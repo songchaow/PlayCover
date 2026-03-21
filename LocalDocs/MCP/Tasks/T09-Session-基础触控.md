@@ -3,7 +3,7 @@
 ## dashboard
 
 - **任务编号**: `T09`
-- **状态**: `未开始`
+- **状态**: `已完成`
 - **层级**: `Session MCP`
 - **工作量**: `M`
 - **推荐单次执行范围**: 一次 agent 执行完成 pointer 基础语义与最小触控闭环
@@ -87,6 +87,15 @@ PlayCover 已有完整的 fake touch 注入链路。
 - 当 `move/up` 找不到对应 id 时如何返回错误
 
 如果这些语义不清楚，后续 `T10` 会很容易跑偏。
+
+## 已落地语义约定
+
+- 坐标空间使用 **当前 key `UIWindow` 坐标系**。
+- 原点在 **左上角**，`x` 向右增长，`y` 向下增长。
+- `tap(x, y)` 语义为：**`pointer_down` 后等待约 30ms，再执行 `pointer_up`**。
+- `pointer_down/move/up` 的外部 `id` 由调用方提供，Session 层将其 **1:1 映射到内部 fake touch 状态**，直到 `pointer_up` 成功结束。
+- 当 `pointer_move` 或 `pointer_up` 找不到对应 `id` 时，返回结构化 `preconditionFailed` 错误。
+- 当坐标越过当前 key `UIWindow` 边界时，返回结构化 `invalidArguments` 错误。
 
 ---
 

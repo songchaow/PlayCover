@@ -23,6 +23,7 @@ final class HostMCPServer {
         registerAppQueryTools()
         registerInstallManagementTools()
         registerDataCleanupTools()
+        registerConfigurationTools()
         registerLaunchTools()
     }
 
@@ -558,6 +559,340 @@ final class HostMCPServer {
         )
     }
 
+    private func registerConfigurationTools() {
+        registry.register(
+            HostToolDefinition(
+                name: "get_app_settings",
+                summary: "Read supported per-app settings, metadata overrides, and launch environment state."
+            ) { arguments, context in
+                try arguments.validateKeys(allowed: ["bundle_id"])
+                let bundleID = try arguments.requiredString("bundle_id")
+                let app = try context.appResolver.resolveApp(bundleID: bundleID)
+                let playToolsStatus = context.appResolver.playToolsStatus(for: app)
+
+                var warnings = self.configurationLimitationsWarnings()
+                if let detectionWarning = playToolsStatus.detectionWarning {
+                    warnings.append(detectionWarning)
+                }
+
+                return .success(
+                    message: "Resolved app settings for \(bundleID).",
+                    data: self.configurationSnapshot(for: app, playToolsStatus: playToolsStatus),
+                    warnings: self.uniqueWarnings(warnings)
+                )
+            }
+        )
+
+        registry.register(
+            HostToolDefinition(
+                name: "set_app_settings",
+                summary: "Patch supported per-app settings and selected metadata overrides."
+            ) { arguments, context in
+                try arguments.validateKeys(allowed: ["bundle_id", "patch"])
+                let bundleID = try arguments.requiredString("bundle_id")
+                guard let patchObject = try arguments.optionalObject("patch"), !patchObject.isEmpty else {
+                    throw HostToolError.preconditionFailed(
+                        "Patch object must contain at least one supported field.",
+                        details: ["bundle_id": .string(bundleID)]
+                    )
+                }
+
+                let patch = try HostAppSettingsPatchParser.parse(patchObject)
+                let app = try context.appResolver.resolveApp(bundleID: bundleID)
+                let runtimeState = await context.appResolver.bestEffortRuntimeState(bundleID: bundleID)
+                let playToolsStatusBefore = context.appResolver.playToolsStatus(for: app)
+                let before = self.configurationSnapshot(for: app, playToolsStatus: playToolsStatusBefore)
+
+                var updatedSettings = app.settings.settings
+                patch.apply(to: &updatedSettings)
+                app.settings.settings = updatedSettings
+                guard app.settings.encode() else {
+                    throw HostToolError.executionFailed(
+                        "Failed to persist app settings for \(bundleID).",
+                        details: [
+                            "bundle_id": .string(bundleID),
+                            "settings_path": .string(app.settings.settingsUrl.path)
+                        ]
+                    )
+                }
+
+                var resigned = false
+                if let applicationCategoryType = patch.applicationCategoryType {
+                    try app.info.setApplicationCategoryType(applicationCategoryType)
+                    try Shell.signApp(app.executable)
+                    resigned = true
+                }
+
+                let playToolsStatusAfter = context.appResolver.playToolsStatus(for: app)
+                let after = self.configurationSnapshot(for: app, playToolsStatus: playToolsStatusAfter)
+
+                var warnings = self.configurationLimitationsWarnings()
+                warnings.append(contentsOf: self.modificationWarningsForRunningApp(
+                    runtimeState,
+                    effect: "Settings changes usually apply on next launch and can race with a running app."
+                ))
+                if resigned {
+                    warnings.append("Changing application_category_type rewrites Info.plist and re-signs the app bundle.")
+                }
+                if let detectionWarning = playToolsStatusBefore.detectionWarning {
+                    warnings.append(detectionWarning)
+                }
+                if let detectionWarning = playToolsStatusAfter.detectionWarning {
+                    warnings.append(detectionWarning)
+                }
+
+                return .success(
+                    message: "Updated app settings for \(bundleID).",
+                    data: .object([
+                        "bundle_id": .string(bundleID),
+                        "applied_fields": self.stringArrayValue(patch.appliedFields),
+                        "resigned": .bool(resigned),
+                        "before": before,
+                        "after": after
+                    ]),
+                    warnings: self.uniqueWarnings(warnings),
+                    debug: [
+                        "settings_path": .string(app.settings.settingsUrl.path),
+                        "best_effort_running": .bool(runtimeState.isRunning),
+                        "best_effort_active": .bool(runtimeState.isActive),
+                        "matched_process_count": .int(runtimeState.matchedProcessCount)
+                    ]
+                )
+            }
+        )
+
+        registry.register(
+            HostToolDefinition(
+                name: "set_launch_env",
+                summary: "Configure DYLD-backed launch environment flags for an installed app."
+            ) { arguments, context in
+                try arguments.validateKeys(allowed: ["bundle_id", "introspection", "ios_frameworks"])
+                let bundleID = try arguments.requiredString("bundle_id")
+                let introspection = try arguments.optionalBool("introspection")
+                let iosFrameworks = try arguments.optionalBool("ios_frameworks")
+                guard introspection != nil || iosFrameworks != nil else {
+                    throw HostToolError.preconditionFailed(
+                        "Provide at least one of 'introspection' or 'ios_frameworks'.",
+                        details: ["bundle_id": .string(bundleID)]
+                    )
+                }
+
+                let app = try context.appResolver.resolveApp(bundleID: bundleID)
+                let runtimeState = await context.appResolver.bestEffortRuntimeState(bundleID: bundleID)
+                let before = self.launchEnvironmentSnapshot(for: app)
+                let changed = try self.applyLaunchEnvironmentPatch(
+                    to: app,
+                    introspection: introspection,
+                    iosFrameworks: iosFrameworks
+                )
+                let after = self.launchEnvironmentSnapshot(for: app)
+
+                var warnings = self.modificationWarningsForRunningApp(
+                    runtimeState,
+                    effect: "Launch environment changes affect future launches and may require a relaunch to observe."
+                )
+                if !changed {
+                    warnings.append("Requested launch environment flags already matched the current configuration.")
+                }
+
+                return .success(
+                    message: changed
+                        ? "Updated launch environment for \(bundleID)."
+                        : "Launch environment for \(bundleID) already matched the requested values.",
+                    data: .object([
+                        "bundle_id": .string(bundleID),
+                        "applied_fields": self.stringArrayValue(
+                            [
+                                introspection != nil ? "introspection" : nil,
+                                iosFrameworks != nil ? "ios_frameworks" : nil
+                            ].compactMap { $0 }
+                        ),
+                        "changed": .bool(changed),
+                        "before": before,
+                        "after": after
+                    ]),
+                    warnings: self.uniqueWarnings(warnings),
+                    debug: [
+                        "info_plist_path": .string(app.info.url.path),
+                        "best_effort_running": .bool(runtimeState.isRunning),
+                        "best_effort_active": .bool(runtimeState.isActive),
+                        "matched_process_count": .int(runtimeState.matchedProcessCount)
+                    ]
+                )
+            }
+        )
+
+        registry.register(
+            HostToolDefinition(
+                name: "sign_app",
+                summary: "Re-sign an installed app using PlayCover's composed entitlements flow."
+            ) { arguments, context in
+                try arguments.validateKeys(allowed: ["bundle_id"])
+                let bundleID = try arguments.requiredString("bundle_id")
+                let app = try context.appResolver.resolveApp(bundleID: bundleID)
+                let runtimeState = await context.appResolver.bestEffortRuntimeState(bundleID: bundleID)
+                let playToolsStatusBefore = context.appResolver.playToolsStatus(for: app)
+
+                try app.signForHostMCP()
+
+                let playToolsStatusAfter = context.appResolver.playToolsStatus(for: app)
+                var warnings = self.modificationWarningsForRunningApp(
+                    runtimeState,
+                    effect: "Re-signing while the app is running may not affect the current process until relaunch."
+                )
+                if let detectionWarning = playToolsStatusBefore.detectionWarning {
+                    warnings.append(detectionWarning)
+                }
+                if let detectionWarning = playToolsStatusAfter.detectionWarning {
+                    warnings.append(detectionWarning)
+                }
+
+                return .success(
+                    message: "Re-signed app \(bundleID).",
+                    data: .object([
+                        "bundle_id": .string(bundleID),
+                        "display_name": .string(app.name),
+                        "entitlements_path": .string(app.entitlements.path),
+                        "has_playtools": .bool(playToolsStatusAfter.hasPlayTools),
+                        "metadata": self.appMetadataSnapshot(for: app),
+                        "launch_env": self.launchEnvironmentSnapshot(for: app)
+                    ]),
+                    warnings: self.uniqueWarnings(warnings),
+                    debug: [
+                        "best_effort_running": .bool(runtimeState.isRunning),
+                        "best_effort_active": .bool(runtimeState.isActive),
+                        "matched_process_count": .int(runtimeState.matchedProcessCount),
+                        "settings_path": .string(app.settings.settingsUrl.path)
+                    ]
+                )
+            }
+        )
+
+        registry.register(
+            HostToolDefinition(
+                name: "inject_playtools",
+                summary: "Inject PlayTools into an installed app and re-sign the bundle."
+            ) { arguments, context in
+                try arguments.validateKeys(allowed: ["bundle_id"])
+                let bundleID = try arguments.requiredString("bundle_id")
+                let app = try context.appResolver.resolveApp(bundleID: bundleID)
+                let runtimeState = await context.appResolver.bestEffortRuntimeState(bundleID: bundleID)
+                let playToolsStatusBefore = context.appResolver.playToolsStatus(for: app)
+
+                var warnings = self.modificationWarningsForRunningApp(
+                    runtimeState,
+                    effect: "Injected PlayTools are intended for subsequent launches; a running app may keep the old binary mapped."
+                )
+                if let detectionWarning = playToolsStatusBefore.detectionWarning {
+                    warnings.append(detectionWarning)
+                }
+
+                if playToolsStatusBefore.hasPlayTools {
+                    return .success(
+                        message: "PlayTools are already installed for \(bundleID).",
+                        data: .object([
+                            "bundle_id": .string(bundleID),
+                            "performed": .bool(false),
+                            "has_playtools": .bool(true)
+                        ]),
+                        warnings: self.uniqueWarnings(warnings),
+                        debug: [
+                            "plugin_path": .string(self.playToolsPluginPath(for: app)),
+                            "best_effort_running": .bool(runtimeState.isRunning),
+                            "best_effort_active": .bool(runtimeState.isActive),
+                            "matched_process_count": .int(runtimeState.matchedProcessCount)
+                        ]
+                    )
+                }
+
+                try await PlayTools.installInIPA(app.executable)
+
+                let playToolsStatusAfter = context.appResolver.playToolsStatus(for: app)
+                if let detectionWarning = playToolsStatusAfter.detectionWarning {
+                    warnings.append(detectionWarning)
+                }
+
+                return .success(
+                    message: "Injected PlayTools into \(bundleID).",
+                    data: .object([
+                        "bundle_id": .string(bundleID),
+                        "performed": .bool(true),
+                        "has_playtools": .bool(playToolsStatusAfter.hasPlayTools)
+                    ]),
+                    warnings: self.uniqueWarnings(warnings),
+                    debug: [
+                        "plugin_path": .string(self.playToolsPluginPath(for: app)),
+                        "best_effort_running": .bool(runtimeState.isRunning),
+                        "best_effort_active": .bool(runtimeState.isActive),
+                        "matched_process_count": .int(runtimeState.matchedProcessCount)
+                    ]
+                )
+            }
+        )
+
+        registry.register(
+            HostToolDefinition(
+                name: "remove_playtools",
+                summary: "Remove PlayTools from an installed app and re-sign the bundle."
+            ) { arguments, context in
+                try arguments.validateKeys(allowed: ["bundle_id"])
+                let bundleID = try arguments.requiredString("bundle_id")
+                let app = try context.appResolver.resolveApp(bundleID: bundleID)
+                let runtimeState = await context.appResolver.bestEffortRuntimeState(bundleID: bundleID)
+                let playToolsStatusBefore = context.appResolver.playToolsStatus(for: app)
+
+                var warnings = self.modificationWarningsForRunningApp(
+                    runtimeState,
+                    effect: "Removing PlayTools affects future launches; a running app may keep the injected framework loaded until exit."
+                )
+                if let detectionWarning = playToolsStatusBefore.detectionWarning {
+                    warnings.append(detectionWarning)
+                }
+
+                if !playToolsStatusBefore.hasPlayTools {
+                    return .success(
+                        message: "PlayTools are already absent for \(bundleID).",
+                        data: .object([
+                            "bundle_id": .string(bundleID),
+                            "performed": .bool(false),
+                            "has_playtools": .bool(false)
+                        ]),
+                        warnings: self.uniqueWarnings(warnings),
+                        debug: [
+                            "plugin_path": .string(self.playToolsPluginPath(for: app)),
+                            "best_effort_running": .bool(runtimeState.isRunning),
+                            "best_effort_active": .bool(runtimeState.isActive),
+                            "matched_process_count": .int(runtimeState.matchedProcessCount)
+                        ]
+                    )
+                }
+
+                try await PlayTools.removeFromApp(app.executable)
+
+                let playToolsStatusAfter = context.appResolver.playToolsStatus(for: app)
+                if let detectionWarning = playToolsStatusAfter.detectionWarning {
+                    warnings.append(detectionWarning)
+                }
+
+                return .success(
+                    message: "Removed PlayTools from \(bundleID).",
+                    data: .object([
+                        "bundle_id": .string(bundleID),
+                        "performed": .bool(true),
+                        "has_playtools": .bool(playToolsStatusAfter.hasPlayTools)
+                    ]),
+                    warnings: self.uniqueWarnings(warnings),
+                    debug: [
+                        "plugin_path": .string(self.playToolsPluginPath(for: app)),
+                        "best_effort_running": .bool(runtimeState.isRunning),
+                        "best_effort_active": .bool(runtimeState.isActive),
+                        "matched_process_count": .int(runtimeState.matchedProcessCount)
+                    ]
+                )
+            }
+        )
+    }
+
     private func registerLaunchTools() {
         registry.register(
             HostToolDefinition(
@@ -679,6 +1014,154 @@ final class HostMCPServer {
         return HostToolError.executionFailed(error.localizedDescription, details: details)
     }
 
+    private func configurationSnapshot(for app: PlayApp, playToolsStatus: HostPlayToolsStatus) -> HostMCPValue {
+        .object([
+            "bundle_id": .string(app.info.bundleIdentifier),
+            "display_name": .string(app.name),
+            "settings_path": .string(app.settings.settingsUrl.path),
+            "settings_file_exists": .bool(FileManager.default.fileExists(atPath: app.settings.settingsUrl.path)),
+            "has_playtools": .bool(playToolsStatus.hasPlayTools),
+            "settings": supportedSettingsSnapshot(for: app.settings.settings),
+            "metadata": appMetadataSnapshot(for: app),
+            "launch_env": launchEnvironmentSnapshot(for: app)
+        ])
+    }
+
+    private func supportedSettingsSnapshot(for settings: AppSettingsData) -> HostMCPValue {
+        .object([
+            "keymapping": .bool(settings.keymapping),
+            "sensitivity": .double(Double(settings.sensitivity)),
+            "disable_timeout": .bool(settings.disableTimeout),
+            "ios_device_model": .string(settings.iosDeviceModel),
+            "window_width": .int(settings.windowWidth),
+            "window_height": .int(settings.windowHeight),
+            "custom_scaler": .double(settings.customScaler),
+            "resolution": .int(settings.resolution),
+            "aspect_ratio": .int(settings.aspectRatio),
+            "notch": .bool(settings.notch),
+            "bypass": .bool(settings.bypass),
+            "play_chain": .bool(settings.playChain),
+            "play_chain_debugging": .bool(settings.playChainDebugging),
+            "inverse_screen_values": .bool(settings.inverseScreenValues),
+            "metal_hud": .bool(settings.metalHUD),
+            "window_fix_method": .int(settings.windowFixMethod),
+            "root_work_dir": .bool(settings.rootWorkDir),
+            "no_km_on_input": .bool(settings.noKMOnInput),
+            "enable_scroll_wheel": .bool(settings.enableScrollWheel),
+            "hide_title_bar": .bool(settings.hideTitleBar),
+            "floating_window": .bool(settings.floatingWindow),
+            "check_mic_permission_sync": .bool(settings.checkMicPermissionSync),
+            "limit_motion_update_frequency": .bool(settings.limitMotionUpdateFrequency),
+            "disable_builtin_mouse": .bool(settings.disableBuiltinMouse),
+            "resizable_aspect_ratio_type": .int(settings.resizableAspectRatioType),
+            "resizable_aspect_ratio_width": .int(settings.resizableAspectRatioWidth),
+            "resizable_aspect_ratio_height": .int(settings.resizableAspectRatioHeight),
+            "block_sleep_spamming": .bool(settings.blockSleepSpamming)
+        ])
+    }
+
+    private func appMetadataSnapshot(for app: PlayApp) -> HostMCPValue {
+        .object([
+            "application_category_type": .string(app.info.applicationCategoryType.rawValue)
+        ])
+    }
+
+    private func launchEnvironmentSnapshot(for app: PlayApp) -> HostMCPValue {
+        let rawValue = app.info.lsEnvironment["DYLD_LIBRARY_PATH"] ?? ""
+        let entries = launchEnvironmentEntries(for: app)
+
+        return .object([
+            "dyld_library_path": .string(rawValue),
+            "dyld_library_path_entries": stringArrayValue(entries),
+            "introspection_enabled": .bool(entries.contains(PlayApp.introspection)),
+            "ios_frameworks_enabled": .bool(entries.contains(PlayApp.iosFrameworks))
+        ])
+    }
+
+    private func launchEnvironmentEntries(for app: PlayApp) -> [String] {
+        let rawValue = app.info.lsEnvironment["DYLD_LIBRARY_PATH"] ?? ""
+        return normalizedDYLDEntries(rawValue.split(separator: ":").map(String.init))
+    }
+
+    private func normalizedDYLDEntries(_ entries: [String]) -> [String] {
+        var seen = Set<String>()
+        return entries
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .filter { seen.insert($0).inserted }
+    }
+
+    @discardableResult
+    private func applyLaunchEnvironmentPatch(
+        to app: PlayApp,
+        introspection: Bool?,
+        iosFrameworks: Bool?
+    ) throws -> Bool {
+        let originalEntries = launchEnvironmentEntries(for: app)
+        var updatedEntries = originalEntries
+
+        if let introspection {
+            setDYLDEntry(PlayApp.introspection, enabled: introspection, entries: &updatedEntries)
+        }
+        if let iosFrameworks {
+            setDYLDEntry(PlayApp.iosFrameworks, enabled: iosFrameworks, entries: &updatedEntries)
+        }
+
+        updatedEntries = normalizedDYLDEntries(updatedEntries)
+        guard updatedEntries != originalEntries else {
+            return false
+        }
+
+        var environment = app.info.lsEnvironment
+        if updatedEntries.isEmpty {
+            environment.removeValue(forKey: "DYLD_LIBRARY_PATH")
+        } else {
+            environment["DYLD_LIBRARY_PATH"] = updatedEntries.joined(separator: ":")
+        }
+
+        try app.info.setLSEnvironment(environment)
+        try Shell.signApp(app.executable)
+        return true
+    }
+
+    private func setDYLDEntry(_ entry: String, enabled: Bool, entries: inout [String]) {
+        if enabled {
+            if !entries.contains(entry) {
+                entries.append(entry)
+            }
+        } else {
+            entries.removeAll { $0 == entry }
+        }
+    }
+
+    private func modificationWarningsForRunningApp(
+        _ runtimeState: HostRuntimeStateSnapshot,
+        effect: String
+    ) -> [String] {
+        guard runtimeState.isRunning else {
+            return []
+        }
+
+        return [
+            "Best-effort runtime state indicates the app is running. \(effect)"
+        ]
+    }
+
+    private func configurationLimitationsWarnings() -> [String] {
+        [
+            "open_with_lldb and open_lldb_with_terminal are not exposed here because PlayCover does not persist them in the per-app settings plist.",
+            "Use set_launch_env for DYLD-backed launch flags; the legacy inject_introspection plist value is not treated as authoritative."
+        ]
+    }
+
+    private func playToolsPluginPath(for app: PlayApp) -> String {
+        app.executable.deletingLastPathComponent()
+            .appendingPathComponent("PlugIns")
+            .appendingPathComponent("AKInterface")
+            .appendingPathExtension("bundle")
+            .path
+    }
+
     private func cleanupWarningsForRunningApp(_ runtimeState: HostRuntimeStateSnapshot) -> [String] {
         guard runtimeState.isRunning else {
             return []
@@ -689,8 +1172,12 @@ final class HostMCPServer {
         ]
     }
 
+    private func stringArrayValue(_ values: [String]) -> HostMCPValue {
+        .array(values.map { .string($0) })
+    }
+
     private func pathArrayValue(_ paths: [String]) -> HostMCPValue {
-        .array(paths.map { .string($0) })
+        stringArrayValue(paths)
     }
 
     private func uniqueWarnings(_ warnings: [String]) -> [String] {
@@ -698,6 +1185,263 @@ final class HostMCPServer {
         return warnings.filter { warning in
             seen.insert(warning).inserted
         }
+    }
+}
+
+private struct HostAppSettingsPatch {
+    let appliedFields: [String]
+    let applicationCategoryType: LSApplicationCategoryType?
+    private let applier: (inout AppSettingsData) -> Void
+
+    init(
+        appliedFields: [String],
+        applicationCategoryType: LSApplicationCategoryType?,
+        applier: @escaping (inout AppSettingsData) -> Void
+    ) {
+        self.appliedFields = appliedFields
+        self.applicationCategoryType = applicationCategoryType
+        self.applier = applier
+    }
+
+    func apply(to settings: inout AppSettingsData) {
+        applier(&settings)
+    }
+}
+
+private enum HostAppSettingsPatchParser {
+    private static let allowedKeys: Set<String> = [
+        "application_category_type",
+        "aspect_ratio",
+        "block_sleep_spamming",
+        "bypass",
+        "check_mic_permission_sync",
+        "custom_scaler",
+        "disable_builtin_mouse",
+        "disable_timeout",
+        "enable_scroll_wheel",
+        "floating_window",
+        "hide_title_bar",
+        "inverse_screen_values",
+        "ios_device_model",
+        "keymapping",
+        "limit_motion_update_frequency",
+        "metal_hud",
+        "no_km_on_input",
+        "notch",
+        "play_chain",
+        "play_chain_debugging",
+        "resizable_aspect_ratio_height",
+        "resizable_aspect_ratio_type",
+        "resizable_aspect_ratio_width",
+        "resolution",
+        "root_work_dir",
+        "sensitivity",
+        "window_fix_method",
+        "window_height",
+        "window_width"
+    ]
+
+    static func parse(_ rawValue: [String: HostMCPValue]) throws -> HostAppSettingsPatch {
+        let unexpected = rawValue.keys.filter { !allowedKeys.contains($0) }.sorted()
+        guard unexpected.isEmpty else {
+            throw HostToolError.unexpectedArguments(unexpected.map { "patch.\($0)" })
+        }
+
+        var appliedFields: [String] = []
+        var applicationCategoryType: LSApplicationCategoryType?
+        var appliers: [(inout AppSettingsData) -> Void] = []
+
+        for key in rawValue.keys.sorted() {
+            guard let value = rawValue[key] else { continue }
+
+            switch key {
+            case "application_category_type":
+                let rawCategory = try stringValue(value, key: key)
+                guard let category = LSApplicationCategoryType(rawValue: rawCategory) else {
+                    throw HostToolError.preconditionFailed(
+                        "Unknown application_category_type '\(rawCategory)'.",
+                        details: [
+                            "argument": .string("patch.\(key)"),
+                            "value": .string(rawCategory)
+                        ]
+                    )
+                }
+                applicationCategoryType = category
+            case "aspect_ratio":
+                let parsed = try nonNegativeIntValue(value, key: key)
+                appliers.append { $0.aspectRatio = parsed }
+            case "block_sleep_spamming":
+                let parsed = try boolValue(value, key: key)
+                appliers.append { $0.blockSleepSpamming = parsed }
+            case "bypass":
+                let parsed = try boolValue(value, key: key)
+                appliers.append { $0.bypass = parsed }
+            case "check_mic_permission_sync":
+                let parsed = try boolValue(value, key: key)
+                appliers.append { $0.checkMicPermissionSync = parsed }
+            case "custom_scaler":
+                let parsed = try positiveDoubleValue(value, key: key)
+                appliers.append { $0.customScaler = parsed }
+            case "disable_builtin_mouse":
+                let parsed = try boolValue(value, key: key)
+                appliers.append { $0.disableBuiltinMouse = parsed }
+            case "disable_timeout":
+                let parsed = try boolValue(value, key: key)
+                appliers.append { $0.disableTimeout = parsed }
+            case "enable_scroll_wheel":
+                let parsed = try boolValue(value, key: key)
+                appliers.append { $0.enableScrollWheel = parsed }
+            case "floating_window":
+                let parsed = try boolValue(value, key: key)
+                appliers.append { $0.floatingWindow = parsed }
+            case "hide_title_bar":
+                let parsed = try boolValue(value, key: key)
+                appliers.append { $0.hideTitleBar = parsed }
+            case "inverse_screen_values":
+                let parsed = try boolValue(value, key: key)
+                appliers.append { $0.inverseScreenValues = parsed }
+            case "ios_device_model":
+                let parsed = try stringValue(value, key: key)
+                appliers.append { $0.iosDeviceModel = parsed }
+            case "keymapping":
+                let parsed = try boolValue(value, key: key)
+                appliers.append { $0.keymapping = parsed }
+            case "limit_motion_update_frequency":
+                let parsed = try boolValue(value, key: key)
+                appliers.append { $0.limitMotionUpdateFrequency = parsed }
+            case "metal_hud":
+                let parsed = try boolValue(value, key: key)
+                appliers.append { $0.metalHUD = parsed }
+            case "no_km_on_input":
+                let parsed = try boolValue(value, key: key)
+                appliers.append { $0.noKMOnInput = parsed }
+            case "notch":
+                let parsed = try boolValue(value, key: key)
+                appliers.append { $0.notch = parsed }
+            case "play_chain":
+                let parsed = try boolValue(value, key: key)
+                appliers.append { $0.playChain = parsed }
+            case "play_chain_debugging":
+                let parsed = try boolValue(value, key: key)
+                appliers.append { $0.playChainDebugging = parsed }
+            case "resizable_aspect_ratio_height":
+                let parsed = try nonNegativeIntValue(value, key: key)
+                appliers.append { $0.resizableAspectRatioHeight = parsed }
+            case "resizable_aspect_ratio_type":
+                let parsed = try nonNegativeIntValue(value, key: key)
+                appliers.append { $0.resizableAspectRatioType = parsed }
+            case "resizable_aspect_ratio_width":
+                let parsed = try nonNegativeIntValue(value, key: key)
+                appliers.append { $0.resizableAspectRatioWidth = parsed }
+            case "resolution":
+                let parsed = try nonNegativeIntValue(value, key: key)
+                appliers.append { $0.resolution = parsed }
+            case "root_work_dir":
+                let parsed = try boolValue(value, key: key)
+                appliers.append { $0.rootWorkDir = parsed }
+            case "sensitivity":
+                let parsed = try boundedDoubleValue(value, key: key, min: 0, max: 100)
+                appliers.append { $0.sensitivity = Float(parsed) }
+            case "window_fix_method":
+                let parsed = try nonNegativeIntValue(value, key: key)
+                appliers.append { $0.windowFixMethod = parsed }
+            case "window_height":
+                let parsed = try positiveIntValue(value, key: key)
+                appliers.append { $0.windowHeight = parsed }
+            case "window_width":
+                let parsed = try positiveIntValue(value, key: key)
+                appliers.append { $0.windowWidth = parsed }
+            default:
+                break
+            }
+
+            appliedFields.append(key)
+        }
+
+        guard !appliedFields.isEmpty else {
+            throw HostToolError.preconditionFailed("Patch object must contain at least one supported field.")
+        }
+
+        return HostAppSettingsPatch(
+            appliedFields: appliedFields,
+            applicationCategoryType: applicationCategoryType
+        ) { settings in
+            appliers.forEach { $0(&settings) }
+        }
+    }
+
+    private static func stringValue(_ value: HostMCPValue, key: String) throws -> String {
+        guard let parsed = value.stringValue else {
+            throw HostToolError.invalidArgument(name: "patch.\(key)", expected: "string", actual: value)
+        }
+        return parsed
+    }
+
+    private static func boolValue(_ value: HostMCPValue, key: String) throws -> Bool {
+        guard let parsed = value.boolValue else {
+            throw HostToolError.invalidArgument(name: "patch.\(key)", expected: "bool", actual: value)
+        }
+        return parsed
+    }
+
+    private static func intValue(_ value: HostMCPValue, key: String) throws -> Int {
+        guard let parsed = value.intValue else {
+            throw HostToolError.invalidArgument(name: "patch.\(key)", expected: "int", actual: value)
+        }
+        return parsed
+    }
+
+    private static func nonNegativeIntValue(_ value: HostMCPValue, key: String) throws -> Int {
+        let parsed = try intValue(value, key: key)
+        guard parsed >= 0 else {
+            throw HostToolError.preconditionFailed(
+                "patch.\(key) must be greater than or equal to 0.",
+                details: ["argument": .string("patch.\(key)"), "actual": .int(parsed)]
+            )
+        }
+        return parsed
+    }
+
+    private static func positiveIntValue(_ value: HostMCPValue, key: String) throws -> Int {
+        let parsed = try intValue(value, key: key)
+        guard parsed > 0 else {
+            throw HostToolError.preconditionFailed(
+                "patch.\(key) must be greater than 0.",
+                details: ["argument": .string("patch.\(key)"), "actual": .int(parsed)]
+            )
+        }
+        return parsed
+    }
+
+    private static func positiveDoubleValue(_ value: HostMCPValue, key: String) throws -> Double {
+        guard let parsed = value.doubleValue else {
+            throw HostToolError.invalidArgument(name: "patch.\(key)", expected: "double", actual: value)
+        }
+        guard parsed > 0 else {
+            throw HostToolError.preconditionFailed(
+                "patch.\(key) must be greater than 0.",
+                details: ["argument": .string("patch.\(key)"), "actual": .double(parsed)]
+            )
+        }
+        return parsed
+    }
+
+    private static func boundedDoubleValue(
+        _ value: HostMCPValue,
+        key: String,
+        min: Double,
+        max: Double
+    ) throws -> Double {
+        guard let parsed = value.doubleValue else {
+            throw HostToolError.invalidArgument(name: "patch.\(key)", expected: "double", actual: value)
+        }
+        guard parsed >= min, parsed <= max else {
+            throw HostToolError.preconditionFailed(
+                "patch.\(key) must be between \(min) and \(max).",
+                details: ["argument": .string("patch.\(key)"), "actual": .double(parsed)]
+            )
+        }
+        return parsed
     }
 }
 

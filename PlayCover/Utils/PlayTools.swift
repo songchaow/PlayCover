@@ -6,6 +6,18 @@
 import Foundation
 import injection
 
+enum PlayToolsMutationError: LocalizedError {
+    case injectionRejected(String)
+    case verificationFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .injectionRejected(message), let .verificationFailed(message):
+            return message
+        }
+    }
+}
+
 class PlayTools {
     private static let frameworksURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library")
@@ -75,20 +87,37 @@ class PlayTools {
         var binary = try Data(contentsOf: exec)
         try Macho.stripBinary(&binary)
 
-        Inject.injectMachO(machoPath: exec.path,
-                           cmdType: .loadDylib,
-                           backup: false,
-                           injectPath: playToolsPath.path,
-                           finishHandle: { result in
-            if result {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            Inject.injectMachO(machoPath: exec.path,
+                               cmdType: .loadDylib,
+                               backup: false,
+                               injectPath: playToolsPath.path,
+                               finishHandle: { result in
+                guard result else {
+                    continuation.resume(
+                        throwing: PlayToolsMutationError.injectionRejected(
+                            "Failed to inject PlayTools load command into \(exec.lastPathComponent)."
+                        )
+                    )
+                    return
+                }
+
                 do {
                     try installPluginInIPA(exec.deletingLastPathComponent())
                     try Shell.signApp(exec)
+
+                    guard try installedInExec(atURL: exec) else {
+                        throw PlayToolsMutationError.verificationFailed(
+                            "PlayTools injection finished but verification failed for \(exec.lastPathComponent)."
+                        )
+                    }
+
+                    continuation.resume(returning: ())
                 } catch {
-                    Log.shared.error(error)
+                    continuation.resume(throwing: error)
                 }
-            }
-        })
+            })
+        }
     }
 
     static func installPluginInIPA(_ payload: URL) throws {
@@ -183,13 +212,22 @@ class PlayTools {
         })
     }
 
-    static func removeFromApp(_ exec: URL) async {
-        Inject.removeMachO(machoPath: exec.path,
-                           cmdType: .loadDylib,
-                           backup: false,
-                           injectPath: playToolsPath.path,
-                           finishHandle: { result in
-            if result {
+    static func removeFromApp(_ exec: URL) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            Inject.removeMachO(machoPath: exec.path,
+                               cmdType: .loadDylib,
+                               backup: false,
+                               injectPath: playToolsPath.path,
+                               finishHandle: { result in
+                guard result else {
+                    continuation.resume(
+                        throwing: PlayToolsMutationError.injectionRejected(
+                            "Failed to remove PlayTools load command from \(exec.lastPathComponent)."
+                        )
+                    )
+                    return
+                }
+
                 do {
                     let pluginUrl = exec.deletingLastPathComponent()
                         .appendingPathComponent("PlugIns")
@@ -200,11 +238,19 @@ class PlayTools {
                         try FileManager.default.removeItem(at: pluginUrl)
                     }
                     try Shell.signApp(exec)
+
+                    guard try !installedInExec(atURL: exec) else {
+                        throw PlayToolsMutationError.verificationFailed(
+                            "PlayTools removal finished but verification still reports an injected dylib for \(exec.lastPathComponent)."
+                        )
+                    }
+
+                    continuation.resume(returning: ())
                 } catch {
-                    Log.shared.error(error)
+                    continuation.resume(throwing: error)
                 }
-            }
-        })
+            })
+        }
     }
 
     static func installedInExec(atURL url: URL) throws -> Bool {

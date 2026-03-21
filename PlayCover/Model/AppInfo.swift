@@ -158,17 +158,21 @@ public class AppInfo {
             ) ?? LSApplicationCategoryType.none
         }
         set {
-            if newValue == .none {
-                rawStorage.removeObject(forKey: "LSApplicationCategoryType")
-            } else {
-                self[string: "LSApplicationCategoryType"] = newValue.rawValue
-            }
             do {
-                try write()
+                try setApplicationCategoryType(newValue)
             } catch {
                 Log.shared.error(error)
             }
         }
+    }
+
+    func setApplicationCategoryType(_ newValue: LSApplicationCategoryType) throws {
+        if newValue == .none {
+            rawStorage.removeObject(forKey: "LSApplicationCategoryType")
+        } else {
+            self[string: "LSApplicationCategoryType"] = newValue.rawValue
+        }
+        try write()
     }
 
     var minimumOSVersion: String {

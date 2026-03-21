@@ -432,11 +432,15 @@ extension PlayApp {
 
     func sign() {
         do {
-            try resignWithComposedEntitlements()
+            try signForHostMCP()
         } catch {
             print(error)
             Log.shared.error(error)
         }
+    }
+
+    func signForHostMCP() throws {
+        try resignWithComposedEntitlements()
     }
 
     private func resignWithComposedEntitlements() throws {

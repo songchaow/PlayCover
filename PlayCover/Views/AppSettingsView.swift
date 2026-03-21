@@ -725,14 +725,14 @@ struct MiscView: View {
                     Button {
                         task = .playTools
                         Task(priority: .userInitiated) {
-                            if hasPlayTools ?? true {
-                                await PlayTools.removeFromApp(app.executable)
-                            } else {
-                                do {
+                            do {
+                                if hasPlayTools ?? true {
+                                    try await PlayTools.removeFromApp(app.executable)
+                                } else {
                                     try await PlayTools.installInIPA(app.executable)
-                                } catch {
-                                    Log.shared.error(error)
                                 }
+                            } catch {
+                                Log.shared.error(error)
                             }
 
                             Task { @MainActor in

@@ -22,6 +22,7 @@ final class HostMCPServer {
         registerDefaultTools()
         registerAppQueryTools()
         registerInstallManagementTools()
+        registerDataCleanupTools()
         registerLaunchTools()
     }
 
@@ -327,6 +328,236 @@ final class HostMCPServer {
         )
     }
 
+    private func registerDataCleanupTools() {
+        registry.register(
+            HostToolDefinition(
+                name: "clear_cache",
+                summary: "Clear PlayCover-managed external cache locations for an installed app."
+            ) { arguments, context in
+                try arguments.validateKeys(allowed: ["bundle_id"])
+                let bundleID = try arguments.requiredString("bundle_id")
+                let app = try context.appResolver.resolveApp(bundleID: bundleID)
+                let runtimeState = await context.appResolver.bestEffortRuntimeState(bundleID: bundleID)
+                let matchedPaths = Uninstaller.matchingExternalCacheURLs(bundleID: bundleID)
+                    .map(\.path)
+                    .sorted()
+
+                await Uninstaller.clearCache(of: app)
+
+                let remainingPaths = Set(
+                    Uninstaller.matchingExternalCacheURLs(bundleID: bundleID)
+                        .map(\.path)
+                )
+                let removedPaths = matchedPaths.filter { !remainingPaths.contains($0) }
+                let blockedPaths = matchedPaths.filter { remainingPaths.contains($0) }
+
+                var warnings = self.cleanupWarningsForRunningApp(runtimeState)
+                if !blockedPaths.isEmpty {
+                    warnings.append(
+                        "Some external cache entries still exist after cleanup; verify Finder locks or that the app is not recreating them."
+                    )
+                }
+
+                let payload: HostMCPValue = .object([
+                    "bundle_id": .string(bundleID),
+                    "performed": .bool(!matchedPaths.isEmpty && blockedPaths.isEmpty),
+                    "paths_touched": self.pathArrayValue(matchedPaths),
+                    "removed_paths": self.pathArrayValue(removedPaths),
+                    "remaining_paths": self.pathArrayValue(blockedPaths)
+                ])
+
+                let message: String
+                if matchedPaths.isEmpty {
+                    message = "No external cache entries found for \(bundleID)."
+                } else if blockedPaths.isEmpty {
+                    message = "Cleared external cache for \(bundleID)."
+                } else {
+                    message = "Attempted to clear external cache for \(bundleID); some entries remain."
+                }
+
+                return .success(
+                    message: message,
+                    data: payload,
+                    warnings: self.uniqueWarnings(warnings),
+                    debug: [
+                        "best_effort_running": .bool(runtimeState.isRunning),
+                        "best_effort_active": .bool(runtimeState.isActive),
+                        "matched_process_count": .int(runtimeState.matchedProcessCount),
+                        "matched_path_count_before_cleanup": .int(matchedPaths.count),
+                        "remaining_path_count_after_cleanup": .int(blockedPaths.count)
+                    ]
+                )
+            }
+        )
+
+        registry.register(
+            HostToolDefinition(
+                name: "clear_preferences",
+                summary: "Delete the app container preferences plist for an installed app."
+            ) { arguments, context in
+                try arguments.validateKeys(allowed: ["bundle_id"])
+                let bundleID = try arguments.requiredString("bundle_id")
+                let app = try context.appResolver.resolveApp(bundleID: bundleID)
+                let runtimeState = await context.appResolver.bestEffortRuntimeState(bundleID: bundleID)
+                let preferencesPath = app.container.userPrefsUrl.path
+                let existedBeforeCleanup = app.container.doesPreferencesExist()
+
+                app.container.clearPreferences()
+
+                let existsAfterCleanup = app.container.doesPreferencesExist()
+                let touchedPaths = existedBeforeCleanup ? [preferencesPath] : []
+
+                var warnings = self.cleanupWarningsForRunningApp(runtimeState)
+                if existedBeforeCleanup && existsAfterCleanup {
+                    warnings.append(
+                        "The preferences file still exists after cleanup; verify file permissions or a running app rewriting it."
+                    )
+                }
+
+                let payload: HostMCPValue = .object([
+                    "bundle_id": .string(bundleID),
+                    "performed": .bool(existedBeforeCleanup && !existsAfterCleanup),
+                    "paths_touched": self.pathArrayValue(touchedPaths),
+                    "preference_path": .string(preferencesPath),
+                    "preference_existed": .bool(existedBeforeCleanup)
+                ])
+
+                let message: String
+                if !existedBeforeCleanup {
+                    message = "No preferences plist found for \(bundleID)."
+                } else if existsAfterCleanup {
+                    message = "Attempted to clear preferences for \(bundleID); the plist still exists."
+                } else {
+                    message = "Cleared preferences for \(bundleID)."
+                }
+
+                return .success(
+                    message: message,
+                    data: payload,
+                    warnings: self.uniqueWarnings(warnings),
+                    debug: [
+                        "best_effort_running": .bool(runtimeState.isRunning),
+                        "best_effort_active": .bool(runtimeState.isActive),
+                        "matched_process_count": .int(runtimeState.matchedProcessCount)
+                    ]
+                )
+            }
+        )
+
+        registry.register(
+            HostToolDefinition(
+                name: "clear_playchain",
+                summary: "Delete PlayChain files for an installed app."
+            ) { arguments, context in
+                try arguments.validateKeys(allowed: ["bundle_id"])
+                let bundleID = try arguments.requiredString("bundle_id")
+                let app = try context.appResolver.resolveApp(bundleID: bundleID)
+                let runtimeState = await context.appResolver.bestEffortRuntimeState(bundleID: bundleID)
+                let candidatePaths = [
+                    app.playChainURL.path,
+                    app.playChainURL.appendingPathExtension("keyCover").path,
+                    app.playChainURL.appendingPathExtension("db").path
+                ]
+                let existingPaths = candidatePaths.filter { FileManager.default.fileExists(atPath: $0) }
+
+                app.clearPlayChain()
+
+                let remainingPaths = existingPaths.filter { FileManager.default.fileExists(atPath: $0) }
+                let removedPaths = existingPaths.filter { !FileManager.default.fileExists(atPath: $0) }
+
+                var warnings = self.cleanupWarningsForRunningApp(runtimeState)
+                if !remainingPaths.isEmpty {
+                    warnings.append(
+                        "Some PlayChain artifacts still exist after cleanup; verify file permissions or that the app is not rewriting them."
+                    )
+                }
+
+                let payload: HostMCPValue = .object([
+                    "bundle_id": .string(bundleID),
+                    "performed": .bool(!existingPaths.isEmpty && remainingPaths.isEmpty),
+                    "paths_touched": self.pathArrayValue(existingPaths),
+                    "removed_paths": self.pathArrayValue(removedPaths),
+                    "remaining_paths": self.pathArrayValue(remainingPaths)
+                ])
+
+                let message: String
+                if existingPaths.isEmpty {
+                    message = "No PlayChain artifacts found for \(bundleID)."
+                } else if remainingPaths.isEmpty {
+                    message = "Cleared PlayChain data for \(bundleID)."
+                } else {
+                    message = "Attempted to clear PlayChain data for \(bundleID); some artifacts remain."
+                }
+
+                return .success(
+                    message: message,
+                    data: payload,
+                    warnings: self.uniqueWarnings(warnings),
+                    debug: [
+                        "best_effort_running": .bool(runtimeState.isRunning),
+                        "best_effort_active": .bool(runtimeState.isActive),
+                        "matched_process_count": .int(runtimeState.matchedProcessCount),
+                        "candidate_path_count": .int(candidatePaths.count)
+                    ]
+                )
+            }
+        )
+
+        registry.register(
+            HostToolDefinition(
+                name: "reset_container",
+                summary: "Delete the installed app's PlayCover container directory."
+            ) { arguments, context in
+                try arguments.validateKeys(allowed: ["bundle_id"])
+                let bundleID = try arguments.requiredString("bundle_id")
+                let app = try context.appResolver.resolveApp(bundleID: bundleID)
+                let runtimeState = await context.appResolver.bestEffortRuntimeState(bundleID: bundleID)
+                let containerPath = app.container.containerUrl.path
+                let existedBeforeCleanup = app.container.doesExist()
+
+                app.container.clear()
+
+                let existsAfterCleanup = app.container.doesExist()
+                let touchedPaths = existedBeforeCleanup ? [containerPath] : []
+
+                var warnings = self.cleanupWarningsForRunningApp(runtimeState)
+                if existedBeforeCleanup && existsAfterCleanup {
+                    warnings.append(
+                        "The container directory still exists after reset; verify file permissions or active file locks."
+                    )
+                }
+
+                let payload: HostMCPValue = .object([
+                    "bundle_id": .string(bundleID),
+                    "performed": .bool(existedBeforeCleanup && !existsAfterCleanup),
+                    "paths_touched": self.pathArrayValue(touchedPaths),
+                    "container_path": .string(containerPath),
+                    "container_existed": .bool(existedBeforeCleanup)
+                ])
+
+                let message: String
+                if !existedBeforeCleanup {
+                    message = "No app container found for \(bundleID)."
+                } else if existsAfterCleanup {
+                    message = "Attempted to reset the container for \(bundleID); the directory still exists."
+                } else {
+                    message = "Reset the container for \(bundleID)."
+                }
+
+                return .success(
+                    message: message,
+                    data: payload,
+                    warnings: self.uniqueWarnings(warnings),
+                    debug: [
+                        "best_effort_running": .bool(runtimeState.isRunning),
+                        "best_effort_active": .bool(runtimeState.isActive),
+                        "matched_process_count": .int(runtimeState.matchedProcessCount)
+                    ]
+                )
+            }
+        )
+    }
+
     private func registerLaunchTools() {
         registry.register(
             HostToolDefinition(
@@ -446,6 +677,20 @@ final class HostMCPServer {
         }
 
         return HostToolError.executionFailed(error.localizedDescription, details: details)
+    }
+
+    private func cleanupWarningsForRunningApp(_ runtimeState: HostRuntimeStateSnapshot) -> [String] {
+        guard runtimeState.isRunning else {
+            return []
+        }
+
+        return [
+            "Best-effort runtime state indicates the app is running; Host MCP does not stop apps before cleanup, so files may be recreated during deletion."
+        ]
+    }
+
+    private func pathArrayValue(_ paths: [String]) -> HostMCPValue {
+        .array(paths.map { .string($0) })
     }
 
     private func uniqueWarnings(_ warnings: [String]) -> [String] {

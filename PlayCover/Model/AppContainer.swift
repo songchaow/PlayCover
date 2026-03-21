@@ -15,14 +15,14 @@ struct AppContainer {
 
     let bundleId: String
     var containerUrl: URL {
-        AppContainer.containersURL.appendingPathComponent(bundleId)
+        AppContainer.containersURL.appendingEscapedPathComponent(bundleId)
     }
 
     var userPrefsUrl: URL {
         containerUrl.appendingPathComponent("Data")
             .appendingPathComponent("Library")
             .appendingPathComponent("Preferences")
-            .appendingPathComponent(bundleId)
+            .appendingEscapedPathComponent(bundleId)
             .appendingPathExtension("plist")
     }
 
@@ -34,7 +34,15 @@ struct AppContainer {
         FileManager.default.delete(at: containerUrl)
     }
 
+    public func clearPreferences() {
+        FileManager.default.delete(at: userPrefsUrl)
+    }
+
     public func doesExist() -> Bool {
         FileManager.default.fileExists(atPath: containerUrl.path)
+    }
+
+    public func doesPreferencesExist() -> Bool {
+        FileManager.default.fileExists(atPath: userPrefsUrl.path)
     }
 }

@@ -71,7 +71,7 @@ struct PlayAppView: View {
             }
             .alert("alert.app.preferences", isPresented: $viewModel.showClearPreferencesAlert) {
                 Button("button.Proceed", role: .destructive) {
-                    deletePreferences(app: viewModel.app.info.bundleIdentifier)
+                    viewModel.app.container.clearPreferences()
                     viewModel.showClearPreferencesAlert.toggle()
                 }
                 Button("button.Cancel", role: .cancel) { }
@@ -92,25 +92,6 @@ struct PlayAppView: View {
             }
     }
 
-    func deletePreferences(app: String) {
-        let plistURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library")
-            .appendingPathComponent("Containers")
-            .appendingEscapedPathComponent(app)
-            .appendingPathComponent("Data")
-            .appendingPathComponent("Library")
-            .appendingPathComponent("Preferences")
-            .appendingEscapedPathComponent(app)
-            .appendingPathExtension("plist")
-
-        guard FileManager.default.fileExists(atPath: plistURL.path) else { return }
-
-        do {
-            try FileManager.default.removeItem(atPath: plistURL.path)
-        } catch {
-            Log.shared.log("\(error)", isError: true)
-        }
-    }
 }
 
 struct PlayAppConditionalView: View {

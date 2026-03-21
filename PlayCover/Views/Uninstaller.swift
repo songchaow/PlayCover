@@ -270,7 +270,7 @@ class Uninstaller {
         }
     }
 
-    private static func matchingExternalCacheURLs(bundleID: String) -> [URL] {
+    static func matchingExternalCacheURLs(bundleID: String) -> [URL] {
         cacheURLs.flatMap { cacheURL in
             guard FileManager.default.fileExists(atPath: cacheURL.path) else {
                 return [URL]()

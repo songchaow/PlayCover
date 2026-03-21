@@ -148,7 +148,7 @@
 | `T05` | `未开始` | Host 实现 agent | 逻辑相对独立 |
 | `T06` | `未开始` | Host 实现 agent | 文件较多，注意范围控制 |
 | `T07` | `未开始` | Host 实现 agent | 容易跑到 UI 层，需保持服务化 |
-| `T08` | `未开始` | Session / 注入层 agent | 是 Session 任务前置 |
+| `T08` | `已完成` | Session / 注入层 agent | 是 Session 任务前置 |
 | `T09` | `未开始` | Session / 输入链路 agent | 优先级高 |
 | `T10` | `未开始` | Session / 输入链路 agent | 依赖基础触控语义 |
 | `T11` | `未开始` | Session / 运行期控制 agent | 注意不要混入高级截图类需求 |

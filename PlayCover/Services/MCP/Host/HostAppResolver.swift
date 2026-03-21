@@ -1,4 +1,16 @@
+import AppKit
 import Foundation
+
+struct HostPlayToolsStatus {
+    let hasPlayTools: Bool
+    let detectionWarning: String?
+}
+
+struct HostRuntimeStateSnapshot {
+    let isRunning: Bool
+    let isActive: Bool
+    let matchedProcessCount: Int
+}
 
 final class HostAppResolver {
     private let fileManager: FileManager
@@ -8,6 +20,14 @@ final class HostAppResolver {
     }
 
     func listInstalledApps() throws -> [PlayApp] {
+        if !fileManager.fileExists(atPath: AppsVM.appDirectory.path) {
+            try fileManager.createDirectory(
+                at: AppsVM.appDirectory,
+                withIntermediateDirectories: true,
+                attributes: nil
+            )
+        }
+
         let directoryContents = try fileManager.contentsOfDirectory(
             at: AppsVM.appDirectory,
             includingPropertiesForKeys: nil,
@@ -112,6 +132,36 @@ final class HostAppResolver {
         }
 
         return fileURL
+    }
+
+    func playToolsStatus(for app: PlayApp) -> HostPlayToolsStatus {
+        do {
+            return HostPlayToolsStatus(hasPlayTools: try app.detectPlayToolsInstallation(), detectionWarning: nil)
+        } catch {
+            Log.shared.error(error)
+            return HostPlayToolsStatus(
+                hasPlayTools: true,
+                detectionWarning: "Failed to inspect PlayTools for \(app.info.bundleIdentifier); reporting has_playtools=true conservatively."
+            )
+        }
+    }
+
+    func debugCapable(for app: PlayApp) -> Bool {
+        fileManager.fileExists(atPath: app.executable.path)
+    }
+
+    func bestEffortRuntimeState(bundleID: String) async -> HostRuntimeStateSnapshot {
+        await MainActor.run {
+            let matches = NSWorkspace.shared.runningApplications.filter {
+                $0.bundleIdentifier == bundleID && !$0.isTerminated
+            }
+
+            return HostRuntimeStateSnapshot(
+                isRunning: !matches.isEmpty,
+                isActive: matches.contains(where: \.isActive),
+                matchedProcessCount: matches.count
+            )
+        }
     }
 
     private func isInstalledAppDirectory(_ url: URL) -> Bool {

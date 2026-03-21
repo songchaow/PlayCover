@@ -190,6 +190,14 @@ extension HostToolError {
         )
     }
 
+    static func unexpectedArguments(_ keys: [String]) -> HostToolError {
+        HostToolError(
+            code: .invalidArguments,
+            message: "Unexpected arguments: \(keys.joined(separator: ", ")).",
+            details: ["unexpected_keys": .array(keys.map { .string($0) })]
+        )
+    }
+
     static func appNotFound(bundleID: String) -> HostToolError {
         HostToolError(
             code: .appNotFound,
@@ -325,5 +333,12 @@ struct HostToolArguments {
 
     func unexpectedKeys(allowed: Set<String>) -> [String] {
         rawValue.keys.filter { !allowed.contains($0) }.sorted()
+    }
+
+    func validateKeys(allowed: Set<String>) throws {
+        let unexpected = unexpectedKeys(allowed: allowed)
+        guard unexpected.isEmpty else {
+            throw HostToolError.unexpectedArguments(unexpected)
+        }
     }
 }

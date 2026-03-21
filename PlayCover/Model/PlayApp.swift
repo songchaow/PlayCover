@@ -262,9 +262,13 @@ extension PlayApp {
 
 // MARK: - Tools
 extension PlayApp {
+    func detectPlayToolsInstallation() throws -> Bool {
+        try PlayTools.installedInExec(atURL: executable)
+    }
+
     func hasPlayTools() -> Bool {
         do {
-            return try PlayTools.installedInExec(atURL: url.appendingEscapedPathComponent(info.executableName))
+            return try detectPlayToolsInstallation()
         } catch {
             Log.shared.error(error)
             return true

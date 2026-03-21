@@ -21,6 +21,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             defaults: ["NSApplicationCrashOnExceptions": true]
         )
 
+        HostMCPServer.shared.start()
+
         NotificationCenter.default.addObserver(self,
                                                selector: #selector(powerStateChanged),
                                                name: Notification.Name.NSProcessInfoPowerStateDidChange,

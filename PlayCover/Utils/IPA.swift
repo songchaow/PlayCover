@@ -6,6 +6,12 @@
 import Foundation
 import SwiftSoup
 
+public struct IPAMacOSCompatibilityStatus {
+    let bundleID: String
+    let appID: Int
+    let supportsMacOS: Bool
+}
+
 public class IPA {
     public let url: URL
     public private(set) var tmpDir: URL?
@@ -102,8 +108,7 @@ public class IPA {
         return false
     }
 
-    @MainActor
-    func checkOfficialMacOS(app: Application) async -> Bool {
+    func inspectOfficialMacOSCompatibility(app: Application) async -> IPAMacOSCompatibilityStatus {
         let bundleID: String
         let appID: Int
         switch app {
@@ -118,9 +123,16 @@ public class IPA {
             let stringArray = appLookup.components(separatedBy: CharacterSet.decimalDigits.inverted)
             appID = Int(stringArray.last ?? "0") ?? 0
         }
-        let supportMacOS: Bool = await checkMacOSCompatibility(appID: appID)
+
+        let supportMacOS = appID == 0 ? false : await checkMacOSCompatibility(appID: appID)
+        return IPAMacOSCompatibilityStatus(bundleID: bundleID, appID: appID, supportsMacOS: supportMacOS)
+    }
+
+    @MainActor
+    func checkOfficialMacOS(app: Application) async -> Bool {
+        let compatibility = await inspectOfficialMacOSCompatibility(app: app)
         let showAlert = InstallPreferences.shared.showAppStorePopup
-        if showAlert && supportMacOS {
+        if showAlert && compatibility.supportsMacOS {
             let alert = NSAlert()
             alert.messageText = NSLocalizedString("alert.appstore", comment: "")
             alert.informativeText = String(
@@ -142,9 +154,9 @@ public class IPA {
                 }
                 return false
             case .alertSecondButtonReturn:
-                if appID != 0 {
+                if compatibility.appID != 0 {
                     guard let urlApp = URL(string:
-                                            "itms-apps://apps.apple.com/app/id\(appID)")
+                                            "itms-apps://apps.apple.com/app/id\(compatibility.appID)")
                     else {return true}
                     NSWorkspace.shared.open(urlApp)
                 }

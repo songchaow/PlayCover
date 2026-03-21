@@ -13,6 +13,52 @@ struct CheckBoxHelper {
     var buttonvar: String
 }
 
+struct UninstallOptions {
+    let removeAppData: Bool
+    let removeAppKeymap: Bool
+    let removeAppSettings: Bool
+    let removeAppEntitlements: Bool
+    let removePlayChain: Bool
+
+    init(
+        removeAppData: Bool = false,
+        removeAppKeymap: Bool = false,
+        removeAppSettings: Bool = false,
+        removeAppEntitlements: Bool = false,
+        removePlayChain: Bool = false
+    ) {
+        self.removeAppData = removeAppData
+        self.removeAppKeymap = removeAppKeymap
+        self.removeAppSettings = removeAppSettings
+        self.removeAppEntitlements = removeAppEntitlements
+        self.removePlayChain = removePlayChain
+    }
+
+    static func fromPreferences(_ preferences: UninstallPreferences = .shared) -> UninstallOptions {
+        UninstallOptions(
+            removeAppData: preferences.clearAppData,
+            removeAppKeymap: preferences.removeAppKeymap,
+            removeAppSettings: preferences.removeAppSettings,
+            removeAppEntitlements: preferences.removeAppEntitlements,
+            removePlayChain: preferences.removePlayChain
+        )
+    }
+
+    var removesAllManagedArtifacts: Bool {
+        removeAppData && removeAppKeymap && removeAppSettings && removeAppEntitlements && removePlayChain
+    }
+}
+
+struct UninstallResult {
+    let bundleID: String
+    let removedApp: Bool
+    let removedAppData: Bool
+    let removedSettings: Bool
+    let removedKeymap: Bool
+    let removedPlaychain: Bool
+    let removedEntitlements: Bool
+}
+
 class Uninstaller {
     private static let libraryUrl = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library")
     private static let pruneURLs: [URL] = [
@@ -109,50 +155,86 @@ class Uninstaller {
     }
 
     static func uninstall(_ app: PlayApp) async {
-        var uninstallNum = 0
+        _ = await uninstall(app, options: .fromPreferences())
+    }
 
-        if UninstallPreferences.shared.clearAppData {
+    static func uninstall(_ app: PlayApp, options: UninstallOptions) async -> UninstallResult {
+        let bundleID = app.info.bundleIdentifier
+        let appURL = app.url
+        let aliasURL = app.aliasURL
+        let keymapURL = app.keymapping.baseKeymapURL
+        let settingsURL = app.settings.settingsUrl
+        let entitlementsURL = app.entitlements
+        let playChainURLs = [
+            app.playChainURL,
+            app.playChainURL.appendingPathExtension("keyCover"),
+            app.playChainURL.appendingPathExtension("db")
+        ]
+
+        let hadAppData = !matchingExternalCacheURLs(bundleID: bundleID).isEmpty
+        if options.removeAppData {
             await app.clearAllCache()
-            uninstallNum += 1
         }
+        let removedAppData = options.removeAppData
+            && hadAppData
+            && matchingExternalCacheURLs(bundleID: bundleID).isEmpty
 
-        if UninstallPreferences.shared.removeAppKeymap {
-            FileManager.default.delete(at: app.keymapping.baseKeymapURL)
-            uninstallNum += 1
+        let hadKeymap = FileManager.default.fileExists(atPath: keymapURL.path)
+        if options.removeAppKeymap {
+            FileManager.default.delete(at: keymapURL)
         }
+        let removedKeymap = options.removeAppKeymap
+            && hadKeymap
+            && !FileManager.default.fileExists(atPath: keymapURL.path)
 
-        if UninstallPreferences.shared.removeAppSettings {
-            FileManager.default.delete(at: app.settings.settingsUrl)
-            uninstallNum += 1
+        let hadSettings = FileManager.default.fileExists(atPath: settingsURL.path)
+        if options.removeAppSettings {
+            FileManager.default.delete(at: settingsURL)
         }
+        let removedSettings = options.removeAppSettings
+            && hadSettings
+            && !FileManager.default.fileExists(atPath: settingsURL.path)
 
-        if UninstallPreferences.shared.removeAppEntitlements {
-            FileManager.default.delete(at: app.entitlements)
-            uninstallNum += 1
+        let hadEntitlements = FileManager.default.fileExists(atPath: entitlementsURL.path)
+        if options.removeAppEntitlements {
+            FileManager.default.delete(at: entitlementsURL)
         }
+        let removedEntitlements = options.removeAppEntitlements
+            && hadEntitlements
+            && !FileManager.default.fileExists(atPath: entitlementsURL.path)
 
-        if UninstallPreferences.shared.removePlayChain {
-            let url = KeyCover.playChainPath.appendingPathComponent(app.info.bundleIdentifier)
-            FileManager.default.delete(at: url)
-
-            // KeyCover encrypted chain
-            let keyCoverURL = url.appendingPathExtension("keyCover")
-            FileManager.default.delete(at: keyCoverURL)
-            uninstallNum += 1
+        let hadPlayChain = playChainURLs.contains(where: { FileManager.default.fileExists(atPath: $0.path) })
+        if options.removePlayChain {
+            app.clearPlayChain()
         }
+        let removedPlaychain = options.removePlayChain
+            && hadPlayChain
+            && playChainURLs.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) }
 
+        let hadAlias = FileManager.default.fileExists(atPath: aliasURL.path)
+        let hadApp = FileManager.default.fileExists(atPath: appURL.path)
         app.removeAlias()
         app.deleteApp()
 
-        if uninstallNum >= 5 {
-            do {
-                let apps = (try PlayApp.bundleIDCache).filter({ $0 != app.info.bundleIdentifier })
-                    .joined(separator: "\n") + "\n"
-                try apps.write(to: PlayApp.bundleIDCacheURL, atomically: false, encoding: .utf8)
-            } catch {
-                Log.shared.error(error)
-            }
+        let removedApp = hadApp && !FileManager.default.fileExists(atPath: appURL.path)
+        let removedAlias = hadAlias && !FileManager.default.fileExists(atPath: aliasURL.path)
+        if !removedAlias && hadAlias {
+            Log.shared.log("Failed to remove alias for \(bundleID) during uninstall.")
         }
+
+        if options.removesAllManagedArtifacts {
+            removeBundleIDCacheEntry(for: bundleID)
+        }
+
+        return UninstallResult(
+            bundleID: bundleID,
+            removedApp: removedApp,
+            removedAppData: removedAppData,
+            removedSettings: removedSettings,
+            removedKeymap: removedKeymap,
+            removedPlaychain: removedPlaychain,
+            removedEntitlements: removedEntitlements
+        )
     }
 
     @MainActor
@@ -185,6 +267,36 @@ class Uninstaller {
                     }
                 }
             }
+        }
+    }
+
+    private static func matchingExternalCacheURLs(bundleID: String) -> [URL] {
+        cacheURLs.flatMap { cacheURL in
+            guard FileManager.default.fileExists(atPath: cacheURL.path) else {
+                return [URL]()
+            }
+
+            do {
+                return try FileManager.default.contentsOfDirectory(
+                    at: cacheURL,
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsSubdirectoryDescendants]
+                )
+                .filter { $0.path.contains(bundleID) }
+            } catch {
+                Log.shared.error(error)
+                return []
+            }
+        }
+    }
+
+    private static func removeBundleIDCacheEntry(for bundleID: String) {
+        do {
+            let apps = (try PlayApp.bundleIDCache).filter({ $0 != bundleID })
+                .joined(separator: "\n") + "\n"
+            try apps.write(to: PlayApp.bundleIDCacheURL, atomically: false, encoding: .utf8)
+        } catch {
+            Log.shared.error(error)
         }
     }
 

@@ -21,6 +21,7 @@ final class HostMCPServer {
         self.context = context
         registerDefaultTools()
         registerAppQueryTools()
+        registerInstallManagementTools()
     }
 
     func start() {
@@ -186,10 +187,186 @@ final class HostMCPServer {
         )
     }
 
+    private func registerInstallManagementTools() {
+        registry.register(
+            HostToolDefinition(
+                name: "install_ipa",
+                summary: "Install a local IPA into PlayCover through a non-interactive Host MCP path."
+            ) { arguments, context in
+                try arguments.validateKeys(allowed: ["path", "inject_playtools", "allow_official_macos"])
+                let path = try arguments.requiredString("path")
+                let ipaURL = try context.appResolver.resolveIPAURL(path: path)
+                let injectPlayTools = try arguments.optionalBool("inject_playtools") ?? true
+                let allowOfficialMacOS = try arguments.optionalBool("allow_official_macos") ?? false
+
+                let configuration = InstallerInstallConfiguration(
+                    installPlayTools: injectPlayTools,
+                    applicationType: InstallPreferences.shared.defaultAppType,
+                    officialMacOSHandling: allowOfficialMacOS ? .allow : .fail
+                )
+
+                do {
+                    let result = try await Installer.install(
+                        ipaUrl: ipaURL,
+                        export: false,
+                        configuration: configuration
+                    )
+
+                    let warnings = self.uniqueWarnings(result.warnings)
+                    let payload: HostMCPValue = .object([
+                        "bundle_id": .string(result.bundleID),
+                        "display_name": .string(result.displayName),
+                        "installed_path": .string(result.finalURL.path),
+                        "has_playtools": .bool(result.hasPlayTools),
+                        "replaced_existing_installation": .bool(result.replacedExistingInstallation)
+                    ])
+
+                    return .success(
+                        message: "Installed IPA for \(result.bundleID).",
+                        data: payload,
+                        warnings: warnings,
+                        debug: [
+                            "source_ipa_path": .string(ipaURL.path),
+                            "inject_playtools": .bool(injectPlayTools),
+                            "allow_official_macos": .bool(allowOfficialMacOS)
+                        ]
+                    )
+                } catch let error as HostToolError {
+                    throw error
+                } catch let error as InstallerInstallError {
+                    throw HostToolError.preconditionFailed(
+                        Installer.userFacingErrorMessage(for: error),
+                        details: [
+                            "path": .string(ipaURL.path),
+                            "inject_playtools": .bool(injectPlayTools),
+                            "allow_official_macos": .bool(allowOfficialMacOS)
+                        ]
+                    )
+                } catch let error as PlayCoverError {
+                    let code: HostToolErrorCode
+                    switch error {
+                    case .waitInstallation, .waitDownload:
+                        code = .preconditionFailed
+                    default:
+                        code = .executionFailed
+                    }
+                    throw HostToolError(
+                        code: code,
+                        message: Installer.userFacingErrorMessage(for: error),
+                        details: ["path": .string(ipaURL.path)]
+                    )
+                } catch {
+                    throw HostToolError.executionFailed(
+                        Installer.userFacingErrorMessage(for: error),
+                        details: ["path": .string(ipaURL.path)]
+                    )
+                }
+            }
+        )
+
+        registry.register(
+            HostToolDefinition(
+                name: "uninstall_app",
+                summary: "Uninstall a PlayCover-managed app by bundle id with explicit cleanup options."
+            ) { arguments, context in
+                try arguments.validateKeys(allowed: ["bundle_id", "options"])
+                let bundleID = try arguments.requiredString("bundle_id")
+                let optionsObject = try arguments.optionalObject("options") ?? [:]
+                try HostUninstallOptionsParser.validateKeys(optionsObject)
+                let options = try HostUninstallOptionsParser.parse(optionsObject)
+                let app = try context.appResolver.resolveApp(bundleID: bundleID)
+                let runtimeState = await context.appResolver.bestEffortRuntimeState(bundleID: bundleID)
+                let result = await Uninstaller.uninstall(app, options: options)
+
+                var warnings: [String] = []
+                if runtimeState.isRunning {
+                    warnings.append(
+                        "The app was running during uninstall. PlayCover does not yet terminate running apps before deletion."
+                    )
+                }
+                if options.removeAppData {
+                    warnings.append(
+                        "remove_app_data clears PlayCover's external cache locations only; full container reset remains a separate tool."
+                    )
+                }
+                if !options.removesAllManagedArtifacts {
+                    warnings.append(
+                        "Some per-app artifacts were intentionally preserved because not all cleanup options were enabled."
+                    )
+                }
+                if !result.removedApp {
+                    warnings.append(
+                        "The managed .app bundle still exists after uninstall; verify Finder locks or running processes."
+                    )
+                }
+
+                let payload: HostMCPValue = .object([
+                    "bundle_id": .string(result.bundleID),
+                    "removed_app": .bool(result.removedApp),
+                    "removed_app_data": .bool(result.removedAppData),
+                    "removed_settings": .bool(result.removedSettings),
+                    "removed_keymap": .bool(result.removedKeymap),
+                    "removed_playchain": .bool(result.removedPlaychain),
+                    "removed_entitlements": .bool(result.removedEntitlements)
+                ])
+
+                return .success(
+                    message: result.removedApp
+                        ? "Uninstalled app \(bundleID)."
+                        : "Attempted uninstall for \(bundleID); some files may remain.",
+                    data: payload,
+                    warnings: self.uniqueWarnings(warnings),
+                    debug: [
+                        "best_effort_running_before_uninstall": .bool(runtimeState.isRunning),
+                        "best_effort_active_before_uninstall": .bool(runtimeState.isActive),
+                        "matched_process_count": .int(runtimeState.matchedProcessCount)
+                    ]
+                )
+            }
+        )
+    }
+
     private func uniqueWarnings(_ warnings: [String]) -> [String] {
         var seen = Set<String>()
         return warnings.filter { warning in
             seen.insert(warning).inserted
         }
+    }
+}
+
+private enum HostUninstallOptionsParser {
+    private static let allowedKeys: Set<String> = [
+        "remove_app_data",
+        "remove_keymap",
+        "remove_settings",
+        "remove_entitlements",
+        "remove_playchain"
+    ]
+
+    static func validateKeys(_ rawValue: [String: HostMCPValue]) throws {
+        let unexpected = rawValue.keys.filter { !allowedKeys.contains($0) }.sorted()
+        guard unexpected.isEmpty else {
+            throw HostToolError.unexpectedArguments(unexpected.map { "options.\($0)" })
+        }
+    }
+
+    static func parse(_ rawValue: [String: HostMCPValue]) throws -> UninstallOptions {
+        func boolValue(for key: String) throws -> Bool {
+            guard let value = rawValue[key] else {
+                return false
+            }
+            guard let boolValue = value.boolValue else {
+                throw HostToolError.invalidArgument(name: "options.\(key)", expected: "bool", actual: value)
+            }
+            return boolValue
+        }
+
+        return UninstallOptions(
+            removeAppData: try boolValue(for: "remove_app_data"),
+            removeAppKeymap: try boolValue(for: "remove_keymap"),
+            removeAppSettings: try boolValue(for: "remove_settings"),
+            removeAppEntitlements: try boolValue(for: "remove_entitlements"),
+            removePlayChain: try boolValue(for: "remove_playchain")
+        )
     }
 }

@@ -5,7 +5,46 @@
 //  Created by Александр Дорофеев on 24.11.2021.
 //
 
+import AppKit
 import Foundation
+
+struct InstallerInstallConfiguration {
+    enum OfficialMacOSHandling {
+        case interactivePrompt
+        case allow
+        case fail
+    }
+
+    let installPlayTools: Bool
+    let applicationType: LSApplicationCategoryType
+    let officialMacOSHandling: OfficialMacOSHandling
+}
+
+struct InstallerInstallResult {
+    let finalURL: URL
+    let bundleID: String
+    let displayName: String
+    let hasPlayTools: Bool
+    let replacedExistingInstallation: Bool
+    let warnings: [String]
+}
+
+enum InstallerInstallError: LocalizedError {
+    case officialMacOSVersionDetected(bundleID: String)
+    case cancelledForOfficialMacOSVersion(bundleID: String)
+    case installDidNotProduceAppBundle
+
+    var errorDescription: String? {
+        switch self {
+        case .officialMacOSVersionDetected(let bundleID):
+            return "The IPA for '\(bundleID)' appears to have an official macOS App Store version. Pass allow_official_macos=true to continue."
+        case .cancelledForOfficialMacOSVersion(let bundleID):
+            return "Installation for '\(bundleID)' was cancelled because an official macOS App Store version is available."
+        case .installDidNotProduceAppBundle:
+            return "Installation finished without producing a managed .app bundle."
+        }
+    }
+}
 
 class Installer {
 
@@ -35,7 +74,7 @@ class Installer {
         return response == .alertFirstButtonReturn
     }
 
-    static private func returnErrorString(error: Error) -> String {
+    static func userFacingErrorMessage(for error: Error) -> String {
         switch error.localizedDescription {
         case let str where str.contains("(disk full?)"): NSLocalizedString("alert.notSpace", comment: "")
         case let str where str.contains(".html"): NSLocalizedString("alert.quota.limit", comment: "")
@@ -44,10 +83,7 @@ class Installer {
         }
     }
 
-    // swiftlint:disable:next function_body_length
     static func install(ipaUrl: URL, export: Bool, returnCompletion: @escaping (URL?) -> Void) {
-        // If (the option key is held or the install playtools popup settings is true) and its not an export,
-        //    then show the installer dialog
         let installPlayTools: Bool
         let applicationType = InstallPreferences.shared.defaultAppType
 
@@ -58,81 +94,156 @@ class Installer {
             installPlayTools = InstallPreferences.shared.alwaysInstallPlayTools
         }
 
-        InstallVM.shared.next(.begin, 0.0, 0.0)
+        let configuration = InstallerInstallConfiguration(
+            installPlayTools: installPlayTools,
+            applicationType: applicationType,
+            officialMacOSHandling: .interactivePrompt
+        )
 
         Task(priority: .userInitiated) {
-            let ipa = IPA(url: ipaUrl)
-
             do {
-                InstallVM.shared.next(.unzip, 0.0, 0.5)
-                try ipa.allocateTempDir()
-
-                let app = try ipa.unzip()
-                if await ipa.checkOfficialMacOS(app: IPA.Application.base(app)) {
-                    ipa.releaseTempDir()
-                    InstallVM.shared.next(.failed, 0.95, 1.0)
-                    returnCompletion(nil)
-                    return
-                }
-                InstallVM.shared.next(.library, 0.5, 0.55)
-                try saveEntitlements(app)
-                let machos = resolveValidMachOs(app)
-                app.validMachOs = machos
-
-                InstallVM.shared.next(.playtools, 0.55, 0.85)
-
-                for macho in machos {
-                    if try Macho.isMachoEncrypted(atURL: macho) {
-                        throw PlayCoverError.appEncrypted
-                    }
-
-                    if !export {
-                        try Macho.convertMacho(macho)
-                        try Shell.signMacho(macho)
-                    }
-                }
-
-                if export {
-                    try PlayTools.injectInIPA(app.executable, payload: app.url)
-                } else if installPlayTools {
-                    try await PlayTools.installInIPA(app.executable)
-                }
-
-                app.info.applicationCategoryType = applicationType
-
-                if !export {
-                    // -rwxr-xr-x
-                    try app.executable.setBinaryPosixPermissions(0o755)
-                    try removeMobileProvision(app)
-                }
-
-                let info = app.info
-                info.assert(minimumVersion: 11.0)
-                try info.write()
-                InstallVM.shared.next(.wrapper, 0.85, 0.95)
-
-                var finalURL: URL
-
-                if export {
-                    finalURL = try ipa.packIPABack(app: app.url)
-                } else {
-                    finalURL = try wrap(app)
-                    let installedApp = PlayApp(appUrl: finalURL)
-
-                    installedApp.sign()
-                }
-
-                ipa.releaseTempDir()
-                try ipa.removeQuarantine(finalURL)
-                InstallVM.shared.next(.finish, 0.95, 1.0)
-                returnCompletion(finalURL)
+                let result = try await install(ipaUrl: ipaUrl, export: export, configuration: configuration)
+                returnCompletion(result.finalURL)
             } catch {
-                Log.shared.error(returnErrorString(error: error))
-                ipa.releaseTempDir()
-
-                InstallVM.shared.next(.failed, 0.95, 1.0)
+                Log.shared.error(userFacingErrorMessage(for: error))
                 returnCompletion(nil)
             }
+        }
+    }
+
+    // swiftlint:disable:next function_body_length
+    static func install(
+        ipaUrl: URL,
+        export: Bool,
+        configuration: InstallerInstallConfiguration
+    ) async throws -> InstallerInstallResult {
+        if InstallVM.shared.inProgress {
+            throw PlayCoverError.waitInstallation
+        }
+
+        if DownloadVM.shared.inProgress {
+            throw PlayCoverError.waitDownload
+        }
+
+        InstallVM.shared.next(.begin, 0.0, 0.0)
+        let ipa = IPA(url: ipaUrl)
+        var warnings: [String] = []
+
+        do {
+            InstallVM.shared.next(.unzip, 0.0, 0.5)
+            try ipa.allocateTempDir()
+
+            let app = try ipa.unzip()
+            let compatibility = await ipa.inspectOfficialMacOSCompatibility(app: IPA.Application.base(app))
+            if compatibility.supportsMacOS {
+                switch configuration.officialMacOSHandling {
+                case .interactivePrompt:
+                    if await ipa.checkOfficialMacOS(app: IPA.Application.base(app)) {
+                        throw InstallerInstallError.cancelledForOfficialMacOSVersion(bundleID: compatibility.bundleID)
+                    }
+                case .allow:
+                    warnings.append(
+                        "The IPA appears to have an official macOS App Store version; continuing because allow_official_macos=true."
+                    )
+                case .fail:
+                    throw InstallerInstallError.officialMacOSVersionDetected(bundleID: compatibility.bundleID)
+                }
+            }
+
+            InstallVM.shared.next(.library, 0.5, 0.55)
+            try saveEntitlements(app)
+            let machos = resolveValidMachOs(app)
+            app.validMachOs = machos
+
+            InstallVM.shared.next(.playtools, 0.55, 0.85)
+
+            for macho in machos {
+                if try Macho.isMachoEncrypted(atURL: macho) {
+                    throw PlayCoverError.appEncrypted
+                }
+
+                if !export {
+                    try Macho.convertMacho(macho)
+                    try Shell.signMacho(macho)
+                }
+            }
+
+            if export {
+                try PlayTools.injectInIPA(app.executable, payload: app.url)
+            } else if configuration.installPlayTools {
+                try await PlayTools.installInIPA(app.executable)
+            }
+
+            app.info.applicationCategoryType = configuration.applicationType
+
+            if !export {
+                try app.executable.setBinaryPosixPermissions(0o755)
+                try removeMobileProvision(app)
+            }
+
+            let info = app.info
+            info.assert(minimumVersion: 11.0)
+            try info.write()
+            InstallVM.shared.next(.wrapper, 0.85, 0.95)
+
+            let finalURL: URL
+            let replacedExistingInstallation: Bool
+
+            if export {
+                finalURL = try ipa.packIPABack(app: app.url)
+                replacedExistingInstallation = false
+            } else {
+                let installLocation = AppsVM.appDirectory
+                    .appendingEscapedPathComponent(info.bundleIdentifier)
+                    .appendingPathExtension("app")
+                replacedExistingInstallation = FileManager.default.fileExists(atPath: installLocation.path)
+                finalURL = try wrap(app)
+                let installedApp = PlayApp(appUrl: finalURL)
+                installedApp.sign()
+            }
+
+            ipa.releaseTempDir()
+            try ipa.removeQuarantine(finalURL)
+            InstallVM.shared.next(.finish, 0.95, 1.0)
+
+            if !export {
+                await MainActor.run {
+                    AppsVM.shared.fetchApps()
+                }
+            }
+
+            let hasPlayTools: Bool
+            if export {
+                hasPlayTools = configuration.installPlayTools
+            } else {
+                let installedApp = PlayApp(appUrl: finalURL)
+                do {
+                    hasPlayTools = try installedApp.detectPlayToolsInstallation()
+                } catch {
+                    hasPlayTools = configuration.installPlayTools
+                    warnings.append(
+                        "PlayTools detection after install failed for \(info.bundleIdentifier); reporting has_playtools=\(configuration.installPlayTools)."
+                    )
+                }
+            }
+
+            if replacedExistingInstallation {
+                warnings.append("Replaced an existing installation for \(info.bundleIdentifier).")
+            }
+
+            return InstallerInstallResult(
+                finalURL: finalURL,
+                bundleID: info.bundleIdentifier,
+                displayName: info.displayName,
+                hasPlayTools: hasPlayTools,
+                replacedExistingInstallation: replacedExistingInstallation,
+                warnings: warnings
+            )
+        } catch {
+            Log.shared.error(userFacingErrorMessage(for: error))
+            ipa.releaseTempDir()
+            InstallVM.shared.next(.failed, 0.95, 1.0)
+            throw error
         }
     }
 

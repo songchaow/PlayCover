@@ -92,32 +92,71 @@ class Shell: ObservableObject {
     }
 
     static func lldb(_ url: URL, withTerminalWindow: Bool = false) throws {
-        Task(priority: .utility) {
-            if withTerminalWindow {
-                let command = "/usr/bin/lldb -o run \(url.esc) -o exit"
-                    .replacingOccurrences(of: "\\", with: "\\\\")
-                let osascript = """
-                    tell app "Terminal"
-                        reopen
-                        activate
-                        do script "\(command)"
-                    end tell
-                """
-                let appleScript = NSAppleScript(source: osascript)
-                var possibleError: NSDictionary?
-                appleScript?.executeAndReturnError(&possibleError)
+        if withTerminalWindow {
+            let command = "/usr/bin/lldb -o run \(url.esc) -o exit"
+                .replacingOccurrences(of: "\\", with: "\\\\")
+            let osascript = """
+                tell app "Terminal"
+                    reopen
+                    activate
+                    do script "\(command)"
+                end tell
+            """
+            let appleScript = NSAppleScript(source: osascript)
+            var possibleError: NSDictionary?
+            appleScript?.executeAndReturnError(&possibleError)
 
-                if let error = possibleError {
-                    for key in error.allKeys {
-                        if let key = key as? String {
-                            throw error.value(forKey: key).debugDescription
-                        }
+            if let error = possibleError {
+                for key in error.allKeys {
+                    if let key = key as? String {
+                        throw error.value(forKey: key).debugDescription
                     }
                 }
-            } else {
-                try run("/usr/bin/lldb", "-o", "run", url.path, "-o", "exit")
+            }
+        } else {
+            try launchDetached("/usr/bin/lldb", "-o", "run", url.path, "-o", "exit")
+        }
+    }
+
+    @discardableResult
+    private static func launchDetached(_ binary: String, _ args: String...) throws -> Process {
+        let process = Process()
+        let pipe = Pipe()
+
+        process.executableURL = URL(fileURLWithPath: binary)
+        process.arguments = args
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        pipe.fileHandleForReading.readabilityHandler = { fileHandle in
+            let data = fileHandle.availableData
+            guard !data.isEmpty else {
+                fileHandle.readabilityHandler = nil
+                return
+            }
+
+            if let output = String(data: data, encoding: .utf8) {
+                let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    Log.shared.log(trimmed)
+                }
             }
         }
+
+        try process.run()
+
+        DispatchQueue.global(qos: .utility).async {
+            process.waitUntilExit()
+            pipe.fileHandleForReading.readabilityHandler = nil
+            if process.terminationStatus != 0 {
+                Log.shared.log(
+                    "Detached command \(binary) exited with status \(process.terminationStatus).",
+                    isError: true
+                )
+            }
+        }
+
+        return process
     }
 }
 

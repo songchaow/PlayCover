@@ -22,6 +22,7 @@ final class HostMCPServer {
         registerDefaultTools()
         registerAppQueryTools()
         registerInstallManagementTools()
+        registerLaunchTools()
     }
 
     func start() {
@@ -324,6 +325,127 @@ final class HostMCPServer {
                 )
             }
         )
+    }
+
+    private func registerLaunchTools() {
+        registry.register(
+            HostToolDefinition(
+                name: "launch_app",
+                summary: "Launch an installed PlayCover-managed app normally or under LLDB."
+            ) { arguments, context in
+                try arguments.validateKeys(allowed: ["bundle_id", "debug", "terminal"])
+                let bundleID = try arguments.requiredString("bundle_id")
+                let debugRequested = try arguments.optionalBool("debug") ?? false
+                let terminalRequested = try arguments.optionalBool("terminal") ?? false
+                let launchMode: PlayAppLaunchMode = debugRequested
+                    ? (terminalRequested ? .lldbTerminal : .lldb)
+                    : .normal
+                let app = try context.appResolver.resolveApp(bundleID: bundleID)
+                let runtimeState = await context.appResolver.bestEffortRuntimeState(bundleID: bundleID)
+
+                var warnings = [
+                    "Host MCP skips the interactive Store update prompt before launch to keep this tool non-interactive."
+                ]
+                if debugRequested {
+                    warnings.append(
+                        "Debug launch starts the app under LLDB; Host MCP does not attach a debugger to an already-running process."
+                    )
+                }
+                if terminalRequested && !debugRequested {
+                    warnings.append("'terminal' is ignored unless 'debug' is true.")
+                }
+                if runtimeState.isRunning {
+                    warnings.append(
+                        "Best-effort runtime state indicates the app was already running before launch; macOS may reactivate the existing instance."
+                    )
+                }
+
+                do {
+                    let attempt = try await app.launchAttempt(
+                        modeOverride: launchMode,
+                        performVersionCheck: false
+                    )
+
+                    let message: String
+                    if !attempt.accepted {
+                        message = "Launch request for \(bundleID) was not accepted."
+                    } else if launchMode == .normal {
+                        message = "Launched app \(bundleID)."
+                    } else if launchMode == .lldbTerminal {
+                        message = "Submitted LLDB Terminal launch request for \(bundleID)."
+                    } else {
+                        message = "Submitted LLDB launch request for \(bundleID)."
+                    }
+
+                    let payload: HostMCPValue = .object([
+                        "bundle_id": .string(app.info.bundleIdentifier),
+                        "display_name": .string(app.name),
+                        "launch_mode": .string(launchMode.rawValue),
+                        "accepted": .bool(attempt.accepted),
+                        "debugger_strategy": .string(launchMode.usesDebugger ? "launch_under_debugger" : "none"),
+                        "terminal": .bool(launchMode.usesTerminalWindow)
+                    ])
+
+                    return .success(
+                        message: message,
+                        data: payload,
+                        warnings: self.uniqueWarnings(warnings),
+                        debug: [
+                            "debug_requested": .bool(debugRequested),
+                            "terminal_requested": .bool(terminalRequested),
+                            "best_effort_running_before_launch": .bool(runtimeState.isRunning),
+                            "best_effort_active_before_launch": .bool(runtimeState.isActive),
+                            "matched_process_count_before_launch": .int(runtimeState.matchedProcessCount),
+                            "version_check_mode": .string("non_interactive_skip"),
+                            "running_application_handle_available": .bool(attempt.runningApplication != nil),
+                            "blocked_by_version_check": .bool(attempt.blockedByVersionCheck)
+                        ]
+                    )
+                } catch {
+                    throw self.launchToolError(
+                        for: error,
+                        bundleID: bundleID,
+                        launchMode: launchMode,
+                        debugRequested: debugRequested,
+                        terminalRequested: terminalRequested
+                    )
+                }
+            }
+        )
+    }
+
+    private func launchToolError(
+        for error: Error,
+        bundleID: String,
+        launchMode: PlayAppLaunchMode,
+        debugRequested: Bool,
+        terminalRequested: Bool
+    ) -> HostToolError {
+        let details: [String: HostMCPValue] = [
+            "bundle_id": .string(bundleID),
+            "launch_mode": .string(launchMode.rawValue),
+            "debug_requested": .bool(debugRequested),
+            "terminal_requested": .bool(terminalRequested)
+        ]
+
+        if let launchError = error as? PlayAppLaunchError {
+            switch launchError {
+            case .playToolsUnavailable, .invalidExecutableArchitecture:
+                return HostToolError.preconditionFailed(launchError.localizedDescription, details: details)
+            case .launchRequestRejected:
+                return HostToolError.executionFailed(launchError.localizedDescription, details: details)
+            }
+        }
+
+        if let playCoverError = error as? PlayCoverError {
+            return HostToolError.preconditionFailed(playCoverError.localizedDescription, details: details)
+        }
+
+        if let hostToolError = error as? HostToolError {
+            return hostToolError
+        }
+
+        return HostToolError.executionFailed(error.localizedDescription, details: details)
     }
 
     private func uniqueWarnings(_ warnings: [String]) -> [String] {

@@ -7,6 +7,44 @@ import Cocoa
 import Foundation
 import IOKit.pwr_mgt
 
+enum PlayAppLaunchMode: String {
+    case normal
+    case lldb
+    case lldbTerminal = "lldb_terminal"
+
+    var usesDebugger: Bool {
+        self != .normal
+    }
+
+    var usesTerminalWindow: Bool {
+        self == .lldbTerminal
+    }
+}
+
+struct PlayAppLaunchAttempt {
+    let mode: PlayAppLaunchMode
+    let accepted: Bool
+    let runningApplication: NSRunningApplication?
+    let blockedByVersionCheck: Bool
+}
+
+enum PlayAppLaunchError: LocalizedError {
+    case playToolsUnavailable
+    case invalidExecutableArchitecture
+    case launchRequestRejected(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .playToolsUnavailable:
+            return "PlayTools are not installed. Please move PlayCover.app into Applications and try again."
+        case .invalidExecutableArchitecture:
+            return "The app executable is not a valid converted Mac Catalyst binary."
+        case let .launchRequestRejected(message):
+            return message
+        }
+    }
+}
+
 class PlayApp: BaseApp {
     // MARK: - Static
     public static let bundleIDCacheURL = PlayTools.playCoverContainer.appendingPathComponent("CACHE")
@@ -61,58 +99,103 @@ class PlayApp: BaseApp {
     lazy var container = AppContainer(bundleId: info.bundleIdentifier)
 
     // MARK: - Launch
+    private var preferredLaunchMode: PlayAppLaunchMode {
+        if settings.openWithLLDB {
+            return settings.openLLDBWithTerminal ? .lldbTerminal : .lldb
+        }
+        return .normal
+    }
+
     func launch() async {
         do {
-            isStarting = true
-
-            if prohibitedToPlay {
-                await clearAllCache()
-                throw PlayCoverError.appProhibited
-            } else if maliciousProhibited {
-                await clearAllCache()
-                deleteApp()
-                throw PlayCoverError.appMaliciousProhibited
-            }
-
-            AppsVM.shared.fetchApps()
-            if await VersionCheck.shared.checkNewVersion(myApp: self) { return }
-
-            settings.sync()
-
-            if try !Entitlements.areEntitlementsValid(app: self) {
-                sign()
-            }
-
-            if try !isInfoPlistSigned() {
-                try Shell.signApp(executable)
-            }
-
-            // Wait for keychain unlock to finish before continuing
-            await unlockKeyCover()
-
-            // If the app does not have PlayTools, do not install PlugIns
-            if hasPlayTools() {
-                try PlayTools.installPluginInIPA(url)
-            }
-
-            if try !PlayTools.isInstalled() {
-                Log.shared.error("PlayTools are not installed! Please move PlayCover.app into Applications!")
-            } else if try !Macho.isMachoValidArch(executable) {
-                Log.shared.error("The app threw an error during conversion.")
-            } else {
-                // Clear any debug-related env vars that could affect the launched app
-                self.clearDebugAffectingEnvironment()
-
-                if settings.openWithLLDB {
-                    try Shell.lldb(executable, withTerminalWindow: settings.openLLDBWithTerminal)
-                } else {
-                    runAppExec() // Splitting to reduce complexity
-                }
-            }
-            isStarting = false
+            _ = try await launchAttempt()
         } catch {
             Log.shared.error(error)
         }
+    }
+
+    @discardableResult
+    func launchAttempt(
+        modeOverride: PlayAppLaunchMode? = nil,
+        performVersionCheck: Bool = true
+    ) async throws -> PlayAppLaunchAttempt {
+        let launchMode = modeOverride ?? preferredLaunchMode
+        isStarting = true
+        defer { isStarting = false }
+
+        let shouldContinue = try await prepareForLaunch(performVersionCheck: performVersionCheck)
+        guard shouldContinue else {
+            return PlayAppLaunchAttempt(
+                mode: launchMode,
+                accepted: false,
+                runningApplication: nil,
+                blockedByVersionCheck: true
+            )
+        }
+
+        switch launchMode {
+        case .normal:
+            let runningApplication = try await runAppExec()
+            return PlayAppLaunchAttempt(
+                mode: launchMode,
+                accepted: true,
+                runningApplication: runningApplication,
+                blockedByVersionCheck: false
+            )
+        case .lldb, .lldbTerminal:
+            try Shell.lldb(executable, withTerminalWindow: launchMode.usesTerminalWindow)
+            return PlayAppLaunchAttempt(
+                mode: launchMode,
+                accepted: true,
+                runningApplication: nil,
+                blockedByVersionCheck: false
+            )
+        }
+    }
+
+    private func prepareForLaunch(performVersionCheck: Bool) async throws -> Bool {
+        if prohibitedToPlay {
+            await clearAllCache()
+            throw PlayCoverError.appProhibited
+        } else if maliciousProhibited {
+            await clearAllCache()
+            deleteApp()
+            throw PlayCoverError.appMaliciousProhibited
+        }
+
+        AppsVM.shared.fetchApps()
+        if performVersionCheck, await VersionCheck.shared.checkNewVersion(myApp: self) {
+            return false
+        }
+
+        settings.sync()
+
+        if try !Entitlements.areEntitlementsValid(app: self) {
+            try resignWithComposedEntitlements()
+        }
+
+        if try !isInfoPlistSigned() {
+            try Shell.signApp(executable)
+        }
+
+        // Wait for keychain unlock to finish before continuing
+        await unlockKeyCover()
+
+        // If the app does not have PlayTools, do not install PlugIns
+        if hasPlayTools() {
+            try PlayTools.installPluginInIPA(url)
+        }
+
+        if try !PlayTools.isInstalled() {
+            throw PlayAppLaunchError.playToolsUnavailable
+        }
+
+        if try !Macho.isMachoValidArch(executable) {
+            throw PlayAppLaunchError.invalidExecutableArchitecture
+        }
+
+        clearDebugAffectingEnvironment()
+        return true
     }
 }
 
@@ -151,40 +234,54 @@ extension PlayApp {
         }
     }
 
-    func runAppExec() {
-        let config = NSWorkspace.OpenConfiguration()
+    func runAppExec() async throws -> NSRunningApplication {
+        try await withCheckedThrowingContinuation { continuation in
+            Task { @MainActor in
+                let config = NSWorkspace.OpenConfiguration()
 
-        // Prevent propagating debugging-related variables to child process
-        for (key, _) in ProcessInfo.processInfo.environment where key.hasPrefix("DYLD_") {
-            unsetenv(key)
-        }
-        for key in PlayApp.metalEnvKeys {
-            unsetenv(key)
-        }
-
-        NSWorkspace.shared.openApplication(
-            at: aliasURL,
-            configuration: config,
-            completionHandler: { runningApp, error in
-                guard error == nil else { return }
-                // Run a thread loop in the background to handle background tasks
-                Task(priority: .background) {
-                    if let runningApp = runningApp {
-                        while !(runningApp.isTerminated) {
-                            if runningApp.isActive {
-                                self.disableTimeOut()
-                            } else {
-                                self.enableTimeOut()
-                            }
-                            sleep(1)
+                NSWorkspace.shared.openApplication(
+                    at: aliasURL,
+                    configuration: config,
+                    completionHandler: { runningApp, error in
+                        if let error {
+                            continuation.resume(
+                                throwing: PlayAppLaunchError.launchRequestRejected(error.localizedDescription)
+                            )
+                            return
                         }
-                        sleep(1)
+
+                        guard let runningApp else {
+                            continuation.resume(
+                                throwing: PlayAppLaunchError.launchRequestRejected(
+                                    "Launch request was submitted, but NSWorkspace did not return a running application handle."
+                                )
+                            )
+                            return
+                        }
+
+                        continuation.resume(returning: runningApp)
+                        self.observeRunningApplication(runningApp)
                     }
-                    // Things that are run after the app is closed
-                    self.lockKeyCover()
-                }
+                )
             }
-        )
+        }
+    }
+
+    private func observeRunningApplication(_ runningApp: NSRunningApplication) {
+        Task(priority: .background) {
+            while !runningApp.isTerminated {
+                if runningApp.isActive {
+                    self.disableTimeOut()
+                } else {
+                    self.enableTimeOut()
+                }
+                sleep(1)
+            }
+            sleep(1)
+
+            // Things that are run after the app is closed
+            self.lockKeyCover()
+        }
     }
 }
 
@@ -335,18 +432,24 @@ extension PlayApp {
 
     func sign() {
         do {
-            let tmpDir = FileManager.default.temporaryDirectory
-            let tmpEnts = tmpDir
-                .appendingEscapedPathComponent(ProcessInfo().globallyUniqueString)
-                .appendingPathExtension("plist")
-            let conf = try Entitlements.composeEntitlements(self)
-            try conf.store(tmpEnts)
-            try Shell.signAppWith(executable, entitlements: tmpEnts)
-            try FileManager.default.removeItem(at: tmpEnts)
+            try resignWithComposedEntitlements()
         } catch {
             print(error)
             Log.shared.error(error)
         }
+    }
+
+    private func resignWithComposedEntitlements() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+        let tmpEnts = tmpDir
+            .appendingEscapedPathComponent(ProcessInfo().globallyUniqueString)
+            .appendingPathExtension("plist")
+        let conf = try Entitlements.composeEntitlements(self)
+        try conf.store(tmpEnts)
+        defer {
+            try? FileManager.default.removeItem(at: tmpEnts)
+        }
+        try Shell.signAppWith(executable, entitlements: tmpEnts)
     }
 }
 

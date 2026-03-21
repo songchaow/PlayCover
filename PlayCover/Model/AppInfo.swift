@@ -248,20 +248,22 @@ public class AppInfo {
             return self[dictionary: "LSEnvironment"] as? [String: String] ?? [:]
         }
         set {
-            if self[dictionary: "LSEnvironment"] == nil {
-                self[dictionary: "LSEnvironment"] = NSMutableDictionary(dictionary: [String: String]())
-            }
-
-            if let key = newValue.first?.key, let value = newValue.first?.value {
-                self[dictionary: "LSEnvironment"]?[key] = value
-
-                do {
-                    try write()
-                } catch {
-                    Log.shared.error(error)
-                }
+            do {
+                try setLSEnvironment(newValue)
+            } catch {
+                Log.shared.error(error)
             }
         }
+    }
+
+    func setLSEnvironment(_ newValue: [String: String]) throws {
+        if newValue.isEmpty {
+            rawStorage.removeObject(forKey: "LSEnvironment")
+        } else {
+            self[dictionary: "LSEnvironment"] = NSMutableDictionary(dictionary: newValue)
+        }
+
+        try write()
     }
 
     func assert(minimumVersion: Double) {

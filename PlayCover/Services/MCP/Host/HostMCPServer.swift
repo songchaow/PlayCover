@@ -24,6 +24,7 @@ final class HostMCPServer {
         registerInstallManagementTools()
         registerDataCleanupTools()
         registerConfigurationTools()
+        registerKeymapAndLogTools()
         registerLaunchTools()
     }
 
@@ -893,6 +894,349 @@ final class HostMCPServer {
         )
     }
 
+    private func registerKeymapAndLogTools() {
+        registry.register(
+            HostToolDefinition(
+                name: "list_keymaps",
+                summary: "List host-managed keymaps for an installed app."
+            ) { arguments, context in
+                try arguments.validateKeys(allowed: ["bundle_id"])
+                let bundleID = try arguments.requiredString("bundle_id")
+                let app = try context.appResolver.resolveApp(bundleID: bundleID)
+                let keymapURLs = app.keymapping.orderedKeymapURLs()
+                let defaultKeymapURL = app.keymapping.defaultKeymapURL()
+
+                var warnings: [String] = []
+                if !keymapURLs.contains(defaultKeymapURL) {
+                    warnings.append("The configured default keymap is missing from the current keymap list.")
+                }
+
+                let payload: HostMCPValue = .object([
+                    "bundle_id": .string(bundleID),
+                    "keymap_directory": .string(app.keymapping.baseKeymapURL.path),
+                    "default_keymap": .string(defaultKeymapURL.deletingPathExtension().lastPathComponent),
+                    "default_keymap_path": .string(defaultKeymapURL.path),
+                    "count": .int(keymapURLs.count),
+                    "items": .array(keymapURLs.map { keymapURL in
+                        .object([
+                            "name": .string(keymapURL.deletingPathExtension().lastPathComponent),
+                            "path": .string(keymapURL.path),
+                            "is_default": .bool(keymapURL == defaultKeymapURL),
+                            "exists_on_disk": .bool(FileManager.default.fileExists(atPath: keymapURL.path))
+                        ])
+                    })
+                ])
+
+                return .success(
+                    message: keymapURLs.isEmpty
+                        ? "No keymaps found for \(bundleID)."
+                        : "Listed \(keymapURLs.count) keymap(s) for \(bundleID).",
+                    data: payload,
+                    warnings: self.uniqueWarnings(warnings)
+                )
+            }
+        )
+
+        registry.register(
+            HostToolDefinition(
+                name: "create_keymap",
+                summary: "Create an empty host-managed keymap for an installed app."
+            ) { arguments, context in
+                try arguments.validateKeys(allowed: ["bundle_id", "name"])
+                let bundleID = try arguments.requiredString("bundle_id")
+                let name = try arguments.requiredString("name")
+                let app = try context.appResolver.resolveApp(bundleID: bundleID)
+                let runtimeState = await context.appResolver.bestEffortRuntimeState(bundleID: bundleID)
+
+                do {
+                    let createdURL = try app.keymapping.createKeymap(name: name)
+                    return .success(
+                        message: "Created keymap '\(name)' for \(bundleID).",
+                        data: .object([
+                            "bundle_id": .string(bundleID),
+                            "name": .string(name),
+                            "path": .string(createdURL.path),
+                            "is_default": .bool(app.keymapping.isDefaultKeymap(name: name))
+                        ]),
+                        warnings: self.uniqueWarnings(self.modificationWarningsForRunningApp(
+                            runtimeState,
+                            effect: "Keymap file changes usually apply on next launch or after the app reloads its keymap cache."
+                        )),
+                        debug: [
+                            "best_effort_running": .bool(runtimeState.isRunning),
+                            "best_effort_active": .bool(runtimeState.isActive),
+                            "matched_process_count": .int(runtimeState.matchedProcessCount)
+                        ]
+                    )
+                } catch {
+                    throw self.keymappingToolError(error, details: [
+                        "bundle_id": .string(bundleID),
+                        "name": .string(name)
+                    ])
+                }
+            }
+        )
+
+        registry.register(
+            HostToolDefinition(
+                name: "rename_keymap",
+                summary: "Rename a host-managed keymap for an installed app."
+            ) { arguments, context in
+                try arguments.validateKeys(allowed: ["bundle_id", "old_name", "new_name"])
+                let bundleID = try arguments.requiredString("bundle_id")
+                let oldName = try arguments.requiredString("old_name")
+                let newName = try arguments.requiredString("new_name")
+                let app = try context.appResolver.resolveApp(bundleID: bundleID)
+                let runtimeState = await context.appResolver.bestEffortRuntimeState(bundleID: bundleID)
+                let renamedDefaultKeymap = app.keymapping.isDefaultKeymap(name: oldName)
+
+                do {
+                    let renamedURL = try app.keymapping.renameKeymapOrThrow(prevName: oldName, newName: newName)
+                    return .success(
+                        message: oldName == newName
+                            ? "Keymap '\(oldName)' already uses the requested name."
+                            : "Renamed keymap '\(oldName)' to '\(newName)' for \(bundleID).",
+                        data: .object([
+                            "bundle_id": .string(bundleID),
+                            "performed": .bool(oldName != newName),
+                            "old_name": .string(oldName),
+                            "new_name": .string(newName),
+                            "old_path": .string(app.keymapping.keymapURL(name: oldName).path),
+                            "new_path": .string(renamedURL.path),
+                            "renamed_default_keymap": .bool(renamedDefaultKeymap)
+                        ]),
+                        warnings: self.uniqueWarnings(self.modificationWarningsForRunningApp(
+                            runtimeState,
+                            effect: "Keymap file changes usually apply on next launch or after the app reloads its keymap cache."
+                        )),
+                        debug: [
+                            "best_effort_running": .bool(runtimeState.isRunning),
+                            "best_effort_active": .bool(runtimeState.isActive),
+                            "matched_process_count": .int(runtimeState.matchedProcessCount)
+                        ]
+                    )
+                } catch {
+                    throw self.keymappingToolError(error, details: [
+                        "bundle_id": .string(bundleID),
+                        "old_name": .string(oldName),
+                        "new_name": .string(newName)
+                    ])
+                }
+            }
+        )
+
+        registry.register(
+            HostToolDefinition(
+                name: "delete_keymap",
+                summary: "Delete a non-default host-managed keymap for an installed app."
+            ) { arguments, context in
+                try arguments.validateKeys(allowed: ["bundle_id", "name"])
+                let bundleID = try arguments.requiredString("bundle_id")
+                let name = try arguments.requiredString("name")
+                let app = try context.appResolver.resolveApp(bundleID: bundleID)
+                let runtimeState = await context.appResolver.bestEffortRuntimeState(bundleID: bundleID)
+
+                do {
+                    let deletedURL = try app.keymapping.deleteKeymapOrThrow(name: name)
+                    return .success(
+                        message: "Deleted keymap '\(name)' for \(bundleID).",
+                        data: .object([
+                            "bundle_id": .string(bundleID),
+                            "name": .string(name),
+                            "deleted_path": .string(deletedURL.path),
+                            "default_keymap": .string(app.keymapping.defaultKeymapURL().deletingPathExtension().lastPathComponent)
+                        ]),
+                        warnings: self.uniqueWarnings(self.modificationWarningsForRunningApp(
+                            runtimeState,
+                            effect: "Keymap file changes usually apply on next launch or after the app reloads its keymap cache."
+                        )),
+                        debug: [
+                            "best_effort_running": .bool(runtimeState.isRunning),
+                            "best_effort_active": .bool(runtimeState.isActive),
+                            "matched_process_count": .int(runtimeState.matchedProcessCount)
+                        ]
+                    )
+                } catch {
+                    throw self.keymappingToolError(error, details: [
+                        "bundle_id": .string(bundleID),
+                        "name": .string(name)
+                    ])
+                }
+            }
+        )
+
+        registry.register(
+            HostToolDefinition(
+                name: "import_keymap",
+                summary: "Import a keymap file into the host-managed keymap directory for an installed app."
+            ) { arguments, context in
+                try arguments.validateKeys(allowed: ["bundle_id", "path", "name", "allow_bundle_id_mismatch"])
+                let bundleID = try arguments.requiredString("bundle_id")
+                let sourcePath = try arguments.requiredString("path")
+                let sourceURL = try context.appResolver.resolveExistingURL(path: sourcePath)
+                let keymapName = try arguments.optionalString("name") ?? sourceURL.deletingPathExtension().lastPathComponent
+                let allowBundleIDMismatch = try arguments.optionalBool("allow_bundle_id_mismatch") ?? false
+                let app = try context.appResolver.resolveApp(bundleID: bundleID)
+                let runtimeState = await context.appResolver.bestEffortRuntimeState(bundleID: bundleID)
+
+                do {
+                    let imported = try app.keymapping.importKeymap(
+                        from: sourceURL,
+                        name: keymapName,
+                        allowBundleIDMismatch: allowBundleIDMismatch
+                    )
+
+                    var warnings = self.modificationWarningsForRunningApp(
+                        runtimeState,
+                        effect: "Keymap file changes usually apply on next launch or after the app reloads its keymap cache."
+                    )
+                    if imported.usedLegacyConversion {
+                        warnings.append("Imported the keymap through legacy keymap conversion because the source file was not in the current plist format.")
+                    }
+                    if imported.importedBundleIdentifier != bundleID {
+                        warnings.append("The imported keymap bundle id differs from the target app bundle id and was accepted only because allow_bundle_id_mismatch=true.")
+                    }
+
+                    return .success(
+                        message: "Imported keymap '\(keymapName)' for \(bundleID).",
+                        data: .object([
+                            "bundle_id": .string(bundleID),
+                            "name": .string(keymapName),
+                            "stored_path": .string(imported.storedURL.path),
+                            "source_path": .string(sourceURL.path),
+                            "imported_bundle_id": .string(imported.importedBundleIdentifier),
+                            "used_legacy_conversion": .bool(imported.usedLegacyConversion)
+                        ]),
+                        warnings: self.uniqueWarnings(warnings),
+                        debug: [
+                            "best_effort_running": .bool(runtimeState.isRunning),
+                            "best_effort_active": .bool(runtimeState.isActive),
+                            "matched_process_count": .int(runtimeState.matchedProcessCount),
+                            "allow_bundle_id_mismatch": .bool(allowBundleIDMismatch)
+                        ]
+                    )
+                } catch {
+                    throw self.keymappingToolError(error, details: [
+                        "bundle_id": .string(bundleID),
+                        "path": .string(sourceURL.path),
+                        "name": .string(keymapName),
+                        "allow_bundle_id_mismatch": .bool(allowBundleIDMismatch)
+                    ])
+                }
+            }
+        )
+
+        registry.register(
+            HostToolDefinition(
+                name: "export_keymap",
+                summary: "Export a host-managed keymap to an explicit filesystem path."
+            ) { arguments, context in
+                try arguments.validateKeys(allowed: ["bundle_id", "name", "path"])
+                let bundleID = try arguments.requiredString("bundle_id")
+                let name = try arguments.requiredString("name")
+                let destinationPath = try arguments.requiredString("path")
+                let destinationURL = try self.resolveOutputURL(path: destinationPath)
+                let app = try context.appResolver.resolveApp(bundleID: bundleID)
+                let overwroteExistingFile = FileManager.default.fileExists(atPath: destinationURL.path)
+
+                do {
+                    let exportedURL = try app.keymapping.exportKeymap(name: name, to: destinationURL)
+                    return .success(
+                        message: "Exported keymap '\(name)' for \(bundleID).",
+                        data: .object([
+                            "bundle_id": .string(bundleID),
+                            "name": .string(name),
+                            "source_keymap_path": .string(app.keymapping.keymapURL(name: name).path),
+                            "exported_path": .string(exportedURL.path),
+                            "overwrote_existing_file": .bool(overwroteExistingFile)
+                        ])
+                    )
+                } catch {
+                    throw self.keymappingToolError(error, details: [
+                        "bundle_id": .string(bundleID),
+                        "name": .string(name),
+                        "path": .string(destinationURL.path)
+                    ])
+                }
+            }
+        )
+
+        registry.register(
+            HostToolDefinition(
+                name: "host_logs_read",
+                summary: "Read the in-memory Host log buffer, optionally tailing by lines or characters."
+            ) { arguments, _ in
+                try arguments.validateKeys(allowed: ["tail_lines", "tail_chars"])
+                let tailLines = try arguments.optionalInt("tail_lines")
+                let tailChars = try arguments.optionalInt("tail_chars")
+
+                if let tailLines, tailLines <= 0 {
+                    throw HostToolError.preconditionFailed("'tail_lines' must be greater than 0.")
+                }
+                if let tailChars, tailChars <= 0 {
+                    throw HostToolError.preconditionFailed("'tail_chars' must be greater than 0.")
+                }
+                if tailLines != nil && tailChars != nil {
+                    throw HostToolError.preconditionFailed("Provide either 'tail_lines' or 'tail_chars', not both.")
+                }
+
+                let snapshot = await MainActor.run { () -> (full: String, returned: String) in
+                    let full = Log.shared.logdata
+                    let returned = Log.shared.read(tailLines: tailLines, tailCharacters: tailChars)
+                    return (full: full, returned: returned)
+                }
+
+                return .success(
+                    message: "Read host log buffer.",
+                    data: .object([
+                        "text": .string(snapshot.returned),
+                        "truncated": .bool(snapshot.returned != snapshot.full),
+                        "total_line_count": .int(self.logLineCount(in: snapshot.full)),
+                        "returned_line_count": .int(self.logLineCount(in: snapshot.returned)),
+                        "total_character_count": .int(snapshot.full.count),
+                        "returned_character_count": .int(snapshot.returned.count)
+                    ]),
+                    warnings: [
+                        "Host logs are stored in-memory only and reset when PlayCover exits."
+                    ],
+                    debug: [
+                        "requested_tail_lines": tailLines.map(HostMCPValue.int) ?? .null,
+                        "requested_tail_chars": tailChars.map(HostMCPValue.int) ?? .null
+                    ]
+                )
+            }
+        )
+
+        registry.register(
+            HostToolDefinition(
+                name: "host_logs_clear",
+                summary: "Clear the in-memory Host log buffer."
+            ) { arguments, _ in
+                try arguments.validateKeys(allowed: [])
+
+                let snapshot = await MainActor.run { () -> (before: String, removedCharacters: Int) in
+                    let before = Log.shared.logdata
+                    let removedCharacters = Log.shared.clear()
+                    return (before: before, removedCharacters: removedCharacters)
+                }
+
+                return .success(
+                    message: snapshot.removedCharacters == 0
+                        ? "Host log buffer was already empty."
+                        : "Cleared host log buffer.",
+                    data: .object([
+                        "cleared": .bool(snapshot.removedCharacters > 0),
+                        "removed_line_count": .int(self.logLineCount(in: snapshot.before)),
+                        "removed_character_count": .int(snapshot.removedCharacters)
+                    ]),
+                    warnings: [
+                        "Host logs are stored in-memory only and reset when PlayCover exits."
+                    ]
+                )
+            }
+        )
+    }
+
     private func registerLaunchTools() {
         registry.register(
             HostToolDefinition(
@@ -1178,6 +1522,55 @@ final class HostMCPServer {
 
     private func pathArrayValue(_ paths: [String]) -> HostMCPValue {
         stringArrayValue(paths)
+    }
+
+    private func keymappingToolError(_ error: Error, details: [String: HostMCPValue]) -> HostToolError {
+        if let hostToolError = error as? HostToolError {
+            return hostToolError
+        }
+
+        if let keymappingError = error as? KeymappingError {
+            return HostToolError.preconditionFailed(keymappingError.localizedDescription, details: details)
+        }
+
+        return HostToolError.executionFailed(error.localizedDescription, details: details)
+    }
+
+    private func resolveOutputURL(path: String) throws -> URL {
+        let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPath.isEmpty else {
+            throw HostToolError.preconditionFailed("Output path cannot be empty.")
+        }
+
+        let expandedPath = NSString(string: trimmedPath).expandingTildeInPath
+        let resolvedPath: String
+        if expandedPath.hasPrefix("/") {
+            resolvedPath = expandedPath
+        } else {
+            resolvedPath = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent(expandedPath)
+                .path
+        }
+
+        return URL(fileURLWithPath: resolvedPath).standardizedFileURL
+    }
+
+    private func logLineCount(in text: String) -> Int {
+        guard !text.isEmpty else {
+            return 0
+        }
+
+        let newlineCount = text.reduce(into: 0) { count, character in
+            if character.isNewline {
+                count += 1
+            }
+        }
+
+        if text.last?.isNewline == true {
+            return newlineCount
+        }
+
+        return newlineCount + 1
     }
 
     private func uniqueWarnings(_ warnings: [String]) -> [String] {

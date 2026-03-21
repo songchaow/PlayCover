@@ -5,8 +5,49 @@
 //  Created by TheMoonThatRises on 9/15/25.
 //
 
+import AppKit
 import Foundation
 import UniformTypeIdentifiers
+
+enum KeymappingError: LocalizedError {
+    case emptyName
+    case invalidName(String)
+    case keymapNotFound(String)
+    case keymapAlreadyExists(String)
+    case cannotDeleteDefaultKeymap(String)
+    case bundleIDMismatch(expected: String, actual: String)
+    case invalidKeymapFile(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .emptyName:
+            return "Keymap name cannot be empty."
+        case let .invalidName(name):
+            return "Keymap name '\(name)' contains unsupported characters."
+        case let .keymapNotFound(name):
+            return "Keymap '\(name)' was not found."
+        case let .keymapAlreadyExists(name):
+            return "Keymap '\(name)' already exists."
+        case let .cannotDeleteDefaultKeymap(name):
+            return "Keymap '\(name)' is the default keymap and cannot be deleted."
+        case let .bundleIDMismatch(expected, actual):
+            return "Imported keymap bundle id '\(actual)' does not match expected bundle id '\(expected)'."
+        case let .invalidKeymapFile(path):
+            return "Keymap file at '\(path)' is not a valid PlayCover keymap."
+        }
+    }
+}
+
+struct ImportedKeymapResult {
+    let storedURL: URL
+    let importedBundleIdentifier: String
+    let usedLegacyConversion: Bool
+}
+
+private struct DecodedKeymapImport {
+    let keymap: Keymap
+    let usedLegacyConversion: Bool
+}
 
 class Keymapping {
     static var keymappingDir: URL {
@@ -21,6 +62,16 @@ class Keymapping {
             }
         }
         return keymappingFolder
+    }
+
+    static func validateName(_ name: String) throws {
+        if name.isEmpty {
+            throw KeymappingError.emptyName
+        }
+
+        if name == "." || name == ".." || name != name.esc || name.contains("/") || name.contains(":") {
+            throw KeymappingError.invalidName(name)
+        }
     }
 
     let info: AppInfo
@@ -76,6 +127,24 @@ class Keymapping {
         baseKeymapURL.appendingPathComponent(name).appendingPathExtension("plist")
     }
 
+    public func keymapURL(name: String) -> URL {
+        constructKeymapPath(name: name)
+    }
+
+    public func orderedKeymapURLs() -> [URL] {
+        reloadKeymapCache()
+        return keymapConfig.keymapOrder
+    }
+
+    public func defaultKeymapURL() -> URL {
+        reloadKeymapCache()
+        return keymapConfig.defaultKm
+    }
+
+    public func isDefaultKeymap(name: String) -> Bool {
+        defaultKeymapURL() == constructKeymapPath(name: name)
+    }
+
     public func reloadKeymapCache() {
         guard FileManager.default.fileExists(atPath: baseKeymapURL.path) else {
             return
@@ -122,10 +191,30 @@ class Keymapping {
         }
     }
 
-    public func createEmptyKeymap(name: String) -> Bool {
+    public func createKeymap(name: String) throws -> URL {
+        reloadKeymapCache()
+        try Self.validateName(name)
+        guard !hasKeymap(name: name) else {
+            throw KeymappingError.keymapAlreadyExists(name)
+        }
+
         setKeymap(name: name, map: Keymap(bundleIdentifier: info.bundleIdentifier))
 
-        return hasKeymap(name: name)
+        guard hasKeymap(name: name) else {
+            throw KeymappingError.keymapNotFound(name)
+        }
+
+        return constructKeymapPath(name: name)
+    }
+
+    public func createEmptyKeymap(name: String) -> Bool {
+        do {
+            _ = try createKeymap(name: name)
+            return true
+        } catch {
+            Log.shared.error(error)
+            return false
+        }
     }
 
     private func setKeymap(name: String, map: Keymap) {
@@ -143,43 +232,76 @@ class Keymapping {
         }
     }
 
-    public func renameKeymap(prevName: String, newName: String) -> Bool {
+    public func renameKeymapOrThrow(prevName: String, newName: String) throws -> URL {
+        reloadKeymapCache()
+        try Self.validateName(newName)
+
         let oldPath = constructKeymapPath(name: prevName)
         let newPath = constructKeymapPath(name: newName)
 
-        if let oldKeymapIndex = keymapConfig.keymapOrder.firstIndex(of: oldPath) {
-            do {
-                try FileManager.default.moveItem(at: oldPath, to: newPath)
+        guard prevName != newName else {
+            return oldPath
+        }
 
-                keymapConfig.keymapOrder[oldKeymapIndex] = newPath
+        guard let oldKeymapIndex = keymapConfig.keymapOrder.firstIndex(of: oldPath) else {
+            throw KeymappingError.keymapNotFound(prevName)
+        }
 
-                return true
-            } catch {
-                Log.shared.error(error)
-                return false
+        guard !hasKeymap(name: newName) else {
+            throw KeymappingError.keymapAlreadyExists(newName)
+        }
+
+        do {
+            try FileManager.default.moveItem(at: oldPath, to: newPath)
+            keymapConfig.keymapOrder[oldKeymapIndex] = newPath
+
+            if keymapConfig.defaultKm == oldPath {
+                keymapConfig.defaultKm = newPath
             }
-        } else {
-            print("could not find keymap with name: \(prevName)")
+
+            return newPath
+        } catch {
+            throw error
+        }
+    }
+
+    public func renameKeymap(prevName: String, newName: String) -> Bool {
+        do {
+            _ = try renameKeymapOrThrow(prevName: prevName, newName: newName)
+            return true
+        } catch {
+            Log.shared.error(error)
             return false
         }
     }
 
-    public func deleteKeymap(name: String) -> Bool {
+    public func deleteKeymapOrThrow(name: String) throws -> URL {
+        reloadKeymapCache()
         let keymapURL = constructKeymapPath(name: name)
 
-        if let keymapIndex = keymapConfig.keymapOrder.firstIndex(of: keymapURL) {
-            do {
-                try FileManager.default.trashItem(at: keymapURL, resultingItemURL: nil)
+        guard let keymapIndex = keymapConfig.keymapOrder.firstIndex(of: keymapURL) else {
+            throw KeymappingError.keymapNotFound(name)
+        }
 
-                keymapConfig.keymapOrder.remove(at: keymapIndex)
+        guard keymapConfig.defaultKm != keymapURL else {
+            throw KeymappingError.cannotDeleteDefaultKeymap(name)
+        }
 
-                return true
-            } catch {
-                Log.shared.error(error)
-                return false
-            }
-        } else {
-            print("could not find keymap with name: \(name)")
+        do {
+            try FileManager.default.trashItem(at: keymapURL, resultingItemURL: nil)
+            keymapConfig.keymapOrder.remove(at: keymapIndex)
+            return keymapURL
+        } catch {
+            throw error
+        }
+    }
+
+    public func deleteKeymap(name: String) -> Bool {
+        do {
+            _ = try deleteKeymapOrThrow(name: name)
+            return true
+        } catch {
+            Log.shared.error(error)
             return false
         }
     }
@@ -204,6 +326,36 @@ class Keymapping {
         return keymapConfig
     }
 
+    public func importKeymap(
+        from sourceURL: URL,
+        name: String,
+        allowBundleIDMismatch: Bool = false,
+        allowLegacyConversion: Bool = true
+    ) throws -> ImportedKeymapResult {
+        reloadKeymapCache()
+        try Self.validateName(name)
+
+        guard !hasKeymap(name: name) else {
+            throw KeymappingError.keymapAlreadyExists(name)
+        }
+
+        let decodedImport = try loadImportedKeymap(from: sourceURL, allowLegacyConversion: allowLegacyConversion)
+        let importedKeymap = decodedImport.keymap
+
+        if importedKeymap.bundleIdentifier != info.bundleIdentifier && !allowBundleIDMismatch {
+            throw KeymappingError.bundleIDMismatch(expected: info.bundleIdentifier, actual: importedKeymap.bundleIdentifier)
+        }
+
+        setKeymap(name: name, map: importedKeymap)
+        let storedURL = constructKeymapPath(name: name)
+
+        return ImportedKeymapResult(
+            storedURL: storedURL,
+            importedBundleIdentifier: importedKeymap.bundleIdentifier,
+            usedLegacyConversion: decodedImport.usedLegacyConversion
+        )
+    }
+
     public func importKeymap(name: String, success: @escaping (Bool) -> Void) {
         let openPanel = NSOpenPanel()
         openPanel.canChooseFiles = true
@@ -217,42 +369,55 @@ class Keymapping {
             if result == .OK {
                 do {
                     if let selectedPath = openPanel.url {
-                        let data = try Data(contentsOf: selectedPath)
-                        let importedKeymap = try PropertyListDecoder().decode(Keymap.self, from: data)
-                        if importedKeymap.bundleIdentifier == self.info.bundleIdentifier {
-                            self.setKeymap(name: name, map: importedKeymap)
+                        let decodedImport = try self.loadImportedKeymap(from: selectedPath, allowLegacyConversion: true)
+                        if decodedImport.keymap.bundleIdentifier == self.info.bundleIdentifier {
+                            _ = try self.importKeymap(
+                                from: selectedPath,
+                                name: name,
+                                allowBundleIDMismatch: false,
+                                allowLegacyConversion: true
+                            )
                             success(true)
-                        } else {
-                            if self.differentBundleIdKeymapAlert() {
-                                self.setKeymap(name: name, map: importedKeymap)
-                                success(true)
-                            } else {
-                                success(false)
-                            }
-                        }
-                    }
-                } catch {
-                    if let selectedPath = openPanel.url {
-                        if let keymap = LegacySettings.convertLegacyKeymapFile(selectedPath) {
-                            if keymap.bundleIdentifier == self.info.bundleIdentifier {
-                                self.setKeymap(name: name, map: keymap)
-                                success(true)
-                            } else {
-                                if self.differentBundleIdKeymapAlert() {
-                                    self.setKeymap(name: name, map: keymap)
-                                    success(true)
-                                } else {
-                                    success(false)
-                                }
-                            }
+                        } else if self.differentBundleIdKeymapAlert() {
+                            _ = try self.importKeymap(
+                                from: selectedPath,
+                                name: name,
+                                allowBundleIDMismatch: true,
+                                allowLegacyConversion: true
+                            )
+                            success(true)
                         } else {
                             success(false)
                         }
                     }
+                } catch {
+                    Log.shared.error(error)
+                    success(false)
                 }
                 openPanel.close()
             }
         }
+    }
+
+    public func exportKeymap(name: String, to destinationURL: URL) throws -> URL {
+        reloadKeymapCache()
+
+        guard hasKeymap(name: name) else {
+            throw KeymappingError.keymapNotFound(name)
+        }
+
+        let resolvedDestination = destinationURL.standardizedFileURL
+        let destinationDirectory = resolvedDestination.deletingLastPathComponent()
+        if !FileManager.default.fileExists(atPath: destinationDirectory.path) {
+            try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+        }
+
+        let data = try encoder.encode(getKeymap(name: name))
+        if FileManager.default.fileExists(atPath: resolvedDestination.path) {
+            try FileManager.default.removeItem(at: resolvedDestination)
+        }
+        try data.write(to: resolvedDestination)
+        return resolvedDestination
     }
 
     public func exportKeymap(name: String) {
@@ -268,9 +433,8 @@ class Keymapping {
             if result == .OK {
                 do {
                     if let selectedPath = savePanel.url {
-                        let data = try self.encoder.encode(self.getKeymap(name: name))
-                        try data.write(to: selectedPath)
-                        selectedPath.openInFinder()
+                        let exportedURL = try self.exportKeymap(name: name, to: selectedPath)
+                        exportedURL.openInFinder()
                     }
                 } catch {
                     savePanel.close()
@@ -278,6 +442,22 @@ class Keymapping {
                 }
                 savePanel.close()
             }
+        }
+    }
+
+    private func loadImportedKeymap(from sourceURL: URL, allowLegacyConversion: Bool) throws -> DecodedKeymapImport {
+        do {
+            let data = try Data(contentsOf: sourceURL)
+            return DecodedKeymapImport(
+                keymap: try PropertyListDecoder().decode(Keymap.self, from: data),
+                usedLegacyConversion: false
+            )
+        } catch {
+            if allowLegacyConversion, let legacyKeymap = LegacySettings.convertLegacyKeymapFile(sourceURL) {
+                return DecodedKeymapImport(keymap: legacyKeymap, usedLegacyConversion: true)
+            }
+
+            throw KeymappingError.invalidKeymapFile(sourceURL.path)
         }
     }
 

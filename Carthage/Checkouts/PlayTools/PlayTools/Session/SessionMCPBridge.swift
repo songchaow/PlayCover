@@ -9,6 +9,7 @@ public final class SessionMCPBridge {
 
     private let dateFormatter = ISO8601DateFormatter()
     private let pointerTools = SessionPointerToolController()
+    private let mappedInputTools = SessionMappedInputToolController()
 
     public private(set) var isStarted = false
 
@@ -26,6 +27,7 @@ public final class SessionMCPBridge {
         registerDefaultTools()
         registerStatusTools()
         registerPointerTools()
+        registerAdvancedTools()
     }
 
     public func start() {
@@ -150,9 +152,91 @@ public final class SessionMCPBridge {
         )
     }
 
+    private func registerAdvancedTools() {
+        registry.register(
+            SessionToolDefinition(
+                name: "drag",
+                summary: "Drag from one UIWindow point to another over a caller-provided duration in seconds."
+            ) { arguments, _ in
+                try arguments.validateKeys(allowed: ["from", "to", "duration"])
+                let from = try Self.requiredPoint(named: "from", from: arguments)
+                let to = try Self.requiredPoint(named: "to", from: arguments)
+                let duration = try Self.requiredPositiveDouble(named: "duration", from: arguments)
+                return try await self.pointerTools.drag(from: from, to: to, duration: duration)
+            }
+        )
+
+        registry.register(
+            SessionToolDefinition(
+                name: "swipe",
+                summary: "Inject a swipe by following an ordered path of UIWindow points."
+            ) { arguments, _ in
+                try arguments.validateKeys(allowed: ["path"])
+                let path = try Self.requiredPointArray(named: "path", from: arguments)
+                return try await self.pointerTools.swipe(path: path)
+            }
+        )
+
+        registry.register(
+            SessionToolDefinition(
+                name: "pinch",
+                summary: "Inject a best-effort two-finger pinch around a center point using a scale factor."
+            ) { arguments, _ in
+                try arguments.validateKeys(allowed: ["center", "scale"])
+                let center = try Self.requiredPoint(named: "center", from: arguments)
+                let scale = try Self.requiredPositiveDouble(named: "scale", from: arguments)
+                return try await self.pointerTools.pinch(center: center, scale: scale)
+            }
+        )
+
+        registry.register(
+            SessionToolDefinition(
+                name: "button",
+                summary: "Dispatch a named keymap button press or release through the existing ActionDispatcher."
+            ) { arguments, _ in
+                try arguments.validateKeys(allowed: ["name", "pressed"])
+                let name = try Self.requiredNonEmptyString(named: "name", from: arguments)
+                let pressed = try Self.requiredBool(named: "pressed", from: arguments)
+                return try self.mappedInputTools.button(name: name, pressed: pressed)
+            }
+        )
+
+        registry.register(
+            SessionToolDefinition(
+                name: "thumbstick",
+                summary: "Dispatch a normalized analog thumbstick vector in the range [-1, 1]. Positive y moves upward."
+            ) { arguments, _ in
+                try arguments.validateKeys(allowed: ["name", "x", "y"])
+                let name = try Self.requiredNonEmptyString(named: "name", from: arguments)
+                let x = try Self.requiredFiniteDoubleInRange(named: "x", from: arguments, allowedRange: -1.0...1.0)
+                let y = try Self.requiredFiniteDoubleInRange(named: "y", from: arguments, allowedRange: -1.0...1.0)
+                return try self.mappedInputTools.thumbstick(name: name, x: x, y: y)
+            }
+        )
+    }
+
     private static func requiredInt(named key: String, from arguments: SessionToolArguments) throws -> Int {
         guard let value = try arguments.optionalInt(key) else {
             throw SessionToolError.missingArgument(key)
+        }
+        return value
+    }
+
+    private static func requiredBool(named key: String, from arguments: SessionToolArguments) throws -> Bool {
+        guard let value = try arguments.optionalBool(key) else {
+            throw SessionToolError.missingArgument(key)
+        }
+        return value
+    }
+
+    private static func requiredNonEmptyString(named key: String, from arguments: SessionToolArguments) throws -> String {
+        let value = try arguments.requiredString(key).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else {
+            throw SessionToolError(
+                code: .invalidArguments,
+                message: "Argument '\(key)' must not be empty.",
+                details: ["argument": .string(key)]
+            )
         }
         return value
     }
@@ -169,6 +253,88 @@ public final class SessionMCPBridge {
             )
         }
         return value
+    }
+
+    private static func requiredPositiveDouble(named key: String, from arguments: SessionToolArguments) throws -> Double {
+        let value = try requiredFiniteDouble(named: key, from: arguments)
+        guard value > 0 else {
+            throw SessionToolError(
+                code: .invalidArguments,
+                message: "Argument '\(key)' must be greater than zero.",
+                details: ["argument": .string(key)]
+            )
+        }
+        return value
+    }
+
+    private static func requiredFiniteDoubleInRange(
+        named key: String,
+        from arguments: SessionToolArguments,
+        allowedRange: ClosedRange<Double>
+    ) throws -> Double {
+        let value = try requiredFiniteDouble(named: key, from: arguments)
+        guard allowedRange.contains(value) else {
+            throw SessionToolError(
+                code: .invalidArguments,
+                message: "Argument '\(key)' must be between \(allowedRange.lowerBound) and \(allowedRange.upperBound).",
+                details: [
+                    "argument": .string(key),
+                    "min": .double(allowedRange.lowerBound),
+                    "max": .double(allowedRange.upperBound),
+                    "actual": .double(value)
+                ]
+            )
+        }
+        return value
+    }
+
+    private static func requiredPoint(named key: String, from arguments: SessionToolArguments) throws -> CGPoint {
+        guard let object = try arguments.optionalObject(key) else {
+            throw SessionToolError.missingArgument(key)
+        }
+        return try point(from: .object(object), label: key)
+    }
+
+    private static func requiredPointArray(named key: String, from arguments: SessionToolArguments) throws -> [CGPoint] {
+        guard let array = try arguments.optionalArray(key) else {
+            throw SessionToolError.missingArgument(key)
+        }
+        return try array.enumerated().map { index, value in
+            try point(from: value, label: "\(key)[\(index)]")
+        }
+    }
+
+    private static func point(from value: SessionMCPValue, label: String) throws -> CGPoint {
+        guard let object = value.objectValue else {
+            throw SessionToolError.invalidArgument(name: label, expected: "object{x,y}", actual: value)
+        }
+
+        let unexpectedKeys = object.keys.filter { $0 != "x" && $0 != "y" }.sorted()
+        guard unexpectedKeys.isEmpty else {
+            throw SessionToolError(
+                code: .invalidArguments,
+                message: "Point '\(label)' contains unexpected keys: \(unexpectedKeys.joined(separator: ", ")).",
+                details: [
+                    "argument": .string(label),
+                    "unexpected_keys": .array(unexpectedKeys.map { .string($0) })
+                ]
+            )
+        }
+
+        guard let rawX = object["x"] else {
+            throw SessionToolError.missingArgument("\(label).x")
+        }
+        guard let rawY = object["y"] else {
+            throw SessionToolError.missingArgument("\(label).y")
+        }
+        guard let x = rawX.doubleValue, x.isFinite else {
+            throw SessionToolError.invalidArgument(name: "\(label).x", expected: "double", actual: rawX)
+        }
+        guard let y = rawY.doubleValue, y.isFinite else {
+            throw SessionToolError.invalidArgument(name: "\(label).y", expected: "double", actual: rawY)
+        }
+
+        return CGPoint(x: x, y: y)
     }
 
     @MainActor
@@ -235,13 +401,15 @@ private final class SessionPointerToolController {
         var lastPoint: CGPoint
     }
 
-    private struct ValidatedPoint {
+    fileprivate struct ValidatedPoint {
         let point: CGPoint
         let windowBounds: CGRect
         let coordinateSpace: SessionMCPValue
     }
 
     private let tapUpDelay: TimeInterval = 0.03
+    private let gestureFrameInterval: TimeInterval = 1.0 / 60.0
+    private let defaultPinchSteps = 8
     private var activePointers: [Int: ActivePointer] = [:]
 
     func tap(x: Double, y: Double) async throws -> SessionToolResult {
@@ -466,6 +634,165 @@ private final class SessionPointerToolController {
         }
     }
 
+    func drag(from: CGPoint, to: CGPoint, duration: Double) async throws -> SessionToolResult {
+        let start = try await validatedPoint(point: from)
+        let end = try await validatedPoint(point: to)
+
+        let segmentCount = max(1, min(120, Int(ceil(duration / gestureFrameInterval))))
+        let path = interpolatedPoints(from: start.point, to: end.point, segmentCount: segmentCount)
+        let stepInterval = duration / Double(segmentCount)
+
+        try await performPath(
+            path,
+            actionName: "SessionGesture",
+            keyName: "drag",
+            stepInterval: stepInterval,
+            coordinateSpace: start.coordinateSpace
+        )
+
+        return .success(
+            message: "Drag injected.",
+            data: .object([
+                "accepted": .bool(true),
+                "from": encodePoint(start.point),
+                "to": encodePoint(end.point),
+                "duration_seconds": .double(duration),
+                "coordinate_space": start.coordinateSpace
+            ]),
+            debug: [
+                "gesture_impl": .string("pointer_path"),
+                "path_point_count": .int(path.count),
+                "segment_count": .int(segmentCount),
+                "step_interval_ms": .int(Int(stepInterval * 1000.0))
+            ]
+        )
+    }
+
+    func swipe(path: [CGPoint]) async throws -> SessionToolResult {
+        guard path.count >= 2 else {
+            throw SessionToolError(
+                code: .invalidArguments,
+                message: "Swipe path must contain at least two points.",
+                details: ["point_count": .int(path.count)]
+            )
+        }
+
+        var validatedPath: [ValidatedPoint] = []
+        validatedPath.reserveCapacity(path.count)
+        for point in path {
+            validatedPath.append(try await self.validatedPoint(point: point))
+        }
+        let coordinateSpace = validatedPath[0].coordinateSpace
+        let points = validatedPath.map(\.point)
+
+        try await performPath(
+            points,
+            actionName: "SessionGesture",
+            keyName: "swipe",
+            stepInterval: gestureFrameInterval,
+            coordinateSpace: coordinateSpace
+        )
+
+        return .success(
+            message: "Swipe injected.",
+            data: .object([
+                "accepted": .bool(true),
+                "path": .array(points.map(encodePoint)),
+                "coordinate_space": coordinateSpace
+            ]),
+            debug: [
+                "gesture_impl": .string("pointer_path"),
+                "path_point_count": .int(points.count),
+                "step_interval_ms": .int(Int(gestureFrameInterval * 1000.0))
+            ]
+        )
+    }
+
+    func pinch(center: CGPoint, scale: Double) async throws -> SessionToolResult {
+        let centerPoint = try await validatedPoint(point: center)
+
+        let safeHorizontalRadius = min(
+            centerPoint.point.x - centerPoint.windowBounds.minX,
+            centerPoint.windowBounds.maxX - centerPoint.point.x
+        ) - 1
+
+        guard safeHorizontalRadius >= 12 else {
+            throw SessionToolError.preconditionFailed(
+                "Pinch center is too close to the window edge.",
+                details: [
+                    "center": encodePoint(centerPoint.point),
+                    "coordinate_space": centerPoint.coordinateSpace
+                ]
+            )
+        }
+
+        let minimumRadius: CGFloat = 12
+        let nominalRadius = min(CGFloat(60), safeHorizontalRadius)
+        var warnings: [String] = []
+
+        var startRadius: CGFloat
+        var endRadius: CGFloat
+        if scale >= 1 {
+            startRadius = max(minimumRadius, min(nominalRadius / CGFloat(scale), safeHorizontalRadius))
+            endRadius = min(safeHorizontalRadius, startRadius * CGFloat(scale))
+        } else {
+            startRadius = min(nominalRadius, safeHorizontalRadius)
+            endRadius = max(minimumRadius, startRadius * CGFloat(scale))
+        }
+
+        startRadius = min(startRadius, safeHorizontalRadius)
+        endRadius = min(endRadius, safeHorizontalRadius)
+
+        if abs((endRadius / startRadius) - CGFloat(scale)) > 0.01 {
+            warnings.append("Pinch scale was clamped to stay inside the current key UIWindow bounds.")
+        }
+        if scale == 1 {
+            warnings.append("Requested pinch scale is 1, so only a minimal two-finger gesture was injected.")
+        }
+
+        let startLeft = CGPoint(x: centerPoint.point.x - startRadius, y: centerPoint.point.y)
+        let startRight = CGPoint(x: centerPoint.point.x + startRadius, y: centerPoint.point.y)
+        let endLeft = CGPoint(x: centerPoint.point.x - endRadius, y: centerPoint.point.y)
+        let endRight = CGPoint(x: centerPoint.point.x + endRadius, y: centerPoint.point.y)
+
+        let validatedStartLeft = try await validatedPoint(point: startLeft)
+        let validatedStartRight = try await validatedPoint(point: startRight)
+        let validatedEndLeft = try await validatedPoint(point: endLeft)
+        let validatedEndRight = try await validatedPoint(point: endRight)
+
+        let leftPath = interpolatedPoints(from: validatedStartLeft.point, to: validatedEndLeft.point, segmentCount: defaultPinchSteps)
+        let rightPath = interpolatedPoints(from: validatedStartRight.point, to: validatedEndRight.point, segmentCount: defaultPinchSteps)
+
+        try await performDualPath(
+            leftPath: leftPath,
+            rightPath: rightPath,
+            actionName: "SessionGesture",
+            keyName: "pinch",
+            stepInterval: gestureFrameInterval,
+            coordinateSpace: centerPoint.coordinateSpace
+        )
+
+        let effectiveScale = Double(endRadius / startRadius)
+        return .success(
+            message: "Pinch injected.",
+            data: .object([
+                "accepted": .bool(true),
+                "center": encodePoint(centerPoint.point),
+                "scale_requested": .double(scale),
+                "scale_effective": .double(effectiveScale),
+                "start_points": .array([encodePoint(validatedStartLeft.point), encodePoint(validatedStartRight.point)]),
+                "end_points": .array([encodePoint(validatedEndLeft.point), encodePoint(validatedEndRight.point)]),
+                "coordinate_space": centerPoint.coordinateSpace
+            ]),
+            warnings: warnings,
+            debug: [
+                "gesture_impl": .string("dual_pointer_path"),
+                "path_point_count": .int(leftPath.count),
+                "step_interval_ms": .int(Int(gestureFrameInterval * 1000.0))
+            ]
+        )
+    }
+
     @MainActor
     private func coordinateSpaceSnapshot() throws -> ValidatedPoint {
         guard let keyWindow = screen.keyWindow else {
@@ -489,8 +816,11 @@ private final class SessionPointerToolController {
     }
 
     private func validatedPoint(x: Double, y: Double) async throws -> ValidatedPoint {
+        try await validatedPoint(point: CGPoint(x: x, y: y))
+    }
+
+    fileprivate func validatedPoint(point: CGPoint) async throws -> ValidatedPoint {
         let snapshot = try await MainActor.run { try self.coordinateSpaceSnapshot() }
-        let point = CGPoint(x: x, y: y)
 
         guard point.x >= snapshot.windowBounds.minX,
               point.y >= snapshot.windowBounds.minY,
@@ -513,9 +843,9 @@ private final class SessionPointerToolController {
         )
     }
 
-    private func runOnTouchQueue(
-        _ operation: @escaping () throws -> SessionToolResult
-    ) async throws -> SessionToolResult {
+    fileprivate func runOnTouchQueue<T>(
+        _ operation: @escaping () throws -> T
+    ) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
             PlayInput.touchQueue.async(qos: .userInteractive) {
                 do {
@@ -526,7 +856,283 @@ private final class SessionPointerToolController {
             }
         }
     }
+
+    private func performPath(
+        _ points: [CGPoint],
+        actionName: String,
+        keyName: String,
+        stepInterval: TimeInterval,
+        coordinateSpace: SessionMCPValue
+    ) async throws {
+        guard points.count >= 2 else {
+            throw SessionToolError(
+                code: .invalidArguments,
+                message: "Gesture path must contain at least two points.",
+                details: ["coordinate_space": coordinateSpace]
+            )
+        }
+
+        var touchID: Int?
+        try await runOnTouchQueue {
+            Toucher.touchcam(point: points[0], phase: .began, tid: &touchID, actionName: actionName, keyName: keyName)
+            guard touchID != nil else {
+                throw SessionToolError.executionFailed(
+                    "Failed to begin \(keyName) gesture.",
+                    details: [
+                        "point": encodePoint(points[0]),
+                        "coordinate_space": coordinateSpace
+                    ]
+                )
+            }
+        }
+
+        for point in points.dropFirst().dropLast() {
+            try await sleepIfNeeded(stepInterval)
+            try await runOnTouchQueue {
+                Toucher.touchcam(point: point, phase: .moved, tid: &touchID, actionName: actionName, keyName: keyName)
+                guard touchID != nil else {
+                    throw SessionToolError.executionFailed(
+                        "\(keyName) gesture became inactive during move.",
+                        details: [
+                            "point": encodePoint(point),
+                            "coordinate_space": coordinateSpace
+                        ]
+                    )
+                }
+            }
+        }
+
+        try await sleepIfNeeded(stepInterval)
+        let finalPoint = points[points.count - 1]
+        try await runOnTouchQueue {
+            Toucher.touchcam(point: finalPoint, phase: .ended, tid: &touchID, actionName: actionName, keyName: keyName)
+            guard touchID == nil else {
+                throw SessionToolError.executionFailed(
+                    "\(keyName) gesture failed to release cleanly.",
+                    details: [
+                        "point": encodePoint(finalPoint),
+                        "touch_id": .int(touchID ?? -1),
+                        "coordinate_space": coordinateSpace
+                    ]
+                )
+            }
+        }
+    }
+
+    private func performDualPath(
+        leftPath: [CGPoint],
+        rightPath: [CGPoint],
+        actionName: String,
+        keyName: String,
+        stepInterval: TimeInterval,
+        coordinateSpace: SessionMCPValue
+    ) async throws {
+        guard leftPath.count == rightPath.count, leftPath.count >= 2 else {
+            throw SessionToolError(
+                code: .invalidArguments,
+                message: "Pinch gesture paths must contain the same number of points.",
+                details: ["coordinate_space": coordinateSpace]
+            )
+        }
+
+        var leftTouchID: Int?
+        var rightTouchID: Int?
+        try await runOnTouchQueue {
+            Toucher.touchcam(point: leftPath[0], phase: .began, tid: &leftTouchID, actionName: actionName, keyName: keyName + ".left")
+            Toucher.touchcam(point: rightPath[0], phase: .began, tid: &rightTouchID, actionName: actionName, keyName: keyName + ".right")
+            guard leftTouchID != nil, rightTouchID != nil else {
+                throw SessionToolError.executionFailed(
+                    "Failed to begin pinch gesture.",
+                    details: [
+                        "left_point": encodePoint(leftPath[0]),
+                        "right_point": encodePoint(rightPath[0]),
+                        "coordinate_space": coordinateSpace
+                    ]
+                )
+            }
+        }
+
+        for index in 1..<(leftPath.count - 1) {
+            try await sleepIfNeeded(stepInterval)
+            try await runOnTouchQueue {
+                Toucher.touchcam(point: leftPath[index], phase: .moved, tid: &leftTouchID, actionName: actionName, keyName: keyName + ".left")
+                Toucher.touchcam(point: rightPath[index], phase: .moved, tid: &rightTouchID, actionName: actionName, keyName: keyName + ".right")
+                guard leftTouchID != nil, rightTouchID != nil else {
+                    throw SessionToolError.executionFailed(
+                        "Pinch gesture became inactive during move.",
+                        details: [
+                            "left_point": encodePoint(leftPath[index]),
+                            "right_point": encodePoint(rightPath[index]),
+                            "coordinate_space": coordinateSpace
+                        ]
+                    )
+                }
+            }
+        }
+
+        try await sleepIfNeeded(stepInterval)
+        let finalLeft = leftPath[leftPath.count - 1]
+        let finalRight = rightPath[rightPath.count - 1]
+        try await runOnTouchQueue {
+            Toucher.touchcam(point: finalLeft, phase: .ended, tid: &leftTouchID, actionName: actionName, keyName: keyName + ".left")
+            Toucher.touchcam(point: finalRight, phase: .ended, tid: &rightTouchID, actionName: actionName, keyName: keyName + ".right")
+            guard leftTouchID == nil, rightTouchID == nil else {
+                throw SessionToolError.executionFailed(
+                    "Pinch gesture failed to release cleanly.",
+                    details: [
+                        "left_point": encodePoint(finalLeft),
+                        "right_point": encodePoint(finalRight),
+                        "left_touch_id": .int(leftTouchID ?? -1),
+                        "right_touch_id": .int(rightTouchID ?? -1),
+                        "coordinate_space": coordinateSpace
+                    ]
+                )
+            }
+        }
+    }
+
+    private func interpolatedPoints(from start: CGPoint, to end: CGPoint, segmentCount: Int) -> [CGPoint] {
+        let segments = max(1, segmentCount)
+        return (0...segments).map { index in
+            let progress = CGFloat(index) / CGFloat(segments)
+            return CGPoint(
+                x: start.x + ((end.x - start.x) * progress),
+                y: start.y + ((end.y - start.y) * progress)
+            )
+        }
+    }
+
+    private func sleepIfNeeded(_ duration: TimeInterval) async throws {
+        guard duration > 0 else { return }
+        try await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000.0))
+    }
 }
+
+private final class SessionMappedInputToolController {
+    func button(name: String, pressed: Bool) throws -> SessionToolResult {
+        if ActionDispatcher.dispatch(key: name, pressed: pressed) {
+            return .success(
+                message: "Button dispatched.",
+                data: .object([
+                    "accepted": .bool(true),
+                    "name": .string(name),
+                    "pressed": .bool(pressed),
+                    "resolved_dispatch_keys": .array([.string(name)])
+                ]),
+                debug: ["resolved_via": .string("dispatch_key")]
+            )
+        }
+
+        let fallbackKeys = logicalButtonDispatchKeys(named: name)
+        let acceptedKeys = fallbackKeys.filter { ActionDispatcher.dispatch(key: $0, pressed: pressed) }
+        guard !acceptedKeys.isEmpty else {
+            throw SessionToolError.preconditionFailed(
+                "Button '\(name)' is not mapped in the current keymap.",
+                details: [
+                    "requested_name": .string(name),
+                    "available_button_names": .array(availableButtonNames().map { .string($0) })
+                ]
+            )
+        }
+
+        return .success(
+            message: "Button dispatched through current keymap resolution.",
+            data: .object([
+                "accepted": .bool(true),
+                "name": .string(name),
+                "pressed": .bool(pressed),
+                "resolved_dispatch_keys": .array(acceptedKeys.map { .string($0) })
+            ]),
+            warnings: ["Resolved button name through the current keymap because no direct dispatch handler matched the requested name."],
+            debug: ["resolved_via": .string("current_keymap")]
+        )
+    }
+
+    func thumbstick(name: String, x: Double, y: Double) throws -> SessionToolResult {
+        let candidateKeys = thumbstickDispatchCandidates(for: name)
+        let acceptedKey = candidateKeys.first { ActionDispatcher.dispatch(key: $0, valueX: CGFloat(x), valueY: CGFloat(y)) }
+        guard let acceptedKey else {
+            throw SessionToolError.preconditionFailed(
+                "Thumbstick '\(name)' is not available in the current keymap.",
+                details: [
+                    "requested_name": .string(name),
+                    "available_thumbsticks": .array(availableAnalogThumbsticks().map { .string($0) })
+                ]
+            )
+        }
+
+        return .success(
+            message: "Thumbstick dispatched.",
+            data: .object([
+                "accepted": .bool(true),
+                "name": .string(name),
+                "x": .double(x),
+                "y": .double(y),
+                "resolved_dispatch_key": .string(acceptedKey)
+            ]),
+            warnings: acceptedKey == name ? [] : ["Resolved thumbstick name through known aliases or current keymap names."],
+            debug: [
+                "resolved_via": .string(acceptedKey == name ? "dispatch_key" : "alias_or_keymap"),
+                "y_axis": .string("positive_up")
+            ]
+        )
+    }
+
+    private func logicalButtonDispatchKeys(named requestedName: String) -> [String] {
+        let matchedButtons = keymap.currentKeymap.buttonModels + keymap.currentKeymap.draggableButtonModels
+        let exactMatches = matchedButtons.filter { $0.keyName == requestedName }
+        let caseInsensitiveMatches = exactMatches.isEmpty
+            ? matchedButtons.filter { $0.keyName.caseInsensitiveCompare(requestedName) == .orderedSame }
+            : []
+        let matches = exactMatches.isEmpty ? caseInsensitiveMatches : exactMatches
+        return uniqued(matches.map(buttonDispatchKey(for:)))
+    }
+
+    private func buttonDispatchKey(for button: Button) -> String {
+        if button.keyCode == KeyCodeNames.defaultCode {
+            return button.keyName
+        }
+        return KeyCodeNames.keyCodes[button.keyCode] ?? button.keyName
+    }
+
+    private func thumbstickDispatchCandidates(for requestedName: String) -> [String] {
+        let keymapMatches = availableAnalogThumbsticks().filter { $0.caseInsensitiveCompare(requestedName) == .orderedSame }
+        let alias = canonicalThumbstickAlias(for: requestedName)
+        return uniqued([requestedName] + keymapMatches + [alias].compactMap { $0 })
+    }
+
+    private func canonicalThumbstickAlias(for requestedName: String) -> String? {
+        switch requestedName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: " ", with: "") {
+        case "left", "leftstick", "leftthumbstick":
+            return "Left Thumbstick"
+        case "right", "rightstick", "rightthumbstick":
+            return "Right Thumbstick"
+        case "mouse":
+            return "Mouse"
+        default:
+            return nil
+        }
+    }
+
+    private func availableButtonNames() -> [String] {
+        uniqued((keymap.currentKeymap.buttonModels + keymap.currentKeymap.draggableButtonModels).map(\.keyName))
+    }
+
+    private func availableAnalogThumbsticks() -> [String] {
+        uniqued(keymap.currentKeymap.joystickModel.filter(JoystickModel.isAnalog).map(\.keyName))
+    }
+
+    private func uniqued(_ items: [String]) -> [String] {
+        var seen = Set<String>()
+        return items.filter { seen.insert($0).inserted }
+    }
+}
+
 
 private func encodePoint(_ point: CGPoint) -> SessionMCPValue {
     .object([

@@ -94,6 +94,18 @@
 		B6ABDA2A2971EEF700A46E80 /* ProgressVM.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6ABDA292971EEF700A46E80 /* ProgressVM.swift */; };
 		F8498CF92E3B416D9577B817 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5D9C44AF910418082DE86B6 /* main.swift */; };
 		B73085F57C194B8FBE136049 /* PlayCoverMCPTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FDA695ADCBB4DD192ABF5DE /* PlayCoverMCPTests.swift */; };
+		146DA62E570A4C1ABE204596 /* MCPTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = E80591C9C66B41F6900EDB12 /* MCPTypes.swift */; };
+		733B8BFA693747C6A9EEF256 /* StdioTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A369BC937EC744178C1B211D /* StdioTransport.swift */; };
+		D07C9FAE21224C11A8EAB873 /* ToolRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89D06AAF495D4535A4E8235C /* ToolRegistry.swift */; };
+		43E0A404E8404842AEDA7D14 /* ResourceRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D655635CF6F3439CAFA4949E /* ResourceRegistry.swift */; };
+		F9C5147CC3B0413EB2E0F011 /* MCPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9687C96D543945518CCEE25D /* MCPServer.swift */; };		511B06A258394449AC255098 /* MCPTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = E80591C9C66B41F6900EDB12 /* MCPTypes.swift */; };
+		5C596A7CF8C345919790DF67 /* StdioTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A369BC937EC744178C1B211D /* StdioTransport.swift */; };
+		3CF02DDB697D4EC28A5CA199 /* ToolRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89D06AAF495D4535A4E8235C /* ToolRegistry.swift */; };
+		EC3B68CFE88247A0BFB37B1A /* ResourceRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D655635CF6F3439CAFA4949E /* ResourceRegistry.swift */; };
+		A58FA942EC6D4EEB9FD2BB89 /* MCPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9687C96D543945518CCEE25D /* MCPServer.swift */; };		268C4D33721649BB81839A88 /* MCPProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3ABD04437FE4450B94210EB /* MCPProtocolTests.swift */; };
+		A071F2F1A0C645AAA7F86F36 /* MCPServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39A5AD7250D9482E8D8D172C /* MCPServerTests.swift */; };
+		3F972DBF85244AEBB7AC0373 /* MCPRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2736C5851CA46C0B92D72AB /* MCPRegistryTests.swift */; };
+		A10E57289D0C4907BF8E3870 /* MCPSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FEDED914AC74CBE8DB5241C /* MCPSmokeTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -219,6 +231,15 @@
 		7ABE004742B3446A8C66A3A1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		9A0A50DFCE4A4FA69A6FFD85 /* PlayCoverMCP */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = PlayCoverMCP; sourceTree = BUILT_PRODUCTS_DIR; };
 		1D515AB8DAE0458CB0B6CD06 /* PlayCoverMCPTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PlayCoverMCPTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		E80591C9C66B41F6900EDB12 /* MCPTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPTypes.swift; path = MCPTypes.swift; sourceTree = "<group>"; };
+		A369BC937EC744178C1B211D /* StdioTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = StdioTransport.swift; path = StdioTransport.swift; sourceTree = "<group>"; };
+		89D06AAF495D4535A4E8235C /* ToolRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ToolRegistry.swift; path = ToolRegistry.swift; sourceTree = "<group>"; };
+		D655635CF6F3439CAFA4949E /* ResourceRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ResourceRegistry.swift; path = ResourceRegistry.swift; sourceTree = "<group>"; };
+		9687C96D543945518CCEE25D /* MCPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPServer.swift; path = MCPServer.swift; sourceTree = "<group>"; };
+		E3ABD04437FE4450B94210EB /* MCPProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPProtocolTests.swift; sourceTree = "<group>"; };
+		39A5AD7250D9482E8D8D172C /* MCPServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPServerTests.swift; sourceTree = "<group>"; };
+		D2736C5851CA46C0B92D72AB /* MCPRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPRegistryTests.swift; sourceTree = "<group>"; };
+		3FEDED914AC74CBE8DB5241C /* MCPSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPSmokeTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -494,6 +515,10 @@
 			children = (
 				6D5A783BCD8844EF91870961 /* HostServices */,
 				E72C14DFDBA1436DB1BCDFCB /* Session */,
+				B2DF4C9855164E3FB4E71130 /* Protocol */,
+				3874B7FA90B5433F896B4A15 /* Transport */,
+				808D969E625048FA8CF52E42 /* Registry */,
+				CAB6818880264CE18D074061 /* Server */,
 				A5D9C44AF910418082DE86B6 /* main.swift */,
 				7ECF709C0250403AB44D2771 /* Info.plist */,
 			);
@@ -504,9 +529,46 @@
 			isa = PBXGroup;
 			children = (
 				1FDA695ADCBB4DD192ABF5DE /* PlayCoverMCPTests.swift */,
+				E3ABD04437FE4450B94210EB /* MCPProtocolTests.swift */,
+				39A5AD7250D9482E8D8D172C /* MCPServerTests.swift */,
+				D2736C5851CA46C0B92D72AB /* MCPRegistryTests.swift */,
+				3FEDED914AC74CBE8DB5241C /* MCPSmokeTests.swift */,
 				7ABE004742B3446A8C66A3A1 /* Info.plist */,
 			);
 			path = PlayCoverMCPTests;
+			sourceTree = "<group>";
+		};
+		B2DF4C9855164E3FB4E71130 /* Protocol */ = {
+			isa = PBXGroup;
+			children = (
+				E80591C9C66B41F6900EDB12 /* MCPTypes.swift */,
+			);
+			path = Protocol;
+			sourceTree = "<group>";
+		};
+		3874B7FA90B5433F896B4A15 /* Transport */ = {
+			isa = PBXGroup;
+			children = (
+				A369BC937EC744178C1B211D /* StdioTransport.swift */,
+			);
+			path = Transport;
+			sourceTree = "<group>";
+		};
+		808D969E625048FA8CF52E42 /* Registry */ = {
+			isa = PBXGroup;
+			children = (
+				89D06AAF495D4535A4E8235C /* ToolRegistry.swift */,
+				D655635CF6F3439CAFA4949E /* ResourceRegistry.swift */,
+			);
+			path = Registry;
+			sourceTree = "<group>";
+		};
+		CAB6818880264CE18D074061 /* Server */ = {
+			isa = PBXGroup;
+			children = (
+				9687C96D543945518CCEE25D /* MCPServer.swift */,
+			);
+			path = Server;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -849,6 +911,11 @@
 			buildActionMask = 2147483647;
 			files = (
 				F8498CF92E3B416D9577B817 /* main.swift in Sources */,
+				146DA62E570A4C1ABE204596 /* MCPTypes.swift in Sources */,
+				733B8BFA693747C6A9EEF256 /* StdioTransport.swift in Sources */,
+				D07C9FAE21224C11A8EAB873 /* ToolRegistry.swift in Sources */,
+				43E0A404E8404842AEDA7D14 /* ResourceRegistry.swift in Sources */,
+				F9C5147CC3B0413EB2E0F011 /* MCPServer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -857,6 +924,15 @@
 			buildActionMask = 2147483647;
 			files = (
 				B73085F57C194B8FBE136049 /* PlayCoverMCPTests.swift in Sources */,
+				511B06A258394449AC255098 /* MCPTypes.swift in Sources */,
+				5C596A7CF8C345919790DF67 /* StdioTransport.swift in Sources */,
+				3CF02DDB697D4EC28A5CA199 /* ToolRegistry.swift in Sources */,
+				EC3B68CFE88247A0BFB37B1A /* ResourceRegistry.swift in Sources */,
+				A58FA942EC6D4EEB9FD2BB89 /* MCPServer.swift in Sources */,
+				268C4D33721649BB81839A88 /* MCPProtocolTests.swift in Sources */,
+				A071F2F1A0C645AAA7F86F36 /* MCPServerTests.swift in Sources */,
+				3F972DBF85244AEBB7AC0373 /* MCPRegistryTests.swift in Sources */,
+				A10E57289D0C4907BF8E3870 /* MCPSmokeTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

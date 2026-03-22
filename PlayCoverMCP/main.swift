@@ -1,9 +1,27 @@
 import Foundation
 
-/// Stub entry point for PlayCoverMCP server.
+/// PlayCoverMCP server entry point.
 ///
-/// This target will eventually host the MCP protocol layer (stdio transport),
-/// tool registry, resource registry, session management, and host service wrappers.
-///
-/// Phase 0 (this task): verify the target compiles and the process starts/exits cleanly.
-print("PlayCoverMCP: stub server – nothing to do yet")
+/// Bootstraps the MCP server with stdio transport and runs the event loop.
+/// Logs are written to stderr to avoid interfering with the JSON-RPC protocol on stdout.
+
+let serverInfo = Implementation(
+    name: "playcover-mcp",
+    version: "0.1.0"
+)
+
+let capabilities = ServerCapabilities(
+    tools: ToolCapabilities(listChanged: false),
+    resources: ResourceCapabilities(subscribe: false, listChanged: false)
+)
+
+let server = MCPServer(
+    serverInfo: serverInfo,
+    capabilities: capabilities
+)
+
+let transport = StdioTransport { message in
+    server.handle(message)
+}
+
+transport.run()

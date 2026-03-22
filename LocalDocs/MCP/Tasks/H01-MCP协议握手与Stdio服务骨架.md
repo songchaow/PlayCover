@@ -5,7 +5,7 @@
 
 ### Dashboard
 
-- **状态**：`TODO`
+- **状态**：`DONE`
 - **优先级**：`P0`
 - **预计工作量**：`M`
 - **建议耗时**：`0.5 ~ 1.0 天`
@@ -85,10 +85,13 @@
 
 ### 执行记录
 
-- **开始时间**：
-- **完成时间**：
-- **执行人 / agent**：
-- **测试命令**：
-- **测试结果**：
+- **开始时间**：2026-03-22
+- **完成时间**：2026-03-22
+- **执行人 / agent**：CodeBuddy
+- **测试命令**：`xcodebuild -project PlayCover.xcodeproj -scheme PlayCoverMCP test`
+- **测试结果**：44 passed, 1 skipped (smoke), 0 failures
 - **遗留问题**：
-- **commit hash**：
+  - 源文件在 MCP 和 Test 两个 target 中各编译一份（非 framework 共享模式）
+  - smoke test 需要独立构建 binary 后才能运行（默认 skip）
+  - 未来建议将共享逻辑抽取为 framework（H00 已有规划）
+- **commit hash**：`68076145`

@@ -427,26 +427,29 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public let tools: ToolCapabilities?
     public let resources: ResourceCapabilities?
     public let logging: Bool?
+    public let tasks: Bool?
     public let prompts: PromptCapabilities?
     public let experimental: AnyCodable?
 
     public init(tools: ToolCapabilities? = nil, resources: ResourceCapabilities? = nil,
-                logging: Bool? = nil, prompts: PromptCapabilities? = nil,
+                logging: Bool? = nil, tasks: Bool? = nil, prompts: PromptCapabilities? = nil,
                 experimental: AnyCodable? = nil) {
         self.tools = tools
         self.resources = resources
         self.logging = logging
+        self.tasks = tasks
         self.prompts = prompts
         self.experimental = experimental
     }
 
-    enum CodingKeys: String, CodingKey { case tools, resources, logging, prompts, experimental }
+    enum CodingKeys: String, CodingKey { case tools, resources, logging, tasks, prompts, experimental }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encodeIfPresent(tools, forKey: .tools)
         try c.encodeIfPresent(resources, forKey: .resources)
         try c.encodeIfPresent(logging, forKey: .logging)
+        try c.encodeIfPresent(tasks, forKey: .tasks)
         try c.encodeIfPresent(prompts, forKey: .prompts)
         try c.encodeIfPresent(experimental, forKey: .experimental)
     }

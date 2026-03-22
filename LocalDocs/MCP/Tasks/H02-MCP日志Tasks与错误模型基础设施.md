@@ -86,10 +86,21 @@
 
 ### 执行记录
 
-- **开始时间**：
-- **完成时间**：
-- **执行人 / agent**：
-- **测试命令**：
-- **测试结果**：
-- **遗留问题**：
-- **commit hash**：
+- **开始时间**：2026-03-23
+- **完成时间**：2026-03-23
+- **执行人 / agent**：CodeBuddy (GLM-5.0-Turbo)
+- **测试命令**：`xcodebuild test -project PlayCover.xcodeproj -scheme PlayCoverMCP -destination 'platform=macOS'`
+- **测试结果**：122 pass / 1 skip / 0 failures
+- **遗留问题**：源文件在 MCP 和 Test 两个 target 中各编译一份（非 framework 共享），与 H01 遗留一致
+- **commit hash**：29b78163
+- **实际改动范围**：
+  - `PlayCoverMCP/Tasks/TaskManager.swift` — 任务状态机、进度跟踪、公共执行器 API
+  - `PlayCoverMCP/Logging/MCPLogger.swift` — 结构化日志适配层、级别过滤、内存缓冲区
+  - `PlayCoverMCP/Common/MCPErrorExtensions.swift` — 统一错误类型、域错误码、MCP 响应映射
+  - `PlayCoverMCP/Server/MCPServer.swift` — 新增 logging/tasks handler 注册、PlayCoverMCPError 支持
+  - `PlayCoverMCP/Protocol/MCPTypes.swift` — ServerCapabilities 新增 `tasks` 字段
+  - `PlayCoverMCP/main.swift` — 启用 logging/tasks 能力，连接 Logger 和 TaskManager
+  - `PlayCoverMCPTests/TaskManagerTests.swift` — 26 个测试（生命周期、进度、回调、执行器、编解码）
+  - `PlayCoverMCPTests/MCPLoggerTests.swift` — 22 个测试（过滤、缓冲区、回调、编解码）
+  - `PlayCoverMCPTests/MCPErrorExtensionsTests.swift` — 25 个测试（错误创建、包装、响应映射）
+  - `PlayCoverMCPTests/MCPServerTests.swift` — 新增 12 个集成测试（logging/tasks handler、错误处理）

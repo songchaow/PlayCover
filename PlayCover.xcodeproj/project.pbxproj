@@ -106,6 +106,15 @@
 		A071F2F1A0C645AAA7F86F36 /* MCPServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39A5AD7250D9482E8D8D172C /* MCPServerTests.swift */; };
 		3F972DBF85244AEBB7AC0373 /* MCPRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2736C5851CA46C0B92D72AB /* MCPRegistryTests.swift */; };
 		A10E57289D0C4907BF8E3870 /* MCPSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FEDED914AC74CBE8DB5241C /* MCPSmokeTests.swift */; };
+		25134B7B8F7E418E868E6720 /* TaskManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4930F81A0AC4247BF6586A0 /* TaskManager.swift */; };
+		3443356323D242D7984ECC52 /* TaskManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4930F81A0AC4247BF6586A0 /* TaskManager.swift */; };
+		FC93105DF5AD483BBE0C7711 /* MCPLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 895F98D661384E178FEAE46F /* MCPLogger.swift */; };
+		C3F4DAE6C2EE4FC0B6DC425B /* MCPLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 895F98D661384E178FEAE46F /* MCPLogger.swift */; };
+		429C6150E22046BEBB31221A /* MCPErrorExtensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0249CA5607CA47D8A7D02053 /* MCPErrorExtensions.swift */; };
+		E00F88BFC95349D08EB7A5AF /* MCPErrorExtensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0249CA5607CA47D8A7D02053 /* MCPErrorExtensions.swift */; };
+		1B6137F231C34AD48A1B78F3 /* TaskManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1069EF1327E48EC830FF01C /* TaskManagerTests.swift */; };
+		653BA93E473845B0BB7630EA /* MCPLoggerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25132C7924DC4C05AB6A2B97 /* MCPLoggerTests.swift */; };
+		8826CC0093D44A6A9FF86DAF /* MCPErrorExtensionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E04CB4D59F564556951228D8 /* MCPErrorExtensionsTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -240,6 +249,12 @@
 		39A5AD7250D9482E8D8D172C /* MCPServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPServerTests.swift; sourceTree = "<group>"; };
 		D2736C5851CA46C0B92D72AB /* MCPRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPRegistryTests.swift; sourceTree = "<group>"; };
 		3FEDED914AC74CBE8DB5241C /* MCPSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPSmokeTests.swift; sourceTree = "<group>"; };
+		B4930F81A0AC4247BF6586A0 /* TaskManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TaskManager.swift; path = TaskManager.swift; sourceTree = "<group>"; };
+		895F98D661384E178FEAE46F /* MCPLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPLogger.swift; path = MCPLogger.swift; sourceTree = "<group>"; };
+		0249CA5607CA47D8A7D02053 /* MCPErrorExtensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPErrorExtensions.swift; path = MCPErrorExtensions.swift; sourceTree = "<group>"; };
+		B1069EF1327E48EC830FF01C /* TaskManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskManagerTests.swift; sourceTree = "<group>"; };
+		25132C7924DC4C05AB6A2B97 /* MCPLoggerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPLoggerTests.swift; sourceTree = "<group>"; };
+		E04CB4D59F564556951228D8 /* MCPErrorExtensionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPErrorExtensionsTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -519,6 +534,9 @@
 				3874B7FA90B5433F896B4A15 /* Transport */,
 				808D969E625048FA8CF52E42 /* Registry */,
 				CAB6818880264CE18D074061 /* Server */,
+				6491B076F7354BFA924F65BF /* Tasks */,
+				98AE07B82E5246DA84FD8509 /* Logging */,
+				F1342BE23CF84473936C7CBA /* Common */,
 				A5D9C44AF910418082DE86B6 /* main.swift */,
 				7ECF709C0250403AB44D2771 /* Info.plist */,
 			);
@@ -533,6 +551,9 @@
 				39A5AD7250D9482E8D8D172C /* MCPServerTests.swift */,
 				D2736C5851CA46C0B92D72AB /* MCPRegistryTests.swift */,
 				3FEDED914AC74CBE8DB5241C /* MCPSmokeTests.swift */,
+				B1069EF1327E48EC830FF01C /* TaskManagerTests.swift */,
+				25132C7924DC4C05AB6A2B97 /* MCPLoggerTests.swift */,
+				E04CB4D59F564556951228D8 /* MCPErrorExtensionsTests.swift */,
 				7ABE004742B3446A8C66A3A1 /* Info.plist */,
 			);
 			path = PlayCoverMCPTests;
@@ -569,6 +590,30 @@
 				9687C96D543945518CCEE25D /* MCPServer.swift */,
 			);
 			path = Server;
+			sourceTree = "<group>";
+		};
+		6491B076F7354BFA924F65BF /* Tasks */ = {
+			isa = PBXGroup;
+			children = (
+				B4930F81A0AC4247BF6586A0 /* TaskManager.swift */,
+			);
+			path = Tasks;
+			sourceTree = "<group>";
+		};
+		98AE07B82E5246DA84FD8509 /* Logging */ = {
+			isa = PBXGroup;
+			children = (
+				895F98D661384E178FEAE46F /* MCPLogger.swift */,
+			);
+			path = Logging;
+			sourceTree = "<group>";
+		};
+		F1342BE23CF84473936C7CBA /* Common */ = {
+			isa = PBXGroup;
+			children = (
+				0249CA5607CA47D8A7D02053 /* MCPErrorExtensions.swift */,
+			);
+			path = Common;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -916,6 +961,9 @@
 				D07C9FAE21224C11A8EAB873 /* ToolRegistry.swift in Sources */,
 				43E0A404E8404842AEDA7D14 /* ResourceRegistry.swift in Sources */,
 				F9C5147CC3B0413EB2E0F011 /* MCPServer.swift in Sources */,
+				25134B7B8F7E418E868E6720 /* TaskManager.swift in Sources */,
+				FC93105DF5AD483BBE0C7711 /* MCPLogger.swift in Sources */,
+				429C6150E22046BEBB31221A /* MCPErrorExtensions.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -933,6 +981,12 @@
 				A071F2F1A0C645AAA7F86F36 /* MCPServerTests.swift in Sources */,
 				3F972DBF85244AEBB7AC0373 /* MCPRegistryTests.swift in Sources */,
 				A10E57289D0C4907BF8E3870 /* MCPSmokeTests.swift in Sources */,
+				3443356323D242D7984ECC52 /* TaskManager.swift in Sources */,
+				C3F4DAE6C2EE4FC0B6DC425B /* MCPLogger.swift in Sources */,
+				E00F88BFC95349D08EB7A5AF /* MCPErrorExtensions.swift in Sources */,
+				1B6137F231C34AD48A1B78F3 /* TaskManagerTests.swift in Sources */,
+				653BA93E473845B0BB7630EA /* MCPLoggerTests.swift in Sources */,
+				8826CC0093D44A6A9FF86DAF /* MCPErrorExtensionsTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

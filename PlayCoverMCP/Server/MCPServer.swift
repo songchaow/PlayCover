@@ -19,6 +19,12 @@ public final class MCPServer {
     public let toolRegistry: ToolRegistry
     public let resourceRegistry: ResourceRegistry
 
+    /// Shared logger instance for structured server-side logging.
+    public let logger: MCPLogger?
+
+    /// Shared task manager for background task tracking.
+    public let taskManager: TaskManager?
+
     /// Whether the client has sent the `notifications/initialized` notification.
     public private(set) var isInitialized = false
 
@@ -33,14 +39,20 @@ public final class MCPServer {
         serverInfo: Implementation,
         capabilities: ServerCapabilities,
         toolRegistry: ToolRegistry = ToolRegistry(),
-        resourceRegistry: ResourceRegistry = ResourceRegistry()
+        resourceRegistry: ResourceRegistry = ResourceRegistry(),
+        logger: MCPLogger? = nil,
+        taskManager: TaskManager? = nil
     ) {
         self.serverInfo = serverInfo
         self.capabilities = capabilities
         self.toolRegistry = toolRegistry
         self.resourceRegistry = resourceRegistry
+        self.logger = logger
+        self.taskManager = taskManager
 
         registerBuiltinHandlers()
+        registerLoggingHandlers()
+        registerTaskHandlers()
     }
 
     // MARK: - Handler registration
@@ -86,15 +98,14 @@ public final class MCPServer {
         do {
             let result = try handler(request.params)
             return .response(.success(id: id, result: result))
+        } catch let error as PlayCoverMCPError {
+            return .response(error.toErrorResponse(id: id))
         } catch let error as MCPError {
             let (code, message) = mapMCPError(error)
             return .response(.error(id: id, code: code, message: message))
         } catch {
-            return .response(.error(
-                id: id,
-                code: JSONRPCError.internalError,
-                message: "Internal error: \(error.localizedDescription)"
-            ))
+            let wrapped = PlayCoverMCPError(wrapping: error)
+            return .response(wrapped.toErrorResponse(id: id))
         }
     }
 
@@ -133,6 +144,80 @@ public final class MCPServer {
                 throw MCPError.internalError("Server deallocated")
             }
             return try AnyCodable(ListResourcesResult(resources: self.resourceRegistry.listResources()))
+        }
+    }
+
+    // MARK: - Logging handlers
+
+    private func registerLoggingHandlers() {
+        guard let logger = logger else { return }
+
+        // logging/setLevel
+        register(method: "logging/setLevel") { params in
+            guard let params = params else {
+                throw MCPError.invalidParams("logging/setLevel requires params")
+            }
+            let setParams: SetLoggingLevelParams
+            do {
+                setParams = try params.decoded()
+            } catch {
+                throw MCPError.invalidParams("Failed to decode SetLoggingLevelParams: \(error.localizedDescription)")
+            }
+            logger.setMinLevel(setParams.level)
+            return AnyCodable([:])
+        }
+
+        // notifications/message (client -> server log messages)
+        // Handled as notification, see handleNotification below
+    }
+
+    // MARK: - Task handlers
+
+    private func registerTaskHandlers() {
+        guard let taskManager = taskManager else { return }
+
+        // tasks/create
+        register(method: "tasks/create") { params in
+            let createParams: CreateTaskParams
+            do {
+                createParams = try (params ?? AnyCodable([:])).decoded()
+            } catch {
+                throw MCPError.invalidParams("Failed to decode CreateTaskParams: \(error.localizedDescription)")
+            }
+            let result = taskManager.createTask(id: createParams.id, title: createParams.title, tool: createParams.tool)
+            return try AnyCodable(result)
+        }
+
+        // tasks/get
+        register(method: "tasks/get") { params in
+            guard let params = params,
+                  let taskId = params.stringValue else {
+                throw MCPError.invalidParams("tasks/get requires a string 'id' param")
+            }
+            guard let status = taskManager.getTask(taskId) else {
+                throw PlayCoverMCPError(code: .taskNotFound, message: "Task not found: \(taskId)")
+            }
+            return try AnyCodable(GetTaskResult(status: status))
+        }
+
+        // tasks/list
+        register(method: "tasks/list") { params in
+            let tasks = taskManager.listTasks(includeCompleted: true)
+            return try AnyCodable(ListTasksResult(tasks: tasks))
+        }
+
+        // tasks/cancel
+        register(method: "tasks/cancel") { params in
+            guard let params = params,
+                  let taskId = params.stringValue else {
+                throw MCPError.invalidParams("tasks/cancel requires a string 'id' param")
+            }
+            guard taskManager.getTask(taskId) != nil else {
+                throw PlayCoverMCPError(code: .taskNotFound, message: "Task not found: \(taskId)")
+            }
+            taskManager.cancelTask(taskId)
+            let status = taskManager.getTask(taskId)!
+            return try AnyCodable(GetTaskResult(status: status))
         }
     }
 

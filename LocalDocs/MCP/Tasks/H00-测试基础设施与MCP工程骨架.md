@@ -5,7 +5,7 @@
 
 ### Dashboard
 
-- **状态**：`TODO`
+- **状态**：`DONE`
 - **优先级**：`P0`
 - **预计工作量**：`M`
 - **建议耗时**：`0.5 ~ 1.0 天`
@@ -92,10 +92,15 @@
 
 ### 执行记录
 
-- **开始时间**：
-- **完成时间**：
-- **执行人 / agent**：
+- **开始时间**：2026-03-22
+- **完成时间**：2026-03-22
+- **执行人 / agent**：CodeBuddy agent
 - **测试命令**：
-- **测试结果**：
+  - `xcodebuild -project PlayCover.xcodeproj -scheme PlayCoverMCP -configuration Release build` — **BUILD SUCCEEDED**
+  - `xcodebuild test -project PlayCover.xcodeproj -scheme PlayCoverMCP -destination 'platform=macOS' -only-testing PlayCoverMCPTests` — **TEST SUCCEEDED** (1 test, 0 failures)
+  - 直接运行 `PlayCoverMCP` 可执行文件 — 正常输出 stub 文本并以 exit code 0 退出
+- **测试结果**：全部通过
 - **遗留问题**：
-- **commit hash**：
+  - PlayCoverMCP 当前为 CLI tool target，测试 target 使用独立模式（非 hosted），无法 `@testable import PlayCoverMCP`。后续任务如需对 MCP 逻辑做单元测试，建议将共享逻辑抽取为 framework target，或采用 Swift Package 管理共享模块。
+  - 临时 Python 脚本 `Scripts/add_mcp_targets.py` 仅用于本次一次性生成 pbxproj 条目，后续任务可直接在 Xcode 中操作，脚本可按需清理。
+- **commit hash**：986d8129

@@ -92,7 +92,19 @@
 		B68FD80D2ACB642100683778 /* PlayAppExtensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B68FD80C2ACB642100683778 /* PlayAppExtensions.swift */; };
 		B6AB53C929232B4F00039B2E /* KeyCodeNames.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6AB53C829232B4F00039B2E /* KeyCodeNames.swift */; };
 		B6ABDA2A2971EEF700A46E80 /* ProgressVM.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6ABDA292971EEF700A46E80 /* ProgressVM.swift */; };
+		F8498CF92E3B416D9577B817 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5D9C44AF910418082DE86B6 /* main.swift */; };
+		B73085F57C194B8FBE136049 /* PlayCoverMCPTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FDA695ADCBB4DD192ABF5DE /* PlayCoverMCPTests.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		6C00AF96D6104C1FB53EFD41 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 8783CFEF26B8C52D00171041 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 935F3C0F7A044595BF595D4E;
+			remoteInfo = PlayCoverMCP;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		342787542E787EB9003A3C2F /* Keymapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Keymapping.swift; sourceTree = "<group>"; };
@@ -201,6 +213,12 @@
 		B68FD80C2ACB642100683778 /* PlayAppExtensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayAppExtensions.swift; sourceTree = "<group>"; };
 		B6AB53C829232B4F00039B2E /* KeyCodeNames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyCodeNames.swift; sourceTree = "<group>"; };
 		B6ABDA292971EEF700A46E80 /* ProgressVM.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgressVM.swift; sourceTree = "<group>"; };
+		A5D9C44AF910418082DE86B6 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		7ECF709C0250403AB44D2771 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		1FDA695ADCBB4DD192ABF5DE /* PlayCoverMCPTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayCoverMCPTests.swift; sourceTree = "<group>"; };
+		7ABE004742B3446A8C66A3A1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		9A0A50DFCE4A4FA69A6FFD85 /* PlayCoverMCP */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = PlayCoverMCP; sourceTree = BUILT_PRODUCTS_DIR; };
+		1D515AB8DAE0458CB0B6CD06 /* PlayCoverMCPTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PlayCoverMCPTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -216,6 +234,20 @@
 				B44E8CD32C31C50200542038 /* SwiftSoup in Frameworks */,
 				68E48B952957046D00C39879 /* DownloadManager in Frameworks */,
 				B17FD03C28C70C2100B1D4CA /* CoreUI.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1264A262BDD141FB873E242A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		3BB65D7B5C3E48A0BB046CD8 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -385,6 +417,9 @@
 			isa = PBXGroup;
 			children = (
 				6E66B0D0289F57B00099B907 /* Documentation.docc */,
+				
+				1BC53A43D5794DA3AE83DC73 /* PlayCoverMCP */,
+				655C253FCA19492C8624612B /* PlayCoverMCPTests */,
 				8783CFF926B8C52D00171041 /* PlayCover */,
 				8783CFF826B8C52D00171041 /* Products */,
 				53841CC826D9D7920021D27C /* Frameworks */,
@@ -394,6 +429,9 @@
 		8783CFF826B8C52D00171041 /* Products */ = {
 			isa = PBXGroup;
 			children = (
+				
+				9A0A50DFCE4A4FA69A6FFD85 /* PlayCoverMCP */,
+				1D515AB8DAE0458CB0B6CD06 /* PlayCoverMCPTests.xctest */,
 				8783CFF726B8C52D00171041 /* PlayCover.app */,
 			);
 			name = Products;
@@ -437,6 +475,40 @@
 			path = Rules;
 			sourceTree = "<group>";
 		};
+		6D5A783BCD8844EF91870961 /* HostServices */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = HostServices;
+			sourceTree = "<group>";
+		};
+		E72C14DFDBA1436DB1BCDFCB /* Session */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = Session;
+			sourceTree = "<group>";
+		};
+		1BC53A43D5794DA3AE83DC73 /* PlayCoverMCP */ = {
+			isa = PBXGroup;
+			children = (
+				6D5A783BCD8844EF91870961 /* HostServices */,
+				E72C14DFDBA1436DB1BCDFCB /* Session */,
+				A5D9C44AF910418082DE86B6 /* main.swift */,
+				7ECF709C0250403AB44D2771 /* Info.plist */,
+			);
+			path = PlayCoverMCP;
+			sourceTree = "<group>";
+		};
+		655C253FCA19492C8624612B /* PlayCoverMCPTests */ = {
+			isa = PBXGroup;
+			children = (
+				1FDA695ADCBB4DD192ABF5DE /* PlayCoverMCPTests.swift */,
+				7ABE004742B3446A8C66A3A1 /* Info.plist */,
+			);
+			path = PlayCoverMCPTests;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -470,6 +542,41 @@
 			productReference = 8783CFF726B8C52D00171041 /* PlayCover.app */;
 			productType = "com.apple.product-type.application";
 		};
+		935F3C0F7A044595BF595D4E /* PlayCoverMCP */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D9AE0296737844C599169244 /* Build configuration list for PBXNativeTarget "PlayCoverMCP" */;
+			buildPhases = (
+				1846259310234BF491844A47 /* Sources */,
+				1264A262BDD141FB873E242A /* Frameworks */,
+				048E7FB851FE465B81DCF7C8 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = PlayCoverMCP;
+			productName = PlayCoverMCP;
+			productReference = 9A0A50DFCE4A4FA69A6FFD85 /* PlayCoverMCP */;
+			productType = "com.apple.product-type.tool";
+		};
+		C3598980EF9342ABA562BD5E /* PlayCoverMCPTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 8BC7244A659E490DA4BC3C21 /* Build configuration list for PBXNativeTarget "PlayCoverMCPTests" */;
+			buildPhases = (
+				0A8EEBDAD8704A82BD740815 /* Sources */,
+				3BB65D7B5C3E48A0BB046CD8 /* Frameworks */,
+				C32C198AD3B742D3B98AAB92 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				03B84BE5122A47A5A2B7CE62 /* PBXTargetDependency */,
+			);
+			name = PlayCoverMCPTests;
+			productName = PlayCoverMCPTests;
+			productReference = 1D515AB8DAE0458CB0B6CD06 /* PlayCoverMCPTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -483,6 +590,13 @@
 					8783CFF626B8C52D00171041 = {
 						CreatedOnToolsVersion = 12.5.1;
 						LastSwiftMigration = 1250;
+					};
+					935F3C0F7A044595BF595D4E = {
+						CreatedOnToolsVersion = 15.0;
+					};
+					C3598980EF9342ABA562BD5E = {
+						CreatedOnToolsVersion = 15.0;
+						TestTargetID = 935F3C0F7A044595BF595D4E;
 					};
 				};
 			};
@@ -527,6 +641,8 @@
 			projectRoot = "";
 			targets = (
 				8783CFF626B8C52D00171041 /* PlayCover */,
+				935F3C0F7A044595BF595D4E /* PlayCoverMCP */,
+				C3598980EF9342ABA562BD5E /* PlayCoverMCPTests */,
 			);
 		};
 /* End PBXProject section */
@@ -543,7 +659,29 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		048E7FB851FE465B81DCF7C8 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C32C198AD3B742D3B98AAB92 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		03B84BE5122A47A5A2B7CE62 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 935F3C0F7A044595BF595D4E /* PlayCoverMCP */;
+			targetProxy = 6C00AF96D6104C1FB53EFD41 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXShellScriptBuildPhase section */
 		36E7AB27288A0B64004C0C3A /* SwiftLint */ = {
@@ -703,6 +841,22 @@
 				B68FD80D2ACB642100683778 /* PlayAppExtensions.swift in Sources */,
 				9272F19E273B74C800DFBEF1 /* AppsVM.swift in Sources */,
 				923421F7275F40300030CD7D /* AppContainer.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1846259310234BF491844A47 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F8498CF92E3B416D9577B817 /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		0A8EEBDAD8704A82BD740815 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B73085F57C194B8FBE136049 /* PlayCoverMCPTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -943,6 +1097,88 @@
 			};
 			name = Nightly;
 		};
+		37A67F06A5834CA384D51E5A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_HARDENED_RUNTIME = YES;
+				EXCLUDED_ARCHS = x86_64;
+				EXECUTABLE_PREFIX = "";
+				MACOSX_DEPLOYMENT_TARGET = 12.0;
+				MARKETING_VERSION = 1.0.0;
+				ONLY_ACTIVE_ARCH = NO;
+				PRODUCT_BUNDLE_IDENTIFIER = io.playcover.PlayCover.MCP;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		7446328AE4264D0AA3841A97 /* Nightly */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_HARDENED_RUNTIME = YES;
+				EXCLUDED_ARCHS = x86_64;
+				EXECUTABLE_PREFIX = "";
+				MACOSX_DEPLOYMENT_TARGET = 12.0;
+				MARKETING_VERSION = 1.0.0;
+				ONLY_ACTIVE_ARCH = NO;
+				PRODUCT_BUNDLE_IDENTIFIER = io.playcover.PlayCover.MCP;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Nightly;
+		};
+		C5F24B52E47C4C638BD4156C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				EXCLUDED_ARCHS = x86_64;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 12.0;
+				MARKETING_VERSION = 1.0.0;
+				ONLY_ACTIVE_ARCH = NO;
+				PRODUCT_BUNDLE_IDENTIFIER = io.playcover.PlayCover.MCPTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		13792A782FB747A1ADD8E81B /* Nightly */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				EXCLUDED_ARCHS = x86_64;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 12.0;
+				MARKETING_VERSION = 1.0.0;
+				ONLY_ACTIVE_ARCH = NO;
+				PRODUCT_BUNDLE_IDENTIFIER = io.playcover.PlayCover.MCPTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Nightly;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -960,6 +1196,24 @@
 			buildConfigurations = (
 				8783D00926B8C52E00171041 /* Release */,
 				9BFBDA6828C95BA500252EB7 /* Nightly */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D9AE0296737844C599169244 /* Build configuration list for PBXNativeTarget "PlayCoverMCP" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				37A67F06A5834CA384D51E5A /* Release */,
+				7446328AE4264D0AA3841A97 /* Nightly */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		8BC7244A659E490DA4BC3C21 /* Build configuration list for PBXNativeTarget "PlayCoverMCPTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C5F24B52E47C4C638BD4156C /* Release */,
+				13792A782FB747A1ADD8E81B /* Nightly */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

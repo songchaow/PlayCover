@@ -90,6 +90,38 @@ public struct ResetKeymapResult: Codable, Equatable, Sendable {
     }
 }
 
+/// Result of importing a keymap from a file.
+public struct ImportKeymapResult: Codable, Equatable, Sendable {
+    public let bundleIdentifier: String
+    public let keymapName: String
+    public let sourcePath: String
+    public let bundleIdMatched: Bool
+    public let message: String
+
+    public init(bundleIdentifier: String, keymapName: String, sourcePath: String, bundleIdMatched: Bool, message: String) {
+        self.bundleIdentifier = bundleIdentifier
+        self.keymapName = keymapName
+        self.sourcePath = sourcePath
+        self.bundleIdMatched = bundleIdMatched
+        self.message = message
+    }
+}
+
+/// Result of exporting a keymap to a file.
+public struct ExportKeymapResult: Codable, Equatable, Sendable {
+    public let bundleIdentifier: String
+    public let keymapName: String
+    public let outputPath: String
+    public let message: String
+
+    public init(bundleIdentifier: String, keymapName: String, outputPath: String, message: String) {
+        self.bundleIdentifier = bundleIdentifier
+        self.keymapName = keymapName
+        self.outputPath = outputPath
+        self.message = message
+    }
+}
+
 // MARK: - Keymap Errors
 
 public enum KeymapError: Error, LocalizedError, Equatable, Sendable {
@@ -101,6 +133,10 @@ public enum KeymapError: Error, LocalizedError, Equatable, Sendable {
     case readFailed(String)
     case writeFailed(String)
     case deleteFailed(String)
+    case invalidKeymapFile(String)
+    case bundleIdMismatch(sourceBundleId: String, targetBundleId: String)
+    case exportFailed(String)
+    case importSourceNotFound(String)
 
     public var errorDescription: String? {
         switch self {
@@ -112,6 +148,10 @@ public enum KeymapError: Error, LocalizedError, Equatable, Sendable {
         case .readFailed(let reason): return "Failed to read keymap: \(reason)"
         case .writeFailed(let reason): return "Failed to write keymap: \(reason)"
         case .deleteFailed(let reason): return "Failed to delete keymap: \(reason)"
+        case .invalidKeymapFile(let reason): return "Invalid keymap file: \(reason)"
+        case .bundleIdMismatch(let source, let target): return "Keymap bundle identifier '\(source)' does not match target app '\(target)'. Use force=true to import anyway."
+        case .exportFailed(let reason): return "Failed to export keymap: \(reason)"
+        case .importSourceNotFound(let path): return "Import source file not found: \(path)"
         }
     }
 }
@@ -474,6 +514,122 @@ public final class KeymapService: Sendable {
             bundleIdentifier: bundleId,
             keymapName: name,
             message: "Keymap '\(name)' reset to defaults"
+        )
+    }
+
+    // MARK: - Import Keymap
+
+    /// Import a keymap from an external plist file.
+    ///
+    /// - Parameters:
+    ///   - bundleId: The target app's bundle identifier.
+    ///   - name: The name for the imported keymap (will be created or overwritten).
+    ///   - filePath: Absolute path to the source plist file.
+    ///   - force: If true, override the bundleId field in the keymap data when it doesn't match.
+    /// - Returns: Import result with details about the operation.
+    public func importKeymap(bundleId: String, name: String, filePath: String, force: Bool = false) throws -> ImportKeymapResult {
+        try validateAppExists(bundleId)
+        try validateKeymapName(name)
+
+        let sourceURL = URL(fileURLWithPath: filePath)
+        let fm = FileManager.default
+
+        guard fm.fileExists(atPath: sourceURL.path) else {
+            throw KeymapError.importSourceNotFound(filePath)
+        }
+
+        // Read and validate the source plist
+        guard let sourceDict = NSDictionary(contentsOf: sourceURL) as? [String: Any] else {
+            throw KeymapError.invalidKeymapFile("Cannot parse plist at '\(filePath)'")
+        }
+
+        // Check bundleId match
+        let sourceBundleId = sourceDict["bundleIdentifier"] as? String
+        let bundleIdMatched = (sourceBundleId == bundleId)
+
+        if !bundleIdMatched {
+            if !force {
+                throw KeymapError.bundleIdMismatch(
+                    sourceBundleId: sourceBundleId ?? "<missing>",
+                    targetBundleId: bundleId
+                )
+            }
+        }
+
+        // Prepare the keymap data (overwrite bundleId if force and mismatched)
+        var keymapData = sourceDict
+        if !bundleIdMatched && force {
+            keymapData["bundleIdentifier"] = bundleId
+        }
+
+        // Write the keymap
+        let config = try readConfig(bundleId: bundleId)
+        let targetURL = keymapURL(for: bundleId, name: name)
+        let baseDir = keymappingBaseDir(for: bundleId)
+
+        try fm.createDirectory(at: baseDir, withIntermediateDirectories: true)
+        try (keymapData as NSDictionary).write(to: targetURL)
+
+        // Update config: add to keymapOrder if new
+        var order = config.keymapOrder
+        if !order.contains(where: { $0.lastPathComponent == targetURL.lastPathComponent }) {
+            order.append(targetURL)
+            try writeConfig(bundleId: bundleId, defaultKm: config.defaultKm, keymapOrder: order)
+        }
+
+        let mismatchNote = (!bundleIdMatched && force) ? " (bundleId overwritten from '\(sourceBundleId ?? "<missing>")' to '\(bundleId)')" : ""
+        return ImportKeymapResult(
+            bundleIdentifier: bundleId,
+            keymapName: name,
+            sourcePath: filePath,
+            bundleIdMatched: bundleIdMatched,
+            message: "Keymap imported to '\(name)'\(mismatchNote)"
+        )
+    }
+
+    // MARK: - Export Keymap
+
+    /// Export a keymap to an external plist file.
+    ///
+    /// - Parameters:
+    ///   - bundleId: The app's bundle identifier.
+    ///   - name: The name of the keymap to export.
+    ///   - outputPath: Absolute path where the keymap plist will be written.
+    /// - Returns: Export result with details about the operation.
+    public func exportKeymap(bundleId: String, name: String, outputPath: String) throws -> ExportKeymapResult {
+        try validateAppExists(bundleId)
+        try validateKeymapName(name)
+
+        let sourceURL = keymapURL(for: bundleId, name: name)
+        let fm = FileManager.default
+
+        guard fm.fileExists(atPath: sourceURL.path) else {
+            throw KeymapError.keymapNotFound(name)
+        }
+
+        guard let sourceDict = NSDictionary(contentsOf: sourceURL) else {
+            throw KeymapError.readFailed("Cannot parse keymap plist: \(name)")
+        }
+
+        let outputURL = URL(fileURLWithPath: outputPath)
+
+        // Create parent directory if needed
+        let parentDir = outputURL.deletingLastPathComponent()
+        if !fm.fileExists(atPath: parentDir.path) {
+            try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        }
+
+        do {
+            try (sourceDict as NSDictionary).write(to: outputURL)
+        } catch {
+            throw KeymapError.exportFailed("Cannot write to '\(outputPath)': \(error.localizedDescription)")
+        }
+
+        return ExportKeymapResult(
+            bundleIdentifier: bundleId,
+            keymapName: name,
+            outputPath: outputPath,
+            message: "Keymap '\(name)' exported to '\(outputPath)'"
         )
     }
 }

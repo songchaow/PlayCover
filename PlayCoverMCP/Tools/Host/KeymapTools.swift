@@ -24,6 +24,8 @@ public enum KeymapTools {
         registerRenameKeymap(on: server, keymapService: keymapService)
         registerDeleteKeymap(on: server, keymapService: keymapService)
         registerResetKeymap(on: server, keymapService: keymapService)
+        registerImportKeymap(on: server, keymapService: keymapService)
+        registerExportKeymap(on: server, keymapService: keymapService)
     }
 
     // MARK: - list_keymaps
@@ -304,6 +306,122 @@ public enum KeymapTools {
             }
 
             let result = try keymapService.resetKeymap(bundleId: bundleId, name: name)
+            return CallToolResult(content: [.text(content: formatResult(result))])
+        }
+    }
+
+    // MARK: - import_keymap
+
+    private static func registerImportKeymap(on server: MCPServer, keymapService: KeymapService) {
+        let tool = Tool(
+            name: "import_keymap",
+            inputSchema: InputSchema(
+                type: "object",
+                properties: [
+                    "bundleId": AnyCodable([
+                        "type": "string",
+                        "description": "The bundle identifier of the target app"
+                    ] as Any),
+                    "name": AnyCodable([
+                        "type": "string",
+                        "description": "The name for the imported keymap. If a keymap with this name already exists, it will be overwritten."
+                    ] as Any),
+                    "filePath": AnyCodable([
+                        "type": "string",
+                        "description": "Absolute path to the source keymap plist file to import"
+                    ] as Any),
+                    "force": AnyCodable([
+                        "type": "boolean",
+                        "description": "If true, import the keymap even when its bundleIdentifier doesn't match the target app. The bundleIdentifier field will be overwritten.",
+                        "default": false
+                    ] as Any)
+                ],
+                required: ["bundleId", "name", "filePath"]
+            ),
+            description: "Import a keymap from an external plist file. If the keymap's bundleIdentifier doesn't match the target app, the import will fail unless force=true is specified.",
+            title: "Import Keymap"
+        )
+        server.toolRegistry.register(tool)
+
+        server.registerTool(name: "import_keymap") { arguments in
+            guard let args = arguments?.dictionary,
+                  let bundleId = args["bundleId"] as? String,
+                  !bundleId.isEmpty else {
+                throw PlayCoverMCPError(
+                    code: JSONRPCError.invalidParams,
+                    message: "import_keymap requires a non-empty 'bundleId' parameter"
+                )
+            }
+            guard let name = args["name"] as? String, !name.isEmpty else {
+                throw PlayCoverMCPError(
+                    code: JSONRPCError.invalidParams,
+                    message: "import_keymap requires a non-empty 'name' parameter"
+                )
+            }
+            guard let filePath = args["filePath"] as? String, !filePath.isEmpty else {
+                throw PlayCoverMCPError(
+                    code: JSONRPCError.invalidParams,
+                    message: "import_keymap requires a non-empty 'filePath' parameter"
+                )
+            }
+            let force = args["force"] as? Bool ?? false
+
+            let result = try keymapService.importKeymap(bundleId: bundleId, name: name, filePath: filePath, force: force)
+            return CallToolResult(content: [.text(content: formatResult(result))])
+        }
+    }
+
+    // MARK: - export_keymap
+
+    private static func registerExportKeymap(on server: MCPServer, keymapService: KeymapService) {
+        let tool = Tool(
+            name: "export_keymap",
+            inputSchema: InputSchema(
+                type: "object",
+                properties: [
+                    "bundleId": AnyCodable([
+                        "type": "string",
+                        "description": "The bundle identifier of the app"
+                    ] as Any),
+                    "name": AnyCodable([
+                        "type": "string",
+                        "description": "The name of the keymap to export"
+                    ] as Any),
+                    "outputPath": AnyCodable([
+                        "type": "string",
+                        "description": "Absolute path where the keymap plist file will be written"
+                    ] as Any)
+                ],
+                required: ["bundleId", "name", "outputPath"]
+            ),
+            description: "Export a keymap to an external plist file at the specified path. The exported file contains the full keymap data including buttons, joysticks, and mouse areas.",
+            title: "Export Keymap"
+        )
+        server.toolRegistry.register(tool)
+
+        server.registerTool(name: "export_keymap") { arguments in
+            guard let args = arguments?.dictionary,
+                  let bundleId = args["bundleId"] as? String,
+                  !bundleId.isEmpty else {
+                throw PlayCoverMCPError(
+                    code: JSONRPCError.invalidParams,
+                    message: "export_keymap requires a non-empty 'bundleId' parameter"
+                )
+            }
+            guard let name = args["name"] as? String, !name.isEmpty else {
+                throw PlayCoverMCPError(
+                    code: JSONRPCError.invalidParams,
+                    message: "export_keymap requires a non-empty 'name' parameter"
+                )
+            }
+            guard let outputPath = args["outputPath"] as? String, !outputPath.isEmpty else {
+                throw PlayCoverMCPError(
+                    code: JSONRPCError.invalidParams,
+                    message: "export_keymap requires a non-empty 'outputPath' parameter"
+                )
+            }
+
+            let result = try keymapService.exportKeymap(bundleId: bundleId, name: name, outputPath: outputPath)
             return CallToolResult(content: [.text(content: formatResult(result))])
         }
     }

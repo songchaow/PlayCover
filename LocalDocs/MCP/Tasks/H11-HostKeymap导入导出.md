@@ -5,7 +5,7 @@
 
 ### Dashboard
 
-- **状态**：`TODO`
+- **状态**：`DONE`
 - **优先级**：`P1`
 - **预计工作量**：`S`
 - **建议耗时**：`0.5 ~ 0.75 天`
@@ -81,10 +81,15 @@
 
 ### 执行记录
 
-- **开始时间**：
-- **完成时间**：
-- **执行人 / agent**：
-- **测试命令**：
-- **测试结果**：
-- **遗留问题**：
-- **commit hash**：
+- **开始时间**：2026-03-24 02:53
+- **完成时间**：2026-03-24 02:56
+- **执行人 / agent**：CodeBuddy
+- **测试命令**：`xcodebuild build-for-testing test-without-building -scheme PlayCoverMCP -destination 'platform=macOS,arch=arm64'`
+- **测试结果**：320 pass / 0 fail / 1 skip，含 H11 新增的 16 个 Import/Export 测试
+- **遗留问题**：无
+- **commit hash**：`1a60e670`
+- **实际改动范围**：
+  - `PlayCoverMCP/HostServices/Keymap/KeymapService.swift`：新增 `ImportKeymapResult`、`ExportKeymapResult` 类型，`KeymapError` 新增 4 个 case，新增 `importKeymap()` 和 `exportKeymap()` 方法
+  - `PlayCoverMCP/Tools/Host/KeymapTools.swift`：新增 `import_keymap` 和 `export_keymap` 工具注册
+  - `PlayCoverMCPTests/KeymapServiceTests.swift`：新增 16 个 Import/Export 测试
+- **bundleId 不一致策略**：默认拒绝（抛 `bundleIdMismatch` 错误），可通过 `force=true` 参数强制导入并覆盖 bundleId 字段

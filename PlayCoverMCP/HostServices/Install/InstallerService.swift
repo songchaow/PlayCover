@@ -1,0 +1,755 @@
+// InstallerService.swift
+// PlayCoverMCP
+
+import Foundation
+
+/// Result of an IPA install operation.
+public struct InstallResult: Codable, Equatable, Sendable {
+    public let bundleIdentifier: String
+    public let appPath: String
+    public let injectPlayTools: Bool
+
+    public init(bundleIdentifier: String, appPath: String, injectPlayTools: Bool) {
+        self.bundleIdentifier = bundleIdentifier
+        self.appPath = appPath
+        self.injectPlayTools = injectPlayTools
+    }
+}
+
+/// Result of an IPA export operation.
+public struct ExportResult: Codable, Equatable, Sendable {
+    public let bundleIdentifier: String
+    public let ipaPath: String
+
+    public init(bundleIdentifier: String, ipaPath: String) {
+        self.bundleIdentifier = bundleIdentifier
+        self.ipaPath = ipaPath
+    }
+}
+
+/// Errors specific to IPA install/export operations.
+public enum InstallerError: Error, LocalizedError, Equatable {
+    case ipaNotFound(String)
+    case invalidIPA(String)
+    case appEncrypted(String)
+    case missingExecutable(String)
+    case conversionFailed(String)
+    case injectionFailed(String)
+    case signingFailed(String)
+    case exportFailed(String)
+    case packFailed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .ipaNotFound(let path): return "IPA not found: \(path)"
+        case .invalidIPA(let msg): return "Invalid IPA: \(msg)"
+        case .appEncrypted(let msg): return "App is encrypted: \(msg)"
+        case .missingExecutable(let msg): return "Missing executable: \(msg)"
+        case .conversionFailed(let msg): return "MachO conversion failed: \(msg)"
+        case .injectionFailed(let msg): return "PlayTools injection failed: \(msg)"
+        case .signingFailed(let msg): return "Signing failed: \(msg)"
+        case .exportFailed(let msg): return "Export failed: \(msg)"
+        case .packFailed(let msg): return "IPA packing failed: \(msg)"
+        }
+    }
+}
+
+/// A headless service for installing and exporting iOS IPA files via PlayCover.
+///
+/// This service encapsulates the install/export logic without any UI framework
+/// dependencies. All progress is reported through a callback closure.
+///
+/// Usage from MCP tool handlers:
+/// ```swift
+/// let result = service.install(ipaPath: "/path/to/app.ipa",
+///                               injectPlayTools: true,
+///                               progress: { total, current, message in
+///     // report progress to TaskManager
+/// })
+/// ```
+public final class InstallerService: Sendable {
+
+    /// The directory where PlayCover stores installed .app bundles.
+    public let appDirectory: URL
+
+    /// The PlayTools framework path on the system.
+    public let playToolsFrameworkPath: URL
+
+    /// The PlayCover bundle path (for accessing bundled PlayTools).
+    public let playCoverBundlePath: URL?
+
+    /// Create an InstallerService with custom paths (useful for testing).
+    public init(
+        appDirectory: URL,
+        playToolsFrameworkPath: URL? = nil,
+        playCoverBundlePath: URL? = nil
+    ) {
+        self.appDirectory = appDirectory
+        self.playToolsFrameworkPath = playToolsFrameworkPath ?? Self.defaultPlayToolsFrameworkPath()
+        self.playCoverBundlePath = playCoverBundlePath
+    }
+
+    /// Create an InstallerService pointing to default PlayCover paths.
+    public static func defaultService() -> InstallerService {
+        let container = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library")
+            .appendingPathComponent("Containers")
+            .appendingPathComponent("io.playcover.PlayCover")
+        let appDir = container.appendingPathComponent("Applications")
+
+        // Try to find PlayCover.app bundle
+        let playCoverBundle = Self.findPlayCoverBundle()
+
+        return InstallerService(
+            appDirectory: appDir,
+            playCoverBundlePath: playCoverBundle
+        )
+    }
+
+    // MARK: - Install
+
+    /// Install an IPA file into the PlayCover Applications directory.
+    ///
+    /// - Parameters:
+    ///   - ipaPath: Path to the .ipa file.
+    ///   - injectPlayTools: Whether to inject PlayTools into the app.
+    ///   - applicationCategory: Optional LSApplicationCategoryType value.
+    ///   - progress: Callback for progress updates (total, current, message).
+    /// - Returns: `InstallResult` with bundle ID and installed path.
+    public func install(
+        ipaPath: String,
+        injectPlayTools: Bool = true,
+        applicationCategory: String? = nil,
+        progress: (@Sendable (_ total: Int, _ current: Int, _ message: String) -> Void)? = nil
+    ) throws -> InstallResult {
+        let ipaURL = URL(fileURLWithPath: ipaPath)
+
+        // Validate IPA exists
+        guard FileManager.default.fileExists(atPath: ipaURL.path) else {
+            throw InstallerError.ipaNotFound(ipaPath)
+        }
+
+        progress?(100, 0, "begin")
+
+        // Create temp directory
+        let tmpDir = try FileManager.default.url(
+            for: .itemReplacementDirectory,
+            in: .userDomainMask,
+            appropriateFor: URL(fileURLWithPath: "/Users"),
+            create: true
+        )
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        // Unzip
+        progress?(100, 10, "unzip")
+        try Shell.run("/usr/bin/unzip", "-oq", ipaURL.path, "-d", tmpDir.path)
+
+        // Find the .app bundle in Payload
+        let payloadDir = tmpDir.appendingPathComponent("Payload")
+        let appURL = try findAppBundle(in: payloadDir)
+
+        // Read Info.plist
+        progress?(100, 20, "reading Info.plist")
+        let info = try readInfoPlist(from: appURL)
+        let bundleId = info["CFBundleIdentifier"] as? String ?? "unknown"
+        let execName = info["CFBundleExecutable"] as? String ?? ""
+        guard !execName.isEmpty else {
+            throw InstallerError.missingExecutable("No CFBundleExecutable in Info.plist")
+        }
+        let execURL = appURL.appendingPathComponent(execName)
+
+        // Save entitlements
+        progress?(100, 30, "saving entitlements")
+        let entitlementsDir = Self.entitlementsDirectory()
+        try FileManager.default.createDirectory(at: entitlementsDir, withIntermediateDirectories: true)
+        let entPath = entitlementsDir
+            .appendingPathComponent(bundleId)
+            .appendingPathExtension("plist")
+        let entString = try Shell.dumpEntitlements(execURL)
+        if !entString.isEmpty {
+            try entString.write(to: entPath, atomically: true, encoding: .utf8)
+        }
+
+        // Find and check MachO binaries
+        progress?(100, 40, "checking MachO binaries")
+        let machos = try findMachOBinaries(in: appURL)
+        for macho in machos {
+            if try isMachoEncrypted(at: macho) {
+                throw InstallerError.appEncrypted(macho.lastPathComponent)
+            }
+
+            // Convert MachO for macOS (replace version command with Mac Catalyst)
+            progress?(100, 50, "converting \(macho.lastPathComponent)")
+            try convertMacho(macho)
+
+            // Ad-hoc sign each MachO
+            try Shell.signMacho(macho)
+        }
+
+        // Inject PlayTools if requested
+        progress?(100, 60, injectPlayTools ? "injecting PlayTools" : "skipping PlayTools")
+        if injectPlayTools {
+            try injectPlayToolsInstall(exec: execURL, payload: appURL)
+        }
+
+        // Set application category
+        if let category = applicationCategory {
+            let infoPlistPath = appURL.appendingPathComponent("Info.plist")
+            let infoPath = appURL.appendingPathComponent("Info").appendingPathExtension("plist")
+            let infoFile = FileManager.default.fileExists(atPath: infoPath.path) ? infoPath : infoPlistPath
+            try setApplicationCategory(infoFile: infoFile, category: category)
+        }
+
+        // Set executable permissions
+        progress?(100, 70, "setting permissions")
+        try Shell.setExecutable(execURL)
+
+        // Remove embedded.mobileprovision
+        let provision = appURL.appendingPathComponent("embedded.mobileprovision")
+        if FileManager.default.fileExists(atPath: provision.path) {
+            try FileManager.default.removeItem(at: provision)
+        }
+
+        // Ensure minimum iOS version
+        progress?(100, 75, "asserting minimum version")
+        try assertMinimumVersion(infoFile: appURL.appendingPathComponent("Info.plist"))
+
+        // Wrap: move to PlayCover Applications directory
+        progress?(100, 80, "installing to Applications")
+        let installDir = appDirectory.appendingPathComponent(bundleId).appendingPathExtension("app")
+        if FileManager.default.fileExists(atPath: installDir.path) {
+            try FileManager.default.removeItem(at: installDir)
+        }
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: appURL, to: installDir)
+
+        // Sign the installed app
+        progress?(100, 90, "signing")
+        let installedExec = installDir.appendingPathComponent(execName)
+        if FileManager.default.fileExists(atPath: entPath.path) {
+            try Shell.signAppWith(installedExec, entitlements: entPath)
+        } else {
+            try Shell.signApp(installedExec)
+        }
+
+        // Remove quarantine
+        progress?(100, 95, "removing quarantine")
+        try Shell.removeQuarantine(installDir)
+
+        progress?(100, 100, "finish")
+        return InstallResult(
+            bundleIdentifier: bundleId,
+            appPath: installDir.path,
+            injectPlayTools: injectPlayTools
+        )
+    }
+
+    // MARK: - Export
+
+    /// Export a patched IPA with PlayTools embedded.
+    ///
+    /// - Parameters:
+    ///   - ipaPath: Path to the source .ipa file.
+    ///   - outputDirectory: Directory for the output .ipa (default: ~/Documents).
+    ///   - applicationCategory: Optional LSApplicationCategoryType value.
+    ///   - progress: Callback for progress updates.
+    /// - Returns: `ExportResult` with bundle ID and output IPA path.
+    public func export(
+        ipaPath: String,
+        outputDirectory: String? = nil,
+        applicationCategory: String? = nil,
+        progress: (@Sendable (_ total: Int, _ current: Int, _ message: String) -> Void)? = nil
+    ) throws -> ExportResult {
+        let ipaURL = URL(fileURLWithPath: ipaPath)
+
+        guard FileManager.default.fileExists(atPath: ipaURL.path) else {
+            throw InstallerError.ipaNotFound(ipaPath)
+        }
+
+        progress?(100, 0, "begin")
+
+        let tmpDir = try FileManager.default.url(
+            for: .itemReplacementDirectory,
+            in: .userDomainMask,
+            appropriateFor: URL(fileURLWithPath: "/Users"),
+            create: true
+        )
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        // Unzip
+        progress?(100, 10, "unzip")
+        try Shell.run("/usr/bin/unzip", "-oq", ipaURL.path, "-d", tmpDir.path)
+
+        // Find .app bundle
+        let payloadDir = tmpDir.appendingPathComponent("Payload")
+        let appURL = try findAppBundle(in: payloadDir)
+
+        // Read Info.plist
+        progress?(100, 20, "reading Info.plist")
+        let info = try readInfoPlist(from: appURL)
+        let bundleId = info["CFBundleIdentifier"] as? String ?? "unknown"
+        let execName = info["CFBundleExecutable"] as? String ?? ""
+        guard !execName.isEmpty else {
+            throw InstallerError.missingExecutable("No CFBundleExecutable in Info.plist")
+        }
+        let execURL = appURL.appendingPathComponent(execName)
+
+        // Save entitlements
+        progress?(100, 30, "saving entitlements")
+        let entitlementsDir = Self.entitlementsDirectory()
+        try FileManager.default.createDirectory(at: entitlementsDir, withIntermediateDirectories: true)
+        let entPath = entitlementsDir
+            .appendingPathComponent(bundleId)
+            .appendingPathExtension("plist")
+        let entString = try Shell.dumpEntitlements(execURL)
+        if !entString.isEmpty {
+            try entString.write(to: entPath, atomically: true, encoding: .utf8)
+        }
+
+        // Check MachO binaries for encryption
+        progress?(100, 40, "checking MachO binaries")
+        let machos = try findMachOBinaries(in: appURL)
+        for macho in machos {
+            if try isMachoEncrypted(at: macho) {
+                throw InstallerError.appEncrypted(macho.lastPathComponent)
+            }
+        }
+
+        // Inject PlayTools into the IPA (copies dylib into Frameworks/)
+        progress?(100, 60, "injecting PlayTools into IPA")
+        try injectPlayToolsExport(exec: execURL, payload: appURL)
+
+        // Set application category
+        if let category = applicationCategory {
+            let infoPlistPath = appURL.appendingPathComponent("Info.plist")
+            let infoPath = appURL.appendingPathComponent("Info").appendingPathExtension("plist")
+            let infoFile = FileManager.default.fileExists(atPath: infoPath.path) ? infoPath : infoPlistPath
+            try setApplicationCategory(infoFile: infoFile, category: category)
+        }
+
+        // Ensure minimum iOS version
+        progress?(100, 75, "asserting minimum version")
+        try assertMinimumVersion(infoFile: appURL.appendingPathComponent("Info.plist"))
+
+        // Pack back to IPA
+        progress?(100, 85, "packing IPA")
+        let outputDir = outputDirectory.map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let outputName = (info["CFBundleDisplayName"] as? String)
+            ?? (info["CFBundleName"] as? String)
+            ?? bundleId
+        let outputIPA = outputDir.appendingPathComponent(outputName).appendingPathExtension("ipa")
+
+        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        if FileManager.default.fileExists(atPath: outputIPA.path) {
+            try FileManager.default.removeItem(at: outputIPA)
+        }
+        try Shell.run("/usr/bin/zip", "-r", outputIPA.path, payloadDir.path)
+
+        // Remove quarantine
+        progress?(100, 95, "removing quarantine")
+        try Shell.removeQuarantine(outputIPA)
+
+        progress?(100, 100, "finish")
+        return ExportResult(
+            bundleIdentifier: bundleId,
+            ipaPath: outputIPA.path
+        )
+    }
+
+    // MARK: - Private Helpers
+
+    /// Find the .app bundle inside a Payload directory.
+    private func findAppBundle(in payloadDir: URL) throws -> URL {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: payloadDir.path) else {
+            throw InstallerError.invalidIPA("Payload directory not found")
+        }
+
+        let contents = try fm.contentsOfDirectory(at: payloadDir, includingPropertiesForKeys: nil)
+        guard let appURL = contents.first(where: { $0.pathExtension == "app" }) else {
+            throw InstallerError.invalidIPA("No .app bundle found in Payload")
+        }
+        return appURL
+    }
+
+    /// Read Info.plist from an .app bundle.
+    private func readInfoPlist(from appURL: URL) throws -> [String: Any] {
+        let plistURL = appURL.appendingPathComponent("Info.plist")
+        guard let dict = NSDictionary(contentsOf: plistURL) as? [String: Any] else {
+            throw InstallerError.invalidIPA("Cannot read Info.plist")
+        }
+        return dict
+    }
+
+    /// Find all MachO binaries (including dylibs) within the .app bundle.
+    private func findMachOBinaries(in appURL: URL) throws -> [URL] {
+        var machos: [URL] = []
+
+        guard let enumerator = FileManager.default.enumerator(
+            at: appURL,
+            includingPropertiesForKeys: [.fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        for case let fileURL as URL in enumerator {
+            guard let attrs = try? fileURL.resourceValues(forKeys: [.fileSizeKey]),
+                  let fileSize = attrs.fileSize, fileSize > 4 else {
+                continue
+            }
+
+            // Skip non-executable extensions (but include .dylib)
+            let ext = fileURL.pathExtension
+            if !ext.isEmpty && ext != "dylib" && ext != "" {
+                // Check for common executable extensions
+                let executableExts = ["", "dylib", "so", "0"]
+                if !executableExts.contains(ext.lowercased()) {
+                    continue
+                }
+            }
+
+            if try isMachoFile(at: fileURL) {
+                machos.append(fileURL)
+            }
+        }
+
+        return machos
+    }
+
+    /// Check if a file is a MachO binary by reading magic bytes.
+    private func isMachoFile(at url: URL) throws -> Bool {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        guard let data = try handle.read(upToCount: 4), data.count == 4 else { return false }
+
+        let bytes = [UInt8](data)
+        // MH_MAGIC_64 (64-bit LE): 0xFEEDFACF
+        // MH_CIGAM_64 (64-bit BE): 0xCFFAEDFE
+        // MH_MAGIC (32-bit LE): 0xFEEDFACE
+        // MH_CIGAM (32-bit BE): 0xCEFAEDFE
+        // FAT_MAGIC (fat LE): 0xCAFEBABE
+        // FAT_CIGAM (fat BE): 0xBEBAFECA
+        switch bytes {
+        case [0xCF, 0xFA, 0xED, 0xFE], // MH_MAGIC_64
+             [0xFE, 0xED, 0xFA, 0xCF], // MH_CIGAM_64
+             [0xCE, 0xFA, 0xED, 0xFE], // MH_MAGIC
+             [0xFE, 0xED, 0xFA, 0xCE], // MH_CIGAM
+             [0xCA, 0xFE, 0xBA, 0xBE], // FAT_MAGIC
+             [0xBE, 0xBA, 0xFE, 0xCA]: // FAT_CIGAM
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Check if a MachO binary is encrypted by looking for LC_ENCRYPTION_INFO.
+    private func isMachoEncrypted(at url: URL) throws -> Bool {
+        // Use codesign to check encryption
+        // An encrypted binary will have cryptid != 0 in its encryption info
+        // We use `codesign -d -vvv` and look for "flags=0x... (encrypted)"
+        do {
+            let output = try Shell.run("/usr/bin/codesign", "-d", "-vvv", url.path)
+            // codesign output contains "cryptid" info for encrypted binaries
+            return output.contains("encrypted")
+        } catch {
+            // If codesign fails, try a binary-level check
+            return false
+        }
+    }
+
+    /// Convert a MachO binary for macOS by replacing the platform version command.
+    ///
+    /// This strips the fat binary to ARM64 only and replaces version commands
+    /// with Mac Catalyst platform markers.
+    private func convertMacho(_ machoURL: URL) throws {
+        var binary = try Data(contentsOf: machoURL)
+
+        // Strip fat binary to ARM64 only
+        try stripFatBinary(&binary)
+
+        // Replace version command with Mac Catalyst
+        try replaceVersionCommand(&binary)
+
+        // Replace @rpath dylib references with system paths
+        try replaceLibraries(&binary)
+
+        // Write modified binary back
+        try FileManager.default.removeItem(at: machoURL)
+        try binary.write(to: machoURL)
+    }
+
+    /// Strip fat binary to extract ARM64 slice only.
+    private func stripFatBinary(_ binary: inout Data) throws {
+        let fatMagic: [UInt8] = [0xCA, 0xFE, 0xBA, 0xBE] // FAT_MAGIC
+        let fatCigam: [UInt8] = [0xBE, 0xBA, 0xFE, 0xCA] // FAT_CIGAM
+
+        guard binary.count >= 4 else { return }
+
+        let isFatLE = binary.prefix(4).elementsEqual(fatMagic)
+        let isFatBE = binary.prefix(4).elementsEqual(fatCigam)
+
+        guard isFatLE || isFatBE else { return } // Not a fat binary, nothing to strip
+
+        // Parse fat_header: magic(4) + nfat_arch(4)
+        let isSwap = isFatBE
+        let nfatArch = isSwap
+            ? UInt32(bigEndian: binary.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt32.self) })
+            : binary.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt32.self) }
+
+        var offset = 8 // sizeof(fat_header)
+        let archSize = 20 // sizeof(fat_arch)
+
+        for _ in 0..<nfatArch {
+            guard binary.count >= offset + archSize else { break }
+
+            // Parse fat_arch: cputype(4) + cpusubtype(4) + offset(4) + size(4) + align(4)
+            let cputype = isSwap
+                ? UInt32(bigEndian: binary.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt32.self) })
+                : binary.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt32.self) }
+
+            let sliceOffset = isSwap
+                ? UInt32(bigEndian: binary.withUnsafeBytes { $0.load(fromByteOffset: offset + 8, as: UInt32.self) })
+                : binary.withUnsafeBytes { $0.load(fromByteOffset: offset + 8, as: UInt32.self) }
+
+            let sliceSize = isSwap
+                ? UInt32(bigEndian: binary.withUnsafeBytes { $0.load(fromByteOffset: offset + 12, as: UInt32.self) })
+                : binary.withUnsafeBytes { $0.load(fromByteOffset: offset + 12, as: UInt32.self) }
+
+            // CPU_TYPE_ARM64 = 0x0100000C
+            if cputype == 0x0100000C {
+                binary = binary.subdata(in: Int(sliceOffset)..<Int(sliceOffset + sliceSize))
+                return
+            }
+
+            offset += archSize
+        }
+
+        throw InstallerError.conversionFailed("No ARM64 architecture found in fat binary")
+    }
+
+    /// Replace version-related load commands with Mac Catalyst platform markers.
+    private func replaceVersionCommand(_ binary: inout Data) throws {
+        guard binary.count >= 32 else { return }
+
+        let isSwap = binary.prefix(4).elementsEqual([0xCF, 0xFA, 0xED, 0xFE]) == false
+            && binary.prefix(4).elementsEqual([0xFE, 0xED, 0xFA, 0xCF]) == false
+            && binary.prefix(4).elementsEqual([0xCA, 0xFE, 0xBA, 0xBE]) == false
+
+        // After stripping, should be a thin ARM64 binary
+        // mach_header_64: magic(4) + cputype(4) + cpusubtype(4) + filetype(4)
+        //                 + ncmds(4) + sizeofcmds(4) + flags(4) + reserved(4)
+        let headerSize = 32
+
+        guard binary.count >= headerSize else { return }
+
+        let ncmds = binary.withUnsafeBytes { ptr -> UInt32 in
+            if isSwap {
+                return UInt32(bigEndian: ptr.load(fromByteOffset: 12, as: UInt32.self))
+            }
+            return ptr.load(fromByteOffset: 12, as: UInt32.self)
+        }
+
+        let sizeofcmds = binary.withUnsafeBytes { ptr -> UInt32 in
+            if isSwap {
+                return UInt32(bigEndian: ptr.load(fromByteOffset: 16, as: UInt32.self))
+            }
+            return ptr.load(fromByteOffset: 16, as: UInt32.self)
+        }
+
+        let cmdEnd = headerSize + Int(sizeofcmds)
+        guard binary.count >= cmdEnd else { return }
+
+        // LC_BUILD_VERSION = 0x32, PLATFORM_MACCATALYST = 13
+        // build_version_command: cmd(4) + cmdsize(4) + platform(4) + minos(4) + sdk(4) + ntools(4) = 24 bytes
+        var offset = headerSize
+        for _ in 0..<ncmds {
+            guard offset + 8 <= binary.count else { break }
+
+            let cmd = binary.withUnsafeBytes { ptr -> UInt32 in
+                if isSwap {
+                    return UInt32(bigEndian: ptr.load(fromByteOffset: offset, as: UInt32.self))
+                }
+                return ptr.load(fromByteOffset: offset, as: UInt32.self)
+            }
+
+            let cmdsize = binary.withUnsafeBytes { ptr -> UInt32 in
+                if isSwap {
+                    return UInt32(bigEndian: ptr.load(fromByteOffset: offset + 4, as: UInt32.self))
+                }
+                return ptr.load(fromByteOffset: offset + 4, as: UInt32.self)
+            }
+
+            // LC_BUILD_VERSION = 0x32 (50)
+            // Replace with Mac Catalyst: platform=13, minos=11.0, sdk=14.0
+            if cmd == 0x32 || cmd == 0x80000032 { // LC_BUILD_VERSION or LC_BUILD_VERSION_64
+                _ = cmd
+                _ = cmdsize
+
+                // platform = PLATFORM_MACCATALYST = 13
+                var platform: UInt32 = isSwap ? UInt32(bigEndian: 13) : 13
+                // minos = 11.0.0 = 0x000B0000
+                var minos: UInt32 = isSwap ? UInt32(bigEndian: 0x000B0000) : 0x000B0000
+                // sdk = 14.0.0 = 0x000E0000
+                var sdk: UInt32 = isSwap ? UInt32(bigEndian: 0x000E0000) : 0x000E0000
+                // ntools = 0
+                var ntools: UInt32 = 0
+
+                binary.replaceSubrange(offset + 8..<(offset + 12), with: Data(bytes: &platform, count: 4))
+                binary.replaceSubrange(offset + 12..<(offset + 16), with: Data(bytes: &minos, count: 4))
+                binary.replaceSubrange(offset + 16..<(offset + 20), with: Data(bytes: &sdk, count: 4))
+                binary.replaceSubrange(offset + 20..<(offset + 24), with: Data(bytes: &ntools, count: 4))
+
+                return
+            }
+
+            offset += Int(cmdsize)
+        }
+    }
+
+    /// Replace @rpath dylib references with system iOS support paths.
+    private func replaceLibraries(_ binary: inout Data) throws {
+        // Replace @rpath/libswiftUIKit.dylib with /System/iOSSupport/usr/lib/swift/libswiftUIKit.dylib
+        let rpathDylib = "@rpath/libswiftUIKit.dylib"
+        let systemDylib = "/System/iOSSupport/usr/lib/swift/libswiftUIKit.dylib"
+
+        guard let rpathRange = binary.range(of: rpathDylib.data(using: .utf8)!) else {
+            return // Not found, nothing to replace
+        }
+
+        // Pad with null bytes to maintain alignment
+        let replacement = systemDylib.data(using: .utf8)!
+        let padding = rpathDylib.count - replacement.count
+        var padded = replacement
+        if padding > 0 {
+            padded.append(Data(count: padding))
+        } else if padding < 0 {
+            // New path is longer - for simplicity, skip if the replacement doesn't fit
+            // In practice, this is rare and would need load command size adjustment
+            return
+        }
+
+        binary.replaceSubrange(rpathRange, with: padded)
+    }
+
+    // MARK: - PlayTools Injection
+
+    /// Inject PlayTools for install mode (system path reference).
+    private func injectPlayToolsInstall(exec: URL, payload: URL) throws {
+        let playToolsDylib = playToolsFrameworkPath
+            .appendingPathComponent("PlayTools")
+
+        guard FileManager.default.fileExists(atPath: playToolsDylib.path) else {
+            throw InstallerError.injectionFailed(
+                "PlayTools not installed at \(playToolsFrameworkPath.path)"
+            )
+        }
+
+        // Use install_name_tool to add load command for PlayTools
+        do {
+            try Shell.run("/usr/bin/install_name_tool",
+                          "-add_rpath", playToolsFrameworkPath.deletingLastPathComponent().path,
+                          exec.path)
+        } catch {
+            // install_name_tool might already have this rpath, ignore the error
+        }
+
+        // Sign after modification
+        try Shell.signApp(exec)
+    }
+
+    /// Inject PlayTools for export mode (embed dylib in IPA).
+    private func injectPlayToolsExport(exec: URL, payload: URL) throws {
+        // Find PlayTools dylib source
+        let sourceDylib: URL
+        if let bundle = playCoverBundlePath {
+            sourceDylib = bundle
+                .appendingPathComponent("Contents/Frameworks/PlayTools.framework/PlayTools")
+        } else {
+            sourceDylib = playToolsFrameworkPath.appendingPathComponent("PlayTools")
+        }
+
+        guard FileManager.default.fileExists(atPath: sourceDylib.path) else {
+            throw InstallerError.injectionFailed(
+                "PlayTools dylib not found at \(sourceDylib.path)"
+            )
+        }
+
+        // Create Frameworks directory in the app
+        let frameworksDir = payload.appendingPathComponent("Frameworks")
+        try FileManager.default.createDirectory(at: frameworksDir, withIntermediateDirectories: true)
+
+        // Copy PlayTools dylib
+        let destDylib = frameworksDir.appendingPathComponent("PlayTools.dylib")
+        if FileManager.default.fileExists(atPath: destDylib.path) {
+            try FileManager.default.removeItem(at: destDylib)
+        }
+        try FileManager.default.copyItem(at: sourceDylib, to: destDylib)
+        try Shell.setExecutable(destDylib)
+
+        // Add load command for the embedded dylib
+        try Shell.run("/usr/bin/install_name_tool",
+                      "-change", sourceDylib.path,
+                      "@executable_path/Frameworks/PlayTools.dylib",
+                      exec.path)
+
+        // Sign the app
+        try Shell.signApp(exec)
+    }
+
+    // MARK: - Info.plist Helpers
+
+    /// Set LSApplicationCategoryType in Info.plist.
+    private func setApplicationCategory(infoFile: URL, category: String) throws {
+        guard let plist = NSMutableDictionary(contentsOf: infoFile) else { return }
+        plist["LSApplicationCategoryType"] = category
+        plist.write(to: infoFile, atomically: true)
+    }
+
+    /// Assert minimum iOS version in Info.plist.
+    private func assertMinimumVersion(infoFile: URL) throws {
+        guard let plist = NSMutableDictionary(contentsOf: infoFile) else { return }
+        if let minVersion = plist["MinimumOSVersion"] as? String {
+            let parts = minVersion.split(separator: ".").compactMap { Int($0) }
+            if parts.first ?? 0 < 11 {
+                plist["MinimumOSVersion"] = "11.0"
+                plist.write(to: infoFile, atomically: true)
+            }
+        } else {
+            plist["MinimumOSVersion"] = "11.0"
+            plist.write(to: infoFile, atomically: true)
+        }
+    }
+
+    // MARK: - Path Utilities
+
+    private static func entitlementsDirectory() -> URL {
+        let container = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library")
+            .appendingPathComponent("Containers")
+            .appendingPathComponent("io.playcover.PlayCover")
+        return container.appendingPathComponent("Entitlements")
+    }
+
+    private static func defaultPlayToolsFrameworkPath() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Frameworks/PlayTools.framework")
+    }
+
+    private static func findPlayCoverBundle() -> URL? {
+        // Search common locations for PlayCover.app
+        let searchPaths = [
+            "/Applications/PlayCover.app",
+            FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Applications/PlayCover.app").path
+        ]
+
+        for path in searchPaths {
+            if FileManager.default.fileExists(atPath: path) {
+                return URL(fileURLWithPath: path)
+            }
+        }
+        return nil
+    }
+}

@@ -33,6 +33,10 @@ let appService = AppService.defaultService()
 AppTools.register(on: server, appService: appService)
 AppResources.register(on: server, appService: appService)
 
+// Register installer tools
+let installerService = InstallerService.defaultService()
+InstallerTools.register(on: server, installerService: installerService, taskManager: taskManager)
+
 let transport = StdioTransport { message in
     server.handle(message)
 }

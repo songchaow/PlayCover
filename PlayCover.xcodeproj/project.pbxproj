@@ -123,6 +123,12 @@
 		DCDA6D1BC3FB4992A9640CEB /* AppResources.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5A0A2C9916847B5B22FE46A /* AppResources.swift */; };
 		69B103E7292F4F82A79AE760 /* AppServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A005C31278C94FA3AF2F277A /* AppServiceTests.swift */; };
 		47A8288D276C4E65A6736A7C /* AppToolsAndResourcesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0814B3729EC24510859A18E9 /* AppToolsAndResourcesTests.swift */; };
+		B8B544F872A140AA94CACDEA /* Shell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AE56941E81945B4950110A7 /* Shell.swift */; };
+		AE65AC31FA6846C89C203C81 /* InstallerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 657AC60955554EEFA6D76D21 /* InstallerService.swift */; };
+		185D8DCE040D40A28183B012 /* InstallerTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19B42407C52741048C0D0A94 /* InstallerTools.swift */; };
+		D718C5A51078417FBD18C953 /* InstallerServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 562CF7645F174B1A9498A196 /* InstallerServiceTests.swift */; };
+		D774A33CB8A94B639DB2158C /* Shell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AE56941E81945B4950110A7 /* Shell.swift */; };
+		391D13FD30264230951D8743 /* InstallerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 657AC60955554EEFA6D76D21 /* InstallerService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -268,6 +274,10 @@
 		F5A0A2C9916847B5B22FE46A /* AppResources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppResources.swift; path = AppResources.swift; sourceTree = "<group>"; };
 		A005C31278C94FA3AF2F277A /* AppServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppServiceTests.swift; path = AppServiceTests.swift; sourceTree = "<group>"; };
 		0814B3729EC24510859A18E9 /* AppToolsAndResourcesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppToolsAndResourcesTests.swift; path = AppToolsAndResourcesTests.swift; sourceTree = "<group>"; };
+		9AE56941E81945B4950110A7 /* Shell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Shell.swift; path = Shell.swift; sourceTree = "<group>"; };
+		657AC60955554EEFA6D76D21 /* InstallerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = InstallerService.swift; path = InstallerService.swift; sourceTree = "<group>"; };
+		19B42407C52741048C0D0A94 /* InstallerTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = InstallerTools.swift; path = InstallerTools.swift; sourceTree = "<group>"; };
+		562CF7645F174B1A9498A196 /* InstallerServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = InstallerServiceTests.swift; path = InstallerServiceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -556,6 +566,7 @@
 				E04CB4D59F564556951228D8 /* MCPErrorExtensionsTests.swift */,
 				A005C31278C94FA3AF2F277A /* AppServiceTests.swift */,
 				0814B3729EC24510859A18E9 /* AppToolsAndResourcesTests.swift */,
+				562CF7645F174B1A9498A196 /* InstallerServiceTests.swift */,
 				7ABE004742B3446A8C66A3A1 /* Info.plist */,
 			);
 			path = PlayCoverMCPTests;
@@ -621,6 +632,8 @@
 		BFD73CC363EA45C09A0972AF /* HostServices */ = {
 			isa = PBXGroup;
 			children = (
+				CEAB2BDBA75A41CD893BC233 /* Install */,
+				9AE56941E81945B4950110A7 /* Shell.swift */,
 				197B67E9F144465F9CAA7A79 /* AppService.swift */,
 			);
 			path = HostServices;
@@ -630,6 +643,7 @@
 			isa = PBXGroup;
 			children = (
 				9582C48DB29E44938338E6C4 /* AppTools.swift */,
+					19B42407C52741048C0D0A94 /* InstallerTools.swift */,
 			);
 			path = Tools;
 			sourceTree = "<group>";
@@ -640,6 +654,14 @@
 				F5A0A2C9916847B5B22FE46A /* AppResources.swift */,
 			);
 			path = Resources;
+			sourceTree = "<group>";
+		};
+		CEAB2BDBA75A41CD893BC233 /* Install */ = {
+			isa = PBXGroup;
+			children = (
+				657AC60955554EEFA6D76D21 /* InstallerService.swift */,
+			);
+			path = Install;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -993,6 +1015,9 @@
 				47F28A57834D40F8B75CB28B /* AppService.swift in Sources */,
 				E63DA694C7ED40BCB6E350BE /* AppTools.swift in Sources */,
 				99C5D776BEFF46FAAF37124A /* AppResources.swift in Sources */,
+				185D8DCE040D40A28183B012 /* InstallerTools.swift in Sources */,
+				AE65AC31FA6846C89C203C81 /* InstallerService.swift in Sources */,
+				B8B544F872A140AA94CACDEA /* Shell.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1019,8 +1044,11 @@
 				6A2BBA3092B8498FA8A998C2 /* AppService.swift in Sources */,
 				33149AAB374B44E8AAF04F45 /* AppTools.swift in Sources */,
 				DCDA6D1BC3FB4992A9640CEB /* AppResources.swift in Sources */,
+				391D13FD30264230951D8743 /* InstallerService.swift in Sources */,
+				D774A33CB8A94B639DB2158C /* Shell.swift in Sources */,
 				69B103E7292F4F82A79AE760 /* AppServiceTests.swift in Sources */,
 				47A8288D276C4E65A6736A7C /* AppToolsAndResourcesTests.swift in Sources */,
+				D718C5A51078417FBD18C953 /* InstallerServiceTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

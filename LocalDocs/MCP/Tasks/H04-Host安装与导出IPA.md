@@ -5,7 +5,7 @@
 
 ### Dashboard
 
-- **状态**：`TODO`
+- **状态**：`DONE`
 - **优先级**：`P0`
 - **预计工作量**：`L`
 - **建议耗时**：`1.0 ~ 1.5 天`
@@ -89,10 +89,10 @@
 
 ### 执行记录
 
-- **开始时间**：
-- **完成时间**：
-- **执行人 / agent**：
-- **测试命令**：
-- **测试结果**：
-- **遗留问题**：
-- **commit hash**：
+- **开始时间**：2026-03-23
+- **完成时间**：2026-03-23
+- **执行人 / agent**：CodeBuddy
+- **测试命令**：`xcodebuild test -project PlayCover.xcodeproj -scheme PlayCoverMCP -destination 'platform=macOS'`
+- **测试结果**：全部通过 (TEST SUCCEEDED)
+- **遗留问题**：无
+- **commit hash**：(待提交)

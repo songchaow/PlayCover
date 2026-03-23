@@ -5,7 +5,7 @@
 
 ### Dashboard
 
-- **状态**：`TODO`
+- **状态**：`IN_PROGRESS`
 - **优先级**：`P0`
 - **预计工作量**：`M`
 - **建议耗时**：`0.5 ~ 1.0 天`
@@ -88,10 +88,17 @@
 
 ### 执行记录
 
-- **开始时间**：
-- **完成时间**：
-- **执行人 / agent**：
-- **测试命令**：
-- **测试结果**：
-- **遗留问题**：
-- **commit hash**：
+- **开始时间**：2026-03-23
+- **完成时间**：2026-03-23
+- **执行人 / agent**：Claude (GLM-5.0-Turbo)
+- **测试命令**：`xcodebuild test-without-building -scheme PlayCoverMCP -destination 'platform=macOS'`
+- **测试结果**：184 tests passed, 1 skipped (smoke test)
+- **遗留问题**：无
+- **commit hash**：(待提交)
+- **实际改动范围**：
+  - 新增 `PlayCoverMCP/HostServices/Cleanup/CleanupService.swift` — 卸载与清理服务层
+  - 新增 `PlayCoverMCP/Tools/Host/CleanupTools.swift` — 6 个 MCP 工具注册
+  - 新增 `PlayCoverMCPTests/CleanupServiceTests.swift` — 17 个单元测试
+  - 修改 `PlayCoverMCP/main.swift` — 注册 cleanup 工具
+  - 修改 `PlayCoverMCPTests/MCPSmokeTests.swift` — 更新工具数量期望 (6→12)
+  - 修改 `PlayCover.xcodeproj/project.pbxproj` — 添加新文件到工程

@@ -133,6 +133,9 @@
 		05F0F71A6E044B9BB94A72D8 /* LaunchTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADDE5924D3464390AC21F996 /* LaunchTools.swift */; };
 		C5254E48764E444C9287B9FF /* LaunchServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73B4F49FEEAB4779AFDC8836 /* LaunchServiceTests.swift */; };
 		D52E41F7A3B84922B0A7C91D /* LaunchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2A30F2153A449FB980C490B /* LaunchService.swift */; };
+		72072B62D7164F96A5B5306B /* CleanupService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3062E5E71B0342F98837ED33 /* CleanupService.swift */; };
+		EF037CF00E274ED1868739CA /* CleanupTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80A2C04FE99540BABC8BBA13 /* CleanupTools.swift */; };
+		5B39A2DE923A4916B1673805 /* CleanupServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3034447D9214465AA562548 /* CleanupServiceTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -285,6 +288,9 @@
 		B2A30F2153A449FB980C490B /* LaunchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LaunchService.swift; path = LaunchService.swift; sourceTree = "<group>"; };
 		ADDE5924D3464390AC21F996 /* LaunchTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LaunchTools.swift; path = LaunchTools.swift; sourceTree = "<group>"; };
 		73B4F49FEEAB4779AFDC8836 /* LaunchServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LaunchServiceTests.swift; path = LaunchServiceTests.swift; sourceTree = "<group>"; };
+		3062E5E71B0342F98837ED33 /* CleanupService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CleanupService.swift; path = CleanupService.swift; sourceTree = "<group>"; };
+		80A2C04FE99540BABC8BBA13 /* CleanupTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CleanupTools.swift; path = CleanupTools.swift; sourceTree = "<group>"; };
+		C3034447D9214465AA562548 /* CleanupServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CleanupServiceTests.swift; path = CleanupServiceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -574,7 +580,8 @@
 				A005C31278C94FA3AF2F277A /* AppServiceTests.swift */,
 				0814B3729EC24510859A18E9 /* AppToolsAndResourcesTests.swift */,
 				562CF7645F174B1A9498A196 /* InstallerServiceTests.swift */,
-				73B4F49FEEAB4779AFDC8836 /* LaunchServiceTests.swift */,
+			73B4F49FEEAB4779AFDC8836 /* LaunchServiceTests.swift */,
+				C3034447D9214465AA562548 /* CleanupServiceTests.swift */,
 				7ABE004742B3446A8C66A3A1 /* Info.plist */,
 			);
 			path = PlayCoverMCPTests;
@@ -641,6 +648,7 @@
 			isa = PBXGroup;
 			children = (
 				8FDB3D47ACD54928980C9209 /* Launch */,
+			25FC63B52EB64F3BAAA86E75 /* Cleanup */,
 				CEAB2BDBA75A41CD893BC233 /* Install */,
 				9AE56941E81945B4950110A7 /* Shell.swift */,
 				197B67E9F144465F9CAA7A79 /* AppService.swift */,
@@ -686,10 +694,19 @@
 			isa = PBXGroup;
 			children = (
 				ADDE5924D3464390AC21F996 /* LaunchTools.swift */,
+				80A2C04FE99540BABC8BBA13 /* CleanupTools.swift */,
 			);
 			path = Host;
 			sourceTree = "<group>";
 		};
+	25FC63B52EB64F3BAAA86E75 /* Cleanup */ = {
+		isa = PBXGroup;
+		children = (
+			3062E5E71B0342F98837ED33 /* CleanupService.swift */,
+		);
+		path = Cleanup;
+		sourceTree = "<group>";
+	};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -1045,7 +1062,9 @@
 				AE65AC31FA6846C89C203C81 /* InstallerService.swift in Sources */,
 				B8B544F872A140AA94CACDEA /* Shell.swift in Sources */,
 				37B8BE89D6B14F5C942E3090 /* LaunchService.swift in Sources */,
-				05F0F71A6E044B9BB94A72D8 /* LaunchTools.swift in Sources */,
+			05F0F71A6E044B9BB94A72D8 /* LaunchTools.swift in Sources */,
+				72072B62D7164F96A5B5306B /* CleanupService.swift in Sources */,
+				EF037CF00E274ED1868739CA /* CleanupTools.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1078,7 +1097,9 @@
 				47A8288D276C4E65A6736A7C /* AppToolsAndResourcesTests.swift in Sources */,
 				D718C5A51078417FBD18C953 /* InstallerServiceTests.swift in Sources */,
 				D52E41F7A3B84922B0A7C91D /* LaunchService.swift in Sources */,
+				72072B62D7164F96A5B5306B /* CleanupService.swift in Sources */,
 				C5254E48764E444C9287B9FF /* LaunchServiceTests.swift in Sources */,
+				5B39A2DE923A4916B1673805 /* CleanupServiceTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

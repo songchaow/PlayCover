@@ -41,6 +41,10 @@ InstallerTools.register(on: server, installerService: installerService, taskMana
 let launchService = LaunchService.defaultService()
 LaunchTools.register(on: server, launchService: launchService)
 
+// Register cleanup tools
+let cleanupService = CleanupService.defaultService()
+CleanupTools.register(on: server, cleanupService: cleanupService)
+
 let transport = StdioTransport { message in
     server.handle(message)
 }

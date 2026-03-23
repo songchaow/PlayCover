@@ -58,6 +58,10 @@ CleanupTools.register(on: server, cleanupService: cleanupService)
 let signingService = SigningService.defaultService()
 SigningTools.register(on: server, signingService: signingService, taskManager: taskManager)
 
+// Register injection tools
+let injectionService = InjectionService.defaultService()
+InjectionTools.register(on: server, injectionService: injectionService)
+
 let transport = StdioTransport { message in
     server.handle(message)
 }

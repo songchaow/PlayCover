@@ -62,6 +62,10 @@ SigningTools.register(on: server, signingService: signingService, taskManager: t
 let injectionService = InjectionService.defaultService()
 InjectionTools.register(on: server, injectionService: injectionService)
 
+// Register keymap tools
+let keymapService = KeymapService.defaultService()
+KeymapTools.register(on: server, keymapService: keymapService)
+
 let transport = StdioTransport { message in
     server.handle(message)
 }

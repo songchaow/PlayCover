@@ -149,6 +149,10 @@
 		B0213F7EAED24359992D112E /* InjectionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EB4F7EC23A7401E8A33569A /* InjectionServiceTests.swift */; };
 		E1E6350355F743E89258FC12 /* InjectionToolsAndResourcesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 198729C057DE4909A0D6DD5E /* InjectionToolsAndResourcesTests.swift */; };
 
+		67949FD61D6346179D528198 /* KeymapService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E672E9943F514F5D9D257AE3 /* KeymapService.swift */; };
+		E46D6DBE0FDE41C4AB2A4F68 /* KeymapTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E92E759231F4F6F92512009 /* KeymapTools.swift */; };
+		22F127AF597D4176B44FA47C /* KeymapServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36B1A2FFC706411CA3D7C07B /* KeymapServiceTests.swift */; };
+
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -316,6 +320,10 @@
 		EAEE5B7B0579477680459AE9 /* InjectionTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = InjectionTools.swift; path = InjectionTools.swift; sourceTree = "<group>"; };
 		4EB4F7EC23A7401E8A33569A /* InjectionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = InjectionServiceTests.swift; path = InjectionServiceTests.swift; sourceTree = "<group>"; };
 		198729C057DE4909A0D6DD5E /* InjectionToolsAndResourcesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = InjectionToolsAndResourcesTests.swift; path = InjectionToolsAndResourcesTests.swift; sourceTree = "<group>"; };
+
+		E672E9943F514F5D9D257AE3 /* KeymapService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeymapService.swift; path = KeymapService.swift; sourceTree = "<group>"; };
+		2E92E759231F4F6F92512009 /* KeymapTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeymapTools.swift; path = KeymapTools.swift; sourceTree = "<group>"; };
+		36B1A2FFC706411CA3D7C07B /* KeymapServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeymapServiceTests.swift; path = KeymapServiceTests.swift; sourceTree = "<group>"; };
 
 /* End PBXFileReference section */
 
@@ -614,7 +622,8 @@
 				7ABE004742B3446A8C66A3A1 /* Info.plist */,
 				4EB4F7EC23A7401E8A33569A /* InjectionServiceTests.swift */,
 				198729C057DE4909A0D6DD5E /* InjectionToolsAndResourcesTests.swift */,
-			);
+							36B1A2FFC706411CA3D7C07B /* KeymapServiceTests.swift */,
+);
 			path = PlayCoverMCPTests;
 			sourceTree = "<group>";
 		};
@@ -686,7 +695,8 @@
 				96C1DB0F196348B6B4CFCBFF /* Injection */,
 				9AE56941E81945B4950110A7 /* Shell.swift */,
 				197B67E9F144465F9CAA7A79 /* AppService.swift */,
-			);
+							FA6B28F5E4FE40D38D394EDA /* Keymap */,
+);
 			path = HostServices;
 			sourceTree = "<group>";
 		};
@@ -733,7 +743,8 @@
 				A1B2C3D4E5F60004AAAABBBB /* SettingsTools.swift */,
 				6DED57D72DEA4C1BB00ED238 /* SigningTools.swift */,
 				EAEE5B7B0579477680459AE9 /* InjectionTools.swift */,
-			);
+							2E92E759231F4F6F92512009 /* KeymapTools.swift */,
+);
 			path = Host;
 			sourceTree = "<group>";
 		};
@@ -767,6 +778,15 @@
 				F65597FEBA8B42BBBEE8B2D5 /* InjectionService.swift */,
 			);
 			path = Injection;
+			sourceTree = "<group>";
+		};
+
+		FA6B28F5E4FE40D38D394EDA /* Keymap */ = {
+			isa = PBXGroup;
+			children = (
+				E672E9943F514F5D9D257AE3 /* KeymapService.swift */,
+			);
+			path = Keymap;
 			sourceTree = "<group>";
 		};
 
@@ -1135,6 +1155,8 @@
 				6DED57D72DEA4C1BB00ED239 /* SigningTools.swift in Sources */,
 				C49B5A6A0B23413C8A098984 /* InjectionService.swift in Sources */,
 				029ACE5E840B459DB50CAC86 /* InjectionTools.swift in Sources */,
+				67949FD61D6346179D528198 /* KeymapService.swift in Sources */,
+				E46D6DBE0FDE41C4AB2A4F68 /* KeymapTools.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1181,6 +1203,8 @@
 				029ACE5E840B459DB50CAC86 /* InjectionTools.swift in Sources */,
 				D8084B3D6F564EC7B878D628 /* SigningServiceTests.swift in Sources */,
 				B0213F7EAED24359992D112E /* InjectionServiceTests.swift in Sources */,
+				67949FD61D6346179D528198 /* KeymapService.swift in Sources */,
+				22F127AF597D4176B44FA47C /* KeymapServiceTests.swift in Sources */,
 				E1E6350355F743E89258FC12 /* InjectionToolsAndResourcesTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

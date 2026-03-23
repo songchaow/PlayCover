@@ -94,7 +94,7 @@
 - **测试命令**：`xcodebuild test-without-building -scheme PlayCoverMCP -destination 'platform=macOS'`
 - **测试结果**：184 tests passed, 1 skipped (smoke test)
 - **遗留问题**：无
-- **commit hash**：(待提交)
+- **commit hash**：`06539375`
 - **实际改动范围**：
   - 新增 `PlayCoverMCP/HostServices/Cleanup/CleanupService.swift` — 卸载与清理服务层
   - 新增 `PlayCoverMCP/Tools/Host/CleanupTools.swift` — 6 个 MCP 工具注册

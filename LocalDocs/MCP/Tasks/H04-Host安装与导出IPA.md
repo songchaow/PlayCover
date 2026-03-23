@@ -95,4 +95,4 @@
 - **测试命令**：`xcodebuild test -project PlayCover.xcodeproj -scheme PlayCoverMCP -destination 'platform=macOS'`
 - **测试结果**：全部通过 (TEST SUCCEEDED)
 - **遗留问题**：无
-- **commit hash**：(待提交)
+- **commit hash**：6db0038e

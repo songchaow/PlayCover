@@ -169,8 +169,9 @@ final class MCPSmokeTests: XCTestCase {
         let toolsResult = toolsResp["result"] as! [String: Any]
         let tools = toolsResult["tools"] as? [Any]
         XCTAssertNotNil(tools)
-        // Expected tools: list_installed_apps, get_app_info, install_ipa, export_patched_ipa
-        XCTAssertEqual(tools?.count, 4, "Expected 4 registered tools, got \(tools?.count ?? 0): \(tools ?? [])")
+        // Expected tools: list_installed_apps, get_app_info, install_ipa, export_patched_ipa,
+        //                launch_app, launch_app_with_lldb
+        XCTAssertEqual(tools?.count, 6, "Expected 6 registered tools, got \(tools?.count ?? 0): \(tools ?? [])")
 
         // Verify resources/list response
         let resResp = try JSONSerialization.jsonObject(with: lines[3].data(using: .utf8)!) as! [String: Any]

@@ -54,6 +54,10 @@ LaunchTools.register(on: server, launchService: launchService)
 let cleanupService = CleanupService.defaultService()
 CleanupTools.register(on: server, cleanupService: cleanupService)
 
+// Register signing tools
+let signingService = SigningService.defaultService()
+SigningTools.register(on: server, signingService: signingService, taskManager: taskManager)
+
 let transport = StdioTransport { message in
     server.handle(message)
 }

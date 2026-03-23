@@ -141,6 +141,9 @@
 		A1B2C3D4E5F60005AAAABBBB /* SettingsResources.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60006AAAABBBB /* SettingsResources.swift */; };
 		A1B2C3D4E5F60007AAAABBBB /* SettingsServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60008AAAABBBB /* SettingsServiceTests.swift */; };
 		A1B2C3D4E5F60009AAAABBBB /* SettingsToolsAndResourcesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000AAAAAABBBB /* SettingsToolsAndResourcesTests.swift */; };
+		D8084B3D6F564EC7B878D626 /* SigningService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8084B3D6F564EC7B878D625 /* SigningService.swift */; };
+		6DED57D72DEA4C1BB00ED239 /* SigningTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DED57D72DEA4C1BB00ED238 /* SigningTools.swift */; };
+		D8084B3D6F564EC7B878D628 /* SigningServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8084B3D6F564EC7B878D627 /* SigningServiceTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -301,6 +304,9 @@
 		A1B2C3D4E5F60006AAAABBBB /* SettingsResources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SettingsResources.swift; path = SettingsResources.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60008AAAABBBB /* SettingsServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SettingsServiceTests.swift; path = SettingsServiceTests.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000AAAAAABBBB /* SettingsToolsAndResourcesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SettingsToolsAndResourcesTests.swift; path = SettingsToolsAndResourcesTests.swift; sourceTree = "<group>"; };
+		D8084B3D6F564EC7B878D625 /* SigningService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SigningService.swift; path = SigningService.swift; sourceTree = "<group>"; };
+		6DED57D72DEA4C1BB00ED238 /* SigningTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SigningTools.swift; path = SigningTools.swift; sourceTree = "<group>"; };
+		D8084B3D6F564EC7B878D627 /* SigningServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SigningServiceTests.swift; path = SigningServiceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -594,6 +600,7 @@
 				C3034447D9214465AA562548 /* CleanupServiceTests.swift */,
 				A1B2C3D4E5F60008AAAABBBB /* SettingsServiceTests.swift */,
 				A1B2C3D4E5F6000AAAAAABBBB /* SettingsToolsAndResourcesTests.swift */,
+				D8084B3D6F564EC7B878D627 /* SigningServiceTests.swift */,
 				7ABE004742B3446A8C66A3A1 /* Info.plist */,
 			);
 			path = PlayCoverMCPTests;
@@ -663,6 +670,7 @@
 				25FC63B52EB64F3BAAA86E75 /* Cleanup */,
 				CEAB2BDBA75A41CD893BC233 /* Install */,
 				A1B2C3D4E5F60010AAAABBBB /* Settings */,
+				D8084B3D6F564EC7B878D624 /* Signing */,
 				9AE56941E81945B4950110A7 /* Shell.swift */,
 				197B67E9F144465F9CAA7A79 /* AppService.swift */,
 			);
@@ -710,6 +718,7 @@
 				ADDE5924D3464390AC21F996 /* LaunchTools.swift */,
 				80A2C04FE99540BABC8BBA13 /* CleanupTools.swift */,
 				A1B2C3D4E5F60004AAAABBBB /* SettingsTools.swift */,
+				6DED57D72DEA4C1BB00ED238 /* SigningTools.swift */,
 			);
 			path = Host;
 			sourceTree = "<group>";
@@ -722,6 +731,14 @@
 		path = Cleanup;
 		sourceTree = "<group>";
 	};
+		D8084B3D6F564EC7B878D624 /* Signing */ = {
+			isa = PBXGroup;
+			children = (
+				D8084B3D6F564EC7B878D625 /* SigningService.swift */,
+			);
+			path = Signing;
+			sourceTree = "<group>";
+		};
 		A1B2C3D4E5F60010AAAABBBB /* Settings */ = {
 			isa = PBXGroup;
 			children = (
@@ -1091,6 +1108,8 @@
 				A1B2C3D4E5F60001AAAABBBB /* SettingsService.swift in Sources */,
 				A1B2C3D4E5F60003AAAABBBB /* SettingsTools.swift in Sources */,
 				A1B2C3D4E5F60005AAAABBBB /* SettingsResources.swift in Sources */,
+				D8084B3D6F564EC7B878D626 /* SigningService.swift in Sources */,
+				6DED57D72DEA4C1BB00ED239 /* SigningTools.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1131,6 +1150,9 @@
 				A1B2C3D4E5F60001AAAABBBB /* SettingsService.swift in Sources */,
 				A1B2C3D4E5F60003AAAABBBB /* SettingsTools.swift in Sources */,
 				A1B2C3D4E5F60005AAAABBBB /* SettingsResources.swift in Sources */,
+				D8084B3D6F564EC7B878D626 /* SigningService.swift in Sources */,
+				6DED57D72DEA4C1BB00ED239 /* SigningTools.swift in Sources */,
+				D8084B3D6F564EC7B878D628 /* SigningServiceTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

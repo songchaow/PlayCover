@@ -708,3 +708,120 @@ public struct PaginatedParams: Decodable, Equatable, Sendable {
         self.cursor = cursor
     }
 }
+
+// MARK: - Tool Call Result
+
+/// Content types that can appear in a tool call result.
+public enum ToolContent: Codable, Equatable, Sendable {
+    case text(content: String)
+    case image(data: String, mimeType: String)
+    case resource(resource: EmbeddedResource)
+
+    enum CodingKeys: String, CodingKey { case type, text, data, mimeType, resource }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .text(let content):
+            try c.encode("text", forKey: .type)
+            try c.encode(content, forKey: .text)
+        case .image(let data, let mimeType):
+            try c.encode("image", forKey: .type)
+            try c.encode(data, forKey: .data)
+            try c.encode(mimeType, forKey: .mimeType)
+        case .resource(let resource):
+            try c.encode("resource", forKey: .type)
+            try c.encode(resource, forKey: .resource)
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try c.decode(String.self, forKey: .type)
+        switch type {
+        case "text":
+            let content = try c.decode(String.self, forKey: .text)
+            self = .text(content: content)
+        case "image":
+            let data = try c.decode(String.self, forKey: .data)
+            let mimeType = try c.decode(String.self, forKey: .mimeType)
+            self = .image(data: data, mimeType: mimeType)
+        case "resource":
+            let resource = try c.decode(EmbeddedResource.self, forKey: .resource)
+            self = .resource(resource: resource)
+        default:
+            let context = DecodingError.Context(
+                codingPath: c.codingPath,
+                debugDescription: "Unknown ToolContent type: \(type)"
+            )
+            throw DecodingError.dataCorrupted(context)
+        }
+    }
+}
+
+/// An embedded resource reference within tool content.
+public struct EmbeddedResource: Codable, Equatable, Sendable {
+    public let uri: String
+    public let name: String?
+    public let mimeType: String?
+    public let text: String?
+
+    public init(uri: String, name: String? = nil, mimeType: String? = nil, text: String? = nil) {
+        self.uri = uri
+        self.name = name
+        self.mimeType = mimeType
+        self.text = text
+    }
+}
+
+/// Result of a `tools/call` invocation.
+public struct CallToolResult: Codable, Equatable, Sendable {
+    public let content: [ToolContent]
+    public let isError: Bool?
+
+    public init(content: [ToolContent], isError: Bool? = nil) {
+        self.content = content
+        self.isError = isError
+    }
+
+    enum CodingKeys: String, CodingKey { case content, isError = "isError" }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(content, forKey: .content)
+        try c.encodeIfPresent(isError, forKey: .isError)
+    }
+}
+
+// MARK: - Resource Read Result
+
+/// A single resource content item returned by `resources/read`.
+public struct ResourceContent: Codable, Equatable, Sendable {
+    public let uri: String
+    public let mimeType: String?
+    public let text: String?
+
+    public init(uri: String, mimeType: String? = nil, text: String? = nil) {
+        self.uri = uri
+        self.mimeType = mimeType
+        self.text = text
+    }
+
+    enum CodingKeys: String, CodingKey { case uri, mimeType, text }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(uri, forKey: .uri)
+        try c.encodeIfPresent(mimeType, forKey: .mimeType)
+        try c.encodeIfPresent(text, forKey: .text)
+    }
+}
+
+/// Result of a `resources/read` invocation.
+public struct ReadResourceResult: Codable, Equatable, Sendable {
+    public let contents: [ResourceContent]
+
+    public init(contents: [ResourceContent]) {
+        self.contents = contents
+    }
+}

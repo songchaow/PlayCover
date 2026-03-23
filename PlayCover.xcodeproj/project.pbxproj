@@ -115,6 +115,14 @@
 		1B6137F231C34AD48A1B78F3 /* TaskManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1069EF1327E48EC830FF01C /* TaskManagerTests.swift */; };
 		653BA93E473845B0BB7630EA /* MCPLoggerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25132C7924DC4C05AB6A2B97 /* MCPLoggerTests.swift */; };
 		8826CC0093D44A6A9FF86DAF /* MCPErrorExtensionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E04CB4D59F564556951228D8 /* MCPErrorExtensionsTests.swift */; };
+		47F28A57834D40F8B75CB28B /* AppService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 197B67E9F144465F9CAA7A79 /* AppService.swift */; };
+		6A2BBA3092B8498FA8A998C2 /* AppService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 197B67E9F144465F9CAA7A79 /* AppService.swift */; };
+		E63DA694C7ED40BCB6E350BE /* AppTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9582C48DB29E44938338E6C4 /* AppTools.swift */; };
+		33149AAB374B44E8AAF04F45 /* AppTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9582C48DB29E44938338E6C4 /* AppTools.swift */; };
+		99C5D776BEFF46FAAF37124A /* AppResources.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5A0A2C9916847B5B22FE46A /* AppResources.swift */; };
+		DCDA6D1BC3FB4992A9640CEB /* AppResources.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5A0A2C9916847B5B22FE46A /* AppResources.swift */; };
+		69B103E7292F4F82A79AE760 /* AppServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A005C31278C94FA3AF2F277A /* AppServiceTests.swift */; };
+		47A8288D276C4E65A6736A7C /* AppToolsAndResourcesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0814B3729EC24510859A18E9 /* AppToolsAndResourcesTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -255,6 +263,11 @@
 		B1069EF1327E48EC830FF01C /* TaskManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskManagerTests.swift; sourceTree = "<group>"; };
 		25132C7924DC4C05AB6A2B97 /* MCPLoggerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPLoggerTests.swift; sourceTree = "<group>"; };
 		E04CB4D59F564556951228D8 /* MCPErrorExtensionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPErrorExtensionsTests.swift; sourceTree = "<group>"; };
+		197B67E9F144465F9CAA7A79 /* AppService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppService.swift; path = AppService.swift; sourceTree = "<group>"; };
+		9582C48DB29E44938338E6C4 /* AppTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppTools.swift; path = AppTools.swift; sourceTree = "<group>"; };
+		F5A0A2C9916847B5B22FE46A /* AppResources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppResources.swift; path = AppResources.swift; sourceTree = "<group>"; };
+		A005C31278C94FA3AF2F277A /* AppServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppServiceTests.swift; path = AppServiceTests.swift; sourceTree = "<group>"; };
+		0814B3729EC24510859A18E9 /* AppToolsAndResourcesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppToolsAndResourcesTests.swift; path = AppToolsAndResourcesTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -511,25 +524,10 @@
 			path = Rules;
 			sourceTree = "<group>";
 		};
-		6D5A783BCD8844EF91870961 /* HostServices */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = HostServices;
-			sourceTree = "<group>";
-		};
-		E72C14DFDBA1436DB1BCDFCB /* Session */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = Session;
-			sourceTree = "<group>";
-		};
 		1BC53A43D5794DA3AE83DC73 /* PlayCoverMCP */ = {
 			isa = PBXGroup;
 			children = (
-				6D5A783BCD8844EF91870961 /* HostServices */,
-				E72C14DFDBA1436DB1BCDFCB /* Session */,
+				BFD73CC363EA45C09A0972AF /* HostServices */,
 				B2DF4C9855164E3FB4E71130 /* Protocol */,
 				3874B7FA90B5433F896B4A15 /* Transport */,
 				808D969E625048FA8CF52E42 /* Registry */,
@@ -537,6 +535,8 @@
 				6491B076F7354BFA924F65BF /* Tasks */,
 				98AE07B82E5246DA84FD8509 /* Logging */,
 				F1342BE23CF84473936C7CBA /* Common */,
+				3AD721A147D7400EAD4E2FA2 /* Tools */,
+				40738BD4E1A9446E8BB6B77A /* Resources */,
 				A5D9C44AF910418082DE86B6 /* main.swift */,
 				7ECF709C0250403AB44D2771 /* Info.plist */,
 			);
@@ -554,6 +554,8 @@
 				B1069EF1327E48EC830FF01C /* TaskManagerTests.swift */,
 				25132C7924DC4C05AB6A2B97 /* MCPLoggerTests.swift */,
 				E04CB4D59F564556951228D8 /* MCPErrorExtensionsTests.swift */,
+				A005C31278C94FA3AF2F277A /* AppServiceTests.swift */,
+				0814B3729EC24510859A18E9 /* AppToolsAndResourcesTests.swift */,
 				7ABE004742B3446A8C66A3A1 /* Info.plist */,
 			);
 			path = PlayCoverMCPTests;
@@ -614,6 +616,30 @@
 				0249CA5607CA47D8A7D02053 /* MCPErrorExtensions.swift */,
 			);
 			path = Common;
+			sourceTree = "<group>";
+		};
+		BFD73CC363EA45C09A0972AF /* HostServices */ = {
+			isa = PBXGroup;
+			children = (
+				197B67E9F144465F9CAA7A79 /* AppService.swift */,
+			);
+			path = HostServices;
+			sourceTree = "<group>";
+		};
+		3AD721A147D7400EAD4E2FA2 /* Tools */ = {
+			isa = PBXGroup;
+			children = (
+				9582C48DB29E44938338E6C4 /* AppTools.swift */,
+			);
+			path = Tools;
+			sourceTree = "<group>";
+		};
+		40738BD4E1A9446E8BB6B77A /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				F5A0A2C9916847B5B22FE46A /* AppResources.swift */,
+			);
+			path = Resources;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -964,6 +990,9 @@
 				25134B7B8F7E418E868E6720 /* TaskManager.swift in Sources */,
 				FC93105DF5AD483BBE0C7711 /* MCPLogger.swift in Sources */,
 				429C6150E22046BEBB31221A /* MCPErrorExtensions.swift in Sources */,
+				47F28A57834D40F8B75CB28B /* AppService.swift in Sources */,
+				E63DA694C7ED40BCB6E350BE /* AppTools.swift in Sources */,
+				99C5D776BEFF46FAAF37124A /* AppResources.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -987,6 +1016,11 @@
 				1B6137F231C34AD48A1B78F3 /* TaskManagerTests.swift in Sources */,
 				653BA93E473845B0BB7630EA /* MCPLoggerTests.swift in Sources */,
 				8826CC0093D44A6A9FF86DAF /* MCPErrorExtensionsTests.swift in Sources */,
+				6A2BBA3092B8498FA8A998C2 /* AppService.swift in Sources */,
+				33149AAB374B44E8AAF04F45 /* AppTools.swift in Sources */,
+				DCDA6D1BC3FB4992A9640CEB /* AppResources.swift in Sources */,
+				69B103E7292F4F82A79AE760 /* AppServiceTests.swift in Sources */,
+				47A8288D276C4E65A6736A7C /* AppToolsAndResourcesTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

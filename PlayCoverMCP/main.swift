@@ -28,6 +28,11 @@ let server = MCPServer(
     taskManager: taskManager
 )
 
+// Register app tools and resources
+let appService = AppService.defaultService()
+AppTools.register(on: server, appService: appService)
+AppResources.register(on: server, appService: appService)
+
 let transport = StdioTransport { message in
     server.handle(message)
 }

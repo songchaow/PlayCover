@@ -12,6 +12,12 @@ public final class MCPServer {
     /// A request handler receives optional params and returns a result.
     public typealias RequestHandler = @Sendable (AnyCodable?) throws -> AnyCodable
 
+    /// A tool handler receives the tool's input arguments and returns a CallToolResult.
+    public typealias ToolHandler = @Sendable (AnyCodable?) throws -> CallToolResult
+
+    /// A resource handler receives the resource URI and arguments, returns a ReadResourceResult.
+    public typealias ResourceHandler = @Sendable (String, AnyCodable?) throws -> ReadResourceResult
+
     // MARK: - Public state
 
     public let serverInfo: Implementation
@@ -31,6 +37,8 @@ public final class MCPServer {
     // MARK: - Private
 
     private var methodHandlers: [String: RequestHandler] = [:]
+    private var toolHandlers: [String: ToolHandler] = [:]
+    private var resourceHandlers: [String: ResourceHandler] = [:]
     private let lock = NSLock()
 
     // MARK: - Init
@@ -62,6 +70,25 @@ public final class MCPServer {
         lock.lock()
         defer { lock.unlock() }
         methodHandlers[method] = handler
+    }
+
+    /// Register a tool handler that will be dispatched via `tools/call`.
+    ///
+    /// The `name` parameter should match the `Tool.name` registered in `toolRegistry`.
+    public func registerTool(name: String, handler: @escaping ToolHandler) {
+        lock.lock()
+        defer { lock.unlock() }
+        toolHandlers[name] = handler
+    }
+
+    /// Register a resource handler that will be dispatched via `resources/read`.
+    ///
+    /// The `uriTemplate` parameter is used to match resource URIs.
+    /// Use exact URIs for fixed resources or prefix matching for template resources.
+    public func registerResource(uriTemplate: String, handler: @escaping ResourceHandler) {
+        lock.lock()
+        defer { lock.unlock() }
+        resourceHandlers[uriTemplate] = handler
     }
 
     // MARK: - Message dispatch
@@ -144,6 +171,66 @@ public final class MCPServer {
                 throw MCPError.internalError("Server deallocated")
             }
             return try AnyCodable(ListResourcesResult(resources: self.resourceRegistry.listResources()))
+        }
+
+        // tools/call — dispatches to registered tool handlers by name
+        register(method: "tools/call") { [weak self] params in
+            guard let self = self else {
+                throw MCPError.internalError("Server deallocated")
+            }
+            guard let params = params,
+                  let name = params.dictionary?["name"] as? String else {
+                throw MCPError.invalidParams("tools/call requires params with 'name' field")
+            }
+            let arguments: AnyCodable? = params.dictionary?["arguments"].map { AnyCodable($0) }
+
+            let handler = self.lock.withLock { self.toolHandlers[name] }
+            guard let handler = handler else {
+                throw PlayCoverMCPError(
+                    code: JSONRPCError.invalidParams,
+                    message: "Unknown tool: \(name)"
+                )
+            }
+
+            let result = try handler(arguments)
+            return try AnyCodable(result)
+        }
+
+        // resources/read — dispatches to registered resource handlers by URI
+        register(method: "resources/read") { [weak self] params in
+            guard let self = self else {
+                throw MCPError.internalError("Server deallocated")
+            }
+            guard let params = params,
+                  let uri = params.dictionary?["uri"] as? String else {
+                throw MCPError.invalidParams("resources/read requires params with 'uri' field")
+            }
+            let arguments: AnyCodable? = params.dictionary?["arguments"].map { AnyCodable($0) }
+
+            // Try exact match first, then prefix match for template resources
+            let handler: ResourceHandler? = self.lock.withLock {
+                if let exact = self.resourceHandlers[uri] {
+                    return exact
+                }
+                // Find longest matching prefix
+                let sorted = self.resourceHandlers.keys.sorted { $0.count > $1.count }
+                for template in sorted {
+                    if uri.hasPrefix(template) {
+                        return self.resourceHandlers[template]
+                    }
+                }
+                return nil
+            }
+
+            guard let handler = handler else {
+                throw PlayCoverMCPError(
+                    code: JSONRPCError.invalidParams,
+                    message: "Unknown resource URI: \(uri)"
+                )
+            }
+
+            let result = try handler(uri, arguments)
+            return try AnyCodable(result)
         }
     }
 

@@ -107,6 +107,20 @@ public struct PlayCoverMCPError: Error, LocalizedError, Equatable, Sendable {
             self.cause = nil
             return
         }
+        if let settingsErr = error as? SettingsError {
+            switch settingsErr {
+            case .appNotFound:
+                self.code = PlayCoverErrorCode.appNotFound.rawValue
+            case .invalidField, .settingsNotFound:
+                self.code = PlayCoverErrorCode.settingsError.rawValue
+            case .encodingFailed, .decodingFailed:
+                self.code = JSONRPCError.internalError
+            }
+            self.message = message ?? settingsErr.localizedDescription
+            self.data = nil
+            self.cause = nil
+            return
+        }
         self.code = code ?? JSONRPCError.internalError
         self.message = message ?? error.localizedDescription
         self.data = nil

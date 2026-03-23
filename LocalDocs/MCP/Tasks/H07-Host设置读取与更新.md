@@ -86,10 +86,20 @@
 
 ### 执行记录
 
-- **开始时间**：
-- **完成时间**：
-- **执行人 / agent**：
-- **测试命令**：
-- **测试结果**：
-- **遗留问题**：
-- **commit hash**：
+- **开始时间**：2026-03-23
+- **完成时间**：2026-03-23
+- **执行人 / agent**：Claude Code (GLM-5.0-Turbo)
+- **测试命令**：`xcodebuild -project PlayCover.xcodeproj -scheme PlayCoverMCP test`
+- **测试结果**：217 tests passed, 0 failures, 1 skipped
+- **遗留问题**：无
+- **commit hash**：ea482854
+- **实际改动范围**：
+  - 新增 `PlayCoverMCP/HostServices/Settings/SettingsService.swift` — settings 读写/patch/reset 服务，使用 PropertyListSerialization 代替 AppSettingsData 以避免跨 target 依赖
+  - 新增 `PlayCoverMCP/Tools/Host/SettingsTools.swift` — 注册 get_app_settings, update_app_settings, reset_app_settings 三个 MCP 工具
+  - 新增 `PlayCoverMCP/Resources/SettingsResources.swift` — 注册 settings resource 元数据
+  - 修改 `PlayCoverMCP/Resources/AppResources.swift` — 添加 settingsService 参数，统一分发 settings resource 请求
+  - 修改 `PlayCoverMCP/main.swift` — 注册 SettingsService、SettingsTools、SettingsResources
+  - 修改 `PlayCoverMCP/Common/MCPErrorExtensions.swift` — 添加 SettingsError 到 PlayCoverMCPError 的错误码映射
+  - 新增 `PlayCoverMCPTests/SettingsServiceTests.swift` — 21 个服务层单元测试
+  - 新增 `PlayCoverMCPTests/SettingsToolsAndResourcesTests.swift` — 12 个 MCP 集成测试
+  - 修改 `PlayCoverMCPTests/MCPSmokeTests.swift` — 更新工具计数 (12→15) 和资源计数 (0→3)

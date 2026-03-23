@@ -136,6 +136,11 @@
 		72072B62D7164F96A5B5306B /* CleanupService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3062E5E71B0342F98837ED33 /* CleanupService.swift */; };
 		EF037CF00E274ED1868739CA /* CleanupTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80A2C04FE99540BABC8BBA13 /* CleanupTools.swift */; };
 		5B39A2DE923A4916B1673805 /* CleanupServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3034447D9214465AA562548 /* CleanupServiceTests.swift */; };
+		A1B2C3D4E5F60001AAAABBBB /* SettingsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60002AAAABBBB /* SettingsService.swift */; };
+		A1B2C3D4E5F60003AAAABBBB /* SettingsTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60004AAAABBBB /* SettingsTools.swift */; };
+		A1B2C3D4E5F60005AAAABBBB /* SettingsResources.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60006AAAABBBB /* SettingsResources.swift */; };
+		A1B2C3D4E5F60007AAAABBBB /* SettingsServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60008AAAABBBB /* SettingsServiceTests.swift */; };
+		A1B2C3D4E5F60009AAAABBBB /* SettingsToolsAndResourcesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000AAAAAABBBB /* SettingsToolsAndResourcesTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -291,6 +296,11 @@
 		3062E5E71B0342F98837ED33 /* CleanupService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CleanupService.swift; path = CleanupService.swift; sourceTree = "<group>"; };
 		80A2C04FE99540BABC8BBA13 /* CleanupTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CleanupTools.swift; path = CleanupTools.swift; sourceTree = "<group>"; };
 		C3034447D9214465AA562548 /* CleanupServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CleanupServiceTests.swift; path = CleanupServiceTests.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60002AAAABBBB /* SettingsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SettingsService.swift; path = SettingsService.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60004AAAABBBB /* SettingsTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SettingsTools.swift; path = SettingsTools.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60006AAAABBBB /* SettingsResources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SettingsResources.swift; path = SettingsResources.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60008AAAABBBB /* SettingsServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SettingsServiceTests.swift; path = SettingsServiceTests.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000AAAAAABBBB /* SettingsToolsAndResourcesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SettingsToolsAndResourcesTests.swift; path = SettingsToolsAndResourcesTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -582,6 +592,8 @@
 				562CF7645F174B1A9498A196 /* InstallerServiceTests.swift */,
 			73B4F49FEEAB4779AFDC8836 /* LaunchServiceTests.swift */,
 				C3034447D9214465AA562548 /* CleanupServiceTests.swift */,
+				A1B2C3D4E5F60008AAAABBBB /* SettingsServiceTests.swift */,
+				A1B2C3D4E5F6000AAAAAABBBB /* SettingsToolsAndResourcesTests.swift */,
 				7ABE004742B3446A8C66A3A1 /* Info.plist */,
 			);
 			path = PlayCoverMCPTests;
@@ -648,8 +660,9 @@
 			isa = PBXGroup;
 			children = (
 				8FDB3D47ACD54928980C9209 /* Launch */,
-			25FC63B52EB64F3BAAA86E75 /* Cleanup */,
+				25FC63B52EB64F3BAAA86E75 /* Cleanup */,
 				CEAB2BDBA75A41CD893BC233 /* Install */,
+				A1B2C3D4E5F60010AAAABBBB /* Settings */,
 				9AE56941E81945B4950110A7 /* Shell.swift */,
 				197B67E9F144465F9CAA7A79 /* AppService.swift */,
 			);
@@ -670,6 +683,7 @@
 			isa = PBXGroup;
 			children = (
 				F5A0A2C9916847B5B22FE46A /* AppResources.swift */,
+				A1B2C3D4E5F60006AAAABBBB /* SettingsResources.swift */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -695,6 +709,7 @@
 			children = (
 				ADDE5924D3464390AC21F996 /* LaunchTools.swift */,
 				80A2C04FE99540BABC8BBA13 /* CleanupTools.swift */,
+				A1B2C3D4E5F60004AAAABBBB /* SettingsTools.swift */,
 			);
 			path = Host;
 			sourceTree = "<group>";
@@ -707,6 +722,14 @@
 		path = Cleanup;
 		sourceTree = "<group>";
 	};
+		A1B2C3D4E5F60010AAAABBBB /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D4E5F60002AAAABBBB /* SettingsService.swift */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -1065,6 +1088,9 @@
 			05F0F71A6E044B9BB94A72D8 /* LaunchTools.swift in Sources */,
 				72072B62D7164F96A5B5306B /* CleanupService.swift in Sources */,
 				EF037CF00E274ED1868739CA /* CleanupTools.swift in Sources */,
+				A1B2C3D4E5F60001AAAABBBB /* SettingsService.swift in Sources */,
+				A1B2C3D4E5F60003AAAABBBB /* SettingsTools.swift in Sources */,
+				A1B2C3D4E5F60005AAAABBBB /* SettingsResources.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1100,6 +1126,11 @@
 				72072B62D7164F96A5B5306B /* CleanupService.swift in Sources */,
 				C5254E48764E444C9287B9FF /* LaunchServiceTests.swift in Sources */,
 				5B39A2DE923A4916B1673805 /* CleanupServiceTests.swift in Sources */,
+				A1B2C3D4E5F60007AAAABBBB /* SettingsServiceTests.swift in Sources */,
+				A1B2C3D4E5F60009AAAABBBB /* SettingsToolsAndResourcesTests.swift in Sources */,
+				A1B2C3D4E5F60001AAAABBBB /* SettingsService.swift in Sources */,
+				A1B2C3D4E5F60003AAAABBBB /* SettingsTools.swift in Sources */,
+				A1B2C3D4E5F60005AAAABBBB /* SettingsResources.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

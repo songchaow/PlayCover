@@ -31,7 +31,16 @@ let server = MCPServer(
 // Register app tools and resources
 let appService = AppService.defaultService()
 AppTools.register(on: server, appService: appService)
-AppResources.register(on: server, appService: appService)
+
+// Register settings service (needed by AppResources for settings resource routing)
+let settingsService = SettingsService.defaultService()
+
+// Register app resources (including settings resource via settingsService)
+AppResources.register(on: server, appService: appService, settingsService: settingsService)
+
+// Register settings resource metadata and tools
+SettingsResources.register(on: server)
+SettingsTools.register(on: server, settingsService: settingsService)
 
 // Register installer tools
 let installerService = InstallerService.defaultService()

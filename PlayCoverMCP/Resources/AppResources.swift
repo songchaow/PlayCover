@@ -11,9 +11,16 @@ import Foundation
 public enum AppResources {
 
     /// Register both app resource metadata and their read handlers on the server.
+    ///
+    /// - Parameters:
+    ///   - server: The MCP server to register on.
+    ///   - appService: Service for app enumeration.
+    ///   - settingsService: Optional service for settings resources. When provided,
+    ///     URIs ending in `/settings` are dispatched to the settings service.
     public static func register(
         on server: MCPServer,
-        appService: AppService
+        appService: AppService,
+        settingsService: SettingsService? = nil
     ) {
         // Collection resource
         server.resourceRegistry.register(Resource(
@@ -46,16 +53,46 @@ public enum AppResources {
             )
         }
 
-        // Resource handler for playcover://apps/{bundleId} (prefix match)
+        // Resource handler for playcover://apps/{bundleId} and playcover://apps/{bundleId}/settings
         server.registerResource(uriTemplate: "playcover://apps/") { uri, _ in
-            let bundleId = String(uri.dropFirst("playcover://apps/".count))
-            guard !bundleId.isEmpty else {
+            let suffix = String(uri.dropFirst("playcover://apps/".count))
+            guard !suffix.isEmpty else {
                 throw PlayCoverMCPError(
                     code: JSONRPCError.invalidParams,
                     message: "Bundle ID must not be empty"
                 )
             }
 
+            // Route /settings suffix to the settings service
+            if suffix.hasSuffix("/settings") {
+                guard let settingsService = settingsService else {
+                    throw PlayCoverMCPError(
+                        code: JSONRPCError.internalError,
+                        message: "Settings service not available"
+                    )
+                }
+                let bundleId = String(suffix.dropLast("/settings".count))
+                guard !bundleId.isEmpty else {
+                    throw PlayCoverMCPError(
+                        code: JSONRPCError.invalidParams,
+                        message: "Bundle ID must not be empty"
+                    )
+                }
+
+                let settings = try settingsService.getSettings(bundleId: bundleId)
+                let data = try JSONSerialization.data(
+                    withJSONObject: settings,
+                    options: [.prettyPrinted, .sortedKeys]
+                )
+                let text = String(data: data, encoding: .utf8) ?? "{}"
+
+                return ReadResourceResult(
+                    contents: [.init(uri: uri, mimeType: "application/json", text: text)]
+                )
+            }
+
+            // Default: app info
+            let bundleId = suffix
             let app = try appService.getApp(bundleId: bundleId)
             let dict = app.toMCPDictionary()
             let data = try JSONSerialization.data(

@@ -171,14 +171,16 @@ final class MCPSmokeTests: XCTestCase {
         XCTAssertNotNil(tools)
         // Expected tools: list_installed_apps, get_app_info, install_ipa, export_patched_ipa,
         //                launch_app, launch_app_with_lldb, uninstall_app, clear_app_data,
-        //                clear_playchain_data, clear_app_settings, clear_app_entitlements, clear_app_keymaps
-        XCTAssertEqual(tools?.count, 12, "Expected 12 registered tools, got \(tools?.count ?? 0): \(tools ?? [])")
+        //                clear_playchain_data, clear_app_settings, clear_app_entitlements, clear_app_keymaps,
+        //                get_app_settings, update_app_settings, reset_app_settings
+        XCTAssertEqual(tools?.count, 15, "Expected 15 registered tools, got \(tools?.count ?? 0): \(tools ?? [])")
 
         // Verify resources/list response
         let resResp = try JSONSerialization.jsonObject(with: lines[3].data(using: .utf8)!) as! [String: Any]
         XCTAssertEqual(resResp["id"] as? String, "smoke-4")
         let resResult = resResp["result"] as! [String: Any]
-        XCTAssertEqual((resResult["resources"] as? [Any])?.count, 0)
+        // Expected resources: playcover://apps, playcover://apps/{bundleId}, playcover://apps/{bundleId}/settings
+        XCTAssertEqual((resResult["resources"] as? [Any])?.count, 3)
 
         // Verify unknown method error
         let errResp = try JSONSerialization.jsonObject(with: lines[4].data(using: .utf8)!) as! [String: Any]

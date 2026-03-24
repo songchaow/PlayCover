@@ -133,8 +133,10 @@ plutil -lint PlayCover.xcodeproj/project.pbxproj
 git diff PlayCover.xcodeproj/project.pbxproj | head -100
 
 # 4. 编译验证
-xcodebuild -scheme PlayCover -configuration Release build 2>&1 | tail -10
-xcodebuild -scheme PlayCoverMCP -configuration Release build 2>&1 | tail -10
+xcodebuild -scheme PlayCover -configuration Release build \
+  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES FASTLANE=1 2>&1 | tail -10
+xcodebuild -scheme PlayCoverMCP -configuration Release build \
+  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES FASTLANE=1 2>&1 | tail -10
 ```
 
 ### Step 4：处理编译错误
@@ -162,9 +164,9 @@ xcodebuild -scheme PlayCoverMCP -configuration Release build 2>&1 | tail -10
 
 - [ ] MCP 源文件（除 `main.swift` 和 `StdioTransport.swift`）已添加到 PlayCover.app target
 - [ ] `plutil -lint` 通过
-- [ ] `xcodebuild -scheme PlayCover build` 通过（GUI target 包含 MCP 代码）
-- [ ] `xcodebuild -scheme PlayCoverMCP build` 通过（CLI target 不受影响）
-- [ ] `xcodebuild test -scheme PlayCoverMCP` 全量测试通过
+- [ ] `xcodebuild -scheme PlayCover build FASTLANE=1 CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES` 通过（GUI target 包含 MCP 代码）
+- [ ] `xcodebuild -scheme PlayCoverMCP build FASTLANE=1 CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES` 通过（CLI target 不受影响）
+- [ ] `xcodebuild test -scheme PlayCoverMCP FASTLANE=1 CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES` 全量测试通过
 - [ ] 集成脚本 `Scripts/add_mcp_to_gui.py` 可重复运行或记录了修改方式
 
 ## 测试计划

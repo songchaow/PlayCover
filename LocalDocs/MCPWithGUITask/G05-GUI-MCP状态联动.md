@@ -183,11 +183,14 @@ if MCPManager.shared.isEmbeddedMode {
 
 ```bash
 # 编译验证
-xcodebuild -scheme PlayCover -configuration Release build 2>&1 | tail -10
-xcodebuild -scheme PlayCoverMCP -configuration Release build 2>&1 | tail -10
+xcodebuild -scheme PlayCover -configuration Release build \
+  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES FASTLANE=1 2>&1 | tail -10
+xcodebuild -scheme PlayCoverMCP -configuration Release build \
+  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES FASTLANE=1 2>&1 | tail -10
 
 # MCP 测试
-xcodebuild test -scheme PlayCoverMCP -destination 'platform=macOS,arch=arm64' 2>&1 | tail -20
+xcodebuild test -scheme PlayCoverMCP -destination 'platform=macOS,arch=arm64' \
+  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES FASTLANE=1 2>&1 | tail -20
 ```
 
 ## 验收标准
@@ -198,8 +201,8 @@ xcodebuild test -scheme PlayCoverMCP -destination 'platform=macOS,arch=arm64' 2>
 - [ ] 通过 MCP 安装应用后，GUI 列表自动刷新（功能测试）
 - [ ] 通过 MCP 卸载应用后，GUI 列表自动更新（功能测试）
 - [ ] CLI 模式下 MCP 服务不受影响（通知发送无副作用）
-- [ ] `xcodebuild -scheme PlayCover build` 通过
-- [ ] `xcodebuild -scheme PlayCoverMCP build` 通过
+- [ ] `xcodebuild -scheme PlayCover build FASTLANE=1 CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES` 通过
+- [ ] `xcodebuild -scheme PlayCoverMCP build FASTLANE=1 CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES` 通过
 - [ ] MCP 全量测试通过
 
 ## 测试计划

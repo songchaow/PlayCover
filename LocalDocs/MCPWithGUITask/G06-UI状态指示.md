@@ -105,7 +105,7 @@ transport.onClientCountChanged = { [weak self] count in
 - [ ] GUI 中可以看到 MCP Server 运行状态
 - [ ] 状态指示与实际状态一致
 - [ ] Agent 连接/断开时客户端数字实时更新
-- [ ] `xcodebuild -scheme PlayCover build` 通过
+- [ ] `xcodebuild -scheme PlayCover build FASTLANE=1 CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES` 通过
 - [ ] MCP 全量测试通过
 
 ## 测试计划

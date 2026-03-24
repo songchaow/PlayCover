@@ -236,10 +236,12 @@ MCP 的 `MCPLogger` 默认向 stderr 写日志。在 GUI 进程中：
 
 ```bash
 # GUI target
-xcodebuild -scheme PlayCover -configuration Release build 2>&1 | tail -10
+xcodebuild -scheme PlayCover -configuration Release build \
+  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES FASTLANE=1 2>&1 | tail -10
 
 # CLI target（不应受影响）
-xcodebuild -scheme PlayCoverMCP -configuration Release build 2>&1 | tail -10
+xcodebuild -scheme PlayCoverMCP -configuration Release build \
+  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES FASTLANE=1 2>&1 | tail -10
 ```
 
 ### Step 6：功能验证
@@ -263,8 +265,8 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 - [ ] 启动 PlayCover.app 后端口 19820 在监听
 - [ ] 通过 TCP 发送 `initialize` 请求能收到正确响应
 - [ ] 退出 PlayCover.app 后端口释放
-- [ ] `xcodebuild -scheme PlayCover build` 通过
-- [ ] `xcodebuild -scheme PlayCoverMCP build` 通过
+- [ ] `xcodebuild -scheme PlayCover build FASTLANE=1 CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES` 通过
+- [ ] `xcodebuild -scheme PlayCoverMCP build FASTLANE=1 CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES` 通过
 - [ ] MCP 全量测试通过
 
 ## 测试计划

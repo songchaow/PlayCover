@@ -67,8 +67,8 @@
 
 至少完成：
 
-- `xcodebuild -project PlayCover.xcodeproj -scheme PlayCoverMCP -configuration Release build`
-- `xcodebuild test -project PlayCover.xcodeproj -scheme PlayCoverMCP -destination 'platform=macOS'`
+- `xcodebuild -project PlayCover.xcodeproj -scheme PlayCoverMCP -configuration Release build CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES FASTLANE=1`
+- `xcodebuild test -project PlayCover.xcodeproj -scheme PlayCoverMCP -destination 'platform=macOS' CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES FASTLANE=1`
 - 最小 smoke：启动 `PlayCoverMCP` 可执行文件并确认进程可正常启动 / 退出
 
 ### 验收标准

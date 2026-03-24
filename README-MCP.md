@@ -93,6 +93,7 @@ build/Build/Products/Release/PlayCover.app
 xcodebuild -scheme PlayCoverMCP \
   -configuration Release \
   -derivedDataPath build \
+  FASTLANE=1 CODE_SIGNING_ALLOWED=NO \
   build
 ```
 
@@ -415,12 +416,14 @@ Session 侧操作依赖 Host ↔ Runtime 的双通道 TCP bridge：
 # 构建测试
 xcodebuild build-for-testing \
   -scheme PlayCoverMCP \
-  -destination 'platform=macOS,arch=arm64'
+  -destination 'platform=macOS,arch=arm64' \
+  FASTLANE=1 CODE_SIGNING_ALLOWED=NO
 
 # 执行测试
 xcodebuild test-without-building \
   -scheme PlayCoverMCP \
-  -destination 'platform=macOS,arch=arm64'
+  -destination 'platform=macOS,arch=arm64' \
+  FASTLANE=1 CODE_SIGNING_ALLOWED=NO
 ```
 
 当前测试覆盖：572 个测试用例，覆盖协议、注册、服务、工具、Session 生命周期、可靠性、E2E 冒烟等。

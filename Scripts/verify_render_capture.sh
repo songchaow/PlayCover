@@ -72,12 +72,14 @@ TOTAL=$((TOTAL+1)); PASS=$((PASS+1))  # 标记为需手动确认
 
 # C02: PlayCoverMCP scheme 构建成功
 echo "  ⚠️  C02: PlayCoverMCP scheme 构建（耗时较长，单独执行以下命令验证）:"
-echo "       xcodebuild -project PlayCover.xcodeproj -scheme PlayCoverMCP -configuration Release build"
+echo "       xcodebuild -project PlayCover.xcodeproj -scheme PlayCoverMCP -configuration Release build \\"
+echo "         CODE_SIGN_IDENTITY=\"-\" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES FASTLANE=1"
 TOTAL=$((TOTAL+1)); PASS=$((PASS+1))
 
 # C03: MCP 单元测试全量通过
 echo "  ⚠️  C03: MCP 单元测试（耗时较长，单独执行以下命令验证）:"
-echo "       xcodebuild test -project PlayCover.xcodeproj -scheme PlayCoverMCP -destination 'platform=macOS,arch=arm64'"
+echo "       xcodebuild test -project PlayCover.xcodeproj -scheme PlayCoverMCP -destination 'platform=macOS,arch=arm64' \\"
+echo "         CODE_SIGN_IDENTITY=\"-\" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES FASTLANE=1"
 TOTAL=$((TOTAL+1)); PASS=$((PASS+1))
 
 # C04: Host AppSettingsData 含 metalCaptureEnabled

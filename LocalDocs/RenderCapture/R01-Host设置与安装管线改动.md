@@ -107,7 +107,7 @@ var metalCaptureEnabled = false
 1. `AppSettingsData`（两侧）都有 `metalCaptureEnabled` 字段
 2. 安装新 app 后，其 `Info.plist` 包含 `MetalCaptureEnabled = YES`
 3. 现有 app 的设置 plist 可以正确读取（新字段有默认值 `false`）
-4. 项目能够正常构建（`xcodebuild -scheme PlayCover build`）
+4. 项目能够正常构建（`xcodebuild -scheme PlayCover build FASTLANE=1 CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES`）
 5. 现有 MCP 测试不因字段变化而失败
 
 ### 测试（参照统一测试策略）

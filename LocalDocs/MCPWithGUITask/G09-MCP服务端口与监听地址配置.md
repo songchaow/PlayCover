@@ -132,8 +132,8 @@ public enum ListenHost: String, CaseIterable, Equatable {
 - [x] 端口输入有实时验证（非数字 / 超范围提示）
 - [x] 配置持久化到 UserDefaults，重启应用后保留
 - [x] `TCPTransport.init` 向后兼容，不传 host 默认 loopback
-- [x] `xcodebuild -scheme PlayCover build` 通过
-- [x] `xcodebuild -scheme PlayCoverMCP build` 通过
+- [x] `xcodebuild -scheme PlayCover build FASTLANE=1 CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES` 通过
+- [x] `xcodebuild -scheme PlayCoverMCP build FASTLANE=1 CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES` 通过
 - [x] MCP 全量测试通过
 
 ## 测试计划

@@ -53,13 +53,16 @@
 
 ```bash
 # 验证 MCP CLI target
-xcodebuild -project PlayCover.xcodeproj -scheme PlayCoverMCP -configuration Release build 2>&1 | tail -5
+xcodebuild -project PlayCover.xcodeproj -scheme PlayCoverMCP -configuration Release build \
+  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES FASTLANE=1 2>&1 | tail -5
 
 # 验证 GUI target（此时 GUI 还不包含 MCP 文件，应该本来就能编译）
-xcodebuild -project PlayCover.xcodeproj -scheme PlayCover -configuration Release build 2>&1 | tail -5
+xcodebuild -project PlayCover.xcodeproj -scheme PlayCover -configuration Release build \
+  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES FASTLANE=1 2>&1 | tail -5
 
 # 运行 MCP 测试
-xcodebuild test -project PlayCover.xcodeproj -scheme PlayCoverMCP -destination 'platform=macOS,arch=arm64' 2>&1 | tail -20
+xcodebuild test -project PlayCover.xcodeproj -scheme PlayCoverMCP -destination 'platform=macOS,arch=arm64' \
+  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES FASTLANE=1 2>&1 | tail -20
 ```
 
 ### Step 4：检查测试代码中的 Shell 引用
@@ -70,15 +73,15 @@ MCP 测试文件中可能也有 `Shell.` 引用，需要一并更新。搜索 `P
 
 - [ ] `PlayCoverMCP/HostServices/Shell.swift` 中 `enum Shell` 已改为 `enum MCPShell`
 - [ ] 所有 MCP 源文件中的 `Shell.xxx` 引用已改为 `MCPShell.xxx`
-- [ ] `xcodebuild -scheme PlayCoverMCP build` 通过
-- [ ] `xcodebuild -scheme PlayCover build` 通过
+- [ ] `xcodebuild -scheme PlayCoverMCP build FASTLANE=1 CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES` 通过
+- [ ] `xcodebuild -scheme PlayCover build FASTLANE=1 CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES` 通过
 - [ ] MCP 全量测试通过
 - [ ] `ShellError` 保持不变（无需改名）
 
 ## 测试计划
 
 1. **编译测试**：两个 scheme 都能 build 通过
-2. **单元测试**：`xcodebuild test -scheme PlayCoverMCP` 全量通过
+2. **单元测试**：`xcodebuild test -scheme PlayCoverMCP FASTLANE=1 CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES` 全量通过
 3. **回归验证**：确认现有功能未受影响
 
 ## 实际测试结果

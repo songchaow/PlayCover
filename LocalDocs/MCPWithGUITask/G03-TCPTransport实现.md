@@ -225,8 +225,8 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 - [ ] `start()` / `stop()` 生命周期正确
 - [ ] 端口被占用时优雅处理（不 crash）
 - [ ] 单元测试覆盖核心路径
-- [ ] `xcodebuild -scheme PlayCover build` 通过
-- [ ] `xcodebuild -scheme PlayCoverMCP build` 通过（不受影响）
+- [ ] `xcodebuild -scheme PlayCover build FASTLANE=1 CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES` 通过
+- [ ] `xcodebuild -scheme PlayCoverMCP build FASTLANE=1 CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES` 通过（不受影响）
 - [ ] MCP 全量测试通过
 
 ## 测试计划

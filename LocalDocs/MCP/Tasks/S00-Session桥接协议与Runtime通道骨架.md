@@ -5,7 +5,7 @@
 
 ### Dashboard
 
-- **状态**：`TODO`
+- **状态**：`DONE`
 - **优先级**：`P0`
 - **预计工作量**：`L`
 - **建议耗时**：`1.0 ~ 1.5 天`
@@ -84,10 +84,10 @@
 
 ### 执行记录
 
-- **开始时间**：
-- **完成时间**：
-- **执行人 / agent**：
-- **测试命令**：
-- **测试结果**：
-- **遗留问题**：
-- **commit hash**：
+- **开始时间**：2026-03-24 10:00
+- **完成时间**：2026-03-24 12:21
+- **执行人 / agent**：CodeBuddy AI
+- **测试命令**：`xcodebuild test -scheme PlayCoverMCP -destination 'platform=macOS,arch=arm64' -only-testing:PlayCoverMCPTests/BridgeProtocolTests -only-testing:PlayCoverMCPTests/SessionRegistryTests -only-testing:PlayCoverMCPTests/BridgeClientTests -only-testing:PlayCoverMCPTests/SessionHandshakeTests -only-testing:PlayCoverMCPTests/SessionErrorTests`
+- **测试结果**：39 tests passed, 0 failures
+- **遗留问题**：无
+- **commit hash**：待提交

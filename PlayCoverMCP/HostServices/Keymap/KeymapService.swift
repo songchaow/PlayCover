@@ -403,6 +403,9 @@ public final class KeymapService: Sendable {
         }
         try writeConfig(bundleId: bundleId, defaultKm: config.defaultKm, keymapOrder: order)
 
+        // Notify GUI that keymaps have changed
+        MCPNotificationPoster.postKeymapsChanged(bundleID: bundleId)
+
         return CreateKeymapResult(
             bundleIdentifier: bundleId,
             keymapName: name,
@@ -578,6 +581,10 @@ public final class KeymapService: Sendable {
         }
 
         let mismatchNote = (!bundleIdMatched && force) ? " (bundleId overwritten from '\(sourceBundleId ?? "<missing>")' to '\(bundleId)')" : ""
+
+        // Notify GUI that keymaps have changed
+        MCPNotificationPoster.postKeymapsChanged(bundleID: bundleId)
+
         return ImportKeymapResult(
             bundleIdentifier: bundleId,
             keymapName: name,

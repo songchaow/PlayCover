@@ -15,6 +15,13 @@ class AppsVM: ObservableObject {
         try? AppsVM.ensureBaseDirectoriesExist()
         PlayTools.installOnSystem()
         fetchApps()
+
+        // Listen for MCP-triggered app list changes (install/uninstall/inject/cleanup)
+        NotificationCenter.default.addObserver(
+            forName: .mcpAppsChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.fetchApps()
+        }
     }
 
     static func ensureBaseDirectoriesExist() throws {

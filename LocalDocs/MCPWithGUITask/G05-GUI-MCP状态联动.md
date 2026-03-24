@@ -4,7 +4,7 @@
 
 | 属性 | 值 |
 |------|---|
-| **状态** | 🔲 待开始 |
+| **状态** | ✅ 已完成 |
 | **前置依赖** | G04（MCPManager 已工作） |
 | **预估工时** | 1-1.5 天 |
 | **风险等级** | 中 |
@@ -216,7 +216,35 @@ xcodebuild test -scheme PlayCoverMCP -destination 'platform=macOS,arch=arm64' 2>
 
 ## 实际测试结果
 
-> （由执行 agent 在完成后填写）
+**执行日期**：2026-03-24
+
+### 编译测试
+- ✅ `xcodebuild -scheme PlayCover -configuration Release build` — BUILD SUCCEEDED
+- ✅ `xcodebuild -scheme PlayCoverMCP -configuration Release build` — BUILD SUCCEEDED
+- ✅ `plutil -lint project.pbxproj` — OK
+
+### 单元测试
+- ✅ `xcodebuild test -scheme PlayCoverMCP` — 579 tests, 0 failures, 1 skipped — **TEST SUCCEEDED**
+
+### 实现摘要
+
+1. **新增文件**：`PlayCoverMCP/Common/MCPNotifications.swift`
+   - 定义 3 个通知名：`mcpAppsChanged`、`mcpSettingsChanged`、`mcpKeymapsChanged`
+   - 提供 `MCPNotificationPoster` 便捷类，确保通知在主线程发送
+
+2. **MCP Service 修改**（通知发送端）：
+   - `InstallerService.swift`：`install()` 成功后发送 `mcpAppsChanged`
+   - `CleanupService.swift`：`uninstallApp()` 成功后发送 `mcpAppsChanged`
+   - `InjectionService.swift`：`injectPlayTools()` / `removePlayTools()` 成功后发送 `mcpAppsChanged`
+   - `SettingsService.swift`：`updateSettings()` / `resetSettings()` 成功后发送 `mcpSettingsChanged`
+   - `KeymapService.swift`：`createKeymap()` / `renameKeymap()` / `deleteKeymap()` / `resetKeymap()` / `importKeymap()` 成功后发送 `mcpKeymapsChanged`
+
+3. **GUI ViewModel 修改**（通知接收端）：
+   - `AppsVM.swift`：在 `init()` 中添加 `mcpAppsChanged` 通知监听，自动调用 `fetchApps()`
+
+4. **pbxproj 修改**：新文件添加到全部 3 个 target（PlayCover、PlayCoverMCP、PlayCoverMCPTests）
+
+5. **采用方案 A**：直接在所有 Service 中无条件 post 通知，CLI 模式下也发送（NotificationCenter 无 observer 时是 no-op，零副作用）
 
 ---
 

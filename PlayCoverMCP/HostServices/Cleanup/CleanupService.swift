@@ -233,6 +233,10 @@ public final class CleanupService: Sendable {
         removedItems.append("appBundle")
 
         let message = "Uninstalled \(app.displayName) (\(bundleId)). Removed: \(removedItems.joined(separator: ", "))"
+
+        // Notify GUI that the app list has changed
+        MCPNotificationPoster.postAppsChanged()
+
         return UninstallResult(
             bundleIdentifier: bundleId,
             displayName: app.displayName,

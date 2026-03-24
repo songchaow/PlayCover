@@ -116,6 +116,9 @@
 		C3F4DAE6C2EE4FC0B6DC425B /* MCPLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 895F98D661384E178FEAE46F /* MCPLogger.swift */; };
 		429C6150E22046BEBB31221A /* MCPErrorExtensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0249CA5607CA47D8A7D02053 /* MCPErrorExtensions.swift */; };
 		E00F88BFC95349D08EB7A5AF /* MCPErrorExtensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0249CA5607CA47D8A7D02053 /* MCPErrorExtensions.swift */; };
+		A5B1C20F3E8A4D1DB7F05E01 /* MCPNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8E2F4A1B6C94E3FA1230B72 /* MCPNotifications.swift */; };
+		B7C3D410F9A54B2EC8D16F02 /* MCPNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8E2F4A1B6C94E3FA1230B72 /* MCPNotifications.swift */; };
+		C9D5E521A0B64C3FD9E27A03 /* MCPNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8E2F4A1B6C94E3FA1230B72 /* MCPNotifications.swift */; };
 		1B6137F231C34AD48A1B78F3 /* TaskManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1069EF1327E48EC830FF01C /* TaskManagerTests.swift */; };
 		653BA93E473845B0BB7630EA /* MCPLoggerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25132C7924DC4C05AB6A2B97 /* MCPLoggerTests.swift */; };
 		8826CC0093D44A6A9FF86DAF /* MCPErrorExtensionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E04CB4D59F564556951228D8 /* MCPErrorExtensionsTests.swift */; };
@@ -372,6 +375,7 @@
 		B4930F81A0AC4247BF6586A0 /* TaskManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TaskManager.swift; path = TaskManager.swift; sourceTree = "<group>"; };
 		895F98D661384E178FEAE46F /* MCPLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPLogger.swift; path = MCPLogger.swift; sourceTree = "<group>"; };
 		0249CA5607CA47D8A7D02053 /* MCPErrorExtensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPErrorExtensions.swift; path = MCPErrorExtensions.swift; sourceTree = "<group>"; };
+		D8E2F4A1B6C94E3FA1230B72 /* MCPNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPNotifications.swift; path = MCPNotifications.swift; sourceTree = "<group>"; };
 		B1069EF1327E48EC830FF01C /* TaskManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskManagerTests.swift; sourceTree = "<group>"; };
 		25132C7924DC4C05AB6A2B97 /* MCPLoggerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPLoggerTests.swift; sourceTree = "<group>"; };
 		E04CB4D59F564556951228D8 /* MCPErrorExtensionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPErrorExtensionsTests.swift; sourceTree = "<group>"; };
@@ -786,6 +790,7 @@
 			isa = PBXGroup;
 			children = (
 				0249CA5607CA47D8A7D02053 /* MCPErrorExtensions.swift */,
+				D8E2F4A1B6C94E3FA1230B72 /* MCPNotifications.swift */,
 			);
 			path = Common;
 			sourceTree = "<group>";
@@ -1272,6 +1277,7 @@
 				8D1EE20FE51D4E498B150AC1 /* TaskManager.swift in Sources */,
 				50748B38B26A4F36A4804DB8 /* MCPLogger.swift in Sources */,
 				870FFDC1C95F4DF99696223A /* MCPErrorExtensions.swift in Sources */,
+				A5B1C20F3E8A4D1DB7F05E01 /* MCPNotifications.swift in Sources */,
 				1C9DB4F503794DF2938DFAF9 /* AppService.swift in Sources */,
 				89F69DA9A25B4F369058B88A /* AppTools.swift in Sources */,
 				9717B6B4E3974E8C836DC81A /* AppResources.swift in Sources */,
@@ -1322,6 +1328,7 @@
 				25134B7B8F7E418E868E6720 /* TaskManager.swift in Sources */,
 				FC93105DF5AD483BBE0C7711 /* MCPLogger.swift in Sources */,
 				429C6150E22046BEBB31221A /* MCPErrorExtensions.swift in Sources */,
+				B7C3D410F9A54B2EC8D16F02 /* MCPNotifications.swift in Sources */,
 				47F28A57834D40F8B75CB28B /* AppService.swift in Sources */,
 				E63DA694C7ED40BCB6E350BE /* AppTools.swift in Sources */,
 				99C5D776BEFF46FAAF37124A /* AppResources.swift in Sources */,
@@ -1375,6 +1382,7 @@
 				3443356323D242D7984ECC52 /* TaskManager.swift in Sources */,
 				C3F4DAE6C2EE4FC0B6DC425B /* MCPLogger.swift in Sources */,
 				E00F88BFC95349D08EB7A5AF /* MCPErrorExtensions.swift in Sources */,
+				C9D5E521A0B64C3FD9E27A03 /* MCPNotifications.swift in Sources */,
 				1B6137F231C34AD48A1B78F3 /* TaskManagerTests.swift in Sources */,
 				653BA93E473845B0BB7630EA /* MCPLoggerTests.swift in Sources */,
 				8826CC0093D44A6A9FF86DAF /* MCPErrorExtensionsTests.swift in Sources */,

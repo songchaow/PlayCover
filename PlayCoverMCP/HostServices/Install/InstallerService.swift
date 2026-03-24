@@ -237,6 +237,10 @@ public final class InstallerService: Sendable {
         try MCPShell.removeQuarantine(installDir)
 
         progress?(100, 100, "finish")
+
+        // Notify GUI that the app list has changed
+        MCPNotificationPoster.postAppsChanged()
+
         return InstallResult(
             bundleIdentifier: bundleId,
             appPath: installDir.path,

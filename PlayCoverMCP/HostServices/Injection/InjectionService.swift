@@ -283,6 +283,9 @@ public final class InjectionService: Sendable {
             throw InjectionError.signingFailed(error.localizedDescription)
         }
 
+        // Notify GUI that the app state may have changed (injection modifies the binary)
+        MCPNotificationPoster.postAppsChanged()
+
         return InjectionResult(
             bundleIdentifier: bundleId,
             displayName: app.displayName,
@@ -323,6 +326,9 @@ public final class InjectionService: Sendable {
         } catch {
             throw InjectionError.signingFailed(error.localizedDescription)
         }
+
+        // Notify GUI that the app state may have changed (removal modifies the binary)
+        MCPNotificationPoster.postAppsChanged()
 
         return InjectionResult(
             bundleIdentifier: bundleId,

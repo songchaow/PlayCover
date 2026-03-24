@@ -237,6 +237,9 @@ public final class SettingsService: Sendable {
             throw SettingsError.encodingFailed(error.localizedDescription)
         }
 
+        // Notify GUI that settings have changed
+        MCPNotificationPoster.postSettingsChanged(bundleID: bundleId)
+
         return SettingsUpdateResult(
             bundleIdentifier: bundleId,
             updatedFields: updatedFields,
@@ -262,6 +265,9 @@ public final class SettingsService: Sendable {
         } catch {
             throw SettingsError.encodingFailed(error.localizedDescription)
         }
+
+        // Notify GUI that settings have changed
+        MCPNotificationPoster.postSettingsChanged(bundleID: bundleId)
 
         return SettingsResetResult(
             bundleIdentifier: bundleId,

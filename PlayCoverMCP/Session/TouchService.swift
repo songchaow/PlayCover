@@ -34,17 +34,75 @@ public struct LongPressParams: Codable, Equatable, Sendable {
     }
 }
 
+/// Parameters for a swipe command.
+public struct SwipeParams: Codable, Equatable, Sendable {
+    /// Start X coordinate in points (0 = left edge of the app window).
+    public let startX: Double
+    /// Start Y coordinate in points (0 = top edge of the app window).
+    public let startY: Double
+    /// End X coordinate in points.
+    public let endX: Double
+    /// End Y coordinate in points.
+    public let endY: Double
+    /// Duration of the swipe in milliseconds (default: 300).
+    public let durationMs: Int
+    /// Number of intermediate touch-move steps (default: 10, min: 2, max: 100).
+    public let steps: Int
+
+    public init(startX: Double, startY: Double, endX: Double, endY: Double,
+                durationMs: Int = 300, steps: Int = 10) {
+        self.startX = startX
+        self.startY = startY
+        self.endX = endX
+        self.endY = endY
+        self.durationMs = durationMs
+        self.steps = steps
+    }
+}
+
+/// Parameters for a drag command.
+///
+/// A drag differs from a swipe in that it begins with a hold phase
+/// at the start point before moving to the end point.
+public struct DragParams: Codable, Equatable, Sendable {
+    /// Start X coordinate in points (0 = left edge of the app window).
+    public let startX: Double
+    /// Start Y coordinate in points (0 = top edge of the app window).
+    public let startY: Double
+    /// End X coordinate in points.
+    public let endX: Double
+    /// End Y coordinate in points.
+    public let endY: Double
+    /// Duration of the drag movement in milliseconds (default: 500).
+    public let durationMs: Int
+    /// Hold time at start point before moving, in milliseconds (default: 100).
+    public let holdDelayMs: Int
+    /// Number of intermediate touch-move steps (default: 10, min: 2, max: 100).
+    public let steps: Int
+
+    public init(startX: Double, startY: Double, endX: Double, endY: Double,
+                durationMs: Int = 500, holdDelayMs: Int = 100, steps: Int = 10) {
+        self.startX = startX
+        self.startY = startY
+        self.endX = endX
+        self.endY = endY
+        self.durationMs = durationMs
+        self.holdDelayMs = holdDelayMs
+        self.steps = steps
+    }
+}
+
 /// Result returned after a touch command completes.
 public struct TouchResult: Codable, Equatable, Sendable {
     /// Whether the command was executed successfully on the runtime side.
     public let success: Bool
-    /// The command that was executed ("tap" or "long_press").
+    /// The command that was executed ("tap", "long_press", "swipe", or "drag").
     public let command: String
-    /// X coordinate that was tapped.
+    /// X coordinate that was tapped (for tap/long_press: the point; for swipe/drag: start point).
     public let x: Double
-    /// Y coordinate that was tapped.
+    /// Y coordinate that was tapped (for tap/long_press: the point; for swipe/drag: start point).
     public let y: Double
-    /// Duration in ms (only relevant for long_press).
+    /// Duration in ms (only relevant for long_press, swipe, drag).
     public let durationMs: Int?
 
     public init(success: Bool, command: String, x: Double, y: Double, durationMs: Int? = nil) {
@@ -69,12 +127,58 @@ public struct TouchResult: Codable, Equatable, Sendable {
     }
 }
 
+/// Result returned after a swipe or drag command completes.
+public struct SwipeResult: Codable, Equatable, Sendable {
+    /// Whether the command was executed successfully on the runtime side.
+    public let success: Bool
+    /// The command that was executed ("swipe" or "drag").
+    public let command: String
+    /// Start X coordinate.
+    public let startX: Double
+    /// Start Y coordinate.
+    public let startY: Double
+    /// End X coordinate.
+    public let endX: Double
+    /// End Y coordinate.
+    public let endY: Double
+    /// Duration in milliseconds.
+    public let durationMs: Int
+    /// Number of steps used.
+    public let steps: Int
+
+    public init(success: Bool, command: String, startX: Double, startY: Double,
+                endX: Double, endY: Double, durationMs: Int, steps: Int) {
+        self.success = success
+        self.command = command
+        self.startX = startX
+        self.startY = startY
+        self.endX = endX
+        self.endY = endY
+        self.durationMs = durationMs
+        self.steps = steps
+    }
+
+    public func toDictionary() -> [String: Any] {
+        [
+            "success": success,
+            "command": command,
+            "startX": startX,
+            "startY": startY,
+            "endX": endX,
+            "endY": endY,
+            "durationMs": durationMs,
+            "steps": steps,
+        ]
+    }
+}
+
 // MARK: - Touch Error
 
 /// Errors specific to touch commands.
 public enum TouchError: Error, LocalizedError, Equatable {
     case invalidCoordinates(String)
     case invalidDuration(String)
+    case invalidSteps(String)
     case sessionNotReady(String)
     case commandFailed(String)
 
@@ -82,6 +186,7 @@ public enum TouchError: Error, LocalizedError, Equatable {
         switch self {
         case .invalidCoordinates(let detail): return "Invalid touch coordinates: \(detail)"
         case .invalidDuration(let detail): return "Invalid duration: \(detail)"
+        case .invalidSteps(let detail): return "Invalid steps: \(detail)"
         case .sessionNotReady(let detail): return "Session not ready for touch: \(detail)"
         case .commandFailed(let detail): return "Touch command failed: \(detail)"
         }
@@ -94,6 +199,8 @@ public enum TouchError: Error, LocalizedError, Equatable {
 public protocol TouchServiceProtocol {
     func tap(sessionId: String, params: TapParams) async throws -> TouchResult
     func longPress(sessionId: String, params: LongPressParams) async throws -> TouchResult
+    func swipe(sessionId: String, params: SwipeParams) async throws -> SwipeResult
+    func drag(sessionId: String, params: DragParams) async throws -> SwipeResult
 }
 
 // MARK: - Touch Service
@@ -192,6 +299,101 @@ public final class TouchService: TouchServiceProtocol, Sendable {
         return TouchResult(success: true, command: "long_press", x: params.x, y: params.y, durationMs: params.durationMs)
     }
 
+    // MARK: - Swipe
+
+    /// Execute a swipe from one point to another.
+    ///
+    /// A swipe is a touch-down at `(startX, startY)`, followed by a series of
+    /// touch-move events interpolated along a straight line to `(endX, endY)`,
+    /// then a touch-up at the end point. The total movement takes `durationMs`
+    /// milliseconds and is divided into `steps` intermediate points.
+    ///
+    /// - Parameters:
+    ///   - sessionId: The target session identifier.
+    ///   - params: Swipe parameters (start, end, duration, steps).
+    /// - Returns: A `SwipeResult` describing the outcome.
+    /// - Throws: `TouchError` or `BridgeProtocolError`.
+    public func swipe(sessionId: String, params: SwipeParams) async throws -> SwipeResult {
+        try validateCoordinates(x: params.startX, y: params.startY)
+        try validateCoordinates(x: params.endX, y: params.endY)
+        try validateDuration(params.durationMs)
+        try validateSteps(params.steps)
+
+        let session = try getReadySession(sessionId)
+
+        let bridgeParams = AnyCodable([
+            "startX": params.startX,
+            "startY": params.startY,
+            "endX": params.endX,
+            "endY": params.endY,
+            "durationMs": params.durationMs,
+            "steps": params.steps,
+        ] as [String: Any])
+
+        let client = clientFactory(sessionId, session.runtimePort)
+        defer { client.close() }
+        try await client.connect(timeout: 5.0)
+
+        let timeoutSec = Double(params.durationMs) / 1000.0 + 5.0
+        _ = try await client.sendCommand("swipe", params: bridgeParams, timeout: timeoutSec)
+
+        return SwipeResult(
+            success: true, command: "swipe",
+            startX: params.startX, startY: params.startY,
+            endX: params.endX, endY: params.endY,
+            durationMs: params.durationMs, steps: params.steps
+        )
+    }
+
+    // MARK: - Drag
+
+    /// Execute a drag from one point to another with an initial hold phase.
+    ///
+    /// A drag begins with a touch-down at `(startX, startY)` and holds for
+    /// `holdDelayMs` milliseconds before moving. Then it interpolates
+    /// touch-move events along a straight line to `(endX, endY)` over
+    /// `durationMs` milliseconds using `steps` intermediate points,
+    /// then a touch-up at the end point.
+    ///
+    /// - Parameters:
+    ///   - sessionId: The target session identifier.
+    ///   - params: Drag parameters (start, end, duration, holdDelay, steps).
+    /// - Returns: A `SwipeResult` describing the outcome.
+    /// - Throws: `TouchError` or `BridgeProtocolError`.
+    public func drag(sessionId: String, params: DragParams) async throws -> SwipeResult {
+        try validateCoordinates(x: params.startX, y: params.startY)
+        try validateCoordinates(x: params.endX, y: params.endY)
+        try validateDuration(params.durationMs)
+        try validateDuration(params.holdDelayMs, label: "holdDelayMs")
+        try validateSteps(params.steps)
+
+        let session = try getReadySession(sessionId)
+
+        let bridgeParams = AnyCodable([
+            "startX": params.startX,
+            "startY": params.startY,
+            "endX": params.endX,
+            "endY": params.endY,
+            "durationMs": params.durationMs,
+            "holdDelayMs": params.holdDelayMs,
+            "steps": params.steps,
+        ] as [String: Any])
+
+        let client = clientFactory(sessionId, session.runtimePort)
+        defer { client.close() }
+        try await client.connect(timeout: 5.0)
+
+        let timeoutSec = Double(params.durationMs + params.holdDelayMs) / 1000.0 + 5.0
+        _ = try await client.sendCommand("drag", params: bridgeParams, timeout: timeoutSec)
+
+        return SwipeResult(
+            success: true, command: "drag",
+            startX: params.startX, startY: params.startY,
+            endX: params.endX, endY: params.endY,
+            durationMs: params.durationMs, steps: params.steps
+        )
+    }
+
     // MARK: - Validation
 
     private func validateCoordinates(x: Double, y: Double) throws {
@@ -203,12 +405,21 @@ public final class TouchService: TouchServiceProtocol, Sendable {
         }
     }
 
-    private func validateDuration(_ durationMs: Int) throws {
+    private func validateDuration(_ durationMs: Int, label: String = "Duration") throws {
         if durationMs <= 0 {
-            throw TouchError.invalidDuration("Duration must be positive (got \(durationMs)ms)")
+            throw TouchError.invalidDuration("\(label) must be positive (got \(durationMs)ms)")
         }
         if durationMs > 60_000 {
-            throw TouchError.invalidDuration("Duration must be at most 60000ms (got \(durationMs)ms)")
+            throw TouchError.invalidDuration("\(label) must be at most 60000ms (got \(durationMs)ms)")
+        }
+    }
+
+    private func validateSteps(_ steps: Int) throws {
+        if steps < 2 {
+            throw TouchError.invalidSteps("Steps must be at least 2 (got \(steps))")
+        }
+        if steps > 100 {
+            throw TouchError.invalidSteps("Steps must be at most 100 (got \(steps))")
         }
     }
 
@@ -232,6 +443,8 @@ public final class FakeTouchService: TouchServiceProtocol, Sendable {
     private let lock = NSLock()
     private var _tapCalls: [(sessionId: String, params: TapParams)] = []
     private var _longPressCalls: [(sessionId: String, params: LongPressParams)] = []
+    private var _swipeCalls: [(sessionId: String, params: SwipeParams)] = []
+    private var _dragCalls: [(sessionId: String, params: DragParams)] = []
     private var _shouldFail: Bool = false
     private var _failureMessage: String = "Fake failure"
 
@@ -249,6 +462,20 @@ public final class FakeTouchService: TouchServiceProtocol, Sendable {
         lock.lock()
         defer { lock.unlock() }
         return _longPressCalls
+    }
+
+    /// All recorded swipe calls.
+    public var swipeCalls: [(sessionId: String, params: SwipeParams)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _swipeCalls
+    }
+
+    /// All recorded drag calls.
+    public var dragCalls: [(sessionId: String, params: DragParams)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _dragCalls
     }
 
     /// Configure the fake to throw errors.
@@ -285,5 +512,43 @@ public final class FakeTouchService: TouchServiceProtocol, Sendable {
         }
 
         return TouchResult(success: true, command: "long_press", x: params.x, y: params.y, durationMs: params.durationMs)
+    }
+
+    public func swipe(sessionId: String, params: SwipeParams) async throws -> SwipeResult {
+        lock.lock()
+        let shouldFail = _shouldFail
+        let message = _failureMessage
+        _swipeCalls.append((sessionId: sessionId, params: params))
+        lock.unlock()
+
+        if shouldFail {
+            throw TouchError.commandFailed(message)
+        }
+
+        return SwipeResult(
+            success: true, command: "swipe",
+            startX: params.startX, startY: params.startY,
+            endX: params.endX, endY: params.endY,
+            durationMs: params.durationMs, steps: params.steps
+        )
+    }
+
+    public func drag(sessionId: String, params: DragParams) async throws -> SwipeResult {
+        lock.lock()
+        let shouldFail = _shouldFail
+        let message = _failureMessage
+        _dragCalls.append((sessionId: sessionId, params: params))
+        lock.unlock()
+
+        if shouldFail {
+            throw TouchError.commandFailed(message)
+        }
+
+        return SwipeResult(
+            success: true, command: "drag",
+            startX: params.startX, startY: params.startY,
+            endX: params.endX, endY: params.endY,
+            durationMs: params.durationMs, steps: params.steps
+        )
     }
 }

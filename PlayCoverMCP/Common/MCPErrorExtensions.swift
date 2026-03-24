@@ -140,7 +140,7 @@ public struct PlayCoverMCPError: Error, LocalizedError, Equatable, Sendable {
         if let touchErr = error as? TouchError {
             let mappedCode: Int
             switch touchErr {
-            case .invalidCoordinates, .invalidDuration:
+            case .invalidCoordinates, .invalidDuration, .invalidSteps:
                 mappedCode = JSONRPCError.invalidParams
             case .sessionNotReady:
                 mappedCode = PlayCoverErrorCode.bridgeError.rawValue

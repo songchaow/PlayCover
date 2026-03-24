@@ -5,7 +5,7 @@
 
 ### Dashboard
 
-- **状态**：`TODO`
+- **状态**：`DONE`
 - **优先级**：`P1`
 - **预计工作量**：`M`
 - **建议耗时**：`0.5 ~ 1.0 天`
@@ -84,10 +84,10 @@
 
 ### 执行记录
 
-- **开始时间**：
-- **完成时间**：
-- **执行人 / agent**：
-- **测试命令**：
-- **测试结果**：
-- **遗留问题**：
-- **commit hash**：
+- **开始时间**：2026-03-24
+- **完成时间**：2026-03-24
+- **执行人 / agent**：Claude agent
+- **测试命令**：`xcodebuild test -scheme PlayCoverMCP -only-testing PlayCoverMCPTests`
+- **测试结果**：484 pass / 0 fail / 1 skip（新增 43 个测试）
+- **遗留问题**：无
+- **commit hash**：`f862711e`

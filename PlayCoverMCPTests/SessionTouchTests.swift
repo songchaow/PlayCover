@@ -40,6 +40,56 @@ final class TouchParamsTests: XCTestCase {
         let decoded = try JSONDecoder().decode(LongPressParams.self, from: data)
         XCTAssertEqual(decoded, original)
     }
+
+    func testSwipeParamsInit() {
+        let params = SwipeParams(startX: 10, startY: 20, endX: 300, endY: 400)
+        XCTAssertEqual(params.startX, 10)
+        XCTAssertEqual(params.startY, 20)
+        XCTAssertEqual(params.endX, 300)
+        XCTAssertEqual(params.endY, 400)
+        XCTAssertEqual(params.durationMs, 300) // default
+        XCTAssertEqual(params.steps, 10)       // default
+    }
+
+    func testSwipeParamsCustomValues() {
+        let params = SwipeParams(startX: 10, startY: 20, endX: 300, endY: 400, durationMs: 500, steps: 20)
+        XCTAssertEqual(params.durationMs, 500)
+        XCTAssertEqual(params.steps, 20)
+    }
+
+    func testSwipeParamsCodable() throws {
+        let original = SwipeParams(startX: 10, startY: 20, endX: 300, endY: 400, durationMs: 500, steps: 15)
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(SwipeParams.self, from: data)
+        XCTAssertEqual(decoded, original)
+    }
+
+    func testDragParamsInit() {
+        let params = DragParams(startX: 50, startY: 60, endX: 200, endY: 250)
+        XCTAssertEqual(params.startX, 50)
+        XCTAssertEqual(params.startY, 60)
+        XCTAssertEqual(params.endX, 200)
+        XCTAssertEqual(params.endY, 250)
+        XCTAssertEqual(params.durationMs, 500)  // default
+        XCTAssertEqual(params.holdDelayMs, 100)  // default
+        XCTAssertEqual(params.steps, 10)         // default
+    }
+
+    func testDragParamsCustomValues() {
+        let params = DragParams(startX: 50, startY: 60, endX: 200, endY: 250,
+                                durationMs: 1000, holdDelayMs: 300, steps: 25)
+        XCTAssertEqual(params.durationMs, 1000)
+        XCTAssertEqual(params.holdDelayMs, 300)
+        XCTAssertEqual(params.steps, 25)
+    }
+
+    func testDragParamsCodable() throws {
+        let original = DragParams(startX: 50, startY: 60, endX: 200, endY: 250,
+                                  durationMs: 1000, holdDelayMs: 300, steps: 25)
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(DragParams.self, from: data)
+        XCTAssertEqual(decoded, original)
+    }
 }
 
 // MARK: - Touch Result Tests
@@ -74,6 +124,46 @@ final class TouchResultTests: XCTestCase {
         let decoded = try JSONDecoder().decode(TouchResult.self, from: data)
         XCTAssertEqual(decoded, original)
     }
+
+    func testSwipeResultToDictionary() {
+        let result = SwipeResult(
+            success: true, command: "swipe",
+            startX: 10, startY: 20, endX: 300, endY: 400,
+            durationMs: 300, steps: 10
+        )
+        let dict = result.toDictionary()
+
+        XCTAssertEqual(dict["success"] as? Bool, true)
+        XCTAssertEqual(dict["command"] as? String, "swipe")
+        XCTAssertEqual(dict["startX"] as? Double, 10)
+        XCTAssertEqual(dict["startY"] as? Double, 20)
+        XCTAssertEqual(dict["endX"] as? Double, 300)
+        XCTAssertEqual(dict["endY"] as? Double, 400)
+        XCTAssertEqual(dict["durationMs"] as? Int, 300)
+        XCTAssertEqual(dict["steps"] as? Int, 10)
+    }
+
+    func testSwipeResultCodable() throws {
+        let original = SwipeResult(
+            success: true, command: "swipe",
+            startX: 10, startY: 20, endX: 300, endY: 400,
+            durationMs: 500, steps: 15
+        )
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(SwipeResult.self, from: data)
+        XCTAssertEqual(decoded, original)
+    }
+
+    func testDragResultToDictionary() {
+        let result = SwipeResult(
+            success: true, command: "drag",
+            startX: 50, startY: 60, endX: 200, endY: 250,
+            durationMs: 500, steps: 10
+        )
+        let dict = result.toDictionary()
+
+        XCTAssertEqual(dict["command"] as? String, "drag")
+    }
 }
 
 // MARK: - Touch Error Tests
@@ -88,6 +178,11 @@ final class TouchErrorTests: XCTestCase {
     func testInvalidDurationDescription() {
         let error = TouchError.invalidDuration("must be positive")
         XCTAssertEqual(error.localizedDescription, "Invalid duration: must be positive")
+    }
+
+    func testInvalidStepsDescription() {
+        let error = TouchError.invalidSteps("must be at least 2")
+        XCTAssertEqual(error.localizedDescription, "Invalid steps: must be at least 2")
     }
 
     func testSessionNotReadyDescription() {
@@ -124,6 +219,12 @@ final class TouchErrorMCPMappingTests: XCTestCase {
 
     func testInvalidDurationMapToInvalidParams() {
         let touchErr = TouchError.invalidDuration("zero")
+        let mcpErr = PlayCoverMCPError(wrapping: touchErr)
+        XCTAssertEqual(mcpErr.code, JSONRPCError.invalidParams)
+    }
+
+    func testInvalidStepsMapToInvalidParams() {
+        let touchErr = TouchError.invalidSteps("too few")
         let mcpErr = PlayCoverMCPError(wrapping: touchErr)
         XCTAssertEqual(mcpErr.code, JSONRPCError.invalidParams)
     }
@@ -182,6 +283,55 @@ final class FakeTouchServiceTests: XCTestCase {
             XCTFail("Should have thrown")
         } catch let error as TouchError {
             XCTAssertEqual(error, .commandFailed("test failure"))
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
+
+    func testFakeSwipeRecordsCalls() async throws {
+        let fake = FakeTouchService()
+        let params = SwipeParams(startX: 10, startY: 20, endX: 300, endY: 400, durationMs: 300, steps: 10)
+        let result = try await fake.swipe(sessionId: "s3", params: params)
+
+        XCTAssertTrue(result.success)
+        XCTAssertEqual(result.command, "swipe")
+        XCTAssertEqual(result.startX, 10)
+        XCTAssertEqual(result.startY, 20)
+        XCTAssertEqual(result.endX, 300)
+        XCTAssertEqual(result.endY, 400)
+        XCTAssertEqual(result.durationMs, 300)
+        XCTAssertEqual(result.steps, 10)
+        XCTAssertEqual(fake.swipeCalls.count, 1)
+        XCTAssertEqual(fake.swipeCalls.first?.sessionId, "s3")
+        XCTAssertEqual(fake.swipeCalls.first?.params, params)
+    }
+
+    func testFakeDragRecordsCalls() async throws {
+        let fake = FakeTouchService()
+        let params = DragParams(startX: 50, startY: 60, endX: 200, endY: 250,
+                                durationMs: 500, holdDelayMs: 100, steps: 10)
+        let result = try await fake.drag(sessionId: "s4", params: params)
+
+        XCTAssertTrue(result.success)
+        XCTAssertEqual(result.command, "drag")
+        XCTAssertEqual(result.startX, 50)
+        XCTAssertEqual(result.startY, 60)
+        XCTAssertEqual(result.endX, 200)
+        XCTAssertEqual(result.endY, 250)
+        XCTAssertEqual(fake.dragCalls.count, 1)
+        XCTAssertEqual(fake.dragCalls.first?.sessionId, "s4")
+        XCTAssertEqual(fake.dragCalls.first?.params, params)
+    }
+
+    func testFakeSwipeCanFail() async {
+        let fake = FakeTouchService()
+        fake.setShouldFail(true, message: "swipe failure")
+
+        do {
+            _ = try await fake.swipe(sessionId: "s1", params: SwipeParams(startX: 0, startY: 0, endX: 100, endY: 100))
+            XCTFail("Should have thrown")
+        } catch let error as TouchError {
+            XCTAssertEqual(error, .commandFailed("swipe failure"))
         } catch {
             XCTFail("Unexpected error type: \(error)")
         }
@@ -327,6 +477,160 @@ final class TouchServiceValidationTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
     }
+
+    // MARK: - Swipe Validation
+
+    func testSwipeWithNegativeStartXThrows() async {
+        do {
+            _ = try await service.swipe(sessionId: "s1", params: SwipeParams(startX: -1, startY: 20, endX: 300, endY: 400))
+            XCTFail("Should throw on negative startX")
+        } catch let error as TouchError {
+            if case .invalidCoordinates = error { } else {
+                XCTFail("Expected invalidCoordinates, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testSwipeWithNegativeEndYThrows() async {
+        do {
+            _ = try await service.swipe(sessionId: "s1", params: SwipeParams(startX: 10, startY: 20, endX: 300, endY: -5))
+            XCTFail("Should throw on negative endY")
+        } catch let error as TouchError {
+            if case .invalidCoordinates = error { } else {
+                XCTFail("Expected invalidCoordinates, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testSwipeWithZeroDurationThrows() async throws {
+        let info = SessionInfo(sessionId: "s1", bundleId: "com.app", pid: 100, runtimePort: 52742, status: .ready)
+        try registry.register(info)
+
+        do {
+            _ = try await service.swipe(sessionId: "s1", params: SwipeParams(startX: 10, startY: 20, endX: 300, endY: 400, durationMs: 0))
+            XCTFail("Should throw on zero duration")
+        } catch let error as TouchError {
+            if case .invalidDuration = error { } else {
+                XCTFail("Expected invalidDuration, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testSwipeWithTooFewStepsThrows() async throws {
+        let info = SessionInfo(sessionId: "s1", bundleId: "com.app", pid: 100, runtimePort: 52742, status: .ready)
+        try registry.register(info)
+
+        do {
+            _ = try await service.swipe(sessionId: "s1", params: SwipeParams(startX: 10, startY: 20, endX: 300, endY: 400, durationMs: 300, steps: 1))
+            XCTFail("Should throw on steps < 2")
+        } catch let error as TouchError {
+            if case .invalidSteps = error { } else {
+                XCTFail("Expected invalidSteps, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testSwipeWithTooManyStepsThrows() async throws {
+        let info = SessionInfo(sessionId: "s1", bundleId: "com.app", pid: 100, runtimePort: 52742, status: .ready)
+        try registry.register(info)
+
+        do {
+            _ = try await service.swipe(sessionId: "s1", params: SwipeParams(startX: 10, startY: 20, endX: 300, endY: 400, durationMs: 300, steps: 200))
+            XCTFail("Should throw on steps > 100")
+        } catch let error as TouchError {
+            if case .invalidSteps = error { } else {
+                XCTFail("Expected invalidSteps, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testSwipeSessionNotFoundThrows() async {
+        do {
+            _ = try await service.swipe(sessionId: "nonexistent", params: SwipeParams(startX: 10, startY: 20, endX: 300, endY: 400))
+            XCTFail("Should throw session not found")
+        } catch let error as SessionError {
+            if case .sessionNotFound = error { } else {
+                XCTFail("Expected sessionNotFound, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    // MARK: - Drag Validation
+
+    func testDragWithNegativeStartXThrows() async {
+        do {
+            _ = try await service.drag(sessionId: "s1", params: DragParams(startX: -1, startY: 20, endX: 200, endY: 250))
+            XCTFail("Should throw on negative startX")
+        } catch let error as TouchError {
+            if case .invalidCoordinates = error { } else {
+                XCTFail("Expected invalidCoordinates, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testDragWithZeroDurationThrows() async throws {
+        let info = SessionInfo(sessionId: "s1", bundleId: "com.app", pid: 100, runtimePort: 52742, status: .ready)
+        try registry.register(info)
+
+        do {
+            _ = try await service.drag(sessionId: "s1", params: DragParams(startX: 10, startY: 20, endX: 200, endY: 250, durationMs: 0))
+            XCTFail("Should throw on zero duration")
+        } catch let error as TouchError {
+            if case .invalidDuration = error { } else {
+                XCTFail("Expected invalidDuration, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testDragWithZeroHoldDelayThrows() async throws {
+        let info = SessionInfo(sessionId: "s1", bundleId: "com.app", pid: 100, runtimePort: 52742, status: .ready)
+        try registry.register(info)
+
+        do {
+            _ = try await service.drag(sessionId: "s1", params: DragParams(startX: 10, startY: 20, endX: 200, endY: 250,
+                                                                            durationMs: 500, holdDelayMs: 0))
+            XCTFail("Should throw on zero holdDelayMs")
+        } catch let error as TouchError {
+            if case .invalidDuration = error { } else {
+                XCTFail("Expected invalidDuration, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testDragWithTooFewStepsThrows() async throws {
+        let info = SessionInfo(sessionId: "s1", bundleId: "com.app", pid: 100, runtimePort: 52742, status: .ready)
+        try registry.register(info)
+
+        do {
+            _ = try await service.drag(sessionId: "s1", params: DragParams(startX: 10, startY: 20, endX: 200, endY: 250,
+                                                                            durationMs: 500, holdDelayMs: 100, steps: 0))
+            XCTFail("Should throw on steps < 2")
+        } catch let error as TouchError {
+            if case .invalidSteps = error { } else {
+                XCTFail("Expected invalidSteps, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
 }
 
 // MARK: - Touch Command Encoding Tests
@@ -397,6 +701,57 @@ final class TouchCommandEncodingTests: XCTestCase {
             XCTFail("Expected commandResponse")
         }
     }
+
+    func testSwipeCommandEncoding() throws {
+        let params = AnyCodable([
+            "startX": 10.0, "startY": 20.0,
+            "endX": 300.0, "endY": 400.0,
+            "durationMs": 300, "steps": 10
+        ] as [String: Any])
+        let command = CommandPayload(
+            sessionId: "s1",
+            commandId: "cmd-3",
+            command: "swipe",
+            params: params
+        )
+        let message = BridgeMessage.command(command)
+
+        let data = try bridgeEncode(message)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+
+        XCTAssertEqual(json["type"] as? String, "command")
+        XCTAssertEqual(json["command"] as? String, "swipe")
+        XCTAssertEqual(json["sessionId"] as? String, "s1")
+        XCTAssertEqual(json["commandId"] as? String, "cmd-3")
+
+        let cmdParams = json["params"] as? [String: Any]
+        XCTAssertNotNil(cmdParams?["startX"])
+        XCTAssertNotNil(cmdParams?["endY"])
+    }
+
+    func testDragCommandEncoding() throws {
+        let params = AnyCodable([
+            "startX": 50.0, "startY": 60.0,
+            "endX": 200.0, "endY": 250.0,
+            "durationMs": 500, "holdDelayMs": 100, "steps": 10
+        ] as [String: Any])
+        let command = CommandPayload(
+            sessionId: "s1",
+            commandId: "cmd-4",
+            command: "drag",
+            params: params
+        )
+        let message = BridgeMessage.command(command)
+
+        let data = try bridgeEncode(message)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+
+        XCTAssertEqual(json["type"] as? String, "command")
+        XCTAssertEqual(json["command"] as? String, "drag")
+
+        let cmdParams = json["params"] as? [String: Any]
+        XCTAssertNotNil(cmdParams?["holdDelayMs"])
+    }
 }
 
 // MARK: - Touch Tools Registration Tests
@@ -436,6 +791,8 @@ final class TouchToolsRegistrationTests: XCTestCase {
         let toolNames = tools.map(\.name)
         XCTAssertTrue(toolNames.contains("tap"))
         XCTAssertTrue(toolNames.contains("long_press"))
+        XCTAssertTrue(toolNames.contains("swipe"))
+        XCTAssertTrue(toolNames.contains("drag"))
     }
 
     func testTapToolSchema() {
@@ -450,6 +807,20 @@ final class TouchToolsRegistrationTests: XCTestCase {
         let lpTool = tools.first { $0.name == "long_press" }
         XCTAssertNotNil(lpTool)
         XCTAssertEqual(lpTool?.inputSchema.required, ["sessionId", "x", "y"])
+    }
+
+    func testSwipeToolSchema() {
+        let tools = server.toolRegistry.listTools()
+        let swipeTool = tools.first { $0.name == "swipe" }
+        XCTAssertNotNil(swipeTool)
+        XCTAssertEqual(swipeTool?.inputSchema.required, ["sessionId", "startX", "startY", "endX", "endY"])
+    }
+
+    func testDragToolSchema() {
+        let tools = server.toolRegistry.listTools()
+        let dragTool = tools.first { $0.name == "drag" }
+        XCTAssertNotNil(dragTool)
+        XCTAssertEqual(dragTool?.inputSchema.required, ["sessionId", "startX", "startY", "endX", "endY"])
     }
 
     // MARK: - Tool call integration
@@ -547,6 +918,182 @@ final class TouchToolsRegistrationTests: XCTestCase {
             "sessionId": "s1",
             "x": 100.0,
             "y": 200.0
+        ])
+        XCTAssertNil(resp?.result)
+        XCTAssertNotNil(resp?.error)
+    }
+
+    // MARK: - Swipe tool call tests
+
+    func testSwipeToolCallSuccess() {
+        let resp = callTool("swipe", arguments: [
+            "sessionId": "s1",
+            "startX": 10.0,
+            "startY": 20.0,
+            "endX": 300.0,
+            "endY": 400.0
+        ])
+        XCTAssertNotNil(resp?.result)
+        XCTAssertNil(resp?.error)
+        XCTAssertEqual(fakeTouchService.swipeCalls.count, 1)
+    }
+
+    func testSwipeToolCallDefaultDurationAndSteps() {
+        let resp = callTool("swipe", arguments: [
+            "sessionId": "s1",
+            "startX": 10.0,
+            "startY": 20.0,
+            "endX": 300.0,
+            "endY": 400.0
+        ])
+        XCTAssertNotNil(resp?.result)
+        XCTAssertNil(resp?.error)
+        XCTAssertEqual(fakeTouchService.swipeCalls.first?.params.durationMs, 300)
+        XCTAssertEqual(fakeTouchService.swipeCalls.first?.params.steps, 10)
+    }
+
+    func testSwipeToolCallCustomDurationAndSteps() {
+        let resp = callTool("swipe", arguments: [
+            "sessionId": "s1",
+            "startX": 10.0,
+            "startY": 20.0,
+            "endX": 300.0,
+            "endY": 400.0,
+            "durationMs": 500,
+            "steps": 20
+        ])
+        XCTAssertNotNil(resp?.result)
+        XCTAssertNil(resp?.error)
+        XCTAssertEqual(fakeTouchService.swipeCalls.first?.params.durationMs, 500)
+        XCTAssertEqual(fakeTouchService.swipeCalls.first?.params.steps, 20)
+    }
+
+    func testSwipeToolMissingSessionId() {
+        let resp = callTool("swipe", arguments: [
+            "startX": 10.0,
+            "startY": 20.0,
+            "endX": 300.0,
+            "endY": 400.0
+        ])
+        XCTAssertNil(resp?.result)
+        XCTAssertEqual(resp?.error?.code, JSONRPCError.invalidParams)
+    }
+
+    func testSwipeToolMissingStartX() {
+        let resp = callTool("swipe", arguments: [
+            "sessionId": "s1",
+            "startY": 20.0,
+            "endX": 300.0,
+            "endY": 400.0
+        ])
+        XCTAssertNil(resp?.result)
+        XCTAssertEqual(resp?.error?.code, JSONRPCError.invalidParams)
+    }
+
+    func testSwipeToolMissingEndY() {
+        let resp = callTool("swipe", arguments: [
+            "sessionId": "s1",
+            "startX": 10.0,
+            "startY": 20.0,
+            "endX": 300.0
+        ])
+        XCTAssertNil(resp?.result)
+        XCTAssertEqual(resp?.error?.code, JSONRPCError.invalidParams)
+    }
+
+    func testSwipeToolServiceFailure() {
+        fakeTouchService.setShouldFail(true, message: "swipe failed")
+
+        let resp = callTool("swipe", arguments: [
+            "sessionId": "s1",
+            "startX": 10.0,
+            "startY": 20.0,
+            "endX": 300.0,
+            "endY": 400.0
+        ])
+        XCTAssertNil(resp?.result)
+        XCTAssertNotNil(resp?.error)
+    }
+
+    // MARK: - Drag tool call tests
+
+    func testDragToolCallSuccess() {
+        let resp = callTool("drag", arguments: [
+            "sessionId": "s1",
+            "startX": 50.0,
+            "startY": 60.0,
+            "endX": 200.0,
+            "endY": 250.0
+        ])
+        XCTAssertNotNil(resp?.result)
+        XCTAssertNil(resp?.error)
+        XCTAssertEqual(fakeTouchService.dragCalls.count, 1)
+    }
+
+    func testDragToolCallDefaultValues() {
+        let resp = callTool("drag", arguments: [
+            "sessionId": "s1",
+            "startX": 50.0,
+            "startY": 60.0,
+            "endX": 200.0,
+            "endY": 250.0
+        ])
+        XCTAssertNotNil(resp?.result)
+        XCTAssertNil(resp?.error)
+        XCTAssertEqual(fakeTouchService.dragCalls.first?.params.durationMs, 500)
+        XCTAssertEqual(fakeTouchService.dragCalls.first?.params.holdDelayMs, 100)
+        XCTAssertEqual(fakeTouchService.dragCalls.first?.params.steps, 10)
+    }
+
+    func testDragToolCallCustomValues() {
+        let resp = callTool("drag", arguments: [
+            "sessionId": "s1",
+            "startX": 50.0,
+            "startY": 60.0,
+            "endX": 200.0,
+            "endY": 250.0,
+            "durationMs": 1000,
+            "holdDelayMs": 300,
+            "steps": 25
+        ])
+        XCTAssertNotNil(resp?.result)
+        XCTAssertNil(resp?.error)
+        XCTAssertEqual(fakeTouchService.dragCalls.first?.params.durationMs, 1000)
+        XCTAssertEqual(fakeTouchService.dragCalls.first?.params.holdDelayMs, 300)
+        XCTAssertEqual(fakeTouchService.dragCalls.first?.params.steps, 25)
+    }
+
+    func testDragToolMissingSessionId() {
+        let resp = callTool("drag", arguments: [
+            "startX": 50.0,
+            "startY": 60.0,
+            "endX": 200.0,
+            "endY": 250.0
+        ])
+        XCTAssertNil(resp?.result)
+        XCTAssertEqual(resp?.error?.code, JSONRPCError.invalidParams)
+    }
+
+    func testDragToolMissingEndX() {
+        let resp = callTool("drag", arguments: [
+            "sessionId": "s1",
+            "startX": 50.0,
+            "startY": 60.0,
+            "endY": 250.0
+        ])
+        XCTAssertNil(resp?.result)
+        XCTAssertEqual(resp?.error?.code, JSONRPCError.invalidParams)
+    }
+
+    func testDragToolServiceFailure() {
+        fakeTouchService.setShouldFail(true, message: "drag failed")
+
+        let resp = callTool("drag", arguments: [
+            "sessionId": "s1",
+            "startX": 50.0,
+            "startY": 60.0,
+            "endX": 200.0,
+            "endY": 250.0
         ])
         XCTAssertNil(resp?.result)
         XCTAssertNotNil(resp?.error)
@@ -715,5 +1262,125 @@ final class TouchBridgeIntegrationTests: XCTestCase {
                 XCTFail("Expected sessionNotFound, got \(error)")
             }
         }
+    }
+
+    func testSwipeThroughFakeRuntime() throws {
+        let port = try registrationListener.start()
+
+        let fakeRuntime = FakeRuntimeServer(bundleId: "com.swipe.test", sessionId: "swipe-sess-1")
+        fakeRuntime.onCommand = { payload in
+            XCTAssertEqual(payload.command, "swipe")
+            XCTAssertNotNil(payload.params, "params should not be nil")
+            XCTAssertNotNil(payload.params?.dictionary, "params.dictionary should not be nil")
+            let params = payload.params?.dictionary
+            XCTAssertNotNil(params?["startX"], "startX param should exist")
+            XCTAssertNotNil(params?["startY"], "startY param should exist")
+            XCTAssertNotNil(params?["endX"], "endX param should exist")
+            XCTAssertNotNil(params?["endY"], "endY param should exist")
+            XCTAssertNotNil(params?["durationMs"], "durationMs param should exist")
+            XCTAssertNotNil(params?["steps"], "steps param should exist")
+
+            return CommandResponsePayload(
+                sessionId: payload.sessionId,
+                commandId: payload.commandId,
+                status: "ok",
+                result: AnyCodable(["executed": true] as [String: Any])
+            )
+        }
+
+        let started = expectation(description: "runtime started")
+        let registered = expectation(description: "runtime registered")
+        try fakeRuntime.start(registrationPort: port, startedExpectation: started, registeredExpectation: registered)
+        waitForExpectations(timeout: 5.0)
+
+        guard registry.get("swipe-sess-1") != nil else {
+            XCTFail("Session should be registered")
+            return
+        }
+
+        let touchService = TouchService(registry: registry)
+
+        let swipeDone = expectation(description: "swipe done")
+        Task {
+            do {
+                let result = try await touchService.swipe(
+                    sessionId: "swipe-sess-1",
+                    params: SwipeParams(startX: 10, startY: 20, endX: 300, endY: 400, durationMs: 300, steps: 10)
+                )
+                XCTAssertTrue(result.success)
+                XCTAssertEqual(result.command, "swipe")
+                XCTAssertEqual(result.startX, 10)
+                XCTAssertEqual(result.startY, 20)
+                XCTAssertEqual(result.endX, 300)
+                XCTAssertEqual(result.endY, 400)
+                swipeDone.fulfill()
+            } catch {
+                XCTFail("Swipe failed: \(error)")
+                swipeDone.fulfill()
+            }
+        }
+        wait(for: [swipeDone], timeout: 10.0)
+
+        XCTAssertEqual(fakeRuntime.receivedCommands.count, 1)
+        XCTAssertEqual(fakeRuntime.receivedCommands.first?.command, "swipe")
+
+        fakeRuntime.stop()
+    }
+
+    func testDragThroughFakeRuntime() throws {
+        let port = try registrationListener.start()
+
+        let fakeRuntime = FakeRuntimeServer(bundleId: "com.drag.test", sessionId: "drag-sess-1")
+        fakeRuntime.onCommand = { payload in
+            XCTAssertEqual(payload.command, "drag")
+            XCTAssertNotNil(payload.params, "params should not be nil")
+            let params = payload.params?.dictionary
+            XCTAssertNotNil(params?["startX"], "startX param should exist")
+            XCTAssertNotNil(params?["holdDelayMs"], "holdDelayMs param should exist")
+
+            return CommandResponsePayload(
+                sessionId: payload.sessionId,
+                commandId: payload.commandId,
+                status: "ok",
+                result: AnyCodable(["executed": true] as [String: Any])
+            )
+        }
+
+        let started = expectation(description: "runtime started")
+        let registered = expectation(description: "runtime registered")
+        try fakeRuntime.start(registrationPort: port, startedExpectation: started, registeredExpectation: registered)
+        waitForExpectations(timeout: 5.0)
+
+        guard registry.get("drag-sess-1") != nil else {
+            XCTFail("Session should be registered")
+            return
+        }
+
+        let touchService = TouchService(registry: registry)
+
+        let dragDone = expectation(description: "drag done")
+        Task {
+            do {
+                let result = try await touchService.drag(
+                    sessionId: "drag-sess-1",
+                    params: DragParams(startX: 50, startY: 60, endX: 200, endY: 250,
+                                       durationMs: 500, holdDelayMs: 100, steps: 10)
+                )
+                XCTAssertTrue(result.success)
+                XCTAssertEqual(result.command, "drag")
+                XCTAssertEqual(result.startX, 50)
+                XCTAssertEqual(result.endX, 200)
+                dragDone.fulfill()
+            } catch {
+                XCTFail("Drag failed: \(error)")
+                dragDone.fulfill()
+            }
+        }
+        wait(for: [dragDone], timeout: 10.0)
+
+        XCTAssertEqual(fakeRuntime.receivedCommands.count, 1)
+        XCTAssertEqual(fakeRuntime.receivedCommands.first?.command, "drag")
+
+        fakeRuntime.stop()
     }
 }

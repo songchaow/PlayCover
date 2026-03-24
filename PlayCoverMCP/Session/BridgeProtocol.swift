@@ -351,6 +351,47 @@ public func bridgeFrame(_ message: BridgeMessage) throws -> Data {
     return data
 }
 
+// MARK: - Well-Known Command Names
+
+/// Command name constants for use with `CommandPayload.command`.
+///
+/// These strings are shared between `BridgeClient` (host side) and
+/// `BridgeListener` (runtime side). Adding a constant here ensures
+/// both sides use the same wire value.
+public enum BridgeCommandName {
+    // -- Touch / Input --
+    public static let tap = "tap"
+    public static let longPress = "long_press"
+    public static let swipe = "swipe"
+    public static let drag = "drag"
+    public static let pressKey = "press_key"
+    public static let typeText = "type_text"
+    public static let toggleDebugOverlay = "toggle_debug_overlay"
+
+    // -- Metal Capture (R03) --
+    /// Trigger a one-frame GPU capture.
+    ///
+    /// Params (all optional):
+    /// - `output_path` (String): custom `.gputrace` file path.
+    /// - `duration_ms` (Int): capture duration in ms (default 100).
+    ///
+    /// Response data:
+    /// - `output_path` (String): actual file path of the `.gputrace`.
+    /// - `message` (String): human-readable status.
+    public static let captureFrame = "capture_frame"
+
+    /// Query the current Metal capture status.
+    ///
+    /// Params: none.
+    ///
+    /// Response data:
+    /// - `available` (Bool): whether `MTLCaptureManager` is accessible.
+    /// - `supports_gpu_trace` (Bool): whether `.gpuTraceDocument` destination is supported.
+    /// - `is_capturing` (Bool): whether a capture is currently in progress.
+    /// - `enabled` (Bool): whether `metalCaptureEnabled` is ON in settings.
+    public static let getCaptureStatus = "get_capture_status"
+}
+
 // MARK: - Errors
 
 /// Errors specific to the bridge protocol.

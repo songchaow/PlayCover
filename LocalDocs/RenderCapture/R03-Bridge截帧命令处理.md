@@ -5,7 +5,7 @@
 
 ### Dashboard
 
-- **状态**：`TODO`
+- **状态**：`DONE`
 - **优先级**：`P1`
 - **预计工作量**：`S`（小型）
 - **依赖任务**：`R02`
@@ -179,9 +179,15 @@ case "get_capture_status":
 
 ### 实施结果
 
-_（任务完成后由执行 agent 填写）_
-
 - **实际改动文件**：
+  - `PlayCoverMCP/Session/BridgeProtocol.swift` — 新增 `BridgeCommandName` 枚举，定义所有命令字符串常量（含 `captureFrame` 和 `getCaptureStatus`）
+  - `Carthage/Checkouts/PlayTools/PlayTools/Controls/Backend/Bridge/BridgeListener.swift` — 在 `handleCommand()` 中新增 `capture_frame` 和 `get_capture_status` case
+  - `.gitignore` — 为 `BridgeListener.swift` 添加逐级打洞例外规则，纳入 git 管理
+  - `LocalDocs/RenderCapture/00-主文档.md` — 更新任务看板状态
 - **关键决策**：
-- **已知问题**：
-- **Commit Hash**：
+  - Bridge 协议层不需要新增 `BridgeMessageType` case：现有的 `command` / `commandResponse` 消息类型足够，命令区分靠 `CommandPayload.command` 字符串字段
+  - 新增 `BridgeCommandName` 枚举统一管理命令字符串常量，便于 R04 MCP 工具引用，也为已有命令补全了常量定义
+  - `capture_frame` 命令同步调用 `MetalCaptureService.shared.captureFrame()`，截帧的定时停止由 service 内部的 `asyncAfter` 处理，BridgeListener 不做额外线程等待
+  - `BridgeListener.swift` 通过 `.gitignore` 逐级打洞纳入 git 管理（同 `PlaySettings.swift`、`MetalCaptureService.swift`、`PlayCover.swift`）
+- **已知问题**：无
+- **Commit Hash**：`f47897e9`

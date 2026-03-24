@@ -300,9 +300,9 @@ import Metal
 - **关键决策**：
   - 采用**策略 A（定时截帧）**：`startCapture()` 后 100ms 自动 `stopCapture()`，简单可靠，足以覆盖 1-2 帧
   - 截帧前自动删除已存在的同名 `.gputrace` 文件（MTLCaptureManager 不会覆盖已有文件）
-  - `.gputrace` 默认输出到 `~/Library/Containers/io.playcover.PlayCover/Captures/`
+  - `.gputrace` 默认输出到 **app 自己的 Documents/Captures 目录**（`FileManager.default.urls(for: .documentDirectory, ...)`），避免跨 container 的沙箱写入权限问题
   - `PlayCover.swift` 也纳入 `.gitignore` 例外管理（与 `PlaySettings.swift` 同样的逐级打洞模式）
 - **已知问题**：
-  - 沙箱写入权限需要实际 Metal app 测试确认（目标 app 是否能写入 PlayCover 的 container 目录）
   - 定时策略可能截取多帧，如效果不佳后续可升级到 CADisplayLink 或 Command Buffer 回调方案
+  - 后续 R03/R04 中 MCP 获取 `.gputrace` 文件时，需要知道 app 的 Documents 目录路径（可通过 Bridge 返回）
 - **Commit Hash**：`45255d7a`

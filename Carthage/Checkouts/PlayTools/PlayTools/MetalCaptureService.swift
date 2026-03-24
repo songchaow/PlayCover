@@ -122,22 +122,21 @@ import Metal
     // MARK: - Private
 
     private func defaultOutputURL() -> URL {
-        // 输出到 PlayCover 的 container 目录，避免沙箱限制
-        let container = URL(
-            fileURLWithPath: "/Users/\(NSUserName())/Library/Containers/io.playcover.PlayCover"
-        ).appendingPathComponent("Captures")
+        // 输出到 app 自己的 Documents/Captures 目录
+        // Documents 目录在沙箱内一定可写，无需担心跨 container 的权限问题
+        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let capturesDir = documentsURL.appendingPathComponent("Captures")
 
         // 确保目录存在
-        try? FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: capturesDir, withIntermediateDirectories: true)
 
         // 用时间戳作为文件名
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         let timestamp = formatter.string(from: Date())
-        let bundleId = Bundle.main.bundleIdentifier ?? "unknown"
 
-        return container
-            .appendingPathComponent("\(bundleId)_\(timestamp)")
+        return capturesDir
+            .appendingPathComponent("capture_\(timestamp)")
             .appendingPathExtension("gputrace")
     }
 }

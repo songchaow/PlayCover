@@ -13,6 +13,13 @@
 !/Carthage/Checkouts/PlayTools/PlayTools/PlaySettings.swift
 !/Carthage/Checkouts/PlayTools/PlayTools/PlayCover.swift
 !/Carthage/Checkouts/PlayTools/PlayTools/MetalCaptureService.swift
+!/Carthage/Checkouts/PlayTools/PlayTools/Controls/
+/Carthage/Checkouts/PlayTools/PlayTools/Controls/*
+!/Carthage/Checkouts/PlayTools/PlayTools/Controls/Backend/
+/Carthage/Checkouts/PlayTools/PlayTools/Controls/Backend/*
+!/Carthage/Checkouts/PlayTools/PlayTools/Controls/Backend/Bridge/
+/Carthage/Checkouts/PlayTools/PlayTools/Controls/Backend/Bridge/*
+!/Carthage/Checkouts/PlayTools/PlayTools/Controls/Backend/Bridge/BridgeListener.swift
 .DS_store
 /vendor
 /output

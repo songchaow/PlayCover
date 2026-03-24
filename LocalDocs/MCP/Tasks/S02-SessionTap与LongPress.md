@@ -101,4 +101,4 @@
   - 坐标系约定为 app 窗口的 point 坐标系（0,0 = 左上角），但实际 runtime 侧的坐标映射依赖 PlayTools 中 Toucher/PTFakeMetaTouch 的实现，本任务未修改 runtime 代码
   - `AnyCodable` 在 JSON 编解码往返中，整数值的 Double/Int 类型不稳定（如 150.0 → 150），测试中对此做了宽容处理
   - `TouchService` 每次调用都创建新的 `BridgeClient` 连接，后续可考虑连接复用/缓存
-- **commit hash**：
+- **commit hash**：`a46db979`

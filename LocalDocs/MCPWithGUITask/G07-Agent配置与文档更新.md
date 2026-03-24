@@ -4,7 +4,7 @@
 
 | 属性 | 值 |
 |------|---|
-| **状态** | 🔲 待开始 |
+| **状态** | ✅ 已完成 |
 | **前置依赖** | G04（MCPManager 已工作，TCP 可连接） |
 | **预估工时** | 0.5 天 |
 | **风险等级** | 低 |
@@ -108,7 +108,32 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 
 ## 实际测试结果
 
-> （由执行 agent 在完成后填写）
+### 文档审查
+
+- [x] `README-MCP.md` 包含两种运行模式说明（GUI 内嵌 TCP / 独立 CLI stdio）
+- [x] 提供了 TCP 连接的 Agent 配置示例（Claude Desktop / CodeBuddy / Cursor）
+- [x] 提供了 CLI stdio 的 Agent 配置示例（保留原有内容并分类整理）
+- [x] 提供了验证连接的方法（UI 查看 + lsof + nc 测试请求）
+- [x] 更新了架构图（两种模式各一个架构图）
+- [x] 更新了构建说明（GUI app + CLI 分别说明）
+- [x] 更新了故障排查表（新增 TCP 相关条目）
+- [x] 更新了协议版本信息（新增 GUI server 名称和 TCP 端口）
+
+### 回归测试
+
+```
+# PlayCover GUI 构建
+** BUILD SUCCEEDED **
+
+# PlayCoverMCP CLI 构建
+** BUILD SUCCEEDED **
+
+# MCP 单元测试
+Executed 579 tests, with 1 test skipped and 0 failures (0 unexpected) in 17.644 seconds
+** TEST SUCCEEDED **
+```
+
+所有验收标准均已满足，回归测试全部通过。
 
 ---
 

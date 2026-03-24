@@ -2,19 +2,55 @@
 
 PlayCoverMCP 是 PlayCover 的 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) Server，允许 AI Agent 通过标准化协议管理 iOS 应用的安装、启动、输入模拟等操作。
 
+## 运行模式
+
+PlayCover MCP Server 支持两种运行模式：
+
+### 模式 1：GUI 内嵌（推荐）
+
+启动 PlayCover.app 后，MCP Server **自动**在 TCP 端口 `19820` 上监听（`127.0.0.1` loopback）。无需手动操作，Agent 直接通过 TCP 连接即可。
+
+- 可在 **Settings → MCP Server** 中查看服务状态、端口号和已连接客户端数
+- 支持多个 Agent 同时连接
+- 应用关闭时自动停止 MCP Server
+
+### 模式 2：独立 CLI（stdio）
+
+使用 `PlayCoverMCP` 命令行工具，通过 stdio 与 Agent 通信。适用于不使用 GUI 或需要自动化脚本的场景。
+
 ## 架构概览
 
 ```
-┌──────────────┐    stdio (JSON-RPC)    ┌────────────────┐    loopback TCP     ┌─────────────┐
-│  MCP Client  │◄──────────────────────►│  PlayCoverMCP  │◄───────────────────►│  PlayTools   │
-│  (AI Agent)  │                        │  (Host 侧)     │                     │  (Runtime)   │
-└──────────────┘                        └────────────────┘                     └─────────────┘
+模式 1（GUI 内嵌 TCP）:
+┌─────────────────────────────────────────────────────────┐
+│  PlayCover.app (GUI 进程)                                │
+│                                                          │
+│  ┌──────────┐   ┌───────────┐   ┌───────────────────┐  │
+│  │ SwiftUI  │   │MCPManager │   │ TCP:19820         │◄── Agent (Claude/Cursor/...)
+│  │   Views  │   │           │   │ (TCPTransport)    │  │
+│  └────┬─────┘   └─────┬─────┘   └────┬──────────────┘  │
+│       │               │              │                   │
+│       │         ┌─────▼─────┐        │                   │
+│       │         │ MCPServer │◄───────┘                   │
+│       │         └─────┬─────┘                            │
+│       │               │                                  │
+│       │    NotificationCenter                            │
+│       │               │                                  │
+│       ◀───────────────┘                                  │
+│  (GUI 自动刷新)                                           │
+└─────────────────────────────────────────────────────────┘
+
+模式 2（独立 CLI stdio）:
+┌──────────────┐    stdio (JSON-RPC)    ┌────────────────┐
+│  MCP Client  │◄──────────────────────►│  PlayCoverMCP  │
+│  (AI Agent)  │                        │  (CLI 进程)     │
+└──────────────┘                        └────────────────┘
 ```
 
-- **Transport**：stdio — 通过标准输入/输出传输 JSON-RPC 消息
-- **日志**：输出到 stderr，不干扰协议通信
+**共通特性**：
 - **Host 侧**：直接调用 PlayCover 本地能力（应用管理、签名、Keymap 等）
 - **Session 侧**：通过 loopback TCP bridge 与运行中的 iOS 应用通信（触控、键盘输入等）
+- **协议**：行分隔 JSON-RPC（两种模式消息格式完全一致）
 
 ## 系统要求
 
@@ -29,8 +65,22 @@ PlayCoverMCP 是 PlayCover 的 [Model Context Protocol (MCP)](https://modelconte
 # 克隆仓库
 git clone https://github.com/PlayCover/PlayCover.git
 cd PlayCover
+```
 
-# 构建 Release 版本
+### 构建 PlayCover.app（包含内嵌 MCP Server）
+
+```bash
+xcodebuild -scheme PlayCover \
+  -configuration Release \
+  -destination 'platform=macOS,arch=arm64' \
+  build
+```
+
+构建完成后启动 PlayCover.app，MCP Server 自动在 `127.0.0.1:19820` 上监听。
+
+### 构建 PlayCoverMCP CLI（独立命令行工具）
+
+```bash
 xcodebuild -scheme PlayCoverMCP \
   -configuration Release \
   -destination 'platform=macOS,arch=arm64' \
@@ -45,7 +95,26 @@ xcodebuild -scheme PlayCoverMCP \
 
 > **提示**：可以将二进制复制到方便的位置，例如 `/usr/local/bin/PlayCoverMCP`。
 
-## 验证安装
+## 验证连接
+
+### GUI 内嵌模式（TCP）
+
+启动 PlayCover.app 后：
+
+1. **查看 UI 状态**：打开 Settings → MCP Server，确认状态显示为 "Running"
+2. **命令行验证**：
+
+```bash
+# 检查端口是否在监听
+lsof -i :19820
+
+# 发送测试请求（initialize 握手）
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | nc localhost 19820
+```
+
+如果连接正常，会返回包含 `serverInfo` 的 JSON 响应。
+
+### CLI 模式（stdio）
 
 ```bash
 # 确认二进制可执行
@@ -57,9 +126,76 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 
 ## Agent 侧配置
 
-PlayCoverMCP 使用 **stdio** transport，以下是主流 MCP 客户端的配置方式。
+根据运行模式选择对应的配置方式。
 
-### Claude Desktop
+---
+
+### GUI 内嵌模式（TCP，推荐）
+
+> **前提**：PlayCover.app 正在运行。
+
+#### Claude Desktop
+
+编辑 `~/Library/Application Support/Claude/claude_desktop_config.json`：
+
+```json
+{
+  "mcpServers": {
+    "playcover": {
+      "transport": "tcp",
+      "host": "127.0.0.1",
+      "port": 19820
+    }
+  }
+}
+```
+
+#### CodeBuddy
+
+在项目根目录或全局 MCP 配置中添加：
+
+```json
+{
+  "mcpServers": {
+    "playcover": {
+      "host": "127.0.0.1",
+      "port": 19820,
+      "transport": "tcp"
+    }
+  }
+}
+```
+
+#### Cursor
+
+编辑 `.cursor/mcp.json`：
+
+```json
+{
+  "mcpServers": {
+    "playcover": {
+      "transport": "tcp",
+      "host": "127.0.0.1",
+      "port": 19820
+    }
+  }
+}
+```
+
+#### 其他支持 MCP TCP 的客户端
+
+配置要素：
+- **transport**：`tcp`
+- **host**：`127.0.0.1`
+- **port**：`19820`
+
+> **注意**：不同 Agent 客户端对 TCP transport 的支持程度可能不同。如果您的客户端尚不支持 TCP MCP，请使用下方的 CLI stdio 模式。
+
+---
+
+### CLI 模式（stdio）
+
+#### Claude Desktop
 
 编辑 `~/Library/Application Support/Claude/claude_desktop_config.json`：
 
@@ -73,9 +209,7 @@ PlayCoverMCP 使用 **stdio** transport，以下是主流 MCP 客户端的配置
 }
 ```
 
-### CodeBuddy
-
-在项目根目录或全局配置中添加 MCP Server：
+#### CodeBuddy
 
 ```json
 {
@@ -89,7 +223,7 @@ PlayCoverMCP 使用 **stdio** transport，以下是主流 MCP 客户端的配置
 }
 ```
 
-### Cursor
+#### Cursor
 
 编辑 `.cursor/mcp.json`：
 
@@ -103,9 +237,9 @@ PlayCoverMCP 使用 **stdio** transport，以下是主流 MCP 客户端的配置
 }
 ```
 
-### 其他支持 MCP 的客户端
+#### 其他客户端
 
-只需配置：
+配置要素：
 - **command**：PlayCoverMCP 二进制路径
 - **transport**：`stdio`
 - 无需额外的 args 或环境变量
@@ -286,7 +420,10 @@ xcodebuild test-without-building \
 
 | 问题 | 可能原因 | 解决方案 |
 |------|----------|----------|
-| Agent 无法连接到 server | 二进制路径错误 | 确认路径正确且有执行权限 (`chmod +x`) |
+| **TCP 模式**：Agent 无法连接 | PlayCover.app 未运行 | 启动 PlayCover.app，检查 Settings → MCP Server 状态 |
+| **TCP 模式**：端口 19820 不可达 | 端口被其他进程占用 | `lsof -i :19820` 检查占用情况，关闭冲突进程 |
+| **TCP 模式**：Settings 显示 "Failed" | TCP 监听失败 | 检查 Settings → MCP Server 中的错误信息 |
+| **CLI 模式**：Agent 无法连接 | 二进制路径错误 | 确认路径正确且有执行权限 (`chmod +x`) |
 | `create_session` 超时 | Runtime 未启动或未注入 PlayTools | 先 `launch_app`，确保应用已注入 PlayTools |
 | 触控/键盘命令失败 | Session 状态为 disconnected/closed | 检查 `list_sessions`，必要时重新创建 session |
 | `install_ipa` 无响应 | 长任务执行中 | 通过 task 机制查询进度，等待完成 |
@@ -299,7 +436,8 @@ xcodebuild test-without-building \
 
 - **MCP 协议**：`2024-11-05`
 - **Server 版本**：`0.2.0`
-- **Server 名称**：`playcover-mcp`
+- **Server 名称**：`playcover-mcp`（CLI）/ `playcover-mcp-gui`（GUI 内嵌）
+- **TCP 默认端口**：`19820`（仅 GUI 内嵌模式）
 
 ## License
 

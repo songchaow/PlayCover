@@ -147,9 +147,10 @@ import Metal
     // MARK: - Private
     
     private func defaultOutputURL() -> URL {
-        // 输出到 PlayCover 的 container 目录，避免沙箱限制
-        let container = URL(fileURLWithPath: "/Users/\(NSUserName())/Library/Containers/io.playcover.PlayCover")
-            .appendingPathComponent("Captures")
+        // ⚠️ 方案已变更：输出到 app 自己的 Documents/Captures 目录，而非 PlayCover container
+        // 实际实现见 MetalCaptureService.swift
+        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let container = documentsURL.appendingPathComponent("Captures")
         
         // 确保目录存在
         try? FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)

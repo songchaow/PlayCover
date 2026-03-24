@@ -90,7 +90,7 @@ case getCaptureStatus  // "get_capture_status"
     "type": "commandResponse",
     "success": true,
     "data": {
-        "output_path": "/Users/.../Captures/com.example.app_20260325_143000.gputrace",
+        "output_path": "/Users/.../Documents/Captures/com.example.app_20260325_143000.gputrace",
         "message": "Capture completed successfully"
     }
 }

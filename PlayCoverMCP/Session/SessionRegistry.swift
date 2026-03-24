@@ -99,6 +99,17 @@ public final class SessionRegistry: Sendable {
         sessions[sessionId]?.lastHeartbeat = Date()
     }
 
+    /// Update the status of a session. Throws if not found.
+    public func updateStatus(sessionId: String, newStatus: SessionStatus) throws {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard sessions[sessionId] != nil else {
+            throw SessionError.sessionNotFound(sessionId)
+        }
+        sessions[sessionId]?.status = newStatus
+    }
+
     /// Remove sessions that haven't sent a heartbeat within the given timeout.
     @discardableResult
     public func removeStaleSessions(timeout: TimeInterval) -> [SessionInfo] {

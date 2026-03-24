@@ -5,7 +5,7 @@
 
 ### Dashboard
 
-- **状态**：`TODO`
+- **状态**：`DONE`
 - **优先级**：`P0`
 - **预计工作量**：`M`
 - **建议耗时**：`0.5 ~ 1.0 天`
@@ -86,10 +86,22 @@
 
 ### 执行记录
 
-- **开始时间**：
-- **完成时间**：
-- **执行人 / agent**：
-- **测试命令**：
-- **测试结果**：
+- **开始时间**：2026-03-24 13:00
+- **完成时间**：2026-03-24 13:30
+- **执行人 / agent**：CodeBuddy AI
+- **测试命令**：`xcodebuild test-without-building -scheme PlayCoverMCP -destination 'platform=macOS,arch=arm64'`
+- **测试结果**：397 pass / 0 fail / 1 skip
+- **实际改动范围**：
+  - `PlayCoverMCP/Session/SessionInfo.swift` — 新增 `SessionStatus` 枚举（starting/ready/disconnected/closed），`SessionInfo` 增加 `status` 字段
+  - `PlayCoverMCP/Session/SessionRegistry.swift` — 新增 `updateStatus` 方法
+  - `PlayCoverMCP/Session/SessionService.swift` — 新增，封装 create/list/close/getSession/getStatus
+  - `PlayCoverMCP/Tools/Session/SessionTools.swift` — 新增，注册 create_session / list_sessions / close_session 工具
+  - `PlayCoverMCP/Resources/Session/SessionResources.swift` — 新增，注册 playcover://sessions 和 playcover://sessions/{sessionId} 资源
+  - `PlayCoverMCP/main.swift` — 注册 session tools 和 resources
+  - `PlayCoverMCP/Common/MCPErrorExtensions.swift` — 新增 SessionError 到 PlayCoverMCPError 的映射
+  - `PlayCoverMCPTests/SessionLifecycleTests.swift` — 新增，覆盖 status 模型、service CRUD、MCP 工具/资源集成、fake runtime 集成
+  - `PlayCover.xcodeproj/project.pbxproj` — 添加新文件到两个 target
 - **遗留问题**：
-- **commit hash**：
+  - `close_session` 当前只做 registry 注销，未主动发送 bridge close 消息（后续任务可通过 RegistrationListener 扩展）
+  - `create_session` 的 pending session 机制（starting 状态）依赖 runtime 注册后状态变为 ready，但当前 RegistrationListener 不更新已有 pending session，而是创建新的 ready session
+- **commit hash**：待提交

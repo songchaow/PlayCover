@@ -121,6 +121,22 @@ public struct PlayCoverMCPError: Error, LocalizedError, Equatable, Sendable {
             self.cause = nil
             return
         }
+        if let sessionErr = error as? SessionError {
+            let mappedCode: Int
+            switch sessionErr {
+            case .sessionNotFound:
+                mappedCode = PlayCoverErrorCode.sessionNotFound.rawValue
+            case .sessionAlreadyExists, .invalidSessionId:
+                mappedCode = JSONRPCError.invalidParams
+            case .heartbeatTimeout:
+                mappedCode = PlayCoverErrorCode.bridgeError.rawValue
+            }
+            self.code = mappedCode
+            self.message = message ?? sessionErr.localizedDescription
+            self.data = nil
+            self.cause = nil
+            return
+        }
         self.code = code ?? JSONRPCError.internalError
         self.message = message ?? error.localizedDescription
         self.data = nil

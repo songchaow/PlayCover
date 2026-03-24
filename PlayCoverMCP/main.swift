@@ -66,6 +66,12 @@ InjectionTools.register(on: server, injectionService: injectionService)
 let keymapService = KeymapService.defaultService()
 KeymapTools.register(on: server, keymapService: keymapService)
 
+// Register session tools and resources
+let sessionRegistry = SessionRegistry()
+let sessionService = SessionService(registry: sessionRegistry)
+SessionTools.register(on: server, sessionService: sessionService)
+SessionResources.register(on: server, sessionService: sessionService)
+
 let transport = StdioTransport { message in
     server.handle(message)
 }

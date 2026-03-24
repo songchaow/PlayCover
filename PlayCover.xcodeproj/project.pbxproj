@@ -159,6 +159,17 @@
 		86A9720A138045CC9C84B70B /* BridgeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7540CDAB9AC4715AAFF0785 /* BridgeClient.swift */; };
 		AB50E2E1A20C462897A04A29 /* RegistrationListener.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9C8C42E2F5F4F0098953ED2 /* RegistrationListener.swift */; };
 		87BEE38E84974F38B193EC3D /* SessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24B2B5244BD64F859A19F172 /* SessionTests.swift */; };
+		A532939C6B04A6BADB1275CC /* SessionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SessionService.swift; path = SessionService.swift; sourceTree = "<group>"; };
+		E09AC6EBA62B88DCAE9BC0CB /* SessionTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SessionTools.swift; path = SessionTools.swift; sourceTree = "<group>"; };
+		442C2A49EBA0FB9B80022994 /* SessionResources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SessionResources.swift; path = SessionResources.swift; sourceTree = "<group>"; };
+		21549A0830B5DFB9F2E1D233 /* SessionLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SessionLifecycleTests.swift; path = SessionLifecycleTests.swift; sourceTree = "<group>"; };
+		98CEEB204D0452954799231F /* SessionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A532939C6B04A6BADB1275CC /* SessionService.swift */; };
+		8A424FF774E64CAD3CB86F24 /* SessionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A532939C6B04A6BADB1275CC /* SessionService.swift */; };
+		F0F06AD5612443C5E9468B7B /* SessionTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = E09AC6EBA62B88DCAE9BC0CB /* SessionTools.swift */; };
+		E9B666C0D2B8E2791D48DC37 /* SessionTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = E09AC6EBA62B88DCAE9BC0CB /* SessionTools.swift */; };
+		2DAF33DFB3A42A90C36E50D6 /* SessionResources.swift in Sources */ = {isa = PBXBuildFile; fileRef = 442C2A49EBA0FB9B80022994 /* SessionResources.swift */; };
+		9FE4C6DF072C136ABED1F996 /* SessionResources.swift in Sources */ = {isa = PBXBuildFile; fileRef = 442C2A49EBA0FB9B80022994 /* SessionResources.swift */; };
+		C9B77BE0F966388DE55DF2CC /* SessionLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21549A0830B5DFB9F2E1D233 /* SessionLifecycleTests.swift */; };
 
 /* End PBXBuildFile section */
 
@@ -639,6 +650,7 @@
 				198729C057DE4909A0D6DD5E /* InjectionToolsAndResourcesTests.swift */,
 							36B1A2FFC706411CA3D7C07B /* KeymapServiceTests.swift */,
 				24B2B5244BD64F859A19F172 /* SessionTests.swift */,
+				21549A0830B5DFB9F2E1D233 /* SessionLifecycleTests.swift */,
 );
 			path = PlayCoverMCPTests;
 			sourceTree = "<group>";
@@ -716,14 +728,31 @@
 			path = HostServices;
 			sourceTree = "<group>";
 		};
+		071900DE922C893E126FE01C /* Session */ = {
+			isa = PBXGroup;
+			children = (
+				E09AC6EBA62B88DCAE9BC0CB /* SessionTools.swift */,
+			);
+			path = Session;
+			sourceTree = "<group>";
+		};
 		3AD721A147D7400EAD4E2FA2 /* Tools */ = {
 			isa = PBXGroup;
 			children = (
 				77C3AF00351D468DB8DB0BE4 /* Host */,
 				9582C48DB29E44938338E6C4 /* AppTools.swift */,
 					19B42407C52741048C0D0A94 /* InstallerTools.swift */,
+				071900DE922C893E126FE01C /* Session */,
 			);
 			path = Tools;
+			sourceTree = "<group>";
+		};
+		22EA45534267562FDDFE2CD2 /* Session */ = {
+			isa = PBXGroup;
+			children = (
+				442C2A49EBA0FB9B80022994 /* SessionResources.swift */,
+			);
+			path = Session;
 			sourceTree = "<group>";
 		};
 		40738BD4E1A9446E8BB6B77A /* Resources */ = {
@@ -731,6 +760,7 @@
 			children = (
 				F5A0A2C9916847B5B22FE46A /* AppResources.swift */,
 				A1B2C3D4E5F60006AAAABBBB /* SettingsResources.swift */,
+				22EA45534267562FDDFE2CD2 /* Session */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -814,6 +844,7 @@
 				A13075E11E5A43A88079D105 /* SessionRegistry.swift */,
 				B7540CDAB9AC4715AAFF0785 /* BridgeClient.swift */,
 				E9C8C42E2F5F4F0098953ED2 /* RegistrationListener.swift */,
+				A532939C6B04A6BADB1275CC /* SessionService.swift */,
 			);
 			path = Session;
 			sourceTree = "<group>";
@@ -1190,6 +1221,9 @@
 				E9374CB5172F48F5AB37A193 /* SessionRegistry.swift in Sources */,
 				86A9720A138045CC9C84B70B /* BridgeClient.swift in Sources */,
 				AB50E2E1A20C462897A04A29 /* RegistrationListener.swift in Sources */,
+				98CEEB204D0452954799231F /* SessionService.swift in Sources */,
+				F0F06AD5612443C5E9468B7B /* SessionTools.swift in Sources */,
+				2DAF33DFB3A42A90C36E50D6 /* SessionResources.swift in Sources */,
 				E46D6DBE0FDE41C4AB2A4F68 /* KeymapTools.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1245,6 +1279,10 @@
 				86A9720A138045CC9C84B70B /* BridgeClient.swift in Sources */,
 				AB50E2E1A20C462897A04A29 /* RegistrationListener.swift in Sources */,
 				87BEE38E84974F38B193EC3D /* SessionTests.swift in Sources */,
+				8A424FF774E64CAD3CB86F24 /* SessionService.swift in Sources */,
+				E9B666C0D2B8E2791D48DC37 /* SessionTools.swift in Sources */,
+				9FE4C6DF072C136ABED1F996 /* SessionResources.swift in Sources */,
+				C9B77BE0F966388DE55DF2CC /* SessionLifecycleTests.swift in Sources */,
 				E1E6350355F743E89258FC12 /* InjectionToolsAndResourcesTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

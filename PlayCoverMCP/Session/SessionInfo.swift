@@ -3,6 +3,16 @@
 
 import Foundation
 
+// MARK: - Session Status
+
+/// Represents the current lifecycle state of a session.
+public enum SessionStatus: String, Codable, Equatable, Sendable {
+    case starting      // Session requested, waiting for runtime to register
+    case ready         // Runtime registered and bridge connected
+    case disconnected  // Runtime connection lost (session still tracked)
+    case closed        // Session explicitly closed by host or client
+}
+
 // MARK: - Session Info
 
 /// Represents an active session between the MCP host and a runtime (PlayTools in an app process).
@@ -25,13 +35,17 @@ public struct SessionInfo: Codable, Equatable, Sendable {
     /// Last time a heartbeat (ping/pong) was received from this runtime.
     public var lastHeartbeat: Date
 
+    /// Current lifecycle status of the session.
+    public var status: SessionStatus
+
     public init(
         sessionId: String,
         bundleId: String,
         pid: Int32,
         runtimePort: UInt16,
         createdAt: Date = Date(),
-        lastHeartbeat: Date = Date()
+        lastHeartbeat: Date = Date(),
+        status: SessionStatus = .ready
     ) {
         self.sessionId = sessionId
         self.bundleId = bundleId
@@ -39,6 +53,7 @@ public struct SessionInfo: Codable, Equatable, Sendable {
         self.runtimePort = runtimePort
         self.createdAt = createdAt
         self.lastHeartbeat = lastHeartbeat
+        self.status = status
     }
 
     /// Create a SessionInfo from a RegisterPayload.
@@ -49,6 +64,7 @@ public struct SessionInfo: Codable, Equatable, Sendable {
         self.runtimePort = payload.runtimePort
         self.createdAt = Date()
         self.lastHeartbeat = Date()
+        self.status = .ready
     }
 
     /// Convert to a dictionary for MCP JSON responses.
@@ -60,6 +76,7 @@ public struct SessionInfo: Codable, Equatable, Sendable {
             "runtimePort": Int(runtimePort),
             "createdAt": ISO8601DateFormatter().string(from: createdAt),
             "lastHeartbeat": ISO8601DateFormatter().string(from: lastHeartbeat),
+            "status": status.rawValue,
         ]
     }
 }

@@ -237,6 +237,13 @@
 		02C876429EE34FB99EB67E4F /* KeymapTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E92E759231F4F6F92512009 /* KeymapTools.swift */; };
 		7ACFBF9F816249E5A9FDA859 /* SessionHealthMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11CBF7E2FB8242E38F6EE005 /* SessionHealthMonitor.swift */; };
 		G04MCP001A2B3C4D5E6F7890 /* MCPManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = G04MCP001A2B3C4D5E6F7891 /* MCPManager.swift */; };
+		2A8F111585554F758B8F0F14 /* CaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D38C3BF68A0F46029D00369F /* CaptureService.swift */; };
+		A69049B67D084FF7AD5F0767 /* CaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D38C3BF68A0F46029D00369F /* CaptureService.swift */; };
+		6A18142DDD71494289DD69A9 /* CaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D38C3BF68A0F46029D00369F /* CaptureService.swift */; };
+		E5441B62AA0749E18153A58E /* CaptureTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 960E8E0BF59B446896CC60A9 /* CaptureTools.swift */; };
+		99EEA1A1413244A5B91723D5 /* CaptureTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 960E8E0BF59B446896CC60A9 /* CaptureTools.swift */; };
+		F42D2BA3119F4D45ACBD95BE /* CaptureTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 960E8E0BF59B446896CC60A9 /* CaptureTools.swift */; };
+		608776EEA49F4EB187F71A45 /* CaptureToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 424F39C2460D4A67BDA3EB09 /* CaptureToolsTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -428,6 +435,9 @@
 		2542BBA788BC4BCFB2924607 /* SessionReliabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SessionReliabilityTests.swift; path = SessionReliabilityTests.swift; sourceTree = "<group>"; };
 		G04MCP001A2B3C4D5E6F7891 /* MCPManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPManager.swift; sourceTree = "<group>"; };
 
+		D38C3BF68A0F46029D00369F /* CaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CaptureService.swift; path = CaptureService.swift; sourceTree = "<group>"; };
+		960E8E0BF59B446896CC60A9 /* CaptureTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CaptureTools.swift; path = CaptureTools.swift; sourceTree = "<group>"; };
+		424F39C2460D4A67BDA3EB09 /* CaptureToolsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CaptureToolsTests.swift; path = CaptureToolsTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -733,6 +743,7 @@
 				21549A0830B5DFB9F2E1D233 /* SessionLifecycleTests.swift */,
 				2B3DE37080CE965D68081DF9 /* SessionTouchTests.swift */,
 				362AE3D78BF14F4BA17D491F /* SessionInputTests.swift */,
+				424F39C2460D4A67BDA3EB09 /* CaptureToolsTests.swift */,
 				2542BBA788BC4BCFB2924607 /* SessionReliabilityTests.swift */,
 				B3F7A1C2D4E5F60500AABB05 /* TCPTransportTests.swift */,
 );
@@ -820,6 +831,7 @@
 				E09AC6EBA62B88DCAE9BC0CB /* SessionTools.swift */,
 				9D040AE8A235F4950A8847D6 /* TouchTools.swift */,
 							B275B27D2B5F4E6BBDFD054E /* InputTools.swift */,
+				960E8E0BF59B446896CC60A9 /* CaptureTools.swift */,
 );
 			path = Session;
 			sourceTree = "<group>";
@@ -935,6 +947,7 @@
 				A532939C6B04A6BADB1275CC /* SessionService.swift */,
 				2370C4C8A84F56AD488154F7 /* TouchService.swift */,
 							BBA93F1020F7431D90F7FE32 /* InputService.swift */,
+				D38C3BF68A0F46029D00369F /* CaptureService.swift */,
 				11CBF7E2FB8242E38F6EE005 /* SessionHealthMonitor.swift */,
 );
 			path = Session;
@@ -1312,6 +1325,8 @@
 				DD5872A862774DA2BB780F7C /* TouchTools.swift in Sources */,
 				EF465F86E3044E4C92D17BA3 /* InputService.swift in Sources */,
 				8E2D679461824632B004385A /* InputTools.swift in Sources */,
+				2A8F111585554F758B8F0F14 /* CaptureService.swift in Sources */,
+				E5441B62AA0749E18153A58E /* CaptureTools.swift in Sources */,
 				02C876429EE34FB99EB67E4F /* KeymapTools.swift in Sources */,
 				7ACFBF9F816249E5A9FDA859 /* SessionHealthMonitor.swift in Sources */,
 				B3F7A1C2D4E5F60200AABB02 /* TCPTransport.swift in Sources */,
@@ -1363,6 +1378,8 @@
 				6DCE6A4EFA7D7CF374752B56 /* TouchTools.swift in Sources */,
 				8EEF62CCB617474EA9EEF11B /* InputService.swift in Sources */,
 				821DCE0775B2404D922B2F5A /* InputTools.swift in Sources */,
+				A69049B67D084FF7AD5F0767 /* CaptureService.swift in Sources */,
+				99EEA1A1413244A5B91723D5 /* CaptureTools.swift in Sources */,
 				E46D6DBE0FDE41C4AB2A4F68 /* KeymapTools.swift in Sources */,
 				63E7EEA005D24C6090BDAD61 /* SessionHealthMonitor.swift in Sources */,
 				B3F7A1C2D4E5F60300AABB03 /* TCPTransport.swift in Sources */,
@@ -1431,6 +1448,9 @@
 				02D2ECF266FC4D9DAD4C939F /* InputService.swift in Sources */,
 				D0345CB8143F4821BF99C505 /* InputTools.swift in Sources */,
 				CEBB186D7B144E77B41EC640 /* SessionInputTests.swift in Sources */,
+				6A18142DDD71494289DD69A9 /* CaptureService.swift in Sources */,
+				F42D2BA3119F4D45ACBD95BE /* CaptureTools.swift in Sources */,
+				608776EEA49F4EB187F71A45 /* CaptureToolsTests.swift in Sources */,
 				E1E6350355F743E89258FC12 /* InjectionToolsAndResourcesTests.swift in Sources */,
 				7D0DABFC70CD4C4CBD146D17 /* SessionHealthMonitor.swift in Sources */,
 				95D4FBFC13B04BD3B5A42C0F /* SessionReliabilityTests.swift in Sources */,

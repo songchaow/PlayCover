@@ -80,6 +80,10 @@ TouchTools.register(on: server, touchService: touchService)
 let inputService = InputService(registry: sessionRegistry)
 InputTools.register(on: server, inputService: inputService)
 
+// Register capture tools (capture_metal_frame, get_capture_status)
+let captureService = CaptureService(registry: sessionRegistry)
+CaptureTools.register(on: server, captureService: captureService)
+
 let transport = StdioTransport { message in
     server.handle(message)
 }

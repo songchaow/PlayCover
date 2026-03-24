@@ -1,0 +1,308 @@
+// CaptureService.swift
+// PlayCoverMCP
+
+import Foundation
+
+// MARK: - Capture Command Parameters
+
+/// Parameters for a capture_metal_frame command.
+public struct CaptureFrameParams: Codable, Equatable, Sendable {
+    /// Optional custom output path for the .gputrace file.
+    public let outputPath: String?
+    /// Capture duration in milliseconds (default: 100, enough for 1-2 frames at 60fps).
+    public let durationMs: Int
+
+    public init(outputPath: String? = nil, durationMs: Int = 100) {
+        self.outputPath = outputPath
+        self.durationMs = durationMs
+    }
+}
+
+/// Result returned after a capture_metal_frame command completes.
+public struct CaptureFrameResult: Codable, Equatable, Sendable {
+    /// Whether the capture was initiated successfully.
+    public let success: Bool
+    /// The actual output path of the .gputrace file.
+    public let outputPath: String?
+    /// Human-readable status message.
+    public let message: String
+
+    public init(success: Bool, outputPath: String? = nil, message: String) {
+        self.success = success
+        self.outputPath = outputPath
+        self.message = message
+    }
+
+    public func toDictionary() -> [String: Any] {
+        var dict: [String: Any] = [
+            "success": success,
+            "message": message,
+        ]
+        if let outputPath = outputPath {
+            dict["output_path"] = outputPath
+        }
+        return dict
+    }
+}
+
+/// Result returned after a get_capture_status command completes.
+public struct CaptureStatusResult: Codable, Equatable, Sendable {
+    /// Whether MTLCaptureManager is accessible.
+    public let available: Bool
+    /// Whether .gpuTraceDocument destination is supported.
+    public let supportsGpuTrace: Bool
+    /// Whether a capture is currently in progress.
+    public let isCapturing: Bool
+    /// Whether metalCaptureEnabled is ON in settings.
+    public let enabled: Bool
+
+    public init(available: Bool, supportsGpuTrace: Bool, isCapturing: Bool, enabled: Bool) {
+        self.available = available
+        self.supportsGpuTrace = supportsGpuTrace
+        self.isCapturing = isCapturing
+        self.enabled = enabled
+    }
+
+    public func toDictionary() -> [String: Any] {
+        [
+            "available": available,
+            "supports_gpu_trace": supportsGpuTrace,
+            "is_capturing": isCapturing,
+            "enabled": enabled,
+        ]
+    }
+}
+
+// MARK: - Capture Error
+
+/// Errors specific to capture commands.
+public enum CaptureError: Error, LocalizedError, Equatable {
+    case invalidDuration(String)
+    case sessionNotReady(String)
+    case commandFailed(String)
+    case captureNotAvailable(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidDuration(let detail): return "Invalid capture duration: \(detail)"
+        case .sessionNotReady(let detail): return "Session not ready for capture: \(detail)"
+        case .commandFailed(let detail): return "Capture command failed: \(detail)"
+        case .captureNotAvailable(let detail): return "Metal capture not available: \(detail)"
+        }
+    }
+}
+
+// MARK: - Capture Service Protocol
+
+/// Protocol for capture services, enabling fake implementations for testing.
+public protocol CaptureServiceProtocol {
+    func captureFrame(sessionId: String, params: CaptureFrameParams) async throws -> CaptureFrameResult
+    func getCaptureStatus(sessionId: String) async throws -> CaptureStatusResult
+}
+
+// MARK: - Capture Service
+
+/// Service that sends Metal capture commands to a runtime through the bridge.
+///
+/// The service validates parameters, then sends capture commands through a
+/// `BridgeClient` connected to the session's runtime port.
+public final class CaptureService: CaptureServiceProtocol, Sendable {
+
+    // MARK: - Dependencies
+
+    private let registry: SessionRegistry
+    private let clientFactory: (String, UInt16) -> BridgeClient
+
+    // MARK: - Init
+
+    public init(
+        registry: SessionRegistry,
+        clientFactory: @escaping (String, UInt16) -> BridgeClient = { sessionId, port in
+            BridgeClient(sessionId: sessionId, port: port)
+        }
+    ) {
+        self.registry = registry
+        self.clientFactory = clientFactory
+    }
+
+    // MARK: - Capture Frame
+
+    /// Trigger a one-frame GPU capture on the target app.
+    ///
+    /// - Parameters:
+    ///   - sessionId: The target session identifier.
+    ///   - params: Capture parameters (optional output path, duration).
+    /// - Returns: A `CaptureFrameResult` describing the outcome.
+    /// - Throws: `CaptureError` or `BridgeProtocolError`.
+    public func captureFrame(sessionId: String, params: CaptureFrameParams) async throws -> CaptureFrameResult {
+        try validateDuration(params.durationMs)
+
+        let session = try getReadySession(sessionId)
+
+        var bridgeDict: [String: Any] = [
+            "duration_ms": params.durationMs,
+        ]
+        if let outputPath = params.outputPath {
+            bridgeDict["output_path"] = outputPath
+        }
+        let bridgeParams = AnyCodable(bridgeDict)
+
+        let client = clientFactory(sessionId, session.runtimePort)
+        defer { client.close() }
+        try await client.connect(timeout: 5.0)
+
+        // Allow time for capture duration plus buffer
+        let timeoutSec = Double(params.durationMs) / 1000.0 + 10.0
+        let response = try await client.sendCommand(
+            BridgeCommandName.captureFrame,
+            params: bridgeParams,
+            timeout: timeoutSec
+        )
+
+        // Extract result from response
+        let resultDict = response.result?.dictionary
+        let outputPath = resultDict?["output_path"] as? String
+        let message = resultDict?["message"] as? String ?? "Capture completed"
+
+        return CaptureFrameResult(
+            success: true,
+            outputPath: outputPath,
+            message: message
+        )
+    }
+
+    // MARK: - Get Capture Status
+
+    /// Query the Metal capture status for the target app.
+    ///
+    /// - Parameter sessionId: The target session identifier.
+    /// - Returns: A `CaptureStatusResult` describing the current status.
+    /// - Throws: `CaptureError` or `BridgeProtocolError`.
+    public func getCaptureStatus(sessionId: String) async throws -> CaptureStatusResult {
+        let session = try getReadySession(sessionId)
+
+        let client = clientFactory(sessionId, session.runtimePort)
+        defer { client.close() }
+        try await client.connect(timeout: 5.0)
+
+        let response = try await client.sendCommand(
+            BridgeCommandName.getCaptureStatus,
+            timeout: 5.0
+        )
+
+        // Extract status fields from response
+        let resultDict = response.result?.dictionary
+        let available = resultDict?["available"] as? Bool ?? false
+        let supportsGpuTrace = resultDict?["supports_gpu_trace"] as? Bool ?? false
+        let isCapturing = resultDict?["is_capturing"] as? Bool ?? false
+        let enabled = resultDict?["enabled"] as? Bool ?? false
+
+        return CaptureStatusResult(
+            available: available,
+            supportsGpuTrace: supportsGpuTrace,
+            isCapturing: isCapturing,
+            enabled: enabled
+        )
+    }
+
+    // MARK: - Validation
+
+    private func validateDuration(_ durationMs: Int) throws {
+        if durationMs <= 0 {
+            throw CaptureError.invalidDuration("Duration must be positive (got \(durationMs)ms)")
+        }
+        if durationMs > 30_000 {
+            throw CaptureError.invalidDuration("Duration must be at most 30000ms (got \(durationMs)ms)")
+        }
+    }
+
+    private func getReadySession(_ sessionId: String) throws -> SessionInfo {
+        guard let session = registry.get(sessionId) else {
+            throw SessionError.sessionNotFound(sessionId)
+        }
+        guard session.status == .ready else {
+            throw CaptureError.sessionNotReady("Session '\(sessionId)' is in '\(session.status.rawValue)' state, expected 'ready'")
+        }
+        return session
+    }
+}
+
+// MARK: - Fake Capture Service (for testing)
+
+/// A fake capture service that records commands without making real bridge connections.
+/// Useful for testing MCP tool handlers in isolation.
+public final class FakeCaptureService: CaptureServiceProtocol, Sendable {
+
+    private let lock = NSLock()
+    private var _captureFrameCalls: [(sessionId: String, params: CaptureFrameParams)] = []
+    private var _getCaptureStatusCalls: [String] = []
+    private var _shouldFail: Bool = false
+    private var _failureMessage: String = "Fake failure"
+    private var _statusResult: CaptureStatusResult = CaptureStatusResult(
+        available: true, supportsGpuTrace: true, isCapturing: false, enabled: true
+    )
+
+    public init() {}
+
+    /// All recorded captureFrame calls.
+    public var captureFrameCalls: [(sessionId: String, params: CaptureFrameParams)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _captureFrameCalls
+    }
+
+    /// All recorded getCaptureStatus calls.
+    public var getCaptureStatusCalls: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _getCaptureStatusCalls
+    }
+
+    /// Configure the fake to throw errors.
+    public func setShouldFail(_ fail: Bool, message: String = "Fake failure") {
+        lock.lock()
+        _shouldFail = fail
+        _failureMessage = message
+        lock.unlock()
+    }
+
+    /// Configure the fake capture status result.
+    public func setStatusResult(_ result: CaptureStatusResult) {
+        lock.lock()
+        _statusResult = result
+        lock.unlock()
+    }
+
+    public func captureFrame(sessionId: String, params: CaptureFrameParams) async throws -> CaptureFrameResult {
+        lock.lock()
+        let shouldFail = _shouldFail
+        let message = _failureMessage
+        _captureFrameCalls.append((sessionId: sessionId, params: params))
+        lock.unlock()
+
+        if shouldFail {
+            throw CaptureError.commandFailed(message)
+        }
+
+        return CaptureFrameResult(
+            success: true,
+            outputPath: params.outputPath ?? "/tmp/capture.gputrace",
+            message: "Frame captured successfully"
+        )
+    }
+
+    public func getCaptureStatus(sessionId: String) async throws -> CaptureStatusResult {
+        lock.lock()
+        let shouldFail = _shouldFail
+        let message = _failureMessage
+        let result = _statusResult
+        _getCaptureStatusCalls.append(sessionId)
+        lock.unlock()
+
+        if shouldFail {
+            throw CaptureError.commandFailed(message)
+        }
+
+        return result
+    }
+}

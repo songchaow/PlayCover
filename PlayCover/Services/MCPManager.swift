@@ -238,5 +238,9 @@ class MCPManager: ObservableObject {
         // Input tools (press_key, type_text, toggle_debug_overlay)
         let inputService = InputService(registry: sessionRegistry)
         InputTools.register(on: server, inputService: inputService)
+
+        // Capture tools (capture_metal_frame, get_capture_status)
+        let captureService = CaptureService(registry: sessionRegistry)
+        CaptureTools.register(on: server, captureService: captureService)
     }
 }

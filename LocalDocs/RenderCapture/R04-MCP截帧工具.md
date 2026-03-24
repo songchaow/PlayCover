@@ -5,7 +5,7 @@
 
 ### Dashboard
 
-- **状态**：`TODO`
+- **状态**：`DONE`
 - **优先级**：`P1`
 - **预计工作量**：`S`（小型）
 - **依赖任务**：`R03`
@@ -182,9 +182,22 @@ func handleCaptureTool(params: [String: Any]) async throws -> [String: Any] {
 
 ### 实施结果
 
-_（任务完成后由执行 agent 填写）_
-
 - **实际改动文件**：
+  - `PlayCoverMCP/Session/CaptureService.swift`（新增）— CaptureFrameParams、CaptureFrameResult、CaptureStatusResult、CaptureError、CaptureServiceProtocol、CaptureService、FakeCaptureService
+  - `PlayCoverMCP/Tools/Session/CaptureTools.swift`（新增）— 注册 `capture_metal_frame` 和 `get_capture_status` 两个 MCP 工具
+  - `PlayCoverMCPTests/CaptureToolsTests.swift`（新增）— 8 个测试类覆盖参数、结果、错误映射、Fake 服务、验证、命令编码、工具注册与调用
+  - `PlayCoverMCP/main.swift`（修改）— 注册 CaptureService 和 CaptureTools
+  - `PlayCover/Services/MCPManager.swift`（修改）— GUI TCP 模式同步注册 CaptureService 和 CaptureTools
+  - `PlayCoverMCP/Common/MCPErrorExtensions.swift`（修改）— 添加 CaptureError → PlayCoverMCPError 映射
+  - `PlayCover.xcodeproj/project.pbxproj`（修改）— 通过 `Scripts/add_r04_files.py` 脚本添加新文件到三个 target（PlayCover Host、PlayCoverMCP、PlayCoverMCPTests）
+  - `Scripts/add_r04_files.py`（新增）— pbxproj 自动化修改脚本
 - **关键决策**：
+  - 工具放置在 `Tools/Session/` 下，因为截帧需要通过 Bridge TCP 与 runtime 通信，遵循 TouchTools/InputTools 的 Session 工具模式
+  - 使用 `sessionId` 而非 `bundle_id` 作为参数，与现有 Session 工具保持一致
+  - CaptureService 验证 duration 范围 1-30000ms，超出范围抛出 invalidDuration 错误
+  - 使用 `runAsync` + `DispatchSemaphore` 桥接 async 服务调用到同步 ToolHandler
+  - pbxproj 脚本需要将文件添加到全部三个 target 的 Sources build phase（Host、MCP CLI、Tests）
 - **已知问题**：
-- **Commit Hash**：
+  - C05（PlayTools AppSettingsData 缺少 metalCaptureEnabled）和 C09（PlayCover.swift MetalCaptureService 初始化）两项验证失败，属于 R01/R02 的前序遗留问题，不在 R04 范围内
+  - PlayCover Host scheme 构建失败仅因 Carthage Bootstrap 脚本（环境配置问题），非代码编译错误
+- **Commit Hash**：`56d04ab5`

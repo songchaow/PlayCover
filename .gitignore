@@ -2,7 +2,15 @@
 #
 # gitignore contributors: remember to update Global/Xcode.gitignore, Objective-C.gitignore & Swift.gitignore
 
-/Carthage
+# 忽略 Carthage 目录，但保留有自定义修改的 PlayTools 文件
+/Carthage/*
+!/Carthage/Checkouts/
+/Carthage/Checkouts/*
+!/Carthage/Checkouts/PlayTools/
+/Carthage/Checkouts/PlayTools/*
+!/Carthage/Checkouts/PlayTools/PlayTools/
+/Carthage/Checkouts/PlayTools/PlayTools/*
+!/Carthage/Checkouts/PlayTools/PlayTools/PlaySettings.swift
 .DS_store
 /vendor
 /output

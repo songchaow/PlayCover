@@ -225,6 +225,8 @@
 "settings.resetKm" = "キーマップをリセット";
 "settings.resetSettingsCompleted" = "設定は初期化されました！";
 "settings.toggle.hud" = "Metal HUD";
+"settings.toggle.metalCapture" = "Metal キャプチャ";
+"settings.help.metalCapture" = "Metal GPU フレームキャプチャを有効にします。レンダリング分析のための GPU フレームのプログラム的キャプチャを可能にします。アプリの再起動が必要です。";
 "settings.info.bundleVersion" = "バンドルバージョン:";
 "playapp.deleteConfirm" = "アンインストール";
 "playapp.deleteMessage" = "本当に %@ をアンインストールしますか？";

@@ -265,6 +265,8 @@
 "settings.toggle.discord" = "Enable Discord activity";
 "settings.toggle.hud" = "Metal HUD";
 "settings.unavailable.hud" = "Metal HUD unavailable";
+"settings.toggle.metalCapture" = "Metal Capture";
+"settings.help.metalCapture" = "Enable Metal GPU frame capture. Allows programmatic capture of GPU frames for render analysis. Requires app restart.";
 "settings.text.debugger" = "Debugger:";
 "settings.toggle.lldb" = "Open with LLDB";
 "settings.toggle.lldbWithTerminal" = "Open in terminal";

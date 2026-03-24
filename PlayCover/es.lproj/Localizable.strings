@@ -222,6 +222,8 @@
 "settings.resetSettings" = "Restablecer configuración";
 "settings.resetKm" = "Restablecer asignación de teclas";
 "settings.toggle.hud" = "HUD de Metal";
+"settings.toggle.metalCapture" = "Metal Capture";
+"settings.help.metalCapture" = "Habilitar captura de fotogramas Metal GPU. Permite la captura programática de fotogramas GPU para análisis de renderizado. Requiere reiniciar la app.";
 "settings.resetSettingsCompleted" = "¡La configuración se ha revertido a la predeterminada!";
 "settings.resetKmCompleted" = "¡La asignación de teclas se ha restablecido!";
 "settings.tab.misc" = "Varios";

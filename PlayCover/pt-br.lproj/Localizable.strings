@@ -103,6 +103,8 @@
 "settings.text.state.help" = "Segunda linha abaixo do título";
 "settings.toggle.discord" = "Habilitar atividade no Discord";
 "settings.toggle.hud" = "HUD Metal";
+"settings.toggle.metalCapture" = "Metal Capture";
+"settings.help.metalCapture" = "Ativar captura de quadros Metal GPU. Permite a captura programática de quadros GPU para análise de renderização. Requer reinicialização do app.";
 "playapp.add" = "Adicionar aplicativo";
 "alert.wrongFileType.title" = "Tipo de arquivo incorreto!";
 "alert.wrongFileType.subtitle" = "O PlayCover pode instalar somente arquivos .ipa válidos.";

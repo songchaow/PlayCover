@@ -225,6 +225,8 @@
 "settings.resetKmCompleted" = "键盘映射已重置！";
 "settings.tab.misc" = "杂项";
 "settings.toggle.hud" = "启用 Metal 性能面板";
+"settings.toggle.metalCapture" = "Metal 截帧";
+"settings.help.metalCapture" = "启用 Metal GPU 帧截取。允许编程式截取 GPU 帧用于渲染分析。需要重启应用生效。";
 "settings.info.bundleVersion" = "Bundle 版本号：";
 "playapp.deleteConfirm" = "确认卸载";
 "playapp.deleteMessage" = "确认卸载 %@ 吗?";

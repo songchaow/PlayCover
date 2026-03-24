@@ -5,7 +5,7 @@
 
 ### Dashboard
 
-- **状态**：`TODO`
+- **状态**：`DONE`
 - **优先级**：`P2`
 - **预计工作量**：`S`（小型）
 - **依赖任务**：`R01`
@@ -127,9 +127,19 @@ Toggle("settings.toggle.metalCapture", isOn: $settings.settings.metalCaptureEnab
 
 ### 实施结果
 
-_（任务完成后由执行 agent 填写）_
-
 - **实际改动文件**：
+  - `PlayCover/Views/AppSettingsView.swift` — 在 MiscView 的 Metal HUD 区域下方新增 Metal Capture Toggle
+  - `PlayCover/en.lproj/Localizable.strings` — 新增 `settings.toggle.metalCapture` 和 `settings.help.metalCapture`
+  - `PlayCover/zh-Hans.lproj/Localizable.strings` — 新增中文简体本地化
+  - `PlayCover/zh-Hant.lproj/Localizable.strings` — 新增中文繁体本地化
+  - 其余 18 个语言的 `Localizable.strings` — 新增对应语言的本地化字符串
+  - `LocalDocs/RenderCapture/00-主文档.md` — 更新任务看板状态
+  - `LocalDocs/RenderCapture/R05-GUI设置界面.md` — 更新任务状态和实施结果
 - **关键决策**：
-- **已知问题**：
-- **Commit Hash**：
+  - Toggle 放置在 MiscView 中 Metal HUD 区域下方，与 Debugger 区域之间，符合"Metal/GPU 调试功能"的逻辑分组
+  - 参考 `metalHUD` Toggle 的模式，使用 `$settings.settings.metalCaptureEnabled` 直接绑定 AppSettingsData
+  - Metal Capture 不需要 macOS 版本限制（MTLCaptureManager 在 macOS 10.15+ 可用）
+  - 为所有 21 个语言文件都添加了本地化，主要语言（en/zh-Hans/zh-Hant/ja/ko/de/fr/es/ru/it/da/id/vi/pt-br/tr/hi/uk）使用了对应语言的翻译
+  - 次要语言（ar/ca/fa/ro）由于 Localizable.strings 中其他条目也多为英文占位，保持英文
+- **已知问题**：无
+- **Commit Hash**：`71cfeab7`

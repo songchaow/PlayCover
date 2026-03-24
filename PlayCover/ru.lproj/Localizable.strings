@@ -225,6 +225,8 @@
 "settings.resetSettingsCompleted" = "Настройки были сброшены к стандартным!";
 "settings.tab.misc" = "Разное";
 "settings.toggle.hud" = "Metal HUD";
+"settings.toggle.metalCapture" = "Metal Capture";
+"settings.help.metalCapture" = "Включить захват кадров Metal GPU. Позволяет программно захватывать кадры GPU для анализа рендеринга. Требуется перезапуск приложения.";
 "settings.info.bundleVersion" = "Версия пакета:";
 "playapp.deleteConfirm" = "Удалить";
 "playapp.deleteMessage" = "Вы уверены, что хотите удалить %@?";

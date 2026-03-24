@@ -722,6 +722,13 @@ struct MiscView: View {
                 Spacer()
                     .frame(height: 20)
                 HStack {
+                    Toggle("settings.toggle.metalCapture", isOn: $settings.settings.metalCaptureEnabled)
+                        .help("settings.help.metalCapture")
+                    Spacer()
+                }
+                Spacer()
+                    .frame(height: 20)
+                HStack {
                     Button {
                         task = .playTools
                         Task(priority: .userInitiated) {

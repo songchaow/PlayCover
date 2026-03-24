@@ -163,6 +163,8 @@
 "settings.text.state.help" = "शीर्षक के नीचे दूसरी पंक्ति";
 "settings.toggle.discord" = "डिस्कॉर्ड गतिविधि सक्षम करें";
 "settings.toggle.hud" = "मेटल HUD";
+"settings.toggle.metalCapture" = "Metal Capture";
+"settings.help.metalCapture" = "Metal GPU फ्रेम कैप्चर सक्षम करें। रेंडर विश्लेषण के लिए GPU फ्रेम की प्रोग्रामेटिक कैप्चर की अनुमति देता है। ऐप पुनरारंभ आवश्यक है।";
 "settings.text.debugger" = "डीबगर:";
 "settings.toggle.lldb" = "LLDB के साथ खोलें";
 "settings.toggle.lldbWithTerminal" = "Terminal में खोलें";

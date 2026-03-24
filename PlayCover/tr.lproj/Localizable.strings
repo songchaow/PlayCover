@@ -145,6 +145,8 @@
 "settings.text.state.help" = "Başlığın altındaki ikinci satır";
 "settings.toggle.discord" = "Discord aktivesini aç";
 "settings.toggle.hud" = "Metal HUD";
+"settings.toggle.metalCapture" = "Metal Capture";
+"settings.help.metalCapture" = "Metal GPU kare yakalamayı etkinleştir. Render analizi için GPU karelerinin programlı olarak yakalanmasına izin verir. Uygulamanın yeniden başlatılması gerekir.";
 "error.appMaliciousProhibited" = "Bu uygulama Macler için tehlikelidir ve cihazınızı açılamaz bir hâlde bırakabilir. Bu nedenle PlayCover'da kullanılması bloke edilniştir. (Siliniyor...)";
 "alert.install.injectPlayToolsQuestion" = "Bu uygulamaya PlayTools injekte edilsin mi?";
 "alert.install.playToolsInformative" = "PlayTools klavye haraketlerini ekranın belli yerlerine ayarlamayı, ekran çözünürlüğünü değiştirmeyi, ve daha fazlasını yapmanıza izin verir. Fakat bazı uygulamaları bozabilir";

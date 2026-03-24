@@ -205,6 +205,8 @@
 "settings.text.state.help" = "標題下方第二列";
 "settings.toggle.discord" = "啟用Discord動態";
 "settings.toggle.hud" = "啟用Metal HUD";
+"settings.toggle.metalCapture" = "Metal 截幀";
+"settings.help.metalCapture" = "啟用 Metal GPU 幀截取。允許程式化截取 GPU 幀用於渲染分析。需要重啟應用生效。";
 "settings.info.bundleVersion" = "Bundle 版本:";
 "playapp.deleteConfirm" = "解除安裝";
 "playapp.deleteMessage" = "你是否確定要解除安裝 %@？";

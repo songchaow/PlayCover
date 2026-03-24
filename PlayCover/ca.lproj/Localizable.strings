@@ -177,6 +177,8 @@
 "alert.differentBundleIdKeymap.message" = "The keymap may have been created for another application.";
 "settings.picker.windowFix" = "Fix window display issues";
 "settings.toggle.hud" = "Metal HUD";
+"settings.toggle.metalCapture" = "Metal Capture";
+"settings.help.metalCapture" = "Enable Metal GPU frame capture. Allows programmatic capture of GPU frames for render analysis. Requires app restart.";
 "settings.noPlayTools" = "PlayTools is not installed in this app";
 "settings.button.discord" = "Custom Discord activity";
 "settings.toggle.enableScrollWheel.help" = "Enable scroll wheel in keymapping";

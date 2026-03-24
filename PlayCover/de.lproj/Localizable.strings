@@ -196,6 +196,8 @@
 "settings.info.minimumOSVersion" = "Mindest Betriebssystemversion:";
 "settings.info.url" = "URL:";
 "settings.toggle.hud" = "Metal HUD";
+"settings.toggle.metalCapture" = "Metal Capture";
+"settings.help.metalCapture" = "Metal GPU Frame Capture aktivieren. Ermöglicht die programmgesteuerte Erfassung von GPU-Frames zur Renderanalyse. Erfordert App-Neustart.";
 "playapp.exportKmPanel.fieldLabel" = "PlayMap Name:";
 "sidebar.appLibrary" = "App-Bibliothek";
 "alert.moveAppToApplications.title" = "In den Anwendungsordner verschieben?";

@@ -225,6 +225,8 @@
 "settings.resetKmCompleted" = "Le mappage de touches a été réinitialisé !";
 "settings.tab.misc" = "Autre";
 "settings.toggle.hud" = "Metal HUD";
+"settings.toggle.metalCapture" = "Metal Capture";
+"settings.help.metalCapture" = "Activer la capture de trames Metal GPU. Permet la capture programmée de trames GPU pour l'analyse de rendu. Nécessite le redémarrage de l'app.";
 "settings.info.bundleVersion" = "Version de l'app :";
 "playapp.deleteConfirm" = "Désinstaller";
 "playapp.deleteMessage" = "Êtes-vous sur de vouloir désinstaller %@ ?";

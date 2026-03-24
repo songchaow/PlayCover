@@ -5,7 +5,7 @@
 
 ### Dashboard
 
-- **状态**：`TODO`
+- **状态**：`DONE`
 - **优先级**：`P1`
 - **预计工作量**：`M`
 - **建议耗时**：`0.5 ~ 1.0 天`
@@ -87,10 +87,27 @@
 
 ### 执行记录
 
-- **开始时间**：
-- **完成时间**：
-- **执行人 / agent**：
-- **测试命令**：
-- **测试结果**：
-- **遗留问题**：
-- **commit hash**：
+- **开始时间**：2026-03-24
+- **完成时间**：2026-03-24
+- **执行人 / agent**：Claude agent
+- **测试命令**：`xcodebuild test-without-building -scheme PlayCoverMCP -destination 'platform=macOS,arch=arm64'`
+- **测试结果**：554 pass / 0 fail / 1 skip（其中 70 个 Input 相关测试全部通过）
+- **遗留问题**：runtime 侧按键/文本输入为最小可用实现（BridgeListener 接受命令但不做真实键盘注入），复杂 IME 不支持
+- **commit hash**：待提交
+
+### 新增文件
+
+| 文件 | 用途 |
+| --- | --- |
+| `PlayCoverMCP/Session/InputService.swift` | 输入服务层：KeyPressParams、TypeTextParams、InputResult、InputError、SupportedKeys 验证、InputServiceProtocol、InputService（真实实现）、FakeInputService（测试替身） |
+| `PlayCoverMCP/Tools/Session/InputTools.swift` | MCP 工具注册：press_key、type_text、toggle_debug_overlay 三个工具的 schema 定义与 handler |
+| `PlayCoverMCPTests/SessionInputTests.swift` | 10 个测试类：InputParamsTests、InputResultTests、InputErrorTests、SupportedKeysTests、InputErrorMCPMappingTests、FakeInputServiceTests、InputServiceValidationTests、InputCommandEncodingTests、InputToolsRegistrationTests、InputBridgeIntegrationTests |
+| `Scripts/add_s04_files.py` | pbxproj 集成脚本 |
+
+### 修改文件
+
+| 文件 | 改动 |
+| --- | --- |
+| `PlayCoverMCP/main.swift` | 注册 InputService 和 InputTools |
+| `PlayCoverMCP/Common/MCPErrorExtensions.swift` | 添加 InputError → PlayCoverMCPError 映射 |
+| `PlayCover.xcodeproj/project.pbxproj` | 添加新文件到 PlayCoverMCP 和 PlayCoverMCPTests targets |

@@ -5,7 +5,8 @@ import Foundation
 import Network
 
 /// TCP transport for MCP server, compatible with StdioTransport's MessageHandler interface.
-/// Listens on loopback (127.0.0.1) only. Supports multiple concurrent client connections.
+/// Supports listening on loopback (127.0.0.1) or all interfaces (0.0.0.0).
+/// Supports multiple concurrent client connections.
 /// Uses line-delimited JSON-RPC protocol (same as StdioTransport).
 public final class TCPTransport {
 
@@ -13,6 +14,24 @@ public final class TCPTransport {
 
     /// Same signature as StdioTransport.MessageHandler
     public typealias MessageHandler = @Sendable (JSONRPCMessage) -> JSONRPCMessage?
+
+    /// Listen host configuration
+    public enum ListenHost: String, CaseIterable, Equatable {
+        /// Listen on 127.0.0.1 only (local connections)
+        case loopback = "127.0.0.1"
+        /// Listen on 0.0.0.0 (all interfaces, accessible from network)
+        case allInterfaces = "0.0.0.0"
+
+        /// The NWHost value for NWEndpoint
+        var nwHost: NWEndpoint.Host {
+            switch self {
+            case .loopback:
+                return .ipv4(.loopback)
+            case .allInterfaces:
+                return .ipv4(.any)
+            }
+        }
+    }
 
     /// Current transport state
     public enum State: Equatable {
@@ -49,6 +68,9 @@ public final class TCPTransport {
     /// The port this transport is configured for
     public let port: UInt16
 
+    /// The host this transport is configured to listen on
+    public let host: ListenHost
+
     private let handler: MessageHandler
     private var listener: NWListener?
     private var clients: [ObjectIdentifier: ClientConnection] = [:]
@@ -60,15 +82,17 @@ public final class TCPTransport {
     /// Create a TCPTransport.
     /// - Parameters:
     ///   - port: Port to listen on. Use 0 for system-assigned port (useful in tests).
+    ///   - host: Host to listen on. Defaults to loopback (127.0.0.1).
     ///   - handler: Message handler, same signature as StdioTransport.MessageHandler.
-    public init(port: UInt16 = 19820, handler: @escaping MessageHandler) {
+    public init(port: UInt16 = 19820, host: ListenHost = .loopback, handler: @escaping MessageHandler) {
         self.port = port
+        self.host = host
         self.handler = handler
     }
 
     // MARK: - Lifecycle
 
-    /// Start listening for TCP connections on 127.0.0.1.
+    /// Start listening for TCP connections.
     public func start() {
         queue.async { [weak self] in
             self?.startOnQueue()
@@ -92,7 +116,7 @@ public final class TCPTransport {
         do {
             let params = NWParameters.tcp
             params.requiredLocalEndpoint = NWEndpoint.hostPort(
-                host: .ipv4(.loopback),
+                host: host.nwHost,
                 port: NWEndpoint.Port(rawValue: port) ?? .any
             )
 
@@ -136,7 +160,7 @@ public final class TCPTransport {
         case .ready:
             if let port = listener?.port?.rawValue {
                 setState(.running(port: port))
-                log("TCPTransport: listening on 127.0.0.1:\(port)")
+                log("TCPTransport: listening on \(host.rawValue):\(port)")
             }
         case .failed(let error):
             setState(.failed(error.localizedDescription))

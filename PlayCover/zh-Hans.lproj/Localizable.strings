@@ -261,6 +261,16 @@
 "mcp.status.running" = "MCP 服务器运行中";
 "mcp.status.stopped" = "MCP 服务器已停止";
 "mcp.status.error" = "MCP 服务器错误";
+"mcp.port.label" = "端口：";
+"mcp.port.apply" = "应用并重启";
+"mcp.port.reset" = "恢复默认";
+"mcp.port.hint" = "更改 MCP 服务器的 TCP 端口和监听地址。更改后需重启服务生效。（默认：127.0.0.1:19820）";
+"mcp.port.error.invalid" = "请输入有效的端口号。";
+"mcp.port.error.range" = "端口号必须在 1024 到 65535 之间。";
+"mcp.host.label" = "监听地址：";
+"mcp.host.loopback" = "仅本机";
+"mcp.host.all" = "所有网卡";
+"mcp.host.warning" = "警告：监听所有网卡会将 MCP 服务器暴露到网络中，请仅在可信网络中使用。";
 "preferences.whenUninstalling" = "在卸载同时:";
 "preferences.toggle.showUninstall" = "显示警告弹窗";
 "preferences.toggle.clearAppData" = "清除应用数据";

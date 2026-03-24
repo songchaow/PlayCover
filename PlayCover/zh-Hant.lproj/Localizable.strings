@@ -237,6 +237,16 @@
 "mcp.status.running" = "MCP 伺服器運行中";
 "mcp.status.stopped" = "MCP 伺服器已停止";
 "mcp.status.error" = "MCP 伺服器錯誤";
+"mcp.port.label" = "連接埠：";
+"mcp.port.apply" = "套用並重啟";
+"mcp.port.reset" = "恢復預設";
+"mcp.port.hint" = "更改 MCP 伺服器的 TCP 連接埠和監聽地址。更改後需重啟服務生效。（預設：127.0.0.1:19820）";
+"mcp.port.error.invalid" = "請輸入有效的連接埠號。";
+"mcp.port.error.range" = "連接埠號必須在 1024 到 65535 之間。";
+"mcp.host.label" = "監聽地址：";
+"mcp.host.loopback" = "僅本機";
+"mcp.host.all" = "所有網卡";
+"mcp.host.warning" = "警告：監聽所有網卡會將 MCP 伺服器暴露到網路中，請僅在可信網路中使用。";
 "preferences.whenUninstalling" = "解除安裝同時：";
 "preferences.toggle.showUninstall" = "顯示警告提示";
 "preferences.toggle.clearAppData" = "清理APP資料";

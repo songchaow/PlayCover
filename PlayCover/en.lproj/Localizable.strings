@@ -48,6 +48,16 @@
 "mcp.status.running" = "MCP Server Running";
 "mcp.status.stopped" = "MCP Server Stopped";
 "mcp.status.error" = "MCP Server Error";
+"mcp.port.label" = "Port:";
+"mcp.port.apply" = "Apply & Restart";
+"mcp.port.reset" = "Reset Default";
+"mcp.port.hint" = "Change the TCP port and listen address for MCP Server. Restart is required to take effect. (Default: 127.0.0.1:19820)";
+"mcp.port.error.invalid" = "Please enter a valid port number.";
+"mcp.port.error.range" = "Port must be between 1024 and 65535.";
+"mcp.host.label" = "Listen Address:";
+"mcp.host.loopback" = "Local only";
+"mcp.host.all" = "All interfaces";
+"mcp.host.warning" = "Warning: Listening on all interfaces exposes MCP Server to network. Only use in trusted networks.";
 "preferences.whenUninstalling" = "When uninstalling:";
 "preferences.toggle.showUninstall" = "Show warning popup";
 "preferences.toggle.clearAppData" = "Clear data";

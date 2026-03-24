@@ -72,25 +72,34 @@ cd PlayCover
 ```bash
 xcodebuild -scheme PlayCover \
   -configuration Release \
-  -destination 'platform=macOS,arch=arm64' \
+  -derivedDataPath build \
+  FASTLANE=1 CODE_SIGNING_ALLOWED=NO \
   build
 ```
 
-构建完成后启动 PlayCover.app，MCP Server 自动在 `127.0.0.1:19820` 上监听。
+> **说明**：`FASTLANE=1` 跳过 Carthage Bootstrap 脚本，`CODE_SIGNING_ALLOWED=NO` 跳过签名（本地开发调试用）。正式分发请在 Xcode 中配置好 provisioning profile 后去掉这两个参数。
+
+构建产物位于：
+
+```
+build/Build/Products/Release/PlayCover.app
+```
+
+启动 PlayCover.app 后，MCP Server 自动在 `127.0.0.1:19820` 上监听。
 
 ### 构建 PlayCoverMCP CLI（独立命令行工具）
 
 ```bash
 xcodebuild -scheme PlayCoverMCP \
   -configuration Release \
-  -destination 'platform=macOS,arch=arm64' \
+  -derivedDataPath build \
   build
 ```
 
 构建产物位于：
 
 ```
-~/Library/Developer/Xcode/DerivedData/PlayCover-<hash>/Build/Products/Release/PlayCoverMCP
+build/Build/Products/Release/PlayCoverMCP
 ```
 
 > **提示**：可以将二进制复制到方便的位置，例如 `/usr/local/bin/PlayCoverMCP`。
@@ -118,10 +127,10 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 
 ```bash
 # 确认二进制可执行
-/path/to/PlayCoverMCP --help 2>/dev/null; echo $?
+build/Build/Products/Release/PlayCoverMCP --help 2>/dev/null; echo $?
 
 # 快速测试协议握手（发送 initialize 请求）
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | /path/to/PlayCoverMCP 2>/dev/null | head -1
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | build/Build/Products/Release/PlayCoverMCP 2>/dev/null | head -1
 ```
 
 ## Agent 侧配置

@@ -185,6 +185,10 @@
 		D0345CB8143F4821BF99C505 /* InputTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = B275B27D2B5F4E6BBDFD054E /* InputTools.swift */; };
 		CEBB186D7B144E77B41EC640 /* SessionInputTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 362AE3D78BF14F4BA17D491F /* SessionInputTests.swift */; };
 
+		63E7EEA005D24C6090BDAD61 /* SessionHealthMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11CBF7E2FB8242E38F6EE005 /* SessionHealthMonitor.swift */; };
+		7D0DABFC70CD4C4CBD146D17 /* SessionHealthMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11CBF7E2FB8242E38F6EE005 /* SessionHealthMonitor.swift */; };
+		95D4FBFC13B04BD3B5A42C0F /* SessionReliabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2542BBA788BC4BCFB2924607 /* SessionReliabilityTests.swift */; };
+
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -367,6 +371,9 @@
 		BBA93F1020F7431D90F7FE32 /* InputService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = InputService.swift; path = InputService.swift; sourceTree = "<group>"; };
 		B275B27D2B5F4E6BBDFD054E /* InputTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = InputTools.swift; path = InputTools.swift; sourceTree = "<group>"; };
 		362AE3D78BF14F4BA17D491F /* SessionInputTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SessionInputTests.swift; path = SessionInputTests.swift; sourceTree = "<group>"; };
+
+		11CBF7E2FB8242E38F6EE005 /* SessionHealthMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SessionHealthMonitor.swift; path = SessionHealthMonitor.swift; sourceTree = "<group>"; };
+		2542BBA788BC4BCFB2924607 /* SessionReliabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SessionReliabilityTests.swift; path = SessionReliabilityTests.swift; sourceTree = "<group>"; };
 
 /* End PBXFileReference section */
 
@@ -671,6 +678,7 @@
 				21549A0830B5DFB9F2E1D233 /* SessionLifecycleTests.swift */,
 				2B3DE37080CE965D68081DF9 /* SessionTouchTests.swift */,
 				362AE3D78BF14F4BA17D491F /* SessionInputTests.swift */,
+				2542BBA788BC4BCFB2924607 /* SessionReliabilityTests.swift */,
 );
 			path = PlayCoverMCPTests;
 			sourceTree = "<group>";
@@ -869,6 +877,7 @@
 				A532939C6B04A6BADB1275CC /* SessionService.swift */,
 				2370C4C8A84F56AD488154F7 /* TouchService.swift */,
 							BBA93F1020F7431D90F7FE32 /* InputService.swift */,
+				11CBF7E2FB8242E38F6EE005 /* SessionHealthMonitor.swift */,
 );
 			path = Session;
 			sourceTree = "<group>";
@@ -1253,6 +1262,7 @@
 				8EEF62CCB617474EA9EEF11B /* InputService.swift in Sources */,
 				821DCE0775B2404D922B2F5A /* InputTools.swift in Sources */,
 				E46D6DBE0FDE41C4AB2A4F68 /* KeymapTools.swift in Sources */,
+				63E7EEA005D24C6090BDAD61 /* SessionHealthMonitor.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1318,6 +1328,8 @@
 				D0345CB8143F4821BF99C505 /* InputTools.swift in Sources */,
 				CEBB186D7B144E77B41EC640 /* SessionInputTests.swift in Sources */,
 				E1E6350355F743E89258FC12 /* InjectionToolsAndResourcesTests.swift in Sources */,
+				7D0DABFC70CD4C4CBD146D17 /* SessionHealthMonitor.swift in Sources */,
+				95D4FBFC13B04BD3B5A42C0F /* SessionReliabilityTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

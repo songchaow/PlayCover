@@ -5,7 +5,7 @@
 
 ### Dashboard
 
-- **状态**：`TODO`
+- **状态**：`DONE`
 - **优先级**：`P1`
 - **预计工作量**：`M`
 - **建议耗时**：`0.5 ~ 1.0 天`
@@ -79,12 +79,40 @@
 
 - `test(mcp): harden session reliability and e2e smoke coverage`
 
+### 实际改动清单
+
+#### 1. Bug 修复：`RegistrationListener.swift`
+- **`removeConnection()` 过滤逻辑反转**：`activeConnections.filter { $0.value === connection }` 改为 `!== connection`
+- **新增断连状态同步**：runtime 断开时自动标记 session 为 `.disconnected`
+
+#### 2. 新增：`SessionHealthMonitor.swift`
+- 基于 `DispatchSourceTimer` 的后台健康监控器
+- 可配置 `staleTimeout`（默认 30s）和 `interval`（默认 10s）
+- 定期调用 `removeStaleSessions()` 清除失联 session
+- `onStaleSessions` 回调用于日志/测试
+- `isRunning`、`start(interval:)`、`stop()` 生命周期管理
+
+#### 3. 新增：`SessionReliabilityTests.swift`（7 个测试类，18 个测试）
+- **SessionHealthMonitorTests**：启停、过期清除、周期检查、无过期 session 时不触发
+- **RegistrationListenerDisconnectTests**：runtime 断连更新 registry 状态
+- **SessionClosedErrorTests**：closed/disconnected session 上的 touch/input 操作抛出正确错误、disconnect 后可 close
+- **BridgeClientTimeoutTests**：连接超时、命令超时（静默 listener）
+- **SessionE2ESmokeTests**：完整生命周期冒烟（register→create→tap→type→key→close→verify-closed-fails）、多 session、超时无 runtime、不存在 session
+- **SessionSwipeDragE2ETests**：swipe→drag→toggle_debug_overlay E2E
+- **RuntimeErrorResponseTests**：runtime 返回 error status 传播
+
+#### 4. 已知限制与未覆盖风险
+- **无命令级重试**：每次命令创建新 TCP 连接，失败直接抛出，不自动重试（避免扩 scope）
+- **`SessionHealthMonitor` 未集成到 `main.swift`**：monitor 已实现但未在生产启动路径中自动启动（需要在正式集成时手动调用 `start()`）
+- **E2E 测试依赖 FakeRuntimeServer**：无真实 iOS app 端到端验证（需物理设备环境）
+- **`removeConnection` 回调线程**：NWConnection 的 stateUpdateHandler 在 listener 队列上执行，registry 操作是线程安全的
+
 ### 执行记录
 
-- **开始时间**：
-- **完成时间**：
-- **执行人 / agent**：
-- **测试命令**：
-- **测试结果**：
-- **遗留问题**：
-- **commit hash**：
+- **开始时间**：2026-03-24 14:00
+- **完成时间**：2026-03-24 15:35
+- **执行人 / agent**：Claude Agent
+- **测试命令**：`xcodebuild build-for-testing -scheme PlayCoverMCP -destination 'platform=macOS,arch=arm64' && xcodebuild test-without-building -scheme PlayCoverMCP -destination 'platform=macOS,arch=arm64'`
+- **测试结果**：572 pass / 0 fail / 1 skip（MCPSmokeTests 默认跳过）— 新增 18 个 reliability/E2E 测试全部通过
+- **遗留问题**：SessionHealthMonitor 未在生产 main.swift 中启用（稳定性监控需手动集成）
+- **commit hash**：`c5385458`

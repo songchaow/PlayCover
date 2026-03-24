@@ -253,7 +253,17 @@ public final class RegistrationListener: Sendable {
 
     private func removeConnection(_ connection: NWConnection) {
         lock.lock()
-        activeConnections = activeConnections.filter { $0.value === connection }
+        // Find session IDs associated with this connection
+        let disconnectedSessionIds = activeConnections
+            .filter { $0.value === connection }
+            .map(\.key)
+        // Remove matching connections (keep non-matching ones)
+        activeConnections = activeConnections.filter { $0.value !== connection }
         lock.unlock()
+
+        // Mark disconnected sessions in the registry
+        for sessionId in disconnectedSessionIds {
+            try? registry.updateStatus(sessionId: sessionId, newStatus: .disconnected)
+        }
     }
 }

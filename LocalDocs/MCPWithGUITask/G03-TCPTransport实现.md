@@ -4,7 +4,7 @@
 
 | 属性 | 值 |
 |------|---|
-| **状态** | 🔲 待开始 |
+| **状态** | ✅ 已完成 |
 | **前置依赖** | G02（MCP 代码在 GUI target 可编译） |
 | **预估工时** | 1-1.5 天 |
 | **风险等级** | 中 |
@@ -238,7 +238,26 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 
 ## 实际测试结果
 
-> （由执行 agent 在完成后填写）
+### 单元测试（TCPTransportTests）
+
+7 个测试全部通过，覆盖：
+- `testStartAndStop` - 启停生命周期 ✅
+- `testEchoMessage` - JSON-RPC 请求/响应回显 ✅
+- `testMultipleClients` - 3 个并发客户端 ✅
+- `testDisconnect` - 断连后 connectedClientCount 正确 ✅
+- `testPortInUse` - 端口被占时 state = .failed ✅
+- `testPartialLineHandling` - 分段发送，缓冲区正确拼接 ✅
+- `testDoesNotBlockMainThread` - 不阻塞主线程 ✅
+
+### 编译测试
+
+- `xcodebuild -scheme PlayCover build` → **BUILD SUCCEEDED** ✅
+- `xcodebuild -scheme PlayCoverMCP build` → **BUILD SUCCEEDED** ✅
+
+### 回归测试
+
+- MCP 全量测试：**579 tests, 0 failures, 1 skipped** ✅
+- plutil -lint：**OK** ✅
 
 ---
 

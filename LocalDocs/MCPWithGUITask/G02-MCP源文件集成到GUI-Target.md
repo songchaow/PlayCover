@@ -4,7 +4,7 @@
 
 | 属性 | 值 |
 |------|---|
-| **状态** | 🔲 待开始 |
+| **状态** | ✅ 已完成 |
 | **前置依赖** | G01（Shell 命名冲突已解决） |
 | **预估工时** | 0.5-1 天 |
 | **风险等级** | 高（涉及 pbxproj 修改） |
@@ -178,7 +178,24 @@ xcodebuild -scheme PlayCoverMCP -configuration Release build 2>&1 | tail -10
 
 ## 实际测试结果
 
-> （由执行 agent 在完成后填写）
+### 编译测试
+- **PlayCover GUI (Nightly, CODE_SIGNING_ALLOWED=NO)**：Swift 编译 ✅ + 链接 ✅（生成 112 个 .o 文件，可执行文件 9.1MB）。BUILD FAILED 仅因 "Codesign sparkle" 脚本签名环境问题，非代码问题。
+- **PlayCoverMCP CLI (Release)**：BUILD SUCCEEDED ✅
+- **PlayCoverMCPTests**：572 tests, 1 skipped, 0 failures ✅ TEST SUCCEEDED
+
+### 方案选择
+- 采用**方案 A（直接 Target Membership）**，成功
+
+### 关键修改清单
+1. 使用 Python 脚本 `Scripts/add_mcp_to_gui.py` 将 39 个 MCP 源文件添加到 PlayCover.app target 的 Sources build phase（排除 `main.swift` 和 `StdioTransport.swift`）
+2. 将 `PlayCoverMCP/HostServices/Shell.swift` 重命名为 `MCPShell.swift`（Swift WMO 不允许同 target 同名文件）
+3. 更新 pbxproj 中 MCP Shell.swift 的 PBXFileReference 和 PBXBuildFile 引用为 MCPShell.swift
+4. 修复 GUI target 的 `SYSTEM_FRAMEWORK_SEARCH_PATHS` → 改为 `FRAMEWORK_SEARCH_PATHS`（解决 Network.framework 与 PrivateFrameworks 路径冲突）
+
+### 遇到的问题
+1. **文件名冲突**：GUI `Shell.swift` 和 MCP `Shell.swift` 同名，WMO 编译器报错。解决：重命名 MCP 文件为 `MCPShell.swift`。
+2. **Network.framework 导入失败**：`SYSTEM_FRAMEWORK_SEARCH_PATHS` 指向 PrivateFrameworks 导致系统 Network.framework 被错误地从 PrivateFrameworks 加载。解决：改为 `FRAMEWORK_SEARCH_PATHS`。
+3. **Carthage 环境问题**：需安装 carthage 并设置 `FASTLANE=1` 跳过 bootstrap 脚本才能编译验证。
 
 ---
 

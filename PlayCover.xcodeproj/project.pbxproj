@@ -123,11 +123,11 @@
 		DCDA6D1BC3FB4992A9640CEB /* AppResources.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5A0A2C9916847B5B22FE46A /* AppResources.swift */; };
 		69B103E7292F4F82A79AE760 /* AppServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A005C31278C94FA3AF2F277A /* AppServiceTests.swift */; };
 		47A8288D276C4E65A6736A7C /* AppToolsAndResourcesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0814B3729EC24510859A18E9 /* AppToolsAndResourcesTests.swift */; };
-		B8B544F872A140AA94CACDEA /* Shell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AE56941E81945B4950110A7 /* Shell.swift */; };
+		B8B544F872A140AA94CACDEA /* MCPShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AE56941E81945B4950110A7 /* MCPShell.swift */; };
 		AE65AC31FA6846C89C203C81 /* InstallerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 657AC60955554EEFA6D76D21 /* InstallerService.swift */; };
 		185D8DCE040D40A28183B012 /* InstallerTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19B42407C52741048C0D0A94 /* InstallerTools.swift */; };
 		D718C5A51078417FBD18C953 /* InstallerServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 562CF7645F174B1A9498A196 /* InstallerServiceTests.swift */; };
-		D774A33CB8A94B639DB2158C /* Shell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AE56941E81945B4950110A7 /* Shell.swift */; };
+		D774A33CB8A94B639DB2158C /* MCPShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AE56941E81945B4950110A7 /* MCPShell.swift */; };
 		391D13FD30264230951D8743 /* InstallerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 657AC60955554EEFA6D76D21 /* InstallerService.swift */; };
 		37B8BE89D6B14F5C942E3090 /* LaunchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2A30F2153A449FB980C490B /* LaunchService.swift */; };
 		05F0F71A6E044B9BB94A72D8 /* LaunchTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADDE5924D3464390AC21F996 /* LaunchTools.swift */; };
@@ -189,6 +189,45 @@
 		7D0DABFC70CD4C4CBD146D17 /* SessionHealthMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11CBF7E2FB8242E38F6EE005 /* SessionHealthMonitor.swift */; };
 		95D4FBFC13B04BD3B5A42C0F /* SessionReliabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2542BBA788BC4BCFB2924607 /* SessionReliabilityTests.swift */; };
 
+		81D0230BF5F6412C848F67D0 /* MCPTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = E80591C9C66B41F6900EDB12 /* MCPTypes.swift */; };
+		4905A4191153476CB8B57A79 /* ToolRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89D06AAF495D4535A4E8235C /* ToolRegistry.swift */; };
+		9BF612BF19FB42C8A53ECCE4 /* ResourceRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D655635CF6F3439CAFA4949E /* ResourceRegistry.swift */; };
+		312554FC7C7049BF8363DF66 /* MCPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9687C96D543945518CCEE25D /* MCPServer.swift */; };
+		8D1EE20FE51D4E498B150AC1 /* TaskManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4930F81A0AC4247BF6586A0 /* TaskManager.swift */; };
+		50748B38B26A4F36A4804DB8 /* MCPLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 895F98D661384E178FEAE46F /* MCPLogger.swift */; };
+		870FFDC1C95F4DF99696223A /* MCPErrorExtensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0249CA5607CA47D8A7D02053 /* MCPErrorExtensions.swift */; };
+		1C9DB4F503794DF2938DFAF9 /* AppService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 197B67E9F144465F9CAA7A79 /* AppService.swift */; };
+		89F69DA9A25B4F369058B88A /* AppTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9582C48DB29E44938338E6C4 /* AppTools.swift */; };
+		9717B6B4E3974E8C836DC81A /* AppResources.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5A0A2C9916847B5B22FE46A /* AppResources.swift */; };
+		4FA3AF8EBC5E48D5873BF753 /* InstallerTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19B42407C52741048C0D0A94 /* InstallerTools.swift */; };
+		4BC7FA15EDDD44608EEAF464 /* InstallerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 657AC60955554EEFA6D76D21 /* InstallerService.swift */; };
+		88FBF371ECF24BE8A84CF638 /* MCPShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AE56941E81945B4950110A7 /* MCPShell.swift */; };
+		4703CCFD96304629A29A6DB6 /* LaunchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2A30F2153A449FB980C490B /* LaunchService.swift */; };
+		E73158203C7A4D7DA82400D6 /* LaunchTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADDE5924D3464390AC21F996 /* LaunchTools.swift */; };
+		2A5F25866B3C4AB2997DD889 /* CleanupService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3062E5E71B0342F98837ED33 /* CleanupService.swift */; };
+		F9664A0E918F406B9EBBC677 /* CleanupTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80A2C04FE99540BABC8BBA13 /* CleanupTools.swift */; };
+		C94FD675F1E4408EB22603E1 /* SettingsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60002AAAABBBB /* SettingsService.swift */; };
+		920658134D6F4811BD8D0DCD /* SettingsTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60004AAAABBBB /* SettingsTools.swift */; };
+		6E59A9DF78D74DB99CC8D493 /* SettingsResources.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60006AAAABBBB /* SettingsResources.swift */; };
+		F24EF92334304013A4CF7E8B /* SigningService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8084B3D6F564EC7B878D625 /* SigningService.swift */; };
+		C72328B088F949059DED1FEA /* SigningTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DED57D72DEA4C1BB00ED238 /* SigningTools.swift */; };
+		15918566468D44658B95DADC /* InjectionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F65597FEBA8B42BBBEE8B2D5 /* InjectionService.swift */; };
+		1A1F3C95E92B4310AB3312F8 /* InjectionTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAEE5B7B0579477680459AE9 /* InjectionTools.swift */; };
+		14FAA1BBEB5C4371A7B3228D /* KeymapService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E672E9943F514F5D9D257AE3 /* KeymapService.swift */; };
+		EE6499616D6D40B6873FE177 /* BridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E693636CD2F41A8A06E183A /* BridgeProtocol.swift */; };
+		B49E69394E78419982FBB4BC /* SessionInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5CC9818FF034886B43E9232 /* SessionInfo.swift */; };
+		CC05E693102146A3B0119584 /* SessionRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13075E11E5A43A88079D105 /* SessionRegistry.swift */; };
+		4590D3F3C29B4DBDB5C016DC /* BridgeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7540CDAB9AC4715AAFF0785 /* BridgeClient.swift */; };
+		6762E7C6AD5F4574A89C0889 /* RegistrationListener.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9C8C42E2F5F4F0098953ED2 /* RegistrationListener.swift */; };
+		2ADCC521DCD741DC98A35D76 /* SessionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A532939C6B04A6BADB1275CC /* SessionService.swift */; };
+		C74DE7E35C1F4840B40D492A /* SessionTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = E09AC6EBA62B88DCAE9BC0CB /* SessionTools.swift */; };
+		E996D7C55B6E4E0195DA115F /* SessionResources.swift in Sources */ = {isa = PBXBuildFile; fileRef = 442C2A49EBA0FB9B80022994 /* SessionResources.swift */; };
+		914D8A2708504335BA470EB9 /* TouchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2370C4C8A84F56AD488154F7 /* TouchService.swift */; };
+		DD5872A862774DA2BB780F7C /* TouchTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D040AE8A235F4950A8847D6 /* TouchTools.swift */; };
+		EF465F86E3044E4C92D17BA3 /* InputService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBA93F1020F7431D90F7FE32 /* InputService.swift */; };
+		8E2D679461824632B004385A /* InputTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = B275B27D2B5F4E6BBDFD054E /* InputTools.swift */; };
+		02C876429EE34FB99EB67E4F /* KeymapTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E92E759231F4F6F92512009 /* KeymapTools.swift */; };
+		7ACFBF9F816249E5A9FDA859 /* SessionHealthMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11CBF7E2FB8242E38F6EE005 /* SessionHealthMonitor.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -334,7 +373,7 @@
 		F5A0A2C9916847B5B22FE46A /* AppResources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppResources.swift; path = AppResources.swift; sourceTree = "<group>"; };
 		A005C31278C94FA3AF2F277A /* AppServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppServiceTests.swift; path = AppServiceTests.swift; sourceTree = "<group>"; };
 		0814B3729EC24510859A18E9 /* AppToolsAndResourcesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppToolsAndResourcesTests.swift; path = AppToolsAndResourcesTests.swift; sourceTree = "<group>"; };
-		9AE56941E81945B4950110A7 /* Shell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Shell.swift; path = Shell.swift; sourceTree = "<group>"; };
+		9AE56941E81945B4950110A7 /* MCPShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPShell.swift; path = MCPShell.swift; sourceTree = "<group>"; };
 		657AC60955554EEFA6D76D21 /* InstallerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = InstallerService.swift; path = InstallerService.swift; sourceTree = "<group>"; };
 		19B42407C52741048C0D0A94 /* InstallerTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = InstallerTools.swift; path = InstallerTools.swift; sourceTree = "<group>"; };
 		562CF7645F174B1A9498A196 /* InstallerServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = InstallerServiceTests.swift; path = InstallerServiceTests.swift; sourceTree = "<group>"; };
@@ -749,7 +788,7 @@
 				A1B2C3D4E5F60010AAAABBBB /* Settings */,
 				D8084B3D6F564EC7B878D624 /* Signing */,
 				96C1DB0F196348B6B4CFCBFF /* Injection */,
-				9AE56941E81945B4950110A7 /* Shell.swift */,
+				9AE56941E81945B4950110A7 /* MCPShell.swift */,
 				197B67E9F144465F9CAA7A79 /* AppService.swift */,
 							FA6B28F5E4FE40D38D394EDA /* Keymap */,
 );
@@ -1215,6 +1254,45 @@
 				B68FD80D2ACB642100683778 /* PlayAppExtensions.swift in Sources */,
 				9272F19E273B74C800DFBEF1 /* AppsVM.swift in Sources */,
 				923421F7275F40300030CD7D /* AppContainer.swift in Sources */,
+				81D0230BF5F6412C848F67D0 /* MCPTypes.swift in Sources */,
+				4905A4191153476CB8B57A79 /* ToolRegistry.swift in Sources */,
+				9BF612BF19FB42C8A53ECCE4 /* ResourceRegistry.swift in Sources */,
+				312554FC7C7049BF8363DF66 /* MCPServer.swift in Sources */,
+				8D1EE20FE51D4E498B150AC1 /* TaskManager.swift in Sources */,
+				50748B38B26A4F36A4804DB8 /* MCPLogger.swift in Sources */,
+				870FFDC1C95F4DF99696223A /* MCPErrorExtensions.swift in Sources */,
+				1C9DB4F503794DF2938DFAF9 /* AppService.swift in Sources */,
+				89F69DA9A25B4F369058B88A /* AppTools.swift in Sources */,
+				9717B6B4E3974E8C836DC81A /* AppResources.swift in Sources */,
+				4FA3AF8EBC5E48D5873BF753 /* InstallerTools.swift in Sources */,
+				4BC7FA15EDDD44608EEAF464 /* InstallerService.swift in Sources */,
+				88FBF371ECF24BE8A84CF638 /* MCPShell.swift in Sources */,
+				4703CCFD96304629A29A6DB6 /* LaunchService.swift in Sources */,
+				E73158203C7A4D7DA82400D6 /* LaunchTools.swift in Sources */,
+				2A5F25866B3C4AB2997DD889 /* CleanupService.swift in Sources */,
+				F9664A0E918F406B9EBBC677 /* CleanupTools.swift in Sources */,
+				C94FD675F1E4408EB22603E1 /* SettingsService.swift in Sources */,
+				920658134D6F4811BD8D0DCD /* SettingsTools.swift in Sources */,
+				6E59A9DF78D74DB99CC8D493 /* SettingsResources.swift in Sources */,
+				F24EF92334304013A4CF7E8B /* SigningService.swift in Sources */,
+				C72328B088F949059DED1FEA /* SigningTools.swift in Sources */,
+				15918566468D44658B95DADC /* InjectionService.swift in Sources */,
+				1A1F3C95E92B4310AB3312F8 /* InjectionTools.swift in Sources */,
+				14FAA1BBEB5C4371A7B3228D /* KeymapService.swift in Sources */,
+				EE6499616D6D40B6873FE177 /* BridgeProtocol.swift in Sources */,
+				B49E69394E78419982FBB4BC /* SessionInfo.swift in Sources */,
+				CC05E693102146A3B0119584 /* SessionRegistry.swift in Sources */,
+				4590D3F3C29B4DBDB5C016DC /* BridgeClient.swift in Sources */,
+				6762E7C6AD5F4574A89C0889 /* RegistrationListener.swift in Sources */,
+				2ADCC521DCD741DC98A35D76 /* SessionService.swift in Sources */,
+				C74DE7E35C1F4840B40D492A /* SessionTools.swift in Sources */,
+				E996D7C55B6E4E0195DA115F /* SessionResources.swift in Sources */,
+				914D8A2708504335BA470EB9 /* TouchService.swift in Sources */,
+				DD5872A862774DA2BB780F7C /* TouchTools.swift in Sources */,
+				EF465F86E3044E4C92D17BA3 /* InputService.swift in Sources */,
+				8E2D679461824632B004385A /* InputTools.swift in Sources */,
+				02C876429EE34FB99EB67E4F /* KeymapTools.swift in Sources */,
+				7ACFBF9F816249E5A9FDA859 /* SessionHealthMonitor.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1236,7 +1314,7 @@
 				99C5D776BEFF46FAAF37124A /* AppResources.swift in Sources */,
 				185D8DCE040D40A28183B012 /* InstallerTools.swift in Sources */,
 				AE65AC31FA6846C89C203C81 /* InstallerService.swift in Sources */,
-				B8B544F872A140AA94CACDEA /* Shell.swift in Sources */,
+				B8B544F872A140AA94CACDEA /* MCPShell.swift in Sources */,
 				37B8BE89D6B14F5C942E3090 /* LaunchService.swift in Sources */,
 			05F0F71A6E044B9BB94A72D8 /* LaunchTools.swift in Sources */,
 				72072B62D7164F96A5B5306B /* CleanupService.swift in Sources */,
@@ -1290,7 +1368,7 @@
 				33149AAB374B44E8AAF04F45 /* AppTools.swift in Sources */,
 				DCDA6D1BC3FB4992A9640CEB /* AppResources.swift in Sources */,
 				391D13FD30264230951D8743 /* InstallerService.swift in Sources */,
-				D774A33CB8A94B639DB2158C /* Shell.swift in Sources */,
+				D774A33CB8A94B639DB2158C /* MCPShell.swift in Sources */,
 				69B103E7292F4F82A79AE760 /* AppServiceTests.swift in Sources */,
 				47A8288D276C4E65A6736A7C /* AppToolsAndResourcesTests.swift in Sources */,
 				D718C5A51078417FBD18C953 /* InstallerServiceTests.swift in Sources */,
@@ -1463,7 +1541,7 @@
 				SWIFT_OBJC_BRIDGING_HEADER = "./PlayCover/PlayCover-Bridging-Header.h";
 				"SWIFT_OBJC_BRIDGING_HEADER[arch=*]" = "./PlayCover/PlayCover-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
-				SYSTEM_FRAMEWORK_SEARCH_PATHS = "$(SYSTEM_LIBRARY_DIR)/PrivateFrameworks";
+				FRAMEWORK_SEARCH_PATHS = "$(SYSTEM_LIBRARY_DIR)/PrivateFrameworks";
 			};
 			name = Release;
 		};
@@ -1566,7 +1644,7 @@
 				SWIFT_OBJC_BRIDGING_HEADER = "./PlayCover/PlayCover-Bridging-Header.h";
 				"SWIFT_OBJC_BRIDGING_HEADER[arch=*]" = "./PlayCover/PlayCover-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
-				SYSTEM_FRAMEWORK_SEARCH_PATHS = "$(SYSTEM_LIBRARY_DIR)/PrivateFrameworks";
+				FRAMEWORK_SEARCH_PATHS = "$(SYSTEM_LIBRARY_DIR)/PrivateFrameworks";
 			};
 			name = Nightly;
 		};

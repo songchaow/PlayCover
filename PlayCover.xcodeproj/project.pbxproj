@@ -232,6 +232,7 @@
 		8E2D679461824632B004385A /* InputTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = B275B27D2B5F4E6BBDFD054E /* InputTools.swift */; };
 		02C876429EE34FB99EB67E4F /* KeymapTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E92E759231F4F6F92512009 /* KeymapTools.swift */; };
 		7ACFBF9F816249E5A9FDA859 /* SessionHealthMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11CBF7E2FB8242E38F6EE005 /* SessionHealthMonitor.swift */; };
+		G04MCP001A2B3C4D5E6F7890 /* MCPManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = G04MCP001A2B3C4D5E6F7891 /* MCPManager.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -419,6 +420,7 @@
 
 		11CBF7E2FB8242E38F6EE005 /* SessionHealthMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SessionHealthMonitor.swift; path = SessionHealthMonitor.swift; sourceTree = "<group>"; };
 		2542BBA788BC4BCFB2924607 /* SessionReliabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SessionReliabilityTests.swift; path = SessionReliabilityTests.swift; sourceTree = "<group>"; };
+		G04MCP001A2B3C4D5E6F7891 /* MCPManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPManager.swift; sourceTree = "<group>"; };
 
 /* End PBXFileReference section */
 
@@ -507,6 +509,7 @@
 		53F3802626EB6F5600D6B525 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				G04MCP001A2B3C4D5E6F7891 /* MCPManager.swift */,
 				53F3802726EB6F6B00D6B525 /* NotifyService.swift */,
 				9280871A2824A8D20034C510 /* SoundDeviceService.swift */,
 			);
@@ -1302,6 +1305,7 @@
 				02C876429EE34FB99EB67E4F /* KeymapTools.swift in Sources */,
 				7ACFBF9F816249E5A9FDA859 /* SessionHealthMonitor.swift in Sources */,
 				B3F7A1C2D4E5F60200AABB02 /* TCPTransport.swift in Sources */,
+				G04MCP001A2B3C4D5E6F7890 /* MCPManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

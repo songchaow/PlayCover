@@ -40,6 +40,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             KeyCoverPreferences.shared.keyCoverEnabled = .selfGeneratedPassword
         }
 
+        // Start embedded MCP Server (TCP on localhost:19820)
+        MCPManager.shared.start()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        MCPManager.shared.stop()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

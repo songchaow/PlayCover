@@ -1,0 +1,17 @@
+--- a/Carthage/Checkouts/PlayTools/PlayTools/PlaySettings.swift
++++ b/Carthage/Checkouts/PlayTools/PlayTools/PlaySettings.swift
+@@ -95,6 +95,8 @@
+     @objc lazy var disableBuiltinMouse = settingsData.disableBuiltinMouse
+ 
+     @objc lazy var blockSleepSpamming = settingsData.blockSleepSpamming
++
++    @objc lazy var metalCaptureEnabled = settingsData.metalCaptureEnabled
+ }
+ 
+ struct AppSettingsData: Codable {
+@@ -128,4 +130,5 @@
+     var resizableAspectRatioWidth = 0
+     var resizableAspectRatioHeight = 0
+     var blockSleepSpamming = false
++    var metalCaptureEnabled = false
+ }

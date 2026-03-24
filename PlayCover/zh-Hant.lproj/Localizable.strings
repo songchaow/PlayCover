@@ -232,6 +232,11 @@
 "playapp.download.downloading" = "下載中";
 "error.waitDownload" = "請等待下載完成！";
 "preferences.tab.uninstall" = "解除安裝";
+
+"preferences.tab.mcp" = "MCP 伺服器";
+"mcp.status.running" = "MCP 伺服器運行中";
+"mcp.status.stopped" = "MCP 伺服器已停止";
+"mcp.status.error" = "MCP 伺服器錯誤";
 "preferences.whenUninstalling" = "解除安裝同時：";
 "preferences.toggle.showUninstall" = "顯示警告提示";
 "preferences.toggle.clearAppData" = "清理APP資料";

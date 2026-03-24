@@ -76,6 +76,11 @@ class MCPManager: ObservableObject {
             }
         }
 
+        transport.onClientCountChanged = { [weak self] count in
+            // This callback is dispatched to main queue by TCPTransport
+            self?.connectedClients = count
+        }
+
         transport.start()
 
         // 5. Save references

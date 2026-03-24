@@ -35,6 +35,9 @@ public final class TCPTransport {
     /// State change callback
     public var onStateChange: ((State) -> Void)?
 
+    /// Client count change callback (dispatched to main queue)
+    public var onClientCountChanged: ((Int) -> Void)?
+
     // MARK: - Properties
 
     /// Current state (read from any thread, written only from queue)
@@ -159,6 +162,7 @@ public final class TCPTransport {
         let clientId = ObjectIdentifier(client)
         clients[clientId] = client
         connectedClientCount = clients.count
+        notifyClientCountChanged()
 
         log("TCPTransport: client connected (\(connectedClientCount) total)")
         client.start()
@@ -167,7 +171,17 @@ public final class TCPTransport {
     private func removeClient(_ clientId: ObjectIdentifier) {
         if clients.removeValue(forKey: clientId) != nil {
             connectedClientCount = clients.count
+            notifyClientCountChanged()
             log("TCPTransport: client disconnected (\(connectedClientCount) total)")
+        }
+    }
+
+    private func notifyClientCountChanged() {
+        let count = connectedClientCount
+        if let callback = onClientCountChanged {
+            DispatchQueue.main.async {
+                callback(count)
+            }
         }
     }
 

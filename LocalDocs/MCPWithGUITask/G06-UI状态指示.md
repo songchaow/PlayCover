@@ -4,7 +4,7 @@
 
 | 属性 | 值 |
 |------|---|
-| **状态** | 🔲 待开始 |
+| **状态** | ✅ 已完成 |
 | **前置依赖** | G04（MCPManager 已工作） |
 | **预估工时** | 0.5 天 |
 | **风险等级** | 低 |
@@ -119,7 +119,19 @@ transport.onClientCountChanged = { [weak self] count in
 
 ## 实际测试结果
 
-> （由执行 agent 在完成后填写）
+### 编译测试
+- ✅ `xcodebuild -scheme PlayCover build` — **BUILD SUCCEEDED**
+- ✅ `xcodebuild -scheme PlayCoverMCP build` — **BUILD SUCCEEDED**
+- ✅ `xcodebuild test -scheme PlayCoverMCP` — **TEST SUCCEEDED**（579 tests, 0 failures, 1 skipped）
+- ✅ `plutil -lint project.pbxproj` — OK
+
+### 变更摘要
+1. **TCPTransport.swift**：添加 `onClientCountChanged` 回调，在连接/断开时通过主线程派发通知
+2. **MCPManager.swift**：绑定 `onClientCountChanged`，实时更新 `connectedClients` 属性
+3. **MCPStatusView.swift**（新增）：Settings 页面新 tab，显示运行状态指示灯、端口号、连接客户端数、错误信息
+4. **PlayCoverSettingsView.swift**：添加 MCP Server tab（`server.rack` 图标）
+5. **project.pbxproj**：添加 MCPStatusView.swift 到 PlayCover target（4 处条目）
+6. **Localizable.strings**：en/zh-Hans/zh-Hant 三语言添加 MCP 状态相关字符串
 
 ---
 

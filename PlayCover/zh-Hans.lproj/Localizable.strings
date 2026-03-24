@@ -256,6 +256,11 @@
 "alert.supression" = "你可以在 PlayCover 偏好设置中更改";
 "menubar.clearCache" = "清除缓存";
 "preferences.tab.uninstall" = "卸载";
+
+"preferences.tab.mcp" = "MCP 服务器";
+"mcp.status.running" = "MCP 服务器运行中";
+"mcp.status.stopped" = "MCP 服务器已停止";
+"mcp.status.error" = "MCP 服务器错误";
 "preferences.whenUninstalling" = "在卸载同时:";
 "preferences.toggle.showUninstall" = "显示警告弹窗";
 "preferences.toggle.clearAppData" = "清除应用数据";

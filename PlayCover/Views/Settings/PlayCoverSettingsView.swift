@@ -13,7 +13,7 @@ struct PlayCoverSettingsView: View {
     @EnvironmentObject var storeVM: StoreVM
 
     private enum Tabs: Hashable {
-        case updates, ipasource, keyCover, install, uninstall
+        case updates, ipasource, keyCover, install, uninstall, mcpServer
     }
 
     var body: some View {
@@ -44,6 +44,11 @@ struct PlayCoverSettingsView: View {
                   Label("preferences.tab.uninstall", systemImage: "trash.square")
                 }
                 .tag(Tabs.uninstall)
+            MCPStatusView()
+                .tabItem {
+                    Label("preferences.tab.mcp", systemImage: "server.rack")
+                }
+                .tag(Tabs.mcpServer)
         }
     }
 }

@@ -84,6 +84,7 @@ final class SettingsServiceTests: XCTestCase {
             "resizableAspectRatioWidth": 0,
             "resizableAspectRatioHeight": 0,
             "blockSleepSpamming": false,
+            "metalCaptureEnabled": false,
         ]
         let data = try PropertyListSerialization.data(
             fromPropertyList: defaults, format: .xml, options: 0
@@ -137,6 +138,7 @@ final class SettingsServiceTests: XCTestCase {
             "resizableAspectRatioWidth": 0,
             "resizableAspectRatioHeight": 0,
             "blockSleepSpamming": false,
+            "metalCaptureEnabled": false,
         ]
         defaults["keymapping"] = keymapping
         defaults["sensitivity"] = sensitivity
@@ -567,6 +569,7 @@ final class SettingsServiceTests: XCTestCase {
             "resizableAspectRatioWidth": 0,
             "resizableAspectRatioHeight": 0,
             "blockSleepSpamming": false,
+            "metalCaptureEnabled": false,
         ]
         let otherData = try PropertyListSerialization.data(
             fromPropertyList: otherDefaults, format: .xml, options: 0

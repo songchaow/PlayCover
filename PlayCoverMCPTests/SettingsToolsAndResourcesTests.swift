@@ -73,6 +73,7 @@ final class SettingsToolsAndResourcesTests: XCTestCase {
             "resizableAspectRatioWidth": 0,
             "resizableAspectRatioHeight": 0,
             "blockSleepSpamming": false,
+            "metalCaptureEnabled": false,
         ]
         let data = try PropertyListSerialization.data(
             fromPropertyList: defaults, format: .xml, options: 0

@@ -248,7 +248,7 @@ public final class InjectionService: Sendable {
         // Add rpath for the PlayTools framework directory
         let rpath = Self.playToolsFrameworkURL.deletingLastPathComponent().path
         do {
-            try Shell.run("/usr/bin/install_name_tool", "-add_rpath", rpath, executableURL.path)
+            try MCPShell.run("/usr/bin/install_name_tool", "-add_rpath", rpath, executableURL.path)
         } catch let err as ShellError {
             // install_name_tool may fail if the rpath already exists; check for that
             if err.output.contains("already in") || err.output.contains("duplicate") {
@@ -273,12 +273,12 @@ public final class InjectionService: Sendable {
                 try FileManager.default.removeItem(at: destPlugin)
             }
             try FileManager.default.copyItem(at: Self.akInterfacePluginPath, to: destPlugin)
-            try Shell.setExecutable(destPlugin)
+            try MCPShell.setExecutable(destPlugin)
         }
 
         // Re-sign the app
         do {
-            try Shell.signApp(executableURL)
+            try MCPShell.signApp(executableURL)
         } catch {
             throw InjectionError.signingFailed(error.localizedDescription)
         }
@@ -308,7 +308,7 @@ public final class InjectionService: Sendable {
         // Remove the PlayTools rpath
         let rpath = Self.playToolsFrameworkURL.deletingLastPathComponent().path
         // Try to delete the rpath; ignore errors if it doesn't exist
-        try? Shell.run("/usr/bin/install_name_tool", "-delete_rpath", rpath, executableURL.path)
+        try? MCPShell.run("/usr/bin/install_name_tool", "-delete_rpath", rpath, executableURL.path)
 
         // Remove AKInterface plugin if it exists
         let pluginPath = app.url
@@ -319,7 +319,7 @@ public final class InjectionService: Sendable {
 
         // Re-sign the app
         do {
-            try Shell.signApp(executableURL)
+            try MCPShell.signApp(executableURL)
         } catch {
             throw InjectionError.signingFailed(error.localizedDescription)
         }
@@ -399,7 +399,7 @@ public final class InjectionService: Sendable {
         // Re-sign after plist modification
         let executableURL = app.url.appendingPathComponent(app.executableName)
         do {
-            try Shell.signApp(executableURL)
+            try MCPShell.signApp(executableURL)
         } catch {
             throw InjectionError.signingFailed(error.localizedDescription)
         }
@@ -445,7 +445,7 @@ public final class InjectionService: Sendable {
     private func isPlayToolsLoaded(in executable: URL) -> Bool {
         // Check rpaths for PlayTools framework directory
         do {
-            let output = try Shell.run("/usr/bin/otool", "-l", executable.path)
+            let output = try MCPShell.run("/usr/bin/otool", "-l", executable.path)
             // Look for LC_RPATH entries that point to the PlayTools framework parent
             let rpathMarker = "path \(Self.playToolsFrameworkURL.deletingLastPathComponent().path)"
             if output.contains(rpathMarker) {
@@ -457,7 +457,7 @@ public final class InjectionService: Sendable {
 
         // Also check loaded libraries via otool -L
         do {
-            let output = try Shell.run("/usr/bin/otool", "-L", executable.path)
+            let output = try MCPShell.run("/usr/bin/otool", "-L", executable.path)
             if output.contains("PlayTools") {
                 return true
             }
@@ -525,7 +525,7 @@ public final class InjectionService: Sendable {
         // Re-sign after plist modification
         let executableURL = app.url.appendingPathComponent(app.executableName)
         do {
-            try Shell.signApp(executableURL)
+            try MCPShell.signApp(executableURL)
         } catch {
             throw InjectionError.signingFailed(error.localizedDescription)
         }

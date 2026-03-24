@@ -244,7 +244,7 @@ public final class LaunchService: Sendable {
     /// Launch an executable under LLDB in headless mode (output to stdout/stderr).
     private func lldbHeadless(executable: URL) throws {
         do {
-            _ = try Shell.run("/usr/bin/lldb", "-o", "run", executable.path, "-o", "exit")
+            _ = try MCPShell.run("/usr/bin/lldb", "-o", "run", executable.path, "-o", "exit")
         } catch {
             throw LaunchError.lldbFailed(error.localizedDescription)
         }
@@ -261,7 +261,7 @@ public final class LaunchService: Sendable {
             end tell
         """
         do {
-            _ = try Shell.run("/usr/bin/osascript", "-e", appleScript)
+            _ = try MCPShell.run("/usr/bin/osascript", "-e", appleScript)
         } catch {
             throw LaunchError.lldbFailed(error.localizedDescription)
         }

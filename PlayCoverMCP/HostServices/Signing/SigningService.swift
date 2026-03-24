@@ -307,7 +307,7 @@ public final class SigningService: Sendable {
         }
 
         do {
-            try Shell.signApp(executableURL)
+            try MCPShell.signApp(executableURL)
         } catch {
             throw SigningServiceError.resignFailed(error.localizedDescription)
         }
@@ -352,7 +352,7 @@ public final class SigningService: Sendable {
             progress.update(message: "Re-signing \(app.displayName)...")
 
             do {
-                try Shell.signApp(executableURL)
+                try MCPShell.signApp(executableURL)
             } catch {
                 throw TaskError(
                     code: PlayCoverErrorCode.signingFailed.rawValue,
@@ -421,7 +421,7 @@ public final class SigningService: Sendable {
     /// Check whether a binary is signed by attempting `codesign -dv`.
     private func isSigned(_ executable: URL) -> Bool {
         do {
-            _ = try Shell.run("/usr/bin/codesign", "-dv", executable.path)
+            _ = try MCPShell.run("/usr/bin/codesign", "-dv", executable.path)
             return true
         } catch {
             return false
@@ -431,7 +431,7 @@ public final class SigningService: Sendable {
     /// Check whether the Info.plist is included in the code signature.
     private func isInfoPlistSigned(_ executable: URL) -> Bool {
         do {
-            let output = try Shell.run("/usr/bin/codesign", "-dv", executable.path)
+            let output = try MCPShell.run("/usr/bin/codesign", "-dv", executable.path)
             return output.contains("Info.plist entries")
         } catch {
             return false
@@ -442,7 +442,7 @@ public final class SigningService: Sendable {
     ///
     /// Uses `codesign -d --entitlements - --xml` and parses the XML plist output.
     private func dumpEntitlementsFromBinary(_ executable: URL) throws -> [String: Any] {
-        let xmlString = try Shell.dumpEntitlements(executable)
+        let xmlString = try MCPShell.dumpEntitlements(executable)
         guard !xmlString.isEmpty else { return [:] }
 
         guard let data = xmlString.data(using: .utf8) else {

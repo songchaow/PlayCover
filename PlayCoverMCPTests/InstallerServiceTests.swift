@@ -303,13 +303,13 @@ final class InstallerServiceTests: XCTestCase {
     // MARK: - Shell Tests
 
     func testShellRunSuccess() throws {
-        let output = try Shell.run("/bin/echo", "hello")
+        let output = try MCPShell.run("/bin/echo", "hello")
         XCTAssertEqual(output.trimmingCharacters(in: .whitespacesAndNewlines), "hello")
     }
 
     func testShellRunFailure() {
         do {
-            _ = try Shell.run("/usr/bin/false")
+            _ = try MCPShell.run("/usr/bin/false")
             XCTFail("Should have thrown")
         } catch let error as ShellError {
             XCTAssertEqual(error.exitCode, 1)

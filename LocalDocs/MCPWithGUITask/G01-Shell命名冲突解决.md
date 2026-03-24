@@ -4,7 +4,7 @@
 
 | 属性 | 值 |
 |------|---|
-| **状态** | 🔲 待开始 |
+| **状态** | ✅ 已完成 |
 | **前置依赖** | 无 |
 | **预估工时** | 0.5 天 |
 | **风险等级** | 低 |
@@ -83,7 +83,15 @@ MCP 测试文件中可能也有 `Shell.` 引用，需要一并更新。搜索 `P
 
 ## 实际测试结果
 
-> （由执行 agent 在完成后填写）
+| 验收项 | 结果 |
+|--------|------|
+| `enum Shell` → `enum MCPShell` | ✅ 完成 |
+| 所有 MCP 源文件 `Shell.xxx` → `MCPShell.xxx` | ✅ 完成（InstallerService 17处、InjectionService 9处、SigningService 5处、LaunchService 2处） |
+| `xcodebuild -scheme PlayCoverMCP build` | ✅ **BUILD SUCCEEDED** |
+| `xcodebuild -scheme PlayCover build` | ✅ 编译通过（仅有 provisioning profile 和 Carthage 配置问题，与代码改动无关） |
+| MCP 全量测试 | ✅ **572 tests, 0 failures** (1 test skipped) |
+| `ShellError` 保持不变 | ✅ 未修改 |
+| 测试文件中的 `Shell.` 引用 | ✅ `InstallerServiceTests.swift` 中 2 处已更新为 `MCPShell.` |
 
 ---
 

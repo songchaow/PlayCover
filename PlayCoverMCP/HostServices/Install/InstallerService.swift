@@ -142,7 +142,7 @@ public final class InstallerService: Sendable {
 
         // Unzip
         progress?(100, 10, "unzip")
-        try Shell.run("/usr/bin/unzip", "-oq", ipaURL.path, "-d", tmpDir.path)
+        try MCPShell.run("/usr/bin/unzip", "-oq", ipaURL.path, "-d", tmpDir.path)
 
         // Find the .app bundle in Payload
         let payloadDir = tmpDir.appendingPathComponent("Payload")
@@ -165,7 +165,7 @@ public final class InstallerService: Sendable {
         let entPath = entitlementsDir
             .appendingPathComponent(bundleId)
             .appendingPathExtension("plist")
-        let entString = try Shell.dumpEntitlements(execURL)
+        let entString = try MCPShell.dumpEntitlements(execURL)
         if !entString.isEmpty {
             try entString.write(to: entPath, atomically: true, encoding: .utf8)
         }
@@ -183,7 +183,7 @@ public final class InstallerService: Sendable {
             try convertMacho(macho)
 
             // Ad-hoc sign each MachO
-            try Shell.signMacho(macho)
+            try MCPShell.signMacho(macho)
         }
 
         // Inject PlayTools if requested
@@ -202,7 +202,7 @@ public final class InstallerService: Sendable {
 
         // Set executable permissions
         progress?(100, 70, "setting permissions")
-        try Shell.setExecutable(execURL)
+        try MCPShell.setExecutable(execURL)
 
         // Remove embedded.mobileprovision
         let provision = appURL.appendingPathComponent("embedded.mobileprovision")
@@ -227,14 +227,14 @@ public final class InstallerService: Sendable {
         progress?(100, 90, "signing")
         let installedExec = installDir.appendingPathComponent(execName)
         if FileManager.default.fileExists(atPath: entPath.path) {
-            try Shell.signAppWith(installedExec, entitlements: entPath)
+            try MCPShell.signAppWith(installedExec, entitlements: entPath)
         } else {
-            try Shell.signApp(installedExec)
+            try MCPShell.signApp(installedExec)
         }
 
         // Remove quarantine
         progress?(100, 95, "removing quarantine")
-        try Shell.removeQuarantine(installDir)
+        try MCPShell.removeQuarantine(installDir)
 
         progress?(100, 100, "finish")
         return InstallResult(
@@ -278,7 +278,7 @@ public final class InstallerService: Sendable {
 
         // Unzip
         progress?(100, 10, "unzip")
-        try Shell.run("/usr/bin/unzip", "-oq", ipaURL.path, "-d", tmpDir.path)
+        try MCPShell.run("/usr/bin/unzip", "-oq", ipaURL.path, "-d", tmpDir.path)
 
         // Find .app bundle
         let payloadDir = tmpDir.appendingPathComponent("Payload")
@@ -301,7 +301,7 @@ public final class InstallerService: Sendable {
         let entPath = entitlementsDir
             .appendingPathComponent(bundleId)
             .appendingPathExtension("plist")
-        let entString = try Shell.dumpEntitlements(execURL)
+        let entString = try MCPShell.dumpEntitlements(execURL)
         if !entString.isEmpty {
             try entString.write(to: entPath, atomically: true, encoding: .utf8)
         }
@@ -344,11 +344,11 @@ public final class InstallerService: Sendable {
         if FileManager.default.fileExists(atPath: outputIPA.path) {
             try FileManager.default.removeItem(at: outputIPA)
         }
-        try Shell.run("/usr/bin/zip", "-r", outputIPA.path, payloadDir.path)
+        try MCPShell.run("/usr/bin/zip", "-r", outputIPA.path, payloadDir.path)
 
         // Remove quarantine
         progress?(100, 95, "removing quarantine")
-        try Shell.removeQuarantine(outputIPA)
+        try MCPShell.removeQuarantine(outputIPA)
 
         progress?(100, 100, "finish")
         return ExportResult(
@@ -450,7 +450,7 @@ public final class InstallerService: Sendable {
         // An encrypted binary will have cryptid != 0 in its encryption info
         // We use `codesign -d -vvv` and look for "flags=0x... (encrypted)"
         do {
-            let output = try Shell.run("/usr/bin/codesign", "-d", "-vvv", url.path)
+            let output = try MCPShell.run("/usr/bin/codesign", "-d", "-vvv", url.path)
             // codesign output contains "cryptid" info for encrypted binaries
             return output.contains("encrypted")
         } catch {
@@ -648,7 +648,7 @@ public final class InstallerService: Sendable {
 
         // Use install_name_tool to add load command for PlayTools
         do {
-            try Shell.run("/usr/bin/install_name_tool",
+            try MCPShell.run("/usr/bin/install_name_tool",
                           "-add_rpath", playToolsFrameworkPath.deletingLastPathComponent().path,
                           exec.path)
         } catch {
@@ -656,7 +656,7 @@ public final class InstallerService: Sendable {
         }
 
         // Sign after modification
-        try Shell.signApp(exec)
+        try MCPShell.signApp(exec)
     }
 
     /// Inject PlayTools for export mode (embed dylib in IPA).
@@ -686,16 +686,16 @@ public final class InstallerService: Sendable {
             try FileManager.default.removeItem(at: destDylib)
         }
         try FileManager.default.copyItem(at: sourceDylib, to: destDylib)
-        try Shell.setExecutable(destDylib)
+        try MCPShell.setExecutable(destDylib)
 
         // Add load command for the embedded dylib
-        try Shell.run("/usr/bin/install_name_tool",
+        try MCPShell.run("/usr/bin/install_name_tool",
                       "-change", sourceDylib.path,
                       "@executable_path/Frameworks/PlayTools.dylib",
                       exec.path)
 
         // Sign the app
-        try Shell.signApp(exec)
+        try MCPShell.signApp(exec)
     }
 
     // MARK: - Info.plist Helpers

@@ -7,7 +7,7 @@ import Foundation
 ///
 /// Provides a headless interface for running external commands without
 /// any UI framework dependencies (no ObservableObject, no Log.shared).
-public enum Shell {
+public enum MCPShell {
 
     /// Run an external command and return its stdout/stderr output.
     ///

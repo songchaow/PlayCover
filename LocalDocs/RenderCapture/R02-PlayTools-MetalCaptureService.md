@@ -5,7 +5,7 @@
 
 ### Dashboard
 
-- **状态**：`TODO`
+- **状态**：`DONE`
 - **优先级**：`P0`
 - **预计工作量**：`M`（中型）
 - **依赖任务**：`R01`
@@ -291,9 +291,18 @@ import Metal
 
 ### 实施结果
 
-_（任务完成后由执行 agent 填写）_
-
 - **实际改动文件**：
+  - `Carthage/Checkouts/PlayTools/PlayTools/MetalCaptureService.swift`（新增）— 封装 MTLCaptureManager 的截帧服务，含 `captureFrame()`、`stopCapture()`、`getStatus()` 方法及 `CaptureResult`/`CaptureStatus` 结果类型
+  - `Carthage/Checkouts/PlayTools/PlayTools/PlayCover.swift`（修改）— 在 `launch()` 中添加 `MetalCaptureService.shared.initialize()` 调用
+  - `.gitignore`（修改）— 为 `MetalCaptureService.swift` 和 `PlayCover.swift` 添加例外规则，使其纳入 git 管理
+  - `LocalDocs/RenderCapture/00-主文档.md`（修改）— 更新任务看板
+  - `LocalDocs/RenderCapture/R02-PlayTools-MetalCaptureService.md`（修改）— 更新状态和实施结果
 - **关键决策**：
+  - 采用**策略 A（定时截帧）**：`startCapture()` 后 100ms 自动 `stopCapture()`，简单可靠，足以覆盖 1-2 帧
+  - 截帧前自动删除已存在的同名 `.gputrace` 文件（MTLCaptureManager 不会覆盖已有文件）
+  - `.gputrace` 默认输出到 `~/Library/Containers/io.playcover.PlayCover/Captures/`
+  - `PlayCover.swift` 也纳入 `.gitignore` 例外管理（与 `PlaySettings.swift` 同样的逐级打洞模式）
 - **已知问题**：
-- **Commit Hash**：
+  - 沙箱写入权限需要实际 Metal app 测试确认（目标 app 是否能写入 PlayCover 的 container 目录）
+  - 定时策略可能截取多帧，如效果不佳后续可升级到 CADisplayLink 或 Command Buffer 回调方案
+- **Commit Hash**：`45255d7a`

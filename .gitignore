@@ -11,6 +11,8 @@
 !/Carthage/Checkouts/PlayTools/PlayTools/
 /Carthage/Checkouts/PlayTools/PlayTools/*
 !/Carthage/Checkouts/PlayTools/PlayTools/PlaySettings.swift
+!/Carthage/Checkouts/PlayTools/PlayTools/PlayCover.swift
+!/Carthage/Checkouts/PlayTools/PlayTools/MetalCaptureService.swift
 .DS_store
 /vendor
 /output

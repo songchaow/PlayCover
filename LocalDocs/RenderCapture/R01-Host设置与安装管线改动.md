@@ -5,7 +5,7 @@
 
 ### Dashboard
 
-- **状态**：`TODO`
+- **状态**：`DONE`
 - **优先级**：`P0`
 - **预计工作量**：`S`（小型）
 - **依赖任务**：无
@@ -119,9 +119,12 @@ var metalCaptureEnabled = false
 
 ### 实施结果
 
-_（任务完成后由执行 agent 填写）_
-
 - **实际改动文件**：
-- **关键决策**：
-- **已知问题**：
-- **Commit Hash**：
+  - `PlayCover/Model/AppSettings.swift` — `AppSettingsData` 新增 `metalCaptureEnabled = false` 字段及 `init(from decoder:)` 解码
+  - `PlayCover/AppInstaller/Installer.swift` — 安装时在 `info.assert(minimumVersion:)` 之后写入 `info[bool: "MetalCaptureEnabled"] = true`
+  - `Carthage/Checkouts/PlayTools/PlayTools/PlaySettings.swift` — `AppSettingsData` 新增 `metalCaptureEnabled = false` 字段，`PlaySettings` 新增 `@objc lazy var metalCaptureEnabled`
+  - `LocalDocs/RenderCapture/00-主文档.md` — 更新看板状态
+  - `LocalDocs/RenderCapture/R01-Host设置与安装管线改动.md` — 更新任务状态
+- **关键决策**：对所有 app 无条件写入 `MetalCaptureEnabled = YES`（此 key 仅声明允许截帧，不影响正常运行）
+- **已知问题**：PlayCover scheme 构建因 Carthage Bootstrap 脚本中 SwiftLint 缺失而失败（环境问题，非代码问题）；PlayCoverMCP scheme 构建和 579 项测试全部通过
+- **Commit Hash**：`b978f607`

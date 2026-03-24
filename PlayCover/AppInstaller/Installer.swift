@@ -108,6 +108,8 @@ class Installer {
 
                 let info = app.info
                 info.assert(minimumVersion: 11.0)
+                // Enable Metal capture support for programmatic frame capture
+                info[bool: "MetalCaptureEnabled"] = true
                 try info.write()
                 InstallVM.shared.next(.wrapper, 0.85, 0.95)
 

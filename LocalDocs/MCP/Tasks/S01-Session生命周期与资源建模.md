@@ -104,4 +104,4 @@
 - **遗留问题**：
   - `close_session` 当前只做 registry 注销，未主动发送 bridge close 消息（后续任务可通过 RegistrationListener 扩展）
   - `create_session` 的 pending session 机制（starting 状态）依赖 runtime 注册后状态变为 ready，但当前 RegistrationListener 不更新已有 pending session，而是创建新的 ready session
-- **commit hash**：待提交
+- **commit hash**：42b4c709

@@ -110,12 +110,25 @@ var metalCaptureEnabled = false
 4. 项目能够正常构建（`xcodebuild -scheme PlayCover build`）
 5. 现有 MCP 测试不因字段变化而失败
 
-### 验证步骤
+### 测试（参照统一测试策略）
 
-1. 构建项目：`xcodebuild -project PlayCover.xcodeproj -scheme PlayCover -configuration Release build`
-2. 构建 MCP：`xcodebuild -project PlayCover.xcodeproj -scheme PlayCoverMCP -configuration Release build`
-3. 运行 MCP 测试：`xcodebuild test -scheme PlayCoverMCP -destination 'platform=macOS,arch=arm64'`
-4. 手动检查：安装一个 app 后用 `plutil -p` 查看 Info.plist 是否包含 `MetalCaptureEnabled`
+**本 task 新增检查项**：C01 ~ C07
+
+| # | 检查项 | 层级 |
+|---|--------|------|
+| C01 | PlayCover scheme 构建成功 | L1 |
+| C02 | PlayCoverMCP scheme 构建成功 | L1 |
+| C03 | MCP 单元测试全量通过 | L2 |
+| C04 | Host `AppSettingsData` 含 `metalCaptureEnabled` | L3 |
+| C05 | PlayTools `AppSettingsData` 含 `metalCaptureEnabled` | L3 |
+| C06 | Installer 写 `MetalCaptureEnabled` 到 Info.plist | L3 |
+| C07 | 两侧 `AppSettingsData` 字段一致性 | L3 |
+
+**完成后验证范围**：C01 ~ C07
+
+**执行方式**：`./Scripts/verify_render_capture.sh`
+
+**人工验证**（可选）：安装一个 app 后用 `plutil -p` 查看 Info.plist 是否包含 `MetalCaptureEnabled`
 
 ### 实施结果
 

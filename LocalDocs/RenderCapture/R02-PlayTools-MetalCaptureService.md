@@ -262,14 +262,25 @@ import Metal
 5. `.gputrace` 文件能够写入到指定路径
 6. PlayTools framework 能够正常构建
 
-### 验证步骤
+### 测试（参照统一测试策略）
 
-1. 构建 PlayTools：
-   - 检查 `Carthage/Checkouts/PlayTools/` 是否能正常编译
-2. 手动测试（需要实际 app）：
-   - 安装一个使用 Metal 的 app
-   - 确认 `MetalCaptureService.shared.getStatus()` 返回正确状态
-   - 调用 `captureFrame()` 并检查 `.gputrace` 文件生成
+**本 task 新增检查项**：C08 ~ C11
+
+| # | 检查项 | 层级 |
+|---|--------|------|
+| C08 | `MetalCaptureService.swift` 存在且编译通过 | L3 |
+| C09 | `PlayCover.swift` 中初始化 `MetalCaptureService` | L3 |
+| C10 | `MetalCaptureService` 含 `captureFrame` 方法 | L3 |
+| C11 | `MetalCaptureService` 含 `getStatus` 方法 | L3 |
+
+**完成后验证范围**：C01 ~ C11（含 R01 的 C01~C07 回归）
+
+**执行方式**：`./Scripts/verify_render_capture.sh`
+
+**人工验证**（需要实际 Metal app）：
+1. 安装一个使用 Metal 的 app
+2. 确认 `MetalCaptureService.shared.getStatus()` 返回正确状态
+3. 调用 `captureFrame()` 并检查 `.gputrace` 文件生成
 
 ### 风险与注意事项
 

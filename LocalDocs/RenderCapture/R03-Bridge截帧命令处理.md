@@ -161,11 +161,21 @@ case "get_capture_status":
 3. 通过 Bridge TCP 发送命令能够触发截帧并返回响应
 4. PlayTools 和 PlayCoverMCP 都能正常编译
 
-### 验证步骤
+### 测试（参照统一测试策略）
 
-1. 构建验证：确保 PlayTools 和 PlayCoverMCP 都能编译通过
-2. 协议兼容性：确认新命令不影响现有 Bridge 通信
-3. 集成测试（如可行）：通过 TCP 发送 `capture_frame` 命令，验证响应格式正确
+**本 task 新增检查项**：C12 ~ C14
+
+| # | 检查项 | 层级 |
+|---|--------|------|
+| C12 | `BridgeProtocol` 含 `capture_frame` 命令 | L3 |
+| C13 | `BridgeListener` 处理 `capture_frame` 命令 | L3 |
+| C14 | `BridgeListener` 处理 `get_capture_status` 命令 | L3 |
+
+**完成后验证范围**：C01 ~ C14（含 R01 的 C01~C07、R02 的 C08~C11 回归）
+
+**执行方式**：`./Scripts/verify_render_capture.sh`
+
+**人工验证**（如可行）：通过 TCP 发送 `capture_frame` 命令，验证响应格式正确
 
 ### 实施结果
 

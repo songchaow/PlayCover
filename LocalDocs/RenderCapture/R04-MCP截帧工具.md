@@ -164,11 +164,21 @@ func handleCaptureTool(params: [String: Any]) async throws -> [String: Any] {
 4. 基本的单元测试通过
 5. PlayCoverMCP 和 PlayCoverMCPTests 编译通过
 
-### 验证步骤
+### 测试（参照统一测试策略）
 
-1. 构建验证：`xcodebuild -scheme PlayCoverMCP build`
-2. 测试验证：`xcodebuild test -scheme PlayCoverMCP -destination 'platform=macOS,arch=arm64'`
-3. MCP 冒烟测试：通过 stdio 发送 `tools/list` 确认新工具出现在列表中
+**本 task 新增检查项**：C15 ~ C17
+
+| # | 检查项 | 层级 |
+|---|--------|------|
+| C15 | MCP `capture_metal_frame` 工具已注册 | L3/L4 |
+| C16 | MCP `get_capture_status` 工具已注册 | L3/L4 |
+| C17 | CaptureTools 单元测试通过 | L2 |
+
+**完成后验证范围**：C01 ~ C17（含 R01~R03 的 C01~C14 回归）
+
+**执行方式**：`./Scripts/verify_render_capture.sh`
+
+**补充验证**：通过 stdio 发送 `tools/list` 确认新工具出现在列表中
 
 ### 实施结果
 

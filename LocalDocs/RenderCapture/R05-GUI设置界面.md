@@ -107,12 +107,23 @@ Toggle("settings.toggle.metalCapture", isOn: $settings.settings.metalCaptureEnab
 3. 本地化字符串正确显示（至少 en、zh-Hans、zh-Hant）
 4. 项目编译通过
 
-### 验证步骤
+### 测试（参照统一测试策略）
 
-1. 构建项目：`xcodebuild -scheme PlayCover build`
-2. 运行 PlayCover，打开某个 app 的设置界面，确认 Metal Capture Toggle 可见
-3. 切换开关，确认设置正确保存（检查对应的 `.plist` 文件）
-4. 重启 PlayCover，确认设置状态保持
+**本 task 新增检查项**：C18 ~ C19
+
+| # | 检查项 | 层级 |
+|---|--------|------|
+| C18 | GUI Metal Capture Toggle 存在 | L3 |
+| C19 | 本地化字符串含 `metalCapture` | L3 |
+
+**完成后验证范围**：C01 ~ C19（含 R01~R04 的 C01~C17 回归）
+
+**执行方式**：`./Scripts/verify_render_capture.sh`
+
+**人工验证**：
+1. 运行 PlayCover，打开某个 app 的设置界面，确认 Metal Capture Toggle 可见
+2. 切换开关，确认设置正确保存（检查对应的 `.plist` 文件）
+3. 重启 PlayCover，确认设置状态保持
 
 ### 实施结果
 

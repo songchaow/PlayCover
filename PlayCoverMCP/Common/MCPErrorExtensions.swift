@@ -137,6 +137,22 @@ public struct PlayCoverMCPError: Error, LocalizedError, Equatable, Sendable {
             self.cause = nil
             return
         }
+        if let touchErr = error as? TouchError {
+            let mappedCode: Int
+            switch touchErr {
+            case .invalidCoordinates, .invalidDuration:
+                mappedCode = JSONRPCError.invalidParams
+            case .sessionNotReady:
+                mappedCode = PlayCoverErrorCode.bridgeError.rawValue
+            case .commandFailed:
+                mappedCode = PlayCoverErrorCode.bridgeError.rawValue
+            }
+            self.code = mappedCode
+            self.message = message ?? touchErr.localizedDescription
+            self.data = nil
+            self.cause = nil
+            return
+        }
         self.code = code ?? JSONRPCError.internalError
         self.message = message ?? error.localizedDescription
         self.data = nil

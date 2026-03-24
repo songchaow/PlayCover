@@ -5,7 +5,7 @@
 
 ### Dashboard
 
-- **状态**：`TODO`
+- **状态**：`DONE`
 - **优先级**：`P0`
 - **预计工作量**：`M`
 - **建议耗时**：`0.5 ~ 1.0 天`
@@ -85,10 +85,20 @@
 
 ### 执行记录
 
-- **开始时间**：
-- **完成时间**：
-- **执行人 / agent**：
-- **测试命令**：
-- **测试结果**：
+- **开始时间**：2026-03-24 14:00
+- **完成时间**：2026-03-24 14:18
+- **执行人 / agent**：CodeBuddy AI
+- **测试命令**：`xcodebuild test-without-building -scheme PlayCoverMCP -destination 'platform=macOS,arch=arm64'`
+- **测试结果**：441 pass / 0 fail / 1 skip
+- **实际改动范围**：
+  - `PlayCoverMCP/Session/TouchService.swift` — 新增 `TapParams`、`LongPressParams`、`TouchResult`、`TouchError`、`TouchServiceProtocol`、`TouchService`（通过 BridgeClient 发送命令到 runtime）、`FakeTouchService`（测试用假服务）
+  - `PlayCoverMCP/Tools/Session/TouchTools.swift` — 新增 `tap` 和 `long_press` MCP 工具注册，使用 DispatchSemaphore 桥接 async 到同步 ToolHandler
+  - `PlayCoverMCP/Common/MCPErrorExtensions.swift` — 增加 `TouchError` 到 `PlayCoverMCPError` 的映射
+  - `PlayCoverMCP/main.swift` — 注册 `TouchService` 和 `TouchTools`
+  - `PlayCoverMCPTests/SessionTouchTests.swift` — 新增 8 个测试类共 40+ 测试用例，覆盖参数验证、结果序列化、错误描述、错误映射、假服务、坐标/时长校验、MCP 工具注册与调用、bridge 集成
+  - `PlayCover.xcodeproj/project.pbxproj` — 添加新文件到两个 target
 - **遗留问题**：
+  - 坐标系约定为 app 窗口的 point 坐标系（0,0 = 左上角），但实际 runtime 侧的坐标映射依赖 PlayTools 中 Toucher/PTFakeMetaTouch 的实现，本任务未修改 runtime 代码
+  - `AnyCodable` 在 JSON 编解码往返中，整数值的 Double/Int 类型不稳定（如 150.0 → 150），测试中对此做了宽容处理
+  - `TouchService` 每次调用都创建新的 `BridgeClient` 连接，后续可考虑连接复用/缓存
 - **commit hash**：

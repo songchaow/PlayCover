@@ -72,6 +72,10 @@ let sessionService = SessionService(registry: sessionRegistry)
 SessionTools.register(on: server, sessionService: sessionService)
 SessionResources.register(on: server, sessionService: sessionService)
 
+// Register touch tools (tap, long_press)
+let touchService = TouchService(registry: sessionRegistry)
+TouchTools.register(on: server, touchService: touchService)
+
 let transport = StdioTransport { message in
     server.handle(message)
 }

@@ -93,7 +93,7 @@
 - **测试命令**：`xcodebuild test-without-building -scheme PlayCoverMCP -destination 'platform=macOS,arch=arm64'`
 - **测试结果**：554 pass / 0 fail / 1 skip（其中 70 个 Input 相关测试全部通过）
 - **遗留问题**：runtime 侧按键/文本输入为最小可用实现（BridgeListener 接受命令但不做真实键盘注入），复杂 IME 不支持
-- **commit hash**：待提交
+- **commit hash**：`eec55d79`
 
 ### 新增文件
 

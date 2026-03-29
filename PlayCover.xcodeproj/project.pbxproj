@@ -114,6 +114,7 @@
 		H02SES00000000000000003 /* MCPSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = H02SES00000000000000001 /* MCPSessionManager.swift */; };
 		H02SES00000000000000004 /* MCPSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = H02SES00000000000000001 /* MCPSessionManager.swift */; };
 		H02SES00000000000000006 /* MCPSessionManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = H02SES00000000000000005 /* MCPSessionManagerTests.swift */; };
+		H03SHT00000000000000002 /* StreamableHTTPTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = H03SHT00000000000000001 /* StreamableHTTPTransport.swift */; };
 		3CF02DDB697D4EC28A5CA199 /* ToolRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89D06AAF495D4535A4E8235C /* ToolRegistry.swift */; };
 		EC3B68CFE88247A0BFB37B1A /* ResourceRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D655635CF6F3439CAFA4949E /* ResourceRegistry.swift */; };
 		A58FA942EC6D4EEB9FD2BB89 /* MCPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9687C96D543945518CCEE25D /* MCPServer.swift */; };		268C4D33721649BB81839A88 /* MCPProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3ABD04437FE4450B94210EB /* MCPProtocolTests.swift */; };
@@ -387,6 +388,7 @@
 		H02SES00000000000000001 /* MCPSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPSessionManager.swift; path = MCPSessionManager.swift; sourceTree = "<group>"; };
 		H02SSE00000000000000005 /* SSEEncoderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSEEncoderTests.swift; sourceTree = "<group>"; };
 		H02SES00000000000000005 /* MCPSessionManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPSessionManagerTests.swift; sourceTree = "<group>"; };
+		H03SHT00000000000000001 /* StreamableHTTPTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = StreamableHTTPTransport.swift; path = StreamableHTTPTransport.swift; sourceTree = "<group>"; };
 		89D06AAF495D4535A4E8235C /* ToolRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ToolRegistry.swift; path = ToolRegistry.swift; sourceTree = "<group>"; };
 		D655635CF6F3439CAFA4949E /* ResourceRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ResourceRegistry.swift; path = ResourceRegistry.swift; sourceTree = "<group>"; };
 		9687C96D543945518CCEE25D /* MCPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPServer.swift; path = MCPServer.swift; sourceTree = "<group>"; };
@@ -781,6 +783,7 @@
 				B3F7A1C2D4E5F60100AABB01 /* TCPTransport.swift */,
 				H02SSE00000000000000001 /* SSEEncoder.swift */,
 				H02SES00000000000000001 /* MCPSessionManager.swift */,
+				H03SHT00000000000000001 /* StreamableHTTPTransport.swift */,
 			);
 			path = Transport;
 			sourceTree = "<group>";
@@ -1352,6 +1355,7 @@
 				B3F7A1C2D4E5F60200AABB02 /* TCPTransport.swift in Sources */,
 				H02SSE00000000000000002 /* SSEEncoder.swift in Sources */,
 				H02SES00000000000000002 /* MCPSessionManager.swift in Sources */,
+				H03SHT00000000000000002 /* StreamableHTTPTransport.swift in Sources */,
 				G04MCP001A2B3C4D5E6F7890 /* MCPManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

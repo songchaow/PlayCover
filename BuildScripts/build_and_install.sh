@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# 构建 PlayCover GUI，并优先安装到 /Applications，失败时回退到 ~/Applications
+# 构建 PlayCover GUI，默认安装到 ~/Applications，可按需切换到 /Applications
 # =============================================================================
 #
 # 用法:
@@ -8,12 +8,13 @@
 #   ./BuildScripts/build_and_install.sh Debug        # Debug 构建 + 自动选择安装目录
 #
 # 可选环境变量:
-#   PLAYCOVER_INSTALL_MODE=auto|system|user          # 默认 auto
+#   PLAYCOVER_INSTALL_MODE=user|auto|system          # 默认 user
 #
 # 说明:
 #   1. 构建 PlayCover.app (PlayCover scheme)
-#   2. auto 模式下优先安装到 /Applications；若当前会话无写权限且无免密 sudo，则回退到 ~/Applications
-#   3. 对安装后的 .app 做 ad-hoc 重签名（解决内嵌 framework Team ID 不匹配）
+#   2. 默认安装到 ~/Applications；可通过 user/auto/system 切换安装策略
+#   3. auto 模式下优先安装到 /Applications；若当前会话无写权限且无免密 sudo，则回退到 ~/Applications
+#   4. 对安装后的 .app 做 ad-hoc 重签名（解决内嵌 framework Team ID 不匹配）
 #
 # =============================================================================
 
@@ -28,7 +29,7 @@ APP_NAME="PlayCover.app"
 APP_PATH="$BUILD_DIR/Build/Products/$CONFIGURATION/$APP_NAME"
 SYSTEM_INSTALL_DIR="/Applications"
 USER_INSTALL_DIR="$HOME/Applications"
-INSTALL_MODE="${PLAYCOVER_INSTALL_MODE:-auto}"
+INSTALL_MODE="${PLAYCOVER_INSTALL_MODE:-user}"
 INSTALL_DIR=""
 INSTALL_PATH=""
 USE_SUDO=0

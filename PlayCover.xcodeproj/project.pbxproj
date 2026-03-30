@@ -219,6 +219,7 @@
 		89F69DA9A25B4F369058B88A /* AppTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9582C48DB29E44938338E6C4 /* AppTools.swift */; };
 		9717B6B4E3974E8C836DC81A /* AppResources.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5A0A2C9916847B5B22FE46A /* AppResources.swift */; };
 		4FA3AF8EBC5E48D5873BF753 /* InstallerTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19B42407C52741048C0D0A94 /* InstallerTools.swift */; };
+		A1B2C3D4E5F60011AAAABBBB /* InstallerTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19B42407C52741048C0D0A94 /* InstallerTools.swift */; };
 		4BC7FA15EDDD44608EEAF464 /* InstallerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 657AC60955554EEFA6D76D21 /* InstallerService.swift */; };
 		88FBF371ECF24BE8A84CF638 /* MCPShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AE56941E81945B4950110A7 /* MCPShell.swift */; };
 		4703CCFD96304629A29A6DB6 /* LaunchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2A30F2153A449FB980C490B /* LaunchService.swift */; };
@@ -1441,6 +1442,7 @@
 				6A2BBA3092B8498FA8A998C2 /* AppService.swift in Sources */,
 				33149AAB374B44E8AAF04F45 /* AppTools.swift in Sources */,
 				DCDA6D1BC3FB4992A9640CEB /* AppResources.swift in Sources */,
+				A1B2C3D4E5F60011AAAABBBB /* InstallerTools.swift in Sources */,
 				391D13FD30264230951D8743 /* InstallerService.swift in Sources */,
 				D774A33CB8A94B639DB2158C /* MCPShell.swift in Sources */,
 				69B103E7292F4F82A79AE760 /* AppServiceTests.swift in Sources */,

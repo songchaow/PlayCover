@@ -45,6 +45,9 @@ AppResources.register(on: server, appService: appService, settingsService: setti
 SettingsResources.register(on: server)
 SettingsTools.register(on: server, settingsService: settingsService)
 
+// Register task inspection tools for long-running operations
+TaskTools.register(on: server, taskManager: taskManager)
+
 // Register installer tools
 let installerService = InstallerService.defaultService()
 InstallerTools.register(on: server, installerService: installerService, taskManager: taskManager)

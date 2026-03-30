@@ -279,6 +279,9 @@ class MCPManager: ObservableObject {
         SettingsResources.register(on: server)
         SettingsTools.register(on: server, settingsService: settingsService)
 
+        // Task inspection tools for long-running operations
+        TaskTools.register(on: server, taskManager: taskManager)
+
         // Installer tools
         let installerService = InstallerService.defaultService()
         InstallerTools.register(on: server, installerService: installerService, taskManager: taskManager)

@@ -167,13 +167,18 @@ final class MCPSmokeTests: XCTestCase {
         let toolsResp = try JSONSerialization.jsonObject(with: lines[2].data(using: .utf8)!) as! [String: Any]
         XCTAssertEqual(toolsResp["id"] as? String, "smoke-3")
         let toolsResult = toolsResp["result"] as! [String: Any]
-        let tools = toolsResult["tools"] as? [Any]
+        let tools = toolsResult["tools"] as? [[String: Any]]
         XCTAssertNotNil(tools)
-        // Expected tools: list_installed_apps, get_app_info, install_ipa, export_patched_ipa,
-        //                launch_app, launch_app_with_lldb, uninstall_app, clear_app_data,
-        //                clear_playchain_data, clear_app_settings, clear_app_entitlements, clear_app_keymaps,
-        //                get_app_settings, update_app_settings, reset_app_settings
-        XCTAssertEqual(tools?.count, 15, "Expected 15 registered tools, got \(tools?.count ?? 0): \(tools ?? [])")
+        let toolNames = Set((tools ?? []).compactMap { $0["name"] as? String })
+        // Expected tools: list_installed_apps, get_app_info, get_task, list_tasks, cancel_task,
+        //                install_ipa, export_patched_ipa, launch_app, launch_app_with_lldb,
+        //                uninstall_app, clear_app_data, clear_playchain_data, clear_app_settings,
+        //                clear_app_entitlements, clear_app_keymaps, get_app_settings,
+        //                update_app_settings, reset_app_settings
+        XCTAssertEqual(tools?.count, 18, "Expected 18 registered tools, got \(tools?.count ?? 0): \(tools ?? [])")
+        XCTAssertTrue(toolNames.contains("get_task"))
+        XCTAssertTrue(toolNames.contains("list_tasks"))
+        XCTAssertTrue(toolNames.contains("cancel_task"))
 
         // Verify resources/list response
         let resResp = try JSONSerialization.jsonObject(with: lines[3].data(using: .utf8)!) as! [String: Any]

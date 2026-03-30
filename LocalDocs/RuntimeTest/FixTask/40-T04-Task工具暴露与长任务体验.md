@@ -93,6 +93,27 @@ cd /Users/songdogwang/Codes/PlayCover && WITH_REGRESSION=1 DERIVED_DATA_PATH=/tm
 
 ---
 
+### 新增 task tools / 返回文案 / 测试入口
+
+- 标准 MCP tools 已新增：
+  - `get_task`
+  - `list_tasks`
+  - `cancel_task`
+- 三个工具当前直接复用底层 task schema：
+  - `get_task` 返回 `GetTaskResult`
+  - `list_tasks` 返回 `ListTasksResult`
+  - `cancel_task` 返回取消后的 `GetTaskResult`
+- GUI 与 CLI 两条入口都已注册这些工具：
+  - `PlayCover/Services/MCPManager.swift`
+  - `PlayCoverMCP/main.swift`
+- `install_ipa` / `export_patched_ipa` 返回文案已从“Use tasks/get”改为指向标准 tool，并附带 `trackingTools` 字段
+- 2026-03-30 验证结果：
+  - focused tests 通过（`MCPServerTests` / `TaskManagerTests` / `MCPSmokeTests`）
+  - `PlayCoverMCP` 全量测试通过
+  - `Scripts/test_http_mcp.sh` 回归通过
+
+---
+
 ### 完成后必须更新
 
 - `01-任务状态.md`

@@ -3,6 +3,31 @@
 
 import Foundation
 
+private enum TaskToolNames {
+    static let get = "get_task"
+    static let list = "list_tasks"
+    static let cancel = "cancel_task"
+}
+
+private func encodeJSONText<T: Encodable>(_ value: T, fallback: String = "{}") throws -> String {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(value)
+    return String(data: data, encoding: .utf8) ?? fallback
+}
+
+private func taskTrackingMessage(prefix: String) -> String {
+    "\(prefix) Use the \(TaskToolNames.get) tool to track progress, \(TaskToolNames.list) to inspect tasks, or \(TaskToolNames.cancel) to cancel the task."
+}
+
+private func taskTrackingTools() -> [String: String] {
+    [
+        "get": TaskToolNames.get,
+        "list": TaskToolNames.list,
+        "cancel": TaskToolNames.cancel,
+    ]
+}
+
 /// Registers IPA install/export MCP tools on the server.
 ///
 /// Tools registered:
@@ -47,7 +72,7 @@ public enum InstallerTools {
                 ],
                 required: ["ipaPath"]
             ),
-            description: "Install an IPA file into PlayCover. This is a long-running operation; use the returned task ID to track progress.",
+            description: "Install an IPA file into PlayCover. This is a long-running operation; use the returned task ID with the get_task tool to track progress.",
             title: "Install IPA"
         )
         server.toolRegistry.register(tool)
@@ -112,9 +137,10 @@ public enum InstallerTools {
             let response: [String: Any] = [
                 "taskId": taskId,
                 "status": "started",
-                "message": "IPA installation started. Use tasks/get to track progress."
+                "message": taskTrackingMessage(prefix: "IPA installation started."),
+                "trackingTools": taskTrackingTools(),
             ]
-            let data = try JSONSerialization.data(withJSONObject: response, options: .prettyPrinted)
+            let data = try JSONSerialization.data(withJSONObject: response, options: [.prettyPrinted, .sortedKeys])
             let text = String(data: data, encoding: .utf8) ?? "{}"
 
             return CallToolResult(content: [.text(content: text)])
@@ -148,7 +174,7 @@ public enum InstallerTools {
                 ],
                 required: ["ipaPath"]
             ),
-            description: "Export a patched IPA with PlayTools embedded. This is a long-running operation; use the returned task ID to track progress.",
+            description: "Export a patched IPA with PlayTools embedded. This is a long-running operation; use the returned task ID with the get_task tool to track progress.",
             title: "Export Patched IPA"
         )
         server.toolRegistry.register(tool)
@@ -212,12 +238,116 @@ public enum InstallerTools {
             let response: [String: Any] = [
                 "taskId": taskId,
                 "status": "started",
-                "message": "IPA export started. Use tasks/get to track progress."
+                "message": taskTrackingMessage(prefix: "IPA export started."),
+                "trackingTools": taskTrackingTools(),
             ]
-            let data = try JSONSerialization.data(withJSONObject: response, options: .prettyPrinted)
+            let data = try JSONSerialization.data(withJSONObject: response, options: [.prettyPrinted, .sortedKeys])
             let text = String(data: data, encoding: .utf8) ?? "{}"
 
             return CallToolResult(content: [.text(content: text)])
         }
+    }
+}
+
+/// Registers standard MCP tool wrappers for background task inspection and cancellation.
+///
+/// Tools registered:
+/// - `get_task`: Get the current status of a task by ID
+/// - `list_tasks`: List all known tasks
+/// - `cancel_task`: Cancel a task by ID
+public enum TaskTools {
+
+    /// Register task tool metadata and handlers on the server.
+    public static func register(on server: MCPServer, taskManager: TaskManager) {
+        registerGetTask(on: server, taskManager: taskManager)
+        registerListTasks(on: server, taskManager: taskManager)
+        registerCancelTask(on: server, taskManager: taskManager)
+    }
+
+    private static func registerGetTask(on server: MCPServer, taskManager: TaskManager) {
+        let tool = Tool(
+            name: TaskToolNames.get,
+            inputSchema: InputSchema(
+                type: "object",
+                properties: [
+                    "taskId": AnyCodable([
+                        "type": "string",
+                        "description": "The task ID to query"
+                    ] as Any),
+                ],
+                required: ["taskId"]
+            ),
+            description: "Get the current status of a background task by its task ID. Equivalent to the JSON-RPC tasks/get method.",
+            title: "Get Task"
+        )
+        server.toolRegistry.register(tool)
+
+        server.registerTool(name: TaskToolNames.get) { arguments in
+            let taskId = try requireTaskId(arguments, toolName: TaskToolNames.get)
+            guard let status = taskManager.getTask(taskId) else {
+                throw PlayCoverMCPError(code: .taskNotFound, message: "Task not found: \(taskId)")
+            }
+
+            let text = try encodeJSONText(GetTaskResult(status: status))
+            return CallToolResult(content: [.text(content: text)])
+        }
+    }
+
+    private static func registerListTasks(on server: MCPServer, taskManager: TaskManager) {
+        let tool = Tool(
+            name: TaskToolNames.list,
+            inputSchema: InputSchema(type: "object", properties: [:]),
+            description: "List all known background tasks. Equivalent to the JSON-RPC tasks/list method.",
+            title: "List Tasks"
+        )
+        server.toolRegistry.register(tool)
+
+        server.registerTool(name: TaskToolNames.list) { _ in
+            let result = ListTasksResult(tasks: taskManager.listTasks(includeCompleted: true))
+            let text = try encodeJSONText(result, fallback: "{\n  \"tasks\" : [\n\n  ]\n}")
+            return CallToolResult(content: [.text(content: text)])
+        }
+    }
+
+    private static func registerCancelTask(on server: MCPServer, taskManager: TaskManager) {
+        let tool = Tool(
+            name: TaskToolNames.cancel,
+            inputSchema: InputSchema(
+                type: "object",
+                properties: [
+                    "taskId": AnyCodable([
+                        "type": "string",
+                        "description": "The task ID to cancel"
+                    ] as Any),
+                ],
+                required: ["taskId"]
+            ),
+            description: "Cancel a background task by its task ID. Equivalent to the JSON-RPC tasks/cancel method.",
+            title: "Cancel Task"
+        )
+        server.toolRegistry.register(tool)
+
+        server.registerTool(name: TaskToolNames.cancel) { arguments in
+            let taskId = try requireTaskId(arguments, toolName: TaskToolNames.cancel)
+            guard taskManager.getTask(taskId) != nil else {
+                throw PlayCoverMCPError(code: .taskNotFound, message: "Task not found: \(taskId)")
+            }
+
+            taskManager.cancelTask(taskId)
+            let status = taskManager.getTask(taskId)!
+            let text = try encodeJSONText(GetTaskResult(status: status))
+            return CallToolResult(content: [.text(content: text)])
+        }
+    }
+
+    private static func requireTaskId(_ arguments: AnyCodable?, toolName: String) throws -> String {
+        guard let taskId = arguments?.dictionary?["taskId"] as? String,
+              !taskId.isEmpty else {
+            throw PlayCoverMCPError(
+                code: JSONRPCError.invalidParams,
+                message: "\(toolName) requires a non-empty 'taskId' parameter"
+            )
+        }
+        return taskId
     }
 }

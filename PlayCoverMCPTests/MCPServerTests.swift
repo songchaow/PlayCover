@@ -10,6 +10,41 @@ final class MCPServerTests: XCTestCase {
         )
     }
 
+    private func makeTaskToolServer(taskManager: TaskManager) -> MCPServer {
+        let server = MCPServer(
+            serverInfo: Implementation(name: "TestServer", version: "0.1.0"),
+            capabilities: ServerCapabilities(
+                tools: ToolCapabilities(),
+                tasks: TaskCapabilities(
+                    list: EmptyCapability(),
+                    cancel: EmptyCapability()
+                )
+            ),
+            taskManager: taskManager
+        )
+        TaskTools.register(on: server, taskManager: taskManager)
+        return server
+    }
+
+    private func extractToolText(from response: JSONRPCMessage?) throws -> String {
+        guard let response else {
+            XCTFail("Expected response")
+            return ""
+        }
+        guard case .response(let resp) = response else {
+            XCTFail("Expected response")
+            return ""
+        }
+        XCTAssertNil(resp.error)
+
+        let result: CallToolResult = try XCTUnwrap(resp.result?.decoded())
+        guard case .text(let content) = try XCTUnwrap(result.content.first) else {
+            XCTFail("Expected text content")
+            return ""
+        }
+        return content
+    }
+
     // MARK: - Initialize
 
     func testInitializeResponse() throws {
@@ -432,7 +467,7 @@ final class MCPServerTests: XCTestCase {
 
         let result: CreateTaskResult = try XCTUnwrap(try resp.result?.decoded())
         XCTAssertEqual(result.id, "my-task")
-        XCTAssertEqual(result.status.state, .pending)
+        XCTAssertEqual(result.status.state, TaskState.pending)
     }
 
     func testTasksGet() throws {
@@ -464,7 +499,7 @@ final class MCPServerTests: XCTestCase {
 
         let result: GetTaskResult = try XCTUnwrap(resp.result?.decoded())
         XCTAssertEqual(result.status.id, "t1")
-        XCTAssertEqual(result.status.state, .pending)
+        XCTAssertEqual(result.status.state, TaskState.pending)
     }
 
     func testTasksGetAcceptsLegacyStringParam() throws {
@@ -610,7 +645,7 @@ final class MCPServerTests: XCTestCase {
         XCTAssertNil(resp.error)
 
         let result: GetTaskResult = try XCTUnwrap(resp.result?.decoded())
-        XCTAssertEqual(result.status.state, .cancelled)
+        XCTAssertEqual(result.status.state, TaskState.cancelled)
     }
 
     func testTasksCancelAcceptsLegacyStringParam() throws {
@@ -642,7 +677,139 @@ final class MCPServerTests: XCTestCase {
         XCTAssertNil(resp.error)
 
         let result: GetTaskResult = try XCTUnwrap(resp.result?.decoded())
-        XCTAssertEqual(result.status.state, .cancelled)
+        XCTAssertEqual(result.status.state, TaskState.cancelled)
+    }
+
+    func testTaskToolsAreRegistered() throws {
+        let server = makeTaskToolServer(taskManager: TaskManager())
+        let request = JSONRPCRequest(id: .string("task-tools-list"), method: "tools/list")
+        let response = server.handle(.request(request))
+
+        guard case .response(let resp) = response else {
+            XCTFail("Expected response")
+            return
+        }
+        XCTAssertNil(resp.error)
+
+        let result: ListToolsResult = try XCTUnwrap(resp.result?.decoded())
+        let toolNames = Set(result.tools.map(\.name))
+        XCTAssertTrue(toolNames.contains("get_task"))
+        XCTAssertTrue(toolNames.contains("list_tasks"))
+        XCTAssertTrue(toolNames.contains("cancel_task"))
+    }
+
+    func testGetTaskToolReturnsTaskStatus() throws {
+        let taskManager = TaskManager()
+        taskManager.createTask(id: "task-1", title: "Example")
+        let server = makeTaskToolServer(taskManager: taskManager)
+
+        let request = JSONRPCRequest(
+            id: .string("get-task-tool"),
+            method: "tools/call",
+            params: AnyCodable([
+                "name": "get_task",
+                "arguments": ["taskId": "task-1"]
+            ])
+        )
+        let response = server.handle(.request(request))
+        let text = try extractToolText(from: response)
+        let result: GetTaskResult = try JSONDecoder().decode(GetTaskResult.self, from: Data(text.utf8))
+
+        XCTAssertEqual(result.status.id, "task-1")
+        XCTAssertEqual(result.status.state, TaskState.pending)
+    }
+
+    func testListTasksToolReturnsAllTasks() throws {
+        let taskManager = TaskManager()
+        taskManager.createTask(id: "task-1", title: "First")
+        taskManager.createTask(id: "task-2", title: "Second")
+        taskManager.startTask("task-2")
+        let server = makeTaskToolServer(taskManager: taskManager)
+
+        let request = JSONRPCRequest(
+            id: .string("list-task-tool"),
+            method: "tools/call",
+            params: AnyCodable(["name": "list_tasks", "arguments": [:]])
+        )
+        let response = server.handle(.request(request))
+        let text = try extractToolText(from: response)
+        let result: ListTasksResult = try JSONDecoder().decode(ListTasksResult.self, from: Data(text.utf8))
+        let ids = Set(result.tasks.map { $0.id })
+
+        XCTAssertEqual(ids, ["task-1", "task-2"])
+    }
+
+    func testCancelTaskToolCancelsTask() throws {
+        let taskManager = TaskManager()
+        taskManager.createTask(id: "task-1", title: "Cancelable")
+        taskManager.startTask("task-1")
+        let server = makeTaskToolServer(taskManager: taskManager)
+
+        let request = JSONRPCRequest(
+            id: .string("cancel-task-tool"),
+            method: "tools/call",
+            params: AnyCodable([
+                "name": "cancel_task",
+                "arguments": ["taskId": "task-1"]
+            ])
+        )
+        let response = server.handle(.request(request))
+        let text = try extractToolText(from: response)
+        let result: GetTaskResult = try JSONDecoder().decode(GetTaskResult.self, from: Data(text.utf8))
+
+        XCTAssertEqual(result.status.id, "task-1")
+        XCTAssertEqual(result.status.state, TaskState.cancelled)
+        XCTAssertEqual(taskManager.getTask("task-1")?.state, TaskState.cancelled)
+    }
+
+    func testInstallerToolResponsesMentionTaskTools() throws {
+        let taskManager = TaskManager()
+        let server = makeTaskToolServer(taskManager: taskManager)
+        let appDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlayCoverMCP-InstallerToolTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: appDirectory) }
+
+        let installerService = InstallerService(
+            appDirectory: appDirectory,
+            playToolsFrameworkPath: appDirectory.appendingPathComponent("PlayTools.framework")
+        )
+        InstallerTools.register(on: server, installerService: installerService, taskManager: taskManager)
+
+        let installResponse = server.handle(.request(JSONRPCRequest(
+            id: .string("install-tool"),
+            method: "tools/call",
+            params: AnyCodable([
+                "name": "install_ipa",
+                "arguments": ["ipaPath": "/tmp/missing-install.ipa"]
+            ])
+        )))
+        let installText = try extractToolText(from: installResponse)
+        let installJSON = try JSONSerialization.jsonObject(with: Data(installText.utf8)) as! [String: Any]
+        let installTracking = installJSON["trackingTools"] as? [String: Any]
+
+        XCTAssertEqual(installJSON["status"] as? String, "started")
+        XCTAssertTrue((installJSON["message"] as? String ?? "").contains("get_task"))
+        XCTAssertEqual(installTracking?["get"] as? String, "get_task")
+        XCTAssertEqual(installTracking?["list"] as? String, "list_tasks")
+        XCTAssertEqual(installTracking?["cancel"] as? String, "cancel_task")
+
+        let exportResponse = server.handle(.request(JSONRPCRequest(
+            id: .string("export-tool"),
+            method: "tools/call",
+            params: AnyCodable([
+                "name": "export_patched_ipa",
+                "arguments": ["ipaPath": "/tmp/missing-export.ipa"]
+            ])
+        )))
+        let exportText = try extractToolText(from: exportResponse)
+        let exportJSON = try JSONSerialization.jsonObject(with: Data(exportText.utf8)) as! [String: Any]
+        let exportTracking = exportJSON["trackingTools"] as? [String: Any]
+
+        XCTAssertEqual(exportJSON["status"] as? String, "started")
+        XCTAssertTrue((exportJSON["message"] as? String ?? "").contains("get_task"))
+        XCTAssertEqual(exportTracking?["get"] as? String, "get_task")
+        XCTAssertEqual(exportTracking?["list"] as? String, "list_tasks")
+        XCTAssertEqual(exportTracking?["cancel"] as? String, "cancel_task")
     }
 
     // MARK: - No-logger / No-taskManager: methods not registered

@@ -609,44 +609,46 @@ public final class InstallerService: Sendable {
 
     /// Strip fat binary to extract ARM64 slice only.
     private func stripFatBinary(_ binary: inout Data) throws {
-        let fatMagic: [UInt8] = [0xCA, 0xFE, 0xBA, 0xBE] // FAT_MAGIC
-        let fatCigam: [UInt8] = [0xBE, 0xBA, 0xFE, 0xCA] // FAT_CIGAM
-
         guard binary.count >= 4 else { return }
 
-        let isFatLE = binary.prefix(4).elementsEqual(fatMagic)
-        let isFatBE = binary.prefix(4).elementsEqual(fatCigam)
+        let magic = Array(binary.prefix(4))
+        let bigEndian: Bool
+        switch magic {
+        case [0xCA, 0xFE, 0xBA, 0xBE]:
+            bigEndian = true
+        case [0xBE, 0xBA, 0xFE, 0xCA]:
+            bigEndian = false
+        default:
+            return // Not a fat binary, nothing to strip
+        }
 
-        guard isFatLE || isFatBE else { return } // Not a fat binary, nothing to strip
+        guard binary.count >= 8 else {
+            throw InstallerError.invalidIPA("Fat Mach-O header is truncated")
+        }
 
-        // Parse fat_header: magic(4) + nfat_arch(4)
-        let isSwap = isFatBE
-        let nfatArch = isSwap
-            ? UInt32(bigEndian: binary.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt32.self) })
-            : binary.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt32.self) }
-
+        let nfatArch = try readUInt32(from: binary, offset: 4, bigEndian: bigEndian)
         var offset = 8 // sizeof(fat_header)
         let archSize = 20 // sizeof(fat_arch)
 
         for _ in 0..<nfatArch {
-            guard binary.count >= offset + archSize else { break }
+            guard binary.count >= offset + archSize else {
+                throw InstallerError.invalidIPA("Fat Mach-O header is truncated")
+            }
 
             // Parse fat_arch: cputype(4) + cpusubtype(4) + offset(4) + size(4) + align(4)
-            let cputype = isSwap
-                ? UInt32(bigEndian: binary.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt32.self) })
-                : binary.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt32.self) }
+            let cputype = try readUInt32(from: binary, offset: offset, bigEndian: bigEndian)
+            let sliceOffset = try readUInt32(from: binary, offset: offset + 8, bigEndian: bigEndian)
+            let sliceSize = try readUInt32(from: binary, offset: offset + 12, bigEndian: bigEndian)
 
-            let sliceOffset = isSwap
-                ? UInt32(bigEndian: binary.withUnsafeBytes { $0.load(fromByteOffset: offset + 8, as: UInt32.self) })
-                : binary.withUnsafeBytes { $0.load(fromByteOffset: offset + 8, as: UInt32.self) }
-
-            let sliceSize = isSwap
-                ? UInt32(bigEndian: binary.withUnsafeBytes { $0.load(fromByteOffset: offset + 12, as: UInt32.self) })
-                : binary.withUnsafeBytes { $0.load(fromByteOffset: offset + 12, as: UInt32.self) }
+            let start = Int(sliceOffset)
+            let end = start + Int(sliceSize)
+            guard start >= 0, sliceSize > 0, end <= binary.count else {
+                throw InstallerError.invalidIPA("Fat Mach-O slice is truncated")
+            }
 
             // CPU_TYPE_ARM64 = 0x0100000C
             if cputype == 0x0100000C {
-                binary = binary.subdata(in: Int(sliceOffset)..<Int(sliceOffset + sliceSize))
+                binary = binary.subdata(in: start..<end)
                 return
             }
 
@@ -660,68 +662,54 @@ public final class InstallerService: Sendable {
     private func replaceVersionCommand(_ binary: inout Data) throws {
         guard binary.count >= 32 else { return }
 
-        let isSwap = binary.prefix(4).elementsEqual([0xCF, 0xFA, 0xED, 0xFE]) == false
-            && binary.prefix(4).elementsEqual([0xFE, 0xED, 0xFA, 0xCF]) == false
-            && binary.prefix(4).elementsEqual([0xCA, 0xFE, 0xBA, 0xBE]) == false
+        let magic = Array(binary.prefix(4))
+        let isSwap: Bool
+        switch magic {
+        case [0xCF, 0xFA, 0xED, 0xFE], [0xCE, 0xFA, 0xED, 0xFE]:
+            isSwap = false
+        case [0xFE, 0xED, 0xFA, 0xCF], [0xFE, 0xED, 0xFA, 0xCE]:
+            isSwap = true
+        default:
+            return
+        }
 
-        // After stripping, should be a thin ARM64 binary
+        // After stripping, should be a thin ARM64 binary.
         // mach_header_64: magic(4) + cputype(4) + cpusubtype(4) + filetype(4)
         //                 + ncmds(4) + sizeofcmds(4) + flags(4) + reserved(4)
         let headerSize = 32
-
-        guard binary.count >= headerSize else { return }
-
-        let ncmds = binary.withUnsafeBytes { ptr -> UInt32 in
-            if isSwap {
-                return UInt32(bigEndian: ptr.load(fromByteOffset: 12, as: UInt32.self))
-            }
-            return ptr.load(fromByteOffset: 12, as: UInt32.self)
-        }
-
-        let sizeofcmds = binary.withUnsafeBytes { ptr -> UInt32 in
-            if isSwap {
-                return UInt32(bigEndian: ptr.load(fromByteOffset: 16, as: UInt32.self))
-            }
-            return ptr.load(fromByteOffset: 16, as: UInt32.self)
-        }
+        let ncmds = try readUInt32(from: binary, offset: 16, bigEndian: isSwap)
+        let sizeofcmds = try readUInt32(from: binary, offset: 20, bigEndian: isSwap)
 
         let cmdEnd = headerSize + Int(sizeofcmds)
-        guard binary.count >= cmdEnd else { return }
+        guard binary.count >= cmdEnd else {
+            throw InstallerError.invalidIPA("Mach-O load commands are truncated")
+        }
 
         // LC_BUILD_VERSION = 0x32, PLATFORM_MACCATALYST = 13
         // build_version_command: cmd(4) + cmdsize(4) + platform(4) + minos(4) + sdk(4) + ntools(4) = 24 bytes
         var offset = headerSize
         for _ in 0..<ncmds {
-            guard offset + 8 <= binary.count else { break }
-
-            let cmd = binary.withUnsafeBytes { ptr -> UInt32 in
-                if isSwap {
-                    return UInt32(bigEndian: ptr.load(fromByteOffset: offset, as: UInt32.self))
-                }
-                return ptr.load(fromByteOffset: offset, as: UInt32.self)
+            guard offset + 8 <= cmdEnd else {
+                throw InstallerError.invalidIPA("Mach-O load command header is truncated")
             }
 
-            let cmdsize = binary.withUnsafeBytes { ptr -> UInt32 in
-                if isSwap {
-                    return UInt32(bigEndian: ptr.load(fromByteOffset: offset + 4, as: UInt32.self))
-                }
-                return ptr.load(fromByteOffset: offset + 4, as: UInt32.self)
+            let cmd = try readUInt32(from: binary, offset: offset, bigEndian: isSwap)
+            let cmdsize = try readUInt32(from: binary, offset: offset + 4, bigEndian: isSwap)
+            let nextOffset = offset + Int(cmdsize)
+            guard cmdsize >= 8, nextOffset <= cmdEnd else {
+                throw InstallerError.invalidIPA("Mach-O load command is truncated")
             }
 
             // LC_BUILD_VERSION = 0x32 (50)
             // Replace with Mac Catalyst: platform=13, minos=11.0, sdk=14.0
             if cmd == 0x32 || cmd == 0x80000032 { // LC_BUILD_VERSION or LC_BUILD_VERSION_64
-                _ = cmd
-                _ = cmdsize
-
-                // platform = PLATFORM_MACCATALYST = 13
                 var platform: UInt32 = isSwap ? UInt32(bigEndian: 13) : 13
                 // minos = 11.0.0 = 0x000B0000
                 var minos: UInt32 = isSwap ? UInt32(bigEndian: 0x000B0000) : 0x000B0000
                 // sdk = 14.0.0 = 0x000E0000
                 var sdk: UInt32 = isSwap ? UInt32(bigEndian: 0x000E0000) : 0x000E0000
                 // ntools = 0
-                var ntools: UInt32 = 0
+                var ntools: UInt32 = isSwap ? UInt32(bigEndian: 0) : 0
 
                 binary.replaceSubrange(offset + 8..<(offset + 12), with: Data(bytes: &platform, count: 4))
                 binary.replaceSubrange(offset + 12..<(offset + 16), with: Data(bytes: &minos, count: 4))
@@ -731,7 +719,7 @@ public final class InstallerService: Sendable {
                 return
             }
 
-            offset += Int(cmdsize)
+            offset = nextOffset
         }
     }
 

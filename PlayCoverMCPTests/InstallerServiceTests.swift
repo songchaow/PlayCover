@@ -358,6 +358,55 @@ final class InstallerServiceTests: XCTestCase {
         XCTAssertTrue(progressMessages.contains("saving entitlements"))
     }
 
+    func testInstallFatArm64BinaryDoesNotFailSliceExtraction() throws {
+        let appDir = try makeTempDir()
+        let playToolsDir = try makeTempDir()
+        let ipaURL = try createFakeIPA(
+            displayName: "FatArm64Preflight",
+            executableData: makeFatMachO(architectures: [.x86_64, .arm64])
+        )
+        defer {
+            try? FileManager.default.removeItem(at: ipaURL.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: appDir)
+            try? FileManager.default.removeItem(at: playToolsDir)
+        }
+
+        let service = InstallerService(appDirectory: appDir, playToolsFrameworkPath: playToolsDir)
+        var progressMessages: [String] = []
+
+        do {
+            _ = try service.install(
+                ipaPath: ipaURL.path,
+                injectPlayTools: false,
+                progress: { _, _, message in
+                    progressMessages.append(message)
+                }
+            )
+        } catch let installerError as InstallerError {
+            switch installerError {
+            case .ipaNotFound, .invalidIPA, .missingExecutable, .appEncrypted, .unsupportedArchitecture:
+                XCTFail("Unexpected preflight failure for fat ARM64 binary: \(installerError)")
+            case .conversionFailed(let message):
+                XCTAssertFalse(
+                    message.contains("No ARM64 architecture found in fat binary"),
+                    "Fat ARM64 binary should no longer fail slice extraction"
+                )
+            case .signingFailed, .injectionFailed, .exportFailed, .packFailed:
+                break
+            }
+        } catch let shellError as ShellError {
+            XCTAssertTrue(
+                shellError.output.contains("object file format unrecognized")
+                    || shellError.output.contains("not signed"),
+                "Unexpected shell failure after fat binary slice extraction: \(shellError)"
+            )
+        }
+
+        XCTAssertTrue(progressMessages.contains("checking MachO binaries"))
+        XCTAssertTrue(progressMessages.contains("saving entitlements"))
+        XCTAssertTrue(progressMessages.contains("converting FakeApp") || progressMessages.contains("converting speedmobile") || progressMessages.contains("converting FatArm64Preflight"))
+    }
+
     // MARK: - Export Flow Tests
 
     func testExportFakeIPAWithoutPlayTools() throws {

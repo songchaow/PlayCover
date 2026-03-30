@@ -26,9 +26,10 @@ struct KeyCover {
         return playChainDir
     }
 
-    // This is only exposed at runtime
-    var keyCoverPlainTextKey: String? = KeyCoverPreferences.shared.keyCoverEnabled == .selfGeneratedPassword
-    ? KeyCoverPassword.shared.getKeyCoverPassword() : nil
+    // This is only exposed at runtime.
+    // Delay loading the Smart Unlock key from macOS Keychain until it is actually needed,
+    // so PlayCover startup is not blocked by a keychain access prompt.
+    var keyCoverPlainTextKey: String?
 
     func isKeyCoverEnabled() -> Bool {
         return KeyCoverPreferences.shared.keyCoverEnabled != .disabled

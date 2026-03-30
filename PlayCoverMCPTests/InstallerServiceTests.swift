@@ -483,6 +483,20 @@ final class InstallerServiceTests: XCTestCase {
         }
     }
 
+    func testShellExtractEmbeddedPropertyListFromMixedCodesignOutput() {
+        let output = "Executable=/tmp/TestApp\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>com.apple.security.network.client</key><true/></dict></plist>\n"
+
+        let plist = MCPShell.extractEmbeddedPropertyList(from: output)
+        XCTAssertEqual(
+            plist,
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>com.apple.security.network.client</key><true/></dict></plist>"
+        )
+    }
+
+    func testShellExtractEmbeddedPropertyListReturnsNilWithoutPlist() {
+        XCTAssertNil(MCPShell.extractEmbeddedPropertyList(from: "Executable=/tmp/TestApp\nno plist here\n"))
+    }
+
     func testShellErrorEquality() {
         let e1 = ShellError(command: "/bin/test", arguments: ["a"], exitCode: 1, output: "err")
         let e2 = ShellError(command: "/bin/test", arguments: ["a"], exitCode: 1, output: "err")

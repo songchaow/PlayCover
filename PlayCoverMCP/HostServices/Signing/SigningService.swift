@@ -222,11 +222,17 @@ public final class SigningService: Sendable {
             throw SigningServiceError.executableNotFound(executableURL.path)
         }
 
+        let signed = isSigned(executableURL)
         let entitlements = try dumpEntitlementsFromBinary(executableURL)
 
-        let message = entitlements.isEmpty
-            ? "App \(app.displayName) (\(bundleId)) has no entitlements or is unsigned."
-            : "Entitlements preview for \(app.displayName) (\(bundleId)): \(entitlements.count) key(s)."
+        let message: String
+        if entitlements.isEmpty {
+            message = signed
+                ? "App \(app.displayName) (\(bundleId)) has no embedded entitlements."
+                : "App \(app.displayName) (\(bundleId)) is not signed, so no entitlements are embedded."
+        } else {
+            message = "Entitlements preview for \(app.displayName) (\(bundleId)): \(entitlements.count) key(s)."
+        }
 
         return EntitlementsPreviewResult(
             bundleIdentifier: bundleId,
@@ -254,27 +260,26 @@ public final class SigningService: Sendable {
             throw SigningServiceError.executableNotFound(executableURL.path)
         }
 
-        // Check if the binary is signed
         let signed = isSigned(executableURL)
-
-        // Check if Info.plist is included in the signature
         let infoPlistSigned = isInfoPlistSigned(executableURL)
+        let entitlementsInspection = inspectEntitlements(executableURL)
+        let entitlementsMatch = !entitlementsInspection.entitlements.isEmpty
 
-        // Check entitlements
-        let entitlements = (try? dumpEntitlementsFromBinary(executableURL)) ?? [:]
-        let entitlementsMatch = !entitlements.isEmpty
-
-        // Overall validity: all checks pass
-        let valid = signed && infoPlistSigned && entitlementsMatch
+        // “签名有效”不要求必须有 entitlements；只要签名链路可读且检查过程没有报错即可。
+        let valid = signed && infoPlistSigned && entitlementsInspection.error == nil
 
         var issues: [String] = []
         if !signed { issues.append("binary is not signed") }
         if !infoPlistSigned { issues.append("Info.plist is not signed") }
-        if !entitlementsMatch { issues.append("no entitlements found") }
+        if let error = entitlementsInspection.error {
+            issues.append(error.localizedDescription)
+        }
 
         let message: String
         if valid {
-            message = "App \(app.displayName) (\(bundleId)) signing is valid."
+            message = entitlementsMatch
+                ? "App \(app.displayName) (\(bundleId)) signing is valid and includes \(entitlementsInspection.entitlements.count) entitlement key(s)."
+                : "App \(app.displayName) (\(bundleId)) signing is valid and no embedded entitlements were found."
         } else {
             message = "App \(app.displayName) (\(bundleId)) has signing issues: \(issues.joined(separator: ", "))."
         }
@@ -287,6 +292,16 @@ public final class SigningService: Sendable {
             entitlementsMatch: entitlementsMatch,
             message: message
         )
+    }
+
+    private func inspectEntitlements(_ executable: URL) -> (entitlements: [String: Any], error: SigningServiceError?) {
+        do {
+            return (try dumpEntitlementsFromBinary(executable), nil)
+        } catch let error as SigningServiceError {
+            return ([:], error)
+        } catch {
+            return ([:], .entitlementsDumpFailed(error.localizedDescription))
+        }
     }
 
     // MARK: - Resign App

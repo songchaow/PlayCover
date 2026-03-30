@@ -13,6 +13,8 @@ class KeymapViewVM: ObservableObject {
     public let app: PlayApp
     public let cache = DataCache.instance
 
+    private var keymapsChangedObserver: NSObjectProtocol?
+
     @Published var selectedKeymap: URL?
     @Published var kmName = ""
 
@@ -36,12 +38,33 @@ class KeymapViewVM: ObservableObject {
         self.defaultKm = app.keymapping.keymapConfig.defaultKm
 
         self.reloadKeymapCache()
+        self.keymapsChangedObserver = NotificationCenter.default.addObserver(
+            forName: .mcpKeymapsChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self else { return }
+
+            if let bundleID = notification.userInfo?["bundleID"] as? String,
+               bundleID != self.app.info.bundleIdentifier {
+                return
+            }
+
+            self.reloadKeymapCache()
+        }
+    }
+
+    deinit {
+        if let keymapsChangedObserver {
+            NotificationCenter.default.removeObserver(keymapsChangedObserver)
+        }
     }
 
     func reloadKeymapCache() {
         app.keymapping.reloadKeymapCache()
 
         keymapURLS = app.keymapping.keymapConfig.keymapOrder
+        defaultKm = app.keymapping.keymapConfig.defaultKm
     }
 
     func setDefaultKeymap(keymap: URL) {

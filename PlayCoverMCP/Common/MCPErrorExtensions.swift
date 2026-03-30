@@ -109,6 +109,22 @@ public struct PlayCoverMCPError: Error, LocalizedError, Equatable, Sendable {
             self.cause = nil
             return
         }
+        if let signingErr = error as? SigningServiceError {
+            let mappedCode: Int
+            switch signingErr {
+            case .appNotFound:
+                mappedCode = PlayCoverErrorCode.appNotFound.rawValue
+            case .executableNotFound, .signingFailed, .resignFailed:
+                mappedCode = PlayCoverErrorCode.signingFailed.rawValue
+            case .entitlementsDumpFailed:
+                mappedCode = PlayCoverErrorCode.entitlementsError.rawValue
+            }
+            self.code = mappedCode
+            self.message = message ?? signingErr.localizedDescription
+            self.data = nil
+            self.cause = nil
+            return
+        }
         if let settingsErr = error as? SettingsError {
             switch settingsErr {
             case .appNotFound:

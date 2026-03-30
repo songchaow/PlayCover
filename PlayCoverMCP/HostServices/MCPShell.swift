@@ -9,6 +9,25 @@ import Foundation
 /// any UI framework dependencies (no ObservableObject, no Log.shared).
 public enum MCPShell {
 
+    struct ProcessOutput {
+        let stdout: String
+        let stderr: String
+        let exitCode: Int32
+
+        var combinedOutput: String {
+            switch (stdout.isEmpty, stderr.isEmpty) {
+            case (true, true):
+                return ""
+            case (false, true):
+                return stdout
+            case (true, false):
+                return stderr
+            case (false, false):
+                return stdout + stderr
+            }
+        }
+    }
+
     /// Run an external command and return its stdout/stderr output.
     ///
     /// - Parameters:
@@ -18,31 +37,16 @@ public enum MCPShell {
     /// - Throws: `ShellError` with the command output if the process exits non-zero.
     @discardableResult
     public static func run(_ binary: String, _ args: String...) throws -> String {
-        let process = Process()
-        let pipe = Pipe()
-
-        process.executableURL = URL(fileURLWithPath: binary)
-        process.arguments = args
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        try process.run()
-
-        let output = try pipe.fileHandleForReading.readToEnd() ?? Data()
-        let outputString = String(data: output, encoding: .utf8) ?? ""
-
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
+        let output = try capture(binary, args)
+        guard output.exitCode == 0 else {
             throw ShellError(
                 command: binary,
                 arguments: args,
-                exitCode: process.terminationStatus,
-                output: outputString
+                exitCode: output.exitCode,
+                output: output.combinedOutput
             )
         }
-
-        return outputString
+        return output.combinedOutput
     }
 
     /// Run an external command and return its stdout/stderr output.
@@ -50,7 +54,56 @@ public enum MCPShell {
     /// Overload that accepts an array of arguments.
     @discardableResult
     public static func run(_ binary: String, _ args: [String]) throws -> String {
-        try run(binary, args.map { $0 })
+        let output = try capture(binary, args)
+        guard output.exitCode == 0 else {
+            throw ShellError(
+                command: binary,
+                arguments: args,
+                exitCode: output.exitCode,
+                output: output.combinedOutput
+            )
+        }
+        return output.combinedOutput
+    }
+
+    static func extractEmbeddedPropertyList(from output: String) -> String? {
+        guard !output.isEmpty else { return nil }
+
+        let start = ["<?xml", "<plist"]
+            .compactMap { output.range(of: $0)?.lowerBound }
+            .min()
+        guard let start else { return nil }
+
+        guard let end = output.range(of: "</plist>", options: .backwards)?.upperBound,
+              start < end else {
+            return nil
+        }
+
+        return String(output[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func capture(_ binary: String, _ args: [String]) throws -> ProcessOutput {
+        let process = Process()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+
+        process.executableURL = URL(fileURLWithPath: binary)
+        process.arguments = args
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+
+        let stdoutData = try stdoutPipe.fileHandleForReading.readToEnd() ?? Data()
+        let stderrData = try stderrPipe.fileHandleForReading.readToEnd() ?? Data()
+
+        process.waitUntilExit()
+
+        return ProcessOutput(
+            stdout: String(data: stdoutData, encoding: .utf8) ?? "",
+            stderr: String(data: stderrData, encoding: .utf8) ?? "",
+            exitCode: process.terminationStatus
+        )
     }
 
     // MARK: - Signing
@@ -87,15 +140,39 @@ public enum MCPShell {
     ///
     /// Returns empty string if the binary has no entitlements or is unsigned.
     public static func dumpEntitlements(_ exec: URL) throws -> String {
-        do {
-            return try run("/usr/bin/codesign", "-d", "--entitlements", "-", "--xml", exec.path)
-        } catch let error as ShellError {
-            if error.output.contains("Document is empty") ||
-               error.output.contains("code object is not signed at all") {
-                return ""
-            }
-            throw error
+        let arguments = ["-d", "--entitlements", "-", "--xml", exec.path]
+        let output = try capture("/usr/bin/codesign", arguments)
+        let combinedOutput = output.combinedOutput
+
+        if combinedOutput.contains("Document is empty") ||
+            combinedOutput.contains("code object is not signed at all") {
+            return ""
         }
+
+        if let plist = extractEmbeddedPropertyList(from: output.stdout)
+            ?? extractEmbeddedPropertyList(from: combinedOutput) {
+            return plist
+        }
+
+        guard output.exitCode == 0 else {
+            throw ShellError(
+                command: "/usr/bin/codesign",
+                arguments: arguments,
+                exitCode: output.exitCode,
+                output: combinedOutput
+            )
+        }
+
+        if combinedOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return ""
+        }
+
+        throw ShellError(
+            command: "/usr/bin/codesign",
+            arguments: arguments,
+            exitCode: output.exitCode,
+            output: "Failed to locate entitlements plist in codesign output: \(combinedOutput)"
+        )
     }
 
     /// Set executable permissions on a file.

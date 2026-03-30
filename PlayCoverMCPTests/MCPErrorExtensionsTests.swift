@@ -94,6 +94,12 @@ final class MCPErrorExtensionsTests: XCTestCase {
         XCTAssertEqual(wrapped.message, "Custom")
     }
 
+    func testPlayCoverMCPError_wrapsSigningServiceEntitlementsFailure() {
+        let wrapped = PlayCoverMCPError(wrapping: SigningServiceError.entitlementsDumpFailed("bad plist"))
+        XCTAssertEqual(wrapped.code, PlayCoverErrorCode.entitlementsError.rawValue)
+        XCTAssertEqual(wrapped.message, "Failed to dump entitlements: bad plist")
+    }
+
     // MARK: - MCPError Extension
 
     func testMCPError_asPlayCoverError() {

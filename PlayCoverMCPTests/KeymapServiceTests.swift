@@ -319,6 +319,64 @@ final class KeymapServiceTests: XCTestCase {
         }
     }
 
+    func testListKeymapsRepairsStaleRenameEntry() throws {
+        let bundleId = "com.test.rename.stale"
+        let (appDir, containerDir) = try makeFixtureApp(bundleId: bundleId)
+        defer { cleanupFixture([appDir, containerDir]) }
+
+        let service = makeService(appDir: appDir, containerDir: containerDir)
+        _ = try service.createKeymap(bundleId: bundleId, name: "old-name")
+
+        let baseDir = containerDir
+            .appendingPathComponent("Keymapping")
+            .appendingPathComponent(bundleId)
+        let defaultURL = baseDir.appendingPathComponent("default.plist")
+        let oldURL = baseDir.appendingPathComponent("old-name.plist")
+        let newURL = baseDir.appendingPathComponent("new-name.plist")
+        let configURL = baseDir.appendingPathComponent(".config.plist")
+
+        try FileManager.default.moveItem(at: oldURL, to: newURL)
+        let staleConfig: [String: Any] = [
+            "defaultKm": defaultURL.path,
+            "keymapOrder": [defaultURL.path, oldURL.path]
+        ]
+        try (staleConfig as NSDictionary).write(to: configURL)
+
+        let result = try service.listKeymaps(bundleId: bundleId)
+        XCTAssertTrue(result.keymaps.contains { $0.name == "new-name" })
+        XCTAssertFalse(result.keymaps.contains { $0.name == "old-name" })
+
+        let secondResult = try service.listKeymaps(bundleId: bundleId)
+        XCTAssertTrue(secondResult.keymaps.contains { $0.name == "new-name" })
+        XCTAssertFalse(secondResult.keymaps.contains { $0.name == "old-name" })
+        XCTAssertThrowsError(try service.getKeymap(bundleId: bundleId, name: "old-name"))
+        XCTAssertEqual(try service.getKeymap(bundleId: bundleId, name: "new-name")["bundleIdentifier"] as? String, bundleId)
+    }
+
+    func testListKeymapsRepairsStaleDeletedEntry() throws {
+        let bundleId = "com.test.delete.stale"
+        let (appDir, containerDir) = try makeFixtureApp(bundleId: bundleId)
+        defer { cleanupFixture([appDir, containerDir]) }
+
+        let service = makeService(appDir: appDir, containerDir: containerDir)
+        _ = try service.createKeymap(bundleId: bundleId, name: "ghost")
+
+        let baseDir = containerDir
+            .appendingPathComponent("Keymapping")
+            .appendingPathComponent(bundleId)
+        let ghostURL = baseDir.appendingPathComponent("ghost.plist")
+        let configURL = baseDir.appendingPathComponent(".config.plist")
+
+        try FileManager.default.removeItem(at: ghostURL)
+
+        let result = try service.listKeymaps(bundleId: bundleId)
+        XCTAssertFalse(result.keymaps.contains { $0.name == "ghost" })
+
+        let repairedConfig = try XCTUnwrap(NSDictionary(contentsOf: configURL) as? [String: Any])
+        let repairedOrder = repairedConfig["keymapOrder"] as? [String] ?? []
+        XCTAssertFalse(repairedOrder.contains(ghostURL.path))
+    }
+
     // MARK: - Reset Keymap Tests
 
     func testResetKeymap() throws {

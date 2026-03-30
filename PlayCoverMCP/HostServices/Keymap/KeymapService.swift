@@ -240,6 +240,32 @@ public final class KeymapService: Sendable {
 
     // MARK: - Config Read/Write
 
+    private func emptyKeymapDictionary(bundleId: String) -> [String: Any] {
+        [
+            "bundleIdentifier": bundleId,
+            "buttonModels": [],
+            "draggableButtonModels": [],
+            "joystickModel": [],
+            "mouseAreaModel": [],
+            "version": "2.0.0"
+        ]
+    }
+
+    private func writePropertyList(_ plist: Any, to url: URL) throws {
+        let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        try data.write(to: url, options: .atomic)
+    }
+
+    private func visibleKeymapURLs(in baseDir: URL) throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(
+            at: baseDir,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+        .filter { $0.pathExtension == "plist" && !$0.lastPathComponent.hasPrefix(".config") }
+        .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+    }
+
     private func readConfig(bundleId: String) throws -> (defaultKm: URL, keymapOrder: [URL]) {
         let fm = FileManager.default
         let baseDir = keymappingBaseDir(for: bundleId)
@@ -253,20 +279,12 @@ public final class KeymapService: Sendable {
         guard fm.fileExists(atPath: cfgURL.path) else {
             // No config yet — create default keymap file and config
             let defaultURL = keymapURL(for: bundleId, name: "default")
-            let emptyKeymap: [String: Any] = [
-                "bundleIdentifier": bundleId,
-                "buttonModels": [],
-                "draggableButtonModels": [],
-                "joystickModel": [],
-                "mouseAreaModel": [],
-                "version": "2.0.0"
-            ]
-            try (emptyKeymap as NSDictionary).write(to: defaultURL)
+            try writePropertyList(emptyKeymapDictionary(bundleId: bundleId), to: defaultURL)
             let config: [String: Any] = [
                 "defaultKm": defaultURL.path,
                 "keymapOrder": [defaultURL.path]
             ]
-            try (config as NSDictionary).write(to: cfgURL)
+            try writePropertyList(config, to: cfgURL)
             return (defaultURL, [defaultURL])
         }
 
@@ -287,7 +305,7 @@ public final class KeymapService: Sendable {
             "defaultKm": defaultKm.path,
             "keymapOrder": keymapOrder.map(\.path)
         ]
-        try (config as NSDictionary).write(to: cfgURL)
+        try writePropertyList(config, to: cfgURL)
     }
 
     // MARK: - List Keymaps
@@ -308,37 +326,49 @@ public final class KeymapService: Sendable {
             )
         }
 
-        let defaultName = config.defaultKm.deletingPathExtension().lastPathComponent
+        var discoveredKeymaps = try visibleKeymapURLs(in: baseDir)
+        if discoveredKeymaps.isEmpty {
+            let defaultURL = keymapURL(for: bundleId, name: "default")
+            if !fm.fileExists(atPath: defaultURL.path) {
+                try writePropertyList(emptyKeymapDictionary(bundleId: bundleId), to: defaultURL)
+            }
+            discoveredKeymaps = [defaultURL]
+        }
 
-        // Read config's keymapOrder first, then scan for any plist files not in order
-        var keymaps: [KeymapInfo] = []
-        var seenNames = Set<String>()
+        let discoveredSet = Set(discoveredKeymaps)
+        var normalizedOrder: [URL] = []
+        var seenFiles = Set<String>()
 
-        for url in config.keymapOrder {
+        for url in config.keymapOrder where discoveredSet.contains(url) {
             let fileName = url.lastPathComponent
-            seenNames.insert(fileName)
+            guard !seenFiles.contains(fileName) else { continue }
+            normalizedOrder.append(url)
+            seenFiles.insert(fileName)
+        }
+
+        for url in discoveredKeymaps {
+            let fileName = url.lastPathComponent
+            guard !seenFiles.contains(fileName) else { continue }
+            normalizedOrder.append(url)
+            seenFiles.insert(fileName)
+        }
+
+        let defaultURL = discoveredSet.contains(config.defaultKm)
+            ? config.defaultKm
+            : normalizedOrder.first ?? keymapURL(for: bundleId, name: "default")
+
+        if normalizedOrder != config.keymapOrder || defaultURL != config.defaultKm {
+            try writeConfig(bundleId: bundleId, defaultKm: defaultURL, keymapOrder: normalizedOrder)
+        }
+
+        let defaultName = defaultURL.deletingPathExtension().lastPathComponent
+        let keymaps = normalizedOrder.map { url in
             let name = url.deletingPathExtension().lastPathComponent
-            keymaps.append(KeymapInfo(
+            return KeymapInfo(
                 name: name,
                 isDefault: name == defaultName,
                 path: url.path
-            ))
-        }
-
-        // Scan for additional plist files (skip .config.plist)
-        if let contents = try? fm.contentsOfDirectory(
-            at: baseDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
-        ) {
-            for url in contents where url.pathExtension == "plist"
-                && !url.lastPathComponent.hasPrefix(".config")
-                && !seenNames.contains(url.lastPathComponent) {
-                let name = url.deletingPathExtension().lastPathComponent
-                keymaps.append(KeymapInfo(
-                    name: name,
-                    isDefault: name == defaultName,
-                    path: url.path
-                ))
-            }
+            )
         }
 
         return ListKeymapsResult(
@@ -503,15 +533,8 @@ public final class KeymapService: Sendable {
         }
 
         // Write empty keymap (reset to defaults)
-        let resetContent: [String: Any] = [
-            "bundleIdentifier": bundleId,
-            "buttonModels": [],
-            "draggableButtonModels": [],
-            "joystickModel": [],
-            "mouseAreaModel": [],
-            "version": "2.0.0"
-        ]
-        try (resetContent as NSDictionary).write(to: url)
+        try writePropertyList(emptyKeymapDictionary(bundleId: bundleId), to: url)
+        MCPNotificationPoster.postKeymapsChanged(bundleID: bundleId)
 
         return ResetKeymapResult(
             bundleIdentifier: bundleId,

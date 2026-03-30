@@ -154,6 +154,7 @@ final class SigningServiceTests: XCTestCase {
         XCTAssertFalse(result.hasNetworkClient)
         XCTAssertFalse(result.hasCamera)
         XCTAssertEqual(result.sandboxProfileRules, 0)
+        XCTAssertTrue(result.message.contains("not signed"))
     }
 
     // MARK: - Validate Signing Tests

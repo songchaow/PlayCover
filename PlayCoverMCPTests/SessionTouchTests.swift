@@ -854,6 +854,19 @@ final class TouchToolsRegistrationTests: XCTestCase {
         XCTAssertEqual(fakeTouchService.tapCalls.count, 1)
     }
 
+    func testTapToolCallAcceptsIntegerCoordinates() {
+        let resp = callTool("tap", arguments: [
+            "sessionId": "s1",
+            "x": 100,
+            "y": 200
+        ])
+        XCTAssertNotNil(resp?.result)
+        XCTAssertNil(resp?.error)
+        XCTAssertEqual(fakeTouchService.tapCalls.count, 1)
+        XCTAssertEqual(fakeTouchService.tapCalls.first?.params.x, 100.0)
+        XCTAssertEqual(fakeTouchService.tapCalls.first?.params.y, 200.0)
+    }
+
     func testLongPressToolCallSuccess() {
         let resp = callTool("long_press", arguments: [
             "sessionId": "s1",
@@ -939,6 +952,21 @@ final class TouchToolsRegistrationTests: XCTestCase {
         XCTAssertNotNil(resp?.result)
         XCTAssertNil(resp?.error)
         XCTAssertEqual(fakeTouchService.swipeCalls.count, 1)
+    }
+
+    func testSwipeToolCallAcceptsIntegerCoordinates() {
+        let resp = callTool("swipe", arguments: [
+            "sessionId": "s1",
+            "startX": 10,
+            "startY": 20,
+            "endX": 300,
+            "endY": 400
+        ])
+        XCTAssertNotNil(resp?.result)
+        XCTAssertNil(resp?.error)
+        XCTAssertEqual(fakeTouchService.swipeCalls.count, 1)
+        XCTAssertEqual(fakeTouchService.swipeCalls.first?.params.startX, 10.0)
+        XCTAssertEqual(fakeTouchService.swipeCalls.first?.params.endY, 400.0)
     }
 
     func testSwipeToolCallDefaultDurationAndSteps() {

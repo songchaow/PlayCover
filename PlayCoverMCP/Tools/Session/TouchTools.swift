@@ -49,6 +49,27 @@ public enum TouchTools {
         }
     }
 
+    private static func requiredDouble(
+        from rawValue: Any?,
+        toolName: String,
+        parameter: String
+    ) throws -> Double {
+        switch rawValue {
+        case let value as NSNumber:
+            return value.doubleValue
+        case let value as String:
+            if let parsed = Double(value.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return parsed
+            }
+            fallthrough
+        default:
+            throw PlayCoverMCPError(
+                code: JSONRPCError.invalidParams,
+                message: "\(toolName) requires a numeric '\(parameter)' parameter"
+            )
+        }
+    }
+
     // MARK: - tap
 
     private static func registerTap(
@@ -90,19 +111,8 @@ public enum TouchTools {
                 )
             }
 
-            guard let x = args["x"] as? Double else {
-                throw PlayCoverMCPError(
-                    code: JSONRPCError.invalidParams,
-                    message: "tap requires a numeric 'x' parameter"
-                )
-            }
-
-            guard let y = args["y"] as? Double else {
-                throw PlayCoverMCPError(
-                    code: JSONRPCError.invalidParams,
-                    message: "tap requires a numeric 'y' parameter"
-                )
-            }
+            let x = try requiredDouble(from: args["x"], toolName: "tap", parameter: "x")
+            let y = try requiredDouble(from: args["y"], toolName: "tap", parameter: "y")
 
             let params = TapParams(x: x, y: y)
             let result = try runAsync {
@@ -164,19 +174,8 @@ public enum TouchTools {
                 )
             }
 
-            guard let x = args["x"] as? Double else {
-                throw PlayCoverMCPError(
-                    code: JSONRPCError.invalidParams,
-                    message: "long_press requires a numeric 'x' parameter"
-                )
-            }
-
-            guard let y = args["y"] as? Double else {
-                throw PlayCoverMCPError(
-                    code: JSONRPCError.invalidParams,
-                    message: "long_press requires a numeric 'y' parameter"
-                )
-            }
+            let x = try requiredDouble(from: args["x"], toolName: "long_press", parameter: "x")
+            let y = try requiredDouble(from: args["y"], toolName: "long_press", parameter: "y")
 
             let durationMs: Int
             if let d = args["durationMs"] as? Int {
@@ -259,33 +258,10 @@ public enum TouchTools {
                 )
             }
 
-            guard let startX = args["startX"] as? Double else {
-                throw PlayCoverMCPError(
-                    code: JSONRPCError.invalidParams,
-                    message: "swipe requires a numeric 'startX' parameter"
-                )
-            }
-
-            guard let startY = args["startY"] as? Double else {
-                throw PlayCoverMCPError(
-                    code: JSONRPCError.invalidParams,
-                    message: "swipe requires a numeric 'startY' parameter"
-                )
-            }
-
-            guard let endX = args["endX"] as? Double else {
-                throw PlayCoverMCPError(
-                    code: JSONRPCError.invalidParams,
-                    message: "swipe requires a numeric 'endX' parameter"
-                )
-            }
-
-            guard let endY = args["endY"] as? Double else {
-                throw PlayCoverMCPError(
-                    code: JSONRPCError.invalidParams,
-                    message: "swipe requires a numeric 'endY' parameter"
-                )
-            }
+            let startX = try requiredDouble(from: args["startX"], toolName: "swipe", parameter: "startX")
+            let startY = try requiredDouble(from: args["startY"], toolName: "swipe", parameter: "startY")
+            let endX = try requiredDouble(from: args["endX"], toolName: "swipe", parameter: "endX")
+            let endY = try requiredDouble(from: args["endY"], toolName: "swipe", parameter: "endY")
 
             let durationMs: Int
             if let d = args["durationMs"] as? Int {
@@ -382,33 +358,10 @@ public enum TouchTools {
                 )
             }
 
-            guard let startX = args["startX"] as? Double else {
-                throw PlayCoverMCPError(
-                    code: JSONRPCError.invalidParams,
-                    message: "drag requires a numeric 'startX' parameter"
-                )
-            }
-
-            guard let startY = args["startY"] as? Double else {
-                throw PlayCoverMCPError(
-                    code: JSONRPCError.invalidParams,
-                    message: "drag requires a numeric 'startY' parameter"
-                )
-            }
-
-            guard let endX = args["endX"] as? Double else {
-                throw PlayCoverMCPError(
-                    code: JSONRPCError.invalidParams,
-                    message: "drag requires a numeric 'endX' parameter"
-                )
-            }
-
-            guard let endY = args["endY"] as? Double else {
-                throw PlayCoverMCPError(
-                    code: JSONRPCError.invalidParams,
-                    message: "drag requires a numeric 'endY' parameter"
-                )
-            }
+            let startX = try requiredDouble(from: args["startX"], toolName: "drag", parameter: "startX")
+            let startY = try requiredDouble(from: args["startY"], toolName: "drag", parameter: "startY")
+            let endX = try requiredDouble(from: args["endX"], toolName: "drag", parameter: "endX")
+            let endY = try requiredDouble(from: args["endY"], toolName: "drag", parameter: "endY")
 
             let durationMs: Int
             if let d = args["durationMs"] as? Int {

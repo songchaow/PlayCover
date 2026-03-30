@@ -32,7 +32,8 @@ WITH_REGRESSION="${WITH_REGRESSION:-0}"
 DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$REPO_ROOT/build/http-mcp-deriveddata}"
 EXPECTED_PROTOCOL_VERSION="2025-11-25"
 EXPECTED_SERVER_NAME="playcover-mcp-gui"
-EXPECTED_APP_INSTALL_PATH="/Applications/PlayCover.app"
+SYSTEM_APP_INSTALL_PATH="/Applications/PlayCover.app"
+USER_APP_INSTALL_PATH="$HOME/Applications/PlayCover.app"
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/playcover-http-mcp.XXXXXX")"
 FAILED=0
@@ -65,6 +66,11 @@ require_cmd() {
         fail "缺少依赖: $1"
         exit 1
     fi
+}
+
+is_allowed_app_install_path() {
+    local candidate="$1"
+    [[ "$candidate" == "$SYSTEM_APP_INSTALL_PATH" || "$candidate" == "$USER_APP_INSTALL_PATH" ]]
 }
 
 extract_header() {
@@ -151,8 +157,8 @@ wait_for_server() {
     info "等待 HTTP MCP 服务"
 
     if [[ -n "$PLAYCOVER_APP_PATH" ]]; then
-        if [[ "$PLAYCOVER_APP_PATH" != "$EXPECTED_APP_INSTALL_PATH" ]]; then
-            fail "PLAYCOVER_APP_PATH 必须是 $EXPECTED_APP_INSTALL_PATH；直接启动 build 目录中的 PlayCover.app 会触发“移到应用程序文件夹”弹窗"
+        if ! is_allowed_app_install_path "$PLAYCOVER_APP_PATH"; then
+            fail "PLAYCOVER_APP_PATH 必须是 $SYSTEM_APP_INSTALL_PATH 或 $USER_APP_INSTALL_PATH；直接启动 build 目录中的 PlayCover.app 会触发“移到应用程序文件夹”弹窗"
             echo "建议先执行: BuildScripts/build_and_install.sh"
             exit 1
         fi
@@ -181,7 +187,7 @@ wait_for_server() {
     done
 
     fail "HTTP 服务未在 ${WAIT_TIMEOUT}s 内就绪: $MCP_BASE_URL"
-    echo "如需自动拉起 GUI，请先把 PlayCover 安装到 $EXPECTED_APP_INSTALL_PATH 后再设置 PLAYCOVER_APP_PATH。"
+    echo "如需自动拉起 GUI，请先把 PlayCover 安装到 $SYSTEM_APP_INSTALL_PATH 或 $USER_APP_INSTALL_PATH 后再设置 PLAYCOVER_APP_PATH。"
     exit 1
 }
 

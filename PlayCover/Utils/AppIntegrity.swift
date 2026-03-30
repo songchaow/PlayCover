@@ -14,30 +14,56 @@ class AppIntegrity: ObservableObject {
     }
 
     func moveToApps() {
-        do {
-            if let url = AppIntegrity.appUrl {
-                FileManager.default.delete(at: AppIntegrity.expectedUrl)
-                try FileManager.default.copyItem(at: url, to: AppIntegrity.expectedUrl)
-                URL(fileURLWithPath: AppIntegrity.expectedUrl.path).openInFinder()
-                FileManager.default.delete(at: url)
-                    exit(0)
+        guard let sourceURL = AppIntegrity.appUrl else {
+            return
+        }
+
+        for destinationURL in AppIntegrity.installDestinations {
+            do {
+                try FileManager.default.createDirectory(
+                    at: destinationURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true,
+                    attributes: nil
+                )
+
+                if FileManager.default.fileExists(atPath: destinationURL.path) {
+                    try FileManager.default.removeItem(at: destinationURL)
                 }
+
+                try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+                destinationURL.openInFinder()
+                FileManager.default.delete(at: sourceURL)
+                exit(0)
             } catch {
                 Log.shared.error(error)
+            }
         }
     }
 
     private static var appUrl: URL? {
-        Bundle.main.resourceURL?.deletingLastPathComponent().deletingLastPathComponent()
+        Bundle.main.resourceURL?
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .standardizedFileURL
     }
 
-    private static var expectedUrl = URL(fileURLWithPath: "/Applications/PlayCover.app")
+    private static var installDestinations: [URL] {
+        [
+            URL(fileURLWithPath: "/Applications/PlayCover.app"),
+            FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Applications", isDirectory: true)
+                .appendingPathComponent("PlayCover.app", isDirectory: true)
+        ]
+    }
 
     private static var insideAppsFolder: Bool {
-        if let url = appUrl {
-            return url.path.contains("Xcode") || url.path.contains(expectedUrl.path)
+        guard let url = appUrl else {
+            return false
         }
-        return false
+
+        return url.path.contains("Xcode") || installDestinations.contains { destination in
+            url.standardizedFileURL.path == destination.standardizedFileURL.path
+        }
     }
 
 }

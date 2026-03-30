@@ -93,19 +93,19 @@ xcodebuild -project PlayCover.xcodeproj \
 
 ### 安装 GUI 验证包（推荐）
 
-> **重要**：不要直接启动 `build/.../PlayCover.app` 或 `DerivedData/.../PlayCover.app` 做 GUI 验证。PlayCover 会执行 `AppIntegrity` 检查，若不在 `/Applications/PlayCover.app`，会弹出“移到应用程序文件夹”对话框。
+> **重要**：不要直接启动 `build/.../PlayCover.app` 或 `DerivedData/.../PlayCover.app` 做 GUI 验证。PlayCover 会执行 `AppIntegrity` 检查；若不在 **Applications 文件夹** 中（`/Applications/PlayCover.app` 或 `~/Applications/PlayCover.app`），会弹出移动提示。
 
 推荐使用仓库内脚本安装并重签名：
 
 ```bash
 ./BuildScripts/build_and_install.sh
-open /Applications/PlayCover.app
 ```
 
 该脚本会：
 
 - 构建 `PlayCover` scheme
-- 安装到 `/Applications/PlayCover.app`
+- **优先**安装到 `/Applications/PlayCover.app`
+- 如果当前会话无法无提示写入 `/Applications`，则**自动回退**到 `~/Applications/PlayCover.app`
 - 对整个 `.app` 做 ad-hoc 重签名，修复 Sparkle 等内嵌 framework 的 Team ID 不匹配问题
 
 ### 构建 PlayCoverMCP CLI（独立命令行工具）
@@ -129,7 +129,7 @@ xcodebuild -project PlayCover.xcodeproj \
 
 ### GUI 内嵌模式（Streamable HTTP）
 
-启动 `/Applications/PlayCover.app` 后：
+启动已安装的 `PlayCover.app` 后（优先 `/Applications/PlayCover.app`，无管理员权限时也可为 `~/Applications/PlayCover.app`）：
 
 1. **查看 UI 状态**：打开 **Settings → MCP Server**，确认状态为 Running，端点显示为 `http://127.0.0.1:19820/mcp`
 2. **命令行验证**：
@@ -193,7 +193,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol
 
 ### GUI 内嵌模式（Streamable HTTP，推荐）
 
-> **前提**：`/Applications/PlayCover.app` 正在运行，且 Settings 中的 transport 为 **Streamable HTTP**。
+> **前提**：已安装的 `PlayCover.app` 正在运行（优先 `/Applications/PlayCover.app`，无管理员权限时也可使用 `~/Applications/PlayCover.app`），且 Settings 中的 transport 为 **Streamable HTTP**。
 
 #### Claude Desktop
 
@@ -495,8 +495,8 @@ xcodebuild test -project PlayCover.xcodeproj \
 
 | 问题 | 可能原因 | 解决方案 |
 |------|----------|----------|
-| **HTTP 模式**：Agent 无法连接 | PlayCover.app 未运行，或 Settings 中当前 transport 不是 Streamable HTTP | 启动 `/Applications/PlayCover.app`，检查 Settings → MCP Server 状态与端点 |
-| **HTTP 模式**：启动时弹出“移到应用程序文件夹” | 你直接打开了 `build/.../PlayCover.app` | 改用 `./BuildScripts/build_and_install.sh` 安装到 `/Applications`，然后 `open /Applications/PlayCover.app` |
+| **HTTP 模式**：Agent 无法连接 | PlayCover.app 未运行，或 Settings 中当前 transport 不是 Streamable HTTP | 启动已安装的 `PlayCover.app`（优先 `/Applications/PlayCover.app`，也可为 `~/Applications/PlayCover.app`），检查 Settings → MCP Server 状态与端点 |
+| **HTTP 模式**：启动时弹出“移到应用程序文件夹” | 你直接打开了 `build/.../PlayCover.app` | 改用 `./BuildScripts/build_and_install.sh` 安装到 Applications 文件夹，然后从安装后的路径启动 |
 | **HTTP 模式**：端口 19820 不可达 | 端口被其他进程占用 | `lsof -i :19820` 检查占用情况，关闭冲突进程 |
 | **HTTP 模式**：返回 400 | 缺少 `Accept`、`Mcp-Session-Id` 或 `Mcp-Protocol-Version` | 按 README 示例补齐请求头 |
 | **HTTP 模式**：返回 403 | `Origin` 非本地来源 | 使用本地客户端或移除无效 `Origin` |

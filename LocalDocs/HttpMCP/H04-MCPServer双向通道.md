@@ -71,11 +71,10 @@ public func wireNotifications() {
     }
 
     // Wire task manager notifications
-    taskManager?.onStatusChange = { [weak self] taskId, status in
+    taskManager?.onStatusChange = { [weak self] _, status in
         guard let self = self, self.isInitialized else { return }
         if let statusAnyCodable = try? AnyCodable(status) {
-            let params: [String: Any] = ["taskId": taskId, "status": statusAnyCodable.value as Any]
-            let notif = JSONRPCNotification(method: "notifications/tasks/update", params: AnyCodable(params))
+            let notif = JSONRPCNotification(method: "notifications/tasks/status", params: statusAnyCodable)
             self.sendNotification(notif)
         }
     }

@@ -452,7 +452,7 @@ final class MCPServerTests: XCTestCase {
         let request = JSONRPCRequest(
             id: .string("get-1"),
             method: "tasks/get",
-            params: try AnyCodable("t1")
+            params: try AnyCodable(["taskId": "t1"])
         )
         let response = server.handle(.request(request))
 
@@ -465,6 +465,37 @@ final class MCPServerTests: XCTestCase {
         let result: GetTaskResult = try XCTUnwrap(resp.result?.decoded())
         XCTAssertEqual(result.status.id, "t1")
         XCTAssertEqual(result.status.state, .pending)
+    }
+
+    func testTasksGetAcceptsLegacyStringParam() throws {
+        let taskManager = TaskManager()
+        taskManager.createTask(id: "t1", title: "Test")
+        let server = MCPServer(
+            serverInfo: Implementation(name: "TestServer", version: "0.1.0"),
+            capabilities: ServerCapabilities(
+                tasks: TaskCapabilities(
+                    list: EmptyCapability(),
+                    cancel: EmptyCapability()
+                )
+            ),
+            taskManager: taskManager
+        )
+
+        let request = JSONRPCRequest(
+            id: .string("get-legacy"),
+            method: "tasks/get",
+            params: try AnyCodable("t1")
+        )
+        let response = server.handle(.request(request))
+
+        guard case .response(let resp) = response else {
+            XCTFail("Expected response")
+            return
+        }
+        XCTAssertNil(resp.error)
+
+        let result: GetTaskResult = try XCTUnwrap(resp.result?.decoded())
+        XCTAssertEqual(result.status.id, "t1")
     }
 
     func testTasksGetNotFound() throws {
@@ -483,7 +514,7 @@ final class MCPServerTests: XCTestCase {
         let request = JSONRPCRequest(
             id: .string("get-2"),
             method: "tasks/get",
-            params: try AnyCodable("nonexistent")
+            params: try AnyCodable(["taskId": "nonexistent"])
         )
         let response = server.handle(.request(request))
 
@@ -492,6 +523,34 @@ final class MCPServerTests: XCTestCase {
             return
         }
         XCTAssertEqual(resp.error?.code, -32008) // taskNotFound
+    }
+
+    func testTasksGetRequiresTaskIdField() throws {
+        let taskManager = TaskManager()
+        let server = MCPServer(
+            serverInfo: Implementation(name: "TestServer", version: "0.1.0"),
+            capabilities: ServerCapabilities(
+                tasks: TaskCapabilities(
+                    list: EmptyCapability(),
+                    cancel: EmptyCapability()
+                )
+            ),
+            taskManager: taskManager
+        )
+
+        let request = JSONRPCRequest(
+            id: .string("get-invalid"),
+            method: "tasks/get",
+            params: try AnyCodable(["id": "t1"])
+        )
+        let response = server.handle(.request(request))
+
+        guard case .response(let resp) = response else {
+            XCTFail("Expected response")
+            return
+        }
+        XCTAssertEqual(resp.error?.code, JSONRPCError.invalidParams)
+        XCTAssertTrue(resp.error?.message.contains("taskId") ?? false)
     }
 
     func testTasksList() throws {
@@ -539,6 +598,38 @@ final class MCPServerTests: XCTestCase {
 
         let request = JSONRPCRequest(
             id: .string("cancel-1"),
+            method: "tasks/cancel",
+            params: try AnyCodable(["taskId": "t1"])
+        )
+        let response = server.handle(.request(request))
+
+        guard case .response(let resp) = response else {
+            XCTFail("Expected response")
+            return
+        }
+        XCTAssertNil(resp.error)
+
+        let result: GetTaskResult = try XCTUnwrap(resp.result?.decoded())
+        XCTAssertEqual(result.status.state, .cancelled)
+    }
+
+    func testTasksCancelAcceptsLegacyStringParam() throws {
+        let taskManager = TaskManager()
+        taskManager.createTask(id: "t1")
+        taskManager.startTask("t1")
+        let server = MCPServer(
+            serverInfo: Implementation(name: "TestServer", version: "0.1.0"),
+            capabilities: ServerCapabilities(
+                tasks: TaskCapabilities(
+                    list: EmptyCapability(),
+                    cancel: EmptyCapability()
+                )
+            ),
+            taskManager: taskManager
+        )
+
+        let request = JSONRPCRequest(
+            id: .string("cancel-legacy"),
             method: "tasks/cancel",
             params: try AnyCodable("t1")
         )

@@ -161,7 +161,7 @@ final class MCPServerNotificationTests: XCTestCase {
 
         // Check that the notification method is correct
         if case .notification(let n) = receivedMessages.last {
-            XCTAssertEqual(n.method, "notifications/tasks/update")
+            XCTAssertEqual(n.method, "notifications/tasks/status")
         } else {
             XCTFail("Expected notification message")
         }

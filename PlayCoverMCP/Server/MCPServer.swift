@@ -178,11 +178,11 @@ public final class MCPServer {
             }
         }
 
-        // Wire task manager → notifications/tasks/update
-        taskManager?.onStatusChange = { [weak self] taskId, status in
+        // Wire task manager → notifications/tasks/status
+        taskManager?.onStatusChange = { [weak self] _, status in
             guard let self = self, self.isInitialized else { return }
             if let statusAnyCodable = try? AnyCodable(status) {
-                let notif = JSONRPCNotification(method: "notifications/tasks/update", params: statusAnyCodable)
+                let notif = JSONRPCNotification(method: "notifications/tasks/status", params: statusAnyCodable)
                 self.sendNotification(notif)
             }
         }
@@ -306,6 +306,21 @@ public final class MCPServer {
     private func registerTaskHandlers() {
         guard let taskManager = taskManager else { return }
 
+        func decodeTaskId(from params: AnyCodable?, method: String) throws -> String {
+            guard let params = params else {
+                throw MCPError.invalidParams("\(method) requires params with a non-empty 'taskId' field")
+            }
+            if let taskId = params.dictionary?["taskId"] as? String,
+               !taskId.isEmpty {
+                return taskId
+            }
+            if let taskId = params.stringValue,
+               !taskId.isEmpty {
+                return taskId
+            }
+            throw MCPError.invalidParams("\(method) requires params with a non-empty 'taskId' field")
+        }
+
         // tasks/create
         register(method: "tasks/create") { params in
             let createParams: CreateTaskParams
@@ -320,10 +335,7 @@ public final class MCPServer {
 
         // tasks/get
         register(method: "tasks/get") { params in
-            guard let params = params,
-                  let taskId = params.stringValue else {
-                throw MCPError.invalidParams("tasks/get requires a string 'id' param")
-            }
+            let taskId = try decodeTaskId(from: params, method: "tasks/get")
             guard let status = taskManager.getTask(taskId) else {
                 throw PlayCoverMCPError(code: .taskNotFound, message: "Task not found: \(taskId)")
             }
@@ -338,10 +350,7 @@ public final class MCPServer {
 
         // tasks/cancel
         register(method: "tasks/cancel") { params in
-            guard let params = params,
-                  let taskId = params.stringValue else {
-                throw MCPError.invalidParams("tasks/cancel requires a string 'id' param")
-            }
+            let taskId = try decodeTaskId(from: params, method: "tasks/cancel")
             guard taskManager.getTask(taskId) != nil else {
                 throw PlayCoverMCPError(code: .taskNotFound, message: "Task not found: \(taskId)")
             }

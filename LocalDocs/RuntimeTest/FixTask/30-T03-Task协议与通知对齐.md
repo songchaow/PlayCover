@@ -83,6 +83,21 @@ cd /Users/songdogwang/Codes/PlayCover && WITH_REGRESSION=1 DERIVED_DATA_PATH=/tm
 
 ---
 
+### 协议决策 / 兼容策略 / 新增测试
+
+- `tasks/get` 与 `tasks/cancel` **默认按对象参数**处理，即 `{"taskId":"..."}`
+- 为降低历史调用方切换成本，当前仍兼容旧的裸字符串参数 `"task-1"`
+- 参数错误提示统一改为指向 `taskId`，不再出现 `string 'id' param` 这类误导文案
+- 任务状态通知默认 method 已统一为 `notifications/tasks/status`
+- 新增 / 调整测试覆盖：
+  - `MCPServerTests`：对象参数成功路径
+  - `MCPServerTests`：旧字符串参数兼容路径
+  - `MCPServerTests`：缺少 `taskId` 时的错误提示
+  - `MCPServerNotificationTests`：任务状态通知 method 断言
+- 2026-03-30 验证结果：focused tests、PlayCoverMCP 全量测试、`test_http_mcp.sh` 回归全部通过
+
+---
+
 ### 完成后必须更新
 
 - `01-任务状态.md`

@@ -10,14 +10,14 @@
 #
 # 环境变量:
 #   MCP_BASE_URL        HTTP MCP 端点，默认 http://127.0.0.1:19820/mcp
-#   PLAYCOVER_APP_PATH  可选；若提供则仅接受 /Applications/PlayCover.app，并在测试前尝试启动
+#   PLAYCOVER_APP_PATH  可选；若提供则仅接受 /Applications/PlayCover.app 或 ~/Applications/PlayCover.app，并在测试前尝试启动
 #   WAIT_TIMEOUT        等待 HTTP 服务启动的秒数，默认 20
 #   WITH_REGRESSION     设为 1 时，额外执行 GUI/CLI build、MCP 全量测试、CLI stdio 回归
 #   DERIVED_DATA_PATH   回归模式使用的 DerivedData 路径，默认 <repo>/build/http-mcp-deriveddata
 #
 # 重要:
 #   - 不要直接启动 build/.../PlayCover.app；PlayCover 会弹出“移到应用程序文件夹”提示。
-#   - GUI 冒烟请先用 BuildScripts/build_and_install.sh（或等效流程）安装到 /Applications。
+#   - GUI 冒烟请先用 BuildScripts/build_and_install.sh（或等效流程）安装到 /Applications 或 ~/Applications。
 # =============================================================================
 
 set -euo pipefail
@@ -191,8 +191,39 @@ wait_for_server() {
     exit 1
 }
 
+verify_preinitialize_sse_probe() {
+    info "测试 1: 未初始化 GET SSE 兼容探测"
+
+    local headers="$TMP_DIR/preinit-sse.headers"
+    local body="$TMP_DIR/preinit-sse.txt"
+
+    run_curl "$headers" "$body" \
+        -N \
+        --max-time 2 \
+        -H "Accept: text/event-stream" \
+        "$MCP_BASE_URL"
+
+    if [[ "$CURL_EXIT_CODE" == "0" || "$CURL_EXIT_CODE" == "28" ]]; then
+        pass "未初始化 GET SSE 可建立（curl exit $CURL_EXIT_CODE）"
+    else
+        fail "未初始化 GET SSE 建立失败（curl exit $CURL_EXIT_CODE）"
+    fi
+
+    assert_http_status "$CURL_HTTP_STATUS" "200" "未初始化 GET SSE 返回 200"
+    assert_header_contains "$headers" "content-type" "text/event-stream" "未初始化 GET SSE 返回 text/event-stream"
+
+    if grep -Eq '^id: .+$' "$body" && grep -Eq '^data: ?$' "$body"; then
+        pass "未初始化 GET SSE 收到 primer event"
+    else
+        echo "--- pre-init SSE body ---"
+        cat "$body"
+        echo ""
+        fail "未初始化 GET SSE 未收到 primer event"
+    fi
+}
+
 initialize_session() {
-    info "测试 1: initialize 握手"
+    info "测试 2: initialize 握手"
 
     local headers="$TMP_DIR/init.headers"
     local body="$TMP_DIR/init.json"
@@ -228,7 +259,7 @@ assert data["result"]["protocolVersion"] == "2025-11-25"
 }
 
 send_initialized_notification() {
-    info "测试 2: initialized 通知"
+    info "测试 3: initialized 通知"
 
     local headers="$TMP_DIR/initialized.headers"
     local body="$TMP_DIR/initialized.body"
@@ -245,7 +276,7 @@ send_initialized_notification() {
 }
 
 request_tools_list() {
-    info "测试 3: tools/list"
+    info "测试 4: tools/list"
 
     local headers="$TMP_DIR/tools.headers"
     local body="$TMP_DIR/tools.json"
@@ -267,7 +298,7 @@ assert len(data["result"]["tools"]) > 0
 }
 
 request_resources_list() {
-    info "测试 4: resources/list"
+    info "测试 5: resources/list"
 
     local headers="$TMP_DIR/resources.headers"
     local body="$TMP_DIR/resources.json"
@@ -289,7 +320,7 @@ assert len(data["result"]["resources"]) > 0
 }
 
 request_ping() {
-    info "测试 5: ping"
+    info "测试 6: ping"
 
     local headers="$TMP_DIR/ping.headers"
     local body="$TMP_DIR/ping.json"
@@ -310,7 +341,7 @@ assert data["id"] == 4
 }
 
 verify_sse_stream() {
-    info "测试 6: GET SSE primer event"
+    info "测试 7: 已绑定 session 的 GET SSE primer event"
 
     local headers="$TMP_DIR/sse.headers"
     local body="$TMP_DIR/sse.txt"
@@ -343,7 +374,7 @@ verify_sse_stream() {
 }
 
 verify_security_guards() {
-    info "测试 7: 安全与协议校验"
+    info "测试 8: 安全与协议校验"
 
     local headers body
 
@@ -365,7 +396,7 @@ verify_security_guards() {
         -H "Accept: application/json, text/event-stream" \
         -H "Mcp-Protocol-Version: $NEGOTIATED_PROTOCOL_VERSION" \
         -d '{"jsonrpc":"2.0","id":11,"method":"tools/list"}'
-    assert_http_status "$CURL_HTTP_STATUS" "400" "缺少 session ID 被拒绝"
+    assert_http_status "$CURL_HTTP_STATUS" "400" "POST 缺少 session ID 仍被拒绝"
 
     headers="$TMP_DIR/missing-version.headers"
     body="$TMP_DIR/missing-version.json"
@@ -375,7 +406,21 @@ verify_security_guards() {
         -H "Accept: application/json, text/event-stream" \
         -H "Mcp-Session-Id: $SESSION_ID" \
         -d '{"jsonrpc":"2.0","id":12,"method":"ping"}'
-    assert_http_status "$CURL_HTTP_STATUS" "400" "缺少 MCP-Protocol-Version 被拒绝"
+    assert_http_status "$CURL_HTTP_STATUS" "200" "POST 缺少 MCP-Protocol-Version 时回退到已协商版本"
+    assert_json_check "$body" "POST 缺少协议头时仍返回 ping result" '
+assert "result" in data
+assert data["id"] == 12
+'
+
+    headers="$TMP_DIR/invalid-get-version.headers"
+    body="$TMP_DIR/invalid-get-version.body"
+    run_curl "$headers" "$body" \
+        -N \
+        --max-time 2 \
+        -H "Accept: text/event-stream" \
+        -H "Mcp-Protocol-Version: 2024-11-05" \
+        "$MCP_BASE_URL"
+    assert_http_status "$CURL_HTTP_STATUS" "400" "未初始化 GET 携带无效 MCP-Protocol-Version 被拒绝"
 
     headers="$TMP_DIR/invalid-version.headers"
     body="$TMP_DIR/invalid-version.json"
@@ -390,7 +435,7 @@ verify_security_guards() {
 }
 
 delete_session() {
-    info "测试 8: DELETE 终止会话"
+    info "测试 9: DELETE 终止会话"
 
     local headers="$TMP_DIR/delete.headers"
     local body="$TMP_DIR/delete.body"
@@ -404,7 +449,7 @@ delete_session() {
 }
 
 verify_session_gone() {
-    info "测试 9: 已删除会话不可复用"
+    info "测试 10: 已删除会话不可复用"
 
     local headers="$TMP_DIR/dead-session.headers"
     local body="$TMP_DIR/dead-session.json"
@@ -421,7 +466,7 @@ verify_session_gone() {
 }
 
 run_regression() {
-    info "测试 10: 可选回归验证"
+    info "测试 11: 可选回归验证"
 
     echo "DerivedData: $DERIVED_DATA_PATH"
 
@@ -472,6 +517,7 @@ main() {
     require_cmd xcodebuild
 
     wait_for_server
+    verify_preinitialize_sse_probe
     initialize_session
     send_initialized_notification
     request_tools_list

@@ -164,10 +164,11 @@ curl -X POST http://127.0.0.1:19820/mcp \
 ./Scripts/test_http_mcp.sh
 ```
 
-如果要让脚本自动拉起 GUI，请先确保已经安装到 `/Applications`，再执行：
+如果要让脚本自动拉起 GUI，请先确保已经安装到 Applications 文件夹，然后执行以下任一命令：
 
 ```bash
 PLAYCOVER_APP_PATH=/Applications/PlayCover.app ./Scripts/test_http_mcp.sh
+PLAYCOVER_APP_PATH=~/Applications/PlayCover.app ./Scripts/test_http_mcp.sh
 ```
 
 ### GUI Legacy TCP 模式
@@ -242,11 +243,11 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol
 
 - POST 请求必须携带 `Accept: application/json, text/event-stream`
 - GET 请求必须携带 `Accept: text/event-stream`
-- initialize 之后，后续请求必须携带：
-  - `Mcp-Session-Id`
-  - `Mcp-Protocol-Version: 2025-11-25`
+- `initialize` 之后，后续 **POST / DELETE** 请求必须携带 `Mcp-Session-Id`
+- 已建立会话的后续请求**建议**携带 `Mcp-Protocol-Version: 2025-11-25`；若客户端漏发但服务端已有协商结果，PlayCover 会回退到会话内已协商版本
+- 为兼容部分 IDE，**未初始化的 `GET /mcp` 探测**也会返回 `200` + SSE primer；只有显式携带无效协议版本时才返回 `400`
 - 非法 `Origin` 会返回 `403`
-- 缺失或无效的协议版本会返回 `400`
+- 显式无效的协议版本会返回 `400`
 - 已失效 session 会返回 `404`
 
 ---
@@ -498,7 +499,7 @@ xcodebuild test -project PlayCover.xcodeproj \
 | **HTTP 模式**：Agent 无法连接 | PlayCover.app 未运行，或 Settings 中当前 transport 不是 Streamable HTTP | 启动已安装的 `PlayCover.app`（优先 `/Applications/PlayCover.app`，也可为 `~/Applications/PlayCover.app`），检查 Settings → MCP Server 状态与端点 |
 | **HTTP 模式**：启动时弹出“移到应用程序文件夹” | 你直接打开了 `build/.../PlayCover.app` | 改用 `./BuildScripts/build_and_install.sh` 安装到 Applications 文件夹，然后从安装后的路径启动 |
 | **HTTP 模式**：端口 19820 不可达 | 端口被其他进程占用 | `lsof -i :19820` 检查占用情况，关闭冲突进程 |
-| **HTTP 模式**：返回 400 | 缺少 `Accept`、`Mcp-Session-Id` 或 `Mcp-Protocol-Version` | 按 README 示例补齐请求头 |
+| **HTTP 模式**：返回 400 | 缺少必需的 `Accept`，或显式携带了无效的 `Mcp-Protocol-Version`，或 POST/DELETE 缺少 `Mcp-Session-Id` | 按 README 示例补齐请求头；若是 IDE 的裸 GET SSE 探测，当前版本已兼容并应返回 `200` |
 | **HTTP 模式**：返回 403 | `Origin` 非本地来源 | 使用本地客户端或移除无效 `Origin` |
 | **HTTP 模式**：返回 404 | Session 已过期或已被 DELETE 终止 | 重新发送 `initialize` 获取新 session |
 | **TCP 模式**：旧客户端无法连接 | GUI 当前没有切到 Legacy TCP | 在 Settings → MCP Server 中切换 transport 为 TCP |

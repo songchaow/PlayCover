@@ -469,10 +469,10 @@ public final class StreamableHTTPTransport {
             return Response(status: .notAcceptable)
         }
 
-        let sessionId: String
-        switch validateSessionContext(request: request, sessionManager: sessionManager) {
-        case .success(let validatedSessionId):
-            sessionId = validatedSessionId
+        let getContext: GetRequestContext
+        switch validateGetRequestContext(request: request, sessionManager: sessionManager) {
+        case .success(let validatedContext):
+            getContext = validatedContext
         case .failure(let issue):
             return makeHTTPErrorResponse(for: issue)
         }
@@ -483,12 +483,17 @@ public final class StreamableHTTPTransport {
         let primerData = SSEEncoder.encodePrimerEvent(eventId: streamId)
         continuation.yield(ByteBuffer(data: primerData))
 
-        sseStreamManager.register(
-            sessionId: sessionId,
-            streamId: streamId,
-            continuation: continuation,
-            type: .get
-        )
+        switch getContext {
+        case .bound(let sessionId):
+            sseStreamManager.register(
+                sessionId: sessionId,
+                streamId: streamId,
+                continuation: continuation,
+                type: .get
+            )
+        case .anonymous:
+            continuation.finish()
+        }
 
         var headers = HTTPFields()
         headers[.contentType] = "text/event-stream"
@@ -540,6 +545,36 @@ public final class StreamableHTTPTransport {
         case protocolVersionMismatch(expected: String, actual: String)
     }
 
+    private enum GetRequestContext {
+        case anonymous
+        case bound(String)
+    }
+
+    private func validateGetRequestContext(
+        request: Request,
+        sessionManager: MCPSessionManager
+    ) -> Result<GetRequestContext, SessionValidationIssue> {
+        if let sessionId = request.headers[mcpSessionIdField] {
+            guard !sessionId.isEmpty else {
+                return .failure(.missingSessionId)
+            }
+
+            switch validateSessionContext(request: request, sessionManager: sessionManager) {
+            case .success(let validatedSessionId):
+                return .success(.bound(validatedSessionId))
+            case .failure(let issue):
+                return .failure(issue)
+            }
+        }
+
+        if let protocolVersion = request.headers[mcpProtocolVersionField], !protocolVersion.isEmpty,
+           !MCPProtocolVersion.supportedVersions.contains(protocolVersion) {
+            return .failure(.unsupportedProtocolVersion(protocolVersion))
+        }
+
+        return .success(.anonymous)
+    }
+
     private func validateSessionContext(
         request: Request,
         sessionManager: MCPSessionManager
@@ -552,7 +587,12 @@ public final class StreamableHTTPTransport {
             return .failure(.invalidSessionId)
         }
 
-        guard let protocolVersion = request.headers[mcpProtocolVersionField], !protocolVersion.isEmpty else {
+        let protocolVersion: String
+        if let headerProtocolVersion = request.headers[mcpProtocolVersionField], !headerProtocolVersion.isEmpty {
+            protocolVersion = headerProtocolVersion
+        } else if let negotiatedVersion = session.protocolVersion, !negotiatedVersion.isEmpty {
+            protocolVersion = negotiatedVersion
+        } else {
             return .failure(.missingProtocolVersion)
         }
 

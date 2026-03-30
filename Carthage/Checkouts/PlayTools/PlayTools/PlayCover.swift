@@ -23,9 +23,12 @@ public class PlayCover: NSObject {
 
         let runtimeBundleId = Bundle.main.bundleIdentifier
             ?? "playtools.runtime.\(ProcessInfo.processInfo.processIdentifier)"
+        NSLog("%@", "[PlayTools] PlayCover.launch bundleId=\(runtimeBundleId)")
         let runtimePort = BridgeListener.shared.start(bundleId: runtimeBundleId)
         if runtimePort > 0 {
-            print("[PlayTools] BridgeListener launched on port \(runtimePort)")
+            NSLog("%@", "[PlayTools] BridgeListener launched on port \(runtimePort)")
+        } else {
+            NSLog("%@", "[PlayTools] BridgeListener launch returned port 0")
         }
 
         if PlaySettings.shared.rootWorkDir {

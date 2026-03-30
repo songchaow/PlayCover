@@ -116,7 +116,7 @@ final class SessionServiceTests: XCTestCase {
         XCTAssertThrowsError(try service.createSession(bundleId: "com.nonexistent", timeout: 0.5)) { error in
             XCTAssertTrue(error is SessionError)
             if let sessionError = error as? SessionError {
-                XCTAssertEqual(sessionError, .heartbeatTimeout("No runtime registered for bundleId 'com.nonexistent' within 0s"))
+                XCTAssertEqual(sessionError, .heartbeatTimeout("No runtime registered for bundleId 'com.nonexistent' within 0.5s"))
             }
         }
     }
@@ -383,6 +383,25 @@ final class SessionToolsAndResourcesTests: XCTestCase {
         XCTAssertNotNil(resp?.result?.dictionary?["content"])
     }
 
+    func testCreateSessionToolAcceptsIntegerTimeout() {
+        let start = Date()
+        let resp = callTool("create_session", arguments: [
+            "bundleId": "com.integer-timeout",
+            "timeout": 1
+        ])
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertNil(resp?.result)
+        XCTAssertNotNil(resp?.error)
+        XCTAssertGreaterThanOrEqual(elapsed, 0.8)
+        XCTAssertLessThan(elapsed, 3.0)
+        XCTAssertEqual(resp?.error?.code, PlayCoverErrorCode.bridgeError.rawValue)
+        XCTAssertEqual(
+            resp?.error?.message,
+            "Session heartbeat timed out: No runtime registered for bundleId 'com.integer-timeout' within 1s"
+        )
+    }
+
     func testListSessionsToolEmpty() {
         let resp = callTool("list_sessions", arguments: [:])
         XCTAssertNotNil(resp?.result)
@@ -414,6 +433,16 @@ final class SessionToolsAndResourcesTests: XCTestCase {
         let resp = callTool("close_session", arguments: ["sessionId": "nonexistent"])
         XCTAssertNil(resp?.result)
         XCTAssertEqual(resp?.error?.code, PlayCoverErrorCode.sessionNotFound.rawValue)
+    }
+
+    func testCreateSessionToolRejectsNonPositiveTimeout() {
+        let resp = callTool("create_session", arguments: [
+            "bundleId": "com.invalid-timeout",
+            "timeout": 0
+        ])
+        XCTAssertNil(resp?.result)
+        XCTAssertEqual(resp?.error?.code, JSONRPCError.invalidParams)
+        XCTAssertEqual(resp?.error?.message, "create_session 'timeout' must be greater than 0")
     }
 
     // MARK: - resources/read integration

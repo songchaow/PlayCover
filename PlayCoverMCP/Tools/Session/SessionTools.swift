@@ -11,6 +11,8 @@ import Foundation
 /// - `close_session`: Close a session by ID
 public enum SessionTools {
 
+    private static let defaultCreateSessionTimeout: TimeInterval = 10.0
+
     /// Register all session tool metadata and their handlers on the server.
     public static func register(
         on server: MCPServer,
@@ -58,7 +60,7 @@ public enum SessionTools {
                 )
             }
 
-            let timeout = args["timeout"] as? Double ?? 10.0
+            let timeout = try sessionTimeout(from: args["timeout"])
 
             let sessionInfo = try sessionService.createSession(
                 bundleId: bundleId,
@@ -73,6 +75,38 @@ public enum SessionTools {
 
             return CallToolResult(content: [.text(content: text)])
         }
+    }
+
+    private static func sessionTimeout(from rawValue: Any?) throws -> TimeInterval {
+        guard let rawValue else {
+            return defaultCreateSessionTimeout
+        }
+
+        let timeout: TimeInterval?
+        switch rawValue {
+        case let value as NSNumber:
+            timeout = value.doubleValue
+        case let value as String:
+            timeout = Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        default:
+            timeout = nil
+        }
+
+        guard let timeout else {
+            throw PlayCoverMCPError(
+                code: JSONRPCError.invalidParams,
+                message: "create_session 'timeout' must be a number"
+            )
+        }
+
+        guard timeout > 0 else {
+            throw PlayCoverMCPError(
+                code: JSONRPCError.invalidParams,
+                message: "create_session 'timeout' must be greater than 0"
+            )
+        }
+
+        return timeout
     }
 
     // MARK: - list_sessions

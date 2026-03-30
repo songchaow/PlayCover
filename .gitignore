@@ -9,6 +9,15 @@
 !/Carthage/Checkouts/PlayTools/
 /Carthage/Checkouts/PlayTools/*
 !/Carthage/Checkouts/PlayTools/PlayTools/
+!/Carthage/Checkouts/PlayTools/PlayTools.xcodeproj/
+/Carthage/Checkouts/PlayTools/PlayTools.xcodeproj/*
+!/Carthage/Checkouts/PlayTools/PlayTools.xcodeproj/project.pbxproj
+/Carthage/Checkouts/PlayTools/PlayTools.xcodeproj/project.xcworkspace/
+!/Carthage/Checkouts/PlayTools/PlayTools.xcodeproj/xcshareddata/
+/Carthage/Checkouts/PlayTools/PlayTools.xcodeproj/xcshareddata/*
+!/Carthage/Checkouts/PlayTools/PlayTools.xcodeproj/xcshareddata/xcschemes/
+/Carthage/Checkouts/PlayTools/PlayTools.xcodeproj/xcshareddata/xcschemes/*
+!/Carthage/Checkouts/PlayTools/PlayTools.xcodeproj/xcshareddata/xcschemes/PlayTools.xcscheme
 /Carthage/Checkouts/PlayTools/PlayTools/*
 !/Carthage/Checkouts/PlayTools/PlayTools/PlaySettings.swift
 !/Carthage/Checkouts/PlayTools/PlayTools/PlayCover.swift

@@ -94,13 +94,17 @@ final class BridgeListener {
         lock.lock()
         if isRunning, let existingPort = localPort {
             lock.unlock()
+            log("BridgeListener already running for \(bundleId) on port \(existingPort)")
             return existingPort
         }
         lock.unlock()
 
+        log("BridgeListener starting for bundleId=\(bundleId), registrationPort=\(registrationPort)")
+
         do {
             let runtimePort = try startCommandListener()
             let runtimeSessionId = "runtime-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString.lowercased())"
+            log("BridgeListener command listener ready on port \(runtimePort); sessionId=\(runtimeSessionId)")
 
             try connectAndRegister(
                 sessionId: runtimeSessionId,
@@ -118,10 +122,10 @@ final class BridgeListener {
 
             startRegistrationReceiveLoop()
             startHeartbeatLoop()
-            print("[PlayTools] BridgeListener started for \(bundleId) on port \(runtimePort)")
+            log("BridgeListener started for \(bundleId) on port \(runtimePort)")
             return runtimePort
         } catch {
-            print("[PlayTools] BridgeListener failed to start: \(error.localizedDescription)")
+            log("BridgeListener failed to start: \(error.localizedDescription)")
             stop()
             return 0
         }
@@ -178,18 +182,23 @@ final class BridgeListener {
             throw BridgeRuntimeError.invalidPort(registrationPort)
         }
 
+        log("BridgeListener connecting to \(host):\(registrationPort) for sessionId=\(sessionId), runtimePort=\(runtimePort)")
+
         let connection = NWConnection(host: host, port: nwPort, using: .tcp)
         let readySemaphore = DispatchSemaphore(value: 0)
         var readyError: Error?
 
-        connection.stateUpdateHandler = { state in
+        connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
+                self?.log("BridgeListener registration connection ready")
                 readySemaphore.signal()
             case .failed(let error):
+                self?.log("BridgeListener registration connection failed: \(error.localizedDescription)")
                 readyError = error
                 readySemaphore.signal()
             case .cancelled:
+                self?.log("BridgeListener registration connection cancelled")
                 readyError = BridgeRuntimeError.connectionClosed
                 readySemaphore.signal()
             default:
@@ -200,6 +209,7 @@ final class BridgeListener {
         connection.start(queue: callbackQueue)
 
         if readySemaphore.wait(timeout: .now() + 5.0) == .timedOut {
+            log("BridgeListener timed out waiting for registration connection readiness")
             connection.cancel()
             throw BridgeRuntimeError.registrationTimeout
         }
@@ -213,19 +223,19 @@ final class BridgeListener {
         registrationConnection = connection
         lock.unlock()
 
-        try sendSync(
-            message: [
-                "type": BridgeMessageType.register.rawValue,
-                "sessionId": sessionId,
-                "bundleId": bundleId,
-                "pid": ProcessInfo.processInfo.processIdentifier,
-                "runtimePort": Int(runtimePort),
-            ],
-            on: connection
-        )
+        let registerMessage: [String: Any] = [
+            "type": BridgeMessageType.register.rawValue,
+            "sessionId": sessionId,
+            "bundleId": bundleId,
+            "pid": ProcessInfo.processInfo.processIdentifier,
+            "runtimePort": Int(runtimePort),
+        ]
+        log("BridgeListener sending register message: \(registerMessage)")
+        sendSync(message: registerMessage, on: connection)
 
         let ackMessage = try receiveSingleMessage(on: connection, timeout: 5.0)
         let ackType = stringValue("type", in: ackMessage)
+        log("BridgeListener received registration response: \(ackMessage)")
 
         if ackType == BridgeMessageType.registerAck.rawValue {
             guard stringValue("sessionId", in: ackMessage) == sessionId else {
@@ -296,7 +306,7 @@ final class BridgeListener {
             stopHeartbeatLoop()
         case BridgeMessageType.error.rawValue:
             let text = stringValue("message", in: message) ?? "unknown"
-            print("[PlayTools] BridgeListener registration channel error: \(text)")
+            log("BridgeListener registration channel error: \(text)")
         default:
             break
         }
@@ -856,6 +866,10 @@ final class BridgeListener {
 
     private func errorResult(_ message: String) -> (status: String, result: [String: Any]?) {
         ("error", ["message": message])
+    }
+
+    private func log(_ message: String) {
+        NSLog("%@", "[PlayTools] \(message)")
     }
 
     // MARK: - Value Helpers

@@ -9,6 +9,16 @@ import Foundation
 /// `create_session` waits for a runtime to register (polling-based).
 public final class SessionService: Sendable {
 
+    private static let timeoutFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = 3
+        formatter.decimalSeparator = "."
+        formatter.groupingSeparator = ""
+        return formatter
+    }()
+
     // MARK: - Dependencies
 
     private let registry: SessionRegistry
@@ -64,7 +74,7 @@ public final class SessionService: Sendable {
         // 4. Timeout: clean up and throw
         try? registry.unregister(sessionId: pendingId)
         throw SessionError.heartbeatTimeout(
-            "No runtime registered for bundleId '\(bundleId)' within \(Int(timeout))s"
+            "No runtime registered for bundleId '\(bundleId)' within \(Self.formatTimeout(timeout))"
         )
     }
 
@@ -119,5 +129,11 @@ public final class SessionService: Sendable {
     /// - Returns: The session status, or nil if not found.
     public func getStatus(_ sessionId: String) -> SessionStatus? {
         registry.get(sessionId)?.status
+    }
+
+    private static func formatTimeout(_ timeout: TimeInterval) -> String {
+        let number = NSNumber(value: timeout)
+        let formatted = timeoutFormatter.string(from: number) ?? String(timeout)
+        return "\(formatted)s"
     }
 }

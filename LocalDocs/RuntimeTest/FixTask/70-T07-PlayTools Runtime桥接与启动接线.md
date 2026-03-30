@@ -126,13 +126,21 @@ cd /Users/songdogwang/Codes/PlayCover && WITH_REGRESSION=1 DERIVED_DATA_PATH=/tm
 - `xcodebuild test -scheme PlayCoverMCP ... -only-testing:...`：本次主要作为 focused 编译检查，命令返回成功，但未实际执行测试用例
 - `xcodebuild test -scheme PlayCoverMCP ...`：**669 tests passed，1 skipped，0 failures**
 - `Scripts/test_http_mcp.sh`：**通过**
-- `xcodebuild build -scheme PlayCover ...`：**通过**，说明本次修改的 `PlayTools` runtime 源码已真实参与 app target 编译
+- `xcodebuild build -scheme PlayCover ...`：**通过**，但这一步后来证明**不能单独作为“runtime 新源码已进入 live framework”的证据**；GUI 默认复制的是 `Carthage/Build/PlayTools.xcframework/ios-arm64/PlayTools.framework`
+- `xcodebuild -project Carthage/Checkouts/PlayTools/PlayTools.xcodeproj -scheme PlayTools -configuration Release -destination 'generic/platform=iOS' build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' FASTLANE=1`：**通过**
 
 #### 真机 / 真实 app 冒烟结果
 
-- 已尝试通过本机 `playcover` MCP 做只读/可逆的 live smoke（计划使用 `list_installed_apps` / `launch_app` / `create_session` / `list_sessions` / `close_session`）
-- 当前环境下 `playcover` MCP 调用返回 **`fetch failed`**，导致无法完成本轮真实 app 冒烟
-- 因此本任务的**代码修复与自动化回归已完成**，但“真实 app 已跑到新 bridge 代码”的最终证据仍需在 MCP 端点恢复后补做
+- 已通过本机 `playcover` GUI 内嵌 Streamable HTTP 做 fresh live smoke
+- 先修复了 `SessionTools.swift` 对整型 `timeout` 的解析；live `create_session(timeout=1)` 已不再错误回落为 `10s`
+- 随后定位出真正的 runtime 根因：`PlayTools.xcodeproj` 之前没有把 `BridgeListener.swift` / `MetalCaptureService.swift` 纳入 `PlayTools` target，且 GUI 构建只复制 `Carthage/Build/PlayTools.xcframework` 预编译 framework，导致真实 app 长期加载旧 `PlayTools.framework`
+- 在补齐 `PlayTools.xcodeproj` target membership、重建 `PlayTools.framework`、替换 `Carthage/Build/PlayTools.xcframework/ios-arm64/PlayTools.framework`、重装并重启 GUI 后，原神 live 成功完成：
+  - `launch_app` 成功
+  - `list_sessions` 返回 `ready` session：`runtime-21654-df323da1-3010-483f-b133-679dd7c60055`
+  - `create_session(timeout=5)` 成功返回同一 session，`runtimePort=60054`
+  - 进程侧可见 `Yuanshen` 已加载 `~/Library/Frameworks/PlayTools.framework/Versions/A/PlayTools`，并建立 `127.0.0.1:59635 -> 127.0.0.1:52741` 注册连接
+  - `close_session` 返回成功，`list_sessions` 回读为空
+- 同时补充了 runtime 系统日志，`log show` 可见：`PlayCover.launch bundleId=...`、`BridgeListener starting`、`registration connection ready`、`received registration response` 等完整链路
 
 ---
 

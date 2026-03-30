@@ -7,20 +7,28 @@ import Foundation
 
 public enum MCPProtocolVersion {
     public static let v2025_11_25 = "2025-11-25"
+    public static let v2025_06_18 = "2025-06-18"
     public static let v2025_03_26 = "2025-03-26"
     public static let v2024_11_05 = "2024-11-05"
 
     public static let latest = v2025_11_25
     public static let supportedVersions: [String] = [
         v2025_11_25,
+        v2025_06_18,
         v2025_03_26,
     ]
 
-    public static func negotiate(with clientVersion: String) -> String? {
-        guard supportedVersions.contains(clientVersion) else {
-            return nil
+    public static func negotiate(with clientVersion: String) -> String {
+        if supportedVersions.contains(clientVersion) {
+            return clientVersion
         }
-        return clientVersion
+
+        let compatibleVersion = supportedVersions
+            .filter { $0 <= clientVersion }
+            .sorted()
+            .last
+
+        return compatibleVersion ?? latest
     }
 }
 

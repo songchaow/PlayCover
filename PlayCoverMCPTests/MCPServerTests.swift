@@ -66,10 +66,33 @@ final class MCPServerTests: XCTestCase {
         XCTAssertEqual(result.protocolVersion, MCPProtocolVersion.v2025_03_26)
     }
 
-    func testInitializeRejectsUnsupportedProtocolVersion() throws {
+    func testInitializeSupports2025_06_18() throws {
         let server = makeServer()
         let request = JSONRPCRequest(
-            id: .string("init-unsupported"),
+            id: .string("init-2025-06-18"),
+            method: "initialize",
+            params: try AnyCodable(InitializeParams(
+                protocolVersion: MCPProtocolVersion.v2025_06_18,
+                capabilities: ClientCapabilities(),
+                clientInfo: Implementation(name: "mid-client", version: "1.0")
+            ))
+        )
+
+        let response = server.handle(.request(request))
+
+        guard case .response(let resp) = response else {
+            XCTFail("Expected response")
+            return
+        }
+
+        let result: InitializeResult = try XCTUnwrap(resp.result?.decoded())
+        XCTAssertEqual(result.protocolVersion, MCPProtocolVersion.v2025_06_18)
+    }
+
+    func testInitializeFallsBackForNewerUnknownProtocolVersion() throws {
+        let server = makeServer()
+        let request = JSONRPCRequest(
+            id: .string("init-future"),
             method: "initialize",
             params: try AnyCodable(InitializeParams(
                 protocolVersion: "2099-01-01",
@@ -85,9 +108,8 @@ final class MCPServerTests: XCTestCase {
             return
         }
 
-        XCTAssertNil(resp.result)
-        XCTAssertEqual(resp.error?.code, JSONRPCError.invalidParams)
-        XCTAssertEqual(resp.error?.message, "Unsupported protocol version: 2099-01-01")
+        let result: InitializeResult = try XCTUnwrap(resp.result?.decoded())
+        XCTAssertEqual(result.protocolVersion, MCPProtocolVersion.latest)
     }
 
     // MARK: - Ping

@@ -122,6 +122,8 @@ class MCPManager: ObservableObject {
     private var taskManager: TaskManager?
     private var activeTransportStorage: AnyObject?
     private var activeTransportStop: (() -> Void)?
+    private var registrationListener: RegistrationListener?
+    private var healthMonitor: SessionHealthMonitor?
 
     private init() {
         port = savedPort
@@ -181,6 +183,10 @@ class MCPManager: ObservableObject {
         server = nil
         logger = nil
         taskManager = nil
+        healthMonitor?.stop()
+        healthMonitor = nil
+        registrationListener?.stop()
+        registrationListener = nil
         isRunning = false
         connectedClients = 0
         lastError = nil
@@ -308,6 +314,22 @@ class MCPManager: ObservableObject {
 
         // Session tools and resources
         let sessionRegistry = SessionRegistry()
+        let registrationListener = RegistrationListener(port: RegistrationListener.defaultPort, registry: sessionRegistry)
+        do {
+            let boundPort = try registrationListener.start()
+            self.logger?.log(.info, "Registration listener started on port \(boundPort)")
+        } catch {
+            self.logger?.log(.error, "Failed to start registration listener: \(error.localizedDescription)")
+        }
+        self.registrationListener = registrationListener
+
+        let healthMonitor = SessionHealthMonitor(registry: sessionRegistry, staleTimeout: 30.0)
+        healthMonitor.onStaleSessions = { [weak self] staleSessions in
+            self?.logger?.log(.info, "Removed \(staleSessions.count) stale session(s): \(staleSessions.map(\.sessionId).joined(separator: ", "))")
+        }
+        healthMonitor.start(interval: 10.0)
+        self.healthMonitor = healthMonitor
+
         let sessionService = SessionService(registry: sessionRegistry)
         SessionTools.register(on: server, sessionService: sessionService)
         SessionResources.register(on: server, sessionService: sessionService)

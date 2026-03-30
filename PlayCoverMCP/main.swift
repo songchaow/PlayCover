@@ -74,6 +74,20 @@ KeymapTools.register(on: server, keymapService: keymapService)
 
 // Register session tools and resources
 let sessionRegistry = SessionRegistry()
+let registrationListener = RegistrationListener(port: RegistrationListener.defaultPort, registry: sessionRegistry)
+do {
+    let boundPort = try registrationListener.start()
+    logger.log(.info, "Registration listener started on port \(boundPort)")
+} catch {
+    logger.log(.error, "Failed to start registration listener: \(error.localizedDescription)")
+}
+
+let healthMonitor = SessionHealthMonitor(registry: sessionRegistry, staleTimeout: 30.0)
+healthMonitor.onStaleSessions = { staleSessions in
+    logger.log(.info, "Removed \(staleSessions.count) stale session(s): \(staleSessions.map(\.sessionId).joined(separator: ", "))")
+}
+healthMonitor.start(interval: 10.0)
+
 let sessionService = SessionService(registry: sessionRegistry)
 SessionTools.register(on: server, sessionService: sessionService)
 SessionResources.register(on: server, sessionService: sessionService)
@@ -92,6 +106,21 @@ CaptureTools.register(on: server, captureService: captureService)
 
 let transport = StdioTransport { message in
     server.handle(message)
+}
+
+// Set up signal handling for graceful shutdown
+let shutdownHandler = {
+    healthMonitor.stop()
+    registrationListener.stop()
+}
+
+signal(SIGINT) { _ in
+    shutdownHandler()
+    exit(0)
+}
+signal(SIGTERM) { _ in
+    shutdownHandler()
+    exit(0)
 }
 
 transport.run()

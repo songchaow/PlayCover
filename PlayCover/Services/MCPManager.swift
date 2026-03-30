@@ -3,7 +3,7 @@
 //  PlayCover
 //
 //  Manages the embedded MCP Server lifecycle.
-//  Starts a TCP-based MCP server on app launch, stops on termination.
+//  Starts the GUI MCP server on app launch and stops it on termination.
 //
 
 import Foundation
@@ -14,11 +14,18 @@ class MCPManager: ObservableObject {
 
     // MARK: - Constants
 
+    enum TransportType: String, CaseIterable {
+        case http
+        case tcp
+    }
+
     static let defaultPort: UInt16 = 19820
     static let defaultHost: TCPTransport.ListenHost = .loopback
+    static let defaultTransportType: TransportType = .http
     static let portRange: ClosedRange<UInt16> = 1024...65535
     private static let portKey = "MCPServerPort"
     private static let hostKey = "MCPServerHost"
+    private static let transportTypeKey = "MCPServerTransportType"
 
     // MARK: - Published State
 
@@ -26,6 +33,7 @@ class MCPManager: ObservableObject {
     @Published var connectedClients = 0
     @Published var port: UInt16 = MCPManager.defaultPort
     @Published var listenHost: TCPTransport.ListenHost = MCPManager.defaultHost
+    @Published var transportType: TransportType = MCPManager.defaultTransportType
     @Published var lastError: String?
 
     // MARK: - Persisted Settings
@@ -57,101 +65,119 @@ class MCPManager: ObservableObject {
         }
     }
 
+    /// The user-configured transport type, persisted in UserDefaults.
+    /// Falls back to Streamable HTTP when available.
+    var savedTransportType: TransportType {
+        get {
+            guard let stored = UserDefaults.standard.string(forKey: MCPManager.transportTypeKey),
+                  let type = TransportType(rawValue: stored) else {
+                return MCPManager.defaultTransportType
+            }
+            return type
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: MCPManager.transportTypeKey)
+        }
+    }
+
+    // MARK: - Computed State
+
+    var isHTTPTransportSupported: Bool {
+        if #available(macOS 14, *) {
+            return true
+        }
+        return false
+    }
+
+    var runtimeDefaultTransportType: TransportType {
+        isHTTPTransportSupported ? .http : .tcp
+    }
+
+    var effectiveTransportType: TransportType {
+        normalizedTransportType(transportType)
+    }
+
+    var endpointURLString: String {
+        switch effectiveTransportType {
+        case .http:
+            return "http://\(endpointHost):\(port)/mcp"
+        case .tcp:
+            return "tcp://\(endpointHost):\(port)"
+        }
+    }
+
+    var bindAddressString: String {
+        "\(listenHost.rawValue):\(port)"
+    }
+
+    private var endpointHost: String {
+        switch listenHost {
+        case .loopback, .allInterfaces:
+            return "127.0.0.1"
+        }
+    }
+
     private var server: MCPServer?
-    private var transport: TCPTransport?
     private var logger: MCPLogger?
     private var taskManager: TaskManager?
+    private var activeTransportStorage: AnyObject?
+    private var activeTransportStop: (() -> Void)?
 
     private init() {
-        // Load persisted settings on init
-        self.port = savedPort
-        self.listenHost = savedHost
+        port = savedPort
+        listenHost = savedHost
+        transportType = normalizedTransportType(savedTransportType)
+
+        if transportType != savedTransportType {
+            savedTransportType = transportType
+        }
     }
 
     /// Validate whether a port number is in the allowed range (1024–65535).
     static func isValidPort(_ port: UInt16) -> Bool {
-        return portRange.contains(port)
+        portRange.contains(port)
     }
 
-    /// Start the embedded MCP Server with TCP transport.
-    /// Safe to call from the main thread — TCP listening is asynchronous.
+    /// Start the embedded MCP Server with the selected transport.
     func start() {
         guard !isRunning else { return }
 
-        // Use the current port and host values (which should already reflect saved settings)
+        let effectiveTransportType = normalizedTransportType(transportType)
+        if effectiveTransportType != transportType {
+            transportType = effectiveTransportType
+            savedTransportType = effectiveTransportType
+        }
+
         let listenPort = port
         let host = listenHost
 
-        // 1. Create infrastructure
         let logger = MCPLogger(minLevel: .info)
         let taskManager = TaskManager()
+        let server = createServer(logger: logger, taskManager: taskManager)
 
-        let serverInfo = Implementation(
-            name: "playcover-mcp-gui",
-            version: "0.2.0"
-        )
-        let capabilities = ServerCapabilities(
-            tools: ToolCapabilities(listChanged: false),
-            resources: ResourceCapabilities(subscribe: false, listChanged: false),
-            logging: true,
-            tasks: true
-        )
-
-        // 2. Create server
-        let server = MCPServer(
-            serverInfo: serverInfo,
-            capabilities: capabilities,
-            logger: logger,
-            taskManager: taskManager
-        )
-
-        // 3. Register all Services, Tools, Resources (mirrors main.swift bootstrap)
-        registerServices(on: server, taskManager: taskManager)
-
-        // 4. Create and start TCP transport
-        let transport = TCPTransport(port: listenPort, host: host) { message in
-            server.handle(message)
-        }
-
-        transport.onStateChange = { [weak self] newState in
-            // This callback is dispatched to main queue by TCPTransport
-            guard let self = self else { return }
-            switch newState {
-            case .running(let actualPort):
-                self.port = actualPort
-                self.isRunning = true
-                self.lastError = nil
-            case .failed(let message):
-                self.isRunning = false
-                self.lastError = message
-            case .stopped:
-                self.isRunning = false
-            case .starting:
-                break
-            }
-        }
-
-        transport.onClientCountChanged = { [weak self] count in
-            // This callback is dispatched to main queue by TCPTransport
-            self?.connectedClients = count
-        }
-
-        transport.start()
-
-        // 5. Save references
         self.server = server
-        self.transport = transport
         self.logger = logger
         self.taskManager = taskManager
-        // Note: isRunning will be set to true via onStateChange when listener is ready
 
-        logger.log(.info, "MCP Server starting on \(host.rawValue):\(listenPort)...")
+        switch effectiveTransportType {
+        case .http:
+            if #available(macOS 14, *) {
+                startHTTPTransport(server: server, logger: logger, port: listenPort, host: host)
+            } else {
+                startTCPTransport(server: server, logger: logger, port: listenPort, host: host)
+            }
+        case .tcp:
+            startTCPTransport(server: server, logger: logger, port: listenPort, host: host)
+        }
+
+        logger.log(.info, "MCP Server starting with \(effectiveTransportType.rawValue.uppercased()) transport on \(host.rawValue):\(listenPort)...")
     }
 
     /// Stop the embedded MCP Server and release all resources.
     func stop() {
-        transport?.stop()
-        transport = nil
+        activeTransportStop?()
+        activeTransportStop = nil
+        activeTransportStorage = nil
         server = nil
         logger = nil
         taskManager = nil
@@ -160,15 +186,18 @@ class MCPManager: ObservableObject {
         lastError = nil
     }
 
-    /// Restart the MCP Server with a new port and/or host.
+    /// Restart the MCP Server with a new port, host, and/or transport type.
     /// Saves the new settings to UserDefaults, stops the current server, and starts with the new configuration.
-    func restart(withPort newPort: UInt16, host newHost: TCPTransport.ListenHost? = nil) {
+    func restart(
+        withPort newPort: UInt16,
+        host newHost: TCPTransport.ListenHost? = nil,
+        transportType newTransportType: TransportType? = nil
+    ) {
         guard MCPManager.isValidPort(newPort) else {
             lastError = "Invalid port: \(newPort). Must be between \(MCPManager.portRange.lowerBound) and \(MCPManager.portRange.upperBound)."
             return
         }
 
-        // Persist settings
         savedPort = newPort
         port = newPort
 
@@ -177,9 +206,58 @@ class MCPManager: ObservableObject {
             listenHost = newHost
         }
 
-        // Stop existing server and restart
+        if let newTransportType = newTransportType {
+            let normalizedTransportType = normalizedTransportType(newTransportType)
+            savedTransportType = normalizedTransportType
+            transportType = normalizedTransportType
+        }
+
         stop()
         start()
+    }
+
+    // MARK: - Transport Startup
+
+    private func startTCPTransport(server: MCPServer, logger: MCPLogger, port: UInt16, host: TCPTransport.ListenHost) {
+        let transport = TCPTransport(port: port, host: host) { message in
+            server.handle(message)
+        }
+
+        transport.onStateChange = { [weak self] newState in
+            self?.handleTransportStateChange(newState)
+        }
+
+        transport.onClientCountChanged = { [weak self] count in
+            self?.connectedClients = count
+        }
+
+        transport.start()
+        activeTransportStorage = transport
+        activeTransportStop = { transport.stop() }
+    }
+
+    @available(macOS 14, *)
+    private func startHTTPTransport(server: MCPServer, logger: MCPLogger, port: UInt16, host: TCPTransport.ListenHost) {
+        let transport = StreamableHTTPTransport(
+            port: port,
+            host: streamableHTTPHost(from: host),
+            handler: { message in
+                server.handle(message)
+            },
+            mcpServer: server
+        )
+
+        transport.onStateChange = { [weak self] newState in
+            self?.handleTransportStateChange(newState)
+        }
+
+        transport.onSessionCountChanged = { [weak self] count in
+            self?.connectedClients = count
+        }
+
+        transport.start()
+        activeTransportStorage = transport
+        activeTransportStop = { transport.stop() }
     }
 
     // MARK: - Service Registration
@@ -242,5 +320,80 @@ class MCPManager: ObservableObject {
         // Capture tools (capture_metal_frame, get_capture_status)
         let captureService = CaptureService(registry: sessionRegistry)
         CaptureTools.register(on: server, captureService: captureService)
+    }
+
+    // MARK: - Private Helpers
+
+    private func createServer(logger: MCPLogger, taskManager: TaskManager) -> MCPServer {
+        let serverInfo = Implementation(
+            name: "playcover-mcp-gui",
+            version: "0.2.0"
+        )
+        let capabilities = ServerCapabilities(
+            tools: ToolCapabilities(listChanged: false),
+            resources: ResourceCapabilities(subscribe: false, listChanged: false),
+            logging: true,
+            tasks: true
+        )
+
+        let server = MCPServer(
+            serverInfo: serverInfo,
+            capabilities: capabilities,
+            logger: logger,
+            taskManager: taskManager
+        )
+
+        registerServices(on: server, taskManager: taskManager)
+        return server
+    }
+
+    private func normalizedTransportType(_ requestedType: TransportType) -> TransportType {
+        guard requestedType == .http, !isHTTPTransportSupported else {
+            return requestedType
+        }
+        return .tcp
+    }
+
+    @available(macOS 14, *)
+    private func streamableHTTPHost(from host: TCPTransport.ListenHost) -> StreamableHTTPTransport.ListenHost {
+        switch host {
+        case .loopback:
+            return .loopback
+        case .allInterfaces:
+            return .allInterfaces
+        }
+    }
+
+    private func handleTransportStateChange(_ newState: TCPTransport.State) {
+        switch newState {
+        case .running(let actualPort):
+            port = actualPort
+            isRunning = true
+            lastError = nil
+        case .failed(let message):
+            isRunning = false
+            lastError = message
+        case .stopped:
+            isRunning = false
+        case .starting:
+            break
+        }
+    }
+
+    @available(macOS 14, *)
+    private func handleTransportStateChange(_ newState: StreamableHTTPTransport.State) {
+        switch newState {
+        case .running(let actualPort):
+            port = actualPort
+            isRunning = true
+            lastError = nil
+        case .failed(let message):
+            isRunning = false
+            lastError = message
+        case .stopped:
+            isRunning = false
+        case .starting:
+            break
+        }
     }
 }

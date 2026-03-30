@@ -40,7 +40,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             KeyCoverPreferences.shared.keyCoverEnabled = .selfGeneratedPassword
         }
 
-        // Start embedded MCP Server (TCP on localhost:19820)
+        // Start embedded MCP Server (Streamable HTTP by default, TCP remains available as a legacy fallback)
         MCPManager.shared.start()
     }
 

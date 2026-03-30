@@ -3,9 +3,10 @@
 //  PlayCover
 //
 //  Displays MCP Server status in the Settings window.
-//  Allows configuring the MCP Server port and listen address.
+//  Allows configuring the MCP Server transport, port, and listen address.
 //
 
+import AppKit
 import SwiftUI
 
 struct MCPStatusView: View {
@@ -13,12 +14,12 @@ struct MCPStatusView: View {
 
     @State private var portString: String = ""
     @State private var selectedHost: TCPTransport.ListenHost = .loopback
+    @State private var selectedTransportType: MCPManager.TransportType = MCPManager.defaultTransportType
     @State private var portError: String?
     @State private var isRestarting = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Status indicator
             HStack(spacing: 8) {
                 Circle()
                     .fill(statusColor)
@@ -28,21 +29,32 @@ struct MCPStatusView: View {
                 Spacer()
             }
 
-            if mcpManager.isRunning {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(NSLocalizedString("mcp.endpoint.label", comment: ""))
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                        Text(endpointDisplay)
+                            .font(.system(.body, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+
+                    Spacer()
+
+                    Button(action: copyEndpoint) {
+                        Text(NSLocalizedString("mcp.endpoint.copy", comment: ""))
+                    }
+                }
+
                 HStack {
                     Label {
-                        Text("\(mcpManager.listenHost.rawValue):\(mcpManager.port)")
-                    } icon: {
-                        Image(systemName: "network")
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
-                    Label {
-                        Text("\(mcpManager.connectedClients)")
+                        Text("\(connectionCountLabel): \(mcpManager.connectedClients)")
                     } icon: {
                         Image(systemName: "person.2")
                             .foregroundColor(.secondary)
                     }
+                    Spacer()
                 }
                 .font(.subheadline)
                 .foregroundColor(.secondary)
@@ -65,7 +77,31 @@ struct MCPStatusView: View {
 
             Divider()
 
-            // Listen address configuration
+            HStack {
+                Text(NSLocalizedString("mcp.transport.label", comment: ""))
+                    .font(.subheadline)
+                Picker("", selection: $selectedTransportType) {
+                    Text(NSLocalizedString("mcp.transport.http", comment: ""))
+                        .tag(MCPManager.TransportType.http)
+                    Text(NSLocalizedString("mcp.transport.tcp", comment: ""))
+                        .tag(MCPManager.TransportType.tcp)
+                }
+                .labelsHidden()
+                .frame(width: 280)
+                Spacer()
+            }
+
+            if !mcpManager.isHTTPTransportSupported && selectedTransportType == .http {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                        .font(.caption)
+                    Text(NSLocalizedString("mcp.transport.http.unsupported", comment: ""))
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
+            }
+
             HStack {
                 Text(NSLocalizedString("mcp.host.label", comment: ""))
                     .font(.subheadline)
@@ -91,7 +127,6 @@ struct MCPStatusView: View {
                 }
             }
 
-            // Port configuration
             HStack {
                 Text(NSLocalizedString("mcp.port.label", comment: ""))
                     .font(.subheadline)
@@ -135,21 +170,35 @@ struct MCPStatusView: View {
                 .foregroundColor(.secondary)
         }
         .padding(20)
-        .frame(width: 600, height: 280)
+        .frame(width: 600, height: 340)
         .onAppear {
             portString = "\(mcpManager.savedPort)"
             selectedHost = mcpManager.savedHost
+            selectedTransportType = mcpManager.savedTransportType
+
+            if !mcpManager.isHTTPTransportSupported && selectedTransportType == .http {
+                selectedTransportType = .tcp
+            }
         }
     }
 
     // MARK: - Computed Properties
 
-    private var listenAddressDisplay: String {
-        if mcpManager.listenHost == .loopback {
-            return "localhost:\(mcpManager.port)"
-        } else {
-            return "\(mcpManager.listenHost.rawValue):\(mcpManager.port)"
+    private var endpointDisplay: String {
+        switch selectedTransportType {
+        case .http:
+            return "http://127.0.0.1:\(displayPort)/mcp"
+        case .tcp:
+            return "tcp://127.0.0.1:\(displayPort)"
         }
+    }
+
+    private var listenAddressDisplay: String {
+        "\(selectedHost.rawValue):\(displayPort)"
+    }
+
+    private var displayPort: UInt16 {
+        parsedPort ?? mcpManager.port
     }
 
     private var statusColor: Color {
@@ -172,27 +221,36 @@ struct MCPStatusView: View {
         }
     }
 
+    private var connectionCountLabel: String {
+        let key = mcpManager.effectiveTransportType == .http ? "mcp.sessions.label" : "mcp.clients.label"
+        return NSLocalizedString(key, comment: "")
+    }
+
     private var parsedPort: UInt16? {
-        guard let value = UInt16(portString) else { return nil }
+        let trimmed = portString.trimmingCharacters(in: .whitespaces)
+        guard let value = UInt16(trimmed) else { return nil }
         return MCPManager.isValidPort(value) ? value : nil
     }
 
-    /// Whether current UI settings differ from the running server config
     private var hasChanges: Bool {
         guard let newPort = parsedPort else { return false }
-        return newPort != mcpManager.port || selectedHost != mcpManager.listenHost
+        return newPort != mcpManager.port
+            || selectedHost != mcpManager.listenHost
+            || selectedTransportType != mcpManager.transportType
     }
 
     private var canApply: Bool {
-        return hasChanges && !isRestarting && portError == nil
+        hasChanges && !isRestarting && portError == nil
     }
 
-    /// Whether current UI settings are at default values
     private var isDefault: Bool {
+        let defaultTransportType = mcpManager.runtimeDefaultTransportType
         return portString == "\(MCPManager.defaultPort)"
             && selectedHost == MCPManager.defaultHost
+            && selectedTransportType == defaultTransportType
             && mcpManager.savedPort == MCPManager.defaultPort
             && mcpManager.savedHost == MCPManager.defaultHost
+            && mcpManager.savedTransportType == defaultTransportType
     }
 
     // MARK: - Actions
@@ -217,30 +275,42 @@ struct MCPStatusView: View {
         guard let newPort = parsedPort else { return }
 
         isRestarting = true
-        mcpManager.restart(withPort: newPort, host: selectedHost)
+        mcpManager.restart(withPort: newPort, host: selectedHost, transportType: selectedTransportType)
 
-        // Brief delay to show restart feedback
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             isRestarting = false
         }
     }
 
     private func resetSettings() {
+        let defaultTransportType = mcpManager.runtimeDefaultTransportType
         portString = "\(MCPManager.defaultPort)"
         selectedHost = MCPManager.defaultHost
+        selectedTransportType = defaultTransportType
         portError = nil
 
         let needsRestart = mcpManager.port != MCPManager.defaultPort
             || mcpManager.listenHost != MCPManager.defaultHost
+            || mcpManager.transportType != defaultTransportType
             || mcpManager.savedPort != MCPManager.defaultPort
             || mcpManager.savedHost != MCPManager.defaultHost
+            || mcpManager.savedTransportType != defaultTransportType
 
         if needsRestart {
             isRestarting = true
-            mcpManager.restart(withPort: MCPManager.defaultPort, host: MCPManager.defaultHost)
+            mcpManager.restart(
+                withPort: MCPManager.defaultPort,
+                host: MCPManager.defaultHost,
+                transportType: defaultTransportType
+            )
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                 isRestarting = false
             }
         }
+    }
+
+    private func copyEndpoint() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(endpointDisplay, forType: .string)
     }
 }

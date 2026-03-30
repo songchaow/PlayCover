@@ -423,16 +423,52 @@ public struct Implementation: Codable, Equatable, Sendable {
 
 // MARK: - Server & Client Capabilities
 
+public struct EmptyCapability: Codable, Equatable, Sendable {
+    public init() {}
+}
+
+public struct TaskRequestToolCapabilities: Codable, Equatable, Sendable {
+    public let call: EmptyCapability?
+
+    public init(call: EmptyCapability? = nil) {
+        self.call = call
+    }
+}
+
+public struct TaskRequestCapabilities: Codable, Equatable, Sendable {
+    public let tools: TaskRequestToolCapabilities?
+
+    public init(tools: TaskRequestToolCapabilities? = nil) {
+        self.tools = tools
+    }
+}
+
+public struct TaskCapabilities: Codable, Equatable, Sendable {
+    public let list: EmptyCapability?
+    public let cancel: EmptyCapability?
+    public let requests: TaskRequestCapabilities?
+
+    public init(
+        list: EmptyCapability? = nil,
+        cancel: EmptyCapability? = nil,
+        requests: TaskRequestCapabilities? = nil
+    ) {
+        self.list = list
+        self.cancel = cancel
+        self.requests = requests
+    }
+}
+
 public struct ServerCapabilities: Codable, Equatable, Sendable {
     public let tools: ToolCapabilities?
     public let resources: ResourceCapabilities?
-    public let logging: Bool?
-    public let tasks: Bool?
+    public let logging: EmptyCapability?
+    public let tasks: TaskCapabilities?
     public let prompts: PromptCapabilities?
     public let experimental: AnyCodable?
 
     public init(tools: ToolCapabilities? = nil, resources: ResourceCapabilities? = nil,
-                logging: Bool? = nil, tasks: Bool? = nil, prompts: PromptCapabilities? = nil,
+                logging: EmptyCapability? = nil, tasks: TaskCapabilities? = nil, prompts: PromptCapabilities? = nil,
                 experimental: AnyCodable? = nil) {
         self.tools = tools
         self.resources = resources

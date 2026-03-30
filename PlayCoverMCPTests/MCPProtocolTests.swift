@@ -185,7 +185,15 @@ final class MCPProtocolTests: XCTestCase {
     func testInitializeResultEncoding() throws {
         let result = InitializeResult(
             protocolVersion: "2025-11-25",
-            capabilities: ServerCapabilities(tools: ToolCapabilities(), resources: ResourceCapabilities()),
+            capabilities: ServerCapabilities(
+                tools: ToolCapabilities(),
+                resources: ResourceCapabilities(),
+                logging: EmptyCapability(),
+                tasks: TaskCapabilities(
+                    list: EmptyCapability(),
+                    cancel: EmptyCapability()
+                )
+            ),
             serverInfo: Implementation(name: "PlayCoverMCP", version: "0.1.0"),
             instructions: "Use this server to manage PlayCover apps."
         )
@@ -195,6 +203,12 @@ final class MCPProtocolTests: XCTestCase {
         XCTAssertNotNil(json["capabilities"])
         XCTAssertNotNil(json["serverInfo"])
         XCTAssertNotNil(json["instructions"])
+
+        let capabilities = try XCTUnwrap(json["capabilities"] as? [String: Any])
+        XCTAssertNotNil(capabilities["logging"] as? [String: Any])
+        let tasks = try XCTUnwrap(capabilities["tasks"] as? [String: Any])
+        XCTAssertNotNil(tasks["list"] as? [String: Any])
+        XCTAssertNotNil(tasks["cancel"] as? [String: Any])
     }
 
     func testToolEncoding() throws {

@@ -332,8 +332,11 @@ class MCPManager: ObservableObject {
         let capabilities = ServerCapabilities(
             tools: ToolCapabilities(listChanged: false),
             resources: ResourceCapabilities(subscribe: false, listChanged: false),
-            logging: true,
-            tasks: true
+            logging: EmptyCapability(),
+            tasks: TaskCapabilities(
+                list: EmptyCapability(),
+                cancel: EmptyCapability()
+            )
         )
 
         let server = MCPServer(

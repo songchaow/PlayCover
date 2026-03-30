@@ -448,8 +448,11 @@ final class CaptureToolsRegistrationTests: XCTestCase {
             capabilities: ServerCapabilities(
                 tools: ToolCapabilities(listChanged: false),
                 resources: ResourceCapabilities(subscribe: false, listChanged: false),
-                logging: true,
-                tasks: true
+                logging: EmptyCapability(),
+                tasks: TaskCapabilities(
+                    list: EmptyCapability(),
+                    cancel: EmptyCapability()
+                )
             ),
             logger: logger,
             taskManager: taskManager

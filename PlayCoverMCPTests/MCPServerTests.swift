@@ -257,7 +257,14 @@ final class MCPServerTests: XCTestCase {
     func testInitializeIncludesLoggingCapability() throws {
         let server = MCPServer(
             serverInfo: Implementation(name: "TestServer", version: "0.1.0"),
-            capabilities: ServerCapabilities(tools: ToolCapabilities(), logging: true, tasks: true)
+            capabilities: ServerCapabilities(
+                tools: ToolCapabilities(),
+                logging: EmptyCapability(),
+                tasks: TaskCapabilities(
+                    list: EmptyCapability(),
+                    cancel: EmptyCapability()
+                )
+            )
         )
         let request = JSONRPCRequest(
             id: .string("init-logging"),
@@ -276,8 +283,9 @@ final class MCPServerTests: XCTestCase {
             return
         }
         let result: InitializeResult = try XCTUnwrap(resp.result?.decoded())
-        XCTAssertEqual(result.capabilities.logging, true)
-        XCTAssertEqual(result.capabilities.tasks, true)
+        XCTAssertNotNil(result.capabilities.logging)
+        XCTAssertNotNil(result.capabilities.tasks?.list)
+        XCTAssertNotNil(result.capabilities.tasks?.cancel)
     }
 
     // MARK: - Logging handlers
@@ -286,7 +294,7 @@ final class MCPServerTests: XCTestCase {
         let logger = MCPLogger(minLevel: .warning)
         let server = MCPServer(
             serverInfo: Implementation(name: "TestServer", version: "0.1.0"),
-            capabilities: ServerCapabilities(logging: true),
+            capabilities: ServerCapabilities(logging: EmptyCapability()),
             logger: logger
         )
 
@@ -311,7 +319,7 @@ final class MCPServerTests: XCTestCase {
         let logger = MCPLogger(minLevel: .info)
         let server = MCPServer(
             serverInfo: Implementation(name: "TestServer", version: "0.1.0"),
-            capabilities: ServerCapabilities(logging: true),
+            capabilities: ServerCapabilities(logging: EmptyCapability()),
             logger: logger
         )
 
@@ -331,7 +339,12 @@ final class MCPServerTests: XCTestCase {
         let taskManager = TaskManager()
         let server = MCPServer(
             serverInfo: Implementation(name: "TestServer", version: "0.1.0"),
-            capabilities: ServerCapabilities(tasks: true),
+            capabilities: ServerCapabilities(
+                tasks: TaskCapabilities(
+                    list: EmptyCapability(),
+                    cancel: EmptyCapability()
+                )
+            ),
             taskManager: taskManager
         )
 
@@ -358,7 +371,12 @@ final class MCPServerTests: XCTestCase {
         taskManager.createTask(id: "t1", title: "Test")
         let server = MCPServer(
             serverInfo: Implementation(name: "TestServer", version: "0.1.0"),
-            capabilities: ServerCapabilities(tasks: true),
+            capabilities: ServerCapabilities(
+                tasks: TaskCapabilities(
+                    list: EmptyCapability(),
+                    cancel: EmptyCapability()
+                )
+            ),
             taskManager: taskManager
         )
 
@@ -384,7 +402,12 @@ final class MCPServerTests: XCTestCase {
         let taskManager = TaskManager()
         let server = MCPServer(
             serverInfo: Implementation(name: "TestServer", version: "0.1.0"),
-            capabilities: ServerCapabilities(tasks: true),
+            capabilities: ServerCapabilities(
+                tasks: TaskCapabilities(
+                    list: EmptyCapability(),
+                    cancel: EmptyCapability()
+                )
+            ),
             taskManager: taskManager
         )
 
@@ -408,7 +431,12 @@ final class MCPServerTests: XCTestCase {
         taskManager.createTask(id: "t2", title: "Second")
         let server = MCPServer(
             serverInfo: Implementation(name: "TestServer", version: "0.1.0"),
-            capabilities: ServerCapabilities(tasks: true),
+            capabilities: ServerCapabilities(
+                tasks: TaskCapabilities(
+                    list: EmptyCapability(),
+                    cancel: EmptyCapability()
+                )
+            ),
             taskManager: taskManager
         )
 
@@ -431,7 +459,12 @@ final class MCPServerTests: XCTestCase {
         taskManager.startTask("t1")
         let server = MCPServer(
             serverInfo: Implementation(name: "TestServer", version: "0.1.0"),
-            capabilities: ServerCapabilities(tasks: true),
+            capabilities: ServerCapabilities(
+                tasks: TaskCapabilities(
+                    list: EmptyCapability(),
+                    cancel: EmptyCapability()
+                )
+            ),
             taskManager: taskManager
         )
 

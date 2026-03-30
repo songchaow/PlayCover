@@ -34,6 +34,11 @@ public final class MCPServer {
     /// Whether the client has sent the `notifications/initialized` notification.
     public private(set) var isInitialized = false
 
+    /// Callback for sending server-initiated notifications to clients.
+    /// The transport layer sets this to route notifications through the appropriate channel.
+    /// - Parameter message: The JSON-RPC notification to send
+    public var notificationSink: ((JSONRPCMessage) -> Void)?
+
     // MARK: - Private
 
     private var methodHandlers: [String: RequestHandler] = [:]
@@ -142,6 +147,44 @@ public final class MCPServer {
             isInitialized = true
         default:
             break
+        }
+    }
+
+    // MARK: - Server-initiated notifications
+
+    /// Convenience: send a notification through the sink.
+    /// No-op if `notificationSink` is not set (e.g., in CLI mode without wiring).
+    public func sendNotification(_ notification: JSONRPCNotification) {
+        let message = JSONRPCMessage.notification(notification)
+        notificationSink?(message)
+    }
+
+    /// Wire up logger and task manager to send notifications through `notificationSink`.
+    ///
+    /// Call this **after** setting `notificationSink`. The wiring sets `MCPLogger.onLog` and
+    /// `TaskManager.onStatusChange` callbacks to forward events as MCP notifications.
+    ///
+    /// - Note: Only sends notifications when the server has been initialized (i.e., the client
+    ///   has sent `notifications/initialized`). This prevents notifications from being sent
+    ///   during the handshake phase.
+    public func wireNotifications() {
+        // Wire logger → notifications/message
+        logger?.onLog = { [weak self] entry in
+            guard let self = self, self.isInitialized else { return }
+            let params = LoggingMessageParams(level: entry.level, data: entry.message, logger: entry.logger)
+            if let paramsAnyCodable = try? AnyCodable(params) {
+                let notif = JSONRPCNotification(method: "notifications/message", params: paramsAnyCodable)
+                self.sendNotification(notif)
+            }
+        }
+
+        // Wire task manager → notifications/tasks/update
+        taskManager?.onStatusChange = { [weak self] taskId, status in
+            guard let self = self, self.isInitialized else { return }
+            if let statusAnyCodable = try? AnyCodable(status) {
+                let notif = JSONRPCNotification(method: "notifications/tasks/update", params: statusAnyCodable)
+                self.sendNotification(notif)
+            }
         }
     }
 

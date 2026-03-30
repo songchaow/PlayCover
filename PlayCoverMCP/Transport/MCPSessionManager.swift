@@ -101,6 +101,13 @@ public final class MCPSessionManager: @unchecked Sendable {
         return sessions.count
     }
 
+    /// Get all active session IDs.
+    public var allSessionIds: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(sessions.keys)
+    }
+
     /// Remove all expired sessions.
     public func removeExpiredSessions() {
         lock.lock()

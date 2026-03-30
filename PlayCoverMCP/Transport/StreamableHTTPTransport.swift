@@ -67,6 +67,12 @@ public final class StreamableHTTPTransport {
 
     let sessionManager = MCPSessionManager()
 
+    /// Manages SSE streams for all sessions (GET and POST SSE streams).
+    let sseStreamManager = SSEStreamManager()
+
+    /// Reference to the MCPServer for wiring notifications.
+    private weak var mcpServer: MCPServer?
+
     private let handler: MessageHandler
     private var serverTask: Task<Void, Never>?
     private let lock = NSLock()
@@ -82,16 +88,43 @@ public final class StreamableHTTPTransport {
     ///   - host: Host to listen on. Defaults to loopback (127.0.0.1).
     ///   - endpointPath: HTTP endpoint path. Defaults to "/mcp".
     ///   - handler: Message handler, same signature as TCPTransport.MessageHandler.
+    ///   - mcpServer: Optional MCPServer reference for wiring server-initiated notifications.
     public init(
         port: UInt16 = 19820,
         host: ListenHost = .loopback,
         endpointPath: String = "/mcp",
-        handler: @escaping MessageHandler
+        handler: @escaping MessageHandler,
+        mcpServer: MCPServer? = nil
     ) {
         self.port = port
         self.host = host
         self.endpointPath = endpointPath
         self.handler = handler
+        self.mcpServer = mcpServer
+
+        // Wire MCPServer's notificationSink to push through SSE streams
+        if let server = mcpServer {
+            wireNotificationSink(server: server)
+        }
+    }
+
+    /// Wire the MCPServer's notificationSink to route notifications through SSE streams.
+    /// Also calls `server.wireNotifications()` to bridge logger and task manager.
+    private func wireNotificationSink(server: MCPServer) {
+        server.notificationSink = { [weak self] message in
+            guard let self = self else { return }
+            do {
+                let eventId = "evt-\(UUID().uuidString.prefix(8))"
+                let sseData = try SSEEncoder.encode(message, eventId: eventId)
+                // Broadcast to all sessions' GET streams
+                for sessionId in self.sessionManager.allSessionIds {
+                    self.sseStreamManager.sendToSession(sessionId: sessionId, data: sseData)
+                }
+            } catch {
+                self.log("Failed to encode notification for SSE: \(error.localizedDescription)")
+            }
+        }
+        server.wireNotifications()
     }
 
     // MARK: - Lifecycle
@@ -117,6 +150,8 @@ public final class StreamableHTTPTransport {
         lock.lock()
         serverTask?.cancel()
         serverTask = nil
+        // Close all SSE streams before cleaning up sessions
+        sseStreamManager.closeAllStreams()
         sessionManager.removeExpiredSessions() // cleanup
         setState(.stopped)
         lock.unlock()
@@ -319,13 +354,67 @@ public final class StreamableHTTPTransport {
         }
 
         // Validate Mcp-Protocol-Version (optional but recommended)
-        // We allow requests without it for backward compatibility in Phase 1
+        // We allow requests without it for backward compatibility
 
-        // Process request
-        if let response = handler(message) {
-            return makeJSONResponse(response, sessionId: sessionId)
+        // Check if client accepts SSE and method may produce intermediate notifications
+        let acceptsSSE = request.headers[.accept]?.contains("text/event-stream") == true
+
+        if acceptsSSE {
+            // SSE stream response mode: allows intermediate notifications before final response
+            return handleRequestWithSSE(
+                message: message,
+                handler: handler,
+                sessionId: sessionId
+            )
+        } else {
+            // Simple JSON response mode (existing behavior)
+            if let response = handler(message) {
+                return makeJSONResponse(response, sessionId: sessionId)
+            }
+            return Response(status: .accepted)
         }
-        return Response(status: .accepted)
+    }
+
+    /// Handle a request with SSE stream response, allowing intermediate notifications.
+    private func handleRequestWithSSE(
+        message: JSONRPCMessage,
+        handler: @escaping MessageHandler,
+        sessionId: String
+    ) -> Response {
+        let (stream, continuation) = AsyncStream<ByteBuffer>.makeStream()
+        let streamId = "post-\(UUID().uuidString.prefix(8))"
+
+        // 1. Register stream for intermediate pushes during request processing
+        sseStreamManager.register(
+            sessionId: sessionId,
+            streamId: streamId,
+            continuation: continuation,
+            type: .post
+        )
+
+        // 2. Process request (may trigger onLog/onStatusChange → pushed to GET streams)
+        if let response = handler(message) {
+            // 3. Send final response as SSE event
+            do {
+                let sseData = try SSEEncoder.encode(response, eventId: "\(streamId)-final")
+                continuation.yield(ByteBuffer(data: sseData))
+            } catch {
+                log("Failed to encode SSE response: \(error.localizedDescription)")
+            }
+        }
+
+        // 4. Finish stream
+        sseStreamManager.remove(streamId: streamId)
+
+        var headers = HTTPFields()
+        headers[.contentType] = "text/event-stream"
+        headers[.cacheControl] = "no-cache"
+
+        return Response(
+            status: .ok,
+            headers: headers,
+            body: .init(asyncSequence: stream)
+        )
     }
 
     private func handleInitialize(
@@ -383,15 +472,19 @@ public final class StreamableHTTPTransport {
 
         // 4. Create SSE response with async stream
         let (stream, continuation) = AsyncStream<ByteBuffer>.makeStream()
+        let streamId = "get-\(UUID().uuidString.prefix(8))"
 
         // Send primer event
-        let primerData = SSEEncoder.encodePrimerEvent(
-            eventId: "stream-\(UUID().uuidString.prefix(8))"
-        )
+        let primerData = SSEEncoder.encodePrimerEvent(eventId: streamId)
         continuation.yield(ByteBuffer(data: primerData))
 
-        // Keep stream open for future pushes (H04 will wire server notifications here)
-        // For Phase 1, just hold the connection open
+        // Register stream for server-initiated pushes
+        sseStreamManager.register(
+            sessionId: sessionId,
+            streamId: streamId,
+            continuation: continuation,
+            type: .get
+        )
 
         var headers = HTTPFields()
         headers[.contentType] = "text/event-stream"
@@ -416,6 +509,8 @@ public final class StreamableHTTPTransport {
         }
 
         if sessionManager.terminateSession(sessionId) {
+            // Close all SSE streams for this session
+            sseStreamManager.closeSession(sessionId: sessionId)
             notifySessionCountChanged()
             return Response(status: .ok)
         } else {
@@ -526,6 +621,108 @@ public final class StreamableHTTPTransport {
     private func log(_ message: String) {
         let data = ("StreamableHTTPTransport: \(message)\n").data(using: .utf8) ?? Data()
         FileHandle.standardError.write(data)
+    }
+}
+
+// MARK: - SSEStreamManager
+
+/// Manages SSE streams for all sessions.
+///
+/// Each session can have:
+/// - One or more GET SSE streams (for server-initiated messages)
+/// - Zero or more POST SSE streams (for request processing)
+///
+/// Thread-safe: all mutations are guarded by an internal lock.
+@available(macOS 14, *)
+final class SSEStreamManager {
+
+    /// A registered SSE stream
+    struct StreamInfo {
+        let sessionId: String
+        let streamId: String
+        let continuation: AsyncStream<ByteBuffer>.Continuation
+        let type: StreamType
+        let createdAt: Date
+
+        enum StreamType {
+            case get     // GET /mcp SSE stream
+            case post    // POST /mcp SSE stream (for a specific request)
+        }
+    }
+
+    private var streams: [String: StreamInfo] = [:]  // streamId -> StreamInfo
+    private let lock = NSLock()
+
+    /// Register a new SSE stream.
+    func register(sessionId: String, streamId: String, continuation: AsyncStream<ByteBuffer>.Continuation, type: StreamInfo.StreamType) {
+        lock.lock()
+        streams[streamId] = StreamInfo(sessionId: sessionId, streamId: streamId, continuation: continuation, type: type, createdAt: Date())
+        lock.unlock()
+    }
+
+    /// Remove a stream (on disconnect or completion). Finishes the continuation.
+    func remove(streamId: String) {
+        lock.lock()
+        if let info = streams.removeValue(forKey: streamId) {
+            info.continuation.finish()
+        }
+        lock.unlock()
+    }
+
+    /// Send an SSE event to a specific stream by ID.
+    func send(streamId: String, data: Data) {
+        lock.lock()
+        if let info = streams[streamId] {
+            info.continuation.yield(ByteBuffer(data: data))
+        }
+        lock.unlock()
+    }
+
+    /// Send a notification to ONE of the session's GET streams.
+    /// Per MCP spec: "MUST send each JSON-RPC message on only one of the connected streams"
+    func sendToSession(sessionId: String, data: Data) {
+        lock.lock()
+        // Find the first GET stream for this session
+        let getStream = streams.values.first { $0.sessionId == sessionId && $0.type == .get }
+        if let stream = getStream {
+            stream.continuation.yield(ByteBuffer(data: data))
+        }
+        lock.unlock()
+    }
+
+    /// Close all streams for a session. Called when session is terminated.
+    func closeSession(sessionId: String) {
+        lock.lock()
+        let sessionStreams = streams.filter { $0.value.sessionId == sessionId }
+        for (id, info) in sessionStreams {
+            info.continuation.finish()
+            streams.removeValue(forKey: id)
+        }
+        lock.unlock()
+    }
+
+    /// Close all streams. Called on transport shutdown.
+    func closeAllStreams() {
+        lock.lock()
+        for (_, info) in streams {
+            info.continuation.finish()
+        }
+        streams.removeAll()
+        lock.unlock()
+    }
+
+    /// Get the count of registered streams.
+    var streamCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return streams.count
+    }
+
+    /// Get the count of GET streams for a specific session.
+    func getStreamCount(sessionId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return streams.values.filter { $0.sessionId == sessionId && $0.type == .get }.count
     }
 }
 

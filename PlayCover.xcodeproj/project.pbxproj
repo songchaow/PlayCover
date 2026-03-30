@@ -113,6 +113,7 @@
 		H02SES00000000000000002 /* MCPSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = H02SES00000000000000001 /* MCPSessionManager.swift */; };
 		H02SES00000000000000003 /* MCPSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = H02SES00000000000000001 /* MCPSessionManager.swift */; };
 		H02SES00000000000000004 /* MCPSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = H02SES00000000000000001 /* MCPSessionManager.swift */; };
+		H04NOT00000000000000002 /* MCPServerNotificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = H04NOT00000000000000001 /* MCPServerNotificationTests.swift */; };
 		H02SES00000000000000006 /* MCPSessionManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = H02SES00000000000000005 /* MCPSessionManagerTests.swift */; };
 		H03SHT00000000000000002 /* StreamableHTTPTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = H03SHT00000000000000001 /* StreamableHTTPTransport.swift */; };
 		3CF02DDB697D4EC28A5CA199 /* ToolRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89D06AAF495D4535A4E8235C /* ToolRegistry.swift */; };
@@ -388,6 +389,7 @@
 		H02SES00000000000000001 /* MCPSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPSessionManager.swift; path = MCPSessionManager.swift; sourceTree = "<group>"; };
 		H02SSE00000000000000005 /* SSEEncoderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSEEncoderTests.swift; sourceTree = "<group>"; };
 		H02SES00000000000000005 /* MCPSessionManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPSessionManagerTests.swift; sourceTree = "<group>"; };
+		H04NOT00000000000000001 /* MCPServerNotificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPServerNotificationTests.swift; sourceTree = "<group>"; };
 		H03SHT00000000000000001 /* StreamableHTTPTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = StreamableHTTPTransport.swift; path = StreamableHTTPTransport.swift; sourceTree = "<group>"; };
 		89D06AAF495D4535A4E8235C /* ToolRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ToolRegistry.swift; path = ToolRegistry.swift; sourceTree = "<group>"; };
 		D655635CF6F3439CAFA4949E /* ResourceRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ResourceRegistry.swift; path = ResourceRegistry.swift; sourceTree = "<group>"; };
@@ -764,6 +766,7 @@
 				B3F7A1C2D4E5F60500AABB05 /* TCPTransportTests.swift */,
 				H02SSE00000000000000005 /* SSEEncoderTests.swift */,
 				H02SES00000000000000005 /* MCPSessionManagerTests.swift */,
+				H04NOT00000000000000001 /* MCPServerNotificationTests.swift */,
 );
 			path = PlayCoverMCPTests;
 			sourceTree = "<group>";
@@ -1488,6 +1491,7 @@
 				H02SSE00000000000000006 /* SSEEncoderTests.swift in Sources */,
 				H02SES00000000000000004 /* MCPSessionManager.swift in Sources */,
 				H02SES00000000000000006 /* MCPSessionManagerTests.swift in Sources */,
+				H04NOT00000000000000002 /* MCPServerNotificationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

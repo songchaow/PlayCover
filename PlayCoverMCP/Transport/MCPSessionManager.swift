@@ -9,6 +9,17 @@ import Foundation
 /// Sessions are identified by a cryptographically secure session ID (`Mcp-Session-Id` header).
 public final class MCPSessionManager: @unchecked Sendable {
 
+    public enum InvalidSessionReason: String, Equatable, Sendable {
+        case notFound
+        case expired
+        case terminated
+    }
+
+    public enum SessionValidationResult: Sendable {
+        case valid(Session)
+        case invalid(InvalidSessionReason)
+    }
+
     /// Session state
     public struct Session: Sendable {
         public let id: String
@@ -29,7 +40,12 @@ public final class MCPSessionManager: @unchecked Sendable {
     /// Session timeout interval (default: 30 minutes)
     public var sessionTimeout: TimeInterval = 30 * 60
 
+    /// How long to remember explicitly terminated sessions, so the transport can
+    /// distinguish “this was intentionally deleted” from “this is an old/stale session”.
+    public var terminatedSessionRetention: TimeInterval = 30 * 60
+
     private var sessions: [String: Session] = [:]
+    private var terminatedSessions: [String: Date] = [:]
     private let lock = NSLock()
 
     public init() {}
@@ -43,32 +59,48 @@ public final class MCPSessionManager: @unchecked Sendable {
         let session = Session(id: sessionId)
 
         lock.lock()
+        pruneTerminatedSessionsLocked(now: Date())
         sessions[sessionId] = session
         lock.unlock()
 
         return sessionId
     }
 
-    /// Validate a session ID. Returns the session if valid, nil if expired/not found.
-    /// Also updates the last activity timestamp.
-    public func validateSession(_ sessionId: String) -> Session? {
+    /// Validate a session ID and explain why it is invalid when possible.
+    /// Valid sessions have their activity timestamp refreshed.
+    public func validateSessionState(_ sessionId: String) -> SessionValidationResult {
         lock.lock()
         defer { lock.unlock() }
 
+        let now = Date()
+        pruneTerminatedSessionsLocked(now: now)
+
         guard var session = sessions[sessionId] else {
-            return nil
+            if terminatedSessions[sessionId] != nil {
+                return .invalid(.terminated)
+            }
+            return .invalid(.notFound)
         }
 
-        // Check expiry
-        if Date().timeIntervalSince(session.lastActivityAt) > sessionTimeout {
+        if now.timeIntervalSince(session.lastActivityAt) > sessionTimeout {
             sessions.removeValue(forKey: sessionId)
-            return nil
+            return .invalid(.expired)
         }
 
-        // Update last activity
-        session.lastActivityAt = Date()
+        session.lastActivityAt = now
         sessions[sessionId] = session
-        return session
+        return .valid(session)
+    }
+
+    /// Validate a session ID. Returns the session if valid, nil if expired/not found.
+    /// Also updates the last activity timestamp.
+    public func validateSession(_ sessionId: String) -> Session? {
+        switch validateSessionState(sessionId) {
+        case .valid(let session):
+            return session
+        case .invalid:
+            return nil
+        }
     }
 
     /// Mark a session as fully initialized (after receiving `notifications/initialized`).
@@ -91,7 +123,13 @@ public final class MCPSessionManager: @unchecked Sendable {
     public func terminateSession(_ sessionId: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return sessions.removeValue(forKey: sessionId) != nil
+
+        pruneTerminatedSessionsLocked(now: Date())
+        let removed = sessions.removeValue(forKey: sessionId) != nil
+        if removed {
+            terminatedSessions[sessionId] = Date()
+        }
+        return removed
     }
 
     /// Get the number of active sessions.
@@ -108,13 +146,14 @@ public final class MCPSessionManager: @unchecked Sendable {
         return Array(sessions.keys)
     }
 
-    /// Remove all expired sessions.
+    /// Remove all expired sessions and outdated termination tombstones.
     public func removeExpiredSessions() {
         lock.lock()
         let now = Date()
         sessions = sessions.filter { _, session in
             now.timeIntervalSince(session.lastActivityAt) <= sessionTimeout
         }
+        pruneTerminatedSessionsLocked(now: now)
         lock.unlock()
     }
 
@@ -126,6 +165,12 @@ public final class MCPSessionManager: @unchecked Sendable {
     }
 
     // MARK: - Private
+
+    private func pruneTerminatedSessionsLocked(now: Date) {
+        terminatedSessions = terminatedSessions.filter { _, deletedAt in
+            now.timeIntervalSince(deletedAt) <= terminatedSessionRetention
+        }
+    }
 
     /// Generate a cryptographically secure session ID.
     private func generateSessionId() -> String {

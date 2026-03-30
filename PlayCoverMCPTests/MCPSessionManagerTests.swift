@@ -40,6 +40,20 @@ final class MCPSessionManagerTests: XCTestCase {
         XCTAssertNil(manager.validateSession(sessionId))
     }
 
+    func testValidateSessionStateReportsTerminatedSession() {
+        let manager = MCPSessionManager()
+        let sessionId = manager.createSession()
+
+        XCTAssertTrue(manager.terminateSession(sessionId))
+
+        switch manager.validateSessionState(sessionId) {
+        case .valid:
+            XCTFail("Expected terminated session to stay invalid")
+        case .invalid(let reason):
+            XCTAssertEqual(reason, .terminated)
+        }
+    }
+
     func testTerminateNonexistentSession() {
         let manager = MCPSessionManager()
         let removed = manager.terminateSession("nonexistent")
@@ -77,6 +91,21 @@ final class MCPSessionManagerTests: XCTestCase {
         XCTAssertNil(manager.validateSession(sessionId))
     }
 
+    func testValidateSessionStateReportsExpiredSession() {
+        let manager = MCPSessionManager()
+        manager.sessionTimeout = 0.1
+
+        let sessionId = manager.createSession()
+        Thread.sleep(forTimeInterval: 0.2)
+
+        switch manager.validateSessionState(sessionId) {
+        case .valid:
+            XCTFail("Expected expired session to be reported as invalid")
+        case .invalid(let reason):
+            XCTAssertEqual(reason, .expired)
+        }
+    }
+
     func testRemoveExpiredSessions() {
         let manager = MCPSessionManager()
         manager.sessionTimeout = 0.1
@@ -89,6 +118,24 @@ final class MCPSessionManagerTests: XCTestCase {
 
         manager.removeExpiredSessions()
         XCTAssertEqual(manager.activeSessionCount, 0)
+    }
+
+    func testRemoveExpiredSessionsAlsoPrunesOldTerminationTombstones() {
+        let manager = MCPSessionManager()
+        manager.terminatedSessionRetention = 0.1
+
+        let sessionId = manager.createSession()
+        XCTAssertTrue(manager.terminateSession(sessionId))
+
+        Thread.sleep(forTimeInterval: 0.2)
+        manager.removeExpiredSessions()
+
+        switch manager.validateSessionState(sessionId) {
+        case .valid:
+            XCTFail("Expected terminated tombstone to be pruned after retention window")
+        case .invalid(let reason):
+            XCTAssertEqual(reason, .notFound)
+        }
     }
 
     func testMultipleSessions() {

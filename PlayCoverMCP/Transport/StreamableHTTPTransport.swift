@@ -292,24 +292,27 @@ public final class StreamableHTTPTransport {
         // 5. Route by message type
         switch message {
         case .notification(let notif):
-            switch validateSessionContext(request: request, sessionManager: sessionManager) {
-            case .success(let sessionId):
+            switch resolveSessionContext(request: request, sessionManager: sessionManager, allowRecovery: true) {
+            case .success(let sessionContext):
                 return handleNotification(
                     notif: notif,
                     message: message,
                     handler: handler,
                     sessionManager: sessionManager,
-                    sessionId: sessionId
+                    sessionContext: sessionContext
                 )
             case .failure(let issue):
                 return makeSessionValidationErrorResponse(issue: issue, requestId: nil)
             }
 
         case .response:
-            switch validateSessionContext(request: request, sessionManager: sessionManager) {
-            case .success:
+            switch resolveSessionContext(request: request, sessionManager: sessionManager, allowRecovery: true) {
+            case .success(let sessionContext):
                 _ = handler(message)
-                return Response(status: .accepted)
+                return Response(
+                    status: .accepted,
+                    headers: makeSessionResponseHeaders(sessionContext)
+                )
             case .failure(let issue):
                 return makeSessionValidationErrorResponse(issue: issue, requestId: nil)
             }
@@ -332,13 +335,16 @@ public final class StreamableHTTPTransport {
         message: JSONRPCMessage,
         handler: @escaping MessageHandler,
         sessionManager: MCPSessionManager,
-        sessionId: String
+        sessionContext: SessionContext
     ) -> Response {
         if notif.method == "notifications/initialized" {
-            sessionManager.markInitialized(sessionId)
+            sessionManager.markInitialized(sessionContext.sessionId)
         }
         _ = handler(message)
-        return Response(status: .accepted)
+        return Response(
+            status: .accepted,
+            headers: makeSessionResponseHeaders(sessionContext)
+        )
     }
 
     private func handleRequest(
@@ -356,10 +362,10 @@ public final class StreamableHTTPTransport {
             )
         }
 
-        let sessionId: String
-        switch validateSessionContext(request: request, sessionManager: sessionManager) {
-        case .success(let validatedSessionId):
-            sessionId = validatedSessionId
+        let sessionContext: SessionContext
+        switch resolveSessionContext(request: request, sessionManager: sessionManager, allowRecovery: true) {
+        case .success(let validatedSessionContext):
+            sessionContext = validatedSessionContext
         case .failure(let issue):
             return makeSessionValidationErrorResponse(issue: issue, requestId: req.id)
         }
@@ -373,32 +379,39 @@ public final class StreamableHTTPTransport {
             return handleRequestWithSSE(
                 message: message,
                 handler: handler,
-                sessionId: sessionId
+                sessionContext: sessionContext
             )
         }
 
         if let response = handler(message) {
-            return makeJSONResponse(response, sessionId: sessionId)
+            return makeJSONResponse(response, sessionContext: sessionContext)
         }
-        return Response(status: .accepted)
+        return Response(
+            status: .accepted,
+            headers: makeSessionResponseHeaders(sessionContext)
+        )
     }
 
     /// Handle a request with SSE stream response, allowing intermediate notifications.
     private func handleRequestWithSSE(
         message: JSONRPCMessage,
         handler: @escaping MessageHandler,
-        sessionId: String
+        sessionContext: SessionContext
     ) -> Response {
         let (stream, continuation) = AsyncStream<ByteBuffer>.makeStream()
         let streamId = "post-\(UUID().uuidString.prefix(8))"
 
         // 1. Register stream for intermediate pushes during request processing
         sseStreamManager.register(
-            sessionId: sessionId,
+            sessionId: sessionContext.sessionId,
             streamId: streamId,
             continuation: continuation,
             type: .post
         )
+
+        if let recovery = sessionContext.recovery {
+            sendRecoveryWarningNotification(recovery, to: continuation, eventId: "\(streamId)-warning")
+        }
 
         // 2. Process request (may trigger onLog/onStatusChange → pushed to GET streams)
         if let response = handler(message) {
@@ -417,6 +430,7 @@ public final class StreamableHTTPTransport {
         var headers = HTTPFields()
         headers[.contentType] = "text/event-stream"
         headers[.cacheControl] = "no-cache"
+        mergeSessionResponseHeaders(makeSessionResponseHeaders(sessionContext), into: &headers)
 
         return Response(
             status: .ok,
@@ -496,13 +510,16 @@ public final class StreamableHTTPTransport {
         continuation.yield(ByteBuffer(data: primerData))
 
         switch getContext {
-        case .bound(let sessionId):
+        case .bound(let sessionContext):
             sseStreamManager.register(
-                sessionId: sessionId,
+                sessionId: sessionContext.sessionId,
                 streamId: streamId,
                 continuation: continuation,
                 type: .get
             )
+            if let recovery = sessionContext.recovery {
+                sendRecoveryWarningNotification(recovery, to: continuation, eventId: "\(streamId)-warning")
+            }
         case .anonymous:
             continuation.finish()
         }
@@ -512,6 +529,9 @@ public final class StreamableHTTPTransport {
         headers[.cacheControl] = "no-cache"
         if let name = HTTPField.Name("X-Accel-Buffering") {
             headers[name] = "no"
+        }
+        if case .bound(let sessionContext) = getContext {
+            mergeSessionResponseHeaders(makeSessionResponseHeaders(sessionContext), into: &headers)
         }
 
         return Response(
@@ -530,36 +550,61 @@ public final class StreamableHTTPTransport {
             }
         }
 
-        let sessionId: String
-        switch validateSessionContext(request: request, sessionManager: sessionManager) {
-        case .success(let validatedSessionId):
-            sessionId = validatedSessionId
-        case .failure(let issue):
-            return makeHTTPErrorResponse(for: issue)
+        guard let sessionId = request.headers[mcpSessionIdField], !sessionId.isEmpty else {
+            return makeHTTPErrorResponse(for: .missingSessionId)
         }
 
-        if sessionManager.terminateSession(sessionId) {
-            sseStreamManager.closeSession(sessionId: sessionId)
-            notifySessionCountChanged()
-            return Response(status: .ok)
+        switch sessionManager.validateSessionState(sessionId) {
+        case .valid:
+            if sessionManager.terminateSession(sessionId) {
+                sseStreamManager.closeSession(sessionId: sessionId)
+                notifySessionCountChanged()
+                return Response(status: .ok)
+            }
+            return Response(status: .notFound)
+        case .invalid(.terminated):
+            return makeHTTPErrorResponse(for: .invalidSessionId(.terminated))
+        case .invalid(let reason):
+            return Response(
+                status: .ok,
+                headers: makeDeleteWarningHeaders(
+                    previousSessionId: sessionId,
+                    reason: reason
+                )
+            )
         }
-
-        return Response(status: .notFound)
     }
 
     // MARK: - Session / Header Validation
 
     private enum SessionValidationIssue: Error {
         case missingSessionId
-        case invalidSessionId
+        case invalidSessionId(MCPSessionManager.InvalidSessionReason)
         case missingProtocolVersion
         case unsupportedProtocolVersion(String)
         case protocolVersionMismatch(expected: String, actual: String)
     }
 
+    private struct SessionRecoveryContext {
+        let previousSessionId: String
+        let replacementSessionId: String
+        let protocolVersion: String
+        let reason: MCPSessionManager.InvalidSessionReason
+
+        var warningMessage: String {
+            "Recovered stale MCP session. The previous Mcp-Session-Id ('\(previousSessionId)') is \(reason.rawValue); a replacement session has been created. Please update to the returned Mcp-Session-Id."
+        }
+    }
+
+    private struct SessionContext {
+        let sessionId: String
+        let protocolVersion: String
+        let recovery: SessionRecoveryContext?
+    }
+
     private enum GetRequestContext {
         case anonymous
-        case bound(String)
+        case bound(SessionContext)
     }
 
     private func validateGetRequestContext(
@@ -571,9 +616,9 @@ public final class StreamableHTTPTransport {
                 return .failure(.missingSessionId)
             }
 
-            switch validateSessionContext(request: request, sessionManager: sessionManager) {
-            case .success(let validatedSessionId):
-                return .success(.bound(validatedSessionId))
+            switch resolveSessionContext(request: request, sessionManager: sessionManager, allowRecovery: true) {
+            case .success(let sessionContext):
+                return .success(.bound(sessionContext))
             case .failure(let issue):
                 return .failure(issue)
             }
@@ -587,18 +632,61 @@ public final class StreamableHTTPTransport {
         return .success(.anonymous)
     }
 
-    private func validateSessionContext(
+    private func resolveSessionContext(
         request: Request,
-        sessionManager: MCPSessionManager
-    ) -> Result<String, SessionValidationIssue> {
+        sessionManager: MCPSessionManager,
+        allowRecovery: Bool
+    ) -> Result<SessionContext, SessionValidationIssue> {
         guard let sessionId = request.headers[mcpSessionIdField], !sessionId.isEmpty else {
             return .failure(.missingSessionId)
         }
 
-        guard let session = sessionManager.validateSession(sessionId) else {
-            return .failure(.invalidSessionId)
-        }
+        switch sessionManager.validateSessionState(sessionId) {
+        case .valid(let session):
+            switch resolveProtocolVersion(for: request, session: session) {
+            case .success(let protocolVersion):
+                return .success(SessionContext(
+                    sessionId: sessionId,
+                    protocolVersion: protocolVersion,
+                    recovery: nil
+                ))
+            case .failure(let issue):
+                return .failure(issue)
+            }
+        case .invalid(let reason):
+            guard allowRecovery, reason != .terminated else {
+                return .failure(.invalidSessionId(reason))
+            }
 
+            guard let headerProtocolVersion = request.headers[mcpProtocolVersionField], !headerProtocolVersion.isEmpty else {
+                return .failure(.missingProtocolVersion)
+            }
+
+            guard MCPProtocolVersion.supportedVersions.contains(headerProtocolVersion) else {
+                return .failure(.unsupportedProtocolVersion(headerProtocolVersion))
+            }
+
+            let replacementSessionId = sessionManager.createSession()
+            sessionManager.setProtocolVersion(replacementSessionId, version: headerProtocolVersion)
+            notifySessionCountChanged()
+
+            return .success(SessionContext(
+                sessionId: replacementSessionId,
+                protocolVersion: headerProtocolVersion,
+                recovery: SessionRecoveryContext(
+                    previousSessionId: sessionId,
+                    replacementSessionId: replacementSessionId,
+                    protocolVersion: headerProtocolVersion,
+                    reason: reason
+                )
+            ))
+        }
+    }
+
+    private func resolveProtocolVersion(
+        for request: Request,
+        session: MCPSessionManager.Session
+    ) -> Result<String, SessionValidationIssue> {
         let protocolVersion: String
         if let headerProtocolVersion = request.headers[mcpProtocolVersionField], !headerProtocolVersion.isEmpty {
             protocolVersion = headerProtocolVersion
@@ -617,7 +705,7 @@ public final class StreamableHTTPTransport {
             return .failure(.protocolVersionMismatch(expected: negotiatedVersion, actual: protocolVersion))
         }
 
-        return .success(sessionId)
+        return .success(protocolVersion)
     }
 
     private func isValidPostAcceptHeader(_ accept: String) -> Bool {
@@ -662,15 +750,15 @@ public final class StreamableHTTPTransport {
     // MARK: - Response Helpers
 
     /// Build a JSON response from a JSONRPCMessage, including session header.
-    private func makeJSONResponse(_ message: JSONRPCMessage, sessionId: String? = nil) -> Response {
+    private func makeJSONResponse(_ message: JSONRPCMessage, sessionContext: SessionContext? = nil) -> Response {
         guard let jsonData = try? message.encode() else {
             return Response(status: .internalServerError)
         }
 
         var headers = HTTPFields()
         headers[.contentType] = "application/json"
-        if let sessionId = sessionId, let name = HTTPField.Name("Mcp-Session-Id") {
-            headers[name] = sessionId
+        if let sessionContext {
+            mergeSessionResponseHeaders(makeSessionResponseHeaders(sessionContext), into: &headers)
         }
 
         return Response(
@@ -715,11 +803,18 @@ public final class StreamableHTTPTransport {
                 message: "Missing session ID",
                 status: .badRequest
             )
-        case .invalidSessionId:
+        case .invalidSessionId(let reason):
+            let message: String
+            switch reason {
+            case .terminated:
+                message = "Session ID was explicitly terminated and cannot be reused."
+            case .expired, .notFound:
+                message = "Invalid or expired session ID"
+            }
             return makeJSONRPCErrorResponse(
                 id: requestId,
                 code: JSONRPCError.invalidRequest,
-                message: "Invalid or expired session ID",
+                message: message,
                 status: .notFound
             )
         case .missingProtocolVersion:
@@ -753,6 +848,67 @@ public final class StreamableHTTPTransport {
         case .invalidSessionId:
             return Response(status: .notFound)
         }
+    }
+
+    private func makeSessionResponseHeaders(_ sessionContext: SessionContext) -> HTTPFields {
+        var headers = HTTPFields()
+        headers[mcpSessionIdField] = sessionContext.sessionId
+        headers[mcpProtocolVersionField] = sessionContext.protocolVersion
+
+        guard let recovery = sessionContext.recovery else {
+            return headers
+        }
+
+        if let warningField = HTTPField.Name("Warning") {
+            headers[warningField] = "299 playcover-mcp \"\(recovery.warningMessage)\""
+        }
+        if let warningField = HTTPField.Name("X-PlayCover-MCP-Warning") {
+            headers[warningField] = recovery.warningMessage
+        }
+        if let statusField = HTTPField.Name("X-PlayCover-MCP-Session-Status") {
+            headers[statusField] = "recovered"
+        }
+        return headers
+    }
+
+    private func makeDeleteWarningHeaders(
+        previousSessionId: String,
+        reason: MCPSessionManager.InvalidSessionReason
+    ) -> HTTPFields {
+        var headers = HTTPFields()
+        let message = "Ignoring stale MCP session delete for '\(previousSessionId)'. The session is already \(reason.rawValue); no further cleanup is required."
+        if let warningField = HTTPField.Name("Warning") {
+            headers[warningField] = "299 playcover-mcp \"\(message)\""
+        }
+        if let warningField = HTTPField.Name("X-PlayCover-MCP-Warning") {
+            headers[warningField] = message
+        }
+        if let statusField = HTTPField.Name("X-PlayCover-MCP-Session-Status") {
+            headers[statusField] = "stale-delete-ignored"
+        }
+        return headers
+    }
+
+    private func mergeSessionResponseHeaders(_ extraHeaders: HTTPFields, into headers: inout HTTPFields) {
+        for header in extraHeaders {
+            headers[header.name] = header.value
+        }
+    }
+
+    private func sendRecoveryWarningNotification(
+        _ recovery: SessionRecoveryContext,
+        to continuation: AsyncStream<ByteBuffer>.Continuation,
+        eventId: String
+    ) {
+        let params = LoggingMessageParams(
+            level: .warning,
+            data: recovery.warningMessage,
+            logger: "playcover-mcp-http"
+        )
+        guard let anyParams = try? AnyCodable(params) else { return }
+        let notification = JSONRPCNotification(method: "notifications/message", params: anyParams)
+        guard let sseData = try? SSEEncoder.encode(.notification(notification), eventId: eventId) else { return }
+        continuation.yield(ByteBuffer(data: sseData))
     }
 
     // MARK: - State Management

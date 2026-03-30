@@ -2,6 +2,9 @@
 // PlayCoverMCP
 
 import Foundation
+#if canImport(injection)
+import injection
+#endif
 
 /// Result of an IPA install operation.
 public struct InstallResult: Codable, Equatable, Sendable {
@@ -231,11 +234,15 @@ public final class InstallerService: Sendable {
         // Sign the installed app
         progress?(100, 90, "signing")
         let installedExec = installDir.appendingPathComponent(execName)
+#if PLAYCOVER_GUI
+        try signInstalledAppForGUI(at: installDir, executable: installedExec, fallbackEntitlements: entPath)
+#else
         if FileManager.default.fileExists(atPath: entPath.path) {
             try MCPShell.signAppWith(installedExec, entitlements: entPath)
         } else {
             try MCPShell.signApp(installedExec)
         }
+#endif
 
         // Remove quarantine
         progress?(100, 95, "removing quarantine")
@@ -761,17 +768,46 @@ public final class InstallerService: Sendable {
             )
         }
 
-        // Use install_name_tool to add load command for PlayTools
+#if canImport(injection)
+        var didInject = false
+        Inject.injectMachO(
+            machoPath: exec.path,
+            cmdType: .loadDylib,
+            backup: false,
+            injectPath: playToolsDylib.path,
+            finishHandle: { result in
+                didInject = result
+            }
+        )
+
+        guard didInject else {
+            throw InstallerError.injectionFailed(
+                "Failed to inject PlayTools dylib load command into \(exec.lastPathComponent)"
+            )
+        }
+
+        do {
+            try installPlayToolsResources(in: payload)
+        } catch {
+            throw InstallerError.injectionFailed(
+                "Failed to install PlayTools resources: \(error.localizedDescription)"
+            )
+        }
+
+        try MCPShell.signApp(exec)
+#else
+        // CLI target currently lacks the GUI injection framework linkage.
+        // Keep the previous fallback semantics there until install internals are fully shared.
         do {
             try MCPShell.run("/usr/bin/install_name_tool",
-                          "-add_rpath", playToolsFrameworkPath.deletingLastPathComponent().path,
-                          exec.path)
+                             "-add_rpath", playToolsFrameworkPath.deletingLastPathComponent().path,
+                             exec.path)
         } catch {
             // install_name_tool might already have this rpath, ignore the error
         }
 
-        // Sign after modification
         try MCPShell.signApp(exec)
+#endif
     }
 
     /// Inject PlayTools for export mode (embed dylib in IPA).
@@ -812,6 +848,123 @@ public final class InstallerService: Sendable {
         // Sign the app
         try MCPShell.signApp(exec)
     }
+
+    private func installPlayToolsResources(in payload: URL) throws {
+        let sourceFramework = try resolvePlayToolsResourceFramework()
+        try copyPlayToolsLocalizations(from: sourceFramework, to: payload)
+
+        let bundleTarget = try copyPlayToolsAsset(
+            source: sourceFramework,
+            target: payload,
+            directoryName: "PlugIns",
+            component: "AKInterface",
+            pathExtension: "bundle"
+        )
+        try MCPShell.setExecutable(bundleTarget)
+        try MCPShell.signMacho(bundleTarget)
+    }
+
+    private func resolvePlayToolsResourceFramework() throws -> URL {
+        let candidates = [
+            playCoverBundlePath?.appendingPathComponent("Contents/Frameworks/PlayTools.framework"),
+            Bundle.main.bundleURL.appendingPathComponent("Contents/Frameworks/PlayTools.framework"),
+            playToolsFrameworkPath,
+        ]
+
+        for candidate in candidates.compactMap({ $0 }) {
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+
+        throw InstallerError.injectionFailed(
+            "PlayTools framework resources not found in bundled or system locations"
+        )
+    }
+
+    private func copyPlayToolsLocalizations(from sourceFramework: URL, to payload: URL) throws {
+        let topLevelEntries = try FileManager.default.contentsOfDirectory(
+            at: sourceFramework,
+            includingPropertiesForKeys: nil
+        )
+
+        for localizationDirectory in topLevelEntries where localizationDirectory.pathExtension == "lproj" {
+            _ = try copyPlayToolsAsset(
+                source: sourceFramework,
+                target: payload,
+                directoryName: localizationDirectory.lastPathComponent,
+                component: "Playtools",
+                pathExtension: "strings"
+            )
+        }
+
+        let resourcesDirectory = sourceFramework
+            .appendingPathComponent("Versions")
+            .appendingPathComponent("A")
+            .appendingPathComponent("Resources")
+        if FileManager.default.fileExists(atPath: resourcesDirectory.path) {
+            let resourceEntries = try FileManager.default.contentsOfDirectory(
+                at: resourcesDirectory,
+                includingPropertiesForKeys: nil
+            )
+            for localizationDirectory in resourceEntries where localizationDirectory.pathExtension == "lproj" {
+                _ = try copyPlayToolsAsset(
+                    source: resourcesDirectory,
+                    target: payload,
+                    directoryName: localizationDirectory.lastPathComponent,
+                    component: "Playtools",
+                    pathExtension: "strings"
+                )
+            }
+        }
+    }
+
+    private func copyPlayToolsAsset(
+        source: URL,
+        target: URL,
+        directoryName: String,
+        component: String,
+        pathExtension: String
+    ) throws -> URL {
+        let directory = target.appendingPathComponent(directoryName)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let sourceAsset = source
+            .appendingPathComponent(directoryName)
+            .appendingPathComponent(component)
+            .appendingPathExtension(pathExtension)
+        let targetAsset = directory
+            .appendingPathComponent(component)
+            .appendingPathExtension(pathExtension)
+
+        if FileManager.default.fileExists(atPath: targetAsset.path) {
+            try FileManager.default.removeItem(at: targetAsset)
+        }
+        try FileManager.default.copyItem(at: sourceAsset, to: targetAsset)
+        return targetAsset
+    }
+
+#if PLAYCOVER_GUI
+    private func signInstalledAppForGUI(at installDir: URL, executable: URL, fallbackEntitlements: URL) throws {
+        let installedApp = PlayApp(appUrl: installDir)
+        let tmpEntitlements = FileManager.default.temporaryDirectory
+            .appendingPathComponent(ProcessInfo.processInfo.globallyUniqueString)
+            .appendingPathExtension("plist")
+        defer { try? FileManager.default.removeItem(at: tmpEntitlements) }
+
+        do {
+            let composed = try Entitlements.composeEntitlements(installedApp)
+            try composed.store(tmpEntitlements)
+            try MCPShell.signAppWith(executable, entitlements: tmpEntitlements)
+        } catch {
+            if FileManager.default.fileExists(atPath: fallbackEntitlements.path) {
+                try MCPShell.signAppWith(executable, entitlements: fallbackEntitlements)
+            } else {
+                try MCPShell.signApp(executable)
+            }
+        }
+    }
+#endif
 
     // MARK: - Info.plist Helpers
 

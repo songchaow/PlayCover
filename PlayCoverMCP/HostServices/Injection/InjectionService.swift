@@ -2,6 +2,9 @@
 // PlayCoverMCP
 
 import Foundation
+#if canImport(injection)
+import injection
+#endif
 
 // MARK: - Result Types
 
@@ -227,9 +230,9 @@ public final class InjectionService: Sendable {
 
     /// Inject PlayTools into an app's MachO binary.
     ///
-    /// Uses `install_name_tool -add_rpath` to add the PlayTools framework's
-    /// parent directory as a runtime search path, then copies the AKInterface
-    /// plugin and re-signs the app.
+    /// In the GUI target, prefer the same load-dylib injection semantics used by
+    /// the long-lived PlayCover UI implementation. CLI builds currently retain a
+    /// reduced fallback until install internals are fully shared.
     public func injectPlayTools(bundleId: String) throws -> InjectionResult {
         let app = try resolveApp(bundleId: bundleId)
         let executableURL = app.url.appendingPathComponent(app.executableName)
@@ -245,12 +248,38 @@ public final class InjectionService: Sendable {
             )
         }
 
+#if canImport(injection)
+        var didInject = false
+        Inject.injectMachO(
+            machoPath: executableURL.path,
+            cmdType: .loadDylib,
+            backup: false,
+            injectPath: Self.playToolsDylibPath.path,
+            finishHandle: { result in
+                didInject = result
+            }
+        )
+
+        guard didInject else {
+            throw InjectionError.injectionFailed(
+                "Failed to inject PlayTools dylib load command into \(app.displayName)"
+            )
+        }
+
+        do {
+            try installPlayToolsResources(in: app.url)
+            try MCPShell.signApp(executableURL)
+        } catch {
+            throw InjectionError.signingFailed(error.localizedDescription)
+        }
+
+        let message = "PlayTools injected into \(app.displayName) (\(bundleId)). Added dylib load command, installed AKInterface resources, and re-signed the app."
+#else
         // Add rpath for the PlayTools framework directory
         let rpath = Self.playToolsFrameworkURL.deletingLastPathComponent().path
         do {
             try MCPShell.run("/usr/bin/install_name_tool", "-add_rpath", rpath, executableURL.path)
         } catch let err as ShellError {
-            // install_name_tool may fail if the rpath already exists; check for that
             if err.output.contains("already in") || err.output.contains("duplicate") {
                 // Rpath already exists, proceed
             } else {
@@ -262,7 +291,6 @@ public final class InjectionService: Sendable {
             throw InjectionError.injectionFailed(error.localizedDescription)
         }
 
-        // Copy AKInterface plugin to the app's PlugIns directory
         if FileManager.default.fileExists(atPath: Self.akInterfacePluginPath.path) {
             let pluginsDir = app.url.appendingPathComponent("PlugIns")
             try FileManager.default.createDirectory(
@@ -276,12 +304,14 @@ public final class InjectionService: Sendable {
             try MCPShell.setExecutable(destPlugin)
         }
 
-        // Re-sign the app
         do {
             try MCPShell.signApp(executableURL)
         } catch {
             throw InjectionError.signingFailed(error.localizedDescription)
         }
+
+        let message = "PlayTools injected into \(app.displayName) (\(bundleId)). Added rpath for PlayTools framework, installed AKInterface plugin, and re-signed the app."
+#endif
 
         // Notify GUI that the app state may have changed (injection modifies the binary)
         MCPNotificationPoster.postAppsChanged()
@@ -290,7 +320,7 @@ public final class InjectionService: Sendable {
             bundleIdentifier: bundleId,
             displayName: app.displayName,
             action: "injected",
-            message: "PlayTools injected into \(app.displayName) (\(bundleId)). Added rpath for PlayTools framework, installed AKInterface plugin, and re-signed the app."
+            message: message
         )
     }
 
@@ -298,8 +328,8 @@ public final class InjectionService: Sendable {
 
     /// Remove PlayTools from an app's MachO binary.
     ///
-    /// Removes the PlayTools rpath, deletes the AKInterface plugin,
-    /// and re-signs the app.
+    /// In the GUI target, prefer the same load-dylib removal semantics used by
+    /// the original PlayCover UI implementation.
     public func removePlayTools(bundleId: String) throws -> InjectionResult {
         let app = try resolveApp(bundleId: bundleId)
         let executableURL = app.url.appendingPathComponent(app.executableName)
@@ -308,24 +338,55 @@ public final class InjectionService: Sendable {
             throw InjectionError.executableNotFound(executableURL.path)
         }
 
-        // Remove the PlayTools rpath
-        let rpath = Self.playToolsFrameworkURL.deletingLastPathComponent().path
-        // Try to delete the rpath; ignore errors if it doesn't exist
-        try? MCPShell.run("/usr/bin/install_name_tool", "-delete_rpath", rpath, executableURL.path)
+#if canImport(injection)
+        var didRemove = false
+        Inject.removeMachO(
+            machoPath: executableURL.path,
+            cmdType: .loadDylib,
+            backup: false,
+            injectPath: Self.playToolsDylibPath.path,
+            finishHandle: { result in
+                didRemove = result
+            }
+        )
 
-        // Remove AKInterface plugin if it exists
+        if !didRemove && isPlayToolsLoaded(in: executableURL) {
+            throw InjectionError.removalFailed(
+                "Failed to remove PlayTools dylib load command from \(app.displayName)"
+            )
+        }
+
         let pluginPath = app.url
             .appendingPathComponent("PlugIns/AKInterface.bundle")
         if FileManager.default.fileExists(atPath: pluginPath.path) {
             try FileManager.default.removeItem(at: pluginPath)
         }
 
-        // Re-sign the app
         do {
             try MCPShell.signApp(executableURL)
         } catch {
             throw InjectionError.signingFailed(error.localizedDescription)
         }
+
+        let message = "PlayTools removed from \(app.displayName) (\(bundleId)). Removed dylib load command, deleted AKInterface plugin, and re-signed the app."
+#else
+        let rpath = Self.playToolsFrameworkURL.deletingLastPathComponent().path
+        try? MCPShell.run("/usr/bin/install_name_tool", "-delete_rpath", rpath, executableURL.path)
+
+        let pluginPath = app.url
+            .appendingPathComponent("PlugIns/AKInterface.bundle")
+        if FileManager.default.fileExists(atPath: pluginPath.path) {
+            try FileManager.default.removeItem(at: pluginPath)
+        }
+
+        do {
+            try MCPShell.signApp(executableURL)
+        } catch {
+            throw InjectionError.signingFailed(error.localizedDescription)
+        }
+
+        let message = "PlayTools removed from \(app.displayName) (\(bundleId)). Removed rpath, deleted AKInterface plugin, and re-signed the app."
+#endif
 
         // Notify GUI that the app state may have changed (removal modifies the binary)
         MCPNotificationPoster.postAppsChanged()
@@ -334,7 +395,7 @@ public final class InjectionService: Sendable {
             bundleIdentifier: bundleId,
             displayName: app.displayName,
             action: "removed",
-            message: "PlayTools removed from \(app.displayName) (\(bundleId)). Removed rpath, deleted AKInterface plugin, and re-signed the app."
+            message: message
         )
     }
 
@@ -444,34 +505,113 @@ public final class InjectionService: Sendable {
 
     // MARK: - Private Helpers
 
-    /// Check if PlayTools is loaded by inspecting the binary's load commands.
+    /// Check if PlayTools is loaded by inspecting the binary's linked dylibs.
     ///
-    /// Uses `otool -L` to list shared libraries; looks for the PlayTools path
-    /// or uses `otool -l` to check rpaths pointing to the PlayTools framework.
+    /// This intentionally aligns with the GUI behavior: an app only counts as
+    /// having PlayTools when the executable contains the actual PlayTools dylib
+    /// load command, not merely an auxiliary rpath.
     private func isPlayToolsLoaded(in executable: URL) -> Bool {
-        // Check rpaths for PlayTools framework directory
         do {
-            let output = try MCPShell.run("/usr/bin/otool", "-l", executable.path)
-            // Look for LC_RPATH entries that point to the PlayTools framework parent
-            let rpathMarker = "path \(Self.playToolsFrameworkURL.deletingLastPathComponent().path)"
-            if output.contains(rpathMarker) {
-                return true
-            }
+            let output = try MCPShell.run("/usr/bin/otool", "-L", executable.path)
+            return output.contains(Self.playToolsDylibPath.path)
+                || output.contains("@executable_path/Frameworks/PlayTools.dylib")
         } catch {
             return false
         }
+    }
 
-        // Also check loaded libraries via otool -L
-        do {
-            let output = try MCPShell.run("/usr/bin/otool", "-L", executable.path)
-            if output.contains("PlayTools") {
-                return true
+    private func installPlayToolsResources(in payload: URL) throws {
+        let sourceFramework = try Self.resolvePlayToolsResourceFramework()
+        try Self.copyPlayToolsLocalizations(from: sourceFramework, to: payload)
+
+        let bundleTarget = try Self.copyPlayToolsAsset(
+            source: sourceFramework,
+            target: payload,
+            directoryName: "PlugIns",
+            component: "AKInterface",
+            pathExtension: "bundle"
+        )
+        try MCPShell.setExecutable(bundleTarget)
+        try MCPShell.signMacho(bundleTarget)
+    }
+
+    private static func resolvePlayToolsResourceFramework() throws -> URL {
+        let candidates = [
+            Bundle.main.bundleURL.appendingPathComponent("Contents/Frameworks/PlayTools.framework"),
+            playToolsFrameworkURL,
+        ]
+
+        for candidate in candidates {
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
             }
-        } catch {
-            // Ignore
         }
 
-        return false
+        throw InjectionError.playToolsNotInstalled(
+            "PlayTools framework resources not found in bundled or system locations"
+        )
+    }
+
+    private static func copyPlayToolsLocalizations(from sourceFramework: URL, to payload: URL) throws {
+        let topLevelEntries = try FileManager.default.contentsOfDirectory(
+            at: sourceFramework,
+            includingPropertiesForKeys: nil
+        )
+
+        for localizationDirectory in topLevelEntries where localizationDirectory.pathExtension == "lproj" {
+            _ = try copyPlayToolsAsset(
+                source: sourceFramework,
+                target: payload,
+                directoryName: localizationDirectory.lastPathComponent,
+                component: "Playtools",
+                pathExtension: "strings"
+            )
+        }
+
+        let resourcesDirectory = sourceFramework
+            .appendingPathComponent("Versions")
+            .appendingPathComponent("A")
+            .appendingPathComponent("Resources")
+        if FileManager.default.fileExists(atPath: resourcesDirectory.path) {
+            let resourceEntries = try FileManager.default.contentsOfDirectory(
+                at: resourcesDirectory,
+                includingPropertiesForKeys: nil
+            )
+            for localizationDirectory in resourceEntries where localizationDirectory.pathExtension == "lproj" {
+                _ = try copyPlayToolsAsset(
+                    source: resourcesDirectory,
+                    target: payload,
+                    directoryName: localizationDirectory.lastPathComponent,
+                    component: "Playtools",
+                    pathExtension: "strings"
+                )
+            }
+        }
+    }
+
+    private static func copyPlayToolsAsset(
+        source: URL,
+        target: URL,
+        directoryName: String,
+        component: String,
+        pathExtension: String
+    ) throws -> URL {
+        let directory = target.appendingPathComponent(directoryName)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let sourceAsset = source
+            .appendingPathComponent(directoryName)
+            .appendingPathComponent(component)
+            .appendingPathExtension(pathExtension)
+        let targetAsset = directory
+            .appendingPathComponent(component)
+            .appendingPathExtension(pathExtension)
+
+        if FileManager.default.fileExists(atPath: targetAsset.path) {
+            try FileManager.default.removeItem(at: targetAsset)
+        }
+        try FileManager.default.copyItem(at: sourceAsset, to: targetAsset)
+        return targetAsset
     }
 
     /// Modify the DYLD_LIBRARY_PATH in Info.plist LSEnvironment.

@@ -479,6 +479,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F0A1B2C3295708C800C39879 /* Injection in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1026,6 +1027,9 @@
 			dependencies = (
 			);
 			name = PlayCoverMCP;
+			packageProductDependencies = (
+				68E48B99295708C800C39879 /* Injection */,
+			);
 			productName = PlayCoverMCP;
 			productReference = 9A0A50DFCE4A4FA69A6FFD85 /* PlayCoverMCP */;
 			productType = "com.apple.product-type.tool";
@@ -1044,6 +1048,9 @@
 				03B84BE5122A47A5A2B7CE62 /* PBXTargetDependency */,
 			);
 			name = PlayCoverMCPTests;
+			packageProductDependencies = (
+				68E48B99295708C800C39879 /* Injection */,
+			);
 			productName = PlayCoverMCPTests;
 			productReference = 1D515AB8DAE0458CB0B6CD06 /* PlayCoverMCPTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -1624,6 +1631,7 @@
 				PROVISIONING_PROFILE_SPECIFIER = "match Direct io.playcover.PlayCover macos";
 				RUN_DOCUMENTATION_COMPILER = NO;
 				SWIFT_ENFORCE_EXCLUSIVE_ACCESS = off;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) PLAYCOVER_GUI";
 				SWIFT_OBJC_BRIDGING_HEADER = "./PlayCover/PlayCover-Bridging-Header.h";
 				"SWIFT_OBJC_BRIDGING_HEADER[arch=*]" = "./PlayCover/PlayCover-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
@@ -1727,6 +1735,7 @@
 				PROVISIONING_PROFILE_SPECIFIER = "match Direct io.playcover.PlayCover macos";
 				RUN_DOCUMENTATION_COMPILER = NO;
 				SWIFT_ENFORCE_EXCLUSIVE_ACCESS = off;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) PLAYCOVER_GUI";
 				SWIFT_OBJC_BRIDGING_HEADER = "./PlayCover/PlayCover-Bridging-Header.h";
 				"SWIFT_OBJC_BRIDGING_HEADER[arch=*]" = "./PlayCover/PlayCover-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;

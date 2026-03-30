@@ -363,8 +363,9 @@ public final class MCPServer {
             throw MCPError.invalidParams("Failed to decode InitializeParams: \(error.localizedDescription)")
         }
 
-        // Version negotiation: return the latest version we support
-        let negotiatedVersion = MCPProtocolVersion.latest
+        guard let negotiatedVersion = MCPProtocolVersion.negotiate(with: initParams.protocolVersion) else {
+            throw MCPError.unsupportedProtocolVersion(initParams.protocolVersion)
+        }
 
         let result = InitializeResult(
             protocolVersion: negotiatedVersion,

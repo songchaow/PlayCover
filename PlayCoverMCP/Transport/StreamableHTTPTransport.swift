@@ -430,14 +430,26 @@ public final class StreamableHTTPTransport {
         handler: @escaping MessageHandler,
         sessionManager: MCPSessionManager
     ) -> Response {
-        let sessionId = sessionManager.createSession()
-        sessionManager.setProtocolVersion(sessionId, version: MCPProtocolVersion.latest)
-
-        notifySessionCountChanged()
-
         guard let response = handler(message) else {
             return Response(status: .internalServerError)
         }
+
+        guard case .response(let rpcResponse) = response else {
+            return Response(status: .internalServerError)
+        }
+
+        if rpcResponse.error != nil {
+            return makeJSONResponse(response)
+        }
+
+        guard let result: InitializeResult = try? rpcResponse.result?.decoded(),
+              MCPProtocolVersion.supportedVersions.contains(result.protocolVersion) else {
+            return Response(status: .internalServerError)
+        }
+
+        let sessionId = sessionManager.createSession()
+        sessionManager.setProtocolVersion(sessionId, version: result.protocolVersion)
+        notifySessionCountChanged()
 
         guard let jsonData = try? response.encode() else {
             return Response(status: .internalServerError)
@@ -446,7 +458,7 @@ public final class StreamableHTTPTransport {
         var headers = HTTPFields()
         headers[.contentType] = "application/json"
         headers[mcpSessionIdField] = sessionId
-        headers[mcpProtocolVersionField] = MCPProtocolVersion.latest
+        headers[mcpProtocolVersionField] = result.protocolVersion
 
         return Response(
             status: .ok,

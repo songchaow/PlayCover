@@ -3,6 +3,20 @@ import Foundation
 
 final class InstallerServiceTests: XCTestCase {
 
+    private enum FixtureMachOArchitecture {
+        case arm64
+        case x86_64
+
+        var cputype: UInt32 {
+            switch self {
+            case .arm64:
+                return 0x0100_000C
+            case .x86_64:
+                return 0x0100_0007
+            }
+        }
+    }
+
     // MARK: - Helper: Create minimal fake IPA
 
     /// Create a minimal .ipa file (actually a zip) containing a tiny .app bundle
@@ -10,7 +24,8 @@ final class InstallerServiceTests: XCTestCase {
     private func createFakeIPA(
         bundleId: String = "com.test.fakeapp",
         execName: String = "FakeApp",
-        displayName: String = "FakeApp"
+        displayName: String = "FakeApp",
+        executableData: Data? = nil
     ) throws -> URL {
         let tmpDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("PlayCoverMCP-\(UUID().uuidString)")
@@ -34,19 +49,9 @@ final class InstallerServiceTests: XCTestCase {
         )
         try plistData.write(to: appDir.appendingPathComponent("Info.plist"))
 
-        // Create a minimal dummy MachO file (just the ARM64 magic bytes + minimal header)
-        var header = Data()
-        header.append(contentsOf: [0xCF, 0xFA, 0xED, 0xFE]) // MH_MAGIC_64
-        header.append(contentsOf: withUnsafeBytes(of: UInt32(0x0100000C).littleEndian) { Array($0) }) // CPU_TYPE_ARM64
-        header.append(contentsOf: withUnsafeBytes(of: UInt32(0).littleEndian) { Array($0) }) // cpusubtype
-        header.append(contentsOf: withUnsafeBytes(of: UInt32(2).littleEndian) { Array($0) }) // MH_EXECUTE
-        header.append(contentsOf: withUnsafeBytes(of: UInt32(0).littleEndian) { Array($0) }) // ncmds
-        header.append(contentsOf: withUnsafeBytes(of: UInt32(0).littleEndian) { Array($0) }) // sizeofcmds
-        header.append(contentsOf: withUnsafeBytes(of: UInt32(0).littleEndian) { Array($0) }) // flags
-        header.append(contentsOf: withUnsafeBytes(of: UInt32(0).littleEndian) { Array($0) }) // reserved
-
         let execURL = appDir.appendingPathComponent(execName)
-        try header.write(to: execURL)
+        let machoData = executableData ?? makeThinMachO(architecture: .arm64)
+        try machoData.write(to: execURL)
 
         // Zip it into an IPA (zip from within tmpDir so Payload is at the root)
         let ipaURL = tmpDir.appendingPathComponent("\(displayName).ipa")
@@ -67,6 +72,49 @@ final class InstallerServiceTests: XCTestCase {
         try? FileManager.default.removeItem(at: payloadDir)
 
         return ipaURL
+    }
+
+    private func makeThinMachO(architecture: FixtureMachOArchitecture) -> Data {
+        var header = Data()
+        header.append(contentsOf: [0xCF, 0xFA, 0xED, 0xFE]) // MH_MAGIC_64
+        header.append(contentsOf: littleEndianBytes(architecture.cputype))
+        header.append(contentsOf: littleEndianBytes(UInt32(0))) // cpusubtype
+        header.append(contentsOf: littleEndianBytes(UInt32(2))) // MH_EXECUTE
+        header.append(contentsOf: littleEndianBytes(UInt32(0))) // ncmds
+        header.append(contentsOf: littleEndianBytes(UInt32(0))) // sizeofcmds
+        header.append(contentsOf: littleEndianBytes(UInt32(0))) // flags
+        header.append(contentsOf: littleEndianBytes(UInt32(0))) // reserved
+        return header
+    }
+
+    private func makeFatMachO(architectures: [FixtureMachOArchitecture]) -> Data {
+        let slices = architectures.map(makeThinMachO)
+        var header = Data([0xCA, 0xFE, 0xBA, 0xBE])
+        header.append(contentsOf: bigEndianBytes(UInt32(architectures.count)))
+
+        var offset = 8 + architectures.count * 20
+        for (index, architecture) in architectures.enumerated() {
+            let slice = slices[index]
+            header.append(contentsOf: bigEndianBytes(architecture.cputype))
+            header.append(contentsOf: bigEndianBytes(UInt32(0))) // cpusubtype
+            header.append(contentsOf: bigEndianBytes(UInt32(offset)))
+            header.append(contentsOf: bigEndianBytes(UInt32(slice.count)))
+            header.append(contentsOf: bigEndianBytes(UInt32(0))) // align
+            offset += slice.count
+        }
+
+        for slice in slices {
+            header.append(contentsOf: slice)
+        }
+        return header
+    }
+
+    private func littleEndianBytes(_ value: UInt32) -> [UInt8] {
+        withUnsafeBytes(of: value.littleEndian) { Array($0) }
+    }
+
+    private func bigEndianBytes(_ value: UInt32) -> [UInt8] {
+        withUnsafeBytes(of: value.bigEndian) { Array($0) }
     }
 
     /// Create a temporary directory for testing.
@@ -153,7 +201,7 @@ final class InstallerServiceTests: XCTestCase {
             // but the flow should at least reach those later steps
             if let installerError = error as? InstallerError {
                 switch installerError {
-                case .ipaNotFound, .invalidIPA, .missingExecutable, .appEncrypted:
+                case .ipaNotFound, .invalidIPA, .missingExecutable, .appEncrypted, .unsupportedArchitecture:
                     XCTFail("Unexpected early failure: \(installerError)")
                 case .conversionFailed, .signingFailed, .injectionFailed,
                      .exportFailed, .packFailed:
@@ -166,15 +214,17 @@ final class InstallerServiceTests: XCTestCase {
 
     func testInstallFakeIPAWithProgress() throws {
         let appDir = try makeTempDir()
+        let playToolsDir = try makeTempDir()
         let ipaURL = try createFakeIPA()
         defer {
             try? FileManager.default.removeItem(at: ipaURL.deletingLastPathComponent())
             try? FileManager.default.removeItem(at: appDir)
+            try? FileManager.default.removeItem(at: playToolsDir)
         }
 
         let service = InstallerService(
             appDirectory: appDir,
-            playToolsFrameworkPath: try makeTempDir()
+            playToolsFrameworkPath: playToolsDir
         )
 
         var progressUpdates: [(Int, Int, String)] = []
@@ -192,6 +242,120 @@ final class InstallerServiceTests: XCTestCase {
         if let first = progressUpdates.first {
             XCTAssertEqual(first.2, "begin")
         }
+    }
+
+    func testInstallRejectsUnsupportedArchitectureBeforeSavingEntitlements() throws {
+        let appDir = try makeTempDir()
+        let playToolsDir = try makeTempDir()
+        let ipaURL = try createFakeIPA(
+            displayName: "UnsupportedArch",
+            executableData: makeFatMachO(architectures: [.x86_64])
+        )
+        defer {
+            try? FileManager.default.removeItem(at: ipaURL.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: appDir)
+            try? FileManager.default.removeItem(at: playToolsDir)
+        }
+
+        let service = InstallerService(appDirectory: appDir, playToolsFrameworkPath: playToolsDir)
+        var progressMessages: [String] = []
+
+        XCTAssertThrowsError(try service.install(
+            ipaPath: ipaURL.path,
+            injectPlayTools: false,
+            progress: { _, _, message in
+                progressMessages.append(message)
+            }
+        )) { error in
+            guard let installerError = error as? InstallerError,
+                  case .unsupportedArchitecture(let message) = installerError else {
+                XCTFail("Expected unsupportedArchitecture, got \(error)")
+                return
+            }
+            XCTAssertTrue(message.contains("Main executable"))
+            XCTAssertTrue(message.contains("x86_64"))
+        }
+
+        XCTAssertTrue(progressMessages.contains("checking MachO binaries"))
+        XCTAssertFalse(progressMessages.contains("saving entitlements"))
+    }
+
+    func testExportRejectsUnsupportedArchitectureBeforeSavingEntitlements() throws {
+        let appDir = try makeTempDir()
+        let playToolsDir = try makeTempDir()
+        let outputDir = try makeTempDir()
+        let ipaURL = try createFakeIPA(
+            displayName: "UnsupportedExport",
+            executableData: makeFatMachO(architectures: [.x86_64])
+        )
+        defer {
+            try? FileManager.default.removeItem(at: ipaURL.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: appDir)
+            try? FileManager.default.removeItem(at: playToolsDir)
+            try? FileManager.default.removeItem(at: outputDir)
+        }
+
+        let service = InstallerService(appDirectory: appDir, playToolsFrameworkPath: playToolsDir)
+        var progressMessages: [String] = []
+
+        XCTAssertThrowsError(try service.export(
+            ipaPath: ipaURL.path,
+            outputDirectory: outputDir.path,
+            progress: { _, _, message in
+                progressMessages.append(message)
+            }
+        )) { error in
+            guard let installerError = error as? InstallerError,
+                  case .unsupportedArchitecture(let message) = installerError else {
+                XCTFail("Expected unsupportedArchitecture, got \(error)")
+                return
+            }
+            XCTAssertTrue(message.contains("Main executable"))
+            XCTAssertTrue(message.contains("x86_64"))
+        }
+
+        XCTAssertTrue(progressMessages.contains("checking MachO binaries"))
+        XCTAssertFalse(progressMessages.contains("saving entitlements"))
+    }
+
+    func testInstallArm64PreflightProgressesPastArchitectureValidation() throws {
+        let appDir = try makeTempDir()
+        let playToolsDir = try makeTempDir()
+        let ipaURL = try createFakeIPA(displayName: "Arm64Preflight")
+        defer {
+            try? FileManager.default.removeItem(at: ipaURL.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: appDir)
+            try? FileManager.default.removeItem(at: playToolsDir)
+        }
+
+        let service = InstallerService(appDirectory: appDir, playToolsFrameworkPath: playToolsDir)
+        var progressMessages: [String] = []
+
+        do {
+            _ = try service.install(
+                ipaPath: ipaURL.path,
+                injectPlayTools: false,
+                progress: { _, _, message in
+                    progressMessages.append(message)
+                }
+            )
+        } catch let installerError as InstallerError {
+            switch installerError {
+            case .ipaNotFound, .invalidIPA, .missingExecutable, .appEncrypted, .unsupportedArchitecture:
+                XCTFail("Unexpected preflight failure: \(installerError)")
+            case .conversionFailed, .signingFailed, .injectionFailed, .exportFailed, .packFailed:
+                break
+            }
+        } catch let shellError as ShellError {
+            XCTAssertTrue(
+                shellError.output.contains("object file format unrecognized")
+                    || shellError.output.contains("not signed"),
+                "Unexpected shell failure after preflight: \(shellError)"
+            )
+        }
+
+        XCTAssertTrue(progressMessages.contains("checking MachO binaries"))
+        XCTAssertTrue(progressMessages.contains("saving entitlements"))
     }
 
     // MARK: - Export Flow Tests

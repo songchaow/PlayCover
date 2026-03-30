@@ -33,6 +33,7 @@ public enum InstallerError: Error, LocalizedError, Equatable {
     case invalidIPA(String)
     case appEncrypted(String)
     case missingExecutable(String)
+    case unsupportedArchitecture(String)
     case conversionFailed(String)
     case injectionFailed(String)
     case signingFailed(String)
@@ -45,6 +46,7 @@ public enum InstallerError: Error, LocalizedError, Equatable {
         case .invalidIPA(let msg): return "Invalid IPA: \(msg)"
         case .appEncrypted(let msg): return "App is encrypted: \(msg)"
         case .missingExecutable(let msg): return "Missing executable: \(msg)"
+        case .unsupportedArchitecture(let msg): return "Unsupported architecture: \(msg)"
         case .conversionFailed(let msg): return "MachO conversion failed: \(msg)"
         case .injectionFailed(let msg): return "PlayTools injection failed: \(msg)"
         case .signingFailed(let msg): return "Signing failed: \(msg)"
@@ -157,9 +159,15 @@ public final class InstallerService: Sendable {
             throw InstallerError.missingExecutable("No CFBundleExecutable in Info.plist")
         }
         let execURL = appURL.appendingPathComponent(execName)
+        try validatePrimaryExecutable(execURL, executableName: execName)
 
-        // Save entitlements
-        progress?(100, 30, "saving entitlements")
+        // Find and preflight MachO binaries before mutating anything.
+        progress?(100, 30, "checking MachO binaries")
+        let machos = try findMachOBinaries(in: appURL)
+        try validateMachOBinaries(machos, primaryExecutable: execURL)
+
+        // Save entitlements after executable / architecture preflight succeeds.
+        progress?(100, 40, "saving entitlements")
         let entitlementsDir = Self.entitlementsDirectory()
         try FileManager.default.createDirectory(at: entitlementsDir, withIntermediateDirectories: true)
         let entPath = entitlementsDir
@@ -170,9 +178,6 @@ public final class InstallerService: Sendable {
             try entString.write(to: entPath, atomically: true, encoding: .utf8)
         }
 
-        // Find and check MachO binaries
-        progress?(100, 40, "checking MachO binaries")
-        let machos = try findMachOBinaries(in: appURL)
         for macho in machos {
             if try isMachoEncrypted(at: macho) {
                 throw InstallerError.appEncrypted(macho.lastPathComponent)
@@ -297,9 +302,15 @@ public final class InstallerService: Sendable {
             throw InstallerError.missingExecutable("No CFBundleExecutable in Info.plist")
         }
         let execURL = appURL.appendingPathComponent(execName)
+        try validatePrimaryExecutable(execURL, executableName: execName)
 
-        // Save entitlements
-        progress?(100, 30, "saving entitlements")
+        // Check MachO binaries and architecture compatibility before export work.
+        progress?(100, 30, "checking MachO binaries")
+        let machos = try findMachOBinaries(in: appURL)
+        try validateMachOBinaries(machos, primaryExecutable: execURL)
+
+        // Save entitlements after preflight succeeds.
+        progress?(100, 40, "saving entitlements")
         let entitlementsDir = Self.entitlementsDirectory()
         try FileManager.default.createDirectory(at: entitlementsDir, withIntermediateDirectories: true)
         let entPath = entitlementsDir
@@ -310,9 +321,6 @@ public final class InstallerService: Sendable {
             try entString.write(to: entPath, atomically: true, encoding: .utf8)
         }
 
-        // Check MachO binaries for encryption
-        progress?(100, 40, "checking MachO binaries")
-        let machos = try findMachOBinaries(in: appURL)
         for macho in machos {
             if try isMachoEncrypted(at: macho) {
                 throw InstallerError.appEncrypted(macho.lastPathComponent)
@@ -433,8 +441,8 @@ public final class InstallerService: Sendable {
         // MH_CIGAM_64 (64-bit BE): 0xCFFAEDFE
         // MH_MAGIC (32-bit LE): 0xFEEDFACE
         // MH_CIGAM (32-bit BE): 0xCEFAEDFE
-        // FAT_MAGIC (fat LE): 0xCAFEBABE
-        // FAT_CIGAM (fat BE): 0xBEBAFECA
+        // FAT_MAGIC (fat BE): 0xCAFEBABE
+        // FAT_CIGAM (fat LE): 0xBEBAFECA
         switch bytes {
         case [0xCF, 0xFA, 0xED, 0xFE], // MH_MAGIC_64
              [0xFE, 0xED, 0xFA, 0xCF], // MH_CIGAM_64
@@ -445,6 +453,121 @@ public final class InstallerService: Sendable {
             return true
         default:
             return false
+        }
+    }
+
+    private func validatePrimaryExecutable(_ executableURL: URL, executableName: String) throws {
+        guard FileManager.default.fileExists(atPath: executableURL.path) else {
+            throw InstallerError.missingExecutable(executableURL.path)
+        }
+
+        guard try isMachoFile(at: executableURL) else {
+            throw InstallerError.invalidIPA(
+                "Main executable '\(executableName)' is not a valid Mach-O binary"
+            )
+        }
+    }
+
+    private func validateMachOBinaries(_ machos: [URL], primaryExecutable: URL) throws {
+        guard !machos.isEmpty else {
+            throw InstallerError.invalidIPA("No Mach-O binaries found in app bundle")
+        }
+
+        for macho in machos {
+            let architectures = try inspectMachOArchitectures(at: macho)
+            guard !architectures.isEmpty else {
+                throw InstallerError.invalidIPA(
+                    "Mach-O binary '\(macho.lastPathComponent)' does not contain a recognizable architecture header"
+                )
+            }
+
+            guard architectures.contains("arm64") else {
+                let binaryLabel = macho.standardizedFileURL == primaryExecutable.standardizedFileURL
+                    ? "Main executable"
+                    : "Binary"
+                let archList = architectures.joined(separator: ", ")
+                throw InstallerError.unsupportedArchitecture(
+                    "\(binaryLabel) '\(macho.lastPathComponent)' contains [\(archList)] but PlayCover requires an arm64 slice"
+                )
+            }
+        }
+    }
+
+    private func inspectMachOArchitectures(at url: URL) throws -> [String] {
+        let data = try Data(contentsOf: url)
+        guard data.count >= 8 else {
+            return []
+        }
+
+        let magic = Array(data.prefix(4))
+        switch magic {
+        case [0xCA, 0xFE, 0xBA, 0xBE]:
+            return try parseFatArchitectures(data, bigEndian: true)
+        case [0xBE, 0xBA, 0xFE, 0xCA]:
+            return try parseFatArchitectures(data, bigEndian: false)
+        case [0xCF, 0xFA, 0xED, 0xFE], [0xCE, 0xFA, 0xED, 0xFE]:
+            let cputype = try readUInt32(from: data, offset: 4, bigEndian: false)
+            return [architectureName(for: cputype)]
+        case [0xFE, 0xED, 0xFA, 0xCF], [0xFE, 0xED, 0xFA, 0xCE]:
+            let cputype = try readUInt32(from: data, offset: 4, bigEndian: true)
+            return [architectureName(for: cputype)]
+        default:
+            return []
+        }
+    }
+
+    private func parseFatArchitectures(_ data: Data, bigEndian: Bool) throws -> [String] {
+        let archCount = try readUInt32(from: data, offset: 4, bigEndian: bigEndian)
+        var architectures: [String] = []
+        var offset = 8
+
+        for _ in 0..<archCount {
+            guard data.count >= offset + 20 else {
+                throw InstallerError.invalidIPA("Fat Mach-O header is truncated")
+            }
+
+            let cputype = try readUInt32(from: data, offset: offset, bigEndian: bigEndian)
+            let name = architectureName(for: cputype)
+            if !architectures.contains(name) {
+                architectures.append(name)
+            }
+            offset += 20
+        }
+
+        return architectures
+    }
+
+    private func readUInt32(from data: Data, offset: Int, bigEndian: Bool) throws -> UInt32 {
+        guard data.count >= offset + 4 else {
+            throw InstallerError.invalidIPA("Mach-O header is truncated")
+        }
+
+        let bytes = Array(data[offset..<(offset + 4)])
+        if bigEndian {
+            return bytes.reduce(UInt32(0)) { partial, byte in
+                (partial << 8) | UInt32(byte)
+            }
+        }
+
+        return bytes.enumerated().reduce(UInt32(0)) { partial, element in
+            partial | (UInt32(element.element) << (8 * element.offset))
+        }
+    }
+
+    private func architectureName(for cputype: UInt32) -> String {
+        switch cputype {
+        case 0x0100_000C:
+            return "arm64"
+        case 0x0100_0007:
+            return "x86_64"
+        case 0x0000_000C:
+            return "arm"
+        case 0x0000_0007:
+            return "x86"
+        case 0x0000_0012:
+            return "ppc"
+        default:
+            return String(format: "cputype_0x%08X", cputype)
         }
     }
 

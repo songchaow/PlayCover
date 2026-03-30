@@ -11,12 +11,14 @@ final class MCPErrorExtensionsTests: XCTestCase {
         XCTAssertEqual(PlayCoverErrorCode.appNotFound.rawValue, -32001)
         XCTAssertEqual(PlayCoverErrorCode.taskNotFound.rawValue, -32008)
         XCTAssertEqual(PlayCoverErrorCode.bridgeError.rawValue, -32012)
+        XCTAssertEqual(PlayCoverErrorCode.unsupportedArchitecture.rawValue, -32016)
     }
 
     func testPlayCoverErrorCode_defaultMessages() {
         XCTAssertEqual(PlayCoverErrorCode.appNotFound.defaultMessage, "Application not found")
         XCTAssertEqual(PlayCoverErrorCode.signingFailed.defaultMessage, "Code signing failed")
         XCTAssertEqual(PlayCoverErrorCode.taskNotFound.defaultMessage, "Task not found")
+        XCTAssertEqual(PlayCoverErrorCode.unsupportedArchitecture.defaultMessage, "Unsupported application architecture")
     }
 
     // MARK: - PlayCoverMCPError Creation

@@ -26,6 +26,7 @@ public enum PlayCoverErrorCode: Int, Sendable {
     case entitlementsError = -32013
     case launchFailed = -32014
     case exportFailed = -32015
+    case unsupportedArchitecture = -32016
 
     /// The default message for this error code.
     public var defaultMessage: String {
@@ -45,6 +46,7 @@ public enum PlayCoverErrorCode: Int, Sendable {
         case .entitlementsError: return "Entitlements operation failed"
         case .launchFailed: return "App launch failed"
         case .exportFailed: return "IPA export failed"
+        case .unsupportedArchitecture: return "Unsupported application architecture"
         }
     }
 }
@@ -117,6 +119,26 @@ public struct PlayCoverMCPError: Error, LocalizedError, Equatable, Sendable {
                 self.code = JSONRPCError.internalError
             }
             self.message = message ?? settingsErr.localizedDescription
+            self.data = nil
+            self.cause = nil
+            return
+        }
+        if let installerErr = error as? InstallerError {
+            switch installerErr {
+            case .ipaNotFound:
+                self.code = PlayCoverErrorCode.invalidPath.rawValue
+            case .invalidIPA, .missingExecutable:
+                self.code = JSONRPCError.invalidParams
+            case .unsupportedArchitecture:
+                self.code = PlayCoverErrorCode.unsupportedArchitecture.rawValue
+            case .injectionFailed:
+                self.code = PlayCoverErrorCode.injectionFailed.rawValue
+            case .signingFailed:
+                self.code = PlayCoverErrorCode.signingFailed.rawValue
+            case .appEncrypted, .conversionFailed, .exportFailed, .packFailed:
+                self.code = PlayCoverErrorCode.exportFailed.rawValue
+            }
+            self.message = message ?? installerErr.localizedDescription
             self.data = nil
             self.cause = nil
             return

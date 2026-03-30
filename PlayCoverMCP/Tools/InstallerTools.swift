@@ -127,9 +127,10 @@ public enum InstallerTools {
                         TaskContentItem(kind: .text, text: text)
                     ]))
                 } catch {
+                    let wrapped = PlayCoverMCPError(wrapping: error)
                     taskManager.failTask(taskId, error: TaskError(
-                        code: PlayCoverErrorCode.exportFailed.rawValue,
-                        message: error.localizedDescription
+                        code: wrapped.code,
+                        message: wrapped.message
                     ))
                 }
             }
@@ -228,9 +229,10 @@ public enum InstallerTools {
                         TaskContentItem(kind: .text, text: text)
                     ]))
                 } catch {
+                    let wrapped = PlayCoverMCPError(wrapping: error)
                     taskManager.failTask(taskId, error: TaskError(
-                        code: PlayCoverErrorCode.exportFailed.rawValue,
-                        message: error.localizedDescription
+                        code: wrapped.code,
+                        message: wrapped.message
                     ))
                 }
             }

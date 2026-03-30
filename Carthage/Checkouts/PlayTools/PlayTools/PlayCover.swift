@@ -21,6 +21,13 @@ public class PlayCover: NSObject {
         // 初始化 Metal 截帧服务
         MetalCaptureService.shared.initialize()
 
+        let runtimeBundleId = Bundle.main.bundleIdentifier
+            ?? "playtools.runtime.\(ProcessInfo.processInfo.processIdentifier)"
+        let runtimePort = BridgeListener.shared.start(bundleId: runtimeBundleId)
+        if runtimePort > 0 {
+            print("[PlayTools] BridgeListener launched on port \(runtimePort)")
+        }
+
         if PlaySettings.shared.rootWorkDir {
             // Change the working directory to / just like iOS
             FileManager.default.changeCurrentDirectoryPath("/")
@@ -69,6 +76,7 @@ public class PlayCover: NSObject {
                                                     object: scene)
                 }
                 UIApplication.shared.delegate?.applicationWillTerminate?(UIApplication.shared)
+                BridgeListener.shared.stop()
                 // Some apps will freeze or crash when click close button if we send willTerminateNotification.
                 // The developer documentation says this is a "may be called method", so it can be safely skipped.
                 // https://developer.apple.com/documentation/uikit/uiapplicationdelegate/1623111-applicationwillterminate

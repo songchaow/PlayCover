@@ -102,6 +102,40 @@ cd /Users/songdogwang/Codes/PlayCover && WITH_REGRESSION=1 DERIVED_DATA_PATH=/tm
 
 ---
 
+### 本次实现结果
+
+#### runtime 启动点
+
+- 已在 `PlayCover.launch()` 中调用 `BridgeListener.shared.start(bundleId:)`
+- 已在窗口关闭终止路径中调用 `BridgeListener.shared.stop()`，补齐 close / cleanup
+
+#### 协议实现
+
+`BridgeListener.swift` 已从骨架改为可工作的 runtime bridge，当前包含：
+
+- 本地 command listener 启动并监听 ephemeral port
+- 连接 host `registrationPort`，发送 `register`，校验 `registerAck`
+- 保持 registration channel，并定时发送 `ping` heartbeat
+- 处理 command channel 上的 `command` / `ping` / `close`
+- 对 `tap` / `long_press` / `swipe` / `drag` 真正接入 `Toucher.touchcam(...)`
+- 对 `press_key` / `type_text` 提供最小可用输入转发；复杂 modifier 组合仍保留为后续增强点
+- 对 `toggle_debug_overlay` / `capture_frame` / `get_capture_status` 接入现有 runtime 能力
+
+#### 自动化验证结果
+
+- `xcodebuild test -scheme PlayCoverMCP ... -only-testing:...`：本次主要作为 focused 编译检查，命令返回成功，但未实际执行测试用例
+- `xcodebuild test -scheme PlayCoverMCP ...`：**669 tests passed，1 skipped，0 failures**
+- `Scripts/test_http_mcp.sh`：**通过**
+- `xcodebuild build -scheme PlayCover ...`：**通过**，说明本次修改的 `PlayTools` runtime 源码已真实参与 app target 编译
+
+#### 真机 / 真实 app 冒烟结果
+
+- 已尝试通过本机 `playcover` MCP 做只读/可逆的 live smoke（计划使用 `list_installed_apps` / `launch_app` / `create_session` / `list_sessions` / `close_session`）
+- 当前环境下 `playcover` MCP 调用返回 **`fetch failed`**，导致无法完成本轮真实 app 冒烟
+- 因此本任务的**代码修复与自动化回归已完成**，但“真实 app 已跑到新 bridge 代码”的最终证据仍需在 MCP 端点恢复后补做
+
+---
+
 ### 非目标
 
 - 不要求在本任务里完成最终人工回归矩阵；那是 `T08`

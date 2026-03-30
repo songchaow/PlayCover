@@ -234,7 +234,16 @@ public final class StreamableHTTPTransport {
             }
         }
 
-        // 2. Validate Content-Type
+        // 2. Validate Accept and Content-Type
+        guard let accept = request.headers[.accept], isValidPostAcceptHeader(accept) else {
+            return makeJSONRPCErrorResponse(
+                id: nil,
+                code: JSONRPCError.invalidRequest,
+                message: "Accept header must include application/json and text/event-stream",
+                status: .notAcceptable
+            )
+        }
+
         guard let contentType = request.headers[.contentType],
               contentType.contains("application/json") else {
             return makeJSONRPCErrorResponse(
@@ -283,18 +292,27 @@ public final class StreamableHTTPTransport {
         // 5. Route by message type
         switch message {
         case .notification(let notif):
-            return handleNotification(
-                notif: notif,
-                message: message,
-                request: request,
-                handler: handler,
-                sessionManager: sessionManager
-            )
+            switch validateSessionContext(request: request, sessionManager: sessionManager) {
+            case .success(let sessionId):
+                return handleNotification(
+                    notif: notif,
+                    message: message,
+                    handler: handler,
+                    sessionManager: sessionManager,
+                    sessionId: sessionId
+                )
+            case .failure(let issue):
+                return makeSessionValidationErrorResponse(issue: issue, requestId: nil)
+            }
 
         case .response:
-            // Client-originated responses: just dispatch and return 202
-            _ = handler(message)
-            return Response(status: .accepted)
+            switch validateSessionContext(request: request, sessionManager: sessionManager) {
+            case .success:
+                _ = handler(message)
+                return Response(status: .accepted)
+            case .failure(let issue):
+                return makeSessionValidationErrorResponse(issue: issue, requestId: nil)
+            }
 
         case .request(let req):
             return handleRequest(
@@ -312,15 +330,12 @@ public final class StreamableHTTPTransport {
     private func handleNotification(
         notif: JSONRPCNotification,
         message: JSONRPCMessage,
-        request: Request,
         handler: @escaping MessageHandler,
-        sessionManager: MCPSessionManager
+        sessionManager: MCPSessionManager,
+        sessionId: String
     ) -> Response {
-        // For initialized notification, mark session
         if notif.method == "notifications/initialized" {
-            if let sessionId = request.headers[mcpSessionIdField] {
-                sessionManager.markInitialized(sessionId)
-            }
+            sessionManager.markInitialized(sessionId)
         }
         _ = handler(message)
         return Response(status: .accepted)
@@ -333,7 +348,6 @@ public final class StreamableHTTPTransport {
         handler: @escaping MessageHandler,
         sessionManager: MCPSessionManager
     ) -> Response {
-        // Special handling for "initialize"
         if req.method == "initialize" {
             return handleInitialize(
                 message: message,
@@ -342,37 +356,31 @@ public final class StreamableHTTPTransport {
             )
         }
 
-        // Validate Mcp-Session-Id
-        guard let sessionId = request.headers[mcpSessionIdField],
-              sessionManager.validateSession(sessionId) != nil else {
-            return makeJSONRPCErrorResponse(
-                id: req.id,
-                code: JSONRPCError.invalidRequest,
-                message: "Invalid or missing session ID",
-                status: .notFound
-            )
+        let sessionId: String
+        switch validateSessionContext(request: request, sessionManager: sessionManager) {
+        case .success(let validatedSessionId):
+            sessionId = validatedSessionId
+        case .failure(let issue):
+            return makeSessionValidationErrorResponse(issue: issue, requestId: req.id)
         }
 
-        // Validate Mcp-Protocol-Version (optional but recommended)
-        // We allow requests without it for backward compatibility
+        let shouldUseSSE = shouldUseSSEResponse(
+            forMethod: req.method,
+            acceptHeader: request.headers[.accept]
+        )
 
-        // Check if client accepts SSE and method may produce intermediate notifications
-        let acceptsSSE = request.headers[.accept]?.contains("text/event-stream") == true
-
-        if acceptsSSE {
-            // SSE stream response mode: allows intermediate notifications before final response
+        if shouldUseSSE {
             return handleRequestWithSSE(
                 message: message,
                 handler: handler,
                 sessionId: sessionId
             )
-        } else {
-            // Simple JSON response mode (existing behavior)
-            if let response = handler(message) {
-                return makeJSONResponse(response, sessionId: sessionId)
-            }
-            return Response(status: .accepted)
         }
+
+        if let response = handler(message) {
+            return makeJSONResponse(response, sessionId: sessionId)
+        }
+        return Response(status: .accepted)
     }
 
     /// Handle a request with SSE stream response, allowing intermediate notifications.
@@ -423,6 +431,7 @@ public final class StreamableHTTPTransport {
         sessionManager: MCPSessionManager
     ) -> Response {
         let sessionId = sessionManager.createSession()
+        sessionManager.setProtocolVersion(sessionId, version: MCPProtocolVersion.latest)
 
         notifySessionCountChanged()
 
@@ -430,16 +439,14 @@ public final class StreamableHTTPTransport {
             return Response(status: .internalServerError)
         }
 
-        // Encode response
         guard let jsonData = try? response.encode() else {
             return Response(status: .internalServerError)
         }
 
         var headers = HTTPFields()
         headers[.contentType] = "application/json"
-        if let name = HTTPField.Name("Mcp-Session-Id") {
-            headers[name] = sessionId
-        }
+        headers[mcpSessionIdField] = sessionId
+        headers[mcpProtocolVersionField] = MCPProtocolVersion.latest
 
         return Response(
             status: .ok,
@@ -451,34 +458,31 @@ public final class StreamableHTTPTransport {
     // MARK: - GET Handler (SSE stream)
 
     private func handleGet(request: Request, sessionManager: MCPSessionManager) -> Response {
-        // 1. Origin validation
         if let origin = request.headers[.origin] {
             guard isValidOrigin(origin) else {
                 return Response(status: .forbidden)
             }
         }
 
-        // 2. Validate Accept header
         guard let accept = request.headers[.accept],
               accept.contains("text/event-stream") else {
             return Response(status: .notAcceptable)
         }
 
-        // 3. Validate session
-        guard let sessionId = request.headers[mcpSessionIdField],
-              sessionManager.validateSession(sessionId) != nil else {
-            return Response(status: .badRequest)
+        let sessionId: String
+        switch validateSessionContext(request: request, sessionManager: sessionManager) {
+        case .success(let validatedSessionId):
+            sessionId = validatedSessionId
+        case .failure(let issue):
+            return makeHTTPErrorResponse(for: issue)
         }
 
-        // 4. Create SSE response with async stream
         let (stream, continuation) = AsyncStream<ByteBuffer>.makeStream()
         let streamId = "get-\(UUID().uuidString.prefix(8))"
 
-        // Send primer event
         let primerData = SSEEncoder.encodePrimerEvent(eventId: streamId)
         continuation.yield(ByteBuffer(data: primerData))
 
-        // Register stream for server-initiated pushes
         sseStreamManager.register(
             sessionId: sessionId,
             streamId: streamId,
@@ -489,7 +493,6 @@ public final class StreamableHTTPTransport {
         var headers = HTTPFields()
         headers[.contentType] = "text/event-stream"
         headers[.cacheControl] = "no-cache"
-        // Disable buffering
         if let name = HTTPField.Name("X-Accel-Buffering") {
             headers[name] = "no"
         }
@@ -504,17 +507,82 @@ public final class StreamableHTTPTransport {
     // MARK: - DELETE Handler
 
     private func handleDelete(request: Request, sessionManager: MCPSessionManager) -> Response {
-        guard let sessionId = request.headers[mcpSessionIdField] else {
-            return Response(status: .badRequest)
+        if let origin = request.headers[.origin] {
+            guard isValidOrigin(origin) else {
+                return Response(status: .forbidden)
+            }
+        }
+
+        let sessionId: String
+        switch validateSessionContext(request: request, sessionManager: sessionManager) {
+        case .success(let validatedSessionId):
+            sessionId = validatedSessionId
+        case .failure(let issue):
+            return makeHTTPErrorResponse(for: issue)
         }
 
         if sessionManager.terminateSession(sessionId) {
-            // Close all SSE streams for this session
             sseStreamManager.closeSession(sessionId: sessionId)
             notifySessionCountChanged()
             return Response(status: .ok)
-        } else {
-            return Response(status: .notFound)
+        }
+
+        return Response(status: .notFound)
+    }
+
+    // MARK: - Session / Header Validation
+
+    private enum SessionValidationIssue: Error {
+        case missingSessionId
+        case invalidSessionId
+        case missingProtocolVersion
+        case unsupportedProtocolVersion(String)
+        case protocolVersionMismatch(expected: String, actual: String)
+    }
+
+    private func validateSessionContext(
+        request: Request,
+        sessionManager: MCPSessionManager
+    ) -> Result<String, SessionValidationIssue> {
+        guard let sessionId = request.headers[mcpSessionIdField], !sessionId.isEmpty else {
+            return .failure(.missingSessionId)
+        }
+
+        guard let session = sessionManager.validateSession(sessionId) else {
+            return .failure(.invalidSessionId)
+        }
+
+        guard let protocolVersion = request.headers[mcpProtocolVersionField], !protocolVersion.isEmpty else {
+            return .failure(.missingProtocolVersion)
+        }
+
+        guard MCPProtocolVersion.supportedVersions.contains(protocolVersion) else {
+            return .failure(.unsupportedProtocolVersion(protocolVersion))
+        }
+
+        if let negotiatedVersion = session.protocolVersion,
+           negotiatedVersion != protocolVersion {
+            return .failure(.protocolVersionMismatch(expected: negotiatedVersion, actual: protocolVersion))
+        }
+
+        return .success(sessionId)
+    }
+
+    private func isValidPostAcceptHeader(_ accept: String) -> Bool {
+        accept.contains("application/json") && accept.contains("text/event-stream")
+    }
+
+    private func shouldUseSSEResponse(forMethod method: String, acceptHeader: String?) -> Bool {
+        guard let acceptHeader = acceptHeader,
+              acceptHeader.contains("text/event-stream") else {
+            return false
+        }
+
+        switch method {
+        case "tools/call":
+            return true
+        default:
+            return false
         }
     }
 
@@ -581,6 +649,58 @@ public final class StreamableHTTPTransport {
             headers: headers,
             body: .init(byteBuffer: ByteBuffer(data: jsonData))
         )
+    }
+
+    private func makeSessionValidationErrorResponse(
+        issue: SessionValidationIssue,
+        requestId: RequestID?
+    ) -> Response {
+        switch issue {
+        case .missingSessionId:
+            return makeJSONRPCErrorResponse(
+                id: requestId,
+                code: JSONRPCError.invalidRequest,
+                message: "Missing session ID",
+                status: .badRequest
+            )
+        case .invalidSessionId:
+            return makeJSONRPCErrorResponse(
+                id: requestId,
+                code: JSONRPCError.invalidRequest,
+                message: "Invalid or expired session ID",
+                status: .notFound
+            )
+        case .missingProtocolVersion:
+            return makeJSONRPCErrorResponse(
+                id: requestId,
+                code: JSONRPCError.invalidRequest,
+                message: "Missing MCP-Protocol-Version header",
+                status: .badRequest
+            )
+        case .unsupportedProtocolVersion(let version):
+            return makeJSONRPCErrorResponse(
+                id: requestId,
+                code: JSONRPCError.invalidRequest,
+                message: "Unsupported MCP-Protocol-Version: \(version)",
+                status: .badRequest
+            )
+        case .protocolVersionMismatch(let expected, let actual):
+            return makeJSONRPCErrorResponse(
+                id: requestId,
+                code: JSONRPCError.invalidRequest,
+                message: "MCP-Protocol-Version mismatch: expected \(expected), got \(actual)",
+                status: .badRequest
+            )
+        }
+    }
+
+    private func makeHTTPErrorResponse(for issue: SessionValidationIssue) -> Response {
+        switch issue {
+        case .missingSessionId, .missingProtocolVersion, .unsupportedProtocolVersion, .protocolVersionMismatch:
+            return Response(status: .badRequest)
+        case .invalidSessionId:
+            return Response(status: .notFound)
+        }
     }
 
     // MARK: - State Management

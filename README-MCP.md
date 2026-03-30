@@ -4,43 +4,54 @@ PlayCoverMCP 是 PlayCover 的 [Model Context Protocol (MCP)](https://modelconte
 
 ## 运行模式
 
-PlayCover MCP Server 支持两种运行模式：
+PlayCover MCP Server 当前支持 **三种传输方式**：
 
-### 模式 1：GUI 内嵌（推荐）
+### 模式 1：GUI 内嵌 Streamable HTTP（推荐）
 
-启动 PlayCover.app 后，MCP Server **自动**在 TCP 端口 `19820` 上监听（`127.0.0.1` loopback）。无需手动操作，Agent 直接通过 TCP 连接即可。
+启动 `PlayCover.app` 后，GUI 进程会自动启动内嵌 MCP Server，并在默认端点 `http://127.0.0.1:19820/mcp` 上提供 **Streamable HTTP** 服务。
 
-- 可在 **Settings → MCP Server** 中查看服务状态、端口号和已连接客户端数
-- 支持多个 Agent 同时连接
-- 应用关闭时自动停止 MCP Server
+- 默认传输：`streamable-http`
+- 默认监听：`127.0.0.1:19820`
+- 支持 `POST /mcp`、`GET /mcp`、`DELETE /mcp`
+- 支持 `Mcp-Session-Id` 会话管理、SSE primer event、Origin 校验
+- 可在 **Settings → MCP Server** 查看状态、端点、会话数，并切换为 Legacy TCP
 
-### 模式 2：独立 CLI（stdio）
+> **运行时可用性**：`StreamableHTTPTransport` 依赖 Hummingbird，要求 **macOS 14+**。在更低系统版本上，GUI 会自动回退到 Legacy TCP。
 
-使用 `PlayCoverMCP` 命令行工具，通过 stdio 与 Agent 通信。适用于不使用 GUI 或需要自动化脚本的场景。
+### 模式 2：GUI 内嵌 TCP（Legacy）
+
+为了兼容旧客户端，GUI 仍保留 TCP 传输选项，可在 Settings 中切换。
+
+- 地址格式：`tcp://127.0.0.1:19820`
+- 协议：换行分隔 JSON-RPC
+- **仅建议旧客户端兼容使用**
+
+### 模式 3：独立 CLI（stdio）
+
+使用 `PlayCoverMCP` 命令行工具，通过 stdio 与 Agent 通信。适用于不使用 GUI、自动化脚本，或客户端只支持 `stdio` transport 的场景。
 
 ## 架构概览
 
-```
-模式 1（GUI 内嵌 TCP）:
-┌─────────────────────────────────────────────────────────┐
-│  PlayCover.app (GUI 进程)                                │
-│                                                          │
-│  ┌──────────┐   ┌───────────┐   ┌───────────────────┐  │
-│  │ SwiftUI  │   │MCPManager │   │ TCP:19820         │◄── Agent (Claude/Cursor/...)
-│  │   Views  │   │           │   │ (TCPTransport)    │  │
-│  └────┬─────┘   └─────┬─────┘   └────┬──────────────┘  │
-│       │               │              │                   │
-│       │         ┌─────▼─────┐        │                   │
-│       │         │ MCPServer │◄───────┘                   │
-│       │         └─────┬─────┘                            │
-│       │               │                                  │
-│       │    NotificationCenter                            │
-│       │               │                                  │
-│       ◀───────────────┘                                  │
-│  (GUI 自动刷新)                                           │
-└─────────────────────────────────────────────────────────┘
+```text
+模式 1（GUI 内嵌 Streamable HTTP）:
+┌───────────────────────────────────────────────────────────────┐
+│ PlayCover.app (GUI 进程)                                      │
+│                                                               │
+│  ┌──────────┐   ┌───────────┐   ┌──────────────────────────┐ │
+│  │ SwiftUI  │   │MCPManager │   │ Streamable HTTP          │◄── Agent
+│  │  Views   │   │           │   │ http://127.0.0.1:19820   │ │
+│  └────┬─────┘   └─────┬─────┘   │ /mcp                     │ │
+│       │               │         └──────────┬───────────────┘ │
+│       │         ┌─────▼─────┐              │                 │
+│       │         │ MCPServer │◄─────────────┘                 │
+│       │         └─────┬─────┘                                │
+│       │               │                                      │
+│       │         NotificationCenter                           │
+│       │               │                                      │
+│       ◀───────────────┘                                      │
+└───────────────────────────────────────────────────────────────┘
 
-模式 2（独立 CLI stdio）:
+模式 3（独立 CLI stdio）:
 ┌──────────────┐    stdio (JSON-RPC)    ┌────────────────┐
 │  MCP Client  │◄──────────────────────►│  PlayCoverMCP  │
 │  (AI Agent)  │                        │  (CLI 进程)     │
@@ -50,7 +61,8 @@ PlayCover MCP Server 支持两种运行模式：
 **共通特性**：
 - **Host 侧**：直接调用 PlayCover 本地能力（应用管理、签名、Keymap 等）
 - **Session 侧**：通过 loopback TCP bridge 与运行中的 iOS 应用通信（触控、键盘输入等）
-- **协议**：行分隔 JSON-RPC（两种模式消息格式完全一致）
+- **CLI 协议**：换行分隔 JSON-RPC
+- **GUI 协议**：MCP 2025-11-25 Streamable HTTP
 
 ## 系统要求
 
@@ -58,6 +70,7 @@ PlayCover MCP Server 支持两种运行模式：
 - Apple Silicon (arm64)
 - [PlayCover](https://github.com/PlayCover/PlayCover) 已安装
 - Xcode 14+（仅构建时需要）
+- **GUI Streamable HTTP 建议 macOS 14+**
 
 ## 构建
 
@@ -70,68 +83,106 @@ cd PlayCover
 ### 构建 PlayCover.app（包含内嵌 MCP Server）
 
 ```bash
-xcodebuild -scheme PlayCover \
+xcodebuild -project PlayCover.xcodeproj \
+  -scheme PlayCover \
   -configuration Release \
-  -derivedDataPath build \
-  FASTLANE=1 CODE_SIGNING_ALLOWED=NO \
+  -derivedDataPath /tmp/PlayCover-DerivedData \
+  FASTLANE=1 CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES \
   build
 ```
 
-> **说明**：`FASTLANE=1` 跳过 Carthage Bootstrap 脚本，`CODE_SIGNING_ALLOWED=NO` 跳过签名（本地开发调试用）。正式分发请在 Xcode 中配置好 provisioning profile 后去掉这两个参数。
+### 安装 GUI 验证包（推荐）
 
-构建产物位于：
+> **重要**：不要直接启动 `build/.../PlayCover.app` 或 `DerivedData/.../PlayCover.app` 做 GUI 验证。PlayCover 会执行 `AppIntegrity` 检查，若不在 `/Applications/PlayCover.app`，会弹出“移到应用程序文件夹”对话框。
 
+推荐使用仓库内脚本安装并重签名：
+
+```bash
+./BuildScripts/build_and_install.sh
+open /Applications/PlayCover.app
 ```
-build/Build/Products/Release/PlayCover.app
-```
 
-启动 PlayCover.app 后，MCP Server 自动在 `127.0.0.1:19820` 上监听。
+该脚本会：
+
+- 构建 `PlayCover` scheme
+- 安装到 `/Applications/PlayCover.app`
+- 对整个 `.app` 做 ad-hoc 重签名，修复 Sparkle 等内嵌 framework 的 Team ID 不匹配问题
 
 ### 构建 PlayCoverMCP CLI（独立命令行工具）
 
 ```bash
-xcodebuild -scheme PlayCoverMCP \
+xcodebuild -project PlayCover.xcodeproj \
+  -scheme PlayCoverMCP \
   -configuration Release \
-  -derivedDataPath build \
-  FASTLANE=1 CODE_SIGNING_ALLOWED=NO \
+  -derivedDataPath /tmp/PlayCover-DerivedData \
+  FASTLANE=1 CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES \
   build
 ```
 
 构建产物位于：
 
+```text
+/tmp/PlayCover-DerivedData/Build/Products/Release/PlayCoverMCP
 ```
-build/Build/Products/Release/PlayCoverMCP
-```
-
-> **提示**：可以将二进制复制到方便的位置，例如 `/usr/local/bin/PlayCoverMCP`。
 
 ## 验证连接
 
-### GUI 内嵌模式（TCP）
+### GUI 内嵌模式（Streamable HTTP）
 
-启动 PlayCover.app 后：
+启动 `/Applications/PlayCover.app` 后：
 
-1. **查看 UI 状态**：打开 Settings → MCP Server，确认状态显示为 "Running"
+1. **查看 UI 状态**：打开 **Settings → MCP Server**，确认状态为 Running，端点显示为 `http://127.0.0.1:19820/mcp`
 2. **命令行验证**：
 
 ```bash
-# 检查端口是否在监听
-lsof -i :19820
+# initialize
+curl -i -X POST http://127.0.0.1:19820/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}'
 
-# 发送测试请求（initialize 握手）
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | nc localhost 19820
+# initialized
+curl -i -X POST http://127.0.0.1:19820/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Mcp-Session-Id: <session-id>" \
+  -H "Mcp-Protocol-Version: 2025-11-25" \
+  -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+
+# tools/list
+curl -X POST http://127.0.0.1:19820/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Mcp-Session-Id: <session-id>" \
+  -H "Mcp-Protocol-Version: 2025-11-25" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 ```
 
-如果连接正常，会返回包含 `serverInfo` 的 JSON 响应。
+如需完整集成验证，请使用：
+
+```bash
+./Scripts/test_http_mcp.sh
+```
+
+如果要让脚本自动拉起 GUI，请先确保已经安装到 `/Applications`，再执行：
+
+```bash
+PLAYCOVER_APP_PATH=/Applications/PlayCover.app ./Scripts/test_http_mcp.sh
+```
+
+### GUI Legacy TCP 模式
+
+如客户端尚未支持 Streamable HTTP，可在 Settings 中切到 TCP，然后使用：
+
+```text
+tcp://127.0.0.1:19820
+```
 
 ### CLI 模式（stdio）
 
 ```bash
-# 确认二进制可执行
-build/Build/Products/Release/PlayCoverMCP --help 2>/dev/null; echo $?
-
-# 快速测试协议握手（发送 initialize 请求）
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | build/Build/Products/Release/PlayCoverMCP 2>/dev/null | head -1
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' \
+  | /tmp/PlayCover-DerivedData/Build/Products/Release/PlayCoverMCP 2>/dev/null | head -1
 ```
 
 ## Agent 侧配置
@@ -140,9 +191,9 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 
 ---
 
-### GUI 内嵌模式（TCP，推荐）
+### GUI 内嵌模式（Streamable HTTP，推荐）
 
-> **前提**：PlayCover.app 正在运行。
+> **前提**：`/Applications/PlayCover.app` 正在运行，且 Settings 中的 transport 为 **Streamable HTTP**。
 
 #### Claude Desktop
 
@@ -152,9 +203,8 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 {
   "mcpServers": {
     "playcover": {
-      "transport": "tcp",
-      "host": "127.0.0.1",
-      "port": 19820
+      "transport": "streamable-http",
+      "url": "http://127.0.0.1:19820/mcp"
     }
   }
 }
@@ -162,15 +212,12 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 
 #### CodeBuddy
 
-在项目根目录或全局 MCP 配置中添加：
-
 ```json
 {
   "mcpServers": {
     "playcover": {
-      "host": "127.0.0.1",
-      "port": 19820,
-      "transport": "tcp"
+      "transport": "streamable-http",
+      "url": "http://127.0.0.1:19820/mcp"
     }
   }
 }
@@ -184,6 +231,34 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 {
   "mcpServers": {
     "playcover": {
+      "transport": "streamable-http",
+      "url": "http://127.0.0.1:19820/mcp"
+    }
+  }
+}
+```
+
+#### 安全说明
+
+- POST 请求必须携带 `Accept: application/json, text/event-stream`
+- GET 请求必须携带 `Accept: text/event-stream`
+- initialize 之后，后续请求必须携带：
+  - `Mcp-Session-Id`
+  - `Mcp-Protocol-Version: 2025-11-25`
+- 非法 `Origin` 会返回 `403`
+- 缺失或无效的协议版本会返回 `400`
+- 已失效 session 会返回 `404`
+
+---
+
+### GUI 内嵌模式（TCP，Legacy）
+
+仅在旧客户端需要时使用：
+
+```json
+{
+  "mcpServers": {
+    "playcover": {
       "transport": "tcp",
       "host": "127.0.0.1",
       "port": 19820
@@ -192,22 +267,11 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 }
 ```
 
-#### 其他支持 MCP TCP 的客户端
-
-配置要素：
-- **transport**：`tcp`
-- **host**：`127.0.0.1`
-- **port**：`19820`
-
-> **注意**：不同 Agent 客户端对 TCP transport 的支持程度可能不同。如果您的客户端尚不支持 TCP MCP，请使用下方的 CLI stdio 模式。
-
 ---
 
 ### CLI 模式（stdio）
 
 #### Claude Desktop
-
-编辑 `~/Library/Application Support/Claude/claude_desktop_config.json`：
 
 ```json
 {
@@ -235,8 +299,6 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 
 #### Cursor
 
-编辑 `.cursor/mcp.json`：
-
 ```json
 {
   "mcpServers": {
@@ -250,9 +312,9 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 #### 其他客户端
 
 配置要素：
-- **command**：PlayCoverMCP 二进制路径
+- **command**：`PlayCoverMCP` 二进制路径
 - **transport**：`stdio`
-- 无需额外的 args 或环境变量
+- 无需额外参数
 
 ## 功能列表
 
@@ -413,28 +475,33 @@ Session 侧操作依赖 Host ↔ Runtime 的双通道 TCP bridge：
 ## 运行测试
 
 ```bash
-# 构建测试
-xcodebuild build-for-testing \
+# PlayCoverMCP 全量测试
+xcodebuild test -project PlayCover.xcodeproj \
   -scheme PlayCoverMCP \
   -destination 'platform=macOS,arch=arm64' \
-  FASTLANE=1 CODE_SIGNING_ALLOWED=NO
+  -derivedDataPath /tmp/PlayCover-DerivedData \
+  FASTLANE=1 CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES
 
-# 执行测试
-xcodebuild test-without-building \
-  -scheme PlayCoverMCP \
-  -destination 'platform=macOS,arch=arm64' \
-  FASTLANE=1 CODE_SIGNING_ALLOWED=NO
+# HTTP 集成测试（要求 GUI 已在 /Applications 中安装并运行）
+./Scripts/test_http_mcp.sh
 ```
 
-当前测试覆盖：572 个测试用例，覆盖协议、注册、服务、工具、Session 生命周期、可靠性、E2E 冒烟等。
+当前测试覆盖包括：
+
+- `PlayCoverMCP` 单元/集成测试：**655 tests, 1 skipped, 0 failures**
+- `Scripts/test_http_mcp.sh`：HTTP 握手、SSE、Origin、Session、Protocol Version、DELETE 会话终止
 
 ## 故障排查
 
 | 问题 | 可能原因 | 解决方案 |
 |------|----------|----------|
-| **TCP 模式**：Agent 无法连接 | PlayCover.app 未运行 | 启动 PlayCover.app，检查 Settings → MCP Server 状态 |
-| **TCP 模式**：端口 19820 不可达 | 端口被其他进程占用 | `lsof -i :19820` 检查占用情况，关闭冲突进程 |
-| **TCP 模式**：Settings 显示 "Failed" | TCP 监听失败 | 检查 Settings → MCP Server 中的错误信息 |
+| **HTTP 模式**：Agent 无法连接 | PlayCover.app 未运行，或 Settings 中当前 transport 不是 Streamable HTTP | 启动 `/Applications/PlayCover.app`，检查 Settings → MCP Server 状态与端点 |
+| **HTTP 模式**：启动时弹出“移到应用程序文件夹” | 你直接打开了 `build/.../PlayCover.app` | 改用 `./BuildScripts/build_and_install.sh` 安装到 `/Applications`，然后 `open /Applications/PlayCover.app` |
+| **HTTP 模式**：端口 19820 不可达 | 端口被其他进程占用 | `lsof -i :19820` 检查占用情况，关闭冲突进程 |
+| **HTTP 模式**：返回 400 | 缺少 `Accept`、`Mcp-Session-Id` 或 `Mcp-Protocol-Version` | 按 README 示例补齐请求头 |
+| **HTTP 模式**：返回 403 | `Origin` 非本地来源 | 使用本地客户端或移除无效 `Origin` |
+| **HTTP 模式**：返回 404 | Session 已过期或已被 DELETE 终止 | 重新发送 `initialize` 获取新 session |
+| **TCP 模式**：旧客户端无法连接 | GUI 当前没有切到 Legacy TCP | 在 Settings → MCP Server 中切换 transport 为 TCP |
 | **CLI 模式**：Agent 无法连接 | 二进制路径错误 | 确认路径正确且有执行权限 (`chmod +x`) |
 | `create_session` 超时 | Runtime 未启动或未注入 PlayTools | 先 `launch_app`，确保应用已注入 PlayTools |
 | 触控/键盘命令失败 | Session 状态为 disconnected/closed | 检查 `list_sessions`，必要时重新创建 session |
@@ -442,14 +509,15 @@ xcodebuild test-without-building \
 
 ## 开发文档
 
-内部实施文档位于 `LocalDocs/MCP/`，包含架构规划、任务看板、测试策略、经验教训等，供开发者和 AI Agent 参考。
+本轮 HTTP 改造实施文档位于 `LocalDocs/HttpMCP/`，旧版 MCP 文档位于 `LocalDocs/MCP/`，包含架构规划、任务看板、测试策略、经验教训等，供开发者和 AI Agent 参考。
 
 ## 协议版本
 
-- **MCP 协议**：`2024-11-05`
+- **MCP 协议**：`2025-11-25`
 - **Server 版本**：`0.2.0`
 - **Server 名称**：`playcover-mcp`（CLI）/ `playcover-mcp-gui`（GUI 内嵌）
-- **TCP 默认端口**：`19820`（仅 GUI 内嵌模式）
+- **GUI 默认 HTTP 端点**：`http://127.0.0.1:19820/mcp`
+- **GUI Legacy TCP 默认端口**：`19820`
 
 ## License
 

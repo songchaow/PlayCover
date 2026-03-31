@@ -147,65 +147,48 @@ Render Capture 相关联调如果涉及：
 
 ---
 
-### 七、延迟注入方案（RC-009 核心技术方向）
+### 七、延迟注入方案（RC-009 — 已实施 ✅）
 
-为了解决 6.2 中的兼容性问题，拟将注入时机从 **启动期 `DYLD_INSERT_LIBRARIES`** 改为 **运行时按需 `dlopen`**。
+已将注入时机从 **启动期 `DYLD_INSERT_LIBRARIES`** 改为 **运行时按需 `dlopen`**。
 
 #### 7.1 方案概述
 
-| 项 | 当前（DYLD_INSERT_LIBRARIES） | 目标（dlopen 延迟注入） |
+| 项 | 旧（DYLD_INSERT_LIBRARIES） | 新（dlopen 延迟注入） |
 |---|---|---|
 | 注入时机 | 进程启动前（dyld 阶段） | 首次执行 `capture_metal_frame` 或 `get_capture_status` 时 |
-| 注入位置 | Host 侧 `effectiveLaunchEnvironment()` | Runtime 侧 `MetalCaptureService` |
+| 注入位置 | Host 侧 `effectiveLaunchEnvironment()` | Runtime 侧 `MetalCaptureService.ensureGPUToolsCaptureLoaded()` |
 | CAMetalLayer hook | 影响 **所有** layer 创建（包括启动阶段） | 仅影响 dlopen **之后** 创建的 layer |
-| 不兼容 app | 启动即崩溃 | 正常启动；截帧时可能成功（如果不兼容的 layer 只在启动阶段创建） |
+| 不兼容 app | 启动即崩溃 | 正常启动；截帧时可能成功 |
 
-#### 7.2 代码改动方向
-
-涉及 3 个文件：
+#### 7.2 代码改动（已完成）
 
 **A. `PlayCover/Model/PlayApp.swift` + `PlayCoverMCP/HostServices/Launch/LaunchService.swift`**
 
-- 当 `metalCaptureEnabled=true` 时，**不再设置 `DYLD_INSERT_LIBRARIES`**
+- 移除 `DYLD_INSERT_LIBRARIES` 注入逻辑
 - 其余环境变量逻辑不变
 
 **B. `Carthage/Checkouts/PlayTools/PlayTools/MetalCaptureService.swift`**
 
-- 新增延迟加载逻辑：
+- 新增 `ensureGPUToolsCaptureLoaded()` 方法：`dlopen` + 重新获取 `captureManager`
+- `initialize()` 不再获取 `captureManager`（避免单例缓存 `false`）
+- `captureFrame()` 和 `getStatus()` 调用时自动延迟加载
 
-```swift
-private static var gpuToolsCaptureLoaded = false
+#### 7.3 Q1 验证结果（RC-010 已完成）
 
-private func ensureGPUToolsCaptureLoaded() -> Bool {
-    guard !Self.gpuToolsCaptureLoaded else { return true }
-    let handle = dlopen("/usr/lib/libmtlcapture.dylib", RTLD_NOW)
-    Self.gpuToolsCaptureLoaded = (handle != nil)
-    if Self.gpuToolsCaptureLoaded {
-        // 重新获取 captureManager 以反映新加载的库能力
-        captureManager = MTLCaptureManager.shared()
-    }
-    return Self.gpuToolsCaptureLoaded
-}
-```
+| 场景 | 结果 | 含义 |
+|---|---|---|
+| 先查后 dlopen（原实例） | `false` → `false` | 单例缓存了首次查询 |
+| 先查后 dlopen（重新 `shared()`） | → `true` | **dlopen 后重新获取 `shared()` 可刷新** |
+| 先 dlopen 后查 | → `true` | **dlopen-first 完全可行** |
 
-- 在 `captureFrame()` 和 `getStatus()` 中调用 `ensureGPUToolsCaptureLoaded()`
+#### 7.4 待实测验证
 
-#### 7.3 方案风险与待验证问题
-
-这是 RC-009 的核心探索方向，以下是必须在实施前/中验证的关键问题：
-
-| # | 待验证问题 | 为什么重要 | 验证方法 |
-|---|---|---|---|
-| **Q1** | `dlopen` 后 `supportsDestination(.gpuTraceDocument)` 能否变为 `true`？ | `MTLCaptureManager` 是单例，可能在首次查询时缓存了 `false`。如果缓存不可刷新，整个方案不成立 | 写一个 Swift CLI：先查询 → `dlopen` → 再查询，观察前后变化 |
-| **Q2** | `dlopen` 后新创建的 `CAMetalLayer` 是否仍会崩溃（对原神）？ | 如果原神在渲染循环中持续创建新 `CAMetalLayer`（且使用不兼容模式），截帧期间仍可能崩溃 | 延迟注入后在原神上执行 `capture_metal_frame`，观察是否崩溃 |
-| **Q3** | `dlopen` 后 `startCapture` 能否成功？ | 即使 `supportsDestination` 返回 `true`，`startCapture` 也可能对延迟加载场景有额外检查 | QQ飞车上验证：改为延迟注入后重跑完整截帧流程 |
-| **Q4** | 延迟注入是否需要重建 xcframework + 重装 app？ | 改动在 PlayTools runtime 侧（`MetalCaptureService.swift`），需要 `sync_playtools_xcframework.sh` + 重装 app | 标准构建流程 |
-
-**如果 Q1 验证失败**（`dlopen` 后 `supportsDestination` 仍为 `false`），则需要考虑：
-
-- 是否有 API 可以重置 `MTLCaptureManager` 的内部缓存
-- 是否需要在 `dlopen` 后才首次访问 `MTLCaptureManager.shared()`（推迟 `initialize()` 时机）
-- 最坏情况：延迟注入方案不可行，需要改用其他策略（如 LLDB attach 注入）
+| # | 问题 | 状态 |
+|---|---|---|
+| **Q1** | `dlopen` 后 `supportsDestination` 能否变 `true`？ | ✅ 已验证通过 |
+| **Q2** | 原神延迟注入后能否正常启动？ | 待实测（需重建 + 重装） |
+| **Q3** | QQ飞车延迟注入后能否成功截帧？ | 待实测（需重建 + 重装） |
+| **Q4** | 是否需要重建 xcframework + 重装 app？ | 是 — 改动在 PlayTools 侧 |
 
 ---
 
@@ -218,26 +201,26 @@ private func ensureGPUToolsCaptureLoaded() -> Bool {
 | `RC-005` | — | `DONE` | 环境级 gpu-trace-unsupported 定位 | `Tasks/RC-005-定位环境级-gpu-trace-unsupported.md` |
 | `RC-006` | — | `DONE` | 默认设备级 capture 前提与替代路径验证 | `Tasks/RC-006-验证系统级-capture-前提与替代路径.md` |
 | `RC-007` | — | `DONE` | 真实渲染 command queue 发现与 queue/queue_scope 路径实现 | `Tasks/RC-007-定位真实渲染-command-queue-与-scope.md` |
-| `RC-008` | — | `DONE` | **找到根因并修复**：注入 `libmtlcapture.dylib` + MCP 改用 `NSWorkspace` 启动，`QQ飞车` 成功生成 `.gputrace` | `Tasks/RC-008-验证真实queue路径-live.md` |
+| `RC-008` | — | `DONE` | 找到根因并修复：注入 `libmtlcapture.dylib` + MCP 改用 `NSWorkspace` 启动，QQ飞车成功生成 `.gputrace` | `Tasks/RC-008-验证真实queue路径-live.md` |
+| `RC-009` | — | `DONE` | **延迟注入方案**：移除 `DYLD_INSERT_LIBRARIES`，改为 runtime `dlopen`，解决部分 app 启动崩溃 | `Tasks/RC-009-延迟注入方案.md` |
+| `RC-010` | — | `DONE` | **验证 Q1**：独立 Swift CLI 确认 `dlopen` 后 `supportsDestination(.gpuTraceDocument)` 可变为 `true` | `Tasks/RC-010-dlopen可行性验证.md` |
 | `RC-002` | — | `WONTFIX` | fresh reinstall 复测（截帧已成功，不再需要） | `Tasks/RC-002-fresh-reinstall-复测.md` |
-| **`RC-009`** | **P0** | **TODO** | **延迟注入方案：验证 `dlopen` 可行性并实施**，解决 `DYLD_INSERT_LIBRARIES` 导致部分 app 崩溃的兼容性问题 | `Tasks/RC-009-延迟注入方案.md` |
-| **`RC-010`** | **P0** | **TODO** | **验证 Q1**：独立 Swift CLI 验证 `dlopen("/usr/lib/libmtlcapture.dylib")` 后 `supportsDestination(.gpuTraceDocument)` 能否从 `false` 变为 `true`。这是 RC-009 的前置门槛 | `Tasks/RC-010-dlopen可行性验证.md` |
-| `RC-004` | P1 | `TODO` | 整理最终可重复 SOP、产物位置与关单验证标准（需等 RC-009 确定最终注入策略后再关单） | `Tasks/RC-004-成功截帧与关单.md` |
+| **`RC-011`** | **P0** | **TODO** | **端到端验证**：重建 PlayTools xcframework + PlayCover.app，实测 QQ飞车延迟注入截帧（Q3）和原神正常启动（Q2） | — |
+| `RC-004` | P1 | `TODO` | 整理最终可重复 SOP、产物位置与关单验证标准（需等 RC-011 实测通过后关单） | `Tasks/RC-004-成功截帧与关单.md` |
 
 ### 九、当前最重要任务
 
-> **`RC-010`：验证 `dlopen` 可行性。**
+> **`RC-011`：端到端验证延迟注入方案。**
 >
-> 这是 RC-009 延迟注入方案的前置门槛。如果 Q1 验证通过，立即推进 RC-009 实施；如果失败，需要重新评估技术方向。
+> RC-009 代码改动已完成，RC-010 验证 `dlopen` 可行性已通过。下一步需要重建 PlayTools + PlayCover，在真实 app 上实测。
 
-RC-010 的具体步骤：
+RC-011 的具体步骤：
 
-1. 编写一个独立 Swift CLI（不依赖 PlayCover / PlayTools），在 **不设 `DYLD_INSERT_LIBRARIES`** 的环境下：
-   - 查询 `MTLCaptureManager.shared().supportsDestination(.gpuTraceDocument)` → 预期 `false`
-   - 执行 `dlopen("/usr/lib/libmtlcapture.dylib", RTLD_NOW)`
-   - 再次查询 `supportsDestination(.gpuTraceDocument)` → 观察是否变为 `true`
-2. 如果首次查询前就 dlopen，是否能得到 `true`？（验证 `MTLCaptureManager` 的初始化时序要求）
-3. 将结果记录到 `Tasks/RC-010-dlopen可行性验证.md`
+1. 执行 `BuildScripts/sync_playtools_xcframework.sh` 重建 PlayTools xcframework
+2. 执行 `BuildScripts/build_and_install.sh` 重建并安装 PlayCover.app
+3. 重装 QQ飞车（或重新注入 PlayTools），验证截帧仍能成功（Q3）
+4. 开启原神的 `metalCaptureEnabled=true`，验证正常启动不崩溃（Q2）
+5. 将结果记录到 Dashboard
 
 ---
 
@@ -257,9 +240,9 @@ RC-010 的具体步骤：
 
 关键代码锚点：
 
-- `PlayCover/Model/PlayApp.swift`：`effectiveLaunchEnvironment()` — `DYLD_INSERT_LIBRARIES` 注入逻辑
-- `PlayCoverMCP/HostServices/Launch/LaunchService.swift`：`effectiveLaunchEnvironment()` — 同上 + `launchApp()` 使用 `NSWorkspace.openApplication`
-- `Carthage/Checkouts/PlayTools/PlayTools/MetalCaptureService.swift`：runtime 截帧核心实现，RC-009 改动的主要目标
+- `PlayCover/Model/PlayApp.swift`：`effectiveLaunchEnvironment()` — 已移除 `DYLD_INSERT_LIBRARIES` 注入
+- `PlayCoverMCP/HostServices/Launch/LaunchService.swift`：`effectiveLaunchEnvironment()` — 已移除 `DYLD_INSERT_LIBRARIES` 注入
+- `Carthage/Checkouts/PlayTools/PlayTools/MetalCaptureService.swift`：runtime 截帧核心实现，`ensureGPUToolsCaptureLoaded()` 实现延迟 dlopen
 
 崩溃样本：
 

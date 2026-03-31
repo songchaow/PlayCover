@@ -83,6 +83,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
     private static let maxTrackedCommandQueues = 8
 
     private var captureManager: MTLCaptureManager?
+    private var gpuToolsCaptureLoaded = false
     private var isCapturing = false
     private let trackedQueueLock = NSLock()
     private var trackedCommandQueues: [ObjectIdentifier: TrackedCommandQueue] = [:]
@@ -108,6 +109,39 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
     /// scope 模式是否已经在某个 vsync 上进入 beginScope
     private var hasBegunActiveCaptureScope = false
 
+    // MARK: - Delayed GPU Tools Capture Loading (RC-009)
+
+    /// Attempt to load `/usr/lib/libmtlcapture.dylib` at runtime via `dlopen`.
+    ///
+    /// **Why**: `DYLD_INSERT_LIBRARIES` injection at launch causes some apps (e.g. Genshin Impact)
+    /// to crash with `SIGABRT` because `GPUToolsCapture` globally hooks `CAMetalLayer` init at
+    /// dyld stage. Delayed `dlopen` avoids this by loading the library only when capture is needed.
+    ///
+    /// **Important**: After `dlopen`, `MTLCaptureManager.shared()` must be re-acquired because
+    /// the singleton caches `supportsDestination` at first access. A fresh `shared()` call after
+    /// the library is loaded returns a new instance with the correct capability (verified by RC-010).
+    private func ensureGPUToolsCaptureLoaded() -> Bool {
+        guard !gpuToolsCaptureLoaded else { return true }
+
+        let libPath = "/usr/lib/libmtlcapture.dylib"
+        guard FileManager.default.fileExists(atPath: libPath) else {
+            logStatusProbe("ensureGPUToolsCaptureLoaded: library not found at \(libPath)")
+            return false
+        }
+
+        let handle = dlopen(libPath, RTLD_NOW)
+        if handle != nil {
+            gpuToolsCaptureLoaded = true
+            // Re-acquire the singleton so supportsDestination reflects the newly loaded library.
+            captureManager = MTLCaptureManager.shared()
+            logStatusProbe("ensureGPUToolsCaptureLoaded: SUCCESS — captureManager re-acquired")
+        } else {
+            let errMsg = dlerror().map { String(cString: $0) } ?? "unknown"
+            logStatusProbe("ensureGPUToolsCaptureLoaded: dlopen FAILED — \(errMsg)")
+        }
+        return gpuToolsCaptureLoaded
+    }
+
     /// 初始化截帧服务
     /// 当前实现的直接开关是 `PlaySettings.shared.metalCaptureEnabled`。
     /// 注意：安装包 `Info.plist` 中是否存在 `MetalCaptureEnabled` key 仍然值得单独观测，
@@ -118,11 +152,13 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
             return
         }
 
-        captureManager = MTLCaptureManager.shared()
+        // NOTE: captureManager is NOT acquired here. It will be lazily initialized
+        // when ensureGPUToolsCaptureLoaded() is called during captureFrame() or getStatus().
+        // This avoids the MTLCaptureManager singleton caching supportsDestination=false
+        // before libmtlcapture.dylib is loaded via dlopen (RC-009).
         installQueueDiscoveryIfNeeded()
 
-        let status = makeStatus(manager: captureManager)
-        print("[PlayTools] MetalCaptureService initialized. \(status.diagnosticSummary)")
+        print("[PlayTools] MetalCaptureService initialized (delayed capture library loading enabled)")
     }
 
     /// 执行一次帧截取，输出 .gputrace 到指定路径
@@ -136,6 +172,9 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         durationMs: Int = 100,
         captureTargetRawValue: String? = nil
     ) -> CaptureResult {
+        // Lazily load libmtlcapture.dylib and re-acquire MTLCaptureManager (RC-009)
+        _ = ensureGPUToolsCaptureLoaded()
+
         guard let manager = captureManager else {
             let status = makeStatus(manager: nil)
             return CaptureResult(
@@ -397,7 +436,9 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
 
     /// 查询截帧状态
     @objc public func getStatus() -> CaptureStatus {
-        makeStatus(manager: captureManager)
+        // Lazily load libmtlcapture.dylib and re-acquire MTLCaptureManager (RC-009)
+        _ = ensureGPUToolsCaptureLoaded()
+        return makeStatus(manager: captureManager)
     }
 
     private func installQueueDiscoveryIfNeeded() {

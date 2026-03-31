@@ -8,99 +8,70 @@
 
 ---
 
-### 二、为什么这个验证很关键
+### 二、验证结果（2026-03-31 22:46）
 
-`MTLCaptureManager` 是系统单例。存在以下可能性：
+运行环境：Apple M4 Pro, macOS
 
-- 首次调用 `supportsDestination(.gpuTraceDocument)` 时，Metal 运行时检查当前进程中是否加载了 `GPUToolsCapture`，**并缓存结果**
-- 如果是缓存式查询，则在 `dlopen` 之前查询过一次 `false` 后，即使后来加载了库，也永远返回 `false`
-- 如果是实时查询，则 `dlopen` 后立即可用
+#### 场景 A：先查询 → dlopen → 再查询
 
----
-
-### 三、验证方案
-
-编写一个独立 Swift 脚本（不依赖 PlayCover / PlayTools），测试 3 个场景：
-
-#### 场景 A：先查询 → 后 dlopen → 再查询
-
-```swift
-import Metal
-import Darwin
-
-let manager = MTLCaptureManager.shared()
-let before = manager.supportsDestination(.gpuTraceDocument)
-print("BEFORE dlopen: supportsGPUTrace = \(before)")
-
-let handle = dlopen("/usr/lib/libmtlcapture.dylib", RTLD_NOW)
-print("dlopen result: \(handle != nil ? "success" : "failed: \(String(cString: dlerror()))")")
-
-let after = manager.supportsDestination(.gpuTraceDocument)
-print("AFTER dlopen: supportsGPUTrace = \(after)")
+```
+[A] BEFORE dlopen: supportsGPUTrace = false
+[A] BEFORE dlopen: supportsDeveloperTools = false
+[A] dlopen: SUCCESS (handle=0x000000007e3c7f70)
+[A] AFTER dlopen: supportsGPUTrace = false          ← 缓存！原始实例不刷新
+[A] AFTER dlopen: supportsDeveloperTools = false
 ```
 
-#### 场景 B：先 dlopen → 后查询（不缓存 false）
+**场景 A2**（dlopen 后重新获取 `shared()`）：
 
-```swift
-import Metal
-import Darwin
-
-let handle = dlopen("/usr/lib/libmtlcapture.dylib", RTLD_NOW)
-print("dlopen result: \(handle != nil ? "success" : "failed: \(String(cString: dlerror()))")")
-
-let manager = MTLCaptureManager.shared()
-let result = manager.supportsDestination(.gpuTraceDocument)
-print("supportsGPUTrace = \(result)")
+```
+[A2] Re-acquired manager supportsGPUTrace = true    ← 新实例返回 true！
+[A2] Same instance as A? false                       ← 确认是新实例
 ```
 
-#### 场景 C：先 dlopen → 后获取 MTLCaptureManager（推迟单例初始化）
+#### 场景 B：先 dlopen → 后查询
 
-```swift
-import Metal
-import Darwin
-
-let handle = dlopen("/usr/lib/libmtlcapture.dylib", RTLD_NOW)
-print("dlopen result: \(handle != nil ? "success" : "failed")")
-
-// 延迟获取 — 确保 MTLCaptureManager 单例在库加载后才初始化
-let manager = MTLCaptureManager.shared()
-let gpuTrace = manager.supportsDestination(.gpuTraceDocument)
-let devTools = manager.supportsDestination(.developerTools)
-print("supportsGPUTrace = \(gpuTrace)")
-print("supportsDeveloperTools = \(devTools)")
 ```
-
-运行方式：
-
-```bash
-# 确保不设 DYLD_INSERT_LIBRARIES
-env -i HOME=$HOME PATH=$PATH xcrun swift /tmp/dlopen_probe.swift
+[B] dlopen: SUCCESS (handle=0x000000007e3c7f70)
+[B] supportsGPUTrace = true                          ← 直接成功
+[B] supportsDeveloperTools = false
 ```
 
 ---
 
-### 四、期望结果矩阵
+### 三、结论
 
-| 场景 | before dlopen | after dlopen | 含义 |
-|---|---|---|---|
-| A：先查后加载 | `false` | `true` | **最佳**：实时查询，延迟注入完全可行 |
-| A：先查后加载 | `false` | `false` | **缓存问题**：需要在 dlopen 之前避免查询 `supportsDestination` |
-| B：先加载后查 | — | `true` | **可行**：只要 dlopen 在首次查询前完成即可 |
-| B：先加载后查 | — | `false` | **不可行**：`dlopen` 方式无法激活 `GPUToolsCapture`，需要 `DYLD_INSERT_LIBRARIES` |
+| 场景 | 结果 | 含义 |
+|---|---|---|
+| A：先查后加载（原实例） | `false` → `false` | `MTLCaptureManager` 单例缓存了首次查询结果 |
+| A2：先查后加载（重新 `shared()`） | → `true` | **dlopen 后重新获取 `shared()` 可以刷新状态** |
+| B：先加载后查 | → `true` | **dlopen-first 方案完全可行** |
 
----
+**关键发现**：
 
-### 五、如果验证失败的后备思路
-
-如果所有场景都返回 `false`：
-
-1. **检查 `dlopen` 是否真的成功加载了库**：确认 `handle != nil`，且 `GPUToolsCapture` 的符号可解析（如 `dlsym(handle, "MakeLayerInfos")`）
-2. **检查是否需要 `METAL_DEVICE_WRAPPER_TYPE=1` 等环境变量配合**：当前 `injectMetalCaptureEnvironment` 开关正好可以测试
-3. **检查是否需要 `Info.plist` 中有 `MetalCaptureEnabled=true`**：独立 CLI 没有 `Info.plist`，可能需要用一个真实 app bundle 来测试
-4. **最后手段**：如果 `dlopen` 方案不可行，考虑改为只有在用户显式执行 `capture_metal_frame` 前才重启 app（带 `DYLD_INSERT_LIBRARIES`），即"按需重启"策略
+1. **`dlopen` 方案可行** ✅ — `supportsDestination(.gpuTraceDocument)` 在 `dlopen` 后能返回 `true`
+2. **必须在 `dlopen` 后重新获取 `MTLCaptureManager.shared()`** — 已缓存的实例不会刷新
+3. **最佳策略**：不在 `initialize()` 中获取 `captureManager`，而是在首次 `captureFrame()` / `getStatus()` 时先 `dlopen` 再获取
 
 ---
 
-### 六、状态
+### 四、实施（RC-009）
 
-`TODO` — 当前最高优先级任务。
+基于验证结果，已直接实施 RC-009 延迟注入方案：
+
+**代码改动**：
+
+1. **`PlayCover/Model/PlayApp.swift`**：移除 `effectiveLaunchEnvironment()` 中的 `DYLD_INSERT_LIBRARIES` 注入
+2. **`PlayCoverMCP/HostServices/Launch/LaunchService.swift`**：同上
+3. **`Carthage/Checkouts/PlayTools/PlayTools/MetalCaptureService.swift`**：
+   - 新增 `ensureGPUToolsCaptureLoaded()` 方法：`dlopen` + 重新获取 `captureManager`
+   - `initialize()` 不再获取 `captureManager`（避免缓存 `false`）
+   - `captureFrame()` 和 `getStatus()` 中在使用前调用 `ensureGPUToolsCaptureLoaded()`
+
+---
+
+### 五、状态
+
+`DONE` — 验证通过，RC-009 已实施。
+
+验证脚本保留在 `/tmp/dlopen_probe.swift` 和 `/tmp/dlopen_probe_b.swift`。

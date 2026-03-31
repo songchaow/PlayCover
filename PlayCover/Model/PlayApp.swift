@@ -166,10 +166,10 @@ extension PlayApp {
             environment.removeValue(forKey: key)
         }
 
-        if settings.settings.metalCaptureEnabled,
-           FileManager.default.fileExists(atPath: PlayApp.gpuToolsCaptureLibrary) {
-            environment["DYLD_INSERT_LIBRARIES"] = PlayApp.gpuToolsCaptureLibrary
-        }
+        // NOTE: DYLD_INSERT_LIBRARIES injection of libmtlcapture.dylib has been removed
+        // to fix compatibility crashes (e.g. Genshin Impact SIGABRT on startup).
+        // Metal capture is now enabled via runtime dlopen() inside PlayTools'
+        // MetalCaptureService — see RC-009 delayed injection.
 
         if settings.settings.injectMetalCaptureEnvironment {
             for (key, value) in PlayApp.injectedMetalCaptureEnvironment {

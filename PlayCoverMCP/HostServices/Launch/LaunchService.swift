@@ -254,10 +254,10 @@ public final class LaunchService: Sendable {
             environment.removeValue(forKey: key)
         }
 
-        if isMetalCaptureEnabled(bundleId: bundleId),
-           FileManager.default.fileExists(atPath: Self.gpuToolsCaptureLibrary) {
-            environment["DYLD_INSERT_LIBRARIES"] = Self.gpuToolsCaptureLibrary
-        }
+        // NOTE: DYLD_INSERT_LIBRARIES injection of libmtlcapture.dylib has been removed
+        // to fix compatibility crashes (e.g. Genshin Impact SIGABRT on startup).
+        // Metal capture is now enabled via runtime dlopen() inside PlayTools'
+        // MetalCaptureService — see RC-009 delayed injection.
 
         if shouldInjectMetalCaptureEnvironment(bundleId: bundleId) {
             for (key, value) in Self.injectedMetalCaptureEnvironment {

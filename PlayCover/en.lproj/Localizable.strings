@@ -66,6 +66,9 @@
 "mcp.host.loopback" = "Local only";
 "mcp.host.all" = "All interfaces";
 "mcp.host.warning" = "Warning: Listening on all interfaces exposes MCP Server to network. Only use in trusted networks.";
+"session.status.ready" = "Connected";
+"session.status.starting" = "Connecting";
+"session.status.disconnected" = "Disconnected";
 "preferences.whenUninstalling" = "When uninstalling:";
 "preferences.toggle.showUninstall" = "Show warning popup";
 "preferences.toggle.clearAppData" = "Clear data";

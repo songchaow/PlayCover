@@ -125,6 +125,22 @@ struct PlayAppConditionalView: View {
     @State var hasPlayTools: Bool?
 
     @State private var cache = DataCache.instance
+    @ObservedObject private var mcpManager = MCPManager.shared
+
+    /// Active session snapshots for this app's bundleId.
+    private var appSessions: [MCPManager.RuntimeSessionSnapshot] {
+        mcpManager.sessions(for: app.info.bundleIdentifier)
+    }
+
+    /// The "best" status to display: prefer ready > starting > disconnected.
+    private var sessionIndicatorStatus: String? {
+        let sessions = appSessions
+        guard !sessions.isEmpty else { return nil }
+        if sessions.contains(where: { $0.status == "ready" }) { return "ready" }
+        if sessions.contains(where: { $0.status == "starting" }) { return "starting" }
+        if sessions.contains(where: { $0.status == "disconnected" }) { return "disconnected" }
+        return nil
+    }
 
     var body: some View {
         Group {
@@ -165,6 +181,10 @@ struct PlayAppConditionalView: View {
                             .frame(width: 30, height: 30)
                     }
                     Spacer()
+                    if let status = sessionIndicatorStatus {
+                        SessionIndicatorView(status: status, sessionCount: appSessions.count)
+                            .padding(.trailing, 8)
+                    }
                     Text(app.settings.info.bundleVersion)
                         .padding(.horizontal, 15)
                         .foregroundColor(.secondary)
@@ -195,6 +215,12 @@ struct PlayAppConditionalView: View {
                     .cornerRadius(15)
                     .shadow(radius: 1)
                     .frame(width: 60, height: 60)
+                    .overlay(alignment: .topTrailing) {
+                        if let status = sessionIndicatorStatus {
+                            SessionDotView(status: status)
+                                .offset(x: 4, y: -4)
+                        }
+                    }
 
                     let noPlayToolsWarning = Text(
                         (hasPlayTools ?? true) ? "" : "\(Image(systemName: "exclamationmark.triangle"))  "
@@ -239,5 +265,75 @@ struct PlayAppConditionalView: View {
             hasPlayTools = app.hasPlayTools()
             showStartingProgress = app.isStarting
         }
+    }
+}
+
+// MARK: - Session Status Indicators
+
+/// Color mapping for session status.
+private func sessionStatusColor(_ status: String) -> Color {
+    switch status {
+    case "ready": return .green
+    case "starting": return .orange
+    case "disconnected": return .red
+    default: return .gray
+    }
+}
+
+/// Localized label for session status.
+private func sessionStatusLabel(_ status: String) -> String {
+    switch status {
+    case "ready": return NSLocalizedString("session.status.ready", comment: "Session connected")
+    case "starting": return NSLocalizedString("session.status.starting", comment: "Session starting")
+    case "disconnected": return NSLocalizedString("session.status.disconnected", comment: "Session disconnected")
+    default: return status
+    }
+}
+
+/// Inline session status indicator for list mode.
+/// Shows a colored dot + label + optional session count badge.
+struct SessionIndicatorView: View {
+    let status: String
+    let sessionCount: Int
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(sessionStatusColor(status))
+                .frame(width: 8, height: 8)
+            Text(sessionStatusLabel(status))
+                .font(.caption)
+                .foregroundColor(.secondary)
+            if sessionCount > 1 {
+                Text("×\(sessionCount)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .help(sessionStatusTooltip(status: status, count: sessionCount))
+    }
+
+    private func sessionStatusTooltip(status: String, count: Int) -> String {
+        let label = sessionStatusLabel(status)
+        if count > 1 {
+            return "\(count) sessions (\(label))"
+        }
+        return "MCP Session: \(label)"
+    }
+}
+
+/// Small colored dot overlay for grid mode app icons.
+struct SessionDotView: View {
+    let status: String
+
+    var body: some View {
+        Circle()
+            .fill(sessionStatusColor(status))
+            .frame(width: 10, height: 10)
+            .overlay(
+                Circle()
+                    .stroke(Color(.windowBackgroundColor), lineWidth: 1.5)
+            )
+            .help("MCP Session: \(sessionStatusLabel(status))")
     }
 }

@@ -12,6 +12,17 @@ import SwiftUI
 class MCPManager: ObservableObject {
     static let shared = MCPManager()
 
+    // MARK: - Runtime Session Snapshot (GUI-visible)
+
+    /// Lightweight snapshot of a runtime session, suitable for GUI display.
+    /// Decoupled from PlayCoverMCP's `SessionInfo` to avoid cross-target dependency.
+    struct RuntimeSessionSnapshot: Identifiable, Equatable {
+        let id: String          // sessionId
+        let bundleId: String
+        let status: String      // "starting" | "ready" | "disconnected" | "closed"
+        let pid: Int32
+    }
+
     // MARK: - Constants
 
     enum TransportType: String, CaseIterable {
@@ -35,6 +46,9 @@ class MCPManager: ObservableObject {
     @Published var listenHost: TCPTransport.ListenHost = MCPManager.defaultHost
     @Published var transportType: TransportType = MCPManager.defaultTransportType
     @Published var lastError: String?
+
+    /// Runtime sessions grouped by bundleId, updated reactively from SessionRegistry.
+    @Published var runtimeSessions: [String: [RuntimeSessionSnapshot]] = [:]
 
     // MARK: - Persisted Settings
 
@@ -81,6 +95,16 @@ class MCPManager: ObservableObject {
     }
 
     // MARK: - Computed State
+
+    /// Get session snapshots for a given bundleId.
+    func sessions(for bundleId: String) -> [RuntimeSessionSnapshot] {
+        runtimeSessions[bundleId] ?? []
+    }
+
+    /// Whether any active (starting/ready) session exists for a given bundleId.
+    func hasActiveSession(for bundleId: String) -> Bool {
+        sessions(for: bundleId).contains { $0.status == "ready" || $0.status == "starting" }
+    }
 
     var isHTTPTransportSupported: Bool {
         if #available(macOS 14, *) {
@@ -189,6 +213,7 @@ class MCPManager: ObservableObject {
         registrationListener = nil
         isRunning = false
         connectedClients = 0
+        runtimeSessions = [:]
         lastError = nil
     }
 
@@ -314,6 +339,21 @@ class MCPManager: ObservableObject {
 
         // Session tools and resources
         let sessionRegistry = SessionRegistry()
+        sessionRegistry.onChange = { [weak self] allSessions in
+            guard let self = self else { return }
+            // Build grouped snapshot by bundleId, excluding pending sessions
+            var grouped: [String: [RuntimeSessionSnapshot]] = [:]
+            for session in allSessions where !session.sessionId.hasPrefix("pending-") {
+                let snapshot = RuntimeSessionSnapshot(
+                    id: session.sessionId,
+                    bundleId: session.bundleId,
+                    status: session.status.rawValue,
+                    pid: session.pid
+                )
+                grouped[session.bundleId, default: []].append(snapshot)
+            }
+            self.runtimeSessions = grouped
+        }
         let registrationListener = RegistrationListener(port: RegistrationListener.defaultPort, registry: sessionRegistry)
         do {
             let boundPort = try registrationListener.start()

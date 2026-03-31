@@ -391,3 +391,6 @@
 "macos.version" = "This app can be installed from Mac App Store";
 "ipaLibrary.AlphabeticalSort" = "Sort source apps alphabetically";
 "alert.install.anyway" = "Install Anyway";
+"session.status.ready" = "已連線";
+"session.status.starting" = "連線中";
+"session.status.disconnected" = "已斷線";

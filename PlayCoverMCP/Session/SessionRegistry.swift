@@ -14,6 +14,21 @@ public final class SessionRegistry: Sendable {
     private var sessions: [String: SessionInfo] = [:]
     private let lock = NSLock()
 
+    // MARK: - Change Notification
+
+    /// Called on the main queue whenever the session set changes (register/unregister/status update).
+    /// The closure receives a snapshot of all current sessions.
+    public var onChange: (([SessionInfo]) -> Void)?
+
+    private func notifyChange() {
+        let snapshot = Array(sessions.values)
+        if let onChange = onChange {
+            DispatchQueue.main.async {
+                onChange(snapshot)
+            }
+        }
+    }
+
     // MARK: - Init
 
     public init() {}
@@ -29,6 +44,7 @@ public final class SessionRegistry: Sendable {
             throw SessionError.sessionAlreadyExists(info.sessionId)
         }
         sessions[info.sessionId] = info
+        notifyChange()
     }
 
     /// Unregister a session by ID. Throws if not found.
@@ -39,6 +55,7 @@ public final class SessionRegistry: Sendable {
         guard sessions.removeValue(forKey: sessionId) != nil else {
             throw SessionError.sessionNotFound(sessionId)
         }
+        notifyChange()
     }
 
     /// Unregister all sessions for a given bundle ID.
@@ -52,6 +69,9 @@ public final class SessionRegistry: Sendable {
             .map(\.sessionId)
         for id in toRemove {
             sessions.removeValue(forKey: id)
+        }
+        if !toRemove.isEmpty {
+            notifyChange()
         }
         return toRemove
     }
@@ -108,6 +128,7 @@ public final class SessionRegistry: Sendable {
             throw SessionError.sessionNotFound(sessionId)
         }
         sessions[sessionId]?.status = newStatus
+        notifyChange()
     }
 
     /// Remove sessions that haven't sent a heartbeat within the given timeout.
@@ -121,6 +142,9 @@ public final class SessionRegistry: Sendable {
         for info in stale {
             sessions.removeValue(forKey: info.sessionId)
         }
+        if !stale.isEmpty {
+            notifyChange()
+        }
         return stale
     }
 
@@ -130,6 +154,10 @@ public final class SessionRegistry: Sendable {
     public func removeAll() {
         lock.lock()
         defer { lock.unlock() }
+        let hadSessions = !sessions.isEmpty
         sessions.removeAll()
+        if hadSessions {
+            notifyChange()
+        }
     }
 }

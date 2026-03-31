@@ -23,15 +23,16 @@
 截至当前，已经确认：
 
 - `PlayCover.app` 已能正常启动，GUI 内嵌 MCP 可用
-- 真实 app（优先 `QQ飞车`）可以启动并成功创建 `ready` session
-- 最新最小 live 复测中，`get_capture_status` **已经可以成功返回完整诊断字段**
-- 当前真正剩下的阻塞点是：**真实 app 仍然返回 `supports_gpu_trace=false`，且 `failure_reason=gpu_trace_document_unsupported`，更没有 `.gputrace` 落盘**
+- 真实 app（`QQ飞车`、`原神`）都可以启动并成功创建 `ready` session
+- `get_capture_status` 已能在多个真实 app 上稳定返回完整诊断字段
+- 当前真正剩下的阻塞点是：**多个真实 app 都稳定返回 `supports_gpu_trace=false`，且 `failure_reason=gpu_trace_document_unsupported`，没有 `.gputrace` 落盘**
 
 详细现状见：
 
 - `Tasks/RC-001-查清-supports_gpu_trace_false.md`
-- `live/2026-03-31-qqfc-rc001b.md`
+- `Tasks/RC-003-对照验证.md`
 - `live/2026-03-31-qqfc-rc001c.md`
+- `live/2026-03-31-yuanshen-rc003a.md`
 
 ---
 
@@ -83,15 +84,15 @@
 
 当前总体判断如下：
 
-- `RC-001-A` 已完成：host / runtime / bridge 的观测增强已经就位
-- `RC-001-B` 已完成：已证实旧 4 字段 live 样本来自陈旧的 `PlayTools.xcframework` 预构建产物，而不是最新源码逻辑
-- `RC-001-C` 已完成：在最新 `PlayCover.app` + `QQ飞车` fresh launch 的最小复测中：
+- `RC-001` 已完成：host / runtime / bridge 的观测增强已经就位，并已确认 `get_capture_status` 不再卡在超时
+- `RC-003` 已完成：在第二个真实 app `原神` 上完成了非破坏性对照验证
   - `launch_app` 成功
   - `create_session -> ready`
-  - `get_capture_status` **成功返回**，不再超时
-  - `list_sessions` 仍为 `ready`
-  - **没有新增 crash 报告**
-- 当前最新稳定 live 状态是：
+  - `get_capture_status` **成功返回**
+  - `capture_metal_frame` 失败，错误与 `QQ飞车` 一致
+  - session 仍保持 `ready`
+  - 没有新增 `原神` crash 报告
+- `QQ飞车` 与 `原神` 当前最新稳定 live 状态都表现为：
   - `available=true`
   - `enabled=true`
   - `supports_gpu_trace=false`
@@ -99,10 +100,18 @@
   - `has_default_device=true`
   - `default_device_name=Apple M4 Pro`
   - `failure_reason=gpu_trace_document_unsupported`
+- 额外对照信息：
+  - `QQ飞车` 已安装包 `Info.plist` 中存在 `MetalCaptureEnabled=true`
+  - `原神` 已安装包 `Info.plist` 中**缺少** `MetalCaptureEnabled`
+  - 尽管如此，`原神` 仍返回与 `QQ飞车` 一致的关键诊断结论
 
-因此，当前最重要的事已经从“定位为什么 `get_capture_status` 超时并断链”切换为：
+因此，当前最重要的事已经从：
 
-> **区分 `gpu_trace_document_unsupported` 是 `QQ飞车` 特有，还是当前机器 / 当前 PlayCover 环境下的普遍现象。**
+> “区分 `gpu_trace_document_unsupported` 是否是 `QQ飞车` 特有”
+
+切换为：
+
+> **定位为什么当前机器 / 当前 PlayCover 环境下，多个真实 app 都 `supports_gpu_trace=false`。**
 
 ---
 
@@ -110,8 +119,9 @@
 
 | ID | 优先级 | 状态 | 任务 | 详细文档 |
 |---|---|---|---|---|
-| `RC-001` | **P0** | `DONE` | 查清真实 app 上 `supports_gpu_trace=false / get_capture_status` 的直接现象；`RC-001-A`、`RC-001-B`、`RC-001-C` 已完成，当前已确认最新 live 不再卡在 `get_capture_status` 超时，而是稳定返回 `gpu_trace_document_unsupported` | `Tasks/RC-001-查清-supports_gpu_trace_false.md` |
-| `RC-003` | **P0** | `TODO` | 做对照验证，区分 `gpu_trace_document_unsupported` 是 `QQ飞车` 特有，还是当前机器 / 当前 PlayCover 环境的普遍问题 | `Tasks/RC-003-对照验证.md` |
+| `RC-001` | **P0** | `DONE` | 查清真实 app 上 `supports_gpu_trace=false / get_capture_status` 的直接现象；已确认当前 live 不再卡在超时，而是稳定返回 `gpu_trace_document_unsupported` | `Tasks/RC-001-查清-supports_gpu_trace_false.md` |
+| `RC-003` | **P0** | `DONE` | 用第二个真实 app `原神` 完成对照验证；已确认 `gpu_trace_document_unsupported` **不是 `QQ飞车` 特有现象** | `Tasks/RC-003-对照验证.md` |
+| `RC-005` | **P0** | `TODO` | 定位为什么当前机器 / 当前 PlayCover 环境下，多个真实 app 都 `supports_gpu_trace=false / gpu_trace_document_unsupported` | `Tasks/RC-005-定位环境级-gpu-trace-unsupported.md` |
 | `RC-002` | **P1** | `TODO` | 在 `metalCaptureEnabled=true` 前提下，对 `QQ飞车` 做 fresh reinstall + 全链路复测，进一步消除“旧安装残留”歧义 | `Tasks/RC-002-fresh-reinstall-复测.md` |
 | `RC-004` | **P2** | `TODO` | 在截帧成功后，整理最终可重复 SOP、产物位置与关单验证标准 | `Tasks/RC-004-成功截帧与关单.md` |
 
@@ -119,13 +129,14 @@
 
 当前最重要任务是：
 
-> **`RC-003`：在另一款真实 app（优先 `原神`）上执行同样的最小链路验证，判断 `supports_gpu_trace=false / gpu_trace_document_unsupported` 是 app 特有，还是环境普遍现象。**
+> **`RC-005`：解释为什么当前机器 / 当前 PlayCover 环境在多个真实 app 上都返回 `supports_gpu_trace=false / gpu_trace_document_unsupported`。**
 
 本轮已经完成的是：
 
-- `RC-001-A`：把 opaque false / opaque error 改造成可观测的诊断输出
-- `RC-001-B`：证明确实存在“源码更新但 GUI 仍吃旧 `PlayTools.xcframework`”的问题，并把 live 样本推进到“新 runtime ready 但 `get_capture_status` 超时”的阶段
-- `RC-001-C`：完成一次最新 GUI + fresh launch 的最小复测，确认 `get_capture_status` 已稳定返回，session 未断开，当前 live 焦点收敛为 `gpu_trace_document_unsupported`
+- `RC-003`：在 **不卸载 `原神`** 的约束下完成非破坏性对照验证
+- 结果表明：
+  - 问题**不是** `QQ飞车` 单 app 特有
+  - 更像是当前机器 / 系统工具链 / PlayCover 运行环境级限制
 
 ---
 
@@ -141,5 +152,6 @@
 - `Tasks/RC-002-fresh-reinstall-复测.md`
 - `Tasks/RC-003-对照验证.md`
 - `Tasks/RC-004-成功截帧与关单.md`
-- `live/2026-03-31-qqfc-rc001b.md`
+- `Tasks/RC-005-定位环境级-gpu-trace-unsupported.md`
 - `live/2026-03-31-qqfc-rc001c.md`
+- `live/2026-03-31-yuanshen-rc003a.md`

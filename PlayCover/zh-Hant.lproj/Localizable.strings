@@ -395,6 +395,7 @@
 "session.status.starting" = "連線中";
 "session.status.disconnected" = "已斷線";
 "capture.tooltip" = "擷取 Metal GPU 幀";
+"capture.button" = "擷取";
 "capture.inProgress" = "擷取中…";
 "capture.unavailable" = "無可用工作階段";
 "capture.success.title" = "幀擷取完成";

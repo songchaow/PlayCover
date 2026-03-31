@@ -403,12 +403,25 @@ struct CaptureButton: View {
             if isCapturing {
                 ProgressView()
                     .controlSize(.small)
-                    .frame(width: compact ? 20 : 24, height: compact ? 20 : 24)
-            } else {
+                    .frame(width: compact ? 20 : nil, height: compact ? 20 : nil)
+            } else if compact {
                 Image(systemName: "camera.viewfinder")
-                    .font(compact ? .callout : .body)
+                    .font(.callout)
                     .imageScale(.large)
                     .foregroundColor(canCapture ? .accentColor : .secondary)
+            } else {
+                Label(
+                    NSLocalizedString("capture.button", comment: "Capture button label"),
+                    systemImage: "camera.viewfinder"
+                )
+                .font(.caption)
+                .foregroundColor(canCapture ? .accentColor : .secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(canCapture ? Color.accentColor : Color.secondary, lineWidth: 1)
+                )
             }
         }
         .buttonStyle(.plain)

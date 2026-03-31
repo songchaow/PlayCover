@@ -415,6 +415,7 @@
 "session.status.starting" = "连接中";
 "session.status.disconnected" = "已断开";
 "capture.tooltip" = "捕获 Metal GPU 帧";
+"capture.button" = "截帧";
 "capture.inProgress" = "捕获中…";
 "capture.unavailable" = "无可用会话";
 "capture.success.title" = "帧捕获完成";

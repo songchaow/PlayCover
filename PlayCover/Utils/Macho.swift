@@ -56,19 +56,66 @@ class Macho {
         try binary.write(to: macho)
     }
 
+    private static let dylibReplacements = [
+        ("@rpath/libswiftUIKit.dylib", "/System/iOSSupport/usr/lib/swift/libswiftUIKit.dylib")
+    ]
+    private static let frameworkReplacementPrefixes = [
+        ("/System/Library/Frameworks/", "/System/iOSSupport/System/Library/Frameworks/"),
+        ("/System/Library/PrivateFrameworks/", "/System/iOSSupport/System/Library/PrivateFrameworks/")
+    ]
+
     static func replaceLibraries(_ binary: inout Data) throws {
-        let dylibsToReplace = ["libswiftUIKit"]
-
-        for dylib in dylibsToReplace {
-            let rpathDylib = "@rpath/\(dylib).dylib"
-            let libDylib = "/System/iOSSupport/usr/lib/swift/\(dylib).dylib"
-
-            // 1. Check if dylib LC exists
-            // 2. If it exists, take notes of its command type and dylib struct
-            // 3. Replace existing LC with new dylib path
-
-            try replaceLibrary(&binary, rpathDylib, libDylib)
+        for (originalPath, replacementPath) in dylibReplacements {
+            try replaceLibrary(&binary, originalPath, replacementPath)
         }
+
+        for loadPath in try linkedDylibPaths(in: binary) {
+            guard let replacementPath = mappedIOSSupportPath(for: loadPath),
+                  replacementPath != loadPath else {
+                continue
+            }
+            try replaceLibrary(&binary, loadPath, replacementPath)
+        }
+    }
+
+    private static func linkedDylibPaths(in binary: Data) throws -> [String] {
+        var result: [String] = []
+        try _ = iterateLoadCommands(binary: binary) { offset, shouldSwap in
+            let loadCommand = binary.extract(load_command.self,
+                                             offset: offset,
+                                             swap: shouldSwap ? swap_load_command:nil)
+            guard [LC_LOAD_WEAK_DYLIB, UInt32(LC_LOAD_DYLIB)].contains(loadCommand.cmd) else {
+                return false
+            }
+
+            let dylibCommand = binary.extract(dylib_command.self,
+                                              offset: offset,
+                                              swap: shouldSwap ? swap_dylib_command:nil)
+            let dylibName = String(data: binary,
+                                   offset: offset,
+                                   commandSize: Int(dylibCommand.cmdsize),
+                                   loadCommandString: dylibCommand.dylib.name)
+            if !dylibName.isEmpty {
+                result.append(dylibName)
+            }
+            return false
+        }
+        return result
+    }
+
+    private static func mappedIOSSupportPath(for loadPath: String) -> String? {
+        for (sourcePrefix, targetPrefix) in frameworkReplacementPrefixes {
+            guard loadPath.hasPrefix(sourcePrefix) else {
+                continue
+            }
+
+            let suffix = String(loadPath.dropFirst(sourcePrefix.count))
+            let candidate = targetPrefix + suffix
+            if FileManager.default.fileExists(atPath: candidate) {
+                return candidate
+            }
+        }
+        return nil
     }
 
     static func replaceLibrary(_ binary: inout Data, _ rpath: String, _ lib: String) throws {

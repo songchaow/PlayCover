@@ -593,11 +593,15 @@ public final class InstallerService: Sendable {
         }
     }
 
-    /// Convert a MachO binary for macOS by replacing the platform version command.
+    /// Convert a MachO binary for macOS.
     ///
-    /// This strips the fat binary to ARM64 only and replaces version commands
-    /// with Mac Catalyst platform markers.
+    /// In GUI builds, defer to PlayCover's long-lived `Macho.convertMacho` implementation
+    /// so the embedded MCP path stays aligned with the original installer behavior.
+    /// CLI builds keep a local fallback implementation with equivalent structure.
     private func convertMacho(_ machoURL: URL) throws {
+#if PLAYCOVER_GUI
+        try Macho.convertMacho(machoURL)
+#else
         var binary = try Data(contentsOf: machoURL)
 
         // Strip fat binary to ARM64 only
@@ -612,6 +616,7 @@ public final class InstallerService: Sendable {
         // Write modified binary back
         try FileManager.default.removeItem(at: machoURL)
         try binary.write(to: machoURL)
+#endif
     }
 
     /// Strip fat binary to extract ARM64 slice only.
@@ -665,94 +670,247 @@ public final class InstallerService: Sendable {
         throw InstallerError.conversionFailed("No ARM64 architecture found in fat binary")
     }
 
+    private let dylibReplacements = [
+        ("@rpath/libswiftUIKit.dylib", "/System/iOSSupport/usr/lib/swift/libswiftUIKit.dylib")
+    ]
+    private let frameworkReplacementPrefixes = [
+        ("/System/Library/Frameworks/", "/System/iOSSupport/System/Library/Frameworks/"),
+        ("/System/Library/PrivateFrameworks/", "/System/iOSSupport/System/Library/PrivateFrameworks/")
+    ]
+
     /// Replace version-related load commands with Mac Catalyst platform markers.
     private func replaceVersionCommand(_ binary: inout Data) throws {
-        guard binary.count >= 32 else { return }
+        var macCatalystCommand = build_version_command(
+            cmd: UInt32(LC_BUILD_VERSION),
+            cmdsize: 24,
+            platform: UInt32(PLATFORM_MACCATALYST),
+            minos: 0x000b0000,
+            sdk: 0x000e0000,
+            ntools: 0
+        )
 
-        let magic = Array(binary.prefix(4))
-        let isSwap: Bool
-        switch magic {
-        case [0xCF, 0xFA, 0xED, 0xFE], [0xCE, 0xFA, 0xED, 0xFE]:
-            isSwap = false
-        case [0xFE, 0xED, 0xFA, 0xCF], [0xFE, 0xED, 0xFA, 0xCE]:
-            isSwap = true
-        default:
-            return
+        try replaceLastCommand(&binary, satisfy: { data, shouldSwap in
+            let loadCommand = data.extract(
+                load_command.self,
+                offset: data.startIndex,
+                swap: shouldSwap ? swap_load_command : nil
+            )
+            return [UInt32(LC_VERSION_MIN_IPHONEOS), UInt32(LC_VERSION_MIN_MACOSX), UInt32(LC_BUILD_VERSION)]
+                .contains(loadCommand.cmd)
+        }, with: { shouldSwap in
+            if shouldSwap {
+                swap_build_version_command(&macCatalystCommand, NX_BigEndian)
+            }
+            return Data(bytes: &macCatalystCommand, count: MemoryLayout<build_version_command>.size)
+        }, atEnd: true)
+    }
+
+    /// Replace known dylib references with system iOS support paths.
+    private func replaceLibraries(_ binary: inout Data) throws {
+        for (originalPath, replacementPath) in dylibReplacements {
+            try replaceLibrary(&binary, originalPath, replacementPath)
         }
 
-        // After stripping, should be a thin ARM64 binary.
-        // mach_header_64: magic(4) + cputype(4) + cpusubtype(4) + filetype(4)
-        //                 + ncmds(4) + sizeofcmds(4) + flags(4) + reserved(4)
-        let headerSize = 32
-        let ncmds = try readUInt32(from: binary, offset: 16, bigEndian: isSwap)
-        let sizeofcmds = try readUInt32(from: binary, offset: 20, bigEndian: isSwap)
-
-        let cmdEnd = headerSize + Int(sizeofcmds)
-        guard binary.count >= cmdEnd else {
-            throw InstallerError.invalidIPA("Mach-O load commands are truncated")
-        }
-
-        // LC_BUILD_VERSION = 0x32, PLATFORM_MACCATALYST = 13
-        // build_version_command: cmd(4) + cmdsize(4) + platform(4) + minos(4) + sdk(4) + ntools(4) = 24 bytes
-        var offset = headerSize
-        for _ in 0..<ncmds {
-            guard offset + 8 <= cmdEnd else {
-                throw InstallerError.invalidIPA("Mach-O load command header is truncated")
+        for loadPath in try linkedDylibPaths(in: binary) {
+            guard let replacementPath = mappedIOSSupportPath(for: loadPath),
+                  replacementPath != loadPath else {
+                continue
             }
-
-            let cmd = try readUInt32(from: binary, offset: offset, bigEndian: isSwap)
-            let cmdsize = try readUInt32(from: binary, offset: offset + 4, bigEndian: isSwap)
-            let nextOffset = offset + Int(cmdsize)
-            guard cmdsize >= 8, nextOffset <= cmdEnd else {
-                throw InstallerError.invalidIPA("Mach-O load command is truncated")
-            }
-
-            // LC_BUILD_VERSION = 0x32 (50)
-            // Replace with Mac Catalyst: platform=13, minos=11.0, sdk=14.0
-            if cmd == 0x32 || cmd == 0x80000032 { // LC_BUILD_VERSION or LC_BUILD_VERSION_64
-                var platform: UInt32 = isSwap ? UInt32(bigEndian: 13) : 13
-                // minos = 11.0.0 = 0x000B0000
-                var minos: UInt32 = isSwap ? UInt32(bigEndian: 0x000B0000) : 0x000B0000
-                // sdk = 14.0.0 = 0x000E0000
-                var sdk: UInt32 = isSwap ? UInt32(bigEndian: 0x000E0000) : 0x000E0000
-                // ntools = 0
-                var ntools: UInt32 = isSwap ? UInt32(bigEndian: 0) : 0
-
-                binary.replaceSubrange(offset + 8..<(offset + 12), with: Data(bytes: &platform, count: 4))
-                binary.replaceSubrange(offset + 12..<(offset + 16), with: Data(bytes: &minos, count: 4))
-                binary.replaceSubrange(offset + 16..<(offset + 20), with: Data(bytes: &sdk, count: 4))
-                binary.replaceSubrange(offset + 20..<(offset + 24), with: Data(bytes: &ntools, count: 4))
-
-                return
-            }
-
-            offset = nextOffset
+            try replaceLibrary(&binary, loadPath, replacementPath)
         }
     }
 
-    /// Replace @rpath dylib references with system iOS support paths.
-    private func replaceLibraries(_ binary: inout Data) throws {
-        // Replace @rpath/libswiftUIKit.dylib with /System/iOSSupport/usr/lib/swift/libswiftUIKit.dylib
-        let rpathDylib = "@rpath/libswiftUIKit.dylib"
-        let systemDylib = "/System/iOSSupport/usr/lib/swift/libswiftUIKit.dylib"
+    private func linkedDylibPaths(in binary: Data) throws -> [String] {
+        var result: [String] = []
+        try _ = iterateLoadCommands(binary: binary) { offset, shouldSwap in
+            let loadCommand = binary.extract(
+                load_command.self,
+                offset: offset,
+                swap: shouldSwap ? swap_load_command : nil
+            )
+            guard [LC_LOAD_WEAK_DYLIB, UInt32(LC_LOAD_DYLIB)].contains(loadCommand.cmd) else {
+                return false
+            }
 
-        guard let rpathRange = binary.range(of: rpathDylib.data(using: .utf8)!) else {
-            return // Not found, nothing to replace
+            let dylibCommand = binary.extract(
+                dylib_command.self,
+                offset: offset,
+                swap: shouldSwap ? swap_dylib_command : nil
+            )
+            let dylibName = String(
+                data: binary,
+                offset: offset,
+                commandSize: Int(dylibCommand.cmdsize),
+                loadCommandString: dylibCommand.dylib.name
+            )
+            if !dylibName.isEmpty {
+                result.append(dylibName)
+            }
+            return false
+        }
+        return result
+    }
+
+    private func mappedIOSSupportPath(for loadPath: String) -> String? {
+        for (sourcePrefix, targetPrefix) in frameworkReplacementPrefixes {
+            guard loadPath.hasPrefix(sourcePrefix) else {
+                continue
+            }
+
+            let suffix = String(loadPath.dropFirst(sourcePrefix.count))
+            let candidate = targetPrefix + suffix
+            if FileManager.default.fileExists(atPath: candidate) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private func replaceLibrary(_ binary: inout Data, _ sourcePath: String, _ targetPath: String) throws {
+        var dylibCommandType: UInt32 = 0
+        var originalDylib: dylib?
+
+        try replaceLastCommand(&binary, satisfy: { commandData, shouldSwap in
+            let loadCommand = commandData.extract(
+                load_command.self,
+                offset: commandData.startIndex,
+                swap: shouldSwap ? swap_load_command : nil
+            )
+            if ![LC_LOAD_WEAK_DYLIB, UInt32(LC_LOAD_DYLIB)].contains(loadCommand.cmd) {
+                return false
+            }
+
+            let dylibCommand = commandData.extract(
+                dylib_command.self,
+                offset: commandData.startIndex,
+                swap: shouldSwap ? swap_dylib_command : nil
+            )
+            if String(
+                data: commandData,
+                offset: commandData.startIndex,
+                commandSize: Int(dylibCommand.cmdsize),
+                loadCommandString: dylibCommand.dylib.name
+            ) != sourcePath {
+                return false
+            }
+
+            dylibCommandType = dylibCommand.cmd
+            originalDylib = dylibCommand.dylib
+            return true
+        }, with: { shouldSwap in
+            guard var newDylib = originalDylib else {
+                return nil
+            }
+
+            let fixedSize = MemoryLayout<dylib_command>.size
+            let stringLength = targetPath.lengthOfBytes(using: .utf8)
+            let padding = 8 - (stringLength % 8)
+            let commandSize = fixedSize + stringLength + padding
+
+            newDylib.name = lc_str(offset: UInt32(fixedSize))
+            var command = dylib_command(
+                cmd: dylibCommandType,
+                cmdsize: UInt32(commandSize),
+                dylib: newDylib
+            )
+            guard let stringData = targetPath.data(using: .utf8) else {
+                return nil
+            }
+            if shouldSwap {
+                swap_dylib_command(&command, NX_BigEndian)
+            }
+            var commandData = Data(bytes: &command, count: fixedSize)
+            commandData.append(stringData)
+            commandData.append(Data(count: padding))
+            return commandData
+        }, atEnd: false)
+    }
+
+    private func replaceLastCommand(
+        _ binary: inout Data,
+        satisfy isTargetCommand: (Data, Bool) -> Bool,
+        with getNewCommandData: (Bool) -> Data?,
+        atEnd shouldAppend: Bool
+    ) throws {
+        let headerSize = MemoryLayout<mach_header_64>.size
+        var header = binary.extract(mach_header_64.self)
+        var shouldSwap = false
+
+        var oldCommandStart = headerSize
+        var oldCommandSize: UInt32 = 0
+
+        let movedCommandsEnd = try iterateLoadCommands(binary: binary) { offset, needSwap in
+            let loadCommand = binary.extract(
+                load_command.self,
+                offset: offset,
+                swap: needSwap ? swap_load_command : nil
+            )
+            if isTargetCommand(binary[offset ..< offset + Int(loadCommand.cmdsize)], needSwap) {
+                oldCommandStart = offset
+                oldCommandSize = loadCommand.cmdsize
+                shouldSwap = needSwap
+            }
+            return false
         }
 
-        // Pad with null bytes to maintain alignment
-        let replacement = systemDylib.data(using: .utf8)!
-        let padding = rpathDylib.count - replacement.count
-        var padded = replacement
-        if padding > 0 {
-            padded.append(Data(count: padding))
-        } else if padding < 0 {
-            // New path is longer - for simplicity, skip if the replacement doesn't fit
-            // In practice, this is rare and would need load command size adjustment
+        let oldCommandEnd = oldCommandStart + Int(oldCommandSize)
+        guard let newCommandData = getNewCommandData(shouldSwap) else {
             return
         }
+        let newCommandSize = UInt32(newCommandData.count)
 
-        binary.replaceSubrange(rpathRange, with: padded)
+        var resultingCommandsData = binary[oldCommandEnd..<movedCommandsEnd]
+        if shouldAppend {
+            resultingCommandsData.append(newCommandData)
+        } else {
+            resultingCommandsData.insert(contentsOf: newCommandData, at: resultingCommandsData.startIndex)
+        }
+
+        let injectionEnd = movedCommandsEnd - Int(oldCommandSize) + Int(newCommandSize)
+        if injectionEnd <= movedCommandsEnd {
+            binary.replaceSubrange(
+                injectionEnd..<movedCommandsEnd,
+                with: Data(count: movedCommandsEnd - injectionEnd)
+            )
+        }
+        binary.replaceSubrange(oldCommandStart..<injectionEnd, with: resultingCommandsData)
+
+        header.sizeofcmds -= oldCommandSize
+        header.sizeofcmds += newCommandSize
+        let newHeaderData = Data(bytes: &header, count: headerSize)
+        binary.replaceSubrange(0..<headerSize, with: newHeaderData)
+    }
+
+    private func iterateLoadCommands(binary: Data, _ evaluate: (Int, Bool) -> Bool) throws -> Int {
+        let headerSize = MemoryLayout<mach_header_64>.size
+        var header = binary.extract(mach_header_64.self)
+        var offset = headerSize
+        let shouldSwap = header.magic == MH_CIGAM_64
+        if shouldSwap {
+            swap_mach_header_64(&header, NXHostByteOrder())
+        }
+
+        let allCommandsEnd = headerSize + Int(header.sizeofcmds)
+        if allCommandsEnd >= binary.count || allCommandsEnd <= headerSize {
+            throw InstallerError.invalidIPA("Mach-O file is corrupted")
+        }
+        for index in 0..<header.ncmds {
+            let loadCommand = binary.extract(
+                load_command.self,
+                offset: offset,
+                swap: shouldSwap ? swap_load_command : nil
+            )
+            let commandEnd = offset + Int(loadCommand.cmdsize)
+            if commandEnd > allCommandsEnd || commandEnd <= offset {
+                throw InstallerError.invalidIPA("Mach-O file is corrupted at load command \(index)")
+            }
+            let terminated = evaluate(offset, shouldSwap)
+            offset = commandEnd
+            if terminated {
+                break
+            }
+        }
+        return offset
     }
 
     // MARK: - PlayTools Injection
@@ -1021,3 +1179,36 @@ public final class InstallerService: Sendable {
         return nil
     }
 }
+
+#if !PLAYCOVER_GUI
+private extension String {
+    init(data: Data, offset: Int, commandSize: Int, loadCommandString: lc_str) {
+        let loadCommandStringOffset = Int(loadCommandString.offset)
+        let stringOffset = offset + loadCommandStringOffset
+        let length = commandSize - loadCommandStringOffset
+        self = String(
+            data: data[stringOffset..<(stringOffset + length)],
+            encoding: .utf8
+        )?.trimmingCharacters(in: .controlCharacters) ?? ""
+    }
+}
+
+private extension Data {
+    func extract<T>(
+        _ type: T.Type,
+        offset: Int = 0,
+        swap: ((UnsafeMutablePointer<T>, NXByteOrder) -> Void)? = nil
+    ) -> T {
+        let data = self[offset..<offset + MemoryLayout<T>.size]
+        var result = data.withUnsafeBytes { dataBytes in
+            dataBytes.baseAddress!
+                .assumingMemoryBound(to: UInt8.self)
+                .withMemoryRebound(to: T.self, capacity: 1) { pointer in
+                    pointer.pointee
+                }
+        }
+        swap?(&result, NXHostByteOrder())
+        return result
+    }
+}
+#endif

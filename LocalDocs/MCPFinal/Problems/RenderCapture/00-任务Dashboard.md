@@ -114,27 +114,33 @@ Render Capture 相关联调如果涉及：
 
 **结果**：原神可正常运行、`get_capture_status` 成功返回 `supportsGPUTrace=true`，不再崩溃。
 
-#### 6.3 已知限制：延迟注入模式下截帧产物为空（原神）
+#### 6.3 已解决：stopCapture SIGSEGV 崩溃（RC-013）
 
-**问题**：`capture_metal_frame` → `startCapture` 成功 → `stopCapture` 时 `GPUToolsCapture` 内部 `GTTraceContextDumpEmptyCapture` 发生 SIGSEGV。
+**问题**：`capture_metal_frame` → `startCapture` 成功 → `stopCapture` 时 `GPUToolsCapture` 内部 `GTTraceContextDumpEmptyCapture` 发生 SIGSEGV，导致 app 崩溃。
 
-**根因**：延迟 dlopen 后，原神的 Metal 对象（device、commandQueue、texture 等）不是 `Capture*` 代理，`GPUToolsCapture` 无法拦截 GPU 命令流，trace context 始终为空。`stopCapture` 访问空 trace context 导致段错误。
+**根因**：延迟 dlopen 后，原神的 Metal 对象不是 `Capture*` 代理，trace context 始终为空。`stopCapture` 的 dump 路径访问空 trace context 导致段错误。
 
-**结论**：原神与 `GPUToolsCapture` 根本不兼容（启动期注入崩溃 SIGABRT，延迟注入截帧 SIGSEGV）。当前截帧功能对原神不可用，但不影响兼容 app（如 QQ飞车）。
+**修复（RC-013）**：新增 C 模块 `GuardedCapture.m`，使用 POSIX `sigsetjmp`/`siglongjmp` + `SIGSEGV` 信号处理器包裹 `manager.stopCapture()` 调用。崩溃时信号处理器捕获 SIGSEGV，通过 `siglongjmp` 恢复执行，标记 `lastCaptureWasEmptyTrace=true`。（Swift 不支持 `sigsetjmp` — `returns_twice` 属性被编译器禁止，因此核心逻辑用 C 实现。）
 
-#### 6.4 双模式注入方案
+**结果**（2026-04-01 00:25）：原神可安全执行 `capture_metal_frame`，`stopCapture` 的 SIGSEGV 被捕获和恢复，app 继续运行。产物为空 trace（0 bytes），这是延迟 dlopen 模式的根本限制（非崩溃问题）。
+
+#### 6.4 已知限制：原神延迟注入产物为空
+
+产物仍然是空 trace，因为延迟 dlopen 模式下原神的 Metal 对象不被 `Capture*` 代理包裹，`GPUToolsCapture` 无法拦截 GPU 命令流。这是 Apple 私有框架的根本架构限制，不是 PlayCover 可以解决的。
+
+#### 6.5 双模式注入方案
 
 | 模式 | 设置 | 机制 | 适用场景 |
 |---|---|---|---|
-| **延迟注入**（默认） | `metalCaptureEnabled=true` | runtime `dlopen` + NSObject compat stubs | 所有 app 安全启动；兼容 app 可截帧 |
+| **延迟注入**（默认） | `metalCaptureEnabled=true` | runtime `dlopen` + NSObject compat stubs + SIGSEGV guard | 所有 app 安全启动；兼容 app 可截帧；不兼容 app 不崩溃 |
 | **启动期注入** | `metalCaptureEnabled=true` + `injectMetalCaptureEnvironment=true` | `DYLD_INSERT_LIBRARIES` 注入 | 兼容 app 获得完整 trace context |
 
-#### 6.5 app 兼容性矩阵
+#### 6.6 app 兼容性矩阵
 
 | App | 延迟注入启动 | 延迟注入截帧 | 启动期注入启动 | 启动期注入截帧 |
 |---|---|---|---|---|
 | QQ飞车 | ✅ | ✅ 413MB .gputrace | ✅ | ✅ 124MB .gputrace |
-| 原神 | ✅ | ❌ SIGSEGV (空 trace) | ❌ SIGABRT (CAMetalLayer hook) | N/A |
+| 原神 | ✅ | ✅ 不崩溃，空 trace (RC-013) | ❌ SIGABRT | N/A |
 
 ---
 
@@ -198,13 +204,14 @@ Render Capture 相关联调如果涉及：
 | `RC-002` | — | `WONTFIX` | fresh reinstall 复测（截帧已成功，不再需要） | `Tasks/RC-002-fresh-reinstall-复测.md` |
 | **`RC-011`** | — | **DONE** | **端到端验证**：重建 PlayTools xcframework + PlayCover.app，实测 QQ飞车延迟注入截帧（Q3 ✅ 413MB）和原神正常启动（Q2 ✅ session ready） | `Tasks/RC-011-端到端验证.md` |
 | **`RC-012`** | — | **DONE** | **原神截帧兼容性攻关**：反汇编 `GPUToolsCapture`，定位 `traceStream`/`streamReference` 崩溃根因，实现 NSObject fallback stubs，恢复双模式注入 | `Tasks/RC-012-原神截帧兼容性.md` |
+| **`RC-013`** | — | **DONE** | **原神截帧 SIGSEGV 保护**：新增 C 模块 `GuardedCapture.m`，用 `sigsetjmp`/`siglongjmp` + SIGSEGV handler 包裹 `stopCapture`，崩溃时优雅恢复而非 crash | `Tasks/RC-013-原神截帧SIGSEGV保护.md` |
 | `RC-004` | **P0** | `TODO` | 整理最终可重复 SOP、产物位置与关单验证标准 | `Tasks/RC-004-成功截帧与关单.md` |
 
 ### 九、当前最重要任务
 
 > **`RC-004`：整理最终可重复 SOP、产物位置与关单验证标准。**
 >
-> 截帧功能对兼容 app（QQ飞车）已完全可用。原神因与 `GPUToolsCapture` 根本不兼容，截帧暂不可用（已记录到兼容性矩阵）。双模式注入已实现，用户可按需选择。
+> 截帧功能对兼容 app（QQ飞车）已完全可用。原神在延迟注入模式下执行截帧不再崩溃（RC-013），但产物为空 trace（Apple 私有框架架构限制）。双模式注入 + SIGSEGV 安全保护已全面实现。
 
 ---
 
@@ -229,6 +236,7 @@ Render Capture 相关联调如果涉及：
 - `PlayCover/Model/PlayApp.swift`：`effectiveLaunchEnvironment()` — 已移除 `DYLD_INSERT_LIBRARIES` 注入
 - `PlayCoverMCP/HostServices/Launch/LaunchService.swift`：`effectiveLaunchEnvironment()` — 已移除 `DYLD_INSERT_LIBRARIES` 注入
 - `Carthage/Checkouts/PlayTools/PlayTools/MetalCaptureService.swift`：runtime 截帧核心实现，`ensureGPUToolsCaptureLoaded()` 实现延迟 dlopen
+- `Carthage/Checkouts/PlayTools/PlayTools/GuardedCapture.m`：SIGSEGV 安全包装器，`PlayTools_guardedStopCapture()` 用 `sigsetjmp`/`siglongjmp` 保护 `stopCapture` 调用
 
 崩溃样本（已解决）：
 

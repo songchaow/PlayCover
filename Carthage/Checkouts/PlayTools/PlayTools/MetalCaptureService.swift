@@ -224,7 +224,13 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         guard !compatStubsInstalled else { return }
         compatStubsInstalled = true
 
-        // Install on NSObject — universal fallback for ALL objects
+        // RC-014: Early stubs are now installed via __attribute__((constructor)) in
+        // GuardedCapture.m, which runs at dyld load time — before GPUToolsCapture's
+        // CAMetalLayer hooks can trigger. This call is kept as a safety net in case
+        // the constructor didn't run (e.g. if GuardedCapture.m is not compiled in).
+        PlayTools_installGPUToolsCaptureEarlyStubs()
+
+        // Verify stubs exist on NSObject (they should already be there from RC-014)
         let nsObjectClass: AnyClass = NSObject.self
         for sel in Self.gpuToolsPrivateSelectors {
             addNilReturningStubIfNeeded(to: nsObjectClass, selector: sel, tag: "NSObject-pre")

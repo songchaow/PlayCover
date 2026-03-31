@@ -24,12 +24,14 @@
 
 - `PlayCover.app` 已能正常启动，GUI 内嵌 MCP 可用
 - 真实 app（优先 `QQ飞车`）可以启动并成功创建 `ready` session
-- 当前真正的阻塞点不是 session 建链，而是：**真实 app 上的截帧状态 / 截帧命令仍未稳定成功返回，更没有 `.gputrace` 落盘**
+- 最新最小 live 复测中，`get_capture_status` **已经可以成功返回完整诊断字段**
+- 当前真正剩下的阻塞点是：**真实 app 仍然返回 `supports_gpu_trace=false`，且 `failure_reason=gpu_trace_document_unsupported`，更没有 `.gputrace` 落盘**
 
 详细现状见：
 
 - `Tasks/RC-001-查清-supports_gpu_trace_false.md`
 - `live/2026-03-31-qqfc-rc001b.md`
+- `live/2026-03-31-qqfc-rc001c.md`
 
 ---
 
@@ -82,23 +84,25 @@
 当前总体判断如下：
 
 - `RC-001-A` 已完成：host / runtime / bridge 的观测增强已经就位
-- `RC-001-B` 已完成：本轮真实复测证明，**旧 4 字段 live 样本来自陈旧的 `PlayTools.xcframework` 预构建产物，而不是最新源码逻辑**
-- 本轮已修复一个会阻塞 `PlayTools` 源码重建的编译问题，并新增脚本：
-  - `BuildScripts/sync_playtools_xcframework.sh`
-  - `build_gui.sh`
-  - `build_and_install.sh`
-  - `build_all.sh`
-  现在会先同步 `PlayTools.xcframework` 预构建 slice
-- 在真正切到最新 PlayTools runtime 后，`QQ飞车` 的问题形态已经变化：
-  - 可以 `launch_app`
-  - 可以 `create_session -> ready`
-  - **第一次 `get_capture_status` 会超时**
-  - 随后 session 进入 `disconnected`
-  - 最新 crash 报告为：`speedmobile-2026-03-31-114113.ips`
+- `RC-001-B` 已完成：已证实旧 4 字段 live 样本来自陈旧的 `PlayTools.xcframework` 预构建产物，而不是最新源码逻辑
+- `RC-001-C` 已完成：在最新 `PlayCover.app` + `QQ飞车` fresh launch 的最小复测中：
+  - `launch_app` 成功
+  - `create_session -> ready`
+  - `get_capture_status` **成功返回**，不再超时
+  - `list_sessions` 仍为 `ready`
+  - **没有新增 crash 报告**
+- 当前最新稳定 live 状态是：
+  - `available=true`
+  - `enabled=true`
+  - `supports_gpu_trace=false`
+  - `supports_developer_tools=false`
+  - `has_default_device=true`
+  - `default_device_name=Apple M4 Pro`
+  - `failure_reason=gpu_trace_document_unsupported`
 
-因此，当前最重要的事已经从“证明新诊断是否进 live”切换为：
+因此，当前最重要的事已经从“定位为什么 `get_capture_status` 超时并断链”切换为：
 
-> **定位为什么在真实 app 真正加载最新 PlayTools runtime 后，`get_capture_status` 会超时并导致 session 断开。**
+> **区分 `gpu_trace_document_unsupported` 是 `QQ飞车` 特有，还是当前机器 / 当前 PlayCover 环境下的普遍现象。**
 
 ---
 
@@ -106,21 +110,22 @@
 
 | ID | 优先级 | 状态 | 任务 | 详细文档 |
 |---|---|---|---|---|
-| `RC-001` | **P0** | `DOING` | 查清真实 app 上 `supports_gpu_trace=false / get_capture_status` 的直接原因；`RC-001-A`、`RC-001-B` 已完成，当前进入 `RC-001-C`：定位最新 runtime 下 `get_capture_status` 超时与 session `disconnected` 的原因 | `Tasks/RC-001-查清-supports_gpu_trace_false.md` |
-| `RC-002` | **P1** | `TODO` | 在 `metalCaptureEnabled=true` 前提下，对 `QQ飞车` 做 fresh reinstall + 全链路复测，消除“旧安装残留”歧义 | `Tasks/RC-002-fresh-reinstall-复测.md` |
-| `RC-003` | **P1** | `TODO` | 做对照验证，区分问题是 `QQ飞车` 特有，还是当前机器 / 当前 PlayCover 环境的普遍问题 | `Tasks/RC-003-对照验证.md` |
+| `RC-001` | **P0** | `DONE` | 查清真实 app 上 `supports_gpu_trace=false / get_capture_status` 的直接现象；`RC-001-A`、`RC-001-B`、`RC-001-C` 已完成，当前已确认最新 live 不再卡在 `get_capture_status` 超时，而是稳定返回 `gpu_trace_document_unsupported` | `Tasks/RC-001-查清-supports_gpu_trace_false.md` |
+| `RC-003` | **P0** | `TODO` | 做对照验证，区分 `gpu_trace_document_unsupported` 是 `QQ飞车` 特有，还是当前机器 / 当前 PlayCover 环境的普遍问题 | `Tasks/RC-003-对照验证.md` |
+| `RC-002` | **P1** | `TODO` | 在 `metalCaptureEnabled=true` 前提下，对 `QQ飞车` 做 fresh reinstall + 全链路复测，进一步消除“旧安装残留”歧义 | `Tasks/RC-002-fresh-reinstall-复测.md` |
 | `RC-004` | **P2** | `TODO` | 在截帧成功后，整理最终可重复 SOP、产物位置与关单验证标准 | `Tasks/RC-004-成功截帧与关单.md` |
 
 ### 七、当前最重要任务
 
 当前最重要任务是：
 
-> **`RC-001-C`：在真正加载最新 PlayTools runtime 的前提下，执行一次最小 `get_capture_status` 复测，抓到它超时前后的 runtime / bridge / crash 证据，判定阻塞发生在命令派发、主线程执行还是 runtime 崩溃阶段。**
+> **`RC-003`：在另一款真实 app（优先 `原神`）上执行同样的最小链路验证，判断 `supports_gpu_trace=false / gpu_trace_document_unsupported` 是 app 特有，还是环境普遍现象。**
 
 本轮已经完成的是：
 
 - `RC-001-A`：把 opaque false / opaque error 改造成可观测的诊断输出
-- `RC-001-B`：证明确实存在“源码更新但 GUI 仍吃旧 `PlayTools.xcframework`”的问题，并把 live 样本推进到“新 runtime ready 但 `get_capture_status` 超时”的新阶段
+- `RC-001-B`：证明确实存在“源码更新但 GUI 仍吃旧 `PlayTools.xcframework`”的问题，并把 live 样本推进到“新 runtime ready 但 `get_capture_status` 超时”的阶段
+- `RC-001-C`：完成一次最新 GUI + fresh launch 的最小复测，确认 `get_capture_status` 已稳定返回，session 未断开，当前 live 焦点收敛为 `gpu_trace_document_unsupported`
 
 ---
 
@@ -137,3 +142,4 @@
 - `Tasks/RC-003-对照验证.md`
 - `Tasks/RC-004-成功截帧与关单.md`
 - `live/2026-03-31-qqfc-rc001b.md`
+- `live/2026-03-31-qqfc-rc001c.md`

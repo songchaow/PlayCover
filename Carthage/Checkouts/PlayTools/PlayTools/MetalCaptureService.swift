@@ -172,6 +172,7 @@ import QuartzCore
             "defaultDeviceName=\(defaultDeviceName ?? "nil")",
             "failureReason=\(failureReason ?? "none")",
         ].joined(separator: ", ")
+        logStatusProbe("makeStatus end. \(diagnosticSummary)")
 
         return CaptureStatus(
             available: available,
@@ -184,6 +185,10 @@ import QuartzCore
             failureReason: failureReason,
             diagnosticSummary: diagnosticSummary
         )
+    }
+
+    private func logStatusProbe(_ message: String) {
+        print("[PlayTools] MetalCaptureService: \(message)")
     }
 
     private func defaultOutputURL() -> URL {

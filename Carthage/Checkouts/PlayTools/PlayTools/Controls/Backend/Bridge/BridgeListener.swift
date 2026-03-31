@@ -622,9 +622,12 @@ final class BridgeListener {
             return errorResult(result.message)
 
         case "get_capture_status":
+            log("BridgeListener get_capture_status begin; entering valueOnMainSync")
             let status = valueOnMainSync {
-                MetalCaptureService.shared.getStatus()
+                self.log("BridgeListener get_capture_status executing on main; onMain=\(Thread.isMainThread)")
+                return MetalCaptureService.shared.getStatus()
             }
+            log("BridgeListener get_capture_status returned from main. \(status.diagnosticSummary)")
             var result: [String: Any] = [
                 "available": status.available,
                 "supports_gpu_trace": status.supportsGPUTrace,

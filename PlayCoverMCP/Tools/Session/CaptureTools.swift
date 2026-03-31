@@ -107,7 +107,7 @@ public enum CaptureTools {
                 guard let parsedTarget = CaptureTarget(rawValue: rawCaptureTarget) else {
                     throw PlayCoverMCPError(
                         code: JSONRPCError.invalidParams,
-                        message: "capture_metal_frame received unsupported 'capture_target': \(rawCaptureTarget). Supported values: device, scope"
+                        message: "capture_metal_frame received unsupported 'capture_target': \(rawCaptureTarget). Supported values: device, scope, queue, queue_scope"
                     )
                 }
                 captureTarget = parsedTarget

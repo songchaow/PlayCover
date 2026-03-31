@@ -10,6 +10,10 @@ public enum CaptureTarget: String, Codable, Equatable, Sendable {
     case device
     /// Capture through a temporary MTLCaptureScope bound to the default Metal device.
     case scope
+    /// Capture the most recently discovered real runtime MTLCommandQueue.
+    case queue
+    /// Capture through a temporary MTLCaptureScope bound to the most recently discovered real runtime MTLCommandQueue.
+    case queueScope = "queue_scope"
 }
 
 /// Parameters for a capture_metal_frame command.
@@ -79,6 +83,18 @@ public struct CaptureStatusResult: Codable, Equatable, Sendable {
     public let failureReason: String?
     /// Human-readable flattened diagnostics for quick investigation.
     public let diagnosticSummary: String?
+    /// Whether runtime-side command queue discovery hooks were installed.
+    public let queueDiscoveryInstalled: Bool?
+    /// Number of runtime command queues currently tracked.
+    public let trackedCommandQueueCount: Int?
+    /// Label of the latest tracked command queue, if any.
+    public let latestCommandQueueLabel: String?
+    /// Device name of the latest tracked command queue, if any.
+    public let latestCommandQueueDeviceName: String?
+    /// Concrete runtime class name of the latest tracked command queue, if any.
+    public let latestCommandQueueClassName: String?
+    /// Label of MTLCaptureManager.defaultCaptureScope, if any.
+    public let defaultCaptureScopeLabel: String?
 
     public init(
         available: Bool,
@@ -89,7 +105,13 @@ public struct CaptureStatusResult: Codable, Equatable, Sendable {
         hasDefaultDevice: Bool? = nil,
         defaultDeviceName: String? = nil,
         failureReason: String? = nil,
-        diagnosticSummary: String? = nil
+        diagnosticSummary: String? = nil,
+        queueDiscoveryInstalled: Bool? = nil,
+        trackedCommandQueueCount: Int? = nil,
+        latestCommandQueueLabel: String? = nil,
+        latestCommandQueueDeviceName: String? = nil,
+        latestCommandQueueClassName: String? = nil,
+        defaultCaptureScopeLabel: String? = nil
     ) {
         self.available = available
         self.supportsGpuTrace = supportsGpuTrace
@@ -100,6 +122,12 @@ public struct CaptureStatusResult: Codable, Equatable, Sendable {
         self.defaultDeviceName = defaultDeviceName
         self.failureReason = failureReason
         self.diagnosticSummary = diagnosticSummary
+        self.queueDiscoveryInstalled = queueDiscoveryInstalled
+        self.trackedCommandQueueCount = trackedCommandQueueCount
+        self.latestCommandQueueLabel = latestCommandQueueLabel
+        self.latestCommandQueueDeviceName = latestCommandQueueDeviceName
+        self.latestCommandQueueClassName = latestCommandQueueClassName
+        self.defaultCaptureScopeLabel = defaultCaptureScopeLabel
     }
 
     public func toDictionary() -> [String: Any] {
@@ -123,6 +151,24 @@ public struct CaptureStatusResult: Codable, Equatable, Sendable {
         }
         if let diagnosticSummary {
             dict["diagnostic_summary"] = diagnosticSummary
+        }
+        if let queueDiscoveryInstalled {
+            dict["queue_discovery_installed"] = queueDiscoveryInstalled
+        }
+        if let trackedCommandQueueCount {
+            dict["tracked_command_queue_count"] = trackedCommandQueueCount
+        }
+        if let latestCommandQueueLabel {
+            dict["latest_command_queue_label"] = latestCommandQueueLabel
+        }
+        if let latestCommandQueueDeviceName {
+            dict["latest_command_queue_device_name"] = latestCommandQueueDeviceName
+        }
+        if let latestCommandQueueClassName {
+            dict["latest_command_queue_class_name"] = latestCommandQueueClassName
+        }
+        if let defaultCaptureScopeLabel {
+            dict["default_capture_scope_label"] = defaultCaptureScopeLabel
         }
         return dict
     }
@@ -257,6 +303,12 @@ public final class CaptureService: CaptureServiceProtocol, Sendable {
         let defaultDeviceName = resultDict?["default_device_name"] as? String
         let failureReason = resultDict?["failure_reason"] as? String
         let diagnosticSummary = resultDict?["diagnostic_summary"] as? String
+        let queueDiscoveryInstalled = resultDict?["queue_discovery_installed"] as? Bool
+        let trackedCommandQueueCount = resultDict?["tracked_command_queue_count"] as? Int
+        let latestCommandQueueLabel = resultDict?["latest_command_queue_label"] as? String
+        let latestCommandQueueDeviceName = resultDict?["latest_command_queue_device_name"] as? String
+        let latestCommandQueueClassName = resultDict?["latest_command_queue_class_name"] as? String
+        let defaultCaptureScopeLabel = resultDict?["default_capture_scope_label"] as? String
 
         return CaptureStatusResult(
             available: available,
@@ -267,7 +319,13 @@ public final class CaptureService: CaptureServiceProtocol, Sendable {
             hasDefaultDevice: hasDefaultDevice,
             defaultDeviceName: defaultDeviceName,
             failureReason: failureReason,
-            diagnosticSummary: diagnosticSummary
+            diagnosticSummary: diagnosticSummary,
+            queueDiscoveryInstalled: queueDiscoveryInstalled,
+            trackedCommandQueueCount: trackedCommandQueueCount,
+            latestCommandQueueLabel: latestCommandQueueLabel,
+            latestCommandQueueDeviceName: latestCommandQueueDeviceName,
+            latestCommandQueueClassName: latestCommandQueueClassName,
+            defaultCaptureScopeLabel: defaultCaptureScopeLabel
         )
     }
 

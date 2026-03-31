@@ -381,7 +381,7 @@ final class CaptureCommandEncodingTests: XCTestCase {
         let params = AnyCodable([
             "duration_ms": 200,
             "output_path": "/tmp/test.gputrace",
-            "capture_target": "scope"
+            "capture_target": "queue_scope"
         ] as [String: Any])
         let command = CommandPayload(
             sessionId: "s1",
@@ -401,7 +401,7 @@ final class CaptureCommandEncodingTests: XCTestCase {
         let cmdParams = json["params"] as? [String: Any]
         XCTAssertNotNil(cmdParams?["duration_ms"])
         XCTAssertEqual(cmdParams?["output_path"] as? String, "/tmp/test.gputrace")
-        XCTAssertEqual(cmdParams?["capture_target"] as? String, "scope")
+        XCTAssertEqual(cmdParams?["capture_target"] as? String, "queue_scope")
     }
 
     func testGetCaptureStatusCommandEncoding() throws {
@@ -544,14 +544,14 @@ final class CaptureToolsRegistrationTests: XCTestCase {
             "sessionId": "s1",
             "output_path": "/tmp/custom.gputrace",
             "duration_ms": 500,
-            "capture_target": "scope"
+            "capture_target": "queue_scope"
         ])
         XCTAssertNotNil(resp?.result)
         XCTAssertNil(resp?.error)
         XCTAssertEqual(fakeCaptureService.captureFrameCalls.count, 1)
         XCTAssertEqual(fakeCaptureService.captureFrameCalls.first?.params.outputPath, "/tmp/custom.gputrace")
         XCTAssertEqual(fakeCaptureService.captureFrameCalls.first?.params.durationMs, 500)
-        XCTAssertEqual(fakeCaptureService.captureFrameCalls.first?.params.captureTarget, .scope)
+        XCTAssertEqual(fakeCaptureService.captureFrameCalls.first?.params.captureTarget, .queueScope)
     }
 
     func testCaptureMetalFrameToolCallDefaultDuration() {
@@ -581,7 +581,7 @@ final class CaptureToolsRegistrationTests: XCTestCase {
     func testCaptureMetalFrameToolInvalidCaptureTarget() {
         let resp = callTool("capture_metal_frame", arguments: [
             "sessionId": "s1",
-            "capture_target": "queue"
+            "capture_target": "banana"
         ])
         XCTAssertNil(resp?.result)
         XCTAssertEqual(resp?.error?.code, JSONRPCError.invalidParams)
@@ -618,7 +618,13 @@ final class CaptureToolsRegistrationTests: XCTestCase {
             hasDefaultDevice: true,
             defaultDeviceName: "Apple M4",
             failureReason: "gpu_trace_document_unsupported",
-            diagnosticSummary: "enabled=true, captureManagerAvailable=true, supportsGPUTrace=false"
+            diagnosticSummary: "enabled=true, captureManagerAvailable=true, supportsGPUTrace=false",
+            queueDiscoveryInstalled: true,
+            trackedCommandQueueCount: 2,
+            latestCommandQueueLabel: "main-render-queue",
+            latestCommandQueueDeviceName: "Apple M4",
+            latestCommandQueueClassName: "AGXMetalG17XFamilyCommandQueue",
+            defaultCaptureScopeLabel: "qqfc.default.scope"
         ))
 
         let resp = callTool("get_capture_status", arguments: [

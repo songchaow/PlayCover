@@ -5,7 +5,25 @@
 
 import Foundation
 import Metal
+import ObjectiveC
 import QuartzCore
+
+private final class CommandQueueDiscoverySwizzles: NSObject {
+    @objc dynamic func pc_newCommandQueue() -> AnyObject? {
+        let queue = self.pc_newCommandQueue()
+        MetalCaptureService.shared.recordObservedCommandQueue(queue, source: "newCommandQueue")
+        return queue
+    }
+
+    @objc dynamic func pc_newCommandQueueWithMaxCommandBufferCount(_ maxCommandBufferCount: UInt) -> AnyObject? {
+        let queue = self.pc_newCommandQueueWithMaxCommandBufferCount(maxCommandBufferCount)
+        MetalCaptureService.shared.recordObservedCommandQueue(
+            queue,
+            source: "newCommandQueueWithMaxCommandBufferCount(\(maxCommandBufferCount))"
+        )
+        return queue
+    }
+}
 
 /// 封装 MTLCaptureManager 的编程式截帧服务
 @objc public class MetalCaptureService: NSObject {
@@ -14,21 +32,62 @@ import QuartzCore
     private enum CaptureTarget: String {
         case device
         case scope
+        case queue
+        case queueScope = "queue_scope"
+
+        var usesCaptureScopeLifecycle: Bool {
+            switch self {
+            case .scope, .queueScope:
+                return true
+            case .device, .queue:
+                return false
+            }
+        }
+    }
+
+    private struct TrackedCommandQueue {
+        let queue: MTLCommandQueue
+        let source: String
+        let className: String
+        var label: String?
+        var deviceName: String
+        let firstSeenAt: Date
+        var lastSeenAt: Date
+        var discoveryCount: Int
+
+        var summary: String {
+            [
+                "class=\(className)",
+                "label=\(MetalCaptureService.describeOptionalString(label))",
+                "device=\(deviceName)",
+                "source=\(source)",
+                "discoveries=\(discoveryCount)",
+            ].joined(separator: ", ")
+        }
     }
 
     private enum CapturePreparationError: LocalizedError {
         case defaultDeviceUnavailable(target: CaptureTarget)
+        case trackedCommandQueueUnavailable(target: CaptureTarget, trackedQueueCount: Int, queueDiscoveryInstalled: Bool)
 
         var errorDescription: String? {
             switch self {
             case .defaultDeviceUnavailable(let target):
                 return "No default Metal device available for capture_target=\(target.rawValue)"
+            case .trackedCommandQueueUnavailable(let target, let trackedQueueCount, let queueDiscoveryInstalled):
+                return "No tracked Metal command queue available for capture_target=\(target.rawValue). tracked_queue_count=\(trackedQueueCount), queue_discovery_installed=\(queueDiscoveryInstalled). Relaunch the app with this build and wait until real Metal rendering has started."
             }
         }
     }
 
+    private static let maxTrackedCommandQueues = 8
+
     private var captureManager: MTLCaptureManager?
     private var isCapturing = false
+    private let trackedQueueLock = NSLock()
+    private var trackedCommandQueues: [ObjectIdentifier: TrackedCommandQueue] = [:]
+    private var trackedCommandQueueOrder: [ObjectIdentifier] = []
+    private var queueDiscoveryInstalled = false
 
     /// CADisplayLink 用于对齐 vsync 边界停止截帧
     private var displayLink: CADisplayLink?
@@ -60,6 +119,7 @@ import QuartzCore
         }
 
         captureManager = MTLCaptureManager.shared()
+        installQueueDiscoveryIfNeeded()
 
         let status = makeStatus(manager: captureManager)
         print("[PlayTools] MetalCaptureService initialized. \(status.diagnosticSummary)")
@@ -69,7 +129,7 @@ import QuartzCore
     /// - Parameters:
     ///   - outputURL: 输出文件路径（.gputrace），传 nil 则使用默认路径
     ///   - durationMs: 最少持续截帧多久后才允许停止，默认 100ms
-    ///   - captureTargetRawValue: runtime capture target，支持 `device` / `scope`
+    ///   - captureTargetRawValue: runtime capture target，支持 `device` / `scope` / `queue` / `queue_scope`
     /// - Returns: 截帧结果
     @objc public func captureFrame(
         outputURL: URL? = nil,
@@ -80,8 +140,7 @@ import QuartzCore
             let status = makeStatus(manager: nil)
             return CaptureResult(
                 success: false,
-                message: "MTLCaptureManager not available. \(status.diagnosticSummary). "
-                    + "Ensure metalCaptureEnabled is ON and app was reinstalled.",
+                message: "MTLCaptureManager not available. \(status.diagnosticSummary). Ensure metalCaptureEnabled is ON and app was reinstalled.",
                 outputPath: nil
             )
         }
@@ -95,7 +154,7 @@ import QuartzCore
             guard let parsedTarget = CaptureTarget(rawValue: rawValue) else {
                 return CaptureResult(
                     success: false,
-                    message: "Unsupported capture_target '\(rawValue)'. Supported values: device, scope",
+                    message: "Unsupported capture_target '\(rawValue)'. Supported values: device, scope, queue, queue_scope",
                     outputPath: nil
                 )
             }
@@ -113,8 +172,6 @@ import QuartzCore
         }
 
         let url = outputURL ?? defaultOutputURL()
-
-        // 如果目标文件已存在，先删除（MTLCaptureManager 不会覆盖）
         if FileManager.default.fileExists(atPath: url.path) {
             try? FileManager.default.removeItem(at: url)
         }
@@ -146,17 +203,16 @@ import QuartzCore
             minimumCaptureDurationMs = normalizedDurationMs
             vsyncCount = 0
 
-            if captureTarget == .scope {
+            if captureTarget.usesCaptureScopeLifecycle {
                 logStatusProbe(
-                    "capture started with scope target; waiting for first vsync to enter beginScope. captureObject=\(captureObjectSummary), output=\(url.path), durationMs=\(normalizedDurationMs)"
+                    "capture started with scope-based target; waiting for first vsync to enter beginScope. target=\(captureTarget.rawValue), captureObject=\(captureObjectSummary), output=\(url.path), durationMs=\(normalizedDurationMs)"
                 )
             } else {
                 logStatusProbe(
-                    "capture started with device target. captureObject=\(captureObjectSummary), output=\(url.path), durationMs=\(normalizedDurationMs)"
+                    "capture started with direct target. target=\(captureTarget.rawValue), captureObject=\(captureObjectSummary), output=\(url.path), durationMs=\(normalizedDurationMs)"
                 )
             }
 
-            // 对齐 vsync 停止，但不再忽略 host 传入的 duration_ms。
             let link = CADisplayLink(target: self, selector: #selector(onVsync(_:)))
             link.add(to: .main, forMode: .common)
             displayLink = link
@@ -185,14 +241,17 @@ import QuartzCore
             return
         }
 
-        if activeCaptureTarget == .scope,
+        if activeCaptureTarget.usesCaptureScopeLifecycle,
            !hasBegunActiveCaptureScope,
            let scope = activeCaptureScope {
             scope.begin()
             hasBegunActiveCaptureScope = true
             captureStartTime = CACurrentMediaTime()
             vsyncCount = 0
-            logStatusProbe("scope begin on first vsync; queue=\(scope.commandQueue.map { String(describing: $0) } ?? "nil")")
+            let queueText = scope.commandQueue.map(queueSummary(for:)) ?? "nil"
+            logStatusProbe(
+                "scope begin on first vsync; target=\(activeCaptureTarget.rawValue), queue=\(queueText)"
+            )
             return
         }
 
@@ -215,7 +274,15 @@ import QuartzCore
         return CaptureResult(success: true, message: "Capture stopped", outputPath: nil)
     }
 
-    /// 清理 stop 触发器
+    /// 给 swizzle 回调记录真实渲染 command queue。
+    fileprivate func recordObservedCommandQueue(_ candidate: AnyObject?, source: String) {
+        guard let queue = candidate as? MTLCommandQueue else {
+            logStatusProbe("queue discovery ignored non-command-queue object from \(source): \(String(describing: candidate))")
+            return
+        }
+        recordTrackedCommandQueue(queue, source: source)
+    }
+
     private func invalidateStopTriggers() {
         displayLink?.invalidate()
         displayLink = nil
@@ -244,11 +311,11 @@ import QuartzCore
         }
 
         let captureTarget = activeCaptureTarget
-        if captureTarget == .scope,
+        if captureTarget.usesCaptureScopeLifecycle,
            hasBegunActiveCaptureScope,
            let scope = activeCaptureScope {
             scope.end()
-            logStatusProbe("scope end before manager.stopCapture(); reason=\(reason)")
+            logStatusProbe("scope end before manager.stopCapture(); target=\(captureTarget.rawValue), reason=\(reason)")
         }
 
         manager.stopCapture()
@@ -261,25 +328,60 @@ import QuartzCore
         target: CaptureTarget,
         manager: MTLCaptureManager
     ) -> Result<(captureObject: Any, scope: MTLCaptureScope?, summary: String), CapturePreparationError> {
-        guard let device = MTLCreateSystemDefaultDevice() else {
-            return .failure(.defaultDeviceUnavailable(target: target))
-        }
-
         switch target {
-        case .device:
-            return .success((
-                captureObject: device,
-                scope: nil,
-                summary: "device(name=\(device.name))"
-            ))
-        case .scope:
-            let scope = manager.makeCaptureScope(device: device)
-            scope.label = "PlayCover.capture.scope.\(UUID().uuidString.lowercased())"
-            return .success((
-                captureObject: scope,
-                scope: scope,
-                summary: "scope(device=\(device.name), queue=nil, label=\(scope.label ?? "nil"))"
-            ))
+        case .device, .scope:
+            guard let device = MTLCreateSystemDefaultDevice() else {
+                return .failure(.defaultDeviceUnavailable(target: target))
+            }
+
+            switch target {
+            case .device:
+                return .success((
+                    captureObject: device,
+                    scope: nil,
+                    summary: "device(name=\(device.name))"
+                ))
+            case .scope:
+                let scope = manager.makeCaptureScope(device: device)
+                scope.label = "PlayCover.capture.scope.\(UUID().uuidString.lowercased())"
+                return .success((
+                    captureObject: scope as Any,
+                    scope: scope,
+                    summary: "scope(device=\(device.name), queue=nil, label=\(MetalCaptureService.describeOptionalString(scope.label)))"
+                ))
+            case .queue, .queueScope:
+                fatalError("unreachable")
+            }
+
+        case .queue, .queueScope:
+            guard let trackedQueue = latestTrackedCommandQueue() else {
+                return .failure(
+                    .trackedCommandQueueUnavailable(
+                        target: target,
+                        trackedQueueCount: trackedCommandQueueCount(),
+                        queueDiscoveryInstalled: queueDiscoveryInstalled
+                    )
+                )
+            }
+
+            switch target {
+            case .queue:
+                return .success((
+                    captureObject: trackedQueue.queue,
+                    scope: nil,
+                    summary: "queue(\(trackedQueue.summary))"
+                ))
+            case .queueScope:
+                let scope = manager.makeCaptureScope(commandQueue: trackedQueue.queue)
+                scope.label = "PlayCover.capture.queue-scope.\(UUID().uuidString.lowercased())"
+                return .success((
+                    captureObject: scope as Any,
+                    scope: scope,
+                    summary: "scope(queue=\(trackedQueue.summary), label=\(MetalCaptureService.describeOptionalString(scope.label)))"
+                ))
+            case .device, .scope:
+                fatalError("unreachable")
+            }
         }
     }
 
@@ -298,7 +400,142 @@ import QuartzCore
         makeStatus(manager: captureManager)
     }
 
-    // MARK: - Private
+    private func installQueueDiscoveryIfNeeded() {
+        guard !queueDiscoveryInstalled else { return }
+
+        queueDiscoveryInstalled = true
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            logStatusProbe("queue discovery skipped because default Metal device is unavailable")
+            return
+        }
+
+        let deviceClass: AnyClass = object_getClass(device) ?? NSClassFromString(NSStringFromClass(type(of: device)))!
+        let installedNewCommandQueue = swizzleInstanceMethod(
+            on: deviceClass,
+            original: NSSelectorFromString("newCommandQueue"),
+            swizzled: #selector(CommandQueueDiscoverySwizzles.pc_newCommandQueue)
+        )
+        let installedNewCommandQueueWithMaxCount = swizzleInstanceMethod(
+            on: deviceClass,
+            original: NSSelectorFromString("newCommandQueueWithMaxCommandBufferCount:"),
+            swizzled: #selector(CommandQueueDiscoverySwizzles.pc_newCommandQueueWithMaxCommandBufferCount(_:))
+        )
+
+        logStatusProbe(
+            "queue discovery install finished. deviceClass=\(NSStringFromClass(deviceClass)), newCommandQueue=\(installedNewCommandQueue), newCommandQueueWithMaxCommandBufferCount=\(installedNewCommandQueueWithMaxCount)"
+        )
+    }
+
+    private func swizzleInstanceMethod(
+        on targetClass: AnyClass,
+        original originalSelector: Selector,
+        swizzled swizzledSelector: Selector
+    ) -> Bool {
+        guard
+            let originalMethod = class_getInstanceMethod(targetClass, originalSelector),
+            let swizzledMethod = class_getInstanceMethod(CommandQueueDiscoverySwizzles.self, swizzledSelector)
+        else {
+            logStatusProbe(
+                "queue discovery swizzle skipped. class=\(NSStringFromClass(targetClass)), original=\(NSStringFromSelector(originalSelector)), swizzled=\(NSStringFromSelector(swizzledSelector))"
+            )
+            return false
+        }
+
+        let didAddMethod = class_addMethod(
+            targetClass,
+            swizzledSelector,
+            method_getImplementation(swizzledMethod),
+            method_getTypeEncoding(swizzledMethod)
+        )
+
+        if didAddMethod {
+            guard let addedMethod = class_getInstanceMethod(targetClass, swizzledSelector) else {
+                return false
+            }
+            method_exchangeImplementations(originalMethod, addedMethod)
+            return true
+        }
+
+        method_exchangeImplementations(originalMethod, swizzledMethod)
+        return true
+    }
+
+    private func recordTrackedCommandQueue(_ queue: MTLCommandQueue, source: String) {
+        let now = Date()
+        let identifier = ObjectIdentifier(queue as AnyObject)
+        let summary: String
+
+        trackedQueueLock.lock()
+        if var existing = trackedCommandQueues[identifier] {
+            existing.lastSeenAt = now
+            existing.discoveryCount += 1
+            existing.label = queue.label
+            existing.deviceName = queue.device.name
+            trackedCommandQueues[identifier] = existing
+            summary = existing.summary
+        } else {
+            let trackedQueue = TrackedCommandQueue(
+                queue: queue,
+                source: source,
+                className: NSStringFromClass(type(of: queue)),
+                label: queue.label,
+                deviceName: queue.device.name,
+                firstSeenAt: now,
+                lastSeenAt: now,
+                discoveryCount: 1
+            )
+            trackedCommandQueues[identifier] = trackedQueue
+            trackedCommandQueueOrder.append(identifier)
+            trimTrackedQueuesIfNeeded()
+            summary = trackedQueue.summary
+        }
+        trackedQueueLock.unlock()
+
+        logStatusProbe("tracked command queue observed. \(summary)")
+    }
+
+    private func trimTrackedQueuesIfNeeded() {
+        while trackedCommandQueueOrder.count > Self.maxTrackedCommandQueues {
+            let removedIdentifier = trackedCommandQueueOrder.removeFirst()
+            trackedCommandQueues.removeValue(forKey: removedIdentifier)
+        }
+    }
+
+    private func trackedCommandQueueCount() -> Int {
+        trackedQueueLock.lock()
+        defer { trackedQueueLock.unlock() }
+        return trackedCommandQueues.count
+    }
+
+    private func latestTrackedCommandQueue() -> TrackedCommandQueue? {
+        trackedQueueLock.lock()
+        defer { trackedQueueLock.unlock() }
+
+        for identifier in trackedCommandQueueOrder.reversed() {
+            if let trackedQueue = trackedCommandQueues[identifier] {
+                return trackedQueue
+            }
+        }
+        return nil
+    }
+
+    private func queueSummary(for queue: MTLCommandQueue) -> String {
+        let identifier = ObjectIdentifier(queue as AnyObject)
+        trackedQueueLock.lock()
+        let trackedQueue = trackedCommandQueues[identifier]
+        trackedQueueLock.unlock()
+
+        if let trackedQueue {
+            return trackedQueue.summary
+        }
+
+        return [
+            "class=\(NSStringFromClass(type(of: queue)))",
+            "label=\(MetalCaptureService.describeOptionalString(queue.label))",
+            "device=\(queue.device.name)",
+            "source=untracked",
+        ].joined(separator: ", ")
+    }
 
     private func makeStatus(manager: MTLCaptureManager?) -> CaptureStatus {
         let enabled = PlaySettings.shared.metalCaptureEnabled
@@ -308,8 +545,11 @@ import QuartzCore
         let defaultDevice = MTLCreateSystemDefaultDevice()
         let hasDefaultDevice = defaultDevice != nil
         let defaultDeviceName = defaultDevice?.name
-
+        let defaultCaptureScope = manager?.defaultCaptureScope
+        let latestTrackedQueue = latestTrackedCommandQueue()
+        let trackedQueueCount = trackedCommandQueueCount()
         let failureReason: String?
+
         if !enabled {
             failureReason = "disabled_by_settings"
         } else if !available {
@@ -328,7 +568,11 @@ import QuartzCore
             "supportsGPUTrace=\(supportsGPUTrace)",
             "supportsDeveloperTools=\(supportsDeveloperTools)",
             "hasDefaultDevice=\(hasDefaultDevice)",
-            "defaultDeviceName=\(defaultDeviceName ?? "nil")",
+            "defaultDeviceName=\(Self.describeOptionalString(defaultDeviceName))",
+            "queueDiscoveryInstalled=\(queueDiscoveryInstalled)",
+            "trackedCommandQueues=\(trackedQueueCount)",
+            "latestTrackedQueue=\(Self.describeOptionalString(latestTrackedQueue?.summary))",
+            "defaultCaptureScopeLabel=\(Self.describeOptionalString(defaultCaptureScope?.label))",
             "failureReason=\(failureReason ?? "none")",
         ].joined(separator: ", ")
         logStatusProbe("makeStatus end. \(diagnosticSummary)")
@@ -342,7 +586,13 @@ import QuartzCore
             hasDefaultDevice: hasDefaultDevice,
             defaultDeviceName: defaultDeviceName,
             failureReason: failureReason,
-            diagnosticSummary: diagnosticSummary
+            diagnosticSummary: diagnosticSummary,
+            queueDiscoveryInstalled: queueDiscoveryInstalled,
+            trackedCommandQueueCount: trackedQueueCount,
+            latestCommandQueueLabel: latestTrackedQueue?.label,
+            latestCommandQueueDeviceName: latestTrackedQueue?.deviceName,
+            latestCommandQueueClassName: latestTrackedQueue?.className,
+            defaultCaptureScopeLabel: defaultCaptureScope?.label
         )
     }
 
@@ -350,16 +600,15 @@ import QuartzCore
         print("[PlayTools] MetalCaptureService: \(message)")
     }
 
+    private static func describeOptionalString(_ value: String?) -> String {
+        value ?? "nil"
+    }
+
     private func defaultOutputURL() -> URL {
-        // 输出到 app 自己的 Documents/Captures 目录
-        // Documents 目录在沙箱内一定可写，无需担心跨 container 的权限问题
         let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let capturesDir = documentsURL.appendingPathComponent("Captures")
-
-        // 确保目录存在
         try? FileManager.default.createDirectory(at: capturesDir, withIntermediateDirectories: true)
 
-        // 用时间戳作为文件名
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         let timestamp = formatter.string(from: Date())
@@ -394,6 +643,12 @@ import QuartzCore
     @objc public let defaultDeviceName: String?
     @objc public let failureReason: String?
     @objc public let diagnosticSummary: String
+    @objc public let queueDiscoveryInstalled: Bool
+    @objc public let trackedCommandQueueCount: Int
+    @objc public let latestCommandQueueLabel: String?
+    @objc public let latestCommandQueueDeviceName: String?
+    @objc public let latestCommandQueueClassName: String?
+    @objc public let defaultCaptureScopeLabel: String?
 
     @objc public init(
         available: Bool,
@@ -404,7 +659,13 @@ import QuartzCore
         hasDefaultDevice: Bool,
         defaultDeviceName: String?,
         failureReason: String?,
-        diagnosticSummary: String
+        diagnosticSummary: String,
+        queueDiscoveryInstalled: Bool,
+        trackedCommandQueueCount: Int,
+        latestCommandQueueLabel: String?,
+        latestCommandQueueDeviceName: String?,
+        latestCommandQueueClassName: String?,
+        defaultCaptureScopeLabel: String?
     ) {
         self.available = available
         self.supportsGPUTrace = supportsGPUTrace
@@ -415,5 +676,11 @@ import QuartzCore
         self.defaultDeviceName = defaultDeviceName
         self.failureReason = failureReason
         self.diagnosticSummary = diagnosticSummary
+        self.queueDiscoveryInstalled = queueDiscoveryInstalled
+        self.trackedCommandQueueCount = trackedCommandQueueCount
+        self.latestCommandQueueLabel = latestCommandQueueLabel
+        self.latestCommandQueueDeviceName = latestCommandQueueDeviceName
+        self.latestCommandQueueClassName = latestCommandQueueClassName
+        self.defaultCaptureScopeLabel = defaultCaptureScopeLabel
     }
 }

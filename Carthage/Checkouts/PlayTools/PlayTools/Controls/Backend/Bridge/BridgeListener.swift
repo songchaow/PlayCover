@@ -642,12 +642,26 @@ final class BridgeListener {
                 "is_capturing": status.isCapturing,
                 "enabled": status.enabled,
                 "diagnostic_summary": status.diagnosticSummary,
+                "queue_discovery_installed": status.queueDiscoveryInstalled,
+                "tracked_command_queue_count": status.trackedCommandQueueCount,
             ]
             if let defaultDeviceName = status.defaultDeviceName {
                 result["default_device_name"] = defaultDeviceName
             }
             if let failureReason = status.failureReason {
                 result["failure_reason"] = failureReason
+            }
+            if let latestCommandQueueLabel = status.latestCommandQueueLabel {
+                result["latest_command_queue_label"] = latestCommandQueueLabel
+            }
+            if let latestCommandQueueDeviceName = status.latestCommandQueueDeviceName {
+                result["latest_command_queue_device_name"] = latestCommandQueueDeviceName
+            }
+            if let latestCommandQueueClassName = status.latestCommandQueueClassName {
+                result["latest_command_queue_class_name"] = latestCommandQueueClassName
+            }
+            if let defaultCaptureScopeLabel = status.defaultCaptureScopeLabel {
+                result["default_capture_scope_label"] = defaultCaptureScopeLabel
             }
             return ("ok", result)
 

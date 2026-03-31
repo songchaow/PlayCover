@@ -51,6 +51,7 @@ struct AppSettingsData: Codable {
     var resizableAspectRatioHeight = 0
     var blockSleepSpamming = false
     var metalCaptureEnabled = false
+    var injectMetalCaptureEnvironment = false
 
     init() {}
 
@@ -92,6 +93,7 @@ struct AppSettingsData: Codable {
         resizableAspectRatioHeight = try container.decodeIfPresent(Int.self, forKey: .resizableAspectRatioHeight) ?? 0
         blockSleepSpamming = try container.decodeIfPresent(Bool.self, forKey: .blockSleepSpamming) ?? false
         metalCaptureEnabled = try container.decodeIfPresent(Bool.self, forKey: .metalCaptureEnabled) ?? false
+        injectMetalCaptureEnvironment = try container.decodeIfPresent(Bool.self, forKey: .injectMetalCaptureEnvironment) ?? false
     }
 }
 

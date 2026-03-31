@@ -108,6 +108,22 @@ xcodebuild -project PlayCover.xcodeproj \
 - 如果当前会话无法无提示写入 `/Applications`，则**自动回退**到 `~/Applications/PlayCover.app`
 - 对整个 `.app` 做 ad-hoc 重签名，修复 Sparkle 等内嵌 framework 的 Team ID 不匹配问题
 
+### Render Capture 实验性启动环境
+
+针对 `supports_gpu_trace=false` / `gpu_trace_document_unsupported` 的环境级排查，`update_app_settings` 额外支持一个实验性布尔字段：
+
+- `injectMetalCaptureEnvironment`: 为目标 app 的启动链路注入 `METAL_DEVICE_WRAPPER_TYPE=1`、`METAL_CAPTURE_ENABLED=1`、`METAL_FRAME_CAPTURE_ENABLED=1`、`MTLCaptureEnabled=1`
+
+用途：在**不改动被测 app 包内容**的前提下，验证特殊启动环境是否会改变 `get_capture_status` 中的 `supports_gpu_trace` / `supports_developer_tools`。
+
+注意：
+
+- 这是 **实验性排查开关**，默认关闭
+- 修改后需要重新启动目标 app 才会生效
+- 它不会替代 `metalCaptureEnabled`，两者需要分别理解：
+  - `metalCaptureEnabled`：让 runtime 初始化 `MTLCaptureManager`
+  - `injectMetalCaptureEnvironment`：让 host 在启动目标 app 时注入额外 Metal capture 环境变量
+
 ### 构建 PlayCoverMCP CLI（独立命令行工具）
 
 ```bash

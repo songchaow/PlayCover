@@ -108,6 +108,12 @@
   - `QQ飞车` 已安装包 `Info.plist` 中存在 `MetalCaptureEnabled=true`
   - `原神` 已安装包 `Info.plist` 中仍**缺少** `MetalCaptureEnabled`
   - 但两者 live 诊断完全一致，说明该 key 差异**不足以解释当前主症状**
+- `RC-006` 本轮新增进展：
+  - 社区案例进一步提示：`MetalCaptureEnabled=true` + `METAL_DEVICE_WRAPPER_TYPE=1` 这一类启动条件仍值得验证
+  - 回查代码后发现：PlayCover 当前会在 GUI / MCP / LLDB 三条启动链路中统一清掉 Metal capture 相关环境变量
+  - 因此过去其实**从未真正验证过**“特殊启动环境是否能改变 `supportsDestination(...)` 结果”
+  - 本轮已新增每 app 设置字段 `injectMetalCaptureEnvironment`
+  - 当该字段为 `true` 时，GUI 与 MCP 启动链路会为目标 app 注入实验性 Metal capture 环境，供下一轮 live 复测使用
 
 因此，当前最重要的事已经从：
 

@@ -91,10 +91,19 @@ class Shell: ObservableObject {
                       "MetalForceHudEnabled", "-bool", String(enabled))
     }
 
-    static func lldb(_ url: URL, withTerminalWindow: Bool = false) throws {
+    static func lldb(
+        _ url: URL,
+        withTerminalWindow: Bool = false,
+        environment: [String: String] = [:]
+    ) throws {
         Task(priority: .utility) {
             if withTerminalWindow {
-                let command = "/usr/bin/lldb -o run \(url.esc) -o exit"
+                let envPrefix = environment
+                    .sorted { $0.key < $1.key }
+                    .map { "\($0.key)=\($0.value)" }
+                    .joined(separator: " ")
+                let lldbCommand = "/usr/bin/lldb -o run \(url.esc) -o exit"
+                let command = (envPrefix.isEmpty ? lldbCommand : "/usr/bin/env \(envPrefix) \(lldbCommand)")
                     .replacingOccurrences(of: "\\", with: "\\\\")
                 let osascript = """
                     tell app "Terminal"
@@ -115,7 +124,21 @@ class Shell: ObservableObject {
                     }
                 }
             } else {
-                try run("/usr/bin/lldb", "-o", "run", url.path, "-o", "exit")
+                let process = Process()
+                let pipe = Pipe()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/lldb")
+                process.arguments = ["-o", "run", url.path, "-o", "exit"]
+                process.standardOutput = pipe
+                process.standardError = pipe
+                process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
+
+                try process.run()
+                let output = try pipe.fileHandleForReading.readToEnd() ?? Data()
+                Log.shared.log(String(data: output, encoding: .utf8) ?? "Shell error occured")
+                process.waitUntilExit()
+                if process.terminationStatus != 0 {
+                    throw String(data: output, encoding: .utf8) ?? "Shell error occured"
+                }
             }
         }
     }

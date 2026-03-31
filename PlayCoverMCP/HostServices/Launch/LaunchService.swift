@@ -46,7 +46,9 @@ public enum LaunchError: Error, LocalizedError, Equatable {
 /// - **LLDB launch**: Starts the app under `lldb` for debugging.
 ///
 /// Both modes perform pre-flight checks (app exists, alias exists, executable exists)
-/// and clear debug-affecting environment variables before launching.
+/// and construct a sanitized child-process environment before launching. When the
+/// per-app `injectMetalCaptureEnvironment` setting is enabled, the launch path will
+/// additionally inject an experimental Metal capture environment profile.
 public final class LaunchService: Sendable {
 
     /// The directory where PlayCover stores installed .app bundles.
@@ -54,6 +56,29 @@ public final class LaunchService: Sendable {
 
     /// The alias directory where PlayCover creates .app aliases.
     public let aliasDirectory: URL
+
+    private static let metalEnvKeys = [
+        "METAL_DEVICE_WRAPPER_TYPE",
+        "METAL_DEBUG_LAYER",
+        "MTL_DEBUG_LAYER",
+        "METAL_API_VALIDATION",
+        "METAL_SHADER_VALIDATION",
+        "METAL_SHADER_VALIDATION_OPTIONS",
+        "METAL_CAPTURE_ENABLED",
+        "METAL_CAPTURE_OUTPUT_FILE",
+        "METAL_CAPTURE_TYPE",
+        "METAL_FORCE_LAZY_COMPILATION",
+        "METAL_FRAME_CAPTURE_ENABLED",
+        "METAL_ERROR_MODE",
+        "MTLCaptureEnabled"
+    ]
+
+    private static let injectedMetalCaptureEnvironment: [String: String] = [
+        "METAL_DEVICE_WRAPPER_TYPE": "1",
+        "METAL_CAPTURE_ENABLED": "1",
+        "METAL_FRAME_CAPTURE_ENABLED": "1",
+        "MTLCaptureEnabled": "1",
+    ]
 
     /// Create a LaunchService with custom paths (useful for testing).
     public init(appDirectory: URL, aliasDirectory: URL) {
@@ -83,9 +108,7 @@ public final class LaunchService: Sendable {
     public func launchApp(bundleId: String) throws -> LaunchResult {
         let appRecord = try resolveApp(bundleId: bundleId)
         try preflightChecks(app: appRecord)
-
-        // Clear debug-affecting environment variables
-        clearDebugEnvironment()
+        let launchEnvironment = effectiveLaunchEnvironment(bundleId: bundleId)
 
         let aliasURL = aliasDirectory
             .appendingPathComponent(appRecord.displayName)
@@ -99,6 +122,7 @@ public final class LaunchService: Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         process.arguments = [aliasURL.path]
+        process.environment = launchEnvironment
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
@@ -125,9 +149,7 @@ public final class LaunchService: Sendable {
     public func launchAppWithLLDB(bundleId: String, withTerminalWindow: Bool = false) throws -> LaunchResult {
         let appRecord = try resolveApp(bundleId: bundleId)
         try preflightChecks(app: appRecord)
-
-        // Clear debug-affecting environment variables
-        clearDebugEnvironment()
+        let launchEnvironment = effectiveLaunchEnvironment(bundleId: bundleId)
 
         let executableURL = appRecord.url
             .appendingPathComponent(appRecord.executableName)
@@ -137,9 +159,9 @@ public final class LaunchService: Sendable {
         }
 
         if withTerminalWindow {
-            try lldbWithTerminal(executable: executableURL)
+            try lldbWithTerminal(executable: executableURL, environment: launchEnvironment)
         } else {
-            try lldbHeadless(executable: executableURL)
+            try lldbHeadless(executable: executableURL, environment: launchEnvironment)
         }
 
         return LaunchResult(
@@ -209,55 +231,79 @@ public final class LaunchService: Sendable {
 
     // MARK: - Environment
 
-    /// Clear environment variables that could affect the launched app's behavior.
-    ///
-    /// Mirrors `PlayApp.clearDebugAffectingEnvironment()` but without UI dependencies.
-    private func clearDebugEnvironment() {
-        // Clear DYLD_* variables
-        for (key, _) in ProcessInfo.processInfo.environment where key.hasPrefix("DYLD_") {
-            unsetenv(key)
+    private func effectiveLaunchEnvironment(bundleId: String) -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+
+        for key in Array(environment.keys) where key.hasPrefix("DYLD_") {
+            environment.removeValue(forKey: key)
+        }
+        for key in Self.metalEnvKeys {
+            environment.removeValue(forKey: key)
         }
 
-        // Clear Metal debug/capture variables
-        let metalKeys = [
-            "METAL_DEVICE_WRAPPER_TYPE",
-            "METAL_DEBUG_LAYER",
-            "MTL_DEBUG_LAYER",
-            "METAL_API_VALIDATION",
-            "METAL_SHADER_VALIDATION",
-            "METAL_SHADER_VALIDATION_OPTIONS",
-            "METAL_CAPTURE_ENABLED",
-            "METAL_CAPTURE_OUTPUT_FILE",
-            "METAL_CAPTURE_TYPE",
-            "METAL_FORCE_LAZY_COMPILATION",
-            "METAL_FRAME_CAPTURE_ENABLED",
-            "METAL_ERROR_MODE",
-            "MTLCaptureEnabled"
-        ]
-        for key in metalKeys {
-            unsetenv(key)
+        if shouldInjectMetalCaptureEnvironment(bundleId: bundleId) {
+            for (key, value) in Self.injectedMetalCaptureEnvironment {
+                environment[key] = value
+            }
         }
+
+        return environment
+    }
+
+    private func shouldInjectMetalCaptureEnvironment(bundleId: String) -> Bool {
+        let settingsURL = appDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("App Settings")
+            .appendingPathComponent(bundleId)
+            .appendingPathExtension("plist")
+
+        guard let data = try? Data(contentsOf: settingsURL),
+              let rawPlist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+              let plist = rawPlist as? [String: Any] else {
+            return false
+        }
+        return plist["injectMetalCaptureEnvironment"] as? Bool ?? false
     }
 
     // MARK: - LLDB Helpers
 
     /// Launch an executable under LLDB in headless mode (output to stdout/stderr).
-    private func lldbHeadless(executable: URL) throws {
+    private func lldbHeadless(executable: URL, environment: [String: String]) throws {
         do {
-            _ = try MCPShell.run("/usr/bin/lldb", "-o", "run", executable.path, "-o", "exit")
+            let process = Process()
+            let pipe = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/lldb")
+            process.arguments = ["-o", "run", executable.path, "-o", "exit"]
+            process.standardOutput = pipe
+            process.standardError = pipe
+            process.environment = environment
+            try process.run()
+            _ = try pipe.fileHandleForReading.readToEnd()
+            process.waitUntilExit()
+            if process.terminationStatus != 0 {
+                throw LaunchError.lldbFailed("lldb exited with status \(process.terminationStatus)")
+            }
+        } catch let error as LaunchError {
+            throw error
         } catch {
             throw LaunchError.lldbFailed(error.localizedDescription)
         }
     }
 
     /// Launch an executable under LLDB in a Terminal window via osascript.
-    private func lldbWithTerminal(executable: URL) throws {
+    private func lldbWithTerminal(executable: URL, environment: [String: String]) throws {
         let escapedPath = executable.path.replacingOccurrences(of: "\"", with: "\\\"")
+        let envPrefix = environment
+            .filter { Self.injectedMetalCaptureEnvironment.keys.contains($0.key) }
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: " ")
+        let commandPrefix = envPrefix.isEmpty ? "" : "/usr/bin/env \(envPrefix) "
         let appleScript = """
             tell application "Terminal"
                 reopen
                 activate
-                do script "/usr/bin/lldb -o run \"\(escapedPath)\" -o exit"
+                do script "\(commandPrefix)/usr/bin/lldb -o run \"\(escapedPath)\" -o exit"
             end tell
         """
         do {

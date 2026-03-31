@@ -74,6 +74,7 @@ final class SettingsToolsAndResourcesTests: XCTestCase {
             "resizableAspectRatioHeight": 0,
             "blockSleepSpamming": false,
             "metalCaptureEnabled": false,
+            "injectMetalCaptureEnvironment": false,
         ]
         let data = try PropertyListSerialization.data(
             fromPropertyList: defaults, format: .xml, options: 0
@@ -181,6 +182,7 @@ final class SettingsToolsAndResourcesTests: XCTestCase {
         XCTAssertEqual(json["bundleIdentifier"] as? String, "com.test.getsettings")
         XCTAssertEqual(json["keymapping"] as? Bool, true)
         XCTAssertEqual(json["windowWidth"] as? Int, 1920)
+        XCTAssertEqual(json["injectMetalCaptureEnvironment"] as? Bool, false)
     }
 
     func testGetAppSettingsMissingBundleId() throws {

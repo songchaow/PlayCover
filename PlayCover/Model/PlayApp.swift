@@ -100,13 +100,16 @@ class PlayApp: BaseApp {
             } else if try !Macho.isMachoValidArch(executable) {
                 Log.shared.error("The app threw an error during conversion.")
             } else {
-                // Clear any debug-related env vars that could affect the launched app
-                self.clearDebugAffectingEnvironment()
+                let launchEnvironment = effectiveLaunchEnvironment()
 
                 if settings.openWithLLDB {
-                    try Shell.lldb(executable, withTerminalWindow: settings.openLLDBWithTerminal)
+                    try Shell.lldb(
+                        executable,
+                        withTerminalWindow: settings.openLLDBWithTerminal,
+                        environment: launchEnvironment
+                    )
                 } else {
-                    runAppExec() // Splitting to reduce complexity
+                    runAppExec(environment: launchEnvironment) // Splitting to reduce complexity
                 }
             }
             isStarting = false
@@ -138,29 +141,37 @@ extension PlayApp {
         "MTLCaptureEnabled"
     ]
 
-    // clear environment variables that can force debug wrappers or validation layers
-    func clearDebugAffectingEnvironment() {
-        // Clear DYLD_* variables inherited from Xcode or other debuggers
-        for (key, _) in ProcessInfo.processInfo.environment where key.hasPrefix("DYLD_") {
-            unsetenv(key)
+    /// Experimental environment used to probe whether a special launch profile
+    /// can make `MTLCaptureManager.supportsDestination(...)` observable as supported.
+    private static let injectedMetalCaptureEnvironment: [String: String] = [
+        "METAL_DEVICE_WRAPPER_TYPE": "1",
+        "METAL_CAPTURE_ENABLED": "1",
+        "METAL_FRAME_CAPTURE_ENABLED": "1",
+        "MTLCaptureEnabled": "1",
+    ]
+
+    func effectiveLaunchEnvironment() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+
+        for key in Array(environment.keys) where key.hasPrefix("DYLD_") {
+            environment.removeValue(forKey: key)
+        }
+        for key in PlayApp.metalEnvKeys {
+            environment.removeValue(forKey: key)
         }
 
-        // Clear common Metal debug and capture related variables
-        for key in PlayApp.metalEnvKeys {
-            unsetenv(key)
+        if settings.settings.injectMetalCaptureEnvironment {
+            for (key, value) in PlayApp.injectedMetalCaptureEnvironment {
+                environment[key] = value
+            }
         }
+
+        return environment
     }
 
-    func runAppExec() {
+    func runAppExec(environment: [String: String]? = nil) {
         let config = NSWorkspace.OpenConfiguration()
-
-        // Prevent propagating debugging-related variables to child process
-        for (key, _) in ProcessInfo.processInfo.environment where key.hasPrefix("DYLD_") {
-            unsetenv(key)
-        }
-        for key in PlayApp.metalEnvKeys {
-            unsetenv(key)
-        }
+        config.environment = environment ?? effectiveLaunchEnvironment()
 
         NSWorkspace.shared.openApplication(
             at: aliasURL,

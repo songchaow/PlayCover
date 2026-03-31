@@ -175,7 +175,7 @@ public final class SettingsService: Sendable {
             "enableScrollWheel", "hideTitleBar", "floatingWindow",
             "checkMicPermissionSync", "limitMotionUpdateFrequency",
             "disableBuiltinMouse", "blockSleepSpamming",
-            "metalCaptureEnabled",
+            "metalCaptureEnabled", "injectMetalCaptureEnvironment",
         ]
         let validIntFields: Set<String> = [
             "windowWidth", "windowHeight", "resolution", "aspectRatio",
@@ -323,6 +323,7 @@ public final class SettingsService: Sendable {
             "resizableAspectRatioHeight": 0,
             "blockSleepSpamming": false,
             "metalCaptureEnabled": false,
+            "injectMetalCaptureEnvironment": false,
         ]
     }
 }

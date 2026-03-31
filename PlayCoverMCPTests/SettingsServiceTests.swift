@@ -139,6 +139,7 @@ final class SettingsServiceTests: XCTestCase {
             "resizableAspectRatioHeight": 0,
             "blockSleepSpamming": false,
             "metalCaptureEnabled": false,
+            "injectMetalCaptureEnvironment": false,
         ]
         defaults["keymapping"] = keymapping
         defaults["sensitivity"] = sensitivity
@@ -389,6 +390,8 @@ final class SettingsServiceTests: XCTestCase {
             "limitMotionUpdateFrequency": true,
             "disableBuiltinMouse": true,
             "blockSleepSpamming": false,
+            "metalCaptureEnabled": true,
+            "injectMetalCaptureEnvironment": true,
         ]
 
         let result = try service.updateSettings(

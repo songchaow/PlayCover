@@ -28,6 +28,8 @@ echo "=== 构建 PlayCover GUI (${CONFIGURATION}) ==="
 echo "    产物目录: $BUILD_DIR"
 echo ""
 
+"$REPO_ROOT/BuildScripts/sync_playtools_xcframework.sh" "$CONFIGURATION"
+
 xcodebuild -project PlayCover.xcodeproj \
   -scheme PlayCover \
   -configuration "$CONFIGURATION" \

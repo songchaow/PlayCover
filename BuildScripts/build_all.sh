@@ -33,6 +33,8 @@ echo " 产物目录: $BUILD_DIR"
 echo "==========================================="
 echo ""
 
+"$REPO_ROOT/BuildScripts/sync_playtools_xcframework.sh" "$CONFIGURATION"
+
 # --- Step 1: 构建 PlayCover GUI ---
 echo "--- [1/3] 构建 PlayCover GUI ---"
 xcodebuild -project PlayCover.xcodeproj \

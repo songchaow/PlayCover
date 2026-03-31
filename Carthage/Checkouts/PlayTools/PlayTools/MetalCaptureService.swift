@@ -169,8 +169,8 @@ import QuartzCore
             "supportsGPUTrace=\(supportsGPUTrace)",
             "supportsDeveloperTools=\(supportsDeveloperTools)",
             "hasDefaultDevice=\(hasDefaultDevice)",
-            "defaultDeviceName=\(defaultDeviceName ?? \"nil\")",
-            "failureReason=\(failureReason ?? \"none\")",
+            "defaultDeviceName=\(defaultDeviceName ?? "nil")",
+            "failureReason=\(failureReason ?? "none")",
         ].joined(separator: ", ")
 
         return CaptureStatus(

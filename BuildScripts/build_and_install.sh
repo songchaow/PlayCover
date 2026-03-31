@@ -81,6 +81,8 @@ run_install_cmd() {
 
 select_install_target
 
+"$REPO_ROOT/BuildScripts/sync_playtools_xcframework.sh" "$CONFIGURATION"
+
 # --- Step 1: 构建 ---
 echo "=== [1/3] 构建 PlayCover GUI (${CONFIGURATION}) ==="
 echo "    产物目录: $BUILD_DIR"

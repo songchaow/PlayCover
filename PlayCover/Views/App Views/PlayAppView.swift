@@ -402,11 +402,12 @@ struct CaptureButton: View {
         } label: {
             if isCapturing {
                 ProgressView()
-                    .controlSize(.mini)
-                    .frame(width: compact ? 16 : 20, height: compact ? 16 : 20)
+                    .controlSize(.small)
+                    .frame(width: compact ? 20 : 24, height: compact ? 20 : 24)
             } else {
                 Image(systemName: "camera.viewfinder")
-                    .font(compact ? .caption2 : .caption)
+                    .font(compact ? .callout : .body)
+                    .imageScale(.large)
                     .foregroundColor(canCapture ? .accentColor : .secondary)
             }
         }

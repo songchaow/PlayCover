@@ -104,18 +104,37 @@ Render Capture 相关联调如果涉及：
    - QQ飞车 `get_capture_status` 返回 `supports_gpu_trace=true`，`capture_metal_frame` 成功落盘 **413MB** `.gputrace`
    - 原神 `metalCaptureEnabled=true` 正常启动、`create_session` 返回 `ready`，无崩溃
 
-#### 6.2 已解决：`DYLD_INSERT_LIBRARIES` 注入导致部分 app 崩溃
+#### 6.2 已解决：延迟 dlopen 后 `doesNotRecognizeSelector` 崩溃（RC-012）
 
-**问题**（2026-03-31 22:23 发现）：原神在 `DYLD_INSERT_LIBRARIES` 方案下启动即崩溃（`GPUToolsCapture.MakeLayerInfos` → `doesNotRecognizeSelector` → `SIGABRT`）。
+**问题**：延迟 `dlopen` 加载 `GPUToolsCapture` 后，原神渲染线程调用 `nextDrawable` 时崩溃。
 
-**解决**：RC-009 延迟注入方案彻底解决此问题。`DYLD_INSERT_LIBRARIES` 已从 Host 侧启动逻辑中移除，改为 runtime 侧 `dlopen` 按需加载。RC-011 实测验证原神在 `metalCaptureEnabled=true` 下正常启动。
+**根因**（反汇编确认）：`GPUToolsCapture` hook 了 `nextDrawable` → `CAMetalLayer_shimDrawable` → `OpenLayerStream` → `MakeLayerInfos`。`MakeLayerInfos` 对所有 tracked layer 及其 `device` 调用 `traceStream`、`streamReference` 等私有 selector。延迟 dlopen 时，预创建的 Metal 对象不是 `Capture*` 代理类，缺少这些方法。
 
-#### 6.3 当前方案的已知限制
+**修复**：在 `dlopen` 前给 `NSObject` 添加 `traceStream` 和 `streamReference` 的 nil-returning fallback stub。所有 `Capture*` 代理类的真实实现会覆盖这些 stub。
 
-| 限制 | 说明 |
-|---|---|
-| **`GPUToolsCapture` 是 Apple 私有框架** | 其内部行为随 macOS 版本变化，不可控 |
-| **dlopen 后创建的 layer 受 hook 影响** | 延迟注入避免了启动期崩溃，但 dlopen 之后新建的 `CAMetalLayer` 仍受 `GPUToolsCapture` hook 影响 |
+**结果**：原神可正常运行、`get_capture_status` 成功返回 `supportsGPUTrace=true`，不再崩溃。
+
+#### 6.3 已知限制：延迟注入模式下截帧产物为空（原神）
+
+**问题**：`capture_metal_frame` → `startCapture` 成功 → `stopCapture` 时 `GPUToolsCapture` 内部 `GTTraceContextDumpEmptyCapture` 发生 SIGSEGV。
+
+**根因**：延迟 dlopen 后，原神的 Metal 对象（device、commandQueue、texture 等）不是 `Capture*` 代理，`GPUToolsCapture` 无法拦截 GPU 命令流，trace context 始终为空。`stopCapture` 访问空 trace context 导致段错误。
+
+**结论**：原神与 `GPUToolsCapture` 根本不兼容（启动期注入崩溃 SIGABRT，延迟注入截帧 SIGSEGV）。当前截帧功能对原神不可用，但不影响兼容 app（如 QQ飞车）。
+
+#### 6.4 双模式注入方案
+
+| 模式 | 设置 | 机制 | 适用场景 |
+|---|---|---|---|
+| **延迟注入**（默认） | `metalCaptureEnabled=true` | runtime `dlopen` + NSObject compat stubs | 所有 app 安全启动；兼容 app 可截帧 |
+| **启动期注入** | `metalCaptureEnabled=true` + `injectMetalCaptureEnvironment=true` | `DYLD_INSERT_LIBRARIES` 注入 | 兼容 app 获得完整 trace context |
+
+#### 6.5 app 兼容性矩阵
+
+| App | 延迟注入启动 | 延迟注入截帧 | 启动期注入启动 | 启动期注入截帧 |
+|---|---|---|---|---|
+| QQ飞车 | ✅ | ✅ 413MB .gputrace | ✅ | ✅ 124MB .gputrace |
+| 原神 | ✅ | ❌ SIGSEGV (空 trace) | ❌ SIGABRT (CAMetalLayer hook) | N/A |
 
 ---
 
@@ -178,13 +197,14 @@ Render Capture 相关联调如果涉及：
 | `RC-010` | — | `DONE` | **验证 Q1**：独立 Swift CLI 确认 `dlopen` 后 `supportsDestination(.gpuTraceDocument)` 可变为 `true` | `Tasks/RC-010-dlopen可行性验证.md` |
 | `RC-002` | — | `WONTFIX` | fresh reinstall 复测（截帧已成功，不再需要） | `Tasks/RC-002-fresh-reinstall-复测.md` |
 | **`RC-011`** | — | **DONE** | **端到端验证**：重建 PlayTools xcframework + PlayCover.app，实测 QQ飞车延迟注入截帧（Q3 ✅ 413MB）和原神正常启动（Q2 ✅ session ready） | `Tasks/RC-011-端到端验证.md` |
+| **`RC-012`** | — | **DONE** | **原神截帧兼容性攻关**：反汇编 `GPUToolsCapture`，定位 `traceStream`/`streamReference` 崩溃根因，实现 NSObject fallback stubs，恢复双模式注入 | `Tasks/RC-012-原神截帧兼容性.md` |
 | `RC-004` | **P0** | `TODO` | 整理最终可重复 SOP、产物位置与关单验证标准 | `Tasks/RC-004-成功截帧与关单.md` |
 
 ### 九、当前最重要任务
 
 > **`RC-004`：整理最终可重复 SOP、产物位置与关单验证标准。**
 >
-> RC-011 端到端验证已全部通过。截帧功能完整可用，兼容性问题已解决。剩余工作是沉淀 SOP 文档。
+> 截帧功能对兼容 app（QQ飞车）已完全可用。原神因与 `GPUToolsCapture` 根本不兼容，截帧暂不可用（已记录到兼容性矩阵）。双模式注入已实现，用户可按需选择。
 
 ---
 

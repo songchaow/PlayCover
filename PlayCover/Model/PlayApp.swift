@@ -143,11 +143,18 @@ extension PlayApp {
 
     /// Experimental environment used to probe whether a special launch profile
     /// can make `MTLCaptureManager.supportsDestination(...)` observable as supported.
+    ///
+    /// RC-012: This now includes `DYLD_INSERT_LIBRARIES` for startup-time injection of
+    /// `libmtlcapture.dylib`. Apps that are compatible with GPUToolsCapture's CAMetalLayer
+    /// hooks can use this mode for full trace context capture. Apps that crash (like Genshin
+    /// Impact) should use the default delayed `dlopen` mode instead (metalCaptureEnabled=true
+    /// without injectMetalCaptureEnvironment).
     private static let injectedMetalCaptureEnvironment: [String: String] = [
         "METAL_DEVICE_WRAPPER_TYPE": "1",
         "METAL_CAPTURE_ENABLED": "1",
         "METAL_FRAME_CAPTURE_ENABLED": "1",
         "MTLCaptureEnabled": "1",
+        "DYLD_INSERT_LIBRARIES": gpuToolsCaptureLibrary,
     ]
 
     /// The system library that enables `MTLCaptureManager.supportsDestination(.gpuTraceDocument)`.

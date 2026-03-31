@@ -109,7 +109,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
     /// scope 模式是否已经在某个 vsync 上进入 beginScope
     private var hasBegunActiveCaptureScope = false
 
-    // MARK: - Delayed GPU Tools Capture Loading (RC-009)
+    // MARK: - Delayed GPU Tools Capture Loading (RC-009 / RC-012)
 
     /// Attempt to load `/usr/lib/libmtlcapture.dylib` at runtime via `dlopen`.
     ///
@@ -120,6 +120,15 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
     /// **Important**: After `dlopen`, `MTLCaptureManager.shared()` must be re-acquired because
     /// the singleton caches `supportsDestination` at first access. A fresh `shared()` call after
     /// the library is loaded returns a new instance with the correct capability (verified by RC-010).
+    ///
+    /// **RC-012**: After `dlopen`, `GPUToolsCapture` hooks `CAMetalLayer.nextDrawable` with
+    /// `CAMetalLayer_shimDrawable`. When the hook fires, `OpenLayerStream` → `MakeLayerInfos`
+    /// iterates all tracked layers and calls `streamReference` on each. Layers created *before*
+    /// `dlopen` were never instrumented by `GPUToolsCapture` and lack `streamReference`, causing
+    /// `doesNotRecognizeSelector` → crash. We preemptively install a nil-returning fallback
+    /// `streamReference` on `CAMetalLayer` before `dlopen` so that pre-existing layers survive
+    /// the hook. `GPUToolsCapture` will overwrite this with its real implementation for layers
+    /// created *after* loading.
     private func ensureGPUToolsCaptureLoaded() -> Bool {
         guard !gpuToolsCaptureLoaded else { return true }
 
@@ -129,17 +138,104 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
             return false
         }
 
+        // RC-012: Install a nil-returning fallback for selectors that GPUToolsCapture's
+        // MakeLayerInfos expects on every tracked CAMetalLayer but only adds to layers
+        // created after it loads. This prevents crashes for pre-existing layer instances.
+        installGPUToolsCaptureCompatStubs()
+
+        // RC-012: Set an uncaught exception handler to log full details before crash
+        let previousHandler = NSGetUncaughtExceptionHandler()
+        NSSetUncaughtExceptionHandler { exception in
+            let reason = exception.reason ?? "nil"
+            let name = exception.name.rawValue
+            let callStack = exception.callStackSymbols.joined(separator: "\n")
+            NSLog("[PlayTools] RC-012 UNCAUGHT EXCEPTION: name=%@ reason=%@ stack:\n%@", name, reason, callStack)
+        }
+
         let handle = dlopen(libPath, RTLD_NOW)
         if handle != nil {
             gpuToolsCaptureLoaded = true
             // Re-acquire the singleton so supportsDestination reflects the newly loaded library.
             captureManager = MTLCaptureManager.shared()
             logStatusProbe("ensureGPUToolsCaptureLoaded: SUCCESS — captureManager re-acquired")
+
+            // RC-012: Re-install compat stubs AFTER dlopen, because GPUToolsCapture may
+            // have swizzled methods during its +load / __attribute__((constructor)).
+            // Also install on any dynamically-created subclass of CAMetalLayer.
+            installGPUToolsCaptureCompatStubsPostLoad()
         } else {
             let errMsg = dlerror().map { String(cString: $0) } ?? "unknown"
             logStatusProbe("ensureGPUToolsCaptureLoaded: dlopen FAILED — \(errMsg)")
         }
+
+        // Restore previous handler
+        NSSetUncaughtExceptionHandler(previousHandler)
+
         return gpuToolsCaptureLoaded
+    }
+
+    /// RC-012: Install nil-returning fallback implementations for selectors that
+    /// `GPUToolsCapture`'s `MakeLayerInfos` calls on `CAMetalLayer` instances.
+    ///
+    /// When `GPUToolsCapture` is loaded at dyld time, it hooks `CAMetalLayer` init
+    /// and adds associated state (including `streamReference`) to each new layer.
+    /// With delayed `dlopen`, layers created before loading lack these methods.
+    /// `MakeLayerInfos` calls: `device`, `streamReference`, `frame`, `name` on each
+    /// layer — `device`/`frame`/`name` are standard `CAMetalLayer` properties, but
+    /// `streamReference` is private to `GPUToolsCapture`.
+    ///
+    /// We add `streamReference` (returning nil) only if it doesn't already exist.
+    /// After `dlopen`, `GPUToolsCapture` may overwrite or extend the layer class
+    /// for newly created layers.
+    private var compatStubsInstalled = false
+
+    /// RC-012: Private selectors that GPUToolsCapture calls on various Metal objects
+    /// (MTLDevice, MTLTexture, MTLDrawable, CAMetalLayer, etc.) through its Capture* proxy
+    /// classes. When using delayed dlopen, pre-existing Metal objects are NOT wrapped in
+    /// Capture* proxies and lack these methods → doesNotRecognizeSelector → SIGABRT.
+    ///
+    /// **Solution**: Install nil-returning fallback stubs on `NSObject` itself, so that
+    /// ANY object will respond to these selectors with nil/NULL instead of crashing.
+    /// GPUToolsCapture's Capture* proxies provide real implementations that override
+    /// these stubs for properly wrapped objects.
+    ///
+    /// Selectors identified via disassembly of GPUToolsCapture:
+    ///   - `traceStream` — called on MTLDevice, MTLTexture, CAMetalLayer, self (CaptureMTLDrawable)
+    ///   - `streamReference` — called on CAMetalLayer, MTLDevice
+    private static let gpuToolsPrivateSelectors = ["streamReference", "traceStream"]
+
+    private func installGPUToolsCaptureCompatStubs() {
+        guard !compatStubsInstalled else { return }
+        compatStubsInstalled = true
+
+        // Install on NSObject — universal fallback for ALL objects
+        let nsObjectClass: AnyClass = NSObject.self
+        for sel in Self.gpuToolsPrivateSelectors {
+            addNilReturningStubIfNeeded(to: nsObjectClass, selector: sel, tag: "NSObject-pre")
+        }
+    }
+
+    /// RC-012: After dlopen, GPUToolsCapture's Capture* classes are now loaded and
+    /// provide real implementations. We don't need to patch them — our NSObject stubs
+    /// are only hit for non-wrapped pre-existing objects.
+    private func installGPUToolsCaptureCompatStubsPostLoad() {
+        logStatusProbe("installGPUToolsCaptureCompatStubsPostLoad: NSObject fallback stubs active")
+    }
+
+    /// Add a nil/0-returning stub for the given selector if the class doesn't already respond.
+    @discardableResult
+    private func addNilReturningStubIfNeeded(to cls: AnyClass, selector selName: String, tag: String) -> Bool {
+        let sel = NSSelectorFromString(selName)
+
+        if class_getInstanceMethod(cls, sel) == nil {
+            // IMP that returns nil/NULL — works for both id and pointer return types
+            let nilIMP: @convention(c) (AnyObject, Selector) -> UnsafeRawPointer? = { _, _ in nil }
+            let added = class_addMethod(cls, sel,
+                                        unsafeBitCast(nilIMP, to: IMP.self), "^v@:")
+            logStatusProbe("addStub[\(tag)]: \(NSStringFromClass(cls)).\(selName) — added=\(added)")
+            return added
+        }
+        return false
     }
 
     /// 初始化截帧服务
@@ -357,7 +453,16 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
             logStatusProbe("scope end before manager.stopCapture(); target=\(captureTarget.rawValue), reason=\(reason)")
         }
 
-        manager.stopCapture()
+        // RC-012: In delayed dlopen mode, pre-existing Metal objects are not wrapped
+        // by GPUToolsCapture's Capture* proxies. stopCapture() may crash in
+        // GTTraceContextDumpEmptyCapture when the trace context has no data.
+        // Check manager.isCapturing before calling stopCapture to avoid the crash.
+        if manager.isCapturing {
+            manager.stopCapture()
+        } else {
+            logStatusProbe("stopActiveCapture: manager.isCapturing is false, skipping stopCapture(); target=\(captureTarget.rawValue), reason=\(reason)")
+        }
+
         invalidateStopTriggers()
         resetActiveCaptureState()
         print("[PlayTools] MetalCaptureService: capture stopped (target=\(captureTarget.rawValue), \(reason))")

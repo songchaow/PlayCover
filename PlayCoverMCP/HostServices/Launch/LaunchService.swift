@@ -79,6 +79,7 @@ public final class LaunchService: Sendable {
         "METAL_CAPTURE_ENABLED": "1",
         "METAL_FRAME_CAPTURE_ENABLED": "1",
         "MTLCaptureEnabled": "1",
+        "DYLD_INSERT_LIBRARIES": "/usr/lib/libmtlcapture.dylib",
     ]
 
     /// The system library that enables `MTLCaptureManager.supportsDestination(.gpuTraceDocument)`.

@@ -85,7 +85,29 @@
 
 ---
 
-### 五、当前总体判断
+### 五、构建 / 安装约束
+
+Render Capture 相关联调如果涉及：
+
+- 重建 `PlayTools`
+- 重建 `PlayCover.app`
+- 安装 / 重装 `PlayCover.app`
+- 刷新 `PlayTools.xcframework`
+
+则**必须使用 `BuildScripts/` 里的标准脚本执行**，不要手写 `xcodebuild`，也不要手工复制 `.app` 或手工拼装安装步骤。
+
+当前应遵守的默认入口是：
+
+- GUI 构建：`BuildScripts/build_gui.sh`
+- GUI 构建并安装：`BuildScripts/build_and_install.sh`
+- `PlayTools.xcframework` 同步：`BuildScripts/sync_playtools_xcframework.sh`
+- Render Capture 专项验证：`BuildScripts/verify_render_capture.sh`
+
+这条规则属于 **Render Capture 主文档级约束**，不能只写在子任务文档里。
+
+---
+
+### 六、当前总体判断
 
 当前总体判断如下：
 
@@ -115,7 +137,7 @@
 
 ---
 
-### 六、任务 TODO 状态
+### 七、任务 TODO 状态
 
 | ID | 优先级 | 状态 | 任务 | 详细文档 |
 |---|---|---|---|---|
@@ -126,7 +148,7 @@
 | `RC-002` | **P2** | `TODO` | 在实现路径校正后，再决定是否需要对 `QQ飞车` 做 fresh reinstall + 全链路复测，用于消除旧安装残留歧义 | `Tasks/RC-002-fresh-reinstall-复测.md` |
 | `RC-004` | **P2** | `TODO` | 在截帧成功后，整理最终可重复 SOP、产物位置与关单验证标准 | `Tasks/RC-004-成功截帧与关单.md` |
 
-### 七、当前最重要任务
+### 八、当前最重要任务
 
 当前最重要任务是：
 
@@ -152,7 +174,7 @@
 
 ---
 
-### 八、参考信息
+### 九、参考信息
 
 统一参考入口：
 

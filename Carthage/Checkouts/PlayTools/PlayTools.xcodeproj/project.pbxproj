@@ -89,6 +89,8 @@
 		A1F9B3022F5A000100000001 /* MetalCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F9B3042F5A000100000001 /* MetalCaptureService.swift */; };
 		D04B12CA2EF6F3DD008FEC14 /* MediaVolume.m in Sources */ = {isa = PBXBuildFile; fileRef = D04B12C92EF6F3DD008FEC14 /* MediaVolume.m */; };
 		EEB248592B81D074000C230A /* PlayedAppleDB.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEB248582B81D074000C230A /* PlayedAppleDB.swift */; };
+		1A44AE24EDFE440EA5084DAE /* GuardedCapture.m in Sources */ = {isa = PBXBuildFile; fileRef = 1EB35123F04341FB8D73C9A4 /* GuardedCapture.m */; };
+		65F0486722224CA5B5A63B66 /* GuardedCapture.h in Headers */ = {isa = PBXBuildFile; fileRef = 4DB9490C1DD74E0E87EB6CE6 /* GuardedCapture.h */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -193,6 +195,8 @@
 		D04B12C92EF6F3DD008FEC14 /* MediaVolume.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MediaVolume.m; sourceTree = "<group>"; };
 		D04B12CC2EF6F3F9008FEC14 /* MediaVolume.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MediaVolume.h; sourceTree = "<group>"; };
 		EEB248582B81D074000C230A /* PlayedAppleDB.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayedAppleDB.swift; sourceTree = "<group>"; };
+		4DB9490C1DD74E0E87EB6CE6 /* GuardedCapture.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = GuardedCapture.h; sourceTree = "<group>"; };
+		1EB35123F04341FB8D73C9A4 /* GuardedCapture.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = GuardedCapture.m; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -455,6 +459,8 @@
 				AA719705287A44D200623C15 /* PlayLoader.h */,
 				AA719702287A44D200623C15 /* PlayLoader.m */,
 				AA719708287A44D200623C15 /* PlayTools.h */,
+				4DB9490C1DD74E0E87EB6CE6 /* GuardedCapture.h */,
+				1EB35123F04341FB8D73C9A4 /* GuardedCapture.m */,
 				2847AE47298EFC0F00B0F983 /* PlayScreen.swift */,
 			);
 			path = PlayTools;
@@ -572,6 +578,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA71986E287A81A000623C15 /* NSObject+Swizzle.h in Headers */,
+				65F0486722224CA5B5A63B66 /* GuardedCapture.h in Headers */,
 				AB7DA47729B8A78B0034ACB2 /* PlayShadow.h in Headers */,
 				AA719846287A81A000623C15 /* IOHIDEvent+KIF.h in Headers */,
 				AA719862287A81A000623C15 /* UITouch-KIFAdditions.h in Headers */,
@@ -780,6 +787,7 @@
 				954389C62B3896E600B063BB /* ChildButton.swift in Sources */,
 				ABCECEE629750BA600746595 /* PlayedApple.swift in Sources */,
 				AA71986C287A81A000623C15 /* NSObject+Swizzle.m in Sources */,
+				1A44AE24EDFE440EA5084DAE /* GuardedCapture.m in Sources */,
 				AA71970F287A44D200623C15 /* PlayCover.swift in Sources */,
 				B127172528817C040025112B /* DiscordIPC.swift in Sources */,
 				AA719850287A81A000623C15 /* UITouch-KIFAdditions.m in Sources */,

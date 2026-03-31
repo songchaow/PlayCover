@@ -8,6 +8,17 @@ import Metal
 import ObjectiveC
 import QuartzCore
 
+// MARK: - RC-013: SIGSEGV-safe stopCapture wrapper
+//
+// GPUToolsCapture's internal `GTTraceContextDumpEmptyCapture` crashes with SIGSEGV
+// when `stopCapture` is called on a trace context with no captured GPU commands
+// (which happens in delayed dlopen mode for apps like Genshin Impact whose Metal
+// objects were created before GPUToolsCapture was loaded).
+//
+// The actual signal handling (sigsetjmp/siglongjmp) is implemented in GuardedCapture.m
+// because Swift forbids functions annotated with `returns_twice` (like sigsetjmp).
+// See GuardedCapture.h for the C API.
+
 private final class CommandQueueDiscoverySwizzles: NSObject {
     @objc dynamic func pc_newCommandQueue() -> AnyObject? {
         let queue = self.pc_newCommandQueue()
@@ -89,6 +100,11 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
     private var trackedCommandQueues: [ObjectIdentifier: TrackedCommandQueue] = [:]
     private var trackedCommandQueueOrder: [ObjectIdentifier] = []
     private var queueDiscoveryInstalled = false
+
+    /// RC-013: Set to true when stopCapture recovered from SIGSEGV,
+    /// indicating the .gputrace file is empty/invalid due to pre-existing
+    /// Metal objects not being wrapped by GPUToolsCapture Capture* proxies.
+    private var lastCaptureWasEmptyTrace = false
 
     /// CADisplayLink 用于对齐 vsync 边界停止截帧
     private var displayLink: CADisplayLink?
@@ -268,6 +284,9 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         durationMs: Int = 100,
         captureTargetRawValue: String? = nil
     ) -> CaptureResult {
+        // RC-013: Reset empty trace flag at the start of each capture attempt
+        lastCaptureWasEmptyTrace = false
+
         // Lazily load libmtlcapture.dylib and re-acquire MTLCaptureManager (RC-009)
         _ = ensureGPUToolsCaptureLoaded()
 
@@ -453,12 +472,21 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
             logStatusProbe("scope end before manager.stopCapture(); target=\(captureTarget.rawValue), reason=\(reason)")
         }
 
-        // RC-012: In delayed dlopen mode, pre-existing Metal objects are not wrapped
-        // by GPUToolsCapture's Capture* proxies. stopCapture() may crash in
-        // GTTraceContextDumpEmptyCapture when the trace context has no data.
-        // Check manager.isCapturing before calling stopCapture to avoid the crash.
+        // RC-013: Use SIGSEGV-guarded stopCapture to handle the case where
+        // GPUToolsCapture's internal GTTraceContextDumpEmptyCapture crashes
+        // when the trace context has no captured data (delayed dlopen mode
+        // with apps whose Metal objects were created before library loading).
         if manager.isCapturing {
-            manager.stopCapture()
+            let stoppedCleanly = PlayTools_guardedStopCapture {
+                manager.stopCapture()
+            }
+            if stoppedCleanly {
+                logStatusProbe("stopActiveCapture: manager.stopCapture() completed normally; target=\(captureTarget.rawValue), reason=\(reason)")
+            } else {
+                logStatusProbe("stopActiveCapture: SIGSEGV recovered during manager.stopCapture() — empty trace context (pre-existing Metal objects not wrapped by GPUToolsCapture); target=\(captureTarget.rawValue), reason=\(reason)")
+                // Mark that this capture produced an empty/invalid result
+                lastCaptureWasEmptyTrace = true
+            }
         } else {
             logStatusProbe("stopActiveCapture: manager.isCapturing is false, skipping stopCapture(); target=\(captureTarget.rawValue), reason=\(reason)")
         }
@@ -537,6 +565,8 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         activeCaptureTarget = .device
         activeCaptureScope = nil
         hasBegunActiveCaptureScope = false
+        // Note: lastCaptureWasEmptyTrace is NOT reset here — it persists
+        // so that getStatus() can report the empty trace condition.
     }
 
     /// 查询截帧状态
@@ -719,6 +749,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
             "trackedCommandQueues=\(trackedQueueCount)",
             "latestTrackedQueue=\(Self.describeOptionalString(latestTrackedQueue?.summary))",
             "defaultCaptureScopeLabel=\(Self.describeOptionalString(defaultCaptureScope?.label))",
+            "lastCaptureWasEmptyTrace=\(lastCaptureWasEmptyTrace)",
             "failureReason=\(failureReason ?? "none")",
         ].joined(separator: ", ")
         logStatusProbe("makeStatus end. \(diagnosticSummary)")

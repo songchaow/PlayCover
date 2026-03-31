@@ -188,6 +188,7 @@ class MCPManager: ObservableObject {
     private var server: MCPServer?
     private var logger: MCPLogger?
     private var taskManager: TaskManager?
+    private var uploadManager: UploadManager?
     private var activeTransportStorage: AnyObject?
     private var activeTransportStop: (() -> Void)?
     private var registrationListener: RegistrationListener?
@@ -224,11 +225,13 @@ class MCPManager: ObservableObject {
 
         let logger = MCPLogger(minLevel: .info)
         let taskManager = TaskManager()
-        let server = createServer(logger: logger, taskManager: taskManager)
+        let uploadManager = UploadManager.defaultManager()
+        let server = createServer(logger: logger, taskManager: taskManager, uploadManager: uploadManager)
 
         self.server = server
         self.logger = logger
         self.taskManager = taskManager
+        self.uploadManager = uploadManager
 
         switch effectiveTransportType {
         case .http:
@@ -252,6 +255,8 @@ class MCPManager: ObservableObject {
         server = nil
         logger = nil
         taskManager = nil
+        uploadManager?.cleanupAll()
+        uploadManager = nil
         captureService = nil
         healthMonitor?.stop()
         healthMonitor = nil
@@ -322,7 +327,8 @@ class MCPManager: ObservableObject {
             handler: { message in
                 server.handle(message)
             },
-            mcpServer: server
+            mcpServer: server,
+            uploadManager: self.uploadManager
         )
 
         transport.onStateChange = { [weak self] newState in
@@ -342,7 +348,7 @@ class MCPManager: ObservableObject {
 
     /// Register all MCP services, tools, and resources on the server.
     /// This mirrors the bootstrap logic in PlayCoverMCP/main.swift.
-    private func registerServices(on server: MCPServer, taskManager: TaskManager) {
+    private func registerServices(on server: MCPServer, taskManager: TaskManager, uploadManager: UploadManager?) {
         // App tools and resources
         let appService = AppService.defaultService()
         AppTools.register(on: server, appService: appService)
@@ -362,7 +368,7 @@ class MCPManager: ObservableObject {
 
         // Installer tools
         let installerService = InstallerService.defaultService()
-        InstallerTools.register(on: server, installerService: installerService, taskManager: taskManager)
+        InstallerTools.register(on: server, installerService: installerService, taskManager: taskManager, uploadManager: uploadManager)
 
         // Launch tools
         let launchService = LaunchService.defaultService()
@@ -437,7 +443,7 @@ class MCPManager: ObservableObject {
 
     // MARK: - Private Helpers
 
-    private func createServer(logger: MCPLogger, taskManager: TaskManager) -> MCPServer {
+    private func createServer(logger: MCPLogger, taskManager: TaskManager, uploadManager: UploadManager?) -> MCPServer {
         let serverInfo = Implementation(
             name: "playcover-mcp-gui",
             version: "0.2.0"
@@ -459,7 +465,7 @@ class MCPManager: ObservableObject {
             taskManager: taskManager
         )
 
-        registerServices(on: server, taskManager: taskManager)
+        registerServices(on: server, taskManager: taskManager, uploadManager: uploadManager)
         return server
     }
 

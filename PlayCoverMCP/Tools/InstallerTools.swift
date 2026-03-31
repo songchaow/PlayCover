@@ -39,10 +39,11 @@ public enum InstallerTools {
     public static func register(
         on server: MCPServer,
         installerService: InstallerService,
-        taskManager: TaskManager
+        taskManager: TaskManager,
+        uploadManager: UploadManager? = nil
     ) {
-        registerInstallIPA(on: server, installerService: installerService, taskManager: taskManager)
-        registerExportPatchedIPA(on: server, installerService: installerService, taskManager: taskManager)
+        registerInstallIPA(on: server, installerService: installerService, taskManager: taskManager, uploadManager: uploadManager)
+        registerExportPatchedIPA(on: server, installerService: installerService, taskManager: taskManager, uploadManager: uploadManager)
     }
 
     // MARK: - install_ipa
@@ -50,7 +51,8 @@ public enum InstallerTools {
     private static func registerInstallIPA(
         on server: MCPServer,
         installerService: InstallerService,
-        taskManager: TaskManager
+        taskManager: TaskManager,
+        uploadManager: UploadManager?
     ) {
         let tool = Tool(
             name: "install_ipa",
@@ -59,7 +61,7 @@ public enum InstallerTools {
                 properties: [
                     "ipaPath": AnyCodable([
                         "type": "string",
-                        "description": "Absolute path to the .ipa file to install"
+                        "description": "Absolute path to the .ipa file to install. Supports @filename references from uploaded files (via POST /upload)."
                     ] as Any),
                     "injectPlayTools": AnyCodable([
                         "type": "boolean",
@@ -72,19 +74,32 @@ public enum InstallerTools {
                 ],
                 required: ["ipaPath"]
             ),
-            description: "Install an IPA file into PlayCover. This is a long-running operation; use the returned task ID with the get_task tool to track progress.",
+            description: "Install an IPA file into PlayCover. This is a long-running operation; use the returned task ID with the get_task tool to track progress. The ipaPath parameter supports @filename references from files uploaded via POST /upload.",
             title: "Install IPA"
         )
         server.toolRegistry.register(tool)
 
         server.registerTool(name: "install_ipa") { arguments in
             guard let args = arguments?.dictionary,
-                  let ipaPath = args["ipaPath"] as? String,
-                  !ipaPath.isEmpty else {
+                  let rawPath = args["ipaPath"] as? String,
+                  !rawPath.isEmpty else {
                 throw PlayCoverMCPError(
                     code: JSONRPCError.invalidParams,
                     message: "install_ipa requires a non-empty 'ipaPath' parameter"
                 )
+            }
+
+            // Resolve @filename references
+            let ipaPath: String
+            if rawPath.hasPrefix("@"), let mgr = uploadManager {
+                ipaPath = try mgr.resolvePathParameter(rawPath, sessionId: nil)
+            } else if rawPath.hasPrefix("@") {
+                throw PlayCoverMCPError(
+                    code: JSONRPCError.invalidParams,
+                    message: "File references (@filename) are only supported in HTTP transport mode with upload enabled"
+                )
+            } else {
+                ipaPath = rawPath
             }
 
             let injectPlayTools = args["injectPlayTools"] as? Bool ?? true
@@ -153,7 +168,8 @@ public enum InstallerTools {
     private static func registerExportPatchedIPA(
         on server: MCPServer,
         installerService: InstallerService,
-        taskManager: TaskManager
+        taskManager: TaskManager,
+        uploadManager: UploadManager?
     ) {
         let tool = Tool(
             name: "export_patched_ipa",
@@ -162,7 +178,7 @@ public enum InstallerTools {
                 properties: [
                     "ipaPath": AnyCodable([
                         "type": "string",
-                        "description": "Absolute path to the source .ipa file to export"
+                        "description": "Absolute path to the source .ipa file to export. Supports @filename references from uploaded files (via POST /upload)."
                     ] as Any),
                     "outputDirectory": AnyCodable([
                         "type": "string",
@@ -175,19 +191,32 @@ public enum InstallerTools {
                 ],
                 required: ["ipaPath"]
             ),
-            description: "Export a patched IPA with PlayTools embedded. This is a long-running operation; use the returned task ID with the get_task tool to track progress.",
+            description: "Export a patched IPA with PlayTools embedded. This is a long-running operation; use the returned task ID with the get_task tool to track progress. The ipaPath parameter supports @filename references from files uploaded via POST /upload.",
             title: "Export Patched IPA"
         )
         server.toolRegistry.register(tool)
 
         server.registerTool(name: "export_patched_ipa") { arguments in
             guard let args = arguments?.dictionary,
-                  let ipaPath = args["ipaPath"] as? String,
-                  !ipaPath.isEmpty else {
+                  let rawPath = args["ipaPath"] as? String,
+                  !rawPath.isEmpty else {
                 throw PlayCoverMCPError(
                     code: JSONRPCError.invalidParams,
                     message: "export_patched_ipa requires a non-empty 'ipaPath' parameter"
                 )
+            }
+
+            // Resolve @filename references
+            let ipaPath: String
+            if rawPath.hasPrefix("@"), let mgr = uploadManager {
+                ipaPath = try mgr.resolvePathParameter(rawPath, sessionId: nil)
+            } else if rawPath.hasPrefix("@") {
+                throw PlayCoverMCPError(
+                    code: JSONRPCError.invalidParams,
+                    message: "File references (@filename) are only supported in HTTP transport mode with upload enabled"
+                )
+            } else {
+                ipaPath = rawPath
             }
 
             let outputDirectory = args["outputDirectory"] as? String

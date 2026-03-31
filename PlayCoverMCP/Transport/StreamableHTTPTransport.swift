@@ -73,12 +73,18 @@ public final class StreamableHTTPTransport {
     /// Reference to the MCPServer for wiring notifications.
     private weak var mcpServer: MCPServer?
 
+    /// Optional upload manager for file upload support via POST /upload.
+    public let uploadManager: UploadManager?
+
     private let handler: MessageHandler
     private var serverTask: Task<Void, Never>?
     private let lock = NSLock()
 
-    /// Maximum request body size (1 MB)
+    /// Maximum request body size for /mcp (1 MB)
     private let maxBodySize = 1_048_576
+
+    /// Maximum upload body size for /upload (500 MB)
+    private let maxUploadBodySize = 500 * 1024 * 1024
 
     // MARK: - Init
 
@@ -94,13 +100,15 @@ public final class StreamableHTTPTransport {
         host: ListenHost = .loopback,
         endpointPath: String = "/mcp",
         handler: @escaping MessageHandler,
-        mcpServer: MCPServer? = nil
+        mcpServer: MCPServer? = nil,
+        uploadManager: UploadManager? = nil
     ) {
         self.port = port
         self.host = host
         self.endpointPath = endpointPath
         self.handler = handler
         self.mcpServer = mcpServer
+        self.uploadManager = uploadManager
 
         // Wire MCPServer's notificationSink to push through SSE streams
         if let server = mcpServer {
@@ -153,6 +161,7 @@ public final class StreamableHTTPTransport {
         // Close all SSE streams before cleaning up sessions
         sseStreamManager.closeAllStreams()
         sessionManager.removeExpiredSessions() // cleanup
+        uploadManager?.cleanupAll()
         setState(.stopped)
         lock.unlock()
     }
@@ -192,6 +201,13 @@ public final class StreamableHTTPTransport {
                 return Response(status: .internalServerError)
             }
             return self.handleDelete(request: request, sessionManager: sessionMgr)
+        }
+
+        router.post(RouterPath("/upload")) { [weak self] request, _ -> Response in
+            guard let self = self else {
+                return Response(status: .internalServerError)
+            }
+            return await self.handleUpload(request: request, sessionManager: sessionMgr)
         }
 
         var logger = Logger(label: "io.playcover.mcp.http")
@@ -558,6 +574,7 @@ public final class StreamableHTTPTransport {
         case .valid:
             if sessionManager.terminateSession(sessionId) {
                 sseStreamManager.closeSession(sessionId: sessionId)
+                uploadManager?.cleanupSession(sessionId)
                 notifySessionCountChanged()
                 return Response(status: .ok)
             }
@@ -724,6 +741,117 @@ public final class StreamableHTTPTransport {
         default:
             return false
         }
+    }
+
+    // MARK: - Upload Handler
+
+    private func handleUpload(
+        request: Request,
+        sessionManager: MCPSessionManager
+    ) async -> Response {
+        // 1. Origin validation
+        if let origin = request.headers[.origin] {
+            guard isValidOrigin(origin) else {
+                return Response(status: .forbidden)
+            }
+        }
+
+        // 2. Check upload manager is available
+        guard let uploadManager = self.uploadManager else {
+            return makeUploadErrorResponse(status: .notFound, message: "Upload endpoint not available")
+        }
+
+        // 3. Validate session
+        guard let sessionId = request.headers[mcpSessionIdField], !sessionId.isEmpty else {
+            return makeUploadErrorResponse(status: .badRequest, message: "Missing Mcp-Session-Id header")
+        }
+        guard sessionManager.validateSession(sessionId) != nil else {
+            return makeUploadErrorResponse(status: .notFound, message: "Invalid or expired session")
+        }
+
+        // 4. Get filename from header
+        guard let filenameField = HTTPField.Name("X-Filename"),
+              let filename = request.headers[filenameField], !filename.isEmpty else {
+            return makeUploadErrorResponse(status: .badRequest, message: "Missing X-Filename header")
+        }
+
+        // 5. Get optional checksum
+        let checksumField = HTTPField.Name("X-Checksum-SHA256")
+        let expectedChecksum: String? = checksumField.flatMap { request.headers[$0] }
+
+        // 6. Collect body
+        var mutableRequest = request
+        let bodyBuffer: ByteBuffer
+        do {
+            bodyBuffer = try await mutableRequest.collectBody(upTo: maxUploadBodySize)
+        } catch {
+            return makeUploadErrorResponse(status: HTTPResponse.Status(code: 413, reasonPhrase: "Payload Too Large"), message: "File too large or read failed")
+        }
+
+        guard let bodyData = bodyBuffer.getData(
+            at: bodyBuffer.readerIndex,
+            length: bodyBuffer.readableBytes
+        ), !bodyData.isEmpty else {
+            return makeUploadErrorResponse(status: .badRequest, message: "Empty request body")
+        }
+
+        // 7. Store file
+        do {
+            let result = try uploadManager.store(
+                data: bodyData,
+                filename: filename,
+                sessionId: sessionId,
+                expectedSHA256: expectedChecksum
+            )
+
+            let responseDict: [String: Any] = [
+                "filename": result.filename,
+                "storedName": result.storedName,
+                "size": result.size,
+                "sha256": result.sha256,
+                "expiresIn": Int(result.expiresIn),
+                "reference": result.reference,
+            ]
+            let jsonData = try JSONSerialization.data(withJSONObject: responseDict, options: [.prettyPrinted, .sortedKeys])
+
+            var headers = HTTPFields()
+            headers[.contentType] = "application/json"
+            headers[mcpSessionIdField] = sessionId
+
+            return Response(
+                status: .ok,
+                headers: headers,
+                body: .init(byteBuffer: ByteBuffer(data: jsonData))
+            )
+        } catch let error as UploadError {
+            let status: HTTPResponse.Status
+            switch error {
+            case .fileTooLarge:
+                status = HTTPResponse.Status(code: 413, reasonPhrase: "Payload Too Large")
+            case .checksumMismatch:
+                // 422 Unprocessable Entity
+                status = HTTPResponse.Status(code: 422, reasonPhrase: "Unprocessable Entity")
+            default:
+                status = .badRequest
+            }
+            return makeUploadErrorResponse(status: status, message: error.localizedDescription ?? "Upload failed")
+        } catch {
+            return makeUploadErrorResponse(status: .internalServerError, message: error.localizedDescription)
+        }
+    }
+
+    private func makeUploadErrorResponse(status: HTTPResponse.Status, message: String) -> Response {
+        let errorDict: [String: Any] = ["error": message]
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: errorDict, options: []) else {
+            return Response(status: status)
+        }
+        var headers = HTTPFields()
+        headers[.contentType] = "application/json"
+        return Response(
+            status: status,
+            headers: headers,
+            body: .init(byteBuffer: ByteBuffer(data: jsonData))
+        )
     }
 
     // MARK: - Origin Validation

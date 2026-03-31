@@ -16,10 +16,16 @@ import QuartzCore
 
     /// CADisplayLink 用于对齐 vsync 边界停止截帧
     private var displayLink: CADisplayLink?
+    /// watchdog，避免长时间没有 vsync 时一直处于 capture 中
+    private var stopWorkItem: DispatchWorkItem?
     /// vsync 回调计数，用于确保至少截取完整 1 帧
     private var vsyncCount = 0
-    /// 在第几个 vsync 后停止截帧（至少等 2 个 vsync 确保覆盖完整 1 帧）
-    private let vsyncStopThreshold = 2
+    /// capture 开始时间，用于把 `durationMs` 真正接入 stop 语义
+    private var captureStartTime: CFTimeInterval = 0
+    /// 本次 capture 至少持续多久后才允许停止
+    private var minimumCaptureDurationMs = 100
+    /// 在第几个 vsync 后才允许停止（至少等 2 个 vsync 确保覆盖完整 1 帧）
+    private let minimumVsyncStopThreshold = 2
 
     /// 初始化截帧服务
     /// 当前实现的直接开关是 `PlaySettings.shared.metalCaptureEnabled`。
@@ -38,9 +44,11 @@ import QuartzCore
     }
 
     /// 执行一次帧截取，输出 .gputrace 到指定路径
-    /// - Parameter outputURL: 输出文件路径（.gputrace），传 nil 则使用默认路径
+    /// - Parameters:
+    ///   - outputURL: 输出文件路径（.gputrace），传 nil 则使用默认路径
+    ///   - durationMs: 最少持续截帧多久后才允许停止，默认 100ms
     /// - Returns: 截帧结果
-    @objc public func captureFrame(outputURL: URL? = nil) -> CaptureResult {
+    @objc public func captureFrame(outputURL: URL? = nil, durationMs: Int = 100) -> CaptureResult {
         guard let manager = captureManager else {
             let status = makeStatus(manager: nil)
             return CaptureResult(
@@ -55,12 +63,11 @@ import QuartzCore
             return CaptureResult(success: false, message: "Capture already in progress", outputPath: nil)
         }
 
-        guard manager.supportsDestination(.gpuTraceDocument) else {
-            let status = makeStatus(manager: manager)
-            return CaptureResult(
-                success: false,
-                message: "GPU trace document not supported. \(status.diagnosticSummary)",
-                outputPath: nil
+        let normalizedDurationMs = max(1, durationMs)
+        let preflightStatus = makeStatus(manager: manager)
+        if !preflightStatus.supportsGPUTrace {
+            logStatusProbe(
+                "captureFrame preflight reports supportsGPUTrace=false; will still attempt startCapture for parity with in-app successful path. \(preflightStatus.diagnosticSummary)"
             )
         }
 
@@ -81,23 +88,27 @@ import QuartzCore
         }
 
         do {
-            isCapturing = true
             try manager.startCapture(with: descriptor)
-            print("[PlayTools] MetalCaptureService: capture started, output: \(url.path)")
+            isCapturing = true
+            captureStartTime = CACurrentMediaTime()
+            minimumCaptureDurationMs = normalizedDurationMs
+            print("[PlayTools] MetalCaptureService: capture started, output: \(url.path), durationMs=\(normalizedDurationMs)")
 
-            // 策略 B：CADisplayLink 对齐 vsync 边界停止截帧
-            // 等待若干个 vsync 信号后自动停止，精确截取 1-2 帧
+            // 对齐 vsync 停止，但不再忽略 host 传入的 duration_ms。
             vsyncCount = 0
             let link = CADisplayLink(target: self, selector: #selector(onVsync(_:)))
             link.add(to: .main, forMode: .common)
             displayLink = link
+            scheduleStopWatchdog(durationMs: normalizedDurationMs)
 
             return CaptureResult(success: true, message: "Capture started", outputPath: url.path)
         } catch {
             isCapturing = false
+            captureStartTime = 0
+            invalidateStopTriggers()
             return CaptureResult(
                 success: false,
-                message: "startCapture failed: \(error.localizedDescription)",
+                message: "startCapture failed: \(error.localizedDescription). preflight=\(preflightStatus.diagnosticSummary)",
                 outputPath: nil
             )
         }
@@ -105,35 +116,62 @@ import QuartzCore
 
     /// vsync 回调：在达到阈值后停止截帧
     @objc private func onVsync(_ link: CADisplayLink) {
-        vsyncCount += 1
-        guard vsyncCount >= vsyncStopThreshold else { return }
-
-        // 到达阈值，停止截帧并清理 displayLink
-        if isCapturing, let manager = captureManager {
-            manager.stopCapture()
-            isCapturing = false
-            print("[PlayTools] MetalCaptureService: capture stopped (vsync #\(vsyncCount))")
+        guard isCapturing else {
+            invalidateStopTriggers()
+            return
         }
-        invalidateDisplayLink()
+
+        vsyncCount += 1
+        guard vsyncCount >= minimumVsyncStopThreshold else { return }
+
+        let elapsedMs = Int((CACurrentMediaTime() - captureStartTime) * 1000.0)
+        guard elapsedMs >= minimumCaptureDurationMs else { return }
+
+        stopActiveCapture(reason: "vsync #\(vsyncCount), elapsed=\(elapsedMs)ms")
     }
 
     /// 手动停止当前截帧（通常不需要，CADisplayLink 会自动停止）
     @objc public func stopCapture() -> CaptureResult {
-        guard let manager = captureManager, isCapturing else {
+        guard isCapturing else {
             return CaptureResult(success: false, message: "No capture in progress", outputPath: nil)
+        }
+
+        stopActiveCapture(reason: "manual")
+        return CaptureResult(success: true, message: "Capture stopped", outputPath: nil)
+    }
+
+    /// 清理 stop 触发器
+    private func invalidateStopTriggers() {
+        displayLink?.invalidate()
+        displayLink = nil
+        stopWorkItem?.cancel()
+        stopWorkItem = nil
+    }
+
+    private func scheduleStopWatchdog(durationMs: Int) {
+        stopWorkItem?.cancel()
+
+        let watchdogDelayMs = max(durationMs + 2_000, 3_000)
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.isCapturing else { return }
+            self.logStatusProbe("capture watchdog fired after \(watchdogDelayMs)ms")
+            self.stopActiveCapture(reason: "watchdog after \(watchdogDelayMs)ms")
+        }
+        stopWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(watchdogDelayMs), execute: workItem)
+    }
+
+    private func stopActiveCapture(reason: String) {
+        guard let manager = captureManager, isCapturing else {
+            invalidateStopTriggers()
+            return
         }
 
         manager.stopCapture()
         isCapturing = false
-        invalidateDisplayLink()
-        print("[PlayTools] MetalCaptureService: capture stopped (manual)")
-        return CaptureResult(success: true, message: "Capture stopped", outputPath: nil)
-    }
-
-    /// 清理 CADisplayLink
-    private func invalidateDisplayLink() {
-        displayLink?.invalidate()
-        displayLink = nil
+        captureStartTime = 0
+        invalidateStopTriggers()
+        print("[PlayTools] MetalCaptureService: capture stopped (\(reason))")
     }
 
     /// 查询截帧状态

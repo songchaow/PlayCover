@@ -68,14 +68,30 @@
 1. `QQ飞车` app 内成功按钮已经生成真实 `.gputrace`
 2. 该成功样本不是空壳路径，而是完整 trace 包
 3. app 内实现使用的也是 **Apple `MTLCapture` 路线**，不是自研替代格式
-4. 因此：
-   - `supports_gpu_trace=false` / `supports_developer_tools=false` 在 PlayCover 当前路径下仍然是**真实现象**
-   - 但它们**不能再被直接解释为“当前机器或当前 app 全局不支持 Apple `MTLCapture`”**
-5. 当前更值得怀疑的，是 PlayCover 自己的实现假设：
-   - 过早依赖 `supportsDestination(...)`
-   - `captureObject` 选择过粗
-   - 触发时机不对
-   - 自动 stop 语义与 app 内成功路径不一致
+4. 本轮已完成一个关键最小实验：
+   - runtime 侧移除了 `supportsDestination(.gpuTraceDocument)` 的硬前置失败
+   - `duration_ms` 已真正传入 runtime
+   - 通过 `BuildScripts/build_and_install.sh Release` 完成 fresh 构建安装后，在真实 `QQ飞车` session 上复测
+5. 该最小实验得到的新 live 结果是：
+   - fresh `get_capture_status` 仍然稳定返回：
+     - `supports_gpu_trace=false`
+     - `supports_developer_tools=false`
+     - `failure_reason=gpu_trace_document_unsupported`
+   - 但 `capture_metal_frame` 的真实失败点已从“预检直接拒绝”推进为：
+     - **`startCapture failed: Capturing is not supported.`**
+   - 失败后 session 仍保持 `ready`
+   - 输出路径没有生成 `.gputrace`
+6. 因此当前可以明确排除一件事：
+   - **`supportsDestination(...)` 的硬门禁不是唯一根因**
+   - 因为即使去掉它，Apple API 仍在 `startCapture` 阶段直接拒绝当前 PlayCover 路径
+7. 当前更值得怀疑的差异，已经进一步收敛到：
+   - `captureObject` / capture scope 与 app 内成功路径不一致
+   - 外部触发时机偏离真实渲染 command queue / command buffer
+   - 当前 start/stop 语义仍与 app 内成功按钮不一致
+
+详细 live 样本见：
+
+- `live/2026-03-31-qqfc-rc006a.md`
 
 ---
 
@@ -83,14 +99,14 @@
 
 下一轮优先做一件事即可：
 
-1. 获取用户提供的 app 内调试按钮复现步骤
-2. 按该步骤观察成功路径的外部行为
-3. 直接对照：
-   - `Carthage/Checkouts/PlayTools/PlayTools/MetalCaptureService.swift`
-   - app 内成功路径的行为特征
-4. 形成一个**最小实验方案**，优先尝试修正：
-   - 去掉或放宽 `supportsDestination(.gpuTraceDocument)` 的硬门禁
-   - 调整 `captureObject`
-   - 调整 start/stop 触发时机
+1. 获取并记录 app 内调试按钮的**最短复现步骤**与外部可观察特征
+2. 明确它到底是：
+   - 一次点击立即完成
+   - 还是内部其实存在 begin / end 或延迟 stop 语义
+3. 继续对照 app 内成功路径，优先调查：
+   - 是否使用了不同的 `captureObject` / `MTLCaptureScope`
+   - 是否绑定在真实渲染队列而不是默认 `MTLDevice`
+   - 是否只有在特定渲染时机触发才会成功
+4. 在此基础上再做下一轮**最小实现实验**，而不是继续单纯围绕 `supportsDestination(...)` 做推断
 
-如果该最小实验能成功落盘 `.gputrace`，则当前主线即可从“解释差异”切换为“整理稳定 SOP”。
+如果后续实验能让 PlayCover 路径也成功落盘 `.gputrace`，则主线即可切换为整理稳定 SOP；如果仍失败，则至少需要把“app 内按钮的 scope / 触发时机差异”进一步显式化。

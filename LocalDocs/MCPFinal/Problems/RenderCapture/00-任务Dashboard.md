@@ -144,7 +144,7 @@ Render Capture 相关联调如果涉及：
 | `RC-001` | **P0** | `DONE` | 查清真实 app 上 `supports_gpu_trace=false / get_capture_status` 的直接现象；已确认当前 live 不再卡在超时，而是稳定返回 `gpu_trace_document_unsupported` | `Tasks/RC-001-查清-supports_gpu_trace_false.md` |
 | `RC-003` | **P0** | `DONE` | 用第二个真实 app `原神` 完成对照验证；已确认 `gpu_trace_document_unsupported` **不是 `QQ飞车` 特有现象** | `Tasks/RC-003-对照验证.md` |
 | `RC-005` | **P1** | `DONE` | 完成旧假设定位；其“机器 / 环境全局不支持”的总判断已被 `QQ飞车` app 内成功 `.gputrace` 样本修正，但历史样本仍保留为对照证据 | `Tasks/RC-005-定位环境级-gpu-trace-unsupported.md` |
-| `RC-006` | **P0** | `TODO` | 以 `QQ飞车` app 内成功按钮为金标准，观察并对照 PlayCover 当前实现，重点比较 `supportsDestination(...)` 门禁、`captureObject`、触发时机与 start/stop 语义，形成最小实验方案 | `Tasks/RC-006-验证系统级-capture-前提与替代路径.md` |
+| `RC-006` | **P0** | `DOING` | 以 `QQ飞车` app 内成功按钮为金标准，已完成“移除 `supportsDestination(...)` 硬门禁”的最小实验；当前确认失败点推进为 `startCapture failed: Capturing is not supported.`，下一步重点转向 `captureObject` / scope 与触发时机差异 | `Tasks/RC-006-验证系统级-capture-前提与替代路径.md` |
 | `RC-002` | **P2** | `TODO` | 在实现路径校正后，再决定是否需要对 `QQ飞车` 做 fresh reinstall + 全链路复测，用于消除旧安装残留歧义 | `Tasks/RC-002-fresh-reinstall-复测.md` |
 | `RC-004` | **P2** | `TODO` | 在截帧成功后，整理最终可重复 SOP、产物位置与关单验证标准 | `Tasks/RC-004-成功截帧与关单.md` |
 
@@ -192,6 +192,7 @@ Render Capture 相关联调如果涉及：
 - `live/2026-03-31-qqfc-rc001c.md`
 - `live/2026-03-31-yuanshen-rc003a.md`
 - `live/2026-03-31-envprobe-rc005a.md`
+- `live/2026-03-31-qqfc-rc006a.md`
 
 已知最新成功样本：
 

@@ -17,14 +17,12 @@
 
 PlayCover MCP 需要对真实 app 成功执行 `capture_metal_frame`，生成 `.gputrace` 文件。
 
-截至 2026-03-31 晚，**截帧功能已基本打通，但存在已知兼容性问题**：
+截至 2026-03-31 深夜，**截帧功能已全面打通，兼容性问题已解决**：
 
-- 根因是启动 iOS app 时缺少 `/usr/lib/libmtlcapture.dylib` 的注入
-- 该库是 Apple GPU Tools Capture 的核心组件（`GPUToolsCapture.framework`），Xcode 在 debug 模式下会自动注入
-- 没有它，`MTLCaptureManager.supportsDestination(.gpuTraceDocument)` 始终返回 `false`
-- 已修改 GUI 和 MCP 两条启动路径，当 `metalCaptureEnabled=true` 时通过 `DYLD_INSERT_LIBRARIES` 自动注入该库
-- **QQ飞车** 已成功通过 `capture_metal_frame` 生成 124MB 的真实 `.gputrace`
-- **⚠️ 新发现**：**原神** 在 `metalCaptureEnabled=true` 时启动崩溃（`SIGABRT`），根因是 `GPUToolsCapture` 的启动期 hook 与原神的 `CAMetalLayer` 初始化不兼容（详见第六节）
+- 根因是 iOS app 需要 `/usr/lib/libmtlcapture.dylib`（`GPUToolsCapture.framework`）才能使 `MTLCaptureManager.supportsDestination(.gpuTraceDocument)` 返回 `true`
+- 早期方案通过 `DYLD_INSERT_LIBRARIES` 启动期注入，但部分 app（如原神）因 `GPUToolsCapture` 全局 hook `CAMetalLayer` 导致启动崩溃
+- **最终方案**（RC-009）：改为 runtime `dlopen` 延迟注入，仅在首次调用 `capture_metal_frame` 或 `get_capture_status` 时加载
+- **RC-011 端到端验证通过**（2026-03-31 23:16）：QQ飞车成功截帧 413MB `.gputrace`，原神 `metalCaptureEnabled=true` 正常启动无崩溃
 
 ---
 
@@ -38,7 +36,7 @@ PlayCover MCP 需要对真实 app 成功执行 `capture_metal_frame`，生成 `.
 - `create_session` 返回 `ready` ✅
 - `capture_metal_frame` 成功返回，并实际生成 `.gputrace` ✅
 - 结果与 app 内成功路径相互印证 ✅
-- 开启 `metalCaptureEnabled` 不会导致不兼容 app 启动崩溃 → `RC-009` 待解决
+- 开启 `metalCaptureEnabled` 不会导致不兼容 app 启动崩溃 ✅（RC-009 + RC-011 已验证）
 - 输出一份可重复执行的验证步骤 → `RC-004` 待完成
 
 ---
@@ -97,53 +95,27 @@ Render Capture 相关联调如果涉及：
 
 #### 6.1 已打通的能力
 
-截帧核心链路已验证成功（QQ飞车）：
+截帧核心链路已验证成功（QQ飞车 + 延迟注入方案）：
 
 1. **根因**：`MTLCaptureManager.supportsDestination(.gpuTraceDocument)` 需要 `/usr/lib/libmtlcapture.dylib`（Apple 私有 `GPUToolsCapture.framework`）被加载到进程中
-2. **修复**：在 `PlayApp.effectiveLaunchEnvironment()`（GUI）和 `LaunchService.effectiveLaunchEnvironment()`（MCP）中，当 `metalCaptureEnabled=true` 时，设置 `DYLD_INSERT_LIBRARIES=/usr/lib/libmtlcapture.dylib`
+2. **最终修复**（RC-009）：在 `MetalCaptureService.ensureGPUToolsCaptureLoaded()` 中通过 runtime `dlopen` 按需加载，替代早期的 `DYLD_INSERT_LIBRARIES` 启动期注入
 3. **附带修复**：MCP 的 `launchApp` 从 `/usr/bin/open` 改为 `NSWorkspace.openApplication`，以正确传递环境变量到目标 app 进程
-4. **验证结果**：`QQ飞车` fresh session 上 `get_capture_status` 返回 `supports_gpu_trace=true`，`capture_metal_frame` 成功落盘 124MB `.gputrace`
+4. **RC-011 验证结果**（2026-03-31 23:16）：
+   - QQ飞车 `get_capture_status` 返回 `supports_gpu_trace=true`，`capture_metal_frame` 成功落盘 **413MB** `.gputrace`
+   - 原神 `metalCaptureEnabled=true` 正常启动、`create_session` 返回 `ready`，无崩溃
 
-#### 6.2 新发现：`DYLD_INSERT_LIBRARIES` 注入导致部分 app 崩溃
+#### 6.2 已解决：`DYLD_INSERT_LIBRARIES` 注入导致部分 app 崩溃
 
-**2026-03-31 22:23 发现**：`原神`（`com.miHoYo.Yuanshen`）在 `metalCaptureEnabled=true` 时启动即崩溃。
+**问题**（2026-03-31 22:23 发现）：原神在 `DYLD_INSERT_LIBRARIES` 方案下启动即崩溃（`GPUToolsCapture.MakeLayerInfos` → `doesNotRecognizeSelector` → `SIGABRT`）。
 
-**崩溃日志关键栈帧**：
+**解决**：RC-009 延迟注入方案彻底解决此问题。`DYLD_INSERT_LIBRARIES` 已从 Host 侧启动逻辑中移除，改为 runtime 侧 `dlopen` 按需加载。RC-011 实测验证原神在 `metalCaptureEnabled=true` 下正常启动。
 
-```
-12  CoreFoundation  -[NSObject(NSObject) doesNotRecognizeSelector:]
-13  CoreFoundation  ___forwarding___
-15  GPUToolsCapture MakeLayerInfos + 248
-16  GPUToolsCapture OpenLayerStream + 168
-17  GPUToolsCapture CAMetalLayer_init + 44
-18  UIKitCore       -[UIView _createLayerWithFrame:]
-19  UIKitCore       UIViewCommonInitWithFrame
-```
-
-**崩溃因果链**：
-
-1. `metalCaptureEnabled=true` → PlayCover 注入 `DYLD_INSERT_LIBRARIES=/usr/lib/libmtlcapture.dylib`
-2. `libmtlcapture.dylib`（`GPUToolsCapture`）在进程加载时 **全局 hook `CAMetalLayer` 的初始化路径**
-3. app 启动 → 创建第一个 `UIView`（含 `CAMetalLayer`）→ `GPUToolsCapture.CAMetalLayer_init` → `MakeLayerInfos`
-4. `MakeLayerInfos` 对 layer 对象调用了某个 selector，原神的 layer 子类 / 代理不响应 → `doesNotRecognizeSelector:` → `objc_exception_throw` → `abort()`
-
-**关键结论**：
-
-- `DYLD_INSERT_LIBRARIES` 注入发生在 **进程最早期**（dyld 阶段），`GPUToolsCapture` 的 hook 在第一个 `CAMetalLayer` 创建时就触发
-- 这是一个 **启动期同步崩溃**，app 代码无法捕获或绕过
-- QQ飞车不崩溃是因为它的 `CAMetalLayer` 使用方式恰好兼容 `GPUToolsCapture` 的 hook
-- 不同 app 对 `CAMetalLayer` 的子类化 / 包装方式不同，所以兼容性因 app 而异
-
-**临时修复**：已将原神的 `metalCaptureEnabled` 关闭为 `false`。
-
-#### 6.3 当前方案的限制
+#### 6.3 当前方案的已知限制
 
 | 限制 | 说明 |
 |---|---|
-| **app 兼容性不可预知** | 无法提前判断哪些 app 会因 `GPUToolsCapture` hook 崩溃，只能逐 app 实测 |
-| **全有或全无** | 当前 `DYLD_INSERT_LIBRARIES` 注入发生在进程启动前，无法按需开关 |
-| **崩溃不可恢复** | 不兼容 app 开启 `metalCaptureEnabled` 后直接无法启动，用户体验极差 |
-| **`GPUToolsCapture` 是 Apple 私有框架** | 其内部行为（`MakeLayerInfos` 期望的 selector）随 macOS 版本变化，不可控 |
+| **`GPUToolsCapture` 是 Apple 私有框架** | 其内部行为随 macOS 版本变化，不可控 |
+| **dlopen 后创建的 layer 受 hook 影响** | 延迟注入避免了启动期崩溃，但 dlopen 之后新建的 `CAMetalLayer` 仍受 `GPUToolsCapture` hook 影响 |
 
 ---
 
@@ -186,9 +158,9 @@ Render Capture 相关联调如果涉及：
 | # | 问题 | 状态 |
 |---|---|---|
 | **Q1** | `dlopen` 后 `supportsDestination` 能否变 `true`？ | ✅ 已验证通过 |
-| **Q2** | 原神延迟注入后能否正常启动？ | 待实测（需重建 + 重装） |
-| **Q3** | QQ飞车延迟注入后能否成功截帧？ | 待实测（需重建 + 重装） |
-| **Q4** | 是否需要重建 xcframework + 重装 app？ | 是 — 改动在 PlayTools 侧 |
+| **Q2** | 原神延迟注入后能否正常启动？ | ✅ 已验证通过（2026-03-31 23:18，PID 98638，session ready） |
+| **Q3** | QQ飞车延迟注入后能否成功截帧？ | ✅ 已验证通过（2026-03-31 23:16，413MB `.gputrace`） |
+| **Q4** | 是否需要重建 xcframework + 重装 app？ | ✅ 是 — 已通过标准脚本完成重建 + 重新注入 |
 
 ---
 
@@ -205,22 +177,14 @@ Render Capture 相关联调如果涉及：
 | `RC-009` | — | `DONE` | **延迟注入方案**：移除 `DYLD_INSERT_LIBRARIES`，改为 runtime `dlopen`，解决部分 app 启动崩溃 | `Tasks/RC-009-延迟注入方案.md` |
 | `RC-010` | — | `DONE` | **验证 Q1**：独立 Swift CLI 确认 `dlopen` 后 `supportsDestination(.gpuTraceDocument)` 可变为 `true` | `Tasks/RC-010-dlopen可行性验证.md` |
 | `RC-002` | — | `WONTFIX` | fresh reinstall 复测（截帧已成功，不再需要） | `Tasks/RC-002-fresh-reinstall-复测.md` |
-| **`RC-011`** | **P0** | **TODO** | **端到端验证**：重建 PlayTools xcframework + PlayCover.app，实测 QQ飞车延迟注入截帧（Q3）和原神正常启动（Q2） | — |
-| `RC-004` | P1 | `TODO` | 整理最终可重复 SOP、产物位置与关单验证标准（需等 RC-011 实测通过后关单） | `Tasks/RC-004-成功截帧与关单.md` |
+| **`RC-011`** | — | **DONE** | **端到端验证**：重建 PlayTools xcframework + PlayCover.app，实测 QQ飞车延迟注入截帧（Q3 ✅ 413MB）和原神正常启动（Q2 ✅ session ready） | `Tasks/RC-011-端到端验证.md` |
+| `RC-004` | **P0** | `TODO` | 整理最终可重复 SOP、产物位置与关单验证标准 | `Tasks/RC-004-成功截帧与关单.md` |
 
 ### 九、当前最重要任务
 
-> **`RC-011`：端到端验证延迟注入方案。**
+> **`RC-004`：整理最终可重复 SOP、产物位置与关单验证标准。**
 >
-> RC-009 代码改动已完成，RC-010 验证 `dlopen` 可行性已通过。下一步需要重建 PlayTools + PlayCover，在真实 app 上实测。
-
-RC-011 的具体步骤：
-
-1. 执行 `BuildScripts/sync_playtools_xcframework.sh` 重建 PlayTools xcframework
-2. 执行 `BuildScripts/build_and_install.sh` 重建并安装 PlayCover.app
-3. 重装 QQ飞车（或重新注入 PlayTools），验证截帧仍能成功（Q3）
-4. 开启原神的 `metalCaptureEnabled=true`，验证正常启动不崩溃（Q2）
-5. 将结果记录到 Dashboard
+> RC-011 端到端验证已全部通过。截帧功能完整可用，兼容性问题已解决。剩余工作是沉淀 SOP 文档。
 
 ---
 
@@ -233,7 +197,9 @@ RC-011 的具体步骤：
 
 成功截帧产物：
 
-- PlayCover MCP 生成：
+- RC-011 延迟注入验证（2026-03-31 23:16）：
+  - `/Users/songdogwang/Library/Containers/com.tencent.tmgp.speedmobile/Data/Documents/Captures/capture_20260331_231639.gputrace`（413MB）
+- 早期 DYLD_INSERT_LIBRARIES 方案验证（2026-03-31 17:08）：
   - `/Users/songdogwang/Library/Containers/com.tencent.tmgp.speedmobile/Data/Documents/Captures/capture_20260331_170807.gputrace`（124MB）
 - QQ飞车 app 内调试按钮生成：
   - `/Users/songdogwang/Library/Containers/com.tencent.tmgp.speedmobile/Data/Documents/FrameCapture/CapturedFrame20260331135148.gputrace`
@@ -244,6 +210,7 @@ RC-011 的具体步骤：
 - `PlayCoverMCP/HostServices/Launch/LaunchService.swift`：`effectiveLaunchEnvironment()` — 已移除 `DYLD_INSERT_LIBRARIES` 注入
 - `Carthage/Checkouts/PlayTools/PlayTools/MetalCaptureService.swift`：runtime 截帧核心实现，`ensureGPUToolsCaptureLoaded()` 实现延迟 dlopen
 
-崩溃样本：
+崩溃样本（已解决）：
 
-- 原神崩溃（2026-03-31 22:23）：`GPUToolsCapture.MakeLayerInfos` → `doesNotRecognizeSelector` → `SIGABRT`，发生在 `UIView _createLayerWithFrame:` 启动路径上
+- 原神崩溃（2026-03-31 22:23，`DYLD_INSERT_LIBRARIES` 方案下）：`GPUToolsCapture.MakeLayerInfos` → `doesNotRecognizeSelector` → `SIGABRT`，发生在 `UIView _createLayerWithFrame:` 启动路径上
+- **已通过 RC-009 延迟注入方案解决**，RC-011 验证原神 `metalCaptureEnabled=true` 正常启动

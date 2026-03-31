@@ -509,6 +509,11 @@ final class CaptureToolsRegistrationTests: XCTestCase {
         return resp
     }
 
+    private func toolTextContent(from response: JSONRPCResponse?) -> String? {
+        let content = response?.result?.dictionary?["content"] as? [[String: Any]]
+        return content?.first?["text"] as? String
+    }
+
     // MARK: - capture_metal_frame tool call tests
 
     func testCaptureMetalFrameToolCallSuccess() {
@@ -575,6 +580,35 @@ final class CaptureToolsRegistrationTests: XCTestCase {
         XCTAssertNotNil(resp?.result)
         XCTAssertNil(resp?.error)
         XCTAssertEqual(fakeCaptureService.getCaptureStatusCalls.count, 1)
+    }
+
+    func testGetCaptureStatusToolCallIncludesDiagnostics() throws {
+        fakeCaptureService.setStatusResult(CaptureStatusResult(
+            available: true,
+            supportsGpuTrace: false,
+            isCapturing: false,
+            enabled: true,
+            supportsDeveloperTools: true,
+            hasDefaultDevice: true,
+            defaultDeviceName: "Apple M4",
+            failureReason: "gpu_trace_document_unsupported",
+            diagnosticSummary: "enabled=true, captureManagerAvailable=true, supportsGPUTrace=false"
+        ))
+
+        let resp = callTool("get_capture_status", arguments: [
+            "sessionId": "s1"
+        ])
+
+        let text = try XCTUnwrap(toolTextContent(from: resp))
+        let data = try XCTUnwrap(text.data(using: .utf8))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        XCTAssertEqual(json["supports_gpu_trace"] as? Bool, false)
+        XCTAssertEqual(json["supports_developer_tools"] as? Bool, true)
+        XCTAssertEqual(json["has_default_device"] as? Bool, true)
+        XCTAssertEqual(json["default_device_name"] as? String, "Apple M4")
+        XCTAssertEqual(json["failure_reason"] as? String, "gpu_trace_document_unsupported")
+        XCTAssertEqual(json["diagnostic_summary"] as? String, "enabled=true, captureManagerAvailable=true, supportsGPUTrace=false")
     }
 
     func testGetCaptureStatusToolMissingSessionId() {

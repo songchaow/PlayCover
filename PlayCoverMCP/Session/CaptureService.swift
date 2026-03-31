@@ -55,21 +55,62 @@ public struct CaptureStatusResult: Codable, Equatable, Sendable {
     public let isCapturing: Bool
     /// Whether metalCaptureEnabled is ON in settings.
     public let enabled: Bool
+    /// Whether capture can stream to Xcode / developer tools even if gpuTrace export is unavailable.
+    public let supportsDeveloperTools: Bool?
+    /// Whether a default Metal device is currently visible to the runtime process.
+    public let hasDefaultDevice: Bool?
+    /// The runtime-visible default Metal device name, if any.
+    public let defaultDeviceName: String?
+    /// A stable reason code describing why capture is not currently ready.
+    public let failureReason: String?
+    /// Human-readable flattened diagnostics for quick investigation.
+    public let diagnosticSummary: String?
 
-    public init(available: Bool, supportsGpuTrace: Bool, isCapturing: Bool, enabled: Bool) {
+    public init(
+        available: Bool,
+        supportsGpuTrace: Bool,
+        isCapturing: Bool,
+        enabled: Bool,
+        supportsDeveloperTools: Bool? = nil,
+        hasDefaultDevice: Bool? = nil,
+        defaultDeviceName: String? = nil,
+        failureReason: String? = nil,
+        diagnosticSummary: String? = nil
+    ) {
         self.available = available
         self.supportsGpuTrace = supportsGpuTrace
         self.isCapturing = isCapturing
         self.enabled = enabled
+        self.supportsDeveloperTools = supportsDeveloperTools
+        self.hasDefaultDevice = hasDefaultDevice
+        self.defaultDeviceName = defaultDeviceName
+        self.failureReason = failureReason
+        self.diagnosticSummary = diagnosticSummary
     }
 
     public func toDictionary() -> [String: Any] {
-        [
+        var dict: [String: Any] = [
             "available": available,
             "supports_gpu_trace": supportsGpuTrace,
             "is_capturing": isCapturing,
             "enabled": enabled,
         ]
+        if let supportsDeveloperTools {
+            dict["supports_developer_tools"] = supportsDeveloperTools
+        }
+        if let hasDefaultDevice {
+            dict["has_default_device"] = hasDefaultDevice
+        }
+        if let defaultDeviceName {
+            dict["default_device_name"] = defaultDeviceName
+        }
+        if let failureReason {
+            dict["failure_reason"] = failureReason
+        }
+        if let diagnosticSummary {
+            dict["diagnostic_summary"] = diagnosticSummary
+        }
+        return dict
     }
 }
 
@@ -196,12 +237,22 @@ public final class CaptureService: CaptureServiceProtocol, Sendable {
         let supportsGpuTrace = resultDict?["supports_gpu_trace"] as? Bool ?? false
         let isCapturing = resultDict?["is_capturing"] as? Bool ?? false
         let enabled = resultDict?["enabled"] as? Bool ?? false
+        let supportsDeveloperTools = resultDict?["supports_developer_tools"] as? Bool
+        let hasDefaultDevice = resultDict?["has_default_device"] as? Bool
+        let defaultDeviceName = resultDict?["default_device_name"] as? String
+        let failureReason = resultDict?["failure_reason"] as? String
+        let diagnosticSummary = resultDict?["diagnostic_summary"] as? String
 
         return CaptureStatusResult(
             available: available,
             supportsGpuTrace: supportsGpuTrace,
             isCapturing: isCapturing,
-            enabled: enabled
+            enabled: enabled,
+            supportsDeveloperTools: supportsDeveloperTools,
+            hasDefaultDevice: hasDefaultDevice,
+            defaultDeviceName: defaultDeviceName,
+            failureReason: failureReason,
+            diagnosticSummary: diagnosticSummary
         )
     }
 

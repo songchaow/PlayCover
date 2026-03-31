@@ -31,12 +31,8 @@ import QuartzCore
 
         captureManager = MTLCaptureManager.shared()
 
-        if let manager = captureManager {
-            let supportsTrace = manager.supportsDestination(.gpuTraceDocument)
-            print("[PlayTools] MetalCaptureService initialized. supportsGPUTrace: \(supportsTrace)")
-        } else {
-            print("[PlayTools] MetalCaptureService: MTLCaptureManager not available")
-        }
+        let status = makeStatus(manager: captureManager)
+        print("[PlayTools] MetalCaptureService initialized. \(status.diagnosticSummary)")
     }
 
     /// 执行一次帧截取，输出 .gputrace 到指定路径
@@ -44,9 +40,10 @@ import QuartzCore
     /// - Returns: 截帧结果
     @objc public func captureFrame(outputURL: URL? = nil) -> CaptureResult {
         guard let manager = captureManager else {
+            let status = makeStatus(manager: nil)
             return CaptureResult(
                 success: false,
-                message: "MTLCaptureManager not available. "
+                message: "MTLCaptureManager not available. \(status.diagnosticSummary). "
                     + "Ensure metalCaptureEnabled is ON and app was reinstalled.",
                 outputPath: nil
             )
@@ -57,7 +54,12 @@ import QuartzCore
         }
 
         guard manager.supportsDestination(.gpuTraceDocument) else {
-            return CaptureResult(success: false, message: "GPU trace document not supported", outputPath: nil)
+            let status = makeStatus(manager: manager)
+            return CaptureResult(
+                success: false,
+                message: "GPU trace document not supported. \(status.diagnosticSummary)",
+                outputPath: nil
+            )
         }
 
         let url = outputURL ?? defaultOutputURL()
@@ -134,17 +136,55 @@ import QuartzCore
 
     /// 查询截帧状态
     @objc public func getStatus() -> CaptureStatus {
-        let available = captureManager != nil
-        let supportsTrace = captureManager?.supportsDestination(.gpuTraceDocument) ?? false
-        return CaptureStatus(
-            available: available,
-            supportsGPUTrace: supportsTrace,
-            isCapturing: isCapturing,
-            enabled: PlaySettings.shared.metalCaptureEnabled
-        )
+        makeStatus(manager: captureManager)
     }
 
     // MARK: - Private
+
+    private func makeStatus(manager: MTLCaptureManager?) -> CaptureStatus {
+        let enabled = PlaySettings.shared.metalCaptureEnabled
+        let available = manager != nil
+        let supportsGPUTrace = manager?.supportsDestination(.gpuTraceDocument) ?? false
+        let supportsDeveloperTools = manager?.supportsDestination(.developerTools) ?? false
+        let defaultDevice = MTLCreateSystemDefaultDevice()
+        let hasDefaultDevice = defaultDevice != nil
+        let defaultDeviceName = defaultDevice?.name
+
+        let failureReason: String?
+        if !enabled {
+            failureReason = "disabled_by_settings"
+        } else if !available {
+            failureReason = "capture_manager_unavailable"
+        } else if !supportsGPUTrace {
+            failureReason = "gpu_trace_document_unsupported"
+        } else if !hasDefaultDevice {
+            failureReason = "default_metal_device_unavailable"
+        } else {
+            failureReason = nil
+        }
+
+        let diagnosticSummary = [
+            "enabled=\(enabled)",
+            "captureManagerAvailable=\(available)",
+            "supportsGPUTrace=\(supportsGPUTrace)",
+            "supportsDeveloperTools=\(supportsDeveloperTools)",
+            "hasDefaultDevice=\(hasDefaultDevice)",
+            "defaultDeviceName=\(defaultDeviceName ?? \"nil\")",
+            "failureReason=\(failureReason ?? \"none\")",
+        ].joined(separator: ", ")
+
+        return CaptureStatus(
+            available: available,
+            supportsGPUTrace: supportsGPUTrace,
+            supportsDeveloperTools: supportsDeveloperTools,
+            isCapturing: isCapturing,
+            enabled: enabled,
+            hasDefaultDevice: hasDefaultDevice,
+            defaultDeviceName: defaultDeviceName,
+            failureReason: failureReason,
+            diagnosticSummary: diagnosticSummary
+        )
+    }
 
     private func defaultOutputURL() -> URL {
         // 输出到 app 自己的 Documents/Captures 目录
@@ -183,13 +223,33 @@ import QuartzCore
 @objc public class CaptureStatus: NSObject {
     @objc public let available: Bool
     @objc public let supportsGPUTrace: Bool
+    @objc public let supportsDeveloperTools: Bool
     @objc public let isCapturing: Bool
     @objc public let enabled: Bool
+    @objc public let hasDefaultDevice: Bool
+    @objc public let defaultDeviceName: String?
+    @objc public let failureReason: String?
+    @objc public let diagnosticSummary: String
 
-    @objc public init(available: Bool, supportsGPUTrace: Bool, isCapturing: Bool, enabled: Bool) {
+    @objc public init(
+        available: Bool,
+        supportsGPUTrace: Bool,
+        supportsDeveloperTools: Bool,
+        isCapturing: Bool,
+        enabled: Bool,
+        hasDefaultDevice: Bool,
+        defaultDeviceName: String?,
+        failureReason: String?,
+        diagnosticSummary: String
+    ) {
         self.available = available
         self.supportsGPUTrace = supportsGPUTrace
+        self.supportsDeveloperTools = supportsDeveloperTools
         self.isCapturing = isCapturing
         self.enabled = enabled
+        self.hasDefaultDevice = hasDefaultDevice
+        self.defaultDeviceName = defaultDeviceName
+        self.failureReason = failureReason
+        self.diagnosticSummary = diagnosticSummary
     }
 }

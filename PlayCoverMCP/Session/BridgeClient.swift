@@ -171,7 +171,8 @@ public final class BridgeClient: Sendable {
                 if payload.status == "ok" {
                     return payload
                 } else {
-                    throw BridgeProtocolError.invalidMessage("Command failed: \(payload.status)")
+                    let detail = payload.result?.dictionary?["message"] as? String ?? payload.status
+                    throw BridgeProtocolError.invalidMessage("Command failed: \(detail)")
                 }
             case .error(let payload):
                 throw BridgeProtocolError.invalidMessage("Runtime error: \(payload.message)")

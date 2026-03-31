@@ -78,11 +78,23 @@
 
 ### 五、当前总体判断
 
-当前最重要的不是继续盲目重试 `capture_metal_frame`，而是：
+当前总体判断如下：
 
-> **先查清为什么 runtime 已经 `available=true`、`enabled=true`，但仍返回 `supports_gpu_trace=false`。**
+- `session` 链路已经不是主阻塞点
+- `supports_gpu_trace=false` 仍是当前最关键的真实阻塞点
+- **本轮已完成 `RC-001` 的观测增强子任务**：
+  - runtime `get_capture_status` 不再只返回 4 个布尔字段
+  - 现在会额外透出：
+    - `supports_developer_tools`
+    - `has_default_device`
+    - `default_device_name`
+    - `failure_reason`
+    - `diagnostic_summary`
+  - `capture_metal_frame` 失败时，bridge 也会保留 runtime 原始错误信息，不再只剩 `Command failed: error`
 
-在这个问题没有搞清前，重复做 capture 只会产生低价值噪音。
+因此，当前最重要的事已经从“盲重试 capture”切换为：
+
+> **基于新增诊断字段，对真实 app 再做一轮最小复测，收集一份可判因的 live 样本。**
 
 ---
 
@@ -90,7 +102,7 @@
 
 | ID | 优先级 | 状态 | 任务 | 详细文档 |
 |---|---|---|---|---|
-| `RC-001` | **P0** | `TODO` | 查清 `supports_gpu_trace=false` 的直接原因，并明确它是环境级、runtime 级还是 app 级问题 | `Tasks/RC-001-查清-supports_gpu_trace_false.md` |
+| `RC-001` | **P0** | `DOING` | 查清 `supports_gpu_trace=false` 的直接原因；本轮已完成观测增强，下一步用真实 app 样本判定它是环境级、runtime 级还是 app 级问题 | `Tasks/RC-001-查清-supports_gpu_trace_false.md` |
 | `RC-002` | **P1** | `TODO` | 在 `metalCaptureEnabled=true` 前提下，对 `QQ飞车` 做 fresh reinstall + 全链路复测，消除“旧安装残留”歧义 | `Tasks/RC-002-fresh-reinstall-复测.md` |
 | `RC-003` | **P1** | `TODO` | 做对照验证，区分问题是 `QQ飞车` 特有，还是当前机器 / 当前 PlayCover 环境的普遍问题 | `Tasks/RC-003-对照验证.md` |
 | `RC-004` | **P2** | `TODO` | 在截帧成功后，整理最终可重复 SOP、产物位置与关单验证标准 | `Tasks/RC-004-成功截帧与关单.md` |
@@ -99,9 +111,9 @@
 
 当前最重要任务是：
 
-> **`RC-001`：查清 `supports_gpu_trace=false` 的直接原因。**
+> **`RC-001-B`：重建并安装带新诊断的 PlayCover / app，执行一次 `get_capture_status` 与一次最小 `capture_metal_frame`，把 live 输出归档后再判定问题归类。**
 
-如果后续 agent 发现 `RC-001` 仍过大，应继续拆分，但**本轮也只做一个拆出来的子任务**。
+本轮已经完成的是 `RC-001-A`：**把 opaque false / opaque error 改造成可观测的诊断输出。**
 
 ---
 

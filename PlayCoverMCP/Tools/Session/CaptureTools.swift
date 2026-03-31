@@ -130,7 +130,7 @@ public enum CaptureTools {
                 ],
                 required: ["sessionId"]
             ),
-            description: "Get the Metal capture service status for a running PlayCover-managed iOS app. Returns whether capture is available, whether GPU trace export is supported, whether a capture is in progress, and whether metalCaptureEnabled is on in settings.",
+            description: "Get the Metal capture service status for a running PlayCover-managed iOS app. Returns whether capture is available, whether GPU trace export is supported, whether a capture is in progress, whether metalCaptureEnabled is on in settings, and when needed includes extra runtime diagnostics such as developer-tools support, default-device visibility, and failure reason.",
             title: "Get Capture Status"
         )
         server.toolRegistry.register(tool)

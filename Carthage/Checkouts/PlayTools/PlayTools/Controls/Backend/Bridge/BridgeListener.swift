@@ -625,12 +625,22 @@ final class BridgeListener {
             let status = valueOnMainSync {
                 MetalCaptureService.shared.getStatus()
             }
-            return ("ok", [
+            var result: [String: Any] = [
                 "available": status.available,
                 "supports_gpu_trace": status.supportsGPUTrace,
+                "supports_developer_tools": status.supportsDeveloperTools,
+                "has_default_device": status.hasDefaultDevice,
                 "is_capturing": status.isCapturing,
                 "enabled": status.enabled,
-            ])
+                "diagnostic_summary": status.diagnosticSummary,
+            ]
+            if let defaultDeviceName = status.defaultDeviceName {
+                result["default_device_name"] = defaultDeviceName
+            }
+            if let failureReason = status.failureReason {
+                result["failure_reason"] = failureReason
+            }
+            return ("ok", result)
 
         default:
             return errorResult("Unknown command: \(command)")

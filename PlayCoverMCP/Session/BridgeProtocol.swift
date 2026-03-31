@@ -387,8 +387,13 @@ public enum BridgeCommandName {
     /// Response data:
     /// - `available` (Bool): whether `MTLCaptureManager` is accessible.
     /// - `supports_gpu_trace` (Bool): whether `.gpuTraceDocument` destination is supported.
+    /// - `supports_developer_tools` (Bool, optional): whether capture is available to Xcode / developer tools.
+    /// - `has_default_device` (Bool, optional): whether the runtime process can see a default Metal device.
+    /// - `default_device_name` (String, optional): the runtime-visible default Metal device name.
     /// - `is_capturing` (Bool): whether a capture is currently in progress.
     /// - `enabled` (Bool): whether `metalCaptureEnabled` is ON in settings.
+    /// - `failure_reason` (String, optional): stable diagnostic reason when capture is not ready.
+    /// - `diagnostic_summary` (String, optional): flattened runtime diagnostics for debugging.
     public static let getCaptureStatus = "get_capture_status"
 }
 

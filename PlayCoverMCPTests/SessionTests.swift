@@ -823,6 +823,59 @@ final class SessionHandshakeTests: XCTestCase {
         fakeRuntime.stop()
     }
 
+    func testCommandFailureIncludesRuntimeMessage() throws {
+        let port = try registrationListener.start()
+
+        let fakeRuntime = FakeRuntimeServer()
+        fakeRuntime.onCommand = { payload in
+            XCTAssertEqual(payload.command, "test_command")
+            return CommandResponsePayload(
+                sessionId: payload.sessionId,
+                commandId: payload.commandId,
+                status: "error",
+                result: AnyCodable(["message": "GPU trace document not supported"] as [String: Any])
+            )
+        }
+
+        let started = expectation(description: "fake runtime started")
+        let registered = expectation(description: "registration completed")
+        try fakeRuntime.start(registrationPort: port, startedExpectation: started, registeredExpectation: registered)
+        waitForExpectations(timeout: 5.0)
+
+        guard let cmdPort = fakeRuntime.commandPort else {
+            XCTFail("Fake runtime should have a command port")
+            return
+        }
+        let client = BridgeClient(sessionId: fakeRuntime.sessionId, port: cmdPort)
+        let connected = expectation(description: "client connected")
+        Task {
+            do {
+                try await client.connect(timeout: 2.0)
+                connected.fulfill()
+            } catch {
+                XCTFail("Connection failed: \(error)")
+            }
+        }
+        wait(for: [connected], timeout: 3.0)
+
+        let commandFailed = expectation(description: "command failed with detail")
+        Task {
+            do {
+                _ = try await client.sendCommand("test_command", timeout: 3.0)
+                XCTFail("Command should have failed")
+            } catch let error as BridgeProtocolError {
+                XCTAssertEqual(error, .invalidMessage("Command failed: GPU trace document not supported"))
+                commandFailed.fulfill()
+            } catch {
+                XCTFail("Unexpected error: \(error)")
+            }
+        }
+        wait(for: [commandFailed], timeout: 5.0)
+
+        client.close()
+        fakeRuntime.stop()
+    }
+
     func testPingPongThroughRegistration() throws {
         let port = try registrationListener.start()
 

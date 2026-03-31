@@ -142,6 +142,16 @@ struct PlayAppConditionalView: View {
         return nil
     }
 
+    /// Whether the capture button should be shown (has ready session).
+    private var canCapture: Bool {
+        mcpManager.canCapture(bundleId: app.info.bundleIdentifier)
+    }
+
+    /// Whether a capture is in progress for this app.
+    private var isCapturing: Bool {
+        mcpManager.isCapturing(bundleId: app.info.bundleIdentifier)
+    }
+
     var body: some View {
         Group {
             if isList {
@@ -185,6 +195,14 @@ struct PlayAppConditionalView: View {
                         SessionIndicatorView(status: status, sessionCount: appSessions.count)
                             .padding(.trailing, 8)
                     }
+                    if sessionIndicatorStatus == "ready" {
+                        CaptureButton(
+                            bundleId: app.info.bundleIdentifier,
+                            canCapture: canCapture,
+                            isCapturing: isCapturing
+                        )
+                        .padding(.trailing, 4)
+                    }
                     Text(app.settings.info.bundleVersion)
                         .padding(.horizontal, 15)
                         .foregroundColor(.secondary)
@@ -219,6 +237,17 @@ struct PlayAppConditionalView: View {
                         if let status = sessionIndicatorStatus {
                             SessionDotView(status: status)
                                 .offset(x: 4, y: -4)
+                        }
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        if sessionIndicatorStatus == "ready" {
+                            CaptureButton(
+                                bundleId: app.info.bundleIdentifier,
+                                canCapture: canCapture,
+                                isCapturing: isCapturing,
+                                compact: true
+                            )
+                            .offset(x: 4, y: 4)
                         }
                     }
 
@@ -335,5 +364,83 @@ struct SessionDotView: View {
                     .stroke(Color(.windowBackgroundColor), lineWidth: 1.5)
             )
             .help("MCP Session: \(sessionStatusLabel(status))")
+    }
+}
+
+// MARK: - Metal Capture Button
+
+/// Button to trigger Metal GPU frame capture for a running app.
+/// Shows in both list and grid modes when a ready session exists.
+struct CaptureButton: View {
+    let bundleId: String
+    let canCapture: Bool
+    let isCapturing: Bool
+    var compact: Bool = false
+
+    @State private var captureResultMessage: String?
+    @State private var showCaptureResult = false
+    @State private var captureSucceeded = false
+
+    var body: some View {
+        Button {
+            guard canCapture else { return }
+            Task {
+                let result = await MCPManager.shared.captureFrame(bundleId: bundleId)
+                await MainActor.run {
+                    switch result {
+                    case .success(let path):
+                        captureSucceeded = true
+                        captureResultMessage = path
+                        showCaptureResult = true
+                    case .failure(let message):
+                        captureSucceeded = false
+                        captureResultMessage = message
+                        showCaptureResult = true
+                    }
+                }
+            }
+        } label: {
+            if isCapturing {
+                ProgressView()
+                    .controlSize(.mini)
+                    .frame(width: compact ? 16 : 20, height: compact ? 16 : 20)
+            } else {
+                Image(systemName: "camera.viewfinder")
+                    .font(compact ? .caption2 : .caption)
+                    .foregroundColor(canCapture ? .accentColor : .secondary)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(!canCapture)
+        .help(captureTooltip)
+        .alert(
+            captureSucceeded
+                ? NSLocalizedString("capture.success.title", comment: "Capture succeeded")
+                : NSLocalizedString("capture.failure.title", comment: "Capture failed"),
+            isPresented: $showCaptureResult
+        ) {
+            if captureSucceeded, let path = captureResultMessage {
+                Button(NSLocalizedString("capture.revealInFinder", comment: "Show in Finder")) {
+                    NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
+                }
+                Button(NSLocalizedString("button.OK", comment: ""), role: .cancel) {}
+            } else {
+                Button(NSLocalizedString("button.OK", comment: ""), role: .cancel) {}
+            }
+        } message: {
+            if let msg = captureResultMessage {
+                Text(msg)
+            }
+        }
+    }
+
+    private var captureTooltip: String {
+        if isCapturing {
+            return NSLocalizedString("capture.inProgress", comment: "Capture in progress")
+        }
+        if canCapture {
+            return NSLocalizedString("capture.tooltip", comment: "Capture Metal frame")
+        }
+        return NSLocalizedString("capture.unavailable", comment: "No ready session")
     }
 }

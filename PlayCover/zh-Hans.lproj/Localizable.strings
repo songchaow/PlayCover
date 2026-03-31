@@ -414,3 +414,9 @@
 "session.status.ready" = "已连接";
 "session.status.starting" = "连接中";
 "session.status.disconnected" = "已断开";
+"capture.tooltip" = "捕获 Metal GPU 帧";
+"capture.inProgress" = "捕获中…";
+"capture.unavailable" = "无可用会话";
+"capture.success.title" = "帧捕获完成";
+"capture.failure.title" = "帧捕获失败";
+"capture.revealInFinder" = "在 Finder 中显示";

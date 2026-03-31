@@ -69,6 +69,12 @@
 "session.status.ready" = "Connected";
 "session.status.starting" = "Connecting";
 "session.status.disconnected" = "Disconnected";
+"capture.tooltip" = "Capture Metal GPU Frame";
+"capture.inProgress" = "Capturing…";
+"capture.unavailable" = "No active session for capture";
+"capture.success.title" = "Frame Captured";
+"capture.failure.title" = "Capture Failed";
+"capture.revealInFinder" = "Show in Finder";
 "preferences.whenUninstalling" = "When uninstalling:";
 "preferences.toggle.showUninstall" = "Show warning popup";
 "preferences.toggle.clearAppData" = "Clear data";

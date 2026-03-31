@@ -50,6 +50,9 @@ class MCPManager: ObservableObject {
     /// Runtime sessions grouped by bundleId, updated reactively from SessionRegistry.
     @Published var runtimeSessions: [String: [RuntimeSessionSnapshot]] = [:]
 
+    /// Bundle IDs currently performing a capture (for UI busy state).
+    @Published var capturingBundleIds: Set<String> = []
+
     // MARK: - Persisted Settings
 
     /// The user-configured port, persisted in UserDefaults.
@@ -106,6 +109,47 @@ class MCPManager: ObservableObject {
         sessions(for: bundleId).contains { $0.status == "ready" || $0.status == "starting" }
     }
 
+    /// Whether a ready session exists and capture is not already in progress for this bundleId.
+    func canCapture(bundleId: String) -> Bool {
+        sessions(for: bundleId).contains { $0.status == "ready" }
+            && !capturingBundleIds.contains(bundleId)
+    }
+
+    /// Whether a capture is currently in progress for this bundleId.
+    func isCapturing(bundleId: String) -> Bool {
+        capturingBundleIds.contains(bundleId)
+    }
+
+    /// Trigger a Metal frame capture for the first ready session of the given bundleId.
+    /// Updates `capturingBundleIds` for UI feedback. Returns the output path on success.
+    @discardableResult
+    func captureFrame(bundleId: String) async -> Result<String, String> {
+        guard let captureService = captureService else {
+            return .failure("MCP Server not running")
+        }
+
+        // Find first ready session for this bundleId
+        guard let session = sessions(for: bundleId).first(where: { $0.status == "ready" }) else {
+            return .failure("No ready session for \(bundleId)")
+        }
+
+        await MainActor.run { capturingBundleIds.insert(bundleId) }
+
+        do {
+            let params = CaptureFrameParams()
+            let result = try await captureService.captureFrame(sessionId: session.id, params: params)
+            await MainActor.run { capturingBundleIds.remove(bundleId) }
+            if result.success, let path = result.outputPath {
+                return .success(path)
+            } else {
+                return .failure(result.message)
+            }
+        } catch {
+            await MainActor.run { capturingBundleIds.remove(bundleId) }
+            return .failure(error.localizedDescription)
+        }
+    }
+
     var isHTTPTransportSupported: Bool {
         if #available(macOS 14, *) {
             return true
@@ -148,6 +192,7 @@ class MCPManager: ObservableObject {
     private var activeTransportStop: (() -> Void)?
     private var registrationListener: RegistrationListener?
     private var healthMonitor: SessionHealthMonitor?
+    private var captureService: CaptureService?
 
     private init() {
         port = savedPort
@@ -207,6 +252,7 @@ class MCPManager: ObservableObject {
         server = nil
         logger = nil
         taskManager = nil
+        captureService = nil
         healthMonitor?.stop()
         healthMonitor = nil
         registrationListener?.stop()
@@ -214,6 +260,7 @@ class MCPManager: ObservableObject {
         isRunning = false
         connectedClients = 0
         runtimeSessions = [:]
+        capturingBundleIds = []
         lastError = nil
     }
 
@@ -384,6 +431,7 @@ class MCPManager: ObservableObject {
 
         // Capture tools (capture_metal_frame, get_capture_status)
         let captureService = CaptureService(registry: sessionRegistry)
+        self.captureService = captureService
         CaptureTools.register(on: server, captureService: captureService)
     }
 

@@ -394,3 +394,9 @@
 "session.status.ready" = "已連線";
 "session.status.starting" = "連線中";
 "session.status.disconnected" = "已斷線";
+"capture.tooltip" = "擷取 Metal GPU 幀";
+"capture.inProgress" = "擷取中…";
+"capture.unavailable" = "無可用工作階段";
+"capture.success.title" = "幀擷取完成";
+"capture.failure.title" = "幀擷取失敗";
+"capture.revealInFinder" = "在 Finder 中顯示";

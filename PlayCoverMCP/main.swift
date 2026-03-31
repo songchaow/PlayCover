@@ -50,7 +50,8 @@ TaskTools.register(on: server, taskManager: taskManager)
 
 // Register installer tools
 let installerService = InstallerService.defaultService()
-InstallerTools.register(on: server, installerService: installerService, taskManager: taskManager)
+let ipaDownloader = IPADownloader.defaultDownloader()
+InstallerTools.register(on: server, installerService: installerService, taskManager: taskManager, ipaDownloader: ipaDownloader)
 
 // Register launch tools
 let launchService = LaunchService.defaultService()

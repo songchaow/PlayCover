@@ -147,6 +147,9 @@
 		47A8288D276C4E65A6736A7C /* AppToolsAndResourcesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0814B3729EC24510859A18E9 /* AppToolsAndResourcesTests.swift */; };
 		B8B544F872A140AA94CACDEA /* MCPShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AE56941E81945B4950110A7 /* MCPShell.swift */; };
 		AE65AC31FA6846C89C203C81 /* InstallerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 657AC60955554EEFA6D76D21 /* InstallerService.swift */; };
+		H06DLR00000000000000002 /* IPADownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = H06DLR00000000000000001 /* IPADownloader.swift */; };
+		H06DLR00000000000000003 /* IPADownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = H06DLR00000000000000001 /* IPADownloader.swift */; };
+		H06DLR00000000000000004 /* IPADownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = H06DLR00000000000000001 /* IPADownloader.swift */; };
 		185D8DCE040D40A28183B012 /* InstallerTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19B42407C52741048C0D0A94 /* InstallerTools.swift */; };
 		D718C5A51078417FBD18C953 /* InstallerServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 562CF7645F174B1A9498A196 /* InstallerServiceTests.swift */; };
 		D774A33CB8A94B639DB2158C /* MCPShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AE56941E81945B4950110A7 /* MCPShell.swift */; };
@@ -417,6 +420,7 @@
 		0814B3729EC24510859A18E9 /* AppToolsAndResourcesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppToolsAndResourcesTests.swift; path = AppToolsAndResourcesTests.swift; sourceTree = "<group>"; };
 		9AE56941E81945B4950110A7 /* MCPShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPShell.swift; path = MCPShell.swift; sourceTree = "<group>"; };
 		657AC60955554EEFA6D76D21 /* InstallerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = InstallerService.swift; path = InstallerService.swift; sourceTree = "<group>"; };
+		H06DLR00000000000000001 /* IPADownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = IPADownloader.swift; path = IPADownloader.swift; sourceTree = "<group>"; };
 		19B42407C52741048C0D0A94 /* InstallerTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = InstallerTools.swift; path = InstallerTools.swift; sourceTree = "<group>"; };
 		562CF7645F174B1A9498A196 /* InstallerServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = InstallerServiceTests.swift; path = InstallerServiceTests.swift; sourceTree = "<group>"; };
 		B2A30F2153A449FB980C490B /* LaunchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LaunchService.swift; path = LaunchService.swift; sourceTree = "<group>"; };
@@ -900,6 +904,7 @@
 			isa = PBXGroup;
 			children = (
 				657AC60955554EEFA6D76D21 /* InstallerService.swift */,
+				H06DLR00000000000000001 /* IPADownloader.swift */,
 			);
 			path = Install;
 			sourceTree = "<group>";
@@ -1339,6 +1344,7 @@
 				9717B6B4E3974E8C836DC81A /* AppResources.swift in Sources */,
 				4FA3AF8EBC5E48D5873BF753 /* InstallerTools.swift in Sources */,
 				4BC7FA15EDDD44608EEAF464 /* InstallerService.swift in Sources */,
+				H06DLR00000000000000003 /* IPADownloader.swift in Sources */,
 				88FBF371ECF24BE8A84CF638 /* MCPShell.swift in Sources */,
 				4703CCFD96304629A29A6DB6 /* LaunchService.swift in Sources */,
 				E73158203C7A4D7DA82400D6 /* LaunchTools.swift in Sources */,
@@ -1396,6 +1402,7 @@
 				99C5D776BEFF46FAAF37124A /* AppResources.swift in Sources */,
 				185D8DCE040D40A28183B012 /* InstallerTools.swift in Sources */,
 				AE65AC31FA6846C89C203C81 /* InstallerService.swift in Sources */,
+				H06DLR00000000000000002 /* IPADownloader.swift in Sources */,
 				B8B544F872A140AA94CACDEA /* MCPShell.swift in Sources */,
 				37B8BE89D6B14F5C942E3090 /* LaunchService.swift in Sources */,
 			05F0F71A6E044B9BB94A72D8 /* LaunchTools.swift in Sources */,
@@ -1458,6 +1465,7 @@
 				DCDA6D1BC3FB4992A9640CEB /* AppResources.swift in Sources */,
 				A1B2C3D4E5F60011AAAABBBB /* InstallerTools.swift in Sources */,
 				391D13FD30264230951D8743 /* InstallerService.swift in Sources */,
+				H06DLR00000000000000004 /* IPADownloader.swift in Sources */,
 				D774A33CB8A94B639DB2158C /* MCPShell.swift in Sources */,
 				69B103E7292F4F82A79AE760 /* AppServiceTests.swift in Sources */,
 				47A8288D276C4E65A6736A7C /* AppToolsAndResourcesTests.swift in Sources */,

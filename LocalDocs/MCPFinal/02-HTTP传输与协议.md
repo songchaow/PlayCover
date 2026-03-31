@@ -32,6 +32,7 @@ http://127.0.0.1:19820/mcp
 | `POST /mcp` | 发送 JSON-RPC 消息 | `initialize`、`tools/list`、`tools/call`、`resources/read` |
 | `GET /mcp` | 打开 SSE 流 | 接收日志、任务状态、服务端通知 |
 | `DELETE /mcp` | 终止 session | 显式关闭 MCP 会话 |
+| `POST /upload` | 上传文件 | 跨机器文件传输，结果可被 tool 参数引用 |
 
 ### 四、POST /mcp 行为
 
@@ -88,6 +89,63 @@ SSE 建立后，服务端会立即发送一个 **primer event**：
 - `Mcp-Session-Id`
 - `Mcp-Protocol-Version`
 
+### 五点五、POST /upload 行为
+
+`POST /upload` 是一个**辅助 HTTP 端点**，不属于 MCP JSON-RPC 协议，但与 `/mcp` 并列在同一 HTTP server 上，用于跨机器文件传输。
+
+#### 1. 典型场景
+
+Agent 位于远端机器，IPA 文件在 Agent 侧。Agent 先将文件 `POST /upload` 到 PlayCover MCP，再通过 `install_ipa` 的 `@filename` 引用安装。
+
+#### 2. 请求格式
+
+| 项目 | 值 |
+|---|---|
+| Content-Type | `application/octet-stream` |
+| 必需 Header | `Mcp-Session-Id`（必须先 `initialize`）、`X-Filename`（原始文件名） |
+| 可选 Header | `X-Checksum-SHA256`（用于校验） |
+| 请求体 | 原始文件二进制内容 |
+| 大小限制 | 默认 500 MB |
+
+#### 3. 成功响应
+
+```json
+{
+  "filename": "game.ipa",
+  "storedName": "a1b2c3d4-game.ipa",
+  "size": 123456789,
+  "sha256": "e3b0c44298fc1c14...",
+  "expiresIn": 3600,
+  "reference": "@a1b2c3d4-game.ipa"
+}
+```
+
+`reference` 字段可直接传给 `install_ipa` 或 `export_patched_ipa` 的 `ipaPath` 参数。
+
+#### 4. 错误状态码
+
+| HTTP 状态码 | 场景 |
+|---|---|
+| `400` | 缺少 `X-Filename` 或 `Mcp-Session-Id` |
+| `404` | session 不存在或过期 |
+| `413` | 文件超过大小限制 |
+| `422` | SHA256 校验失败 |
+
+#### 5. 文件生命周期
+
+上传文件存储在 `~/Library/Containers/io.playcover.PlayCover/tmp/mcp-uploads/<session-id>/` 目录下，按 session 隔离。
+
+清理时机：
+
+- session 终止（`DELETE /mcp`）→ 清理该 session 所有上传文件
+- session 超时过期 → 同上
+- MCP server 停止 → 清理整个上传目录
+- 文件 TTL 到期（默认 1 小时）→ 单文件级清理
+
+#### 6. 与 CLI 的关系
+
+`/upload` 仅在 HTTP transport 下可用。CLI（stdio）不支持文件上传。如果 CLI 模式下 tool 参数使用了 `@filename` 引用，会返回明确错误。
+
 ### 六、DELETE /mcp 行为
 
 `DELETE /mcp` 用于：
@@ -95,6 +153,7 @@ SSE 建立后，服务端会立即发送一个 **primer event**：
 - 显式终止某个 `Mcp-Session-Id`
 - 清理其会话状态
 - 关闭关联的 SSE 流
+- 清理该 session 通过 `/upload` 上传的所有临时文件
 
 ### 七、关键 Header
 
@@ -214,8 +273,9 @@ CLI 继续使用 `StdioTransport`，不依赖 Hummingbird。
 
 | 文件 | 作用 |
 |---|---|
-| `PlayCoverMCP/Transport/StreamableHTTPTransport.swift` | `/mcp` 的 POST / GET / DELETE 路由 |
+| `PlayCoverMCP/Transport/StreamableHTTPTransport.swift` | `/mcp` 的 POST / GET / DELETE 路由 + `/upload` 路由 |
 | `PlayCoverMCP/Transport/MCPSessionManager.swift` | HTTP session 生命周期 |
+| `PlayCoverMCP/Transport/UploadManager.swift` | 文件上传暂存、`@filename` 引用解析、清理 |
 | `PlayCoverMCP/Transport/SSEEncoder.swift` | SSE 编码 |
 | `PlayCoverMCP/Server/MCPServer.swift` | `notificationSink` 与推送接线 |
 | `PlayCover/Services/MCPManager.swift` | GUI 默认选 HTTP、低版本回退 TCP |

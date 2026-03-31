@@ -40,10 +40,11 @@ public enum InstallerTools {
         on server: MCPServer,
         installerService: InstallerService,
         taskManager: TaskManager,
-        uploadManager: UploadManager? = nil
+        uploadManager: UploadManager? = nil,
+        ipaDownloader: IPADownloader? = nil
     ) {
-        registerInstallIPA(on: server, installerService: installerService, taskManager: taskManager, uploadManager: uploadManager)
-        registerExportPatchedIPA(on: server, installerService: installerService, taskManager: taskManager, uploadManager: uploadManager)
+        registerInstallIPA(on: server, installerService: installerService, taskManager: taskManager, uploadManager: uploadManager, ipaDownloader: ipaDownloader)
+        registerExportPatchedIPA(on: server, installerService: installerService, taskManager: taskManager, uploadManager: uploadManager, ipaDownloader: ipaDownloader)
     }
 
     // MARK: - install_ipa
@@ -52,7 +53,8 @@ public enum InstallerTools {
         on server: MCPServer,
         installerService: InstallerService,
         taskManager: TaskManager,
-        uploadManager: UploadManager?
+        uploadManager: UploadManager?,
+        ipaDownloader: IPADownloader?
     ) {
         let tool = Tool(
             name: "install_ipa",
@@ -61,7 +63,11 @@ public enum InstallerTools {
                 properties: [
                     "ipaPath": AnyCodable([
                         "type": "string",
-                        "description": "Absolute path to the .ipa file to install. Supports @filename references from uploaded files (via POST /upload)."
+                        "description": "Absolute path to the .ipa file to install. Supports @filename references from uploaded files (via POST /upload). Either ipaPath or ipaURL is required."
+                    ] as Any),
+                    "ipaURL": AnyCodable([
+                        "type": "string",
+                        "description": "HTTP or HTTPS URL to download the .ipa file from. The server will download and install it. Either ipaPath or ipaURL is required."
                     ] as Any),
                     "injectPlayTools": AnyCodable([
                         "type": "boolean",
@@ -72,60 +78,110 @@ public enum InstallerTools {
                         "description": "LSApplicationCategoryType value (e.g., 'public.app-category.games')"
                     ] as Any)
                 ],
-                required: ["ipaPath"]
+                required: []
             ),
-            description: "Install an IPA file into PlayCover. This is a long-running operation; use the returned task ID with the get_task tool to track progress. The ipaPath parameter supports @filename references from files uploaded via POST /upload.",
+            description: "Install an IPA file into PlayCover. Accepts either a local file path (ipaPath) or a remote URL (ipaURL). This is a long-running operation; use the returned task ID with the get_task tool to track progress.",
             title: "Install IPA"
         )
         server.toolRegistry.register(tool)
 
         server.registerTool(name: "install_ipa") { arguments in
-            guard let args = arguments?.dictionary,
-                  let rawPath = args["ipaPath"] as? String,
-                  !rawPath.isEmpty else {
+            let args = arguments?.dictionary ?? [:]
+            let rawPath = args["ipaPath"] as? String
+            let ipaURLString = args["ipaURL"] as? String
+
+            // Validate: at least one must be provided
+            guard (rawPath != nil && !rawPath!.isEmpty) || (ipaURLString != nil && !ipaURLString!.isEmpty) else {
                 throw PlayCoverMCPError(
                     code: JSONRPCError.invalidParams,
-                    message: "install_ipa requires a non-empty 'ipaPath' parameter"
+                    message: "install_ipa requires either 'ipaPath' or 'ipaURL' parameter"
                 )
             }
 
-            // Resolve @filename references
-            let ipaPath: String
-            if rawPath.hasPrefix("@"), let mgr = uploadManager {
-                ipaPath = try mgr.resolvePathParameter(rawPath, sessionId: nil)
-            } else if rawPath.hasPrefix("@") {
-                throw PlayCoverMCPError(
-                    code: JSONRPCError.invalidParams,
-                    message: "File references (@filename) are only supported in HTTP transport mode with upload enabled"
-                )
-            } else {
-                ipaPath = rawPath
+            // If ipaURL is provided, validate it synchronously before creating the task
+            var validatedURL: URL?
+            if let urlString = ipaURLString, !urlString.isEmpty {
+                let downloader = ipaDownloader ?? IPADownloader.defaultDownloader()
+                validatedURL = try downloader.validateURL(urlString)
             }
 
             let injectPlayTools = args["injectPlayTools"] as? Bool ?? true
             let applicationCategory = args["applicationCategory"] as? String
 
-            // Create a background task for the install
-            let createResult = taskManager.createTask(
-                title: "Installing IPA: \(URL(fileURLWithPath: ipaPath).lastPathComponent)"
-            )
+            // Determine task title
+            let taskTitle: String
+            if let url = validatedURL {
+                taskTitle = "Installing IPA from URL: \(url.lastPathComponent.isEmpty ? url.host ?? url.absoluteString : url.lastPathComponent)"
+            } else {
+                taskTitle = "Installing IPA: \(URL(fileURLWithPath: rawPath ?? "").lastPathComponent)"
+            }
+
+            let createResult = taskManager.createTask(title: taskTitle)
             let taskId = createResult.id
 
-            // Launch async work
             DispatchQueue.global(qos: .userInitiated).async {
                 taskManager.startTask(taskId)
 
+                var downloadedFile: URL?
                 do {
+                    let resolvedPath: String
+
+                    if let url = validatedURL {
+                        // Download from URL (progress maps to 0-40%)
+                        let downloader = ipaDownloader ?? IPADownloader.defaultDownloader()
+                        let localFile = try downloader.download(
+                            url: url,
+                            progress: { total, current, message in
+                                let mapped = Int(Double(current) / Double(max(total, 1)) * 40)
+                                taskManager.updateProgress(taskId, progress: TaskProgress(
+                                    total: 100, current: mapped, message: message
+                                ))
+                            }
+                        )
+                        downloadedFile = localFile
+                        resolvedPath = localFile.path
+                    } else if let path = rawPath {
+                        // Resolve @filename references
+                        if path.hasPrefix("@"), let mgr = uploadManager {
+                            resolvedPath = try mgr.resolvePathParameter(path, sessionId: nil)
+                        } else if path.hasPrefix("@") {
+                            throw PlayCoverMCPError(
+                                code: JSONRPCError.invalidParams,
+                                message: "File references (@filename) are only supported in HTTP transport mode with upload enabled"
+                            )
+                        } else {
+                            resolvedPath = path
+                        }
+                    } else {
+                        throw PlayCoverMCPError(
+                            code: JSONRPCError.invalidParams,
+                            message: "install_ipa requires either 'ipaPath' or 'ipaURL' parameter"
+                        )
+                    }
+
+                    // Install (progress maps to 40-100% for URL mode, 0-100% for path mode)
+                    let hasURL = validatedURL != nil
                     let result = try installerService.install(
-                        ipaPath: ipaPath,
+                        ipaPath: resolvedPath,
                         injectPlayTools: injectPlayTools,
                         applicationCategory: applicationCategory,
                         progress: { total, current, message in
+                            let mapped: Int
+                            if hasURL {
+                                mapped = 40 + Int(Double(current) / Double(max(total, 1)) * 60)
+                            } else {
+                                mapped = current
+                            }
                             taskManager.updateProgress(taskId, progress: TaskProgress(
-                                total: total, current: current, message: message
+                                total: 100, current: mapped, message: message
                             ))
                         }
                     )
+
+                    // Cleanup downloaded file
+                    if let file = downloadedFile {
+                        ipaDownloader?.cleanup(file: file)
+                    }
 
                     let resultData: [String: Any] = [
                         "bundleIdentifier": result.bundleIdentifier,
@@ -142,6 +198,10 @@ public enum InstallerTools {
                         TaskContentItem(kind: .text, text: text)
                     ]))
                 } catch {
+                    // Cleanup on failure
+                    if let file = downloadedFile {
+                        ipaDownloader?.cleanup(file: file)
+                    }
                     let wrapped = PlayCoverMCPError(wrapping: error)
                     taskManager.failTask(taskId, error: TaskError(
                         code: wrapped.code,
@@ -169,7 +229,8 @@ public enum InstallerTools {
         on server: MCPServer,
         installerService: InstallerService,
         taskManager: TaskManager,
-        uploadManager: UploadManager?
+        uploadManager: UploadManager?,
+        ipaDownloader: IPADownloader?
     ) {
         let tool = Tool(
             name: "export_patched_ipa",
@@ -178,7 +239,11 @@ public enum InstallerTools {
                 properties: [
                     "ipaPath": AnyCodable([
                         "type": "string",
-                        "description": "Absolute path to the source .ipa file to export. Supports @filename references from uploaded files (via POST /upload)."
+                        "description": "Absolute path to the source .ipa file to export. Supports @filename references from uploaded files (via POST /upload). Either ipaPath or ipaURL is required."
+                    ] as Any),
+                    "ipaURL": AnyCodable([
+                        "type": "string",
+                        "description": "HTTP or HTTPS URL to download the source .ipa file from. Either ipaPath or ipaURL is required."
                     ] as Any),
                     "outputDirectory": AnyCodable([
                         "type": "string",
@@ -189,60 +254,103 @@ public enum InstallerTools {
                         "description": "LSApplicationCategoryType value (e.g., 'public.app-category.games')"
                     ] as Any)
                 ],
-                required: ["ipaPath"]
+                required: []
             ),
-            description: "Export a patched IPA with PlayTools embedded. This is a long-running operation; use the returned task ID with the get_task tool to track progress. The ipaPath parameter supports @filename references from files uploaded via POST /upload.",
+            description: "Export a patched IPA with PlayTools embedded. Accepts either a local file path (ipaPath) or a remote URL (ipaURL). This is a long-running operation; use the returned task ID with the get_task tool to track progress.",
             title: "Export Patched IPA"
         )
         server.toolRegistry.register(tool)
 
         server.registerTool(name: "export_patched_ipa") { arguments in
-            guard let args = arguments?.dictionary,
-                  let rawPath = args["ipaPath"] as? String,
-                  !rawPath.isEmpty else {
+            let args = arguments?.dictionary ?? [:]
+            let rawPath = args["ipaPath"] as? String
+            let ipaURLString = args["ipaURL"] as? String
+
+            guard (rawPath != nil && !rawPath!.isEmpty) || (ipaURLString != nil && !ipaURLString!.isEmpty) else {
                 throw PlayCoverMCPError(
                     code: JSONRPCError.invalidParams,
-                    message: "export_patched_ipa requires a non-empty 'ipaPath' parameter"
+                    message: "export_patched_ipa requires either 'ipaPath' or 'ipaURL' parameter"
                 )
             }
 
-            // Resolve @filename references
-            let ipaPath: String
-            if rawPath.hasPrefix("@"), let mgr = uploadManager {
-                ipaPath = try mgr.resolvePathParameter(rawPath, sessionId: nil)
-            } else if rawPath.hasPrefix("@") {
-                throw PlayCoverMCPError(
-                    code: JSONRPCError.invalidParams,
-                    message: "File references (@filename) are only supported in HTTP transport mode with upload enabled"
-                )
-            } else {
-                ipaPath = rawPath
+            var validatedURL: URL?
+            if let urlString = ipaURLString, !urlString.isEmpty {
+                let downloader = ipaDownloader ?? IPADownloader.defaultDownloader()
+                validatedURL = try downloader.validateURL(urlString)
             }
 
             let outputDirectory = args["outputDirectory"] as? String
             let applicationCategory = args["applicationCategory"] as? String
 
-            // Create a background task for the export
-            let createResult = taskManager.createTask(
-                title: "Exporting IPA: \(URL(fileURLWithPath: ipaPath).lastPathComponent)"
-            )
+            let taskTitle: String
+            if let url = validatedURL {
+                taskTitle = "Exporting IPA from URL: \(url.lastPathComponent.isEmpty ? url.host ?? url.absoluteString : url.lastPathComponent)"
+            } else {
+                taskTitle = "Exporting IPA: \(URL(fileURLWithPath: rawPath ?? "").lastPathComponent)"
+            }
+
+            let createResult = taskManager.createTask(title: taskTitle)
             let taskId = createResult.id
 
-            // Launch async work
             DispatchQueue.global(qos: .userInitiated).async {
                 taskManager.startTask(taskId)
 
+                var downloadedFile: URL?
                 do {
+                    let resolvedPath: String
+
+                    if let url = validatedURL {
+                        let downloader = ipaDownloader ?? IPADownloader.defaultDownloader()
+                        let localFile = try downloader.download(
+                            url: url,
+                            progress: { total, current, message in
+                                let mapped = Int(Double(current) / Double(max(total, 1)) * 40)
+                                taskManager.updateProgress(taskId, progress: TaskProgress(
+                                    total: 100, current: mapped, message: message
+                                ))
+                            }
+                        )
+                        downloadedFile = localFile
+                        resolvedPath = localFile.path
+                    } else if let path = rawPath {
+                        if path.hasPrefix("@"), let mgr = uploadManager {
+                            resolvedPath = try mgr.resolvePathParameter(path, sessionId: nil)
+                        } else if path.hasPrefix("@") {
+                            throw PlayCoverMCPError(
+                                code: JSONRPCError.invalidParams,
+                                message: "File references (@filename) are only supported in HTTP transport mode with upload enabled"
+                            )
+                        } else {
+                            resolvedPath = path
+                        }
+                    } else {
+                        throw PlayCoverMCPError(
+                            code: JSONRPCError.invalidParams,
+                            message: "export_patched_ipa requires either 'ipaPath' or 'ipaURL' parameter"
+                        )
+                    }
+
+                    let hasURL = validatedURL != nil
                     let result = try installerService.export(
-                        ipaPath: ipaPath,
+                        ipaPath: resolvedPath,
                         outputDirectory: outputDirectory,
                         applicationCategory: applicationCategory,
                         progress: { total, current, message in
+                            let mapped: Int
+                            if hasURL {
+                                mapped = 40 + Int(Double(current) / Double(max(total, 1)) * 60)
+                            } else {
+                                mapped = current
+                            }
                             taskManager.updateProgress(taskId, progress: TaskProgress(
-                                total: total, current: current, message: message
+                                total: 100, current: mapped, message: message
                             ))
                         }
                     )
+
+                    if let file = downloadedFile {
+                        ipaDownloader?.cleanup(file: file)
+                    }
 
                     let resultData: [String: Any] = [
                         "bundleIdentifier": result.bundleIdentifier,
@@ -258,6 +366,9 @@ public enum InstallerTools {
                         TaskContentItem(kind: .text, text: text)
                     ]))
                 } catch {
+                    if let file = downloadedFile {
+                        ipaDownloader?.cleanup(file: file)
+                    }
                     let wrapped = PlayCoverMCPError(wrapping: error)
                     taskManager.failTask(taskId, error: TaskError(
                         code: wrapped.code,

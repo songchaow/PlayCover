@@ -368,7 +368,8 @@ class MCPManager: ObservableObject {
 
         // Installer tools
         let installerService = InstallerService.defaultService()
-        InstallerTools.register(on: server, installerService: installerService, taskManager: taskManager, uploadManager: uploadManager)
+        let ipaDownloader = IPADownloader.defaultDownloader()
+        InstallerTools.register(on: server, installerService: installerService, taskManager: taskManager, uploadManager: uploadManager, ipaDownloader: ipaDownloader)
 
         // Launch tools
         let launchService = LaunchService.defaultService()

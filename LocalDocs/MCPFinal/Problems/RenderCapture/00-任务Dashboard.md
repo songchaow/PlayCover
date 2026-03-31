@@ -15,45 +15,29 @@
 
 ### 二、问题背景
 
-当前要解决的是 `Render Capture` 的真实联调问题，目标是让 PlayCover MCP 能对真实 app 成功执行：
+PlayCover MCP 需要对真实 app 成功执行 `capture_metal_frame`，生成 `.gputrace` 文件。
 
-- `get_capture_status`
-- `capture_metal_frame`
+截至本轮（2026-03-31），**问题已解决**：
 
-截至当前，已经确认：
-
-- `PlayCover.app` 已能正常启动，GUI 内嵌 MCP 可用
-- 真实 app（`QQ飞车`、`原神`）都可以启动并成功创建 `ready` session
-- `get_capture_status` 已能在多个真实 app 上稳定返回完整诊断字段
-- 真实 app 的 preflight 仍稳定返回：
-  - `supports_gpu_trace=false`
-  - `supports_developer_tools=false`
-  - `failure_reason=gpu_trace_document_unsupported`
-- 用户已在同一台机器、同一个 `QQ飞车` 包内，通过 app 自带调试按钮，走 **Apple `MTLCapture` 路线** 成功生成真实 `.gputrace`
-
-因此，当前问题不再是：
-
-> **“这台机器 / 这个 app 组合本身不支持 Apple `MTLCapture` 导出 `.gputrace`。”**
-
-而是：
-
-> **“为什么 app 内成功路径可以导出 `.gputrace`，而 PlayCover 当前实现仍被拦在错误的 capture object / 触发时机之前？”**
+- 根因是启动 iOS app 时缺少 `/usr/lib/libmtlcapture.dylib` 的注入
+- 该库是 Apple GPU Tools Capture 的核心组件，Xcode 在 debug 模式下会自动注入
+- 没有它，`MTLCaptureManager.supportsDestination(.gpuTraceDocument)` 始终返回 `false`
+- 本轮已修改 GUI 和 MCP 两条启动路径，当 `metalCaptureEnabled=true` 时自动注入该库
+- **QQ飞车** 已成功通过 `capture_metal_frame` 生成 124MB 的真实 `.gputrace`
 
 ---
 
 ### 三、最终目标
 
-最终目标只有一个：
-
 > **用真实 app 成功执行 `capture_metal_frame`，生成可验证的 `.gputrace` 文件，并沉淀稳定 SOP。**
 
 完成标准：
 
-- `QQ飞车` 或其他真实 app 能成功 `launch_app`
-- `create_session` 返回 `ready`
-- `capture_metal_frame` 成功返回，并实际生成 `.gputrace`
-- 结果与 app 内成功路径相互印证
-- 输出一份可重复执行的验证步骤
+- `QQ飞车` 或其他真实 app 能成功 `launch_app` ✅
+- `create_session` 返回 `ready` ✅
+- `capture_metal_frame` 成功返回，并实际生成 `.gputrace` ✅
+- 结果与 app 内成功路径相互印证 ✅
+- 输出一份可重复执行的验证步骤 → `RC-004` 待完成
 
 ---
 
@@ -80,7 +64,7 @@
 禁止事项：
 
 - **禁止一个 agent 长时间死磕最终目标**
-- **禁止把“连续多次尝试 capture”当成一个单独任务无限延长**
+- **禁止把"连续多次尝试 capture"当成一个单独任务无限延长**
 - **禁止只追加、不整理主文档**
 
 ---
@@ -109,40 +93,17 @@ Render Capture 相关联调如果涉及：
 
 ### 六、当前总体判断
 
-当前总体判断如下：
+**截帧功能已打通。** 核心修复如下：
 
-- `RC-001` 已完成：host / runtime / bridge 的观测增强已经就位，并已确认 `get_capture_status` 不再卡在超时
-- `RC-003` 已完成：在第二个真实 app `原神` 上完成了非破坏性对照验证，确认 `gpu_trace_document_unsupported` **不是 `QQ飞车` 特有现象**
-- `RC-005` 已完成：拿到了“PlayCover 路径下多个真实 app 以及普通 Swift 进程都返回 `supports_gpu_trace=false`”的历史证据
-- `RC-006` 已完成：
-  - 已先后验证 `device` 与 `scope(device)` 两条默认设备级最小路径
-  - 两条路径都在真实 `QQ飞车` fresh session 上失败于同一个 Apple 拒绝点：
-    - `startCapture failed: Capturing is not supported.`
-  - 因此当前可以排除“只要继续换默认设备级 capture object 就会成功”的旧路径
-- `RC-007` 已完成：
-  - 已在 `PlayTools` 运行时补上 **真实 `MTLCommandQueue` 发现钩子**
-  - 已新增 `capture_target=queue|queue_scope` 第一版实验路径
-  - `get_capture_status` 已补充 queue 发现相关诊断字段，可直接判断 runtime 是否真的看到了真实队列
-  - `BuildScripts/build_gui.sh` 已通过，capture 相关 MCP 定向测试已通过
-- 当前最可信的新判断是：
-  - app 内成功按钮更可能依赖：
-    - **真实渲染 `MTLCommandQueue`**
-    - 或 **queue-bound `MTLCaptureScope`**
-    - 或更贴近真实渲染提交点的 begin/end 语义
-- 当前仍未完成的是：
-  - **尚未在真实 app fresh session 上对新 `queue` / `queue_scope` 路径做 live**
-  - 因而还不能判断当前阻塞点究竟是“还没抓到正确 queue”，还是“即便拿到真实 queue 也仍需要更贴近 commit 的 begin/end 时机”
-- 当前已知最新成功样本：
-  - `QQ飞车` app 内调试按钮成功生成的 `.gputrace`：
-    - `/Users/songdogwang/Library/Containers/com.tencent.tmgp.speedmobile/Data/Documents/FrameCapture/CapturedFrame20260331135148.gputrace`
+1. **根因**：`MTLCaptureManager.supportsDestination(.gpuTraceDocument)` 需要 `/usr/lib/libmtlcapture.dylib`（Apple 私有 `GPUToolsCapture.framework`）被加载到进程中
+2. **修复**：在 `PlayApp.effectiveLaunchEnvironment()`（GUI）和 `LaunchService.effectiveLaunchEnvironment()`（MCP）中，当 `metalCaptureEnabled=true` 时，设置 `DYLD_INSERT_LIBRARIES=/usr/lib/libmtlcapture.dylib`
+3. **附带修复**：MCP 的 `launchApp` 从 `/usr/bin/open` 改为 `NSWorkspace.openApplication`，以正确传递环境变量到目标 app 进程
+4. **验证结果**：`QQ飞车` fresh session 上 `get_capture_status` 返回 `supports_gpu_trace=true`，`capture_metal_frame` 成功落盘 124MB `.gputrace`
 
-因此，当前最重要的事已经从：
+历史调查摘要（已关闭）：
 
-> **反复试默认设备级 capture 路径。**
-
-切换为：
-
-> **在真实 app 上验证 `queue` / `queue_scope` 新路径，并用 queue 诊断字段确认 runtime 是否真的抓到了真实渲染对象。**
+- `RC-001` ~ `RC-007`：逐步排除了 capture object 选择、queue 发现、环境变量等假设
+- `RC-008`：先验证了 queue/queue_scope 路径仍失败，然后定位到 `supportsDestination` 返回 false 的根因是缺少 `libmtlcapture.dylib`
 
 ---
 
@@ -150,43 +111,18 @@ Render Capture 相关联调如果涉及：
 
 | ID | 优先级 | 状态 | 任务 | 详细文档 |
 |---|---|---|---|---|
-| `RC-001` | **P0** | `DONE` | 查清真实 app 上 `supports_gpu_trace=false / get_capture_status` 的直接现象；已确认当前 live 不再卡在超时，而是稳定返回 `gpu_trace_document_unsupported` | `Tasks/RC-001-查清-supports_gpu_trace_false.md` |
-| `RC-003` | **P0** | `DONE` | 用第二个真实 app `原神` 完成对照验证；已确认 `gpu_trace_document_unsupported` **不是 `QQ飞车` 特有现象** | `Tasks/RC-003-对照验证.md` |
-| `RC-005` | **P1** | `DONE` | 完成旧假设定位；其“机器 / 环境全局不支持”的总判断已被 `QQ飞车` app 内成功 `.gputrace` 样本修正，但历史样本仍保留为对照证据 | `Tasks/RC-005-定位环境级-gpu-trace-unsupported.md` |
-| `RC-006` | **P0** | `DONE` | 已完成默认设备级最小实验闭环：移除 preflight 硬门禁后，又在真实 `QQ飞车` fresh session 上补做 `device` 与 `scope(device)` live 对照；两条路径都失败于 `startCapture failed: Capturing is not supported.` | `Tasks/RC-006-验证系统级-capture-前提与替代路径.md` |
-| `RC-007` | **P0** | `DONE` | 已完成真实渲染入口第一版实现：runtime 新增 command queue 发现钩子，capture 新增 `queue` / `queue_scope` 路径，`get_capture_status` 新增 queue 诊断字段 | `Tasks/RC-007-定位真实渲染-command-queue-与-scope.md` |
-| `RC-008` | **P0** | `TODO` | 在真实 `QQ飞车` fresh session 上验证 `queue` / `queue_scope` 新路径，确认队列发现字段是否命中真实渲染对象，并记录是否能成功落盘 `.gputrace` | `Tasks/RC-008-验证真实queue路径-live.md` |
-| `RC-002` | **P2** | `TODO` | 在实现路径校正后，再决定是否需要对 `QQ飞车` 做 fresh reinstall + 全链路复测，用于消除旧安装残留歧义 | `Tasks/RC-002-fresh-reinstall-复测.md` |
-| `RC-004` | **P2** | `TODO` | 在截帧成功后，整理最终可重复 SOP、产物位置与关单验证标准 | `Tasks/RC-004-成功截帧与关单.md` |
+| `RC-001` | P0 | `DONE` | 查清真实 app 上 `supports_gpu_trace=false` 的直接现象 | `Tasks/RC-001-查清-supports_gpu_trace_false.md` |
+| `RC-003` | P0 | `DONE` | 用第二个真实 app `原神` 完成对照验证 | `Tasks/RC-003-对照验证.md` |
+| `RC-005` | P1 | `DONE` | 环境级 gpu-trace-unsupported 定位 | `Tasks/RC-005-定位环境级-gpu-trace-unsupported.md` |
+| `RC-006` | P0 | `DONE` | 默认设备级 capture 前提与替代路径验证 | `Tasks/RC-006-验证系统级-capture-前提与替代路径.md` |
+| `RC-007` | P0 | `DONE` | 真实渲染 command queue 发现与 queue/queue_scope 路径实现 | `Tasks/RC-007-定位真实渲染-command-queue-与-scope.md` |
+| `RC-008` | **P0** | `DONE` | **找到根因并修复**：注入 `libmtlcapture.dylib` + MCP 改用 `NSWorkspace` 启动，`QQ飞车` 成功生成 `.gputrace` | `Tasks/RC-008-验证真实queue路径-live.md` |
+| `RC-004` | **P1** | `TODO` | 整理最终可重复 SOP、产物位置与关单验证标准 | `Tasks/RC-004-成功截帧与关单.md` |
+| `RC-002` | P2 | `WONTFIX` | fresh reinstall 复测（截帧已成功，不再需要） | `Tasks/RC-002-fresh-reinstall-复测.md` |
 
 ### 八、当前最重要任务
 
-当前最重要任务是：
-
-> **`RC-008`：在真实 app 上验证 `queue` / `queue_scope` 新路径。**
-
-下一轮建议只做一件事：
-
-1. 用最新构建启动 `PlayCover.app`，确保新 `PlayTools` 代码已进入 runtime 链路
-2. 在真实 `QQ飞车` fresh session 上先看 `get_capture_status`：
-   - `queue_discovery_installed`
-   - `tracked_command_queue_count`
-   - `latest_command_queue_label`
-   - `latest_command_queue_device_name`
-   - `latest_command_queue_class_name`
-   - `default_capture_scope_label`
-3. 只有在确认 runtime 已经发现真实 queue 后，再做：
-   - `capture_target=queue`
-   - `capture_target=queue_scope`
-   live 对照
-4. 重点记录：
-   - 是否落盘 `.gputrace`
-   - 若失败，`startCapture failed ...` 的完整 runtime 文本
-   - queue 诊断字段与 app 内成功路径是否相符
-5. 暂时不要回到：
-   - `supportsDestination(...)` 猜测
-   - 默认 `MTLDevice`
-   - 默认设备绑定 `MTLCaptureScope`
+> **`RC-004`：整理最终可重复 SOP、产物位置与关单验证标准。**
 
 ---
 
@@ -197,23 +133,14 @@ Render Capture 相关联调如果涉及：
 - `Refs/01-验证入口与代码锚点.md`
 - `BuildScripts/probe_metal_capture_env.sh`
 
-当前已记录的详细问题文档：
+成功截帧产物：
 
-- `Tasks/RC-001-查清-supports_gpu_trace_false.md`
-- `Tasks/RC-002-fresh-reinstall-复测.md`
-- `Tasks/RC-003-对照验证.md`
-- `Tasks/RC-004-成功截帧与关单.md`
-- `Tasks/RC-005-定位环境级-gpu-trace-unsupported.md`
-- `Tasks/RC-006-验证系统级-capture-前提与替代路径.md`
-- `Tasks/RC-007-定位真实渲染-command-queue-与-scope.md`
-- `Tasks/RC-008-验证真实queue路径-live.md`
-- `live/2026-03-31-qqfc-rc001c.md`
-- `live/2026-03-31-yuanshen-rc003a.md`
-- `live/2026-03-31-envprobe-rc005a.md`
-- `live/2026-03-31-qqfc-rc006a.md`
-- `live/2026-03-31-qqfc-rc006b.md`
-
-已知最新成功样本：
-
-- `QQ飞车` app 内调试按钮成功生成的 `.gputrace`：
+- PlayCover MCP 生成：
+  - `/Users/songdogwang/Library/Containers/com.tencent.tmgp.speedmobile/Data/Documents/Captures/capture_20260331_170807.gputrace`（124MB）
+- QQ飞车 app 内调试按钮生成：
   - `/Users/songdogwang/Library/Containers/com.tencent.tmgp.speedmobile/Data/Documents/FrameCapture/CapturedFrame20260331135148.gputrace`
+
+关键代码修改：
+
+- `PlayCover/Model/PlayApp.swift`：`effectiveLaunchEnvironment()` 新增 `DYLD_INSERT_LIBRARIES` 注入
+- `PlayCoverMCP/HostServices/Launch/LaunchService.swift`：`effectiveLaunchEnvironment()` 新增同样逻辑 + `launchApp()` 改用 `NSWorkspace.openApplication`

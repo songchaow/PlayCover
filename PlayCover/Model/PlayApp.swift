@@ -150,6 +150,12 @@ extension PlayApp {
         "MTLCaptureEnabled": "1",
     ]
 
+    /// The system library that enables `MTLCaptureManager.supportsDestination(.gpuTraceDocument)`.
+    /// Xcode injects this automatically during GPU Frame Capture debug sessions.
+    /// Without it, `supportsDestination(.gpuTraceDocument)` always returns `false`,
+    /// making programmatic `.gputrace` export impossible.
+    private static let gpuToolsCaptureLibrary = "/usr/lib/libmtlcapture.dylib"
+
     func effectiveLaunchEnvironment() -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
 
@@ -158,6 +164,11 @@ extension PlayApp {
         }
         for key in PlayApp.metalEnvKeys {
             environment.removeValue(forKey: key)
+        }
+
+        if settings.settings.metalCaptureEnabled,
+           FileManager.default.fileExists(atPath: PlayApp.gpuToolsCaptureLibrary) {
+            environment["DYLD_INSERT_LIBRARIES"] = PlayApp.gpuToolsCaptureLibrary
         }
 
         if settings.settings.injectMetalCaptureEnvironment {

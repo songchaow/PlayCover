@@ -1,6 +1,7 @@
 // LaunchService.swift
 // PlayCoverMCP
 
+import AppKit
 import Foundation
 
 /// Result of an app launch operation.
@@ -80,6 +81,12 @@ public final class LaunchService: Sendable {
         "MTLCaptureEnabled": "1",
     ]
 
+    /// The system library that enables `MTLCaptureManager.supportsDestination(.gpuTraceDocument)`.
+    /// Xcode injects this automatically during GPU Frame Capture debug sessions.
+    /// Without it, `supportsDestination(.gpuTraceDocument)` always returns `false`,
+    /// making programmatic `.gputrace` export impossible.
+    private static let gpuToolsCaptureLibrary = "/usr/lib/libmtlcapture.dylib"
+
     /// Create a LaunchService with custom paths (useful for testing).
     public init(appDirectory: URL, aliasDirectory: URL) {
         self.appDirectory = appDirectory
@@ -118,17 +125,23 @@ public final class LaunchService: Sendable {
             throw LaunchError.aliasNotFound(bundleId)
         }
 
-        // Launch via `open` command (non-blocking, headless)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = [aliasURL.path]
-        process.environment = launchEnvironment
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        do {
-            try process.run()
-        } catch {
+        // Launch via NSWorkspace so that environment (including DYLD_INSERT_LIBRARIES)
+        // is correctly propagated to the target app process.
+        let config = NSWorkspace.OpenConfiguration()
+        config.environment = launchEnvironment
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var launchError: Error?
+        NSWorkspace.shared.openApplication(
+            at: aliasURL,
+            configuration: config
+        ) { _, error in
+            launchError = error
+            semaphore.signal()
+        }
+        semaphore.wait()
+
+        if let error = launchError {
             throw LaunchError.launchFailed(error.localizedDescription)
         }
 
@@ -241,6 +254,11 @@ public final class LaunchService: Sendable {
             environment.removeValue(forKey: key)
         }
 
+        if isMetalCaptureEnabled(bundleId: bundleId),
+           FileManager.default.fileExists(atPath: Self.gpuToolsCaptureLibrary) {
+            environment["DYLD_INSERT_LIBRARIES"] = Self.gpuToolsCaptureLibrary
+        }
+
         if shouldInjectMetalCaptureEnvironment(bundleId: bundleId) {
             for (key, value) in Self.injectedMetalCaptureEnvironment {
                 environment[key] = value
@@ -248,6 +266,21 @@ public final class LaunchService: Sendable {
         }
 
         return environment
+    }
+
+    private func isMetalCaptureEnabled(bundleId: String) -> Bool {
+        let settingsURL = appDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("App Settings")
+            .appendingPathComponent(bundleId)
+            .appendingPathExtension("plist")
+
+        guard let data = try? Data(contentsOf: settingsURL),
+              let rawPlist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+              let plist = rawPlist as? [String: Any] else {
+            return false
+        }
+        return plist["metalCaptureEnabled"] as? Bool ?? false
     }
 
     private func shouldInjectMetalCaptureEnvironment(bundleId: String) -> Bool {

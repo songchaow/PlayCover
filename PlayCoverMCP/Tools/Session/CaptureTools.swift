@@ -68,6 +68,11 @@ public enum CaptureTools {
                         "type": "integer",
                         "description": "Capture duration in milliseconds. Default: 100 (enough for 1-2 frames at 60fps). Max: 30000."
                     ] as Any),
+                    "capture_target": AnyCodable([
+                        "type": "string",
+                        "enum": ["device", "scope"],
+                        "description": "Experimental capture target. 'device' captures all queues on the default Metal device; 'scope' uses a temporary MTLCaptureScope aligned to vsync boundaries. Default: 'device'."
+                    ] as Any),
                 ],
                 required: ["sessionId"]
             ),
@@ -97,7 +102,24 @@ public enum CaptureTools {
                 durationMs = 100 // default
             }
 
-            let params = CaptureFrameParams(outputPath: outputPath, durationMs: durationMs)
+            let captureTarget: CaptureTarget
+            if let rawCaptureTarget = args["capture_target"] as? String {
+                guard let parsedTarget = CaptureTarget(rawValue: rawCaptureTarget) else {
+                    throw PlayCoverMCPError(
+                        code: JSONRPCError.invalidParams,
+                        message: "capture_metal_frame received unsupported 'capture_target': \(rawCaptureTarget). Supported values: device, scope"
+                    )
+                }
+                captureTarget = parsedTarget
+            } else {
+                captureTarget = .device
+            }
+
+            let params = CaptureFrameParams(
+                outputPath: outputPath,
+                durationMs: durationMs,
+                captureTarget: captureTarget
+            )
             let result = try runAsync {
                 try await captureService.captureFrame(sessionId: sessionId, params: params)
             }

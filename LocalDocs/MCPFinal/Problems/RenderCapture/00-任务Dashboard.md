@@ -25,19 +25,19 @@
 - `PlayCover.app` 已能正常启动，GUI 内嵌 MCP 可用
 - 真实 app（`QQ飞车`、`原神`）都可以启动并成功创建 `ready` session
 - `get_capture_status` 已能在多个真实 app 上稳定返回完整诊断字段
-- PlayCover 当前实现里，真实 app 仍稳定返回：
+- 真实 app 的 preflight 仍稳定返回：
   - `supports_gpu_trace=false`
   - `supports_developer_tools=false`
   - `failure_reason=gpu_trace_document_unsupported`
-- **但现在出现了新的强证据**：用户已在同一台机器、同一个 `QQ飞车` 包内，通过 app 自带调试按钮，走 **Apple `MTLCapture` 路线** 成功生成真实 `.gputrace`
+- 用户已在同一台机器、同一个 `QQ飞车` 包内，通过 app 自带调试按钮，走 **Apple `MTLCapture` 路线** 成功生成真实 `.gputrace`
 
-这说明当前主问题已经不应再表述为：
+因此，当前问题不再是：
 
 > **“这台机器 / 这个 app 组合本身不支持 Apple `MTLCapture` 导出 `.gputrace`。”**
 
-而应切换为：
+而是：
 
-> **“为什么 app 内成功路径可以导出 `.gputrace`，而 PlayCover 当前实现却把自己拦在 `supportsDestination(...)` / 当前触发方式之前？”**
+> **“为什么 app 内成功路径可以导出 `.gputrace`，而 PlayCover 当前实现仍被拦在错误的 capture object / 触发时机之前？”**
 
 ---
 
@@ -114,26 +114,32 @@ Render Capture 相关联调如果涉及：
 - `RC-001` 已完成：host / runtime / bridge 的观测增强已经就位，并已确认 `get_capture_status` 不再卡在超时
 - `RC-003` 已完成：在第二个真实 app `原神` 上完成了非破坏性对照验证，确认 `gpu_trace_document_unsupported` **不是 `QQ飞车` 特有现象**
 - `RC-005` 已完成：拿到了“PlayCover 路径下多个真实 app 以及普通 Swift 进程都返回 `supports_gpu_trace=false`”的历史证据
-- **但 `RC-005` 的旧总判断已被新证据修正**：
-  - 同一台机器、同一个 `QQ飞车`、同样是 Apple `MTLCapture` 路线，app 内调试按钮已经成功生成 `.gputrace`
-  - 因此，**“当前机器 / 当前 app 全局不支持 `.gpuTraceDocument`”不再是当前最可信结论**
-  - 现在更应优先怀疑的是：
-    - PlayCover 当前把 `supportsDestination(.gpuTraceDocument)` 当成了过早的硬门禁
-    - 当前 `captureObject` 选择（默认 `MTLDevice`）与 app 内成功路径不一致
-    - 当前外部触发时机 / start-stop 语义与 app 内成功路径不一致
-    - 当前实现缺少对 app 内成功行为的直接对照观察
-- 已知最新强证据：
-  - 用户已在 `QQ飞车` 中通过 app 内调试按钮成功保存一份真实 `.gputrace`
-  - 成功产物位于：
+- `RC-006` 已完成：
+  - 已先后验证 `device` 与 `scope(device)` 两条默认设备级最小路径
+  - 两条路径都在真实 `QQ飞车` fresh session 上失败于同一个 Apple 拒绝点：
+    - `startCapture failed: Capturing is not supported.`
+  - `scope` 路径已经命中新 runtime 代码，因为错误文本明确回传了：
+    - `target=scope`
+    - `captureObject=scope(...)`
+  - 因此当前可以排除：
+    - 仅仅是 `supportsDestination(...)` 的 host/runtime 误门禁
+    - 仅仅是“默认 `MTLDevice` 不对，只要换成默认设备绑定的 `MTLCaptureScope` 就会成功”
+- 当前最可信的新判断是：
+  - app 内成功按钮更可能依赖：
+    - **真实渲染 `MTLCommandQueue`**
+    - 或 **queue-bound `MTLCaptureScope`**
+    - 或更贴近真实渲染提交点的 begin/end 语义
+- 当前已知最新成功样本：
+  - `QQ飞车` app 内调试按钮成功生成的 `.gputrace`：
     - `/Users/songdogwang/Library/Containers/com.tencent.tmgp.speedmobile/Data/Documents/FrameCapture/CapturedFrame20260331135148.gputrace`
 
 因此，当前最重要的事已经从：
 
-> **验证当前机器是否存在任何系统级可行路径，让 `.gpuTraceDocument` 或 `.developerTools` destination 变为可用。**
+> **反复试默认设备级 capture 路径。**
 
 切换为：
 
-> **以 `QQ飞车` app 内成功截帧路径为金标准，对照 PlayCover 当前实现，找出差异并做最小修正实验。**
+> **定位真实渲染 `MTLCommandQueue` / queue-bound scope 入口，并围绕真实渲染提交点做下一轮最小实验。**
 
 ---
 
@@ -144,7 +150,8 @@ Render Capture 相关联调如果涉及：
 | `RC-001` | **P0** | `DONE` | 查清真实 app 上 `supports_gpu_trace=false / get_capture_status` 的直接现象；已确认当前 live 不再卡在超时，而是稳定返回 `gpu_trace_document_unsupported` | `Tasks/RC-001-查清-supports_gpu_trace_false.md` |
 | `RC-003` | **P0** | `DONE` | 用第二个真实 app `原神` 完成对照验证；已确认 `gpu_trace_document_unsupported` **不是 `QQ飞车` 特有现象** | `Tasks/RC-003-对照验证.md` |
 | `RC-005` | **P1** | `DONE` | 完成旧假设定位；其“机器 / 环境全局不支持”的总判断已被 `QQ飞车` app 内成功 `.gputrace` 样本修正，但历史样本仍保留为对照证据 | `Tasks/RC-005-定位环境级-gpu-trace-unsupported.md` |
-| `RC-006` | **P0** | `DOING` | 以 `QQ飞车` app 内成功按钮为金标准，已完成“移除 `supportsDestination(...)` 硬门禁”的最小实验；当前确认失败点推进为 `startCapture failed: Capturing is not supported.`，下一步重点转向 `captureObject` / scope 与触发时机差异 | `Tasks/RC-006-验证系统级-capture-前提与替代路径.md` |
+| `RC-006` | **P0** | `DONE` | 已完成默认设备级最小实验闭环：移除 preflight 硬门禁后，又在真实 `QQ飞车` fresh session 上补做 `device` 与 `scope(device)` live 对照；两条路径都失败于 `startCapture failed: Capturing is not supported.` | `Tasks/RC-006-验证系统级-capture-前提与替代路径.md` |
+| `RC-007` | **P0** | `TODO` | 定位真实渲染 `MTLCommandQueue` / queue-bound scope 入口；下一轮不再重复默认设备级试验，而是转向真实渲染对象与注入点 | `Tasks/RC-007-定位真实渲染-command-queue-与-scope.md` |
 | `RC-002` | **P2** | `TODO` | 在实现路径校正后，再决定是否需要对 `QQ飞车` 做 fresh reinstall + 全链路复测，用于消除旧安装残留歧义 | `Tasks/RC-002-fresh-reinstall-复测.md` |
 | `RC-004` | **P2** | `TODO` | 在截帧成功后，整理最终可重复 SOP、产物位置与关单验证标准 | `Tasks/RC-004-成功截帧与关单.md` |
 
@@ -152,25 +159,20 @@ Render Capture 相关联调如果涉及：
 
 当前最重要任务是：
 
-> **`RC-006`：以 `QQ飞车` app 内成功截帧路径为金标准，对照并修正 PlayCover 当前实现。**
+> **`RC-007`：定位真实渲染 `MTLCommandQueue` / queue-bound scope 入口。**
 
 下一轮建议只做一件事：
 
-1. 获取并记录 app 内调试按钮的**最短复现步骤**
-2. 观察该成功路径的行为特征：
-   - 一次点击还是开始/结束两步
-   - 触发后多久落盘
-   - 是否出现明显卡顿 / 暂停 / UI 提示
-3. 对照当前 `MetalCaptureService.captureFrame(...)`，优先审视：
-   - 是否不该把 `supportsDestination(.gpuTraceDocument)` 当成硬前置条件
-   - 是否不该只抓默认 `MTLDevice`
-   - 是否需要改成更贴近 app 渲染时机的触发方式
-4. 只做**最小修正实验**，避免再次回到泛化的环境猜测
-
-本轮结果表明：
-
-- 继续单纯围绕“机器是否全局不支持”做推断，价值已经很低
-- 后续主线应切到：**参考 app 内成功路径，修正我们自己的实现假设**
+1. 在 PlayTools 运行时里找到或新增**最小可插桩点**，用于发现真实渲染 `MTLCommandQueue`
+2. 如果拿不到队列，优先补：
+   - command queue 发现日志
+   - `defaultCaptureScope` / queue 相关观测
+   - 更贴近 frame 提交点的注入点说明
+3. 只有在拿到真实 queue 或明确注入点后，再做下一轮 live
+4. 不要再把时间花在：
+   - `supportsDestination(...)` 猜测
+   - 默认 `MTLDevice`
+   - 默认设备绑定 `MTLCaptureScope`
 
 ---
 
@@ -189,10 +191,12 @@ Render Capture 相关联调如果涉及：
 - `Tasks/RC-004-成功截帧与关单.md`
 - `Tasks/RC-005-定位环境级-gpu-trace-unsupported.md`
 - `Tasks/RC-006-验证系统级-capture-前提与替代路径.md`
+- `Tasks/RC-007-定位真实渲染-command-queue-与-scope.md`
 - `live/2026-03-31-qqfc-rc001c.md`
 - `live/2026-03-31-yuanshen-rc003a.md`
 - `live/2026-03-31-envprobe-rc005a.md`
 - `live/2026-03-31-qqfc-rc006a.md`
+- `live/2026-03-31-qqfc-rc006b.md`
 
 已知最新成功样本：
 

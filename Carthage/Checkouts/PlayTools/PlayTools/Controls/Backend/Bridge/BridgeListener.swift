@@ -610,8 +610,13 @@ final class BridgeListener {
             let outputPath = stringValue("output_path", in: params)
             let outputURL = outputPath.map(URL.init(fileURLWithPath:))
             let durationMs = intValue("duration_ms", in: params) ?? 100
+            let captureTarget = stringValue("capture_target", in: params)
             let result = valueOnMainSync {
-                MetalCaptureService.shared.captureFrame(outputURL: outputURL, durationMs: durationMs)
+                MetalCaptureService.shared.captureFrame(
+                    outputURL: outputURL,
+                    durationMs: durationMs,
+                    captureTargetRawValue: captureTarget
+                )
             }
 
             if result.success {

@@ -11,6 +11,22 @@ import QuartzCore
 @objc public class MetalCaptureService: NSObject {
     @objc public static let shared = MetalCaptureService()
 
+    private enum CaptureTarget: String {
+        case device
+        case scope
+    }
+
+    private enum CapturePreparationError: LocalizedError {
+        case defaultDeviceUnavailable(target: CaptureTarget)
+
+        var errorDescription: String? {
+            switch self {
+            case .defaultDeviceUnavailable(let target):
+                return "No default Metal device available for capture_target=\(target.rawValue)"
+            }
+        }
+    }
+
     private var captureManager: MTLCaptureManager?
     private var isCapturing = false
 
@@ -26,6 +42,12 @@ import QuartzCore
     private var minimumCaptureDurationMs = 100
     /// 在第几个 vsync 后才允许停止（至少等 2 个 vsync 确保覆盖完整 1 帧）
     private let minimumVsyncStopThreshold = 2
+    /// 本次 capture 使用的 target 策略
+    private var activeCaptureTarget: CaptureTarget = .device
+    /// scope 模式下的临时 capture scope
+    private var activeCaptureScope: MTLCaptureScope?
+    /// scope 模式是否已经在某个 vsync 上进入 beginScope
+    private var hasBegunActiveCaptureScope = false
 
     /// 初始化截帧服务
     /// 当前实现的直接开关是 `PlaySettings.shared.metalCaptureEnabled`。
@@ -47,8 +69,13 @@ import QuartzCore
     /// - Parameters:
     ///   - outputURL: 输出文件路径（.gputrace），传 nil 则使用默认路径
     ///   - durationMs: 最少持续截帧多久后才允许停止，默认 100ms
+    ///   - captureTargetRawValue: runtime capture target，支持 `device` / `scope`
     /// - Returns: 截帧结果
-    @objc public func captureFrame(outputURL: URL? = nil, durationMs: Int = 100) -> CaptureResult {
+    @objc public func captureFrame(
+        outputURL: URL? = nil,
+        durationMs: Int = 100,
+        captureTargetRawValue: String? = nil
+    ) -> CaptureResult {
         guard let manager = captureManager else {
             let status = makeStatus(manager: nil)
             return CaptureResult(
@@ -63,11 +90,25 @@ import QuartzCore
             return CaptureResult(success: false, message: "Capture already in progress", outputPath: nil)
         }
 
+        let captureTarget: CaptureTarget
+        if let rawValue = captureTargetRawValue, !rawValue.isEmpty {
+            guard let parsedTarget = CaptureTarget(rawValue: rawValue) else {
+                return CaptureResult(
+                    success: false,
+                    message: "Unsupported capture_target '\(rawValue)'. Supported values: device, scope",
+                    outputPath: nil
+                )
+            }
+            captureTarget = parsedTarget
+        } else {
+            captureTarget = .device
+        }
+
         let normalizedDurationMs = max(1, durationMs)
         let preflightStatus = makeStatus(manager: manager)
         if !preflightStatus.supportsGPUTrace {
             logStatusProbe(
-                "captureFrame preflight reports supportsGPUTrace=false; will still attempt startCapture for parity with in-app successful path. \(preflightStatus.diagnosticSummary)"
+                "captureFrame preflight reports supportsGPUTrace=false; will still attempt startCapture for parity with in-app successful path. target=\(captureTarget.rawValue). \(preflightStatus.diagnosticSummary)"
             )
         }
 
@@ -82,9 +123,20 @@ import QuartzCore
         descriptor.destination = .gpuTraceDocument
         descriptor.outputURL = url
 
-        // 截取默认 Metal device 上的命令
-        if let device = MTLCreateSystemDefaultDevice() {
-            descriptor.captureObject = device
+        let captureObjectSummary: String
+        switch makeCaptureObject(target: captureTarget, manager: manager) {
+        case .success(let preparedTarget):
+            descriptor.captureObject = preparedTarget.captureObject
+            captureObjectSummary = preparedTarget.summary
+            activeCaptureTarget = captureTarget
+            activeCaptureScope = preparedTarget.scope
+            hasBegunActiveCaptureScope = false
+        case .failure(let error):
+            return CaptureResult(
+                success: false,
+                message: error.localizedDescription,
+                outputPath: nil
+            )
         }
 
         do {
@@ -92,23 +144,35 @@ import QuartzCore
             isCapturing = true
             captureStartTime = CACurrentMediaTime()
             minimumCaptureDurationMs = normalizedDurationMs
-            print("[PlayTools] MetalCaptureService: capture started, output: \(url.path), durationMs=\(normalizedDurationMs)")
+            vsyncCount = 0
+
+            if captureTarget == .scope {
+                logStatusProbe(
+                    "capture started with scope target; waiting for first vsync to enter beginScope. captureObject=\(captureObjectSummary), output=\(url.path), durationMs=\(normalizedDurationMs)"
+                )
+            } else {
+                logStatusProbe(
+                    "capture started with device target. captureObject=\(captureObjectSummary), output=\(url.path), durationMs=\(normalizedDurationMs)"
+                )
+            }
 
             // 对齐 vsync 停止，但不再忽略 host 传入的 duration_ms。
-            vsyncCount = 0
             let link = CADisplayLink(target: self, selector: #selector(onVsync(_:)))
             link.add(to: .main, forMode: .common)
             displayLink = link
             scheduleStopWatchdog(durationMs: normalizedDurationMs)
 
-            return CaptureResult(success: true, message: "Capture started", outputPath: url.path)
+            return CaptureResult(
+                success: true,
+                message: "Capture started (target=\(captureTarget.rawValue), captureObject=\(captureObjectSummary))",
+                outputPath: url.path
+            )
         } catch {
-            isCapturing = false
-            captureStartTime = 0
+            resetActiveCaptureState()
             invalidateStopTriggers()
             return CaptureResult(
                 success: false,
-                message: "startCapture failed: \(error.localizedDescription). preflight=\(preflightStatus.diagnosticSummary)",
+                message: "startCapture failed: \(error.localizedDescription). target=\(captureTarget.rawValue), captureObject=\(captureObjectSummary), preflight=\(preflightStatus.diagnosticSummary)",
                 outputPath: nil
             )
         }
@@ -118,6 +182,17 @@ import QuartzCore
     @objc private func onVsync(_ link: CADisplayLink) {
         guard isCapturing else {
             invalidateStopTriggers()
+            return
+        }
+
+        if activeCaptureTarget == .scope,
+           !hasBegunActiveCaptureScope,
+           let scope = activeCaptureScope {
+            scope.begin()
+            hasBegunActiveCaptureScope = true
+            captureStartTime = CACurrentMediaTime()
+            vsyncCount = 0
+            logStatusProbe("scope begin on first vsync; queue=\(scope.commandQueue.map { String(describing: $0) } ?? "nil")")
             return
         }
 
@@ -164,14 +239,58 @@ import QuartzCore
     private func stopActiveCapture(reason: String) {
         guard let manager = captureManager, isCapturing else {
             invalidateStopTriggers()
+            resetActiveCaptureState()
             return
         }
 
+        let captureTarget = activeCaptureTarget
+        if captureTarget == .scope,
+           hasBegunActiveCaptureScope,
+           let scope = activeCaptureScope {
+            scope.end()
+            logStatusProbe("scope end before manager.stopCapture(); reason=\(reason)")
+        }
+
         manager.stopCapture()
+        invalidateStopTriggers()
+        resetActiveCaptureState()
+        print("[PlayTools] MetalCaptureService: capture stopped (target=\(captureTarget.rawValue), \(reason))")
+    }
+
+    private func makeCaptureObject(
+        target: CaptureTarget,
+        manager: MTLCaptureManager
+    ) -> Result<(captureObject: Any, scope: MTLCaptureScope?, summary: String), CapturePreparationError> {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            return .failure(.defaultDeviceUnavailable(target: target))
+        }
+
+        switch target {
+        case .device:
+            return .success((
+                captureObject: device,
+                scope: nil,
+                summary: "device(name=\(device.name))"
+            ))
+        case .scope:
+            let scope = manager.makeCaptureScope(device: device)
+            scope.label = "PlayCover.capture.scope.\(UUID().uuidString.lowercased())"
+            return .success((
+                captureObject: scope,
+                scope: scope,
+                summary: "scope(device=\(device.name), queue=nil, label=\(scope.label ?? "nil"))"
+            ))
+        }
+    }
+
+    private func resetActiveCaptureState() {
         isCapturing = false
         captureStartTime = 0
-        invalidateStopTriggers()
-        print("[PlayTools] MetalCaptureService: capture stopped (\(reason))")
+        vsyncCount = 0
+        minimumCaptureDurationMs = 100
+        activeCaptureTarget = .device
+        activeCaptureScope = nil
+        hasBegunActiveCaptureScope = false
     }
 
     /// 查询截帧状态

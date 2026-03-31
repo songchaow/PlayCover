@@ -5,16 +5,30 @@ import Foundation
 
 // MARK: - Capture Command Parameters
 
+public enum CaptureTarget: String, Codable, Equatable, Sendable {
+    /// Capture all queues on the runtime-visible default Metal device.
+    case device
+    /// Capture through a temporary MTLCaptureScope bound to the default Metal device.
+    case scope
+}
+
 /// Parameters for a capture_metal_frame command.
 public struct CaptureFrameParams: Codable, Equatable, Sendable {
     /// Optional custom output path for the .gputrace file.
     public let outputPath: String?
     /// Capture duration in milliseconds (default: 100, enough for 1-2 frames at 60fps).
     public let durationMs: Int
+    /// Which capture target strategy to use for the runtime experiment.
+    public let captureTarget: CaptureTarget
 
-    public init(outputPath: String? = nil, durationMs: Int = 100) {
+    public init(
+        outputPath: String? = nil,
+        durationMs: Int = 100,
+        captureTarget: CaptureTarget = .device
+    ) {
         self.outputPath = outputPath
         self.durationMs = durationMs
+        self.captureTarget = captureTarget
     }
 }
 
@@ -182,6 +196,7 @@ public final class CaptureService: CaptureServiceProtocol, Sendable {
 
         var bridgeDict: [String: Any] = [
             "duration_ms": params.durationMs,
+            "capture_target": params.captureTarget.rawValue,
         ]
         if let outputPath = params.outputPath {
             bridgeDict["output_path"] = outputPath

@@ -12,16 +12,26 @@ final class CaptureParamsTests: XCTestCase {
         let params = CaptureFrameParams()
         XCTAssertNil(params.outputPath)
         XCTAssertEqual(params.durationMs, 100)
+        XCTAssertEqual(params.captureTarget, .device)
     }
 
     func testCaptureFrameParamsCustomValues() {
-        let params = CaptureFrameParams(outputPath: "/tmp/test.gputrace", durationMs: 500)
+        let params = CaptureFrameParams(
+            outputPath: "/tmp/test.gputrace",
+            durationMs: 500,
+            captureTarget: .scope
+        )
         XCTAssertEqual(params.outputPath, "/tmp/test.gputrace")
         XCTAssertEqual(params.durationMs, 500)
+        XCTAssertEqual(params.captureTarget, .scope)
     }
 
     func testCaptureFrameParamsCodable() throws {
-        let original = CaptureFrameParams(outputPath: "/tmp/test.gputrace", durationMs: 200)
+        let original = CaptureFrameParams(
+            outputPath: "/tmp/test.gputrace",
+            durationMs: 200,
+            captureTarget: .scope
+        )
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(CaptureFrameParams.self, from: data)
         XCTAssertEqual(decoded, original)
@@ -32,6 +42,7 @@ final class CaptureParamsTests: XCTestCase {
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(CaptureFrameParams.self, from: data)
         XCTAssertEqual(decoded, original)
+        XCTAssertEqual(decoded.captureTarget, .device)
     }
 }
 
@@ -165,7 +176,7 @@ final class FakeCaptureServiceTests: XCTestCase {
 
     func testFakeCaptureFrameRecordsCalls() async throws {
         let fake = FakeCaptureService()
-        let params = CaptureFrameParams(outputPath: "/tmp/test.gputrace", durationMs: 200)
+        let params = CaptureFrameParams(outputPath: "/tmp/test.gputrace", durationMs: 200, captureTarget: .scope)
         let result = try await fake.captureFrame(sessionId: "s1", params: params)
 
         XCTAssertTrue(result.success)
@@ -369,7 +380,8 @@ final class CaptureCommandEncodingTests: XCTestCase {
     func testCaptureFrameCommandEncoding() throws {
         let params = AnyCodable([
             "duration_ms": 200,
-            "output_path": "/tmp/test.gputrace"
+            "output_path": "/tmp/test.gputrace",
+            "capture_target": "scope"
         ] as [String: Any])
         let command = CommandPayload(
             sessionId: "s1",
@@ -389,6 +401,7 @@ final class CaptureCommandEncodingTests: XCTestCase {
         let cmdParams = json["params"] as? [String: Any]
         XCTAssertNotNil(cmdParams?["duration_ms"])
         XCTAssertEqual(cmdParams?["output_path"] as? String, "/tmp/test.gputrace")
+        XCTAssertEqual(cmdParams?["capture_target"] as? String, "scope")
     }
 
     func testGetCaptureStatusCommandEncoding() throws {
@@ -482,6 +495,7 @@ final class CaptureToolsRegistrationTests: XCTestCase {
         XCTAssertNotNil(captureTool?.inputSchema.properties?["sessionId"])
         XCTAssertNotNil(captureTool?.inputSchema.properties?["output_path"])
         XCTAssertNotNil(captureTool?.inputSchema.properties?["duration_ms"])
+        XCTAssertNotNil(captureTool?.inputSchema.properties?["capture_target"])
     }
 
     func testGetCaptureStatusToolSchema() {
@@ -529,13 +543,15 @@ final class CaptureToolsRegistrationTests: XCTestCase {
         let resp = callTool("capture_metal_frame", arguments: [
             "sessionId": "s1",
             "output_path": "/tmp/custom.gputrace",
-            "duration_ms": 500
+            "duration_ms": 500,
+            "capture_target": "scope"
         ])
         XCTAssertNotNil(resp?.result)
         XCTAssertNil(resp?.error)
         XCTAssertEqual(fakeCaptureService.captureFrameCalls.count, 1)
         XCTAssertEqual(fakeCaptureService.captureFrameCalls.first?.params.outputPath, "/tmp/custom.gputrace")
         XCTAssertEqual(fakeCaptureService.captureFrameCalls.first?.params.durationMs, 500)
+        XCTAssertEqual(fakeCaptureService.captureFrameCalls.first?.params.captureTarget, .scope)
     }
 
     func testCaptureMetalFrameToolCallDefaultDuration() {
@@ -545,6 +561,7 @@ final class CaptureToolsRegistrationTests: XCTestCase {
         XCTAssertNotNil(resp?.result)
         XCTAssertNil(resp?.error)
         XCTAssertEqual(fakeCaptureService.captureFrameCalls.first?.params.durationMs, 100)
+        XCTAssertEqual(fakeCaptureService.captureFrameCalls.first?.params.captureTarget, .device)
     }
 
     func testCaptureMetalFrameToolMissingSessionId() {
@@ -556,6 +573,15 @@ final class CaptureToolsRegistrationTests: XCTestCase {
     func testCaptureMetalFrameToolEmptySessionId() {
         let resp = callTool("capture_metal_frame", arguments: [
             "sessionId": ""
+        ])
+        XCTAssertNil(resp?.result)
+        XCTAssertEqual(resp?.error?.code, JSONRPCError.invalidParams)
+    }
+
+    func testCaptureMetalFrameToolInvalidCaptureTarget() {
+        let resp = callTool("capture_metal_frame", arguments: [
+            "sessionId": "s1",
+            "capture_target": "queue"
         ])
         XCTAssertNil(resp?.result)
         XCTAssertEqual(resp?.error?.code, JSONRPCError.invalidParams)

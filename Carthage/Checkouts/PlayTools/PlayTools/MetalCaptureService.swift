@@ -22,7 +22,9 @@ import QuartzCore
     private let vsyncStopThreshold = 2
 
     /// 初始化截帧服务
-    /// 仅当 Info.plist 中 MetalCaptureEnabled = YES 且 PlaySettings.metalCaptureEnabled 时生效
+    /// 当前实现的直接开关是 `PlaySettings.shared.metalCaptureEnabled`。
+    /// 注意：安装包 `Info.plist` 中是否存在 `MetalCaptureEnabled` key 仍然值得单独观测，
+    /// 但它并不是这里的直接 runtime guard。
     @objc public func initialize() {
         guard PlaySettings.shared.metalCaptureEnabled else {
             print("[PlayTools] MetalCaptureService: disabled by settings")

@@ -124,23 +124,37 @@ Render Capture 相关联调如果涉及：
 
 **结果**（2026-04-01 00:25）：原神可安全执行 `capture_metal_frame`，`stopCapture` 的 SIGSEGV 被捕获和恢复，app 继续运行。产物为空 trace（0 bytes），这是延迟 dlopen 模式的根本限制（非崩溃问题）。
 
-#### 6.4 已知限制：原神延迟注入产物为空
+#### 6.4 已解决：启动期注入 SIGABRT 崩溃（RC-014）
 
-产物仍然是空 trace，因为延迟 dlopen 模式下原神的 Metal 对象不被 `Capture*` 代理包裹，`GPUToolsCapture` 无法拦截 GPU 命令流。这是 Apple 私有框架的根本架构限制，不是 PlayCover 可以解决的。
+**问题**：原神在 `injectMetalCaptureEnvironment=true`（`DYLD_INSERT_LIBRARIES`）模式下启动即 SIGABRT。
 
-#### 6.5 双模式注入方案
+**根因**：RC-012 的 compat stubs 只在延迟 dlopen 路径安装，启动期注入时 stubs 不存在。`GPUToolsCapture` 在 dyld 阶段 hook `CAMetalLayer` 后，原神创建 layer 时 `MakeLayerInfos` 调用 `traceStream`/`streamReference` → `doesNotRecognizeSelector` → SIGABRT。
+
+**修复（RC-014）**：在 `GuardedCapture.m` 中添加 `__attribute__((constructor))` 函数 `guardedCapture_earlyInit()`，在 PlayTools dyld 加载阶段立即安装 `traceStream`/`streamReference` nil-returning stubs 到 NSObject。这确保 stubs 在 `GPUToolsCapture` 的 hook 触发前就位。
+
+**结果**（2026-04-01 00:44）：原神启动期注入模式下**首次成功启动**。
+
+**附带发现**：MetalFX 不兼容 — `CaptureMTLFXSpatialScaler.encodeToCommandBuffer:` 触发 `MTLReportFailure`。关闭游戏内 MetalFX 选项后可规避。
+
+#### 6.5 已确认：原神与 GPUToolsCapture 根本不兼容
+
+**两种注入模式下 trace 均为空。** 启动期注入时 tracked queue class 仍为 `AGXG16XFamilyCommandQueue`（非 `CaptureMTLCommandQueue`），说明 `GPUToolsCapture` 未能代理原神的 Metal 命令流。`stopCapture` 均触发 SIGSEGV guard（empty trace context）。
+
+这是 Apple 私有框架 `GPUToolsCapture` 对原神的 Metal 使用方式的根本架构限制，非 PlayCover 可解决。
+
+#### 6.6 双模式注入方案
 
 | 模式 | 设置 | 机制 | 适用场景 |
 |---|---|---|---|
 | **延迟注入**（默认） | `metalCaptureEnabled=true` | runtime `dlopen` + NSObject compat stubs + SIGSEGV guard | 所有 app 安全启动；兼容 app 可截帧；不兼容 app 不崩溃 |
-| **启动期注入** | `metalCaptureEnabled=true` + `injectMetalCaptureEnvironment=true` | `DYLD_INSERT_LIBRARIES` 注入 | 兼容 app 获得完整 trace context |
+| **启动期注入** | `metalCaptureEnabled=true` + `injectMetalCaptureEnvironment=true` | `DYLD_INSERT_LIBRARIES` + early compat stubs（RC-014） | 兼容 app 获得完整 trace context；不兼容 app 需关闭 MetalFX |
 
-#### 6.6 app 兼容性矩阵
+#### 6.7 app 兼容性矩阵
 
 | App | 延迟注入启动 | 延迟注入截帧 | 启动期注入启动 | 启动期注入截帧 |
 |---|---|---|---|---|
 | QQ飞车 | ✅ | ✅ 413MB .gputrace | ✅ | ✅ 124MB .gputrace |
-| 原神 | ✅ | ✅ 不崩溃，空 trace (RC-013) | ❌ SIGABRT | N/A |
+| 原神 | ✅ | ✅ 不崩溃，空 trace | ✅ (需关闭MetalFX) | ❌ 空 trace (GPUToolsCapture 无法代理命令流) |
 
 ---
 
@@ -205,13 +219,14 @@ Render Capture 相关联调如果涉及：
 | **`RC-011`** | — | **DONE** | **端到端验证**：重建 PlayTools xcframework + PlayCover.app，实测 QQ飞车延迟注入截帧（Q3 ✅ 413MB）和原神正常启动（Q2 ✅ session ready） | `Tasks/RC-011-端到端验证.md` |
 | **`RC-012`** | — | **DONE** | **原神截帧兼容性攻关**：反汇编 `GPUToolsCapture`，定位 `traceStream`/`streamReference` 崩溃根因，实现 NSObject fallback stubs，恢复双模式注入 | `Tasks/RC-012-原神截帧兼容性.md` |
 | **`RC-013`** | — | **DONE** | **原神截帧 SIGSEGV 保护**：新增 C 模块 `GuardedCapture.m`，用 `sigsetjmp`/`siglongjmp` + SIGSEGV handler 包裹 `stopCapture`，崩溃时优雅恢复而非 crash | `Tasks/RC-013-原神截帧SIGSEGV保护.md` |
+| **`RC-014`** | — | **DONE** | **启动期注入兼容性修复**：在 `GuardedCapture.m` 添加 constructor 早期安装 compat stubs，修复原神启动期注入 SIGABRT。但 trace 仍为空 — GPUToolsCapture 根本无法代理原神的 Metal 命令流 | `Tasks/RC-014-启动期注入兼容性修复.md` |
 | `RC-004` | **P0** | `TODO` | 整理最终可重复 SOP、产物位置与关单验证标准 | `Tasks/RC-004-成功截帧与关单.md` |
 
 ### 九、当前最重要任务
 
 > **`RC-004`：整理最终可重复 SOP、产物位置与关单验证标准。**
 >
-> 截帧功能对兼容 app（QQ飞车）已完全可用。原神在延迟注入模式下执行截帧不再崩溃（RC-013），但产物为空 trace（Apple 私有框架架构限制）。双模式注入 + SIGSEGV 安全保护已全面实现。
+> 截帧功能对兼容 app（QQ飞车）已完全可用。原神与 Apple `GPUToolsCapture` 框架**根本不兼容**——无论启动期注入还是延迟注入，`GPUToolsCapture` 均无法代理原神的 Metal 命令流，trace 始终为空。RC-014 修复了启动期注入的 SIGABRT 崩溃，但未能解决根本兼容性问题。双模式注入 + SIGSEGV 安全保护 + 早期 compat stubs 已全面实现。
 
 ---
 
@@ -236,9 +251,10 @@ Render Capture 相关联调如果涉及：
 - `PlayCover/Model/PlayApp.swift`：`effectiveLaunchEnvironment()` — 已移除 `DYLD_INSERT_LIBRARIES` 注入
 - `PlayCoverMCP/HostServices/Launch/LaunchService.swift`：`effectiveLaunchEnvironment()` — 已移除 `DYLD_INSERT_LIBRARIES` 注入
 - `Carthage/Checkouts/PlayTools/PlayTools/MetalCaptureService.swift`：runtime 截帧核心实现，`ensureGPUToolsCaptureLoaded()` 实现延迟 dlopen
-- `Carthage/Checkouts/PlayTools/PlayTools/GuardedCapture.m`：SIGSEGV 安全包装器，`PlayTools_guardedStopCapture()` 用 `sigsetjmp`/`siglongjmp` 保护 `stopCapture` 调用
+- `Carthage/Checkouts/PlayTools/PlayTools/GuardedCapture.m`：SIGSEGV 安全包装器 + RC-014 early compat stubs constructor
 
 崩溃样本（已解决）：
 
-- 原神崩溃（2026-03-31 22:23，`DYLD_INSERT_LIBRARIES` 方案下）：`GPUToolsCapture.MakeLayerInfos` → `doesNotRecognizeSelector` → `SIGABRT`，发生在 `UIView _createLayerWithFrame:` 启动路径上
-- **已通过 RC-009 延迟注入方案解决**，RC-011 验证原神 `metalCaptureEnabled=true` 正常启动
+- 原神 SIGABRT（2026-03-31 22:23，`DYLD_INSERT_LIBRARIES` 方案下）：`GPUToolsCapture.MakeLayerInfos` → `doesNotRecognizeSelector` → `SIGABRT`，发生在 `UIView _createLayerWithFrame:` 启动路径上 → **RC-014 early stubs 修复**
+- 原神 MetalFX SIGABRT（2026-04-01 00:44，启动期注入 + MetalFX 开启）：`CaptureMTLFXSpatialScaler.encodeToCommandBuffer:` → `MTLReportFailure` → `abort()`（Thread 48 渲染线程） → **关闭 MetalFX 可规避**
+- **已通过 RC-009 延迟注入 + RC-014 早期 stubs 全面解决启动崩溃**

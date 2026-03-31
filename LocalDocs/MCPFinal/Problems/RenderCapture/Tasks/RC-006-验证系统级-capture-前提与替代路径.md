@@ -1,37 +1,51 @@
-## RC-006：验证系统级 capture 前提与替代路径
+## RC-006：以 app 内成功路径为金标准，对照修正 PlayCover 截帧实现
 
 ### 一、任务目标
 
 回答新的核心问题：
 
-> **当前机器上，是否存在任何受支持的路径让 `MTLCaptureManager.supportsDestination(.gpuTraceDocument / .developerTools)` 变为 `true`？**
+> **同一台机器、同一个 `QQ飞车`、同样是 Apple `MTLCapture` 路线，为什么 app 内调试按钮可以成功生成 `.gputrace`，而 PlayCover 当前实现仍失败在 `supportsDestination(...)` / 当前触发方式之前？**
 
 ---
 
 ### 二、任务背景
 
-`RC-005` 已经拿到强证据表明：
+此前 `RC-005` 曾得到一条强历史证据链：
 
-- 两个真实 app 在最新 `PlayCover.app` 上都稳定返回：
+- PlayCover 路径下，多个真实 app 稳定返回：
   - `supports_gpu_trace=false`
   - `supports_developer_tools=false`
   - `failure_reason=gpu_trace_document_unsupported`
-- 失败后 session 仍保持 `ready`
-- 普通 Swift 进程中，`MTLCaptureManager.supportsDestination(.gpuTraceDocument)` 也返回 `false`
-- 带 `METAL_DEVICE_WRAPPER_TYPE=1` 再测，结果仍未改变
+- 普通 Swift 进程里，`MTLCaptureManager.supportsDestination(.gpuTraceDocument)` 也返回 `false`
 
-这说明当前主线已经不该继续停留在“再换一个 app 试试”。
+但 2026-03-31 出现新的更强证据：
+
+- 用户已在同一台机器、同一个 `QQ飞车` 包内，通过 app 自带调试按钮，走 **Apple `MTLCapture` 路线** 成功生成真实 `.gputrace`
+- 成功产物位于：
+  - `/Users/songdogwang/Library/Containers/com.tencent.tmgp.speedmobile/Data/Documents/FrameCapture/CapturedFrame20260331135148.gputrace`
+
+因此当前已经不能再把主问题表述为：
+
+> **“当前机器 / 当前 app 组合根本不支持 `.gpuTraceDocument`。”**
+
+更合理的新方向是：
+
+> **把 app 内成功路径当成金标准，直接对照 PlayCover 当前实现，找出调用门禁、`captureObject`、触发时机或 start/stop 语义上的关键差异。**
 
 ---
 
-### 三、本任务只聚焦系统级可行路径
+### 三、本任务只聚焦“成功路径对照”
 
 本轮优先回答：
 
-1. 普通带 bundle / `Info.plist` 的最小原生样本，是否会返回不同结果
-2. 通过 Xcode / Developer Tools attach 的路径，是否会改变 `supportsDestination` 结果
-3. Apple 文档是否明确限制了 `.gpuTraceDocument` / `.developerTools` 的使用上下文
-4. 如果当前机器确实不存在可行路径，是否应把目标从“当前机型直接产出 `.gputrace`”改成“给出明确不支持结论与替代 SOP”
+1. app 内调试按钮的**最短复现步骤**是什么
+2. 它是一次点击完成，还是开始 / 结束两步
+3. 触发后大概多久落盘，是否伴随明显卡顿 / 暂停 / UI 提示
+4. 它与 `MetalCaptureService.captureFrame(...)` 的关键差异是什么：
+   - `supportsDestination(.gpuTraceDocument)` 是否只是一个误导性的硬门禁
+   - 当前是否不该只抓默认 `MTLDevice`
+   - 当前外部触发时机是否偏离 app 的真实渲染时机
+   - 当前自动 stop 的方式是否与 app 内成功路径不一致
 
 ---
 
@@ -39,52 +53,44 @@
 
 完成本任务时，应至少给出以下之一：
 
-- **一个可行的系统级成功路径**
-- **Apple 文档或强实验证据支撑的“不支持”结论**
-- **一份替代验证 SOP**（例如改走 Xcode attach / 切换环境 / 降级目标）
+- **一份基于成功路径对照得出的最小修正方案**
+- **一组最值得优先尝试的代码实验点**
+- **一条可以解释“为什么 app 内成功、PlayCover 当前失败”的高可信差异链**
+
+更理想的完成结果是：
+
+- 直接产出一个新的最小实现实验，使 PlayCover 路径也能成功生成 `.gputrace`
 
 ---
 
-### 五、本轮新增结论（2026-03-31）
+### 五、本轮已知关键事实（2026-03-31）
 
-本轮围绕“是否可以通过修改目标 app 属性或启动配置，让 `supports_gpu_trace` / `supports_developer_tools` 发生变化”做了两件事：
+1. `QQ飞车` app 内成功按钮已经生成真实 `.gputrace`
+2. 该成功样本不是空壳路径，而是完整 trace 包
+3. app 内实现使用的也是 **Apple `MTLCapture` 路线**，不是自研替代格式
+4. 因此：
+   - `supports_gpu_trace=false` / `supports_developer_tools=false` 在 PlayCover 当前路径下仍然是**真实现象**
+   - 但它们**不能再被直接解释为“当前机器或当前 app 全局不支持 Apple `MTLCapture`”**
+5. 当前更值得怀疑的，是 PlayCover 自己的实现假设：
+   - 过早依赖 `supportsDestination(...)`
+   - `captureObject` 选择过粗
+   - 触发时机不对
+   - 自动 stop 语义与 app 内成功路径不一致
 
-1. **补充外部证据**
-   - 社区案例表明：对 macOS 程序做编程式 Metal capture 时，`Info.plist` 中的 `MetalCaptureEnabled=true` 与 `METAL_DEVICE_WRAPPER_TYPE=1` 可能是必要条件之一
-   - 这并不能直接证明当前机器一定可行，但至少说明“启动环境”本身值得单独验证
-
-2. **回看 PlayCover 当前实现后发现一个关键事实**
-   - 无论是 GUI 正常启动、GUI 的 LLDB 启动，还是 MCP 的 `launch_app` / `launch_app_with_lldb`，启动前都会清掉 Metal capture 相关环境变量
-   - 这意味着即使外部 shell 已经准备好了 `METAL_DEVICE_WRAPPER_TYPE=1` 一类变量，当前 PlayCover 也会把它们抹掉，导致这条假设路径在现状下**根本没有被真正验证过**
-
-因此，本轮没有直接把 `RC-006` 关单，而是先落了一个**新的实验入口**：
-
-- 新增每 app 设置字段：`injectMetalCaptureEnvironment`
-- 当它为 `true` 时，GUI 与 MCP 启动链路会为目标 app 注入：
-  - `METAL_DEVICE_WRAPPER_TYPE=1`
-  - `METAL_CAPTURE_ENABLED=1`
-  - `METAL_FRAME_CAPTURE_ENABLED=1`
-  - `MTLCaptureEnabled=1`
-
-这让后续可以在**不手改目标 app 包**的前提下，直接验证：
-
-> **“特殊启动环境”是否足以让当前机器上的 `supportsDestination(...)` 结果发生变化。**
+---
 
 ### 六、下一步建议
 
 下一轮优先做一件事即可：
 
-1. 选一个真实 app（优先 `QQ飞车`）
-2. 用 `update_app_settings` 同时打开：
-   - `metalCaptureEnabled=true`
-   - `injectMetalCaptureEnvironment=true`
-3. 分别走：
-   - `launch_app`
-   - `launch_app_with_lldb`
-4. 复测：
-   - `create_session`
-   - `get_capture_status`
-   - `capture_metal_frame`
-5. 记录 `supports_gpu_trace` / `supports_developer_tools` 是否有任何变化
+1. 获取用户提供的 app 内调试按钮复现步骤
+2. 按该步骤观察成功路径的外部行为
+3. 直接对照：
+   - `Carthage/Checkouts/PlayTools/PlayTools/MetalCaptureService.swift`
+   - app 内成功路径的行为特征
+4. 形成一个**最小实验方案**，优先尝试修正：
+   - 去掉或放宽 `supportsDestination(.gpuTraceDocument)` 的硬门禁
+   - 调整 `captureObject`
+   - 调整 start/stop 触发时机
 
-如果仍然完全不变，则可以把“不支持结论”的证据链再向前推进一大步。 
+如果该最小实验能成功落盘 `.gputrace`，则当前主线即可从“解释差异”切换为“整理稳定 SOP”。

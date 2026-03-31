@@ -25,14 +25,19 @@
 - `PlayCover.app` 已能正常启动，GUI 内嵌 MCP 可用
 - 真实 app（`QQ飞车`、`原神`）都可以启动并成功创建 `ready` session
 - `get_capture_status` 已能在多个真实 app 上稳定返回完整诊断字段
-- 当前真正剩下的阻塞点是：**多个真实 app 都稳定返回 `supports_gpu_trace=false`，且 `failure_reason=gpu_trace_document_unsupported`，没有 `.gputrace` 落盘**
+- PlayCover 当前实现里，真实 app 仍稳定返回：
+  - `supports_gpu_trace=false`
+  - `supports_developer_tools=false`
+  - `failure_reason=gpu_trace_document_unsupported`
+- **但现在出现了新的强证据**：用户已在同一台机器、同一个 `QQ飞车` 包内，通过 app 自带调试按钮，走 **Apple `MTLCapture` 路线** 成功生成真实 `.gputrace`
 
-详细现状见：
+这说明当前主问题已经不应再表述为：
 
-- `Tasks/RC-001-查清-supports_gpu_trace_false.md`
-- `Tasks/RC-003-对照验证.md`
-- `live/2026-03-31-qqfc-rc001c.md`
-- `live/2026-03-31-yuanshen-rc003a.md`
+> **“这台机器 / 这个 app 组合本身不支持 Apple `MTLCapture` 导出 `.gputrace`。”**
+
+而应切换为：
+
+> **“为什么 app 内成功路径可以导出 `.gputrace`，而 PlayCover 当前实现却把自己拦在 `supportsDestination(...)` / 当前触发方式之前？”**
 
 ---
 
@@ -46,8 +51,8 @@
 
 - `QQ飞车` 或其他真实 app 能成功 `launch_app`
 - `create_session` 返回 `ready`
-- `get_capture_status` 显示截帧能力可用
 - `capture_metal_frame` 成功返回，并实际生成 `.gputrace`
+- 结果与 app 内成功路径相互印证
 - 输出一份可重复执行的验证步骤
 
 ---
@@ -86,42 +91,27 @@
 
 - `RC-001` 已完成：host / runtime / bridge 的观测增强已经就位，并已确认 `get_capture_status` 不再卡在超时
 - `RC-003` 已完成：在第二个真实 app `原神` 上完成了非破坏性对照验证，确认 `gpu_trace_document_unsupported` **不是 `QQ飞车` 特有现象**
-- `RC-005` 已完成：已经取得环境级强证据，确认当前主阻塞点更像 **当前机器 / 当前 Xcode-Metal 运行环境** 对 `.gpuTraceDocument` / `.developerTools` destination 的支持限制，而不是 PlayCover session 自身
-  - 最新 `PlayCover.app` 已重新构建、安装并启动
-  - `QQ飞车` 与 `原神` 在最新 GUI 上都可 `create_session -> ready`
-  - 两者都稳定返回：
-    - `available=true`
-    - `enabled=true`
-    - `supports_gpu_trace=false`
-    - `supports_developer_tools=false`
-    - `has_default_device=true`
-    - `default_device_name=Apple M4 Pro`
-    - `failure_reason=gpu_trace_document_unsupported`
-  - 两者补做一次最小 `capture_metal_frame` 后都直接失败，但 session 仍保持 `ready`
-  - 当前 crash 目录没有新增本轮 `QQ飞车` / `原神` crash 样本
-  - **更关键的是**：在普通 Swift 进程中直接探测 `MTLCaptureManager.supportsDestination(...)`，结果仍是：
-    - `supports_gpu_trace=false`
-    - `supports_developer_tools=false`
-    - `default_device=Apple M4 Pro`
-  - 即使带 `METAL_DEVICE_WRAPPER_TYPE=1` 再测，结果也不变
-- 安装态补充对照：
-  - `QQ飞车` 已安装包 `Info.plist` 中存在 `MetalCaptureEnabled=true`
-  - `原神` 已安装包 `Info.plist` 中仍**缺少** `MetalCaptureEnabled`
-  - 但两者 live 诊断完全一致，说明该 key 差异**不足以解释当前主症状**
-- `RC-006` 本轮新增进展：
-  - 社区案例进一步提示：`MetalCaptureEnabled=true` + `METAL_DEVICE_WRAPPER_TYPE=1` 这一类启动条件仍值得验证
-  - 回查代码后发现：PlayCover 当前会在 GUI / MCP / LLDB 三条启动链路中统一清掉 Metal capture 相关环境变量
-  - 因此过去其实**从未真正验证过**“特殊启动环境是否能改变 `supportsDestination(...)` 结果”
-  - 本轮已新增每 app 设置字段 `injectMetalCaptureEnvironment`
-  - 当该字段为 `true` 时，GUI 与 MCP 启动链路会为目标 app 注入实验性 Metal capture 环境，供下一轮 live 复测使用
+- `RC-005` 已完成：拿到了“PlayCover 路径下多个真实 app 以及普通 Swift 进程都返回 `supports_gpu_trace=false`”的历史证据
+- **但 `RC-005` 的旧总判断已被新证据修正**：
+  - 同一台机器、同一个 `QQ飞车`、同样是 Apple `MTLCapture` 路线，app 内调试按钮已经成功生成 `.gputrace`
+  - 因此，**“当前机器 / 当前 app 全局不支持 `.gpuTraceDocument`”不再是当前最可信结论**
+  - 现在更应优先怀疑的是：
+    - PlayCover 当前把 `supportsDestination(.gpuTraceDocument)` 当成了过早的硬门禁
+    - 当前 `captureObject` 选择（默认 `MTLDevice`）与 app 内成功路径不一致
+    - 当前外部触发时机 / start-stop 语义与 app 内成功路径不一致
+    - 当前实现缺少对 app 内成功行为的直接对照观察
+- 已知最新强证据：
+  - 用户已在 `QQ飞车` 中通过 app 内调试按钮成功保存一份真实 `.gputrace`
+  - 成功产物位于：
+    - `/Users/songdogwang/Library/Containers/com.tencent.tmgp.speedmobile/Data/Documents/FrameCapture/CapturedFrame20260331135148.gputrace`
 
 因此，当前最重要的事已经从：
 
-> **定位为什么当前机器 / 当前 PlayCover 环境下，多个真实 app 都 `supports_gpu_trace=false / gpu_trace_document_unsupported`。**
+> **验证当前机器是否存在任何系统级可行路径，让 `.gpuTraceDocument` 或 `.developerTools` destination 变为可用。**
 
 切换为：
 
-> **验证当前机器是否存在任何系统级可行路径，让 `.gpuTraceDocument` 或 `.developerTools` destination 变为可用。**
+> **以 `QQ飞车` app 内成功截帧路径为金标准，对照 PlayCover 当前实现，找出差异并做最小修正实验。**
 
 ---
 
@@ -131,23 +121,34 @@
 |---|---|---|---|---|
 | `RC-001` | **P0** | `DONE` | 查清真实 app 上 `supports_gpu_trace=false / get_capture_status` 的直接现象；已确认当前 live 不再卡在超时，而是稳定返回 `gpu_trace_document_unsupported` | `Tasks/RC-001-查清-supports_gpu_trace_false.md` |
 | `RC-003` | **P0** | `DONE` | 用第二个真实 app `原神` 完成对照验证；已确认 `gpu_trace_document_unsupported` **不是 `QQ飞车` 特有现象** | `Tasks/RC-003-对照验证.md` |
-| `RC-005` | **P0** | `DONE` | 完成环境级定位；已拿到“普通 Swift 进程也不支持 `.gpuTraceDocument` / `.developerTools`”的强证据，当前主阻塞点更像机器 / 工具链 / Apple Metal 运行环境限制 | `Tasks/RC-005-定位环境级-gpu-trace-unsupported.md` |
-| `RC-006` | **P0** | `TODO` | 验证当前机器是否存在任何系统级可行路径，让 `.gpuTraceDocument` 或 `.developerTools` destination 变为可用；如果没有，则给出明确不支持结论或替代 SOP | `Tasks/RC-006-验证系统级-capture-前提与替代路径.md` |
-| `RC-002` | **P1** | `TODO` | 在 `metalCaptureEnabled=true` 前提下，对 `QQ飞车` 做 fresh reinstall + 全链路复测，进一步消除“旧安装残留”歧义 | `Tasks/RC-002-fresh-reinstall-复测.md` |
+| `RC-005` | **P1** | `DONE` | 完成旧假设定位；其“机器 / 环境全局不支持”的总判断已被 `QQ飞车` app 内成功 `.gputrace` 样本修正，但历史样本仍保留为对照证据 | `Tasks/RC-005-定位环境级-gpu-trace-unsupported.md` |
+| `RC-006` | **P0** | `TODO` | 以 `QQ飞车` app 内成功按钮为金标准，观察并对照 PlayCover 当前实现，重点比较 `supportsDestination(...)` 门禁、`captureObject`、触发时机与 start/stop 语义，形成最小实验方案 | `Tasks/RC-006-验证系统级-capture-前提与替代路径.md` |
+| `RC-002` | **P2** | `TODO` | 在实现路径校正后，再决定是否需要对 `QQ飞车` 做 fresh reinstall + 全链路复测，用于消除旧安装残留歧义 | `Tasks/RC-002-fresh-reinstall-复测.md` |
 | `RC-004` | **P2** | `TODO` | 在截帧成功后，整理最终可重复 SOP、产物位置与关单验证标准 | `Tasks/RC-004-成功截帧与关单.md` |
 
 ### 七、当前最重要任务
 
 当前最重要任务是：
 
-> **`RC-006`：验证当前机器是否存在任何系统级可行路径，让 `.gpuTraceDocument` 或 `.developerTools` destination 变为可用。**
+> **`RC-006`：以 `QQ飞车` app 内成功截帧路径为金标准，对照并修正 PlayCover 当前实现。**
 
-本轮已经完成的是：
+下一轮建议只做一件事：
 
-- `RC-005`：通过最新 GUI live 复测 + 普通 Swift 进程环境探针，把主问题进一步收敛到**当前机器 / 当前 Xcode-Metal 运行环境级限制**
-- 本轮结果表明：
-  - 继续换更多真实 app 的价值已经很低
-  - 后续主线应转向系统 / 工具链 / Apple API 限制分析与可行路径验证
+1. 获取并记录 app 内调试按钮的**最短复现步骤**
+2. 观察该成功路径的行为特征：
+   - 一次点击还是开始/结束两步
+   - 触发后多久落盘
+   - 是否出现明显卡顿 / 暂停 / UI 提示
+3. 对照当前 `MetalCaptureService.captureFrame(...)`，优先审视：
+   - 是否不该把 `supportsDestination(.gpuTraceDocument)` 当成硬前置条件
+   - 是否不该只抓默认 `MTLDevice`
+   - 是否需要改成更贴近 app 渲染时机的触发方式
+4. 只做**最小修正实验**，避免再次回到泛化的环境猜测
+
+本轮结果表明：
+
+- 继续单纯围绕“机器是否全局不支持”做推断，价值已经很低
+- 后续主线应切到：**参考 app 内成功路径，修正我们自己的实现假设**
 
 ---
 
@@ -169,3 +170,8 @@
 - `live/2026-03-31-qqfc-rc001c.md`
 - `live/2026-03-31-yuanshen-rc003a.md`
 - `live/2026-03-31-envprobe-rc005a.md`
+
+已知最新成功样本：
+
+- `QQ飞车` app 内调试按钮成功生成的 `.gputrace`：
+  - `/Users/songdogwang/Library/Containers/com.tencent.tmgp.speedmobile/Data/Documents/FrameCapture/CapturedFrame20260331135148.gputrace`

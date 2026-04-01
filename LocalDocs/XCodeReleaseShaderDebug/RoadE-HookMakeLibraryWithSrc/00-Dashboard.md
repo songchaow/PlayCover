@@ -6,7 +6,7 @@
 
 ## 最终目标
 
-在 PlayTools 运行时中 hook `MTLDevice.makeLibrary(data:)` 系列 API，将 app 加载的每个 metallib **用 `-frecord-sources` 重新编译后替换返回**，使后续截帧的 gputrace 中自动携带可读的 shader 源码。
+在 PlayTools 运行时中 hook `MTLDevice.makeLibrary(data:)` 系列 API，从 metallib 中提取 LLVM Bitcode，经 `llvm-dis` 反汇编为 LLVM IR，再**转换为可编译的 MSL 源码**，通过 `makeLibrary(source:)` 重新编译并替换原始返回，使后续截帧的 gputrace 中自动携带可读的 shader 源码。
 
 ## Agent 工作流
 
@@ -49,7 +49,8 @@ PlayCover 主应用 (macOS)
         ├── LibrarySourceInjectionSwizzles: hook makeLibrary 系列 API
         ├── MetallibParser: 解析 metallib, 提取 LLVM Bitcode
         ├── LLVMDisassembler: 调用 llvm-dis 将 bitcode → LLVM IR 文本
-        └── ShaderSourceRecompiler: 用 IR 文本作为伪源码, 调 makeLibrary(source:) 重编译
+        ├── IRToMSLConverter: 将 LLVM IR 转换为可编译的 MSL 源码
+        └── ShaderSourceRecompiler: 调 makeLibrary(source:) 编译 MSL, 替换原始 library
 ```
 
 **关键设计决策**：PlayCover 管理的 iOS app 运行在 macOS 用户态（非真正 iOS 沙盒），PlayTools 可以 fork/exec 本地二进制。因此 `llvm-dis` 可直接在 PlayTools 运行时中通过 `Process()` 调用。
@@ -68,10 +69,10 @@ PlayCover 主应用 (macOS)
 |  | `PlayCover/Utils/LLVMToolManager.swift` — 单例管理器，从 GitHub Releases 下载 LLVM 19.1.0 macOS ARM64 预编译包，用 `tar --strip-components=2` 提取 `bin/llvm-dis`，安装到 `~/Library/Containers/io.playcover.PlayCover/llvm-tools/`。支持版本记录、可执行权限设置、ad-hoc 签名、`--version` 验证、进度跟踪（ObservableObject）、卸载 | | |
 | E-004d | ↳ **PlayTools 中调用 `llvm-dis` 将 bitcode → LLVM IR 文本** | ✅ DONE | |
 |  | `Carthage/Checkouts/PlayTools/PlayTools/LLVMDisassembler.swift` — 纯 Swift struct，使用 `posix_spawn` 调用 `llvm-dis` 将 bitcode 二进制转换为 LLVM IR 文本。支持路径自动发现（LLVMToolManager 安装位置 + Homebrew 路径）、超时控制（默认 30s）、bitcode magic 校验、stderr 捕获、批量处理（`disassembleBatch`）和安全包装（`safeDisassemble`/`safeDisassembleBatch`，失败不中断 hook 流程） | | |
-| E-004e | ↳ **LLVM IR → 可编译 MSL 的转换/适配** | TODO | |
-|  | LLVM IR 文本不能直接传给 `makeLibrary(source:)`。需要：(1) 验证 IR 文本能否直接作为"伪源码"注入 SOURCES section；(2) 若不行，实现 IR→MSL 的关键转换（`addrspace` 标注→地址空间限定符、`air.*` 内建→MSL 等效调用等）；(3) 或者绕过 `makeLibrary(source:)`，直接用 `xcrun metal` 从 IR 重编译为带 `-frecord-sources` 的 metallib | | |
+| E-004e | ↳ **LLVM IR → MSL 转换器** | TODO | |
+|  | 实现 IR→MSL 的关键转换：`addrspace` 标注→地址空间限定符（`device`/`constant`/`threadgroup`）、`air.*` 内建→MSL 等效调用、IR 函数签名→MSL 函数声明。前序步骤（E-004a–d）已具备提取 bitcode 并生成 LLVM IR 文本的完整能力，本步骤在此基础上实现 IR 文本到可通过 `makeLibrary(source:)` 编译的 MSL 源码的转换。首先需对真实游戏 metallib 的 IR 结构做样本分析 | | |
 | E-005 | **运行时 library 替换：用带源码的 library 替换原始返回** | TODO | |
-|  | 在 `pc_newLibraryWithData` hook 中，将 E-004d/e 生成的带源码 library 替换原始返回值。需处理：函数签名一致性校验、编译失败 fallback（退回原始 library）、性能优化（缓存已处理的 metallib） | | |
+|  | 在 `pc_newLibraryWithData` hook 中，将 E-004e 生成的 MSL 经 `makeLibrary(source:)` 编译后替换原始返回值。需处理：函数签名一致性校验、编译失败 fallback（退回原始 library）、性能优化（缓存已处理的 metallib） | | |
 | E-006 | **端到端验证** | TODO | |
 |  | 对 QQ飞车 / 原神 启用功能 → 截帧 → Xcode 打开 gputrace → 确认 shader 源码可见 | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
@@ -81,33 +82,17 @@ PlayCover 主应用 (macOS)
 
 （由 agent 不断维护，保持简要，详情写子文档）
 
-- **Metal 编译器调用**：必须用 `xcrun --sdk macosx metal` 方式调用，不能给 `metal` 传 `-sdk` 参数（它不认识），SDK 选择通过 xcrun 的 `--sdk` 参数完成
+- **`-frecord-sources` 不适用于已有 bitcode**：该选项仅在 `metal -c`（MSL→.air）阶段有效，将 MSL 源码嵌入 .air 中。`metallib` 命令不接受此参数。从现有 metallib 提取的 bitcode 不含源码，无法通过重编译补回。因此**必须走 IR→MSL 转换路径**
+- **Metal 编译器调用**：必须用 `xcrun --sdk macosx metal` 方式调用，SDK 选择通过 xcrun 的 `--sdk` 参数完成
 - **SOURCES section**：`-frecord-sources` 在 metallib 中新增 `SOURCES` section（约占原体积的 90%+），包含完整 MSL 源码文本
-- **PRIVATE_METADATA 变化**：带源码版本的 PRIVATE_METADATA 大幅增长（0x18 → 0x27c），包含源文件路径等调试元数据
 - **运行时编译可行**：`MTLDevice.makeLibrary(source:options:)` 在 Apple M4 Pro 上验证通过，函数签名与从 metallib 加载完全一致
-- **PoC 脚本**：`Scripts/poc_e001_frecord_sources.sh` 可重复执行，含 Swift 运行时测试
-- **MTLDevice 运行时类**：Apple Silicon 上的实际类不是 `MTLDevice`（协议），而是 GPU family 层类（如 M4 Pro=`AGXG16SDevice`），继承链 `AGXGxxSDevice → AGXGxxFamilyDevice → IOGPUMetalDevice → _MTLDevice → NSObject`。swizzle 必须通过 `object_getClass(device)` 动态获取，不能硬编码类名
-- **Library 方法分布**：`newLibraryWithData:error:` 等定义在 GPU family 层（`AGXGxxFamilyDevice`），`newLibraryWithURL:error:` 等定义在框架层（`_MTLDevice`），但 `class_getInstanceMethod` 能沿继承链找到，统一用 `object_getClass(device)` 作为 swizzle 目标即可
-- **完整 Library API 列表**：MTLDevice 协议共有 11 个 library 相关 required method（含 2 个 dynamic library），详见 [E-002](E-002-MTLDevice-Library-API.md)
-- **Swizzle 骨架**：`LibrarySourceInjectionSwizzles` 采用与 `CommandQueueDiscoverySwizzles` 完全一致的模式——私有 `NSObject` 子类持有 `@objc dynamic` 替换方法，通过 `class_addMethod` + `method_exchangeImplementations` 安装到设备类上
-- **异步 API 的 hook**：`newLibraryWithSource:options:completionHandler:` 通过包装 `completionHandler` block 记录日志，不阻塞原始回调
-- **`newLibraryWithData:error:` 参数类型**：ObjC 层实际参数类型是 `dispatch_data_t`（桥接为 `__DispatchData`），不是 `NSData`；Swift swizzle 方法签名必须用 `__DispatchData` 才能正确交换
-- **metallib 格式（MTLB）**：文件头通常 56 或 88 字节，magic 为 `MTLB` (0x4D544C42 LE)。四大 section：FunctionList（函数 tag 元数据）、PublicMetadata、PrivateMetadata、Bitcode（LLVM IR）
-- **函数 Tag 格式**：每个函数由 `[4B tag_name][2B size][payload]...ENDT` 序列描述。关键 tag：NAME（函数名）、TYPE（vertex/fragment/kernel）、MDSZ（bitcode 大小）、OFFT（bitcode 偏移）、HASH（SHA256）。SARC tag 特殊，用 4B size
-- **dispatch_data_t → Data 转换**：不能直接 `as? Data`，需通过 `DispatchData.enumerateBytes` 逐段拷贝收集，因为 dispatch_data 可能是不连续的内存区域
-- **SOURCES section**：`-frecord-sources` 编译的 metallib 在四大 section 之后追加 SOURCES section，可能是 bzip2 压缩或纯文本 MSL 源码
-- **Bitcode 模块去重**：metallib 中多个函数可能共享同一个 bitcode 模块（相同 OFFT+MDSZ），提取时按 (offset, size) 去重可大幅减少后续处理量
-- **LLVM Bitcode magic**：提取的 bitcode 模块以 `DE C0 17 0B`（wrapper）或 `42 43`（"BC"，raw bitstream）开头即为有效 LLVM bitcode，可用此做快速校验
-- **dispatch_data_t 转换**：从 `__DispatchData` 转换为 `Data` 的逻辑被抽取为 `MetallibParser.convertDispatchData()` 公共方法，消除了多处重复代码
-- **LLVM 工具链**：macOS/Xcode 不自带 `llvm-dis`（Xcode 的 Metal 工具链只有 `air-*`/`metal-*` 系列）。需从 LLVM 官方 GitHub Releases 下载预编译包。已确认 LLVM 19.1.0 macOS ARM64 包可用：`LLVM-19.1.0-macOS-ARM64.tar.xz`（~1.4GB），包含完整工具链。只需解压提取 `bin/llvm-dis` 即可
-- **PlayTools 可执行外部命令**：PlayCover 管理的 iOS app 运行在 macOS 用户态（翻译执行），不受 iOS 沙盒限制，PlayTools 中可以使用 `Process()` / `posix_spawn` 调用本地二进制
-- **LLVM tar.xz 提取**：`tar xf` 支持 `--strip-components=2` 配合具体路径 `LLVM-{ver}-macOS-ARM64/bin/llvm-dis` 只提取单个文件，避免解压完整 1.4GB 包。若精确路径失败可用 `--include=*/bin/llvm-dis` 兜底
-- **llvm-dis ad-hoc 签名**：从 GitHub 下载的 llvm-dis 在 macOS 上可能被 Gatekeeper 阻止执行，需要 `codesign -fs-` 进行 ad-hoc 签名才能正常调用
-- **LLVMToolManager 安装位置**：选择 `~/Library/Containers/io.playcover.PlayCover/llvm-tools/` 而非 `~/Library/Frameworks/`，与 PlayTools 安装位置（`~/Library/Frameworks/`）分离，避免污染系统框架目录
-- **PlayTools 是 iOS target**：不能使用 `Foundation.Process`（`NSTask`），因为 iOS SDK 不暴露该类。必须使用 `posix_spawn` + `waitpid` 代替。虽然 PlayCover 管理的 app 实际运行在 macOS 用户态，但编译时仍受 iOS SDK 约束
-- **Swift 中 wait 宏不可用**：`WIFEXITED`、`WEXITSTATUS`、`WIFSIGNALED`、`WTERMSIG` 等 C 宏在 Swift 中不可用，需要手动用位操作实现：`WIFEXITED(s) = (s & 0x7F) == 0`，`WEXITSTATUS(s) = (s >> 8) & 0xFF`
-- **Swift 中 `environ` 不可用**：iOS SDK 中全局变量 `environ` 不直接暴露给 Swift，需通过 `dlsym(RTLD_DEFAULT, "environ")` 获取指针
-- **llvm-dis 路径发现**：`LLVMDisassembler.findLLVMDis()` 按优先级搜索：LLVMToolManager 安装路径 → Homebrew ARM → Homebrew x86 → /usr/bin
+- **MTLDevice 运行时类**：Apple Silicon 上的实际类是 GPU family 层类（如 M4 Pro=`AGXG16SDevice`），swizzle 必须通过 `object_getClass(device)` 动态获取
+- **`newLibraryWithData:error:` 参数类型**：ObjC 层实际参数类型是 `dispatch_data_t`（桥接为 `__DispatchData`），不是 `NSData`
+- **metallib 格式（MTLB）**：文件头 56 或 88 字节，magic `MTLB`。四大 section：FunctionList、PublicMetadata、PrivateMetadata、Bitcode。函数 Tag 格式详见 E-004 文档
+- **dispatch_data_t → Data 转换**：不能直接 `as? Data`，需通过 `DispatchData.enumerateBytes` 逐段拷贝
+- **Bitcode 模块去重**：metallib 中多个函数可能共享同一个 bitcode 模块（相同 OFFT+MDSZ），按 (offset, size) 去重可大幅减少处理量
+- **LLVM 工具链**：macOS/Xcode 不自带 `llvm-dis`。LLVM 19.1.0 macOS ARM64 预编译包已验证可用
+- **PlayTools 是 iOS target**：不能使用 `Foundation.Process`，必须用 `posix_spawn`。`environ`/wait 宏等需特殊处理，详见 E-004d 文档
 
 ## 参考信息
 

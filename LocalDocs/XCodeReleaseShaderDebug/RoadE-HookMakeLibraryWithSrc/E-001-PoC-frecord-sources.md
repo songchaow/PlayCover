@@ -58,15 +58,17 @@ MTLB header 前 88 字节包含：
 
 ## 对 Road E 方案的启示
 
-### 最优策略（运行时 hook）
+### 核心策略（运行时 hook + IR→MSL 转换）
 
 ```
 App 调用 makeLibrary(data: metallib_data)
     ↓ hook 拦截
-从 metallib_data 的 LLVM Bitcode 恢复 MSL 源码
-    ↓
-调用 makeLibrary(source: msl_source, options: ...)
-    ↓ 替换原始返回值
+MetallibParser 提取 LLVM Bitcode
+    ↓ llvm-dis
+LLVM IR 文本
+    ↓ IRToMSLConverter (E-004e)
+可编译的 MSL 源码
+    ↓ makeLibrary(source: msl_source, options: ...)
 App 得到包含源码信息的 library
     ↓ 后续截帧
 Xcode 自动获取源码 ✅
@@ -74,14 +76,12 @@ Xcode 自动获取源码 ✅
 
 ### 关键挑战
 
-**从 metallib 的 LLVM Bitcode → MSL 反编译**（E-004 任务）：
-- metallib 的 MODULE_LIST section 包含 LLVM Bitcode
-- 需要解析 MTLB 格式提取 bitcode
-- 需要将 LLVM IR（含 Metal 地址空间标注）还原为可编译的 MSL
-- 这是整个方案最难的部分
+**LLVM IR → MSL 转换**（E-004e 任务）：
+- Metal LLVM IR 包含 `addrspace(N)` 标注、`air.*` 系列内建函数等 Metal 特有语义
+- 需要将这些映射为 MSL 地址空间限定符（`device`/`constant`/`threadgroup`）和 MSL 内建调用
+- 这是整个方案最难的部分，前序步骤 E-004a–d 已为此做好准备
 
-### 备选策略
+### 注意
 
-如果 bitcode → MSL 反编译过于困难，可以：
-- 直接将 LLVM IR 文本作为"伪源码"传给 Xcode（可读性不如 MSL 但足以调试）
-- 在 metallib 二进制中直接注入 SOURCES section（修改 MTLB 格式）
+- **`-frecord-sources` 不适用于此场景**：该选项仅在从 MSL 编译到 .air 时有效。从现有 metallib 提取的 bitcode 不含源码，无法通过重编译补回
+- 必须走 IR→MSL 转换路径，不能绕过

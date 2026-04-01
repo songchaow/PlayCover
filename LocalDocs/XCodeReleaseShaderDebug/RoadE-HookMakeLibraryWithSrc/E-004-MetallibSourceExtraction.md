@@ -4,7 +4,7 @@
 
 ## 目标
 
-在运行时拦截到 metallib `Data` 后，提取 LLVM Bitcode（参考 MetalLibraryArchive 格式），生成可读 IR 文本或 MSL 伪源码。
+在运行时拦截到 metallib `Data` 后，提取 LLVM Bitcode，经 `llvm-dis` 反汇编为 LLVM IR 文本，再转换为可通过 `makeLibrary(source:)` 编译的 MSL 源码。
 
 ## 任务拆分
 
@@ -16,11 +16,11 @@
 | E-004b | **从 MODULE_LIST 提取函数级 LLVM Bitcode** | ✅ DONE | 利用解析器定位每个函数的 bitcode 数据并提取为独立 Data |
 | E-004c | **LLVM 工具链管理：下载并部署 `llvm-dis`** | ✅ DONE | PlayCover 主应用中实现 LLVMToolManager，下载 LLVM 预编译包并提取 `llvm-dis` |
 | E-004d | **PlayTools 中调用 `llvm-dis` 转换 bitcode → IR** | ✅ DONE | 新增 LLVMDisassembler 类，使用 posix_spawn 调用 llvm-dis，支持路径自动发现、超时、批量处理 |
-| E-004e | **LLVM IR → 可编译 MSL 的转换/适配** | TODO | 验证 IR 能否直接作为伪源码使用；必要时实现 IR→MSL 关键转换 |
+| E-004e | **LLVM IR → MSL 转换器** | TODO | 实现 IR→MSL 关键转换（addrspace→地址空间限定符、air.*内建→MSL调用、IR函数签名→MSL声明），先做真实游戏 metallib 的 IR 样本分析 |
 
 ### 架构说明
 
-原方案试图在 PlayTools 内部纯代码实现 bitcode 反编译（受限于运行时无 LLVM 库）。新方案改为**下载 LLVM 预编译工具链**，利用 `llvm-dis` 完成 bitcode → LLVM IR 文本的完整转换：
+原方案试图在 PlayTools 内部纯代码实现 bitcode 反编译（受限于运行时无 LLVM 库）。新方案改为**下载 LLVM 预编译工具链**，利用 `llvm-dis` 完成 bitcode → LLVM IR 文本的完整转换，再实现 IR→MSL 的关键转换：
 
 ```
 E-004b 提取的 BitcodeModule.data (LLVM Bitcode 二进制)
@@ -28,13 +28,13 @@ E-004b 提取的 BitcodeModule.data (LLVM Bitcode 二进制)
 llvm-dis input.bc -o output.ll  (外部进程调用)
     ↓ 读取 .ll 文件
 LLVM IR 文本 (完整的人类可读 IR, 包含函数签名/指令/元数据)
-    ↓ E-004e 转换
-可编译的 MSL 源码 / 伪源码
+    ↓ E-004e: IRToMSLConverter
+可编译的 MSL 源码 (addrspace→device/constant, air.*→MSL内建, ...)
+    ↓ E-005: makeLibrary(source:)
+带源码信息的 MTLLibrary (替换原始返回值)
 ```
 
-**为什么可行**：PlayCover 管理的 iOS app 运行在 macOS 用户态翻译层，不受 iOS 沙盒限制。PlayTools 中可以使用 `Process()` 调用本地二进制。
-
-**LLVM 工具链来源**：LLVM 19.1.0 macOS ARM64 预编译包（`LLVM-19.1.0-macOS-ARM64.tar.xz`，~1.4GB）从 GitHub Releases 下载，解压后只保留 `bin/llvm-dis`（约 30-50MB）。
+**核心技术挑战（E-004e）**：Metal LLVM IR 中的 `addrspace(N)` 标注需映射到 MSL 地址空间限定符，`air.*` 系列内建函数需映射到 MSL 等效调用。这是 IR→MSL 转换的关键。前序步骤 E-004a–d 已具备完整的 bitcode 提取和 IR 反汇编能力，为此奠定了基础。
 
 ## E-004a 实现
 

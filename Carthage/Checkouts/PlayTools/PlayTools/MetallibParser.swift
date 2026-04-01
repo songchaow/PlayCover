@@ -184,6 +184,59 @@ struct MetallibParser {
         let size: UInt64
     }
 
+    // MARK: - Bitcode module
+
+    /// 一个从 metallib 中提取出的 LLVM Bitcode 模块。
+    /// 多个函数可能共享同一个模块（相同偏移/大小），此类型对其进行去重和验证。
+    struct BitcodeModule {
+        /// 模块在 bitcode section 内的相对偏移
+        let relativeOffset: UInt64
+        /// 模块数据大小
+        let size: UInt64
+        /// 提取出的原始 bitcode 数据
+        let data: Data
+        /// 引用此模块的函数名列表
+        let functionNames: [String]
+        /// 引用此模块的函数类型列表
+        let functionTypes: [String]
+
+        /// bitcode 是否以有效的 LLVM bitcode magic 开头。
+        /// LLVM bitcode wrapper: 0xDEC04342 ("BC\xC0\xDE")
+        /// LLVM IR bitstream:    0x4243      ("BC" at offset 0..1)
+        var isValidLLVMBitcode: Bool {
+            guard data.count >= 4 else { return false }
+            return data.withUnsafeBytes { buf in
+                let b0 = buf.load(fromByteOffset: 0, as: UInt8.self)
+                let b1 = buf.load(fromByteOffset: 1, as: UInt8.self)
+                // LLVM bitcode wrapper magic: DE C0 17 0B
+                if b0 == 0xDE && b1 == 0xC0 { return true }
+                // Raw LLVM bitstream magic: "BC" (0x42 0x43)
+                if b0 == 0x42 && b1 == 0x43 { return true }
+                return false
+            }
+        }
+
+        /// bitcode magic 描述（用于调试日志）
+        var magicDescription: String {
+            guard data.count >= 4 else { return "too_short" }
+            let hex = data.prefix(4).map { String(format: "%02X", $0) }.joined()
+            if isValidLLVMBitcode {
+                return data.withUnsafeBytes { buf in
+                    let b0 = buf.load(fromByteOffset: 0, as: UInt8.self)
+                    return b0 == 0xDE ? "llvm_wrapper(\(hex))" : "llvm_bitstream(\(hex))"
+                }
+            }
+            return "unknown(\(hex))"
+        }
+
+        var summary: String {
+            let names = functionNames.prefix(3).joined(separator: ",")
+            let suffix = functionNames.count > 3 ? "..." : ""
+            return "module[offset=\(relativeOffset),size=\(size)," +
+                   "magic=\(magicDescription),funcs=\(functionNames.count)(\(names)\(suffix))]"
+        }
+    }
+
     /// 解析结果
     struct ParseResult {
         let header: Header
@@ -194,13 +247,14 @@ struct MetallibParser {
 
         /// 文件中是否包含 SOURCES section
         var hasSources: Bool {
-            extraSections.contains { $0.name == "SOURCES" }
+            extraSections.contains { $0.name.hasPrefix("SOURCES") }
         }
 
         /// 提取指定函数的 bitcode 数据
         func extractBitcode(for function: FunctionEntry) -> Data? {
             guard let relOffset = function.bitcodeOffset,
-                  let size = function.bitcodeSize else { return nil }
+                  let size = function.bitcodeSize,
+                  size > 0 else { return nil }
             let absOffset = header.bitcodeOffset + relOffset
             let end = absOffset + size
             guard end <= UInt64(data.count) else { return nil }
@@ -214,6 +268,63 @@ struct MetallibParser {
                       let bc = extractBitcode(for: entry) else { return nil }
                 return (name, bc)
             }
+        }
+
+        /// **E-004b 核心方法**：提取去重后的 LLVM Bitcode 模块列表。
+        ///
+        /// metallib 中多个函数可能引用同一个 bitcode 模块（相同的 offset+size），
+        /// 此方法将它们合并为唯一的 `BitcodeModule`，并附带引用它的所有函数名。
+        ///
+        /// - Returns: 去重后的 bitcode 模块数组，按偏移量排序
+        func extractBitcodeModules() -> [BitcodeModule] {
+            // 按 (relativeOffset, size) 分组函数
+            struct ModuleKey: Hashable {
+                let offset: UInt64
+                let size: UInt64
+            }
+
+            var groups: [ModuleKey: (names: [String], types: [String])] = [:]
+            var orderedKeys: [ModuleKey] = []
+
+            for entry in functions {
+                guard let relOffset = entry.bitcodeOffset,
+                      let size = entry.bitcodeSize,
+                      size > 0 else { continue }
+                let key = ModuleKey(offset: relOffset, size: size)
+                if groups[key] == nil {
+                    orderedKeys.append(key)
+                    groups[key] = (names: [], types: [])
+                }
+                let name = entry.functionName ?? "<unnamed>"
+                let type = entry.functionTypeDescription
+                groups[key]!.names.append(name)
+                groups[key]!.types.append(type)
+            }
+
+            // 按偏移量排序并提取数据
+            return orderedKeys.sorted(by: { $0.offset < $1.offset }).compactMap { key in
+                let absOffset = header.bitcodeOffset + key.offset
+                let end = absOffset + key.size
+                guard end <= UInt64(data.count) else { return nil }
+                let bcData = data.subdata(in: Int(absOffset)..<Int(end))
+                guard let group = groups[key] else { return nil }
+                return BitcodeModule(
+                    relativeOffset: key.offset,
+                    size: key.size,
+                    data: bcData,
+                    functionNames: group.names,
+                    functionTypes: group.types
+                )
+            }
+        }
+
+        /// 整个 bitcode section 的原始数据
+        var rawBitcodeSection: Data? {
+            guard header.bitcodeSize > 0 else { return nil }
+            let start = Int(header.bitcodeOffset)
+            let end = start + Int(header.bitcodeSize)
+            guard end <= data.count else { return nil }
+            return data.subdata(in: start..<end)
         }
 
         var summary: String {
@@ -519,6 +630,21 @@ struct MetallibParser {
 // MARK: - Integration with LibrarySourceInjectionService
 
 extension MetallibParser {
+
+    /// dispatch_data_t → Data 转换辅助方法
+    static func convertDispatchData(_ dispatchData: __DispatchData) -> Data {
+        let nsData = dispatchData as AnyObject
+        if let d = nsData as? Data {
+            return d
+        }
+        let dd = unsafeBitCast(dispatchData, to: DispatchData.self)
+        var collected = Data()
+        dd.enumerateBytes { buffer, _, _ in
+            collected.append(contentsOf: buffer)
+        }
+        return collected
+    }
+
     /// 安全地尝试解析 metallib 数据并记录结果。
     /// 解析失败不会中断 library 创建流程。
     static func safeParseAndLog(_ data: Data, selector: String) {
@@ -527,6 +653,16 @@ extension MetallibParser {
             NSLog("[PlayTools] MetallibParser: %@ — %@",
                   selector,
                   result.summary.replacingOccurrences(of: "\n", with: " | "))
+
+            // E-004b: 提取并记录 bitcode 模块信息
+            let modules = result.extractBitcodeModules()
+            let validCount = modules.filter { $0.isValidLLVMBitcode }.count
+            let totalSize = modules.reduce(0) { $0 + $1.size }
+            NSLog("[PlayTools] MetallibParser: %@ — bitcode modules: %d (valid_llvm=%d, total_size=%llu)",
+                  selector, modules.count, validCount, totalSize)
+            for (i, mod) in modules.enumerated() {
+                NSLog("[PlayTools] MetallibParser:   [%d] %@", i, mod.summary)
+            }
         } catch {
             NSLog("[PlayTools] MetallibParser: %@ — parse failed: %@",
                   selector, error.localizedDescription)
@@ -535,18 +671,29 @@ extension MetallibParser {
 
     /// 安全地尝试解析 dispatch_data_t 并记录结果。
     static func safeParseAndLog(dispatchData: __DispatchData, selector: String) {
-        let nsData = dispatchData as AnyObject
-        let data: Data
-        if let d = nsData as? Data {
-            data = d
-        } else {
-            let dd = unsafeBitCast(dispatchData, to: DispatchData.self)
-            var collected = Data()
-            dd.enumerateBytes { buffer, _, _ in
-                collected.append(contentsOf: buffer)
-            }
-            data = collected
-        }
+        let data = convertDispatchData(dispatchData)
         safeParseAndLog(data, selector: selector)
+    }
+
+    /// **E-004b**: 安全地提取 bitcode 模块。
+    /// 返回 nil 表示解析失败或无有效 bitcode；失败不会中断调用方流程。
+    static func safeExtractBitcodeModules(from data: Data) -> (result: ParseResult, modules: [BitcodeModule])? {
+        do {
+            let result = try parse(data)
+            let modules = result.extractBitcodeModules()
+            return (result, modules)
+        } catch {
+            NSLog("[PlayTools] MetallibParser: extractBitcodeModules failed: %@",
+                  error.localizedDescription)
+            return nil
+        }
+    }
+
+    /// **E-004b**: 安全地从 dispatch_data_t 提取 bitcode 模块。
+    static func safeExtractBitcodeModules(
+        from dispatchData: __DispatchData
+    ) -> (result: ParseResult, modules: [BitcodeModule])? {
+        let data = convertDispatchData(dispatchData)
+        return safeExtractBitcodeModules(from: data)
     }
 }

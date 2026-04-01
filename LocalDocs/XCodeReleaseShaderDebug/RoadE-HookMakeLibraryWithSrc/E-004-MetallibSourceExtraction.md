@@ -13,7 +13,7 @@
 | # | 子任务 | 状态 | 说明 |
 |---|--------|------|------|
 | E-004a | **metallib 二进制格式解析器** | ✅ DONE | 解析 MTLB header + section 信息 + 函数 tag 元数据 |
-| E-004b | **从 MODULE_LIST 提取函数级 LLVM Bitcode** | TODO | 利用解析器定位每个函数的 bitcode 数据并提取为独立 Data |
+| E-004b | **从 MODULE_LIST 提取函数级 LLVM Bitcode** | ✅ DONE | 利用解析器定位每个函数的 bitcode 数据并提取为独立 Data |
 | E-004c | **LLVM Bitcode → 可读文本（MSL 伪源码或 IR）** | TODO | 将 bitcode 转为文本形式供 E-005 重编译使用 |
 
 ## E-004a 实现
@@ -84,3 +84,33 @@ Offset  Size   Field
 - pbxproj 格式验证通过（`plutil -lint`）
 - 解析功能已集成到 `pc_newLibraryWithData` swizzle hook 中
 - 运行时验证需在实际 app 上测试（下一个 agent 可完成）
+
+## E-004b 实现
+
+### 新增/修改文件
+
+| 文件 | 变更 |
+|------|------|
+| `MetallibParser.swift` | 新增 `BitcodeModule` 类型、`extractBitcodeModules()` 方法、`safeExtractBitcodeModules()` 方法、`convertDispatchData()` 公共方法 |
+| `LibrarySourceInjectionSwizzles.swift` | 在 `LibrarySourceInjectionService` 中新增 bitcode 缓存、`extractAndCacheBitcodeModules()` 方法；更新 `pc_newLibraryWithData` hook 调用提取逻辑 |
+
+### BitcodeModule 设计
+
+`BitcodeModule` 表示一个去重后的 LLVM bitcode 模块：
+
+- **去重逻辑**：多个函数可能引用同一个 bitcode 模块（相同的 OFFT+MDSZ）。`extractBitcodeModules()` 按 `(offset, size)` 分组，合并引用同一模块的函数名，避免重复提取和后续重复处理。
+- **LLVM 验证**：`isValidLLVMBitcode` 检查数据前缀是否为 LLVM bitcode wrapper magic (`DE C0 17 0B`) 或 raw bitstream magic (`42 43` = "BC")。
+- **元数据**：每个模块记录相对偏移、大小、引用的函数名列表和函数类型列表。
+
+### LibrarySourceInjectionService 缓存
+
+- **缓存 key**：使用 metallib 数据前 32 字节 + 尾 16 字节 + 数据大小计算快速 hash，避免对大 metallib 进行完整 SHA256。
+- **跳过已有 SOURCES**：如果 metallib 已包含 SOURCES section（已用 `-frecord-sources` 编译），自动跳过。
+- **ExtractionStats**：记录处理统计（总 metallib 数、模块数、有效 LLVM 数、缓存命中数等），用于运行时诊断。
+
+### 验证
+
+- PlayTools xcframework 构建通过（`BUILD SUCCEEDED`）
+- 无 lint 错误
+- Hook 已从 log-only（`safeParseAndLog`）升级为实际提取（`extractAndCacheBitcodeModules`）
+- 运行时验证需在实际 app 上测试

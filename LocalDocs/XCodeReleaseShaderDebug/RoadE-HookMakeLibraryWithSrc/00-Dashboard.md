@@ -52,7 +52,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | E-004 | **实现 metallib → MSL 源码提取**（已拆分） | 🔄 IN PROGRESS | [E-004](E-004-MetallibSourceExtraction.md) |
 |  | 在运行时拦截到 metallib `Data` 后，提取 LLVM Bitcode（参考 MetalLibraryArchive 格式），生成可读 IR 文本或 MSL 伪源码 | | |
 | E-004a | ↳ metallib 二进制格式解析器（MTLB header + section + 函数 tag 解析） | ✅ DONE | |
-| E-004b | ↳ 从 MODULE_LIST 提取函数级 LLVM Bitcode | TODO | |
+| E-004b | ↳ 从 MODULE_LIST 提取函数级 LLVM Bitcode | ✅ DONE | |
 | E-004c | ↳ LLVM Bitcode → 可读文本（MSL 伪源码或 IR） | TODO | |
 | E-005 | **实现 MSL 重编译为带源码的 metallib** | TODO | |
 |  | 用提取的源码 + `MTLDevice.makeLibrary(source:options:)` 在运行时重编译，生成自带调试信息的 library 并替换返回 | | |
@@ -80,6 +80,9 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 - **函数 Tag 格式**：每个函数由 `[4B tag_name][2B size][payload]...ENDT` 序列描述。关键 tag：NAME（函数名）、TYPE（vertex/fragment/kernel）、MDSZ（bitcode 大小）、OFFT（bitcode 偏移）、HASH（SHA256）。SARC tag 特殊，用 4B size
 - **dispatch_data_t → Data 转换**：不能直接 `as? Data`，需通过 `DispatchData.enumerateBytes` 逐段拷贝收集，因为 dispatch_data 可能是不连续的内存区域
 - **SOURCES section**：`-frecord-sources` 编译的 metallib 在四大 section 之后追加 SOURCES section，可能是 bzip2 压缩或纯文本 MSL 源码
+- **Bitcode 模块去重**：metallib 中多个函数可能共享同一个 bitcode 模块（相同 OFFT+MDSZ），提取时按 (offset, size) 去重可大幅减少后续处理量
+- **LLVM Bitcode magic**：提取的 bitcode 模块以 `DE C0 17 0B`（wrapper）或 `42 43`（"BC"，raw bitstream）开头即为有效 LLVM bitcode，可用此做快速校验
+- **dispatch_data_t 转换**：从 `__DispatchData` 转换为 `Data` 的逻辑被抽取为 `MetallibParser.convertDispatchData()` 公共方法，消除了多处重复代码
 
 ## 参考信息
 

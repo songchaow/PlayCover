@@ -30,8 +30,11 @@ private final class LibrarySourceInjectionSwizzles: NSObject {
             dataSize: (data as? Data)?.count,
             extraInfo: nil
         )
-        // E-004: 解析 metallib 二进制格式，提取函数和 section 信息
-        MetallibParser.safeParseAndLog(dispatchData: data, selector: "newLibraryWithData:error:")
+        // E-004b: 提取并缓存 bitcode 模块（替代 E-004a 的纯日志解析）
+        _ = LibrarySourceInjectionService.shared.extractAndCacheBitcodeModules(
+            from: data,
+            selector: "newLibraryWithData:error:"
+        )
         return library
     }
 
@@ -148,6 +151,122 @@ class LibrarySourceInjectionService {
     /// 已观测到的 library 创建计数（按 selector 分类）
     private var creationCounts: [String: Int] = [:]
     private let countsLock = NSLock()
+
+    // MARK: - E-004b: Bitcode 模块缓存
+
+    /// 缓存的 bitcode 提取结果。
+    /// Key: metallib 数据的 SHA256 hash（前 16 字节 hex），Value: 提取的模块列表。
+    private var bitcodeCache: [String: [MetallibParser.BitcodeModule]] = [:]
+    private let bitcodeCacheLock = NSLock()
+
+    /// 已处理的 metallib 计数统计
+    private(set) var extractionStats = ExtractionStats()
+
+    struct ExtractionStats {
+        var totalMetallibs: Int = 0
+        var totalModulesExtracted: Int = 0
+        var totalValidLLVMModules: Int = 0
+        var totalFunctionsProcessed: Int = 0
+        var cacheHits: Int = 0
+        var alreadyHasSources: Int = 0
+
+        var summary: String {
+            "metallibs=\(totalMetallibs), modules=\(totalModulesExtracted), " +
+            "valid_llvm=\(totalValidLLVMModules), functions=\(totalFunctionsProcessed), " +
+            "cache_hits=\(cacheHits), has_sources=\(alreadyHasSources)"
+        }
+    }
+
+    /// **E-004b**: 从 metallib 数据中提取 bitcode 模块并缓存。
+    /// 如果 metallib 已经包含 SOURCES section，则跳过（无需重新注入）。
+    ///
+    /// - Parameters:
+    ///   - data: metallib 的原始 Data
+    ///   - selector: 调用来源的 selector 名（用于日志）
+    /// - Returns: 提取的 bitcode 模块列表，如果不需要处理或失败则返回空数组
+    func extractAndCacheBitcodeModules(from data: Data, selector: String) -> [MetallibParser.BitcodeModule] {
+        // 计算 cache key（使用数据前 32 字节 + 大小作为快速指纹）
+        let cacheKey = computeCacheKey(data)
+
+        bitcodeCacheLock.lock()
+        if let cached = bitcodeCache[cacheKey] {
+            extractionStats.cacheHits += 1
+            bitcodeCacheLock.unlock()
+            NSLog("[PlayTools] BitcodeExtraction: %@ — cache hit (key=%@, modules=%d)",
+                  selector, cacheKey, cached.count)
+            return cached
+        }
+        bitcodeCacheLock.unlock()
+
+        // 解析并提取
+        guard let (result, modules) = MetallibParser.safeExtractBitcodeModules(from: data) else {
+            return []
+        }
+
+        bitcodeCacheLock.lock()
+        extractionStats.totalMetallibs += 1
+        extractionStats.totalModulesExtracted += modules.count
+        extractionStats.totalFunctionsProcessed += result.functions.count
+
+        // 如果已有 SOURCES section，标记并跳过
+        if result.hasSources {
+            extractionStats.alreadyHasSources += 1
+            bitcodeCacheLock.unlock()
+            NSLog("[PlayTools] BitcodeExtraction: %@ — skipped, already has SOURCES section (%d functions)",
+                  selector, result.functions.count)
+            return []
+        }
+
+        let validCount = modules.filter { $0.isValidLLVMBitcode }.count
+        extractionStats.totalValidLLVMModules += validCount
+
+        // 缓存结果
+        bitcodeCache[cacheKey] = modules
+        let stats = extractionStats
+        bitcodeCacheLock.unlock()
+
+        NSLog("[PlayTools] BitcodeExtraction: %@ — extracted %d modules (%d valid LLVM) from %d functions [%@]",
+              selector, modules.count, validCount, result.functions.count, stats.summary)
+
+        return modules
+    }
+
+    /// **E-004b**: 从 dispatch_data_t 中提取 bitcode 模块。
+    func extractAndCacheBitcodeModules(
+        from dispatchData: __DispatchData,
+        selector: String
+    ) -> [MetallibParser.BitcodeModule] {
+        let data = MetallibParser.convertDispatchData(dispatchData)
+        return extractAndCacheBitcodeModules(from: data, selector: selector)
+    }
+
+    /// 获取当前缓存中所有 bitcode 模块的快照（供调试/诊断用）
+    func cachedModulesSnapshot() -> [String: [MetallibParser.BitcodeModule]] {
+        bitcodeCacheLock.lock()
+        let snapshot = bitcodeCache
+        bitcodeCacheLock.unlock()
+        return snapshot
+    }
+
+    private func computeCacheKey(_ data: Data) -> String {
+        // 快速 hash：使用数据大小 + 前 32 字节 + 尾 16 字节的 hash
+        let size = data.count
+        var hashValue: UInt64 = UInt64(size)
+        let headBytes = min(32, size)
+        let tailBytes = min(16, max(0, size - 32))
+        data.withUnsafeBytes { buf in
+            for i in 0..<headBytes {
+                hashValue = hashValue &* 31 &+ UInt64(buf.load(fromByteOffset: i, as: UInt8.self))
+            }
+            if tailBytes > 0 {
+                let tailStart = size - tailBytes
+                for i in tailStart..<size {
+                    hashValue = hashValue &* 31 &+ UInt64(buf.load(fromByteOffset: i, as: UInt8.self))
+                }
+            }
+        }
+        return String(format: "%016llX_%d", hashValue, size)
+    }
 
     /// 安装所有 makeLibrary swizzle。
     /// 应在 MetalCaptureService.initialize() 之后调用。

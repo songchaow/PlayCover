@@ -16,6 +16,7 @@
 		ED7643D004B24E95A4390294 /* MCPStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2790865C2E8D47EA830D1057 /* MCPStatusView.swift */; };
 		F1A2B3C4D5E6F708AABB0002 /* MCPTasksPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F708AABB0001 /* MCPTasksPanelView.swift */; };
 		36B26B97288C724600859EFD /* UpdateSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36B26B96288C724600859EFD /* UpdateSettings.swift */; };
+		E004LLVM00000000000000A1 /* LLVMToolManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E004LLVM00000000000000A2 /* LLVMToolManager.swift */; };
 		5314D1EE26C402EC00A0A727 /* Shell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5314D1ED26C402EC00A0A727 /* Shell.swift */; };
 		532644DE26E79E56002EA34D /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 532644E026E79E56002EA34D /* Localizable.strings */; };
 		53D9DAF326C1849D0071959E /* PlayCoverError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53D9DAF226C1849D0071959E /* PlayCoverError.swift */; };
@@ -284,6 +285,7 @@
 		2790865C2E8D47EA830D1057 /* MCPStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStatusView.swift; sourceTree = "<group>"; };
 		36B26B96288C724600859EFD /* UpdateSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateSettings.swift; sourceTree = "<group>"; };
 		5314D1ED26C402EC00A0A727 /* Shell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shell.swift; sourceTree = "<group>"; };
+		E004LLVM00000000000000A2 /* LLVMToolManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLVMToolManager.swift; sourceTree = "<group>"; };
 		531D717926E8313100F4A7AB /* es */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = es; path = es.lproj/Localizable.strings; sourceTree = "<group>"; };
 		532644E126E79E5C002EA34D /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
 		532644E226E7D9C4002EA34D /* de */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = de; path = de.lproj/Localizable.strings; sourceTree = "<group>"; };
@@ -631,6 +633,7 @@
 				AB6F21EA299B7FA20078ADEC /* URLHandler.swift */,
 				ABBC85B82B7C5CBA00DCF223 /* ModifierKeyObserver.swift */,
 				B67BC7112C39354500315011 /* UpdateScheme.swift */,
+				E004LLVM00000000000000A2 /* LLVMToolManager.swift */,
 			);
 			path = Utils;
 			sourceTree = "<group>";
@@ -1315,6 +1318,7 @@
 				AB6F21EB299B7FA20078ADEC /* URLHandler.swift in Sources */,
 				6ED6379D28DAAAC100B506FA /* IPASourceSettings.swift in Sources */,
 				5314D1EE26C402EC00A0A727 /* Shell.swift in Sources */,
+				E004LLVM00000000000000A1 /* LLVMToolManager.swift in Sources */,
 				6E7CA16528B4D02900216CD8 /* ITunesResponse.swift in Sources */,
 				ABDAD80C298A1E3E00DC164F /* KeyCoverViews.swift in Sources */,
 				6EF893D528F34CD1004AB6D9 /* NetworkVM.swift in Sources */,

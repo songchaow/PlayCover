@@ -14,7 +14,7 @@
 |---|--------|------|------|
 | E-004a | **metallib 二进制格式解析器** | ✅ DONE | 解析 MTLB header + section 信息 + 函数 tag 元数据 |
 | E-004b | **从 MODULE_LIST 提取函数级 LLVM Bitcode** | ✅ DONE | 利用解析器定位每个函数的 bitcode 数据并提取为独立 Data |
-| E-004c | **LLVM 工具链管理：下载并部署 `llvm-dis`** | TODO | PlayCover 主应用中实现 LLVMToolManager，下载 LLVM 预编译包并提取 `llvm-dis` |
+| E-004c | **LLVM 工具链管理：下载并部署 `llvm-dis`** | ✅ DONE | PlayCover 主应用中实现 LLVMToolManager，下载 LLVM 预编译包并提取 `llvm-dis` |
 | E-004d | **PlayTools 中调用 `llvm-dis` 转换 bitcode → IR** | TODO | 新增 LLVMDisassembler 类，将 bitcode 写临时文件 → 调用 llvm-dis → 读取 .ll 文本 |
 | E-004e | **LLVM IR → 可编译 MSL 的转换/适配** | TODO | 验证 IR 能否直接作为伪源码使用；必要时实现 IR→MSL 关键转换 |
 
@@ -134,3 +134,45 @@ Offset  Size   Field
 - 无 lint 错误
 - Hook 已从 log-only（`safeParseAndLog`）升级为实际提取（`extractAndCacheBitcodeModules`）
 - 运行时验证需在实际 app 上测试
+
+## E-004c 实现
+
+### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `PlayCover/Utils/LLVMToolManager.swift` | LLVM 工具链下载/管理器（PlayCover 主应用 target） |
+
+### LLVMToolManager 架构
+
+`LLVMToolManager` 是 PlayCover 主应用中的单例 `ObservableObject`，负责下载和管理 `llvm-dis` 二进制：
+
+1. **路径约定**：
+   - 安装目录：`~/Library/Containers/io.playcover.PlayCover/llvm-tools/`
+   - 二进制：`llvm-tools/llvm-dis`
+   - 版本文件：`llvm-tools/.llvm-version`
+
+2. **下载源**：LLVM GitHub Releases `LLVM-19.1.0-macOS-ARM64.tar.xz`（~1.4GB）
+
+3. **提取策略**：使用 `tar xf --strip-components=2` 从压缩包中只提取 `bin/llvm-dis`，避免解压完整包
+
+4. **安装流程**：
+   ```
+   下载 tar.xz → 解压提取 llvm-dis → 移动到目标路径 →
+   设置 0o755 权限 → ad-hoc codesign → --version 验证 → 写入版本文件
+   ```
+
+5. **Published 状态**：`isInstalled`、`installedVersion`、`isDownloading`、`downloadProgress`、`statusMessage`、`lastError` — 供 UI 绑定
+
+6. **API**：
+   - `refreshInstallStatus()` — 检查 llvm-dis 是否已安装
+   - `install(version:)` — 异步下载并安装
+   - `uninstall()` — 删除工具目录
+
+7. **错误处理**：`LLVMToolError` 枚举覆盖下载失败、超时、提取失败、二进制缺失、验证失败
+
+### 验证
+
+- PlayCover GUI 构建通过（`BUILD SUCCEEDED`）
+- pbxproj 格式验证通过（`plutil -lint`）
+- 文件已正确添加到 PlayCover target 的 Utils group 和 Sources build phase

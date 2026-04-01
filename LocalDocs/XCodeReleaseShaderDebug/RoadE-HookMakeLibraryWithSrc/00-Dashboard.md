@@ -64,8 +64,8 @@ PlayCover 主应用 (macOS)
 | E-004 | **metallib → 源码提取**（已拆分） | 🔄 IN PROGRESS | [E-004](E-004-MetallibSourceExtraction.md) |
 | E-004a | ↳ metallib 二进制格式解析器 | ✅ DONE | |
 | E-004b | ↳ 提取函数级 LLVM Bitcode | ✅ DONE | |
-| E-004c | ↳ **LLVM 工具链管理：下载并部署 `llvm-dis`** | TODO | |
-|  | 在 PlayCover 主应用中实现 `LLVMToolManager`：从 GitHub Releases 下载 LLVM 预编译包（macOS ARM64），解压并提取 `llvm-dis` 到 `~/Library/Containers/io.playcover.PlayCover/llvm-tools/`。支持版本检查、断点续传、首次使用时自动提示下载 | | |
+| E-004c | ↳ **LLVM 工具链管理：下载并部署 `llvm-dis`** | ✅ DONE | |
+|  | `PlayCover/Utils/LLVMToolManager.swift` — 单例管理器，从 GitHub Releases 下载 LLVM 19.1.0 macOS ARM64 预编译包，用 `tar --strip-components=2` 提取 `bin/llvm-dis`，安装到 `~/Library/Containers/io.playcover.PlayCover/llvm-tools/`。支持版本记录、可执行权限设置、ad-hoc 签名、`--version` 验证、进度跟踪（ObservableObject）、卸载 | | |
 | E-004d | ↳ **PlayTools 中调用 `llvm-dis` 将 bitcode → LLVM IR 文本** | TODO | |
 |  | 在 PlayTools 运行时中新增 `LLVMDisassembler` 类：将 E-004b 提取的 bitcode 模块写入临时文件，调用 `llvm-dis` 转换为 `.ll` 文本，读取结果。需处理路径发现（从已知安装位置查找 `llvm-dis`）、超时、错误恢复 | | |
 | E-004e | ↳ **LLVM IR → 可编译 MSL 的转换/适配** | TODO | |
@@ -101,6 +101,9 @@ PlayCover 主应用 (macOS)
 - **dispatch_data_t 转换**：从 `__DispatchData` 转换为 `Data` 的逻辑被抽取为 `MetallibParser.convertDispatchData()` 公共方法，消除了多处重复代码
 - **LLVM 工具链**：macOS/Xcode 不自带 `llvm-dis`（Xcode 的 Metal 工具链只有 `air-*`/`metal-*` 系列）。需从 LLVM 官方 GitHub Releases 下载预编译包。已确认 LLVM 19.1.0 macOS ARM64 包可用：`LLVM-19.1.0-macOS-ARM64.tar.xz`（~1.4GB），包含完整工具链。只需解压提取 `bin/llvm-dis` 即可
 - **PlayTools 可执行外部命令**：PlayCover 管理的 iOS app 运行在 macOS 用户态（翻译执行），不受 iOS 沙盒限制，PlayTools 中可以使用 `Process()` / `posix_spawn` 调用本地二进制
+- **LLVM tar.xz 提取**：`tar xf` 支持 `--strip-components=2` 配合具体路径 `LLVM-{ver}-macOS-ARM64/bin/llvm-dis` 只提取单个文件，避免解压完整 1.4GB 包。若精确路径失败可用 `--include=*/bin/llvm-dis` 兜底
+- **llvm-dis ad-hoc 签名**：从 GitHub 下载的 llvm-dis 在 macOS 上可能被 Gatekeeper 阻止执行，需要 `codesign -fs-` 进行 ad-hoc 签名才能正常调用
+- **LLVMToolManager 安装位置**：选择 `~/Library/Containers/io.playcover.PlayCover/llvm-tools/` 而非 `~/Library/Frameworks/`，与 PlayTools 安装位置（`~/Library/Frameworks/`）分离，避免污染系统框架目录
 
 ## 参考信息
 

@@ -39,27 +39,43 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 **人工确认（最终）**：Xcode 打开 gputrace → 选 Draw Call → 查看 Shader 面板是否显示源码而非 "Shader source not found"。此步无法自动化。
 
+## 整体架构
+
+```
+PlayCover 主应用 (macOS)
+  ├── LLVMToolManager: 下载/管理 LLVM 预编译工具链 (llvm-dis)
+  │     → 安装到 ~/Library/Containers/io.playcover.PlayCover/llvm-tools/
+  └── PlayTools.framework (注入到 iOS app)
+        ├── LibrarySourceInjectionSwizzles: hook makeLibrary 系列 API
+        ├── MetallibParser: 解析 metallib, 提取 LLVM Bitcode
+        ├── LLVMDisassembler: 调用 llvm-dis 将 bitcode → LLVM IR 文本
+        └── ShaderSourceRecompiler: 用 IR 文本作为伪源码, 调 makeLibrary(source:) 重编译
+```
+
+**关键设计决策**：PlayCover 管理的 iOS app 运行在 macOS 用户态（非真正 iOS 沙盒），PlayTools 可以 fork/exec 本地二进制。因此 `llvm-dis` 可直接在 PlayTools 运行时中通过 `Process()` 调用。
+
 ## TODO
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
-| E-001 | **可行性 PoC：手动 `-frecord-sources` 重编译单个 metallib 并验证 Xcode 能显示源码** | ✅ DONE | [E-001-PoC](E-001-PoC-frecord-sources.md) |
-|  | 从 QQ飞车 app 包中提取一个 metallib → 用 `xcrun metal` 工具链反编译得到 MSL/IR → 用 `-frecord-sources` 重编译 → 替换回 gputrace → 打开 Xcode 验证 | | |
-| E-002 | **调研 `MTLDevice` 创建 Library 的全部 API 入口** | ✅ DONE | [E-002-API](E-002-MTLDevice-Library-API.md) |
-|  | 枚举所有需要 hook 的 ObjC selector（`newLibraryWithData:error:`, `newLibraryWithSource:options:error:`, `newLibraryWithURL:error:` 等），确认运行时类名 | | |
-| E-003 | **在 PlayTools 中实现 makeLibrary swizzle 骨架** | ✅ DONE | [E-003-Swizzle](E-003-LibrarySwizzleSkeleton.md) |
-|  | 参考 `CommandQueueDiscoverySwizzles` 模式，添加 `LibrarySourceInjectionSwizzles` 类，拦截并记录每次 makeLibrary 调用（先 log-only，不修改返回） | | |
-| E-004 | **实现 metallib → MSL 源码提取**（已拆分） | 🔄 IN PROGRESS | [E-004](E-004-MetallibSourceExtraction.md) |
-|  | 在运行时拦截到 metallib `Data` 后，提取 LLVM Bitcode（参考 MetalLibraryArchive 格式），生成可读 IR 文本或 MSL 伪源码 | | |
-| E-004a | ↳ metallib 二进制格式解析器（MTLB header + section + 函数 tag 解析） | ✅ DONE | |
-| E-004b | ↳ 从 MODULE_LIST 提取函数级 LLVM Bitcode | ✅ DONE | |
-| E-004c | ↳ LLVM Bitcode → 可读文本（MSL 伪源码或 IR） | TODO | |
-| E-005 | **实现 MSL 重编译为带源码的 metallib** | TODO | |
-|  | 用提取的源码 + `MTLDevice.makeLibrary(source:options:)` 在运行时重编译，生成自带调试信息的 library 并替换返回 | | |
+| E-001 | **可行性 PoC：`-frecord-sources` 重编译验证** | ✅ DONE | [E-001-PoC](E-001-PoC-frecord-sources.md) |
+| E-002 | **调研 MTLDevice Library API 入口** | ✅ DONE | [E-002-API](E-002-MTLDevice-Library-API.md) |
+| E-003 | **makeLibrary swizzle 骨架** | ✅ DONE | [E-003-Swizzle](E-003-LibrarySwizzleSkeleton.md) |
+| E-004 | **metallib → 源码提取**（已拆分） | 🔄 IN PROGRESS | [E-004](E-004-MetallibSourceExtraction.md) |
+| E-004a | ↳ metallib 二进制格式解析器 | ✅ DONE | |
+| E-004b | ↳ 提取函数级 LLVM Bitcode | ✅ DONE | |
+| E-004c | ↳ **LLVM 工具链管理：下载并部署 `llvm-dis`** | TODO | |
+|  | 在 PlayCover 主应用中实现 `LLVMToolManager`：从 GitHub Releases 下载 LLVM 预编译包（macOS ARM64），解压并提取 `llvm-dis` 到 `~/Library/Containers/io.playcover.PlayCover/llvm-tools/`。支持版本检查、断点续传、首次使用时自动提示下载 | | |
+| E-004d | ↳ **PlayTools 中调用 `llvm-dis` 将 bitcode → LLVM IR 文本** | TODO | |
+|  | 在 PlayTools 运行时中新增 `LLVMDisassembler` 类：将 E-004b 提取的 bitcode 模块写入临时文件，调用 `llvm-dis` 转换为 `.ll` 文本，读取结果。需处理路径发现（从已知安装位置查找 `llvm-dis`）、超时、错误恢复 | | |
+| E-004e | ↳ **LLVM IR → 可编译 MSL 的转换/适配** | TODO | |
+|  | LLVM IR 文本不能直接传给 `makeLibrary(source:)`。需要：(1) 验证 IR 文本能否直接作为"伪源码"注入 SOURCES section；(2) 若不行，实现 IR→MSL 的关键转换（`addrspace` 标注→地址空间限定符、`air.*` 内建→MSL 等效调用等）；(3) 或者绕过 `makeLibrary(source:)`，直接用 `xcrun metal` 从 IR 重编译为带 `-frecord-sources` 的 metallib | | |
+| E-005 | **运行时 library 替换：用带源码的 library 替换原始返回** | TODO | |
+|  | 在 `pc_newLibraryWithData` hook 中，将 E-004d/e 生成的带源码 library 替换原始返回值。需处理：函数签名一致性校验、编译失败 fallback（退回原始 library）、性能优化（缓存已处理的 metallib） | | |
 | E-006 | **端到端验证** | TODO | |
 |  | 对 QQ飞车 / 原神 启用功能 → 截帧 → Xcode 打开 gputrace → 确认 shader 源码可见 | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
-|  | 添加 `injectShaderSources` 开关到 AppSettings / AppSettingsView | | |
+|  | 添加 `injectShaderSources` 开关到 AppSettings / AppSettingsView；添加 LLVM 工具链下载/状态 UI | | |
 
 ## 踩坑与经验
 
@@ -83,6 +99,8 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 - **Bitcode 模块去重**：metallib 中多个函数可能共享同一个 bitcode 模块（相同 OFFT+MDSZ），提取时按 (offset, size) 去重可大幅减少后续处理量
 - **LLVM Bitcode magic**：提取的 bitcode 模块以 `DE C0 17 0B`（wrapper）或 `42 43`（"BC"，raw bitstream）开头即为有效 LLVM bitcode，可用此做快速校验
 - **dispatch_data_t 转换**：从 `__DispatchData` 转换为 `Data` 的逻辑被抽取为 `MetallibParser.convertDispatchData()` 公共方法，消除了多处重复代码
+- **LLVM 工具链**：macOS/Xcode 不自带 `llvm-dis`（Xcode 的 Metal 工具链只有 `air-*`/`metal-*` 系列）。需从 LLVM 官方 GitHub Releases 下载预编译包。已确认 LLVM 19.1.0 macOS ARM64 包可用：`LLVM-19.1.0-macOS-ARM64.tar.xz`（~1.4GB），包含完整工具链。只需解压提取 `bin/llvm-dis` 即可
+- **PlayTools 可执行外部命令**：PlayCover 管理的 iOS app 运行在 macOS 用户态（翻译执行），不受 iOS 沙盒限制，PlayTools 中可以使用 `Process()` / `posix_spawn` 调用本地二进制
 
 ## 参考信息
 
@@ -100,3 +118,6 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | applegpu（GPU ISA 反汇编） | https://github.com/dougallj/applegpu |
 | metallib 逆向分析 | https://worthdoingbadly.com/metalbitcode/ |
 | Apple metallibdsym 文档 | https://developer.apple.com/documentation/metal/generating-and-loading-a-metal-library-symbol-file |
+| LLVM 预编译下载 | https://github.com/llvm/llvm-project/releases （19.1.0 macOS ARM64 已验证可用） |
+| PlayCover 外部命令封装 | `PlayCover/Utils/Shell.swift` — `Process()` 封装 |
+| PlayCover 组件安装目录 | `~/Library/Containers/io.playcover.PlayCover/` — 见 `PlayTools.swift` |

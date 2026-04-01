@@ -1,0 +1,84 @@
+declare <2 x float> @air.convert.f.v2f32.u.v2i32(<2 x i32>) local_unnamed_addr #1
+declare <4 x float> @air.convert.f.v4f32.f.v4f16(<4 x half>) local_unnamed_addr #1
+declare float @air.convert.f.f32.u.i32(i32) local_unnamed_addr #1
+declare <4 x i32> @air.convert.s.v4i32.f.v4f32(<4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.convert.f.v4f32.s.v4i32(<4 x i32>) local_unnamed_addr #1
+declare <4 x half> @air.convert.f.v4f16.f.v4f32(<4 x float>) local_unnamed_addr #1
+declare void @air.wg.barrier(i32, i32) local_unnamed_addr #6
+declare void @air.simdgroup.barrier(i32, i32) local_unnamed_addr #6
+declare <4 x float> @air.fast_sin.v4f32(<4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.fast_cos.v4f32(<4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.fast_tan.v4f32(<4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.fast_exp.v4f32(<4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.fast_exp2.v4f32(<4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.fast_log.v4f32(<4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.fast_log2.v4f32(<4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.fast_sqrt.v4f32(<4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.fast_rsqrt.v4f32(<4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.fast_fabs.v4f32(<4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.fast_floor.v4f32(<4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.fast_ceil.v4f32(<4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.fast_round.v4f32(<4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.fast_trunc.v4f32(<4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.fast_fract.v4f32(<4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.sign.v4f32(<4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.fast_saturate.v4f32(<4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.fast_fmin.v4f32(<4 x float>, <4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.fast_fmax.v4f32(<4 x float>, <4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.fast_pow.v4f32(<4 x float>, <4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.fast_fmod.v4f32(<4 x float>, <4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.convert.f.v4f32.u.v4i1(<4 x i1>) local_unnamed_addr #1
+declare <4 x float> @air.mix.v4f32(<4 x float>, <4 x float>, <4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.fast_clamp.v4f32(<4 x float>, <4 x float>, <4 x float>) local_unnamed_addr #1
+declare float @air.dot.v3f32(<3 x float>, <3 x float>) local_unnamed_addr #1
+declare float @air.fast_sqrt.f32(float) local_unnamed_addr #1
+declare float @air.fast_rsqrt.f32(float) local_unnamed_addr #1
+declare <4 x i32> @air.abs.s.v4i32(<4 x i32>) local_unnamed_addr #1
+declare <4 x i32> @air.min.s.v4i32(<4 x i32>, <4 x i32>) local_unnamed_addr #1
+declare <4 x i32> @air.max.s.v4i32(<4 x i32>, <4 x i32>) local_unnamed_addr #1
+declare <4 x i32> @air.clamp.s.v4i32(<4 x i32>, <4 x i32>, <4 x i32>) local_unnamed_addr #1
+declare i32 @air.popcount.i32(i32) local_unnamed_addr #1
+declare i32 @air.clz.i32(i32, i1) local_unnamed_addr #1
+declare i32 @air.ctz.i32(i32, i1) local_unnamed_addr #1
+declare i32 @air.extract_bits.s.i32(i32, i32, i32) local_unnamed_addr #1
+declare i32 @air.insert_bits.s.i32(i32, i32, i32, i32) local_unnamed_addr #1
+declare i32 @air.reverse_bits.i32(i32) local_unnamed_addr #1
+declare float @air.dfdx.f32(float) local_unnamed_addr #6
+declare float @air.dfdy.f32(float) local_unnamed_addr #6
+declare float @air.fwidth.f32(float) local_unnamed_addr #6
+declare i32 @air.pack.snorm4x8.v4f32(<4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.unpack.snorm4x8.v4f32(i32) local_unnamed_addr #1
+declare i32 @air.pack.unorm4x8.v4f32(<4 x float>) local_unnamed_addr #1
+declare <4 x float> @air.unpack.unorm4x8.v4f32(i32) local_unnamed_addr #1
+declare { <4 x float>, i8 } @air.sample_texture_2d.v4f32(ptr addrspace(1) readonly captures(none), ptr addrspace(2) readonly captures(none), <2 x float>, i1, <2 x i32>, i1, float, float, i32) local_unnamed_addr #7
+declare { <4 x float>, i8 } @air.sample_texture_2d_grad.v4f32(ptr addrspace(1) readonly captures(none), ptr addrspace(2) readonly captures(none), <2 x float>, <2 x float>, <2 x float>, float, i1, <2 x i32>, i32) local_unnamed_addr #8
+declare { <4 x half>, i8 } @air.sample_texture_2d.v4f16(ptr addrspace(1) readonly captures(none), ptr addrspace(2) readonly captures(none), <2 x float>, i1, <2 x i32>, i1, float, float, i32) local_unnamed_addr #7
+declare { <4 x float>, i8 } @air.sample_texture_3d.v4f32(ptr addrspace(1) readonly captures(none), ptr addrspace(2) readonly captures(none), <3 x float>, i1, <3 x i32>, i1, float, float, i32) local_unnamed_addr #7
+declare { <4 x float>, i8 } @air.sample_texture_cube.v4f32(ptr addrspace(1) readonly captures(none), ptr addrspace(2) readonly captures(none), <3 x float>, i1, float, float, i32) local_unnamed_addr #7
+declare { <4 x float>, i8 } @air.sample_texture_2d_array.v4f32(ptr addrspace(1) readonly captures(none), ptr addrspace(2) readonly captures(none), <2 x float>, i32, i1, <2 x i32>, i1, float, float, i32) local_unnamed_addr #7
+declare { float, i8 } @air.sample_compare_depth_2d.f32(ptr addrspace(1) readonly captures(none), ptr addrspace(2) readonly captures(none), i32, <2 x float>, float, i1, <2 x i32>, i1, float, float, i32) local_unnamed_addr #7
+declare { <4 x float>, i8 } @air.read_texture_2d.v4f32(ptr addrspace(1) readonly captures(none), <2 x i32>, i32, i32) local_unnamed_addr #8
+declare void @air.write_texture_2d.v4f32(ptr addrspace(1) captures(none), <2 x i32>, <4 x float>, i32, i32) local_unnamed_addr #9
+declare i32 @air.get_width_texture_2d(ptr addrspace(1) readonly captures(none), i32) local_unnamed_addr #8
+declare i32 @air.get_height_texture_2d(ptr addrspace(1) readonly captures(none), i32) local_unnamed_addr #8
+declare <4 x float> @air.simd_shuffle.v4f32(<4 x float>, i16) local_unnamed_addr #6
+declare <4 x float> @air.simd_shuffle_xor.v4f32(<4 x float>, i16) local_unnamed_addr #6
+declare <4 x float> @air.simd_shuffle_up.v4f32(<4 x float>, i16) local_unnamed_addr #6
+declare <4 x float> @air.simd_shuffle_down.v4f32(<4 x float>, i16) local_unnamed_addr #6
+declare <4 x float> @air.simd_sum.v4f32(<4 x float>) local_unnamed_addr #6
+declare <4 x float> @air.simd_product.v4f32(<4 x float>) local_unnamed_addr #6
+declare <4 x float> @air.simd_min.v4f32(<4 x float>) local_unnamed_addr #6
+declare <4 x float> @air.simd_max.v4f32(<4 x float>) local_unnamed_addr #6
+declare <4 x float> @air.simd_broadcast_first.v4f32(<4 x float>) local_unnamed_addr #6
+declare <4 x float> @air.simd_prefix_exclusive_sum.v4f32(<4 x float>) local_unnamed_addr #6
+declare i32 @air.atomic.global.add.u.i32(ptr addrspace(1) captures(none), i32, i32, i32, i1) local_unnamed_addr #10
+declare i32 @air.atomic.global.sub.s.i32(ptr addrspace(1) captures(none), i32, i32, i32, i1) local_unnamed_addr #10
+declare i32 @air.atomic.global.min.s.i32(ptr addrspace(1) captures(none), i32, i32, i32, i1) local_unnamed_addr #10
+declare i32 @air.atomic.global.max.s.i32(ptr addrspace(1) captures(none), i32, i32, i32, i1) local_unnamed_addr #10
+declare i32 @air.atomic.global.and.u.i32(ptr addrspace(1) captures(none), i32, i32, i32, i1) local_unnamed_addr #10
+declare i32 @air.atomic.global.or.u.i32(ptr addrspace(1) captures(none), i32, i32, i32, i1) local_unnamed_addr #10
+declare i32 @air.atomic.global.xor.u.i32(ptr addrspace(1) captures(none), i32, i32, i32, i1) local_unnamed_addr #10
+declare i32 @air.atomic.global.xchg.i32(ptr addrspace(1) captures(none), i32, i32, i32, i1) local_unnamed_addr #10
+declare i32 @air.atomic.global.cmpxchg.weak.i32(ptr addrspace(1) captures(none), ptr captures(none), i32, i32, i32, i32, i1) local_unnamed_addr #10
+declare i32 @air.atomic.global.load.i32(ptr addrspace(1) captures(none), i32, i32, i1) local_unnamed_addr #10
+declare void @air.atomic.global.store.i32(ptr addrspace(1) captures(none), i32, i32, i32, i1) local_unnamed_addr #10

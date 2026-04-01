@@ -74,7 +74,8 @@ PlayCover 主应用 (macOS)
 | E-004e1 | ↳↳ IRToMSLConverter 骨架 + stub MSL 生成 | ✅ DONE | |
 |  | `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift` — 纯 Swift struct，从 LLVM IR 文本中解析函数定义（`define` 行）、提取函数名/返回类型/参数列表、识别 addrspace(N) 标注、推断 shader 类型（vertex/fragment/kernel，支持 metallib 元数据和启发式两种方式）。生成带正确 `[[attribute]]` 标注的 stub MSL 源码（函数体为默认返回值）。支持安全包装（`safeConvert`）。已通过 PlayTools xcframework 构建验证 | | |
 | E-004e2 | ↳↳ addrspace → MSL 地址空间限定符完整映射 | ✅ DONE | |
-| E-004e3 | ↳↳ air.* 内建 → MSL 等效调用映射 | TODO | |
+| E-004e3 | ↳↳ air.* 内建 → MSL 等效调用映射 | ✅ DONE | |
+|  | `IRToMSLConverter.swift` 新增 `AirBuiltinMapping` 映射表（覆盖 84+ 个实际 air.* 内建），包括纹理采样/读写（sample/read/write/get_width/get_height）、同步屏障（wg.barrier/simdgroup.barrier）、数学函数（fast_*/non-fast 全覆盖）、整数位操作（popcount/clz/ctz/extract_bits/reverse_bits）、SIMD group（shuffle/reduce/broadcast/prefix_sum）、原子操作（global/local 全 11 种）、片段导数（dfdx/dfdy/fwidth）、pack/unpack、类型转换（air.convert）。新增 `airStripTypeSuffix()` 去类型后缀、`lookupAirBuiltin()` 查表、`parseAirBuiltinCalls()` 从 IR 提取调用、`parseAirConvertTargetType()` 解析转换目标类型、`airTypeSuffixToMSL()` 类型后缀转 MSL 类型。映射信息集成到 `ParsedShaderFunction.airBuiltinCalls`，生成的 MSL 注释中汇总。验证数据来自 test-data/test_builtins.metal→.air→llvm-dis→.ll（84 个 air 声明）| | |
 | E-004e4 | ↳↳ 完整函数体转换（IR 指令→MSL 语句） | TODO | |
 | E-005 | **运行时 library 替换：用带源码的 library 替换原始返回** | TODO | |
 |  | 在 `pc_newLibraryWithData` hook 中，将 E-004e 生成的 MSL 经 `makeLibrary(source:)` 编译后替换原始返回值。需处理：函数签名一致性校验、编译失败 fallback（退回原始 library）、性能优化（缓存已处理的 metallib） | | |
@@ -105,6 +106,12 @@ PlayCover 主应用 (macOS)
 - **Bitcode 模块去重**：metallib 中多个函数可能共享同一个 bitcode 模块（相同 OFFT+MDSZ），按 (offset, size) 去重可大幅减少处理量
 - **LLVM 工具链**：macOS/Xcode 不自带 `llvm-dis`。LLVM 19.1.0 macOS ARM64 预编译包已验证可用
 - **PlayTools 是 iOS target**：不能使用 `Foundation.Process`，必须用 `posix_spawn`。`environ`/wait 宏等需特殊处理，详见 E-004d 文档
+- **air.* 内建函数命名规则**：`air.<category>.<name>.<type_suffix>`，type_suffix 编码参数类型（`v4f32`=`<4 x float>`、`v4f16`=`<4 x half>`、`i32`=`i32`）。去掉 type_suffix 后可用前缀匹配定位 MSL 等效调用
+- **air.fast_* 与 air.* 双变体**：Metal 编译器在 fast-math 模式（默认）下生成 `air.fast_sin` 等 fast 变体；关闭 fast-math 后生成 `air.sin` 等无前缀变体。两者对应同一个 MSL 函数（`sin`/`cos`/...），映射表需同时覆盖
+- **air.convert 命名特殊**：`air.convert.<dst_kind>.<dst_type>.<src_kind>.<src_type>`，如 `air.convert.f.v4f32.s.v4i32`（int4→float4）。整个后缀都是类型编码，strip 时只保留 `air.convert`，目标类型需单独解析
+- **air.atomic 带符号性和 scope**：`air.atomic.global.add.u.i32`（global/device 原子 add, unsigned i32）、`air.atomic.local.add.s.i32`（threadgroup 原子 add, signed i32）。strip 时需保留到 op 级别（`air.atomic.global.add`）
+- **air.clz/ctz 多一个 bool 参数**：IR 签名 `air.clz.i32(i32, i1)`，第二个参数是 "is_zero_undef" 标志，MSL 的 `clz(x)` 不需要此参数
+- **纹理 air 内建是方法调用**：`air.sample_texture_2d.v4f32(tex, sampler, coord, ...)` 对应 MSL `tex.sample(sampler, coord, ...)`，第一个参数是 texture 对象而非普通值参数
 
 ## 参考信息
 

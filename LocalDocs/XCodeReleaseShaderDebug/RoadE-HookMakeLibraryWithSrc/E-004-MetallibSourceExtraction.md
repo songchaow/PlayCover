@@ -244,7 +244,7 @@ E-004e 工作量较大，拆分为四个子任务：
 |---|--------|------|------|
 | E-004e1 | **IRToMSLConverter 骨架 + stub MSL 生成** | ✅ DONE | 解析 IR 函数定义，生成 stub MSL 源码 |
 | E-004e2 | addrspace → MSL 地址空间限定符完整映射 | ✅ DONE | 完善参数类型转换 |
-| E-004e3 | air.* 内建 → MSL 等效调用映射 | TODO | 映射 Metal runtime 内建函数 |
+| E-004e3 | air.* 内建 → MSL 等效调用映射 | ✅ DONE | 映射 84+ 个 air.* 内建函数到 MSL |
 | E-004e4 | 完整函数体转换（IR 指令→MSL 语句） | TODO | 将 IR 指令序列转换为 MSL 代码 |
 
 ### E-004e1: IRToMSLConverter 骨架
@@ -348,3 +348,80 @@ E-004e 工作量较大，拆分为四个子任务：
 - 发现关键事实：Xcode 16 Metal 编译器使用 100% opaque pointer，类型信息仅在 metadata 中
 - PlayTools xcframework 构建通过（`BUILD SUCCEEDED`）
 - 无 linter 错误
+
+### E-004e3: air.* 内建 → MSL 等效调用映射
+
+#### 修改/新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift` | 新增 air.* 映射表和查询逻辑 |
+| `LocalDocs/.../test-data/test_builtins.metal` | 覆盖各类 MSL 内建的测试 shader（9 组） |
+| `LocalDocs/.../test-data/test_builtins.ll` | 上述 shader 编译后的完整 LLVM IR（729 行） |
+| `LocalDocs/.../test-data/air_declarations.txt` | 从 IR 中提取的 84 个 air.* 声明列表 |
+
+#### 方法论
+
+直接从 Metal 编译器的实际输出逆向提取 air.* 模式，而非依赖（不存在的）公开文档：
+1. 编写覆盖 9 大类 MSL 内建函数的测试 shader（纹理采样/读写、同步屏障、数学运算、整数位操作、类型转换、SIMD group、原子操作、片段导数、pack/unpack）
+2. 用 `xcrun --sdk macosx metal -c` 编译为 AIR
+3. 用 `llvm-dis` 反汇编为 LLVM IR 文本
+4. 用 `grep '^declare.*@air\.'` 提取所有 air 内建声明（84 个）
+5. 分析命名规则，建立 air→MSL 映射表
+
+#### 新增类型和方法
+
+1. **`AirBuiltinCategory` 枚举**：10 种分类
+   - `texture`, `synchronization`, `conversion`, `math`, `integerMath`,
+   - `simd`, `atomic`, `fragmentDerivative`, `packUnpack`, `misc`
+
+2. **`AirBuiltinMapping` 结构**：映射条目
+   - `airPattern`：air 函数前缀（去掉类型后缀）
+   - `mslFunction`：对应的 MSL 函数名
+   - `category`、`paramCount`、`isMethodCall`、`description`
+
+3. **`AirBuiltinCall` 结构**：从 IR 提取的调用记录
+   - `airFunctionName`（完整名）、`airBaseName`（去后缀名）
+   - `mapping`（查到的映射）、`irArguments`（原始参数）、`resultSSA`
+
+4. **`airBuiltinMappings` 静态映射表**：覆盖类别：
+   - 数学函数（一元 20 组 fast/non-fast × 2 = 40、二元 16、三元 8、向量 10）
+   - 整数位操作（10 个）
+   - 类型转换（1 个通用模式 `air.convert`）
+   - 同步屏障（2 个）
+   - 纹理操作（14 个：sample 6 维度、read 2、write 2、query 4）
+   - SIMD group（12 个）
+   - 原子操作（22 个：global 11 + local 4）
+   - 片段导数（3 个）
+   - pack/unpack（8 个）
+
+5. **工具方法**：
+   - `airStripTypeSuffix()` — 去掉 `.v4f32`/`.i32` 等类型后缀，特殊处理 `air.convert.*` 和 `air.atomic.*`
+   - `lookupAirBuiltin()` — 精确匹配 + 最长前缀匹配
+   - `parseAirBuiltinCalls()` — 从 IR 中扫描 `call @air.*` 指令
+   - `parseAirConvertTargetType()` — 从 `air.convert.f.v4f32.s.v4i32` 解析目标 MSL 类型 `float4`
+   - `airTypeSuffixToMSL()` / `airScalarSuffixToMSL()` — 类型后缀→MSL 类型
+
+6. **集成**：
+   - `ParsedShaderFunction.airBuiltinCalls` 字段
+   - `convert()` 中新增步骤 3 调用 `parseAirBuiltinCalls()`
+   - `ConversionStats` 新增 `airBuiltinCalls`/`mappedAirCalls`/`unmappedAirCalls`
+   - 生成的 MSL 中在函数注释中汇总 air 内建映射
+
+#### air.* 命名规则发现
+
+| 规则 | 示例 |
+|------|------|
+| 类型后缀编码参数类型 | `air.fast_sin.v4f32` → `<4 x float>` 参数 |
+| fast-math 使用 `fast_` 前缀 | `air.fast_sin` vs `air.sin` |
+| 纹理区分维度 | `air.sample_texture_2d` / `3d` / `cube` / `2d_array` |
+| 原子区分 scope + sign | `air.atomic.global.add.u.i32` / `air.atomic.local.add.s.i32` |
+| convert 全是类型编码 | `air.convert.f.v4f32.s.v4i32` = int4→float4 |
+| 部分函数有额外 bool 参数 | `air.clz.i32(i32, i1)` — 第二个是 undef-on-zero 标志 |
+
+#### 验证
+
+- PlayTools xcframework 构建通过（`BUILD SUCCEEDED`）
+- 无 linter 错误
+- 测试数据：84 个 air 声明全部有对应 MSL 映射或已知模式
+- 映射表在 `convert()` 流水线中已集成，统计信息在日志中输出

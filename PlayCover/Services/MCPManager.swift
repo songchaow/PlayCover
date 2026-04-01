@@ -23,6 +23,49 @@ class MCPManager: ObservableObject {
         let pid: Int32
     }
 
+    // MARK: - Task Snapshot (GUI-visible)
+
+    /// Lightweight snapshot of a background task for GUI display.
+    /// Decoupled from PlayCoverMCP's `TaskStatus` to avoid cross-target dependency.
+    struct TaskSnapshot: Identifiable, Equatable {
+        let id: String
+        let state: String       // "pending" | "running" | "completed" | "failed" | "cancelled"
+        let progressFraction: Double?   // 0.0–1.0, nil = indeterminate
+        let progressMessage: String?
+        let errorMessage: String?
+        let resultText: String?
+
+        var isTerminal: Bool {
+            state == "completed" || state == "failed" || state == "cancelled"
+        }
+
+        var displayTitle: String {
+            progressMessage ?? "Task \(id)"
+        }
+
+        var stateIcon: String {
+            switch state {
+            case "pending": return "clock"
+            case "running": return "arrow.triangle.2.circlepath"
+            case "completed": return "checkmark.circle.fill"
+            case "failed": return "xmark.circle.fill"
+            case "cancelled": return "minus.circle.fill"
+            default: return "questionmark.circle"
+            }
+        }
+
+        var stateColor: String {
+            switch state {
+            case "pending": return "gray"
+            case "running": return "blue"
+            case "completed": return "green"
+            case "failed": return "red"
+            case "cancelled": return "orange"
+            default: return "gray"
+            }
+        }
+    }
+
     // MARK: - Constants
 
     enum TransportType: String, CaseIterable {
@@ -52,6 +95,13 @@ class MCPManager: ObservableObject {
 
     /// Bundle IDs currently performing a capture (for UI busy state).
     @Published var capturingBundleIds: Set<String> = []
+
+    /// Active MCP tasks, updated reactively from TaskManager.
+    /// Sorted with non-terminal tasks first, then by most recent.
+    @Published var activeTasks: [TaskSnapshot] = []
+
+    /// Whether the tasks panel is expanded in the main view.
+    @Published var isTasksPanelExpanded: Bool = false
 
     // MARK: - Persisted Settings
 
@@ -118,6 +168,21 @@ class MCPManager: ObservableObject {
     /// Whether a capture is currently in progress for this bundleId.
     func isCapturing(bundleId: String) -> Bool {
         capturingBundleIds.contains(bundleId)
+    }
+
+    /// Cancel a background task by its ID.
+    func cancelTask(_ taskId: String) {
+        taskManager?.cancelTask(taskId)
+    }
+
+    /// Whether there are any non-terminal tasks.
+    var hasActiveTasks: Bool {
+        activeTasks.contains { !$0.isTerminal }
+    }
+
+    /// Count of non-terminal tasks.
+    var activeTaskCount: Int {
+        activeTasks.filter { !$0.isTerminal }.count
     }
 
     /// Trigger a Metal frame capture for the first ready session of the given bundleId.
@@ -233,6 +298,11 @@ class MCPManager: ObservableObject {
         self.taskManager = taskManager
         self.uploadManager = uploadManager
 
+        // Wire task status changes to GUI-visible activeTasks
+        taskManager.onStatusChange = { [weak self] _, _ in
+            self?.refreshTaskSnapshots()
+        }
+
         switch effectiveTransportType {
         case .http:
             if #available(macOS 14, *) {
@@ -266,6 +336,7 @@ class MCPManager: ObservableObject {
         connectedClients = 0
         runtimeSessions = [:]
         capturingBundleIds = []
+        activeTasks = []
         lastError = nil
     }
 
@@ -517,6 +588,39 @@ class MCPManager: ObservableObject {
             isRunning = false
         case .starting:
             break
+        }
+    }
+
+    // MARK: - Task Snapshot Refresh
+
+    /// Pull all tasks from TaskManager and publish as GUI-friendly snapshots.
+    /// Called from `onStatusChange` callback (may arrive on any thread).
+    private func refreshTaskSnapshots() {
+        guard let taskManager = taskManager else { return }
+        let allTasks = taskManager.listTasks(includeCompleted: true)
+
+        let snapshots: [TaskSnapshot] = allTasks.map { status in
+            TaskSnapshot(
+                id: status.id,
+                state: status.state.rawValue,
+                progressFraction: status.progress?.fraction,
+                progressMessage: status.progress?.message,
+                errorMessage: status.error?.message,
+                resultText: status.result?.content.first?.text
+            )
+        }
+        // Sort: non-terminal first, then by id (newer ids last → reverse for most-recent-first)
+        .sorted { lhs, rhs in
+            if lhs.isTerminal != rhs.isTerminal { return !lhs.isTerminal }
+            return lhs.id > rhs.id
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.activeTasks = snapshots
+            // Auto-expand when a new non-terminal task appears
+            if snapshots.contains(where: { !$0.isTerminal }) {
+                self?.isTasksPanelExpanded = true
+            }
         }
     }
 }

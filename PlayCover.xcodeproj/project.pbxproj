@@ -14,6 +14,7 @@
 		365AFB0828847B75008B3542 /* Sparkle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 365AFB0728847B75008B3542 /* Sparkle.swift */; };
 		3665EF8928832400007CF915 /* PlayCoverSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3665EF8828832400007CF915 /* PlayCoverSettingsView.swift */; };
 		ED7643D004B24E95A4390294 /* MCPStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2790865C2E8D47EA830D1057 /* MCPStatusView.swift */; };
+		F1A2B3C4D5E6F708AABB0002 /* MCPTasksPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F708AABB0001 /* MCPTasksPanelView.swift */; };
 		36B26B97288C724600859EFD /* UpdateSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36B26B96288C724600859EFD /* UpdateSettings.swift */; };
 		5314D1EE26C402EC00A0A727 /* Shell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5314D1ED26C402EC00A0A727 /* Shell.swift */; };
 		532644DE26E79E56002EA34D /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 532644E026E79E56002EA34D /* Localizable.strings */; };
@@ -308,6 +309,7 @@
 		6E250970297F5281004D754C /* SigningSetupView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SigningSetupView.swift; sourceTree = "<group>"; };
 		6E550A8A29BA507200EFC15C /* Macho.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Macho.swift; sourceTree = "<group>"; };
 		6E5C68B9289865C8008EC11B /* MainView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainView.swift; sourceTree = "<group>"; };
+		F1A2B3C4D5E6F708AABB0001 /* MCPTasksPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPTasksPanelView.swift; sourceTree = "<group>"; };
 		6E66B0BE289DE6240099B907 /* StoreVM.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreVM.swift; sourceTree = "<group>"; };
 		6E66B0C8289F52800099B907 /* IPALibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPALibraryView.swift; sourceTree = "<group>"; };
 		6E66B0D0289F57B00099B907 /* Documentation.docc */ = {isa = PBXFileReference; lastKnownFileType = folder.documentationcatalog; path = Documentation.docc; sourceTree = "<group>"; };
@@ -522,6 +524,7 @@
 				34775E742D493B54001586C2 /* CachedAsyncImageWrapper.swift */,
 				8783CFFA26B8C52D00171041 /* PlayCoverApp.swift */,
 				6E5C68B9289865C8008EC11B /* MainView.swift */,
+				F1A2B3C4D5E6F708AABB0001 /* MCPTasksPanelView.swift */,
 				ABED59822887A32F004D782B /* MenuBarView.swift */,
 				6E66B0D428A0039D0099B907 /* ToastView.swift */,
 				365AFB0728847B75008B3542 /* Sparkle.swift */,
@@ -1290,6 +1293,7 @@
 				6E66B0D1289F57B00099B907 /* Documentation.docc in Sources */,
 				53F3802826EB6F6B00D6B525 /* NotifyService.swift in Sources */,
 				6E5C68BA289865C8008EC11B /* MainView.swift in Sources */,
+				F1A2B3C4D5E6F708AABB0002 /* MCPTasksPanelView.swift in Sources */,
 				3447B5E52E28B46800FAA22F /* KeymapViewVM.swift in Sources */,
 				B1419FB628BA82EE000CB69F /* DiscordActivity.swift in Sources */,
 				6E66B0BF289DE6240099B907 /* StoreVM.swift in Sources */,

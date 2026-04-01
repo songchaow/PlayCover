@@ -30,6 +30,7 @@ struct MainView: View {
 
     var body: some View {
         GeometryReader { viewGeom in
+            VStack(spacing: 0) {
             NavigationView {
                 GeometryReader { sidebarGeom in
                     List {
@@ -127,6 +128,9 @@ struct MainView: View {
                 }
                 .background(SplitViewAccessor(sideCollapsed: $collapsed))
             }
+
+            MCPTasksPanelView()
+            } // VStack
             .onAppear {
                 self.selectedView = URLObserved.type == .source ? 2 : 1
             }

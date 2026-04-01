@@ -9,29 +9,18 @@
 //  完成阶段：
 //  - E-004e1: 基础骨架 + stub MSL 生成 ✅
 //  - E-004e2: addrspace → MSL 地址空间限定符完整映射 ✅
-//    · 扩展 AddressSpace 枚举覆盖 Metal 2+ 地址空间 (0-6)
-//    · 解析 IR metadata (!air.vertex/!air.fragment/!air.kernel) 获取精确参数信息
-//    · 从 metadata 提取: air.arg_type_name, air.arg_name, air.location_index,
-//      air.address_space, air.read/air.read_write, air.buffer/air.texture/air.sampler
-//    · 生成正确的 MSL 参数声明 (地址空间 + 精确元素类型 + 属性标注)
-//    · 支持 const/non-const 推断 (constant + air.read → const constant)
-//    · 区分 buffer/threadgroup/texture/sampler/vertex_input 等参数类型
 //  - E-004e3: air.* 内建 → MSL 等效调用映射 ✅
-//    · AirBuiltinMapping 映射表：覆盖 84+ 个实际 air.* 内建函数
-//      (纹理采样/读写、同步屏障、类型转换、数学运算(fast_/non-fast)、
-//       整数位操作、SIMD/quad-group、原子操作、片段导数、pack/unpack)
-//    · AirBuiltinCategory 分类枚举 (10 种分类)
-//    · airStripTypeSuffix() 去掉类型后缀 (v4f32/i32 等) 得到函数基础名
-//    · lookupAirBuiltin() 查询映射表，支持精确匹配和最长前缀匹配
-//    · parseAirBuiltinCalls() 从 IR 函数体中提取 call @air.* 指令
-//    · parseAirConvertTargetType() 从 air.convert 名称解析目标 MSL 类型
-//    · airTypeSuffixToMSL() 将 air 类型后缀转为 MSL 类型 (v4f32→float4)
-//    · 映射信息集成到 ParsedShaderFunction.airBuiltinCalls，
-//      并在生成的 MSL 注释中汇总，供 E-004e4 函数体转换使用
-//    · 验证数据来源: test-data/test_builtins.metal → .air → llvm-dis → .ll
-//
-//  后续阶段将逐步提升转换保真度：
-//  - E-004e4: 完整函数体转换
+//  - E-004e4: 完整函数体转换（已拆分）
+//    · E-004e4a: IR 函数体解析 + SSA→MSL 表达式翻译框架 ✅
+//      - IRBodyParser: 解析函数体 IR 指令流
+//      - SSAContext: SSA 寄存器→MSL 表达式映射
+//      - 翻译基础指令集: 算术(fadd/fmul/fsub/add/sub/mul/fma),
+//        向量(shufflevector/extractelement/insertelement/extractvalue/insertvalue),
+//        内存(load/store/getelementptr), 类型转换(zext/sext/fpext/fptrunc/bitcast),
+//        控制流(ret/br/select), 比较(icmp/fcmp), air.* 内建调用
+//      - generateFunction 从 stub 升级为真实函数体生成
+//    · E-004e4b: 控制流图重建(phi/多基本块→MSL if/else) — TODO
+//    · E-004e4c: 复杂类型推断(结构体/数组访问路径) — TODO
 //
 
 import Foundation
@@ -200,6 +189,8 @@ struct IRToMSLConverter {
         let isFullyParsed: Bool
         /// 函数体中使用的 air.* 内建调用（E-004e3）
         let airBuiltinCalls: [AirBuiltinCall]
+        /// 函数体 IR 文本（从 define 到 }，不含签名行）（E-004e4）
+        let irBody: String
     }
 
     /// 转换结果
@@ -1654,6 +1645,8 @@ struct IRToMSLConverter {
         let parameterList: String
         let attributes: String
         let fullDefinition: String
+        /// 函数体 IR 文本（define 行之后到 } 之前的所有行）
+        let body: String
     }
 
     /// 解析 IR 文本中的所有函数定义。
@@ -1661,24 +1654,42 @@ struct IRToMSLConverter {
     private static func parseIRFunctions(_ irText: String) -> ([IRFunctionDef], Int) {
         var functions: [IRFunctionDef] = []
 
-        // LLVM IR 函数定义格式：
-        // define <return_type> @<name>(<params>) #N { ... }
-        // 或 declare <return_type> @<name>(<params>)
-        //
-        // Metal shader 函数通常是 define，有 body
         let lines = irText.components(separatedBy: "\n")
         var totalDefines = 0
+        var i = 0
 
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
+        while i < lines.count {
+            let trimmed = lines[i].trimmingCharacters(in: .whitespaces)
 
             // 匹配 define 行
-            guard trimmed.hasPrefix("define ") else { continue }
+            guard trimmed.hasPrefix("define ") else { i += 1; continue }
             totalDefines += 1
 
-            // 提取函数名：@"function_name" 或 @function_name
-            guard let funcDef = parseDefineLine(trimmed) else { continue }
-            functions.append(funcDef)
+            guard let funcDef = parseDefineLine(trimmed) else { i += 1; continue }
+
+            // 提取函数体：从 define 行之后到 } 行
+            var bodyLines: [String] = []
+            i += 1
+            while i < lines.count {
+                let bodyLine = lines[i]
+                let bodyTrimmed = bodyLine.trimmingCharacters(in: .whitespaces)
+                if bodyTrimmed == "}" {
+                    i += 1
+                    break
+                }
+                bodyLines.append(bodyLine)
+                i += 1
+            }
+            let body = bodyLines.joined(separator: "\n")
+
+            functions.append(IRFunctionDef(
+                name: funcDef.name,
+                returnType: funcDef.returnType,
+                parameterList: funcDef.parameterList,
+                attributes: funcDef.attributes,
+                fullDefinition: funcDef.fullDefinition,
+                body: body
+            ))
         }
 
         return (functions, totalDefines)
@@ -1736,7 +1747,8 @@ struct IRToMSLConverter {
             returnType: returnType,
             parameterList: paramList,
             attributes: afterParams,
-            fullDefinition: line
+            fullDefinition: line,
+            body: ""  // filled by parseIRFunctions
         )
     }
 
@@ -1845,7 +1857,8 @@ struct IRToMSLConverter {
                 parameters: params,
                 irSignature: "define \(irFunc.returnType) @\"\(irFunc.name)\"(\(irFunc.parameterList))",
                 isFullyParsed: isFullyParsed,
-                airBuiltinCalls: airBuiltinCalls
+                airBuiltinCalls: airBuiltinCalls,
+                irBody: irFunc.body
             ))
         }
 
@@ -1869,7 +1882,8 @@ struct IRToMSLConverter {
                     parameters: [],
                     irSignature: "(metallib-only, no IR match)",
                     isFullyParsed: false,
-                    airBuiltinCalls: []
+                    airBuiltinCalls: [],
+                    irBody: ""
                 ))
             }
         }
@@ -2298,7 +2312,1296 @@ struct IRToMSLConverter {
         }
     }
 
-    // MARK: - MSL Generation
+    // MARK: - IR Body Parser (E-004e4a)
+
+    /// SSA 寄存器上下文：追踪 IR SSA 值到 MSL 表达式的映射。
+    ///
+    /// LLVM IR 使用 SSA（Static Single Assignment）形式，每个值只赋值一次。
+    /// 本上下文维护 `%N` / `%name` → MSL 表达式字符串的映射，
+    /// 将 IR 指令流翻译为线性的 MSL 语句序列。
+    private class SSAContext {
+        /// %N → MSL 表达式 或 临时变量名
+        var values: [String: String] = [:]
+        /// %N → MSL 类型（用于需要类型信息的操作）
+        var types: [String: String] = [:]
+        /// 生成的 MSL 语句（按顺序）
+        var statements: [String] = []
+        /// 下一个临时变量编号
+        var nextTemp: Int = 0
+        /// 函数参数名映射（IR 参数 %N → MSL 参数名）
+        var paramNames: [String: String] = [:]
+        /// 函数参数类型映射
+        var paramTypes: [String: String] = [:]
+
+        func freshTemp() -> String {
+            let name = "t\(nextTemp)"
+            nextTemp += 1
+            return name
+        }
+
+        /// 查找 SSA 值对应的 MSL 表达式
+        func resolve(_ ssaName: String) -> String {
+            let name = ssaName.trimmingCharacters(in: .whitespaces)
+            if let expr = values[name] { return expr }
+            if let pname = paramNames[name] { return pname }
+            // 字面量常量
+            if name.hasPrefix("splat (") || name.hasPrefix("zeroinitializer") {
+                return name
+            }
+            return name
+        }
+
+        /// 记录一个 SSA 值的 MSL 表达式和类型
+        func define(_ ssaName: String, expr: String, type: String = "") {
+            values[ssaName] = expr
+            if !type.isEmpty { types[ssaName] = type }
+        }
+
+        /// 发射一条 MSL 语句到输出
+        func emit(_ stmt: String) {
+            statements.append(stmt)
+        }
+
+        /// 为 SSA 值分配临时变量并发射赋值语句
+        func emitAssign(_ ssaName: String, type: String, expr: String) {
+            let mslType = IRToMSLConverter.irScalarTypeToMSL(type)
+            let temp = freshTemp()
+            emit("\(mslType) \(temp) = \(expr);")
+            define(ssaName, expr: temp, type: mslType)
+        }
+
+        /// 简洁版：推断类型时直接用 auto
+        func emitAutoAssign(_ ssaName: String, expr: String, knownType: String = "") {
+            let temp = freshTemp()
+            let typeStr = knownType.isEmpty ? "auto" : knownType
+            emit("\(typeStr) \(temp) = \(expr);")
+            define(ssaName, expr: temp, type: knownType)
+        }
+    }
+
+    /// 解析并翻译单个函数体的 IR 指令为 MSL 语句。
+    ///
+    /// 当前支持的指令类别（E-004e4a）：
+    /// - 算术: fadd, fmul, fsub, fneg, add, sub, mul, udiv, sdiv, urem, srem
+    /// - 浮点比较/整数比较: fcmp, icmp
+    /// - 选择: select
+    /// - 向量: shufflevector, extractelement, insertelement, extractvalue, insertvalue
+    /// - 内存: load, store, getelementptr
+    /// - 类型转换: zext, sext, trunc, fpext, fptrunc, bitcast, freeze
+    /// - 控制流: ret, br (翻译为注释占位)
+    /// - air.* 内建调用: call/tail call @air.*
+    /// - LLVM 内建: llvm.lifetime.* (忽略)
+    ///
+    /// 限制（后续子任务）：
+    /// - phi 节点和多基本块控制流 → E-004e4b
+    /// - 复杂 GEP 结构体路径还原 → E-004e4c
+    private static func translateFunctionBody(
+        _ func_: ParsedShaderFunction,
+        irParamList: String
+    ) -> [String] {
+        let ctx = SSAContext()
+
+        // 建立参数名映射：IR 的 %0, %1, ... → MSL 参数名
+        setupParameterMappings(ctx, params: func_.parameters, irParamList: irParamList)
+
+        // 逐行翻译函数体
+        let bodyLines = func_.irBody.components(separatedBy: "\n")
+        for line in bodyLines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+
+            // 基本块标签
+            if trimmed.hasSuffix(":") && !trimmed.contains(" ") {
+                ctx.emit("// BB: \(trimmed)")
+                continue
+            }
+            // 带前驱注释的基本块标签: "10:  ; preds = %7"
+            if let colonIdx = trimmed.firstIndex(of: ":"),
+               trimmed[trimmed.startIndex..<colonIdx].allSatisfy({ $0.isNumber }) {
+                let label = String(trimmed[trimmed.startIndex..<colonIdx])
+                ctx.emit("// BB\(label):")
+                continue
+            }
+
+            translateInstruction(trimmed, ctx: ctx)
+        }
+
+        return ctx.statements
+    }
+
+    /// 建立 IR 参数（%0, %1, ...）到 MSL 参数名的映射
+    private static func setupParameterMappings(
+        _ ctx: SSAContext,
+        params: [ParsedParameter],
+        irParamList: String
+    ) {
+        let irParams = splitIRParameters(irParamList)
+        // metadata 参数通常过滤了 stage_in/position 等，
+        // 需要遍历 IR 参数并与 metadata 参数对应
+        var metaIdx = 0
+        for (i, irParam) in irParams.enumerated() {
+            let irName = extractParamName(from: irParam) ?? "\(i)"
+            let ssaName = "%\(irName)"
+            if metaIdx < params.count {
+                let p = params[metaIdx]
+                ctx.paramNames[ssaName] = p.name
+                ctx.paramTypes[ssaName] = p.irType
+                metaIdx += 1
+            } else {
+                ctx.paramNames[ssaName] = "param\(i)"
+            }
+        }
+    }
+
+    /// 翻译单条 IR 指令
+    private static func translateInstruction(_ line: String, ctx: SSAContext) {
+        // 忽略 IR 注释和空行
+        if line.hasPrefix(";") { return }
+
+        // 忽略 llvm.lifetime 和 llvm.dbg 等内部调用
+        if line.contains("@llvm.lifetime") || line.contains("@llvm.dbg") { return }
+
+        // 形如 "%N = ..." 的赋值指令
+        if let eqRange = line.range(of: " = ") {
+            let lhs = String(line[line.startIndex..<eqRange.lowerBound])
+                .trimmingCharacters(in: .whitespaces)
+            let rhs = String(line[eqRange.upperBound...])
+                .trimmingCharacters(in: .whitespaces)
+
+            if lhs.hasPrefix("%") {
+                translateAssignment(lhs: lhs, rhs: rhs, ctx: ctx)
+                return
+            }
+        }
+
+        // 非赋值指令：ret, br, store, call void, tail call void
+        if line.hasPrefix("ret ") {
+            translateRet(line, ctx: ctx)
+        } else if line.hasPrefix("br ") {
+            translateBr(line, ctx: ctx)
+        } else if line.hasPrefix("store ") {
+            translateStore(line, ctx: ctx)
+        } else if line.contains("call void @air.") {
+            translateVoidAirCall(line, ctx: ctx)
+        } else if line.contains("call void @air.") || line.contains("tail call void @air.") {
+            translateVoidAirCall(line, ctx: ctx)
+        } else {
+            // 未识别的指令，作为注释保留
+            ctx.emit("// [unhandled] \(line.prefix(120))")
+        }
+    }
+
+    /// 翻译赋值指令（%N = <opcode> ...）
+    private static func translateAssignment(lhs: String, rhs: String, ctx: SSAContext) {
+        // 确定操作码
+        let parts = rhs.components(separatedBy: " ")
+        guard let opcode = parts.first else {
+            ctx.emit("// [unknown] \(lhs) = \(rhs.prefix(100))")
+            return
+        }
+
+        switch opcode {
+        // ── 二元浮点算术 ──
+        case "fadd", "fmul", "fsub", "fdiv", "frem":
+            translateBinaryFP(lhs: lhs, rhs: rhs, opcode: opcode, ctx: ctx)
+        // ── fneg ──
+        case "fneg":
+            translateFNeg(lhs: lhs, rhs: rhs, ctx: ctx)
+        // ── 二元整数算术 ──
+        case "add", "sub", "mul", "udiv", "sdiv", "urem", "srem",
+             "shl", "lshr", "ashr", "and", "or", "xor":
+            translateBinaryInt(lhs: lhs, rhs: rhs, opcode: opcode, ctx: ctx)
+        // ── 比较 ──
+        case "fcmp":
+            translateFCmp(lhs: lhs, rhs: rhs, ctx: ctx)
+        case "icmp":
+            translateICmp(lhs: lhs, rhs: rhs, ctx: ctx)
+        // ── 选择 ──
+        case "select":
+            translateSelect(lhs: lhs, rhs: rhs, ctx: ctx)
+        // ── 向量 ──
+        case "shufflevector":
+            translateShuffleVector(lhs: lhs, rhs: rhs, ctx: ctx)
+        case "extractelement":
+            translateExtractElement(lhs: lhs, rhs: rhs, ctx: ctx)
+        case "insertelement":
+            translateInsertElement(lhs: lhs, rhs: rhs, ctx: ctx)
+        case "extractvalue":
+            translateExtractValue(lhs: lhs, rhs: rhs, ctx: ctx)
+        case "insertvalue":
+            translateInsertValue(lhs: lhs, rhs: rhs, ctx: ctx)
+        // ── 内存 ──
+        case "load":
+            translateLoad(lhs: lhs, rhs: rhs, ctx: ctx)
+        case "getelementptr":
+            translateGEP(lhs: lhs, rhs: rhs, ctx: ctx)
+        // ── 类型转换 ──
+        case "zext", "sext", "trunc", "fpext", "fptrunc":
+            translateIntCast(lhs: lhs, rhs: rhs, opcode: opcode, ctx: ctx)
+        case "bitcast":
+            translateBitcast(lhs: lhs, rhs: rhs, ctx: ctx)
+        case "freeze":
+            translateFreeze(lhs: lhs, rhs: rhs, ctx: ctx)
+        // ── air.* / 其他 call ──
+        case "tail", "call", "musttail", "notail":
+            translateCall(lhs: lhs, rhs: rhs, ctx: ctx)
+        // ── phi (控制流相关，E-004e4b) ──
+        case "phi":
+            translatePhi(lhs: lhs, rhs: rhs, ctx: ctx)
+        // ── alloca ──
+        case "alloca":
+            translateAlloca(lhs: lhs, rhs: rhs, ctx: ctx)
+        default:
+            ctx.emit("// [unhandled] \(lhs) = \(rhs.prefix(100))")
+        }
+    }
+
+    // MARK: - Instruction Translators
+
+    /// 翻译二元浮点运算: fadd/fmul/fsub/fdiv/frem
+    private static func translateBinaryFP(lhs: String, rhs: String, opcode: String, ctx: SSAContext) {
+        // 格式: fadd [fast] <type> <op1>, <op2>
+        let op: String
+        switch opcode {
+        case "fadd": op = "+"
+        case "fmul": op = "*"
+        case "fsub": op = "-"
+        case "fdiv": op = "/"
+        case "frem": op = "/* fmod */"
+        default: op = "??"
+        }
+
+        let (type, operands) = parseBinaryOperands(rhs, skipKeywords: ["fast", "nnan", "ninf", "nsz", "arcp", "contract", "reassoc", "afn"])
+        guard operands.count >= 2 else {
+            ctx.define(lhs, expr: "/* parse error: \(rhs.prefix(60)) */")
+            return
+        }
+
+        let a = resolveIROperand(operands[0], ctx: ctx)
+        let b = resolveIROperand(operands[1], ctx: ctx)
+        let mslType = irScalarTypeToMSL(type)
+
+        if opcode == "frem" {
+            ctx.emitAutoAssign(lhs, expr: "fmod(\(a), \(b))", knownType: mslType)
+        } else {
+            ctx.emitAutoAssign(lhs, expr: "\(a) \(op) \(b)", knownType: mslType)
+        }
+    }
+
+    /// 翻译 fneg
+    private static func translateFNeg(lhs: String, rhs: String, ctx: SSAContext) {
+        // fneg [fast] <type> <op>
+        let cleaned = stripFastMathFlags(rhs.replacingOccurrences(of: "fneg ", with: ""))
+        let parts = cleaned.components(separatedBy: " ")
+        let value: String
+        if parts.count >= 2 {
+            value = resolveIROperand(parts.dropFirst().joined(separator: " "), ctx: ctx)
+        } else {
+            value = resolveIROperand(cleaned, ctx: ctx)
+        }
+        ctx.emitAutoAssign(lhs, expr: "-(\(value))")
+    }
+
+    /// 翻译二元整数运算
+    private static func translateBinaryInt(lhs: String, rhs: String, opcode: String, ctx: SSAContext) {
+        let op: String
+        switch opcode {
+        case "add": op = "+"
+        case "sub": op = "-"
+        case "mul": op = "*"
+        case "udiv", "sdiv": op = "/"
+        case "urem", "srem": op = "%"
+        case "shl": op = "<<"
+        case "lshr", "ashr": op = ">>"
+        case "and": op = "&"
+        case "or": op = "|"
+        case "xor": op = "^"
+        default: op = "??"
+        }
+
+        let (type, operands) = parseBinaryOperands(rhs, skipKeywords: ["nsw", "nuw", "exact"])
+        guard operands.count >= 2 else {
+            ctx.define(lhs, expr: "/* parse error */")
+            return
+        }
+
+        let a = resolveIROperand(operands[0], ctx: ctx)
+        let b = resolveIROperand(operands[1], ctx: ctx)
+        let mslType = irScalarTypeToMSL(type)
+        ctx.emitAutoAssign(lhs, expr: "\(a) \(op) \(b)", knownType: mslType)
+    }
+
+    /// 翻译 fcmp
+    private static func translateFCmp(lhs: String, rhs: String, ctx: SSAContext) {
+        // fcmp [fast] <cond> <type> <op1>, <op2>
+        let cleaned = stripFastMathFlags(rhs.replacingOccurrences(of: "fcmp ", with: ""))
+        let tokens = cleaned.components(separatedBy: " ").filter { !$0.isEmpty }
+        guard tokens.count >= 2 else {
+            ctx.define(lhs, expr: "/* fcmp parse error */")
+            return
+        }
+        let cond = tokens[0]
+        // 剩余部分：<type> <op1>, <op2>
+        let rest = tokens.dropFirst().joined(separator: " ")
+        let (_, operands) = parseBinaryOperands(rest, skipKeywords: [])
+        guard operands.count >= 2 else {
+            ctx.define(lhs, expr: "/* fcmp operand error */")
+            return
+        }
+        let a = resolveIROperand(operands[0], ctx: ctx)
+        let b = resolveIROperand(operands[1], ctx: ctx)
+        let mslOp = fcmpCondToMSL(cond)
+        ctx.emitAutoAssign(lhs, expr: "\(a) \(mslOp) \(b)", knownType: "bool")
+    }
+
+    /// 翻译 icmp
+    private static func translateICmp(lhs: String, rhs: String, ctx: SSAContext) {
+        let cleaned = rhs.replacingOccurrences(of: "icmp ", with: "")
+        let tokens = cleaned.components(separatedBy: " ").filter { !$0.isEmpty }
+        guard tokens.count >= 2 else {
+            ctx.define(lhs, expr: "/* icmp parse error */")
+            return
+        }
+        let cond = tokens[0]
+        let rest = tokens.dropFirst().joined(separator: " ")
+        let (_, operands) = parseBinaryOperands(rest, skipKeywords: [])
+        guard operands.count >= 2 else {
+            ctx.define(lhs, expr: "/* icmp operand error */")
+            return
+        }
+        let a = resolveIROperand(operands[0], ctx: ctx)
+        let b = resolveIROperand(operands[1], ctx: ctx)
+        let mslOp = icmpCondToMSL(cond)
+        ctx.emitAutoAssign(lhs, expr: "\(a) \(mslOp) \(b)", knownType: "bool")
+    }
+
+    /// 翻译 select
+    private static func translateSelect(lhs: String, rhs: String, ctx: SSAContext) {
+        // select <cond_type> <cond>, <type> <val_true>, <type> <val_false>
+        let cleaned = rhs.replacingOccurrences(of: "select ", with: "")
+        let selectParts = splitSelectOperands(cleaned)
+        guard selectParts.count >= 3 else {
+            ctx.define(lhs, expr: "/* select parse error */")
+            return
+        }
+        let cond = resolveIROperand(selectParts[0], ctx: ctx)
+        let valTrue = resolveIROperand(selectParts[1], ctx: ctx)
+        let valFalse = resolveIROperand(selectParts[2], ctx: ctx)
+        ctx.emitAutoAssign(lhs, expr: "\(cond) ? \(valTrue) : \(valFalse)")
+    }
+
+    /// 翻译 shufflevector
+    private static func translateShuffleVector(lhs: String, rhs: String, ctx: SSAContext) {
+        // shufflevector <type> <v1>, <type> <v2>, <mask_type> <mask>
+        let cleaned = rhs.replacingOccurrences(of: "shufflevector ", with: "")
+        let shuffleParts = splitTypedOperands(cleaned, count: 3)
+        guard shuffleParts.count >= 3 else {
+            ctx.define(lhs, expr: "/* shufflevector parse error */")
+            return
+        }
+
+        let v1 = resolveIROperand(shuffleParts[0].value, ctx: ctx)
+        let mask = shuffleParts[2].value
+
+        // 解析 mask 以确定 swizzle 模式
+        let maskIndices = parseVectorConstant(mask)
+        let resultDim = maskIndices.count
+
+        // 如果 mask 全相同（broadcast/splat），生成 MSL vector splat
+        if !maskIndices.isEmpty && maskIndices.allSatisfy({ $0 == maskIndices[0] }) {
+            let idx = maskIndices[0]
+            if idx >= 0 {
+                let swizzle = vectorIndexToSwizzle(idx)
+                let srcType = shuffleParts[0].type
+                let outType = vectorTypeWithDim(srcType, dim: resultDim)
+                let mslOutType = irScalarTypeToMSL(outType)
+                ctx.emitAutoAssign(lhs, expr: "\(mslOutType)(\(v1).\(swizzle))", knownType: mslOutType)
+            } else {
+                // poison/undef splat
+                ctx.define(lhs, expr: v1)
+            }
+            return
+        }
+
+        // 一般 swizzle
+        let maxSrcDim = extractVectorDim(shuffleParts[0].type)
+        let allFromV1 = maskIndices.allSatisfy { $0 < maxSrcDim }
+
+        if allFromV1 && maskIndices.allSatisfy({ $0 >= 0 }) {
+            // 纯 v1 swizzle
+            let swizzle = maskIndices.map { vectorIndexToSwizzle($0) }.joined()
+            ctx.emitAutoAssign(lhs, expr: "\(v1).\(swizzle)")
+        } else {
+            // 涉及 v2 或 poison，生成逐元素构造
+            let v2 = resolveIROperand(shuffleParts[1].value, ctx: ctx)
+            var elems: [String] = []
+            for idx in maskIndices {
+                if idx < 0 {
+                    elems.append("0")
+                } else if idx < maxSrcDim {
+                    elems.append("\(v1)[\(idx)]")
+                } else {
+                    elems.append("\(v2)[\(idx - maxSrcDim)]")
+                }
+            }
+            let srcType = shuffleParts[0].type
+            let outType = vectorTypeWithDim(srcType, dim: resultDim)
+            let mslType = irScalarTypeToMSL(outType)
+            ctx.emitAutoAssign(lhs, expr: "\(mslType)(\(elems.joined(separator: ", ")))", knownType: mslType)
+        }
+    }
+
+    /// 翻译 extractelement
+    private static func translateExtractElement(lhs: String, rhs: String, ctx: SSAContext) {
+        // extractelement <type> <vec>, <idx_type> <idx>
+        let cleaned = rhs.replacingOccurrences(of: "extractelement ", with: "")
+        let parts = splitTypedOperands(cleaned, count: 2)
+        guard parts.count >= 2 else {
+            ctx.define(lhs, expr: "/* extractelement error */")
+            return
+        }
+        let vec = resolveIROperand(parts[0].value, ctx: ctx)
+        let idx = resolveIROperand(parts[1].value, ctx: ctx)
+
+        // 常量索引用 swizzle
+        if let idxNum = Int(idx) {
+            let swizzle = vectorIndexToSwizzle(idxNum)
+            ctx.emitAutoAssign(lhs, expr: "\(vec).\(swizzle)")
+        } else {
+            ctx.emitAutoAssign(lhs, expr: "\(vec)[\(idx)]")
+        }
+    }
+
+    /// 翻译 insertelement
+    private static func translateInsertElement(lhs: String, rhs: String, ctx: SSAContext) {
+        // insertelement <type> <vec>, <elem_type> <elem>, <idx_type> <idx>
+        let cleaned = rhs.replacingOccurrences(of: "insertelement ", with: "")
+        let parts = splitTypedOperands(cleaned, count: 3)
+        guard parts.count >= 3 else {
+            ctx.define(lhs, expr: "/* insertelement error */")
+            return
+        }
+        let vec = resolveIROperand(parts[0].value, ctx: ctx)
+        let elem = resolveIROperand(parts[1].value, ctx: ctx)
+        let idx = resolveIROperand(parts[2].value, ctx: ctx)
+
+        let temp = ctx.freshTemp()
+        let mslType = irScalarTypeToMSL(parts[0].type)
+        if vec == "poison" || vec == "undef" {
+            ctx.emit("\(mslType) \(temp) = \(mslType)(0);")
+        } else {
+            ctx.emit("\(mslType) \(temp) = \(vec);")
+        }
+        if let idxNum = Int(idx) {
+            let swizzle = vectorIndexToSwizzle(idxNum)
+            ctx.emit("\(temp).\(swizzle) = \(elem);")
+        } else {
+            ctx.emit("\(temp)[\(idx)] = \(elem);")
+        }
+        ctx.define(lhs, expr: temp, type: mslType)
+    }
+
+    /// 翻译 extractvalue
+    private static func translateExtractValue(lhs: String, rhs: String, ctx: SSAContext) {
+        // extractvalue <type> <agg>, <idx>, ...
+        let cleaned = rhs.replacingOccurrences(of: "extractvalue ", with: "")
+        // 找到 aggregate 值和索引
+        let parts = splitTypedOperands(cleaned, count: 1)
+        guard let first = parts.first else {
+            ctx.define(lhs, expr: "/* extractvalue error */")
+            return
+        }
+        let agg = resolveIROperand(first.value, ctx: ctx)
+        // 后续索引在逗号后
+        let afterFirst = cleaned.dropFirst(first.rawLength)
+        let indices = afterFirst.components(separatedBy: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .compactMap { Int($0) }
+
+        if indices.count == 1 {
+            // 单层索引：通常是从 {<4 x float>, i8} 中提取，用数组索引
+            ctx.define(lhs, expr: "\(agg)/* .field\(indices[0]) */")
+        } else {
+            ctx.define(lhs, expr: "\(agg)/* extractvalue indices:\(indices) */")
+        }
+    }
+
+    /// 翻译 insertvalue
+    private static func translateInsertValue(lhs: String, rhs: String, ctx: SSAContext) {
+        let cleaned = rhs.replacingOccurrences(of: "insertvalue ", with: "")
+        let parts = splitTypedOperands(cleaned, count: 2)
+        guard parts.count >= 2 else {
+            ctx.define(lhs, expr: "/* insertvalue error */")
+            return
+        }
+        let agg = resolveIROperand(parts[0].value, ctx: ctx)
+        let val = resolveIROperand(parts[1].value, ctx: ctx)
+        // insertvalue 用于构建返回值结构体，简化为注释
+        ctx.define(lhs, expr: "\(agg)/* .insert(\(val)) */")
+    }
+
+    /// 翻译 load
+    private static func translateLoad(lhs: String, rhs: String, ctx: SSAContext) {
+        // load <type>, <ptr_type> <ptr>[, align N][, !tbaa ...]
+        let cleaned = rhs.replacingOccurrences(of: "load ", with: "")
+        // 分割类型和指针，注意 <type> 可能包含逗号（如 <4 x float>）
+        let parts = splitTypedOperands(cleaned, count: 2)
+        guard parts.count >= 2 else {
+            ctx.define(lhs, expr: "/* load error */")
+            return
+        }
+        let loadType = parts[0].type
+        let ptr = resolveIROperand(parts[1].value, ctx: ctx)
+        let mslType = irScalarTypeToMSL(loadType)
+        // 指针解引用
+        ctx.emitAutoAssign(lhs, expr: "*(\(ptr))", knownType: mslType)
+    }
+
+    /// 翻译 store
+    private static func translateStore(_ line: String, ctx: SSAContext) {
+        // store <type> <value>, <ptr_type> <ptr>[, align N]
+        let cleaned = line.replacingOccurrences(of: "store ", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        let parts = splitTypedOperands(cleaned, count: 2)
+        guard parts.count >= 2 else {
+            ctx.emit("// [store parse error] \(line.prefix(80))")
+            return
+        }
+        let val = resolveIROperand(parts[0].value, ctx: ctx)
+        let ptr = resolveIROperand(parts[1].value, ctx: ctx)
+        ctx.emit("*(\(ptr)) = \(val);")
+    }
+
+    /// 翻译 getelementptr
+    private static func translateGEP(lhs: String, rhs: String, ctx: SSAContext) {
+        // getelementptr [inbounds] <type>, <ptr_type> <ptr>, <idx_type> <idx>[, ...]
+        var cleaned = rhs.replacingOccurrences(of: "getelementptr ", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        if cleaned.hasPrefix("inbounds ") {
+            cleaned = String(cleaned.dropFirst("inbounds ".count))
+        }
+
+        let parts = splitTypedOperands(cleaned, count: 10)
+        guard parts.count >= 2 else {
+            ctx.define(lhs, expr: "/* GEP error */")
+            return
+        }
+
+        let basePtr = resolveIROperand(parts[1].value, ctx: ctx)
+
+        if parts.count == 3 {
+            // 简单数组索引: ptr + idx
+            let idx = resolveIROperand(parts[2].value, ctx: ctx)
+            if idx == "0" {
+                ctx.define(lhs, expr: basePtr)
+            } else {
+                ctx.define(lhs, expr: "&\(basePtr)[\(idx)]")
+            }
+        } else if parts.count > 3 {
+            // 结构体/嵌套索引
+            var indices: [String] = []
+            for i in 2..<parts.count {
+                indices.append(resolveIROperand(parts[i].value, ctx: ctx))
+            }
+            // 简化：生成注释性的 GEP
+            ctx.define(lhs, expr: "&\(basePtr)[\(indices.joined(separator: "]["))]")
+        } else {
+            ctx.define(lhs, expr: basePtr)
+        }
+    }
+
+    /// 翻译整数类型转换: zext/sext/trunc/fpext/fptrunc
+    private static func translateIntCast(lhs: String, rhs: String, opcode: String, ctx: SSAContext) {
+        // zext <src_type> <val> to <dst_type>
+        let cleaned = rhs.replacingOccurrences(of: "\(opcode) ", with: "")
+        guard let toRange = cleaned.range(of: " to ") else {
+            ctx.define(lhs, expr: "/* cast error */")
+            return
+        }
+        let srcPart = String(cleaned[cleaned.startIndex..<toRange.lowerBound])
+        let dstType = String(cleaned[toRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+
+        let srcParts = splitTypedOperands(srcPart, count: 1)
+        let srcVal = srcParts.isEmpty ? "0" : resolveIROperand(srcParts[0].value, ctx: ctx)
+        let mslDstType = irScalarTypeToMSL(dstType)
+        ctx.emitAutoAssign(lhs, expr: "\(mslDstType)(\(srcVal))", knownType: mslDstType)
+    }
+
+    /// 翻译 bitcast
+    private static func translateBitcast(lhs: String, rhs: String, ctx: SSAContext) {
+        let cleaned = rhs.replacingOccurrences(of: "bitcast ", with: "")
+        guard let toRange = cleaned.range(of: " to ") else {
+            ctx.define(lhs, expr: "/* bitcast error */")
+            return
+        }
+        let srcPart = String(cleaned[cleaned.startIndex..<toRange.lowerBound])
+        let dstType = String(cleaned[toRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+
+        let srcParts = splitTypedOperands(srcPart, count: 1)
+        let srcVal = srcParts.isEmpty ? "0" : resolveIROperand(srcParts[0].value, ctx: ctx)
+        let mslDstType = irScalarTypeToMSL(dstType)
+        ctx.emitAutoAssign(lhs, expr: "as_type<\(mslDstType)>(\(srcVal))", knownType: mslDstType)
+    }
+
+    /// 翻译 freeze（LLVM poison → 确定值，MSL 中直接透传）
+    private static func translateFreeze(lhs: String, rhs: String, ctx: SSAContext) {
+        let cleaned = rhs.replacingOccurrences(of: "freeze ", with: "")
+        let parts = splitTypedOperands(cleaned, count: 1)
+        if let first = parts.first {
+            let val = resolveIROperand(first.value, ctx: ctx)
+            ctx.define(lhs, expr: val)
+        } else {
+            ctx.define(lhs, expr: "/* freeze error */")
+        }
+    }
+
+    /// 翻译 call/tail call（包括 air.* 和普通函数）
+    private static func translateCall(lhs: String, rhs: String, ctx: SSAContext) {
+        // 检查是否是 air.* 调用
+        if rhs.contains("@air.") {
+            translateAirCall(lhs: lhs, fullRhs: rhs, ctx: ctx)
+            return
+        }
+        // 其他函数调用
+        ctx.define(lhs, expr: "/* call: \(rhs.prefix(80)) */")
+    }
+
+    /// 翻译 air.* 内建调用
+    private static func translateAirCall(lhs: String, fullRhs: String, ctx: SSAContext) {
+        // 提取 air 函数名
+        guard let atRange = fullRhs.range(of: "@air.") else {
+            ctx.define(lhs, expr: "/* air call error */")
+            return
+        }
+        let afterAt = fullRhs[fullRhs.index(after: atRange.lowerBound)...]
+        guard let parenIdx = afterAt.firstIndex(of: "(") else {
+            ctx.define(lhs, expr: "/* air call error */")
+            return
+        }
+        let airName = String(afterAt[afterAt.startIndex..<parenIdx])
+
+        // 提取参数列表
+        let argsStart = afterAt.index(after: parenIdx)
+        var depth = 1
+        var cursor = argsStart
+        while cursor < afterAt.endIndex && depth > 0 {
+            if afterAt[cursor] == "(" { depth += 1 }
+            else if afterAt[cursor] == ")" { depth -= 1 }
+            if depth > 0 { cursor = afterAt.index(after: cursor) }
+        }
+        let argsStr = String(afterAt[argsStart..<cursor])
+        let argParts = splitTypedOperands(argsStr, count: 20)
+        let resolvedArgs = argParts.map { resolveIROperand($0.value, ctx: ctx) }
+
+        // 查找映射
+        let mapping = lookupAirBuiltin(airName)
+
+        if let m = mapping {
+            let mslExpr = generateMSLForAirCall(
+                mapping: m,
+                airName: airName,
+                args: resolvedArgs,
+                argTypes: argParts.map { $0.type }
+            )
+            ctx.emitAutoAssign(lhs, expr: mslExpr)
+        } else {
+            // 未映射的 air 调用
+            let argList = resolvedArgs.prefix(4).joined(separator: ", ")
+            ctx.emitAutoAssign(lhs, expr: "/* \(airName)(\(argList)) */")
+        }
+    }
+
+    /// 翻译 void 返回的 air.* 调用（如 barrier、write_texture）
+    private static func translateVoidAirCall(_ line: String, ctx: SSAContext) {
+        guard let atRange = line.range(of: "@air.") else {
+            ctx.emit("// [void air call error] \(line.prefix(80))")
+            return
+        }
+        let afterAt = line[line.index(after: atRange.lowerBound)...]
+        guard let parenIdx = afterAt.firstIndex(of: "(") else { return }
+        let airName = String(afterAt[afterAt.startIndex..<parenIdx])
+
+        let argsStart = afterAt.index(after: parenIdx)
+        var depth = 1
+        var cursor = argsStart
+        while cursor < afterAt.endIndex && depth > 0 {
+            if afterAt[cursor] == "(" { depth += 1 }
+            else if afterAt[cursor] == ")" { depth -= 1 }
+            if depth > 0 { cursor = afterAt.index(after: cursor) }
+        }
+        let argsStr = String(afterAt[argsStart..<cursor])
+        let argParts = splitTypedOperands(argsStr, count: 20)
+        let resolvedArgs = argParts.map { resolveIROperand($0.value, ctx: ctx) }
+
+        let mapping = lookupAirBuiltin(airName)
+        if let m = mapping {
+            let mslExpr = generateMSLForAirCall(
+                mapping: m, airName: airName,
+                args: resolvedArgs, argTypes: argParts.map { $0.type }
+            )
+            ctx.emit("\(mslExpr);")
+        } else {
+            let argList = resolvedArgs.prefix(4).joined(separator: ", ")
+            ctx.emit("/* \(airName)(\(argList)) */;")
+        }
+    }
+
+    /// 根据 air→MSL 映射生成 MSL 表达式
+    private static func generateMSLForAirCall(
+        mapping: AirBuiltinMapping,
+        airName: String,
+        args: [String],
+        argTypes: [String]
+    ) -> String {
+        // 特殊处理: air.convert
+        if airName.hasPrefix("air.convert") {
+            let targetType = parseAirConvertTargetType(airName) ?? "float"
+            let srcArg = args.first ?? "0"
+            return "\(targetType)(\(srcArg))"
+        }
+
+        // 纹理方法调用: tex.sample(sampler, coord, ...)
+        if mapping.isMethodCall {
+            if args.count >= 2 {
+                let obj = args[0]
+                let methodArgs = Array(args.dropFirst())
+                // 过滤内部参数（i1, i32 常量等控制标志）
+                let userArgs = filterTextureArgs(methodArgs, argTypes: Array(argTypes.dropFirst()))
+                return "\(obj).\(mapping.mslFunction)(\(userArgs.joined(separator: ", ")))"
+            }
+            return "\(mapping.mslFunction)(/* args */)"
+        }
+
+        // barrier 特殊处理
+        if mapping.mslFunction == "threadgroup_barrier" || mapping.mslFunction == "simdgroup_barrier" {
+            let flags = args.first ?? "0"
+            let flagStr = barrierFlagsToMSL(flags)
+            return "\(mapping.mslFunction)(\(flagStr))"
+        }
+
+        // 普通函数调用
+        let paramCount = mapping.paramCount > 0 ? mapping.paramCount : args.count
+        let callArgs = Array(args.prefix(paramCount))
+        return "\(mapping.mslFunction)(\(callArgs.joined(separator: ", ")))"
+    }
+
+    /// 翻译 phi 节点（E-004e4b 完善，当前生成注释占位）
+    private static func translatePhi(lhs: String, rhs: String, ctx: SSAContext) {
+        // phi <type> [<val>, <label>], [<val>, <label>], ...
+        // 当前简化：取第一个值
+        let cleaned = rhs.replacingOccurrences(of: "phi ", with: "")
+        // 找第一个 [ ] 中的值
+        if let bracketStart = cleaned.firstIndex(of: "["),
+           let bracketEnd = cleaned.firstIndex(of: "]") {
+            let inner = cleaned[cleaned.index(after: bracketStart)..<bracketEnd]
+            let phiParts = inner.components(separatedBy: ",")
+            if let firstVal = phiParts.first?.trimmingCharacters(in: .whitespaces) {
+                let val = resolveIROperand(firstVal, ctx: ctx)
+                ctx.emitAutoAssign(lhs, expr: val + " /* phi */")
+                return
+            }
+        }
+        ctx.define(lhs, expr: "/* phi: \(rhs.prefix(60)) */")
+    }
+
+    /// 翻译 alloca
+    private static func translateAlloca(lhs: String, rhs: String, ctx: SSAContext) {
+        let cleaned = rhs.replacingOccurrences(of: "alloca ", with: "")
+        let typePart = cleaned.components(separatedBy: ",").first ?? cleaned
+        let mslType = irScalarTypeToMSL(typePart.trimmingCharacters(in: .whitespaces))
+        let temp = ctx.freshTemp()
+        ctx.emit("\(mslType) \(temp);")
+        ctx.define(lhs, expr: "&\(temp)", type: mslType + "*")
+    }
+
+    /// 翻译 ret 指令
+    private static func translateRet(_ line: String, ctx: SSAContext) {
+        let cleaned = line.replacingOccurrences(of: "ret ", with: "").trimmingCharacters(in: .whitespaces)
+        if cleaned == "void" {
+            ctx.emit("return;")
+            return
+        }
+        // ret <type> <value>
+        let parts = splitTypedOperands(cleaned, count: 1)
+        if let first = parts.first {
+            let val = resolveIROperand(first.value, ctx: ctx)
+            ctx.emit("return \(val);")
+        } else {
+            ctx.emit("return;")
+        }
+    }
+
+    /// 翻译 br 指令（条件/无条件跳转 → 注释）
+    private static func translateBr(_ line: String, ctx: SSAContext) {
+        let cleaned = line.replacingOccurrences(of: "br ", with: "").trimmingCharacters(in: .whitespaces)
+        if cleaned.hasPrefix("i1 ") {
+            // 条件跳转: br i1 %cond, label %trueBB, label %falseBB
+            let condParts = cleaned.components(separatedBy: ",")
+            if condParts.count >= 1 {
+                let condStr = condParts[0].replacingOccurrences(of: "i1 ", with: "")
+                    .trimmingCharacters(in: .whitespaces)
+                let cond = resolveIROperand(condStr, ctx: ctx)
+                ctx.emit("if (\(cond)) { /* branch */ }")
+            }
+        }
+        // 无条件跳转忽略
+    }
+
+    // MARK: - IR Parsing Helpers (E-004e4a)
+
+    /// 表示一个带类型的 IR 操作数
+    private struct TypedOperand {
+        let type: String
+        let value: String
+        let rawLength: Int
+    }
+
+    /// 分割带类型的 IR 操作数列表。
+    /// IR 中的操作数格式: <type> <value>, <type> <value>, ...
+    /// 其中 type 可能是 <4 x float> 等复合形式。
+    private static func splitTypedOperands(_ text: String, count: Int) -> [TypedOperand] {
+        var results: [TypedOperand] = []
+        var remaining = text.trimmingCharacters(in: .whitespaces)
+        var consumed = 0
+
+        for _ in 0..<count {
+            if remaining.isEmpty { break }
+
+            // 跳过逗号
+            if remaining.hasPrefix(",") {
+                remaining = String(remaining.dropFirst()).trimmingCharacters(in: .whitespaces)
+                consumed += 1
+            }
+
+            // 去掉 metadata 尾巴 (!tbaa !xx, !alias.scope !xx 等)
+            if remaining.hasPrefix("!") { break }
+
+            // 去掉 align N
+            if remaining.hasPrefix("align ") { break }
+
+            // 解析类型
+            let (type, afterType) = parseIRType(remaining)
+            if type.isEmpty { break }
+            remaining = afterType.trimmingCharacters(in: .whitespaces)
+
+            // 解析值（到下一个逗号、metadata 或结尾）
+            let (value, afterValue) = parseIRValue(remaining)
+            remaining = afterValue.trimmingCharacters(in: .whitespaces)
+
+            let rawLen = text.count - remaining.count - consumed
+            results.append(TypedOperand(type: type, value: value, rawLength: rawLen))
+        }
+
+        return results
+    }
+
+    /// 解析 IR 类型前缀，返回 (type, remaining)
+    private static func parseIRType(_ text: String) -> (String, String) {
+        var s = text.trimmingCharacters(in: .whitespaces)
+
+        // 向量类型: <N x T>
+        if s.hasPrefix("<") {
+            var depth = 0
+            var i = s.startIndex
+            while i < s.endIndex {
+                if s[i] == "<" { depth += 1 }
+                else if s[i] == ">" { depth -= 1 }
+                i = s.index(after: i)
+                if depth == 0 { break }
+            }
+            let type = String(s[s.startIndex..<i])
+            let rest = String(s[i...])
+            return (type, rest)
+        }
+
+        // 结构体类型: { <4 x float>, i8 }
+        if s.hasPrefix("{") {
+            var depth = 0
+            var i = s.startIndex
+            while i < s.endIndex {
+                if s[i] == "{" { depth += 1 }
+                else if s[i] == "}" { depth -= 1 }
+                i = s.index(after: i)
+                if depth == 0 { break }
+            }
+            let type = String(s[s.startIndex..<i])
+            let rest = String(s[i...])
+            return (type, rest)
+        }
+
+        // packed struct: <{ ... }>
+        if s.hasPrefix("<{") {
+            var depth = 0
+            var i = s.startIndex
+            while i < s.endIndex {
+                if s[i] == "<" && s.index(after: i) < s.endIndex && s[s.index(after: i)] == "{" { depth += 1 }
+                else if s[i] == "}" && s.index(after: i) < s.endIndex && s[s.index(after: i)] == ">" { depth -= 1 }
+                i = s.index(after: i)
+                if depth == 0 { i = s.index(after: i); break }
+            }
+            let type = String(s[s.startIndex..<i])
+            let rest = String(s[i...])
+            return (type, rest)
+        }
+
+        // ptr addrspace(N)
+        if s.hasPrefix("ptr") {
+            // 可能是 "ptr addrspace(N)" 或只是 "ptr"
+            let words = s.prefix(30)
+            if words.contains("addrspace(") {
+                if let closeP = s.range(of: ")") {
+                    let endIdx = s.index(after: closeP.upperBound)
+                    let type = String(s[s.startIndex..<closeP.upperBound])
+                    let rest = endIdx < s.endIndex ? String(s[endIdx...]) : ""
+                    return (type, rest)
+                }
+            }
+            // 处理 ptr 后面跟的修饰符
+            var endIdx = s.index(s.startIndex, offsetBy: 3)
+            while endIdx < s.endIndex {
+                let c = s[endIdx]
+                if c == "%" || c == "@" || c == "-" || c.isNumber ||
+                   c == "<" || c == "{" || c == "(" || c == "!" {
+                    break
+                }
+                // 跳过空格和修饰符关键字
+                if c == " " || c == "\t" {
+                    let afterSpace = String(s[endIdx...]).trimmingCharacters(in: .whitespaces)
+                    let modifiers = ["addrspace(", "nocapture", "readonly", "writeonly",
+                                     "align ", "dereferenceable(", "nonnull", "captures(",
+                                     "\"air-buffer-no-alias\""]
+                    var foundMod = false
+                    for mod in modifiers {
+                        if afterSpace.hasPrefix(mod) {
+                            foundMod = true
+                            break
+                        }
+                    }
+                    if !foundMod { break }
+                }
+                endIdx = s.index(after: endIdx)
+            }
+            let type = String(s[s.startIndex..<endIdx]).trimmingCharacters(in: .whitespaces)
+            let rest = String(s[endIdx...])
+            return (type, rest)
+        }
+
+        // 简单类型: void, float, half, i1, i8, i16, i32, i64, double
+        let simpleTypes = ["void", "double", "float", "half", "i64", "i32", "i16", "i8", "i1"]
+        for st in simpleTypes {
+            if s.hasPrefix(st) {
+                let afterType = s.dropFirst(st.count)
+                if afterType.isEmpty || afterType.first == " " || afterType.first == "," {
+                    // 检查是否有 addrspace 后缀
+                    let rest = String(afterType).trimmingCharacters(in: .whitespaces)
+                    if rest.hasPrefix("addrspace(") {
+                        if let closeP = rest.range(of: ")") {
+                            let fullType = st + " " + String(rest[rest.startIndex...closeP.lowerBound])
+                            let afterFull = String(rest[closeP.upperBound...])
+                            return (fullType, afterFull)
+                        }
+                    }
+                    return (st, String(afterType))
+                }
+            }
+        }
+
+        // %struct.xxx 或 %"xxx"
+        if s.hasPrefix("%") {
+            let end = s.firstIndex(where: { $0 == " " || $0 == "," }) ?? s.endIndex
+            let type = String(s[s.startIndex..<end])
+            let rest = String(s[end...])
+            return (type, rest)
+        }
+
+        // 无法识别
+        return ("", s)
+    }
+
+    /// 解析 IR 值，到下一个逗号或 metadata 标记为止
+    private static func parseIRValue(_ text: String) -> (String, String) {
+        var s = text
+        // 去掉前导空格
+        while s.hasPrefix(" ") || s.hasPrefix("\t") {
+            s = String(s.dropFirst())
+        }
+
+        var depth = 0
+        var i = s.startIndex
+        while i < s.endIndex {
+            let c = s[i]
+            if c == "<" || c == "(" || c == "{" || c == "[" { depth += 1 }
+            else if c == ">" || c == ")" || c == "}" || c == "]" { depth -= 1 }
+
+            // 逗号在顶层表示操作数分隔
+            if c == "," && depth == 0 { break }
+            // metadata 标记
+            if c == "!" && depth == 0 {
+                // 确认不是 "!0" 数值型操作数
+                let rest = s[i...]
+                if rest.hasPrefix("!tbaa") || rest.hasPrefix("!alias") ||
+                   rest.hasPrefix("!noalias") || rest.hasPrefix("!range") {
+                    break
+                }
+            }
+            i = s.index(after: i)
+        }
+
+        let value = String(s[s.startIndex..<i]).trimmingCharacters(in: .whitespaces)
+        let remaining = i < s.endIndex ? String(s[i...]) : ""
+        return (value, remaining)
+    }
+
+    /// 解析二元运算的操作数: [flags] <type> <op1>, <op2>
+    private static func parseBinaryOperands(
+        _ rhs: String,
+        skipKeywords: [String]
+    ) -> (String, [String]) {
+        var s = rhs
+        // 跳过 opcode（已经在外面 strip 了）
+        // 跳过 flags
+        var words = s.components(separatedBy: " ").filter { !$0.isEmpty }
+        // 去掉开头的 opcode（如果还留着）
+        while let first = words.first, skipKeywords.contains(first) {
+            words.removeFirst()
+        }
+        s = words.joined(separator: " ")
+
+        let parts = splitTypedOperands(s, count: 2)
+        if parts.count >= 2 {
+            return (parts[0].type, [parts[0].value, parts[1].value])
+        } else if parts.count == 1 {
+            // type op1, op2 格式（type 共享）
+            return (parts[0].type, [parts[0].value])
+        }
+        return ("", [])
+    }
+
+    /// 分割 select 的三个操作数
+    private static func splitSelectOperands(_ text: String) -> [String] {
+        let parts = splitTypedOperands(text, count: 3)
+        return parts.map { $0.value }
+    }
+
+    /// 解析 IR 操作数为 MSL 表达式
+    private static func resolveIROperand(_ operand: String, ctx: SSAContext) -> String {
+        let s = operand.trimmingCharacters(in: .whitespaces)
+
+        // SSA 名
+        if s.hasPrefix("%") { return ctx.resolve(s) }
+
+        // 布尔常量
+        if s == "true" { return "true" }
+        if s == "false" { return "false" }
+
+        // 特殊常量
+        if s == "zeroinitializer" { return "0" }
+        if s == "undef" || s == "poison" { return "0" }
+        if s == "null" { return "nullptr" }
+
+        // 向量 splat: splat (float 2.000000e+00)
+        if s.hasPrefix("splat (") {
+            let inner = String(s.dropFirst("splat (".count).dropLast())
+            let innerParts = inner.components(separatedBy: " ")
+            if innerParts.count >= 2 {
+                return formatIRLiteral(innerParts.dropFirst().joined(separator: " "))
+            }
+            return s
+        }
+
+        // 向量常量: <float 1.0, float 0.0, ...>
+        if s.hasPrefix("<") && s.hasSuffix(">") && !s.contains(" x ") {
+            return parseVectorLiteral(s)
+        }
+
+        // 浮点字面量
+        if s.contains("e+") || s.contains("e-") || s.contains("0x") {
+            return formatIRLiteral(s)
+        }
+
+        // 整数字面量
+        if s.first?.isNumber == true || (s.first == "-" && s.count > 1) {
+            return s
+        }
+
+        return s
+    }
+
+    /// 格式化 IR 浮点字面量为 MSL
+    private static func formatIRLiteral(_ s: String) -> String {
+        if s.hasPrefix("0x") {
+            // 十六进制浮点 → Double → 十进制
+            let hex = String(s.dropFirst(2))
+            if let bits = UInt64(hex, radix: 16) {
+                let d = Double(bitPattern: bits)
+                if d == 0.0 { return "0.0" }
+                return String(format: "%.6g", d)
+            }
+            return s
+        }
+        // 科学计数法
+        if let d = Double(s) {
+            if d == 0.0 { return "0.0" }
+            if d == 1.0 { return "1.0" }
+            if d == 2.0 { return "2.0" }
+            if d == 0.5 { return "0.5" }
+            if d == 3.0 { return "3.0" }
+            return String(format: "%.6g", d)
+        }
+        return s
+    }
+
+    /// 解析 IR 向量字面量: <float 1.0, float 0.0, ...> → float4(1.0, 0.0, ...)
+    private static func parseVectorLiteral(_ s: String) -> String {
+        let inner = String(s.dropFirst().dropLast())
+        let elems = inner.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        var values: [String] = []
+        for elem in elems {
+            let parts = elem.components(separatedBy: " ")
+            if parts.count >= 2 {
+                values.append(formatIRLiteral(parts.last ?? "0"))
+            } else {
+                values.append(formatIRLiteral(elem))
+            }
+        }
+        let dim = values.count
+        let elemType = elems.first?.components(separatedBy: " ").first ?? "float"
+        let mslType = irScalarTypeToMSL(elemType)
+        return "\(mslType)\(dim)(\(values.joined(separator: ", ")))"
+    }
+
+    /// 解析向量常量 mask: <i32 0, i32 1, i32 2, i32 poison>
+    private static func parseVectorConstant(_ mask: String) -> [Int] {
+        let inner: String
+        if mask.hasPrefix("<") && mask.hasSuffix(">") {
+            inner = String(mask.dropFirst().dropLast())
+        } else {
+            inner = mask
+        }
+
+        if inner.contains("zeroinitializer") {
+            return [0, 0, 0, 0]
+        }
+
+        return inner.components(separatedBy: ",").map { part in
+            let trimmed = part.trimmingCharacters(in: .whitespaces)
+            if trimmed.contains("poison") || trimmed.contains("undef") { return -1 }
+            // "i32 0" → 0
+            let numStr = trimmed.components(separatedBy: " ").last ?? trimmed
+            return Int(numStr) ?? -1
+        }
+    }
+
+    /// 向量索引到 swizzle 字符
+    private static func vectorIndexToSwizzle(_ idx: Int) -> String {
+        switch idx {
+        case 0: return "x"
+        case 1: return "y"
+        case 2: return "z"
+        case 3: return "w"
+        default: return "[\(idx)]"
+        }
+    }
+
+    /// 从 IR 向量类型提取维度
+    private static func extractVectorDim(_ irType: String) -> Int {
+        // <4 x float> → 4
+        if irType.hasPrefix("<") && irType.contains(" x ") {
+            let inner = irType.dropFirst().prefix(while: { $0 != " " })
+            return Int(inner) ?? 4
+        }
+        return 1
+    }
+
+    /// 构造指定维度的向量类型
+    private static func vectorTypeWithDim(_ baseType: String, dim: Int) -> String {
+        if dim <= 1 { return baseType }
+        // 从 <4 x float> 中提取元素类型
+        if baseType.hasPrefix("<") && baseType.contains(" x ") {
+            let inner = String(baseType.dropFirst().dropLast())
+            let parts = inner.components(separatedBy: " x ")
+            if parts.count >= 2 {
+                let elemType = parts.last?.trimmingCharacters(in: .whitespaces) ?? "float"
+                return "<\(dim) x \(elemType)>"
+            }
+        }
+        return baseType
+    }
+
+    /// 去掉 fast-math 标志
+    private static func stripFastMathFlags(_ s: String) -> String {
+        let flags = ["fast", "nnan", "ninf", "nsz", "arcp", "contract", "reassoc", "afn"]
+        var result = s
+        for flag in flags {
+            result = result.replacingOccurrences(of: flag + " ", with: "")
+        }
+        return result.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// fcmp 条件码到 MSL 运算符
+    private static func fcmpCondToMSL(_ cond: String) -> String {
+        switch cond {
+        case "oeq", "ueq": return "=="
+        case "one", "une": return "!="
+        case "ogt", "ugt": return ">"
+        case "oge", "uge": return ">="
+        case "olt", "ult": return "<"
+        case "ole", "ule": return "<="
+        case "ord": return "== /* ordered */"
+        case "uno": return "!= /* unordered */"
+        case "true": return "== /* always true */"
+        case "false": return "!= /* always false */"
+        default: return "/* \(cond) */"
+        }
+    }
+
+    /// icmp 条件码到 MSL 运算符
+    private static func icmpCondToMSL(_ cond: String) -> String {
+        switch cond {
+        case "eq": return "=="
+        case "ne": return "!="
+        case "ugt", "sgt": return ">"
+        case "uge", "sge": return ">="
+        case "ult", "slt": return "<"
+        case "ule", "sle": return "<="
+        default: return "/* \(cond) */"
+        }
+    }
+
+    /// barrier 标志常量到 MSL mem_flags
+    private static func barrierFlagsToMSL(_ flags: String) -> String {
+        switch flags {
+        case "0": return "mem_flags::mem_none"
+        case "1": return "mem_flags::mem_device"
+        case "2": return "mem_flags::mem_threadgroup"
+        case "3": return "mem_flags::mem_threadgroup | mem_flags::mem_device"
+        default: return "mem_flags::mem_threadgroup"
+        }
+    }
+
+    /// 过滤纹理 air 调用的内部控制参数，只保留用户可见参数
+    private static func filterTextureArgs(_ args: [String], argTypes: [String]) -> [String] {
+        var result: [String] = []
+        for (i, arg) in args.enumerated() {
+            let type = i < argTypes.count ? argTypes[i] : ""
+            // 跳过 i1 (bool 控制标志) 和 i32 控制参数（但保留坐标/颜色）
+            if type == "i1" { continue }
+            // 跳过零值 i32 控制标志（如 mip level=0, slice=0）
+            if type == "i32" && (arg == "0" || arg == "1" || arg == "2") {
+                continue
+            }
+            // 跳过 <N x i32> zeroinitializer（offset 参数）
+            if arg == "0" && type.contains("x i32") { continue }
+            // 跳过 "0.0" float 控制参数（如 LOD bias）
+            if type == "float" && (arg == "0.0" || arg == "0.000000e+00" ||
+                                    arg.hasPrefix("0.0")) {
+                continue
+            }
+            result.append(arg)
+        }
+        return result
+    }
 
     /// 生成完整的 MSL 源码
     private static func generateMSL(functions: [ParsedShaderFunction]) -> String {
@@ -2364,6 +3667,45 @@ struct IRToMSLConverter {
         _ func_: ParsedShaderFunction,
         safeName: String
     ) -> String {
+        // 如果有函数体 IR，尝试翻译为真实 MSL 语句（E-004e4a）
+        if !func_.irBody.isEmpty {
+            return generateFunctionWithBody(func_, safeName: safeName)
+        }
+        // 回退到 stub 生成
+        return generateStubFunction(func_, safeName: safeName)
+    }
+
+    /// 生成带真实函数体的 MSL 代码（E-004e4a）
+    private static func generateFunctionWithBody(
+        _ func_: ParsedShaderFunction,
+        safeName: String
+    ) -> String {
+        let allParams = generateAllParams(func_.parameters,
+            defaultBuiltin: defaultBuiltinParam(for: func_.shaderType))
+
+        let bodyStatements = translateFunctionBody(func_, irParamList: func_.irSignature)
+
+        let shaderQualifier = func_.shaderType.rawValue
+        let retType = func_.shaderType == .kernel ? "void" : func_.returnType
+
+        var lines: [String] = []
+        lines.append("\(shaderQualifier) \(retType) \(safeName)(\(allParams)) {")
+        for stmt in bodyStatements {
+            lines.append("    \(stmt)")
+        }
+        // 确保非 void 函数有返回值
+        if retType != "void" && !bodyStatements.contains(where: { $0.hasPrefix("return ") }) {
+            lines.append("    return \(defaultReturnValue(for: retType));")
+        }
+        lines.append("}")
+        return lines.joined(separator: "\n")
+    }
+
+    /// 生成 stub 函数（回退路径）
+    private static func generateStubFunction(
+        _ func_: ParsedShaderFunction,
+        safeName: String
+    ) -> String {
         switch func_.shaderType {
         case .vertex:
             return generateVertexFunction(func_, safeName: safeName)
@@ -2371,6 +3713,15 @@ struct IRToMSLConverter {
             return generateFragmentFunction(func_, safeName: safeName)
         case .kernel:
             return generateKernelFunction(func_, safeName: safeName)
+        }
+    }
+
+    /// shader 类型对应的默认内置参数
+    private static func defaultBuiltinParam(for type: ShaderType) -> String {
+        switch type {
+        case .vertex: return "uint vid [[vertex_id]]"
+        case .fragment: return "float4 position [[position]]"
+        case .kernel: return "uint tid [[thread_position_in_grid]]"
         }
     }
 

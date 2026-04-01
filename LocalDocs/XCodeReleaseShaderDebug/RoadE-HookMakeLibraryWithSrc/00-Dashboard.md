@@ -76,7 +76,11 @@ PlayCover 主应用 (macOS)
 | E-004e2 | ↳↳ addrspace → MSL 地址空间限定符完整映射 | ✅ DONE | |
 | E-004e3 | ↳↳ air.* 内建 → MSL 等效调用映射 | ✅ DONE | |
 |  | `IRToMSLConverter.swift` 新增 `AirBuiltinMapping` 映射表（覆盖 84+ 个实际 air.* 内建），包括纹理采样/读写（sample/read/write/get_width/get_height）、同步屏障（wg.barrier/simdgroup.barrier）、数学函数（fast_*/non-fast 全覆盖）、整数位操作（popcount/clz/ctz/extract_bits/reverse_bits）、SIMD group（shuffle/reduce/broadcast/prefix_sum）、原子操作（global/local 全 11 种）、片段导数（dfdx/dfdy/fwidth）、pack/unpack、类型转换（air.convert）。新增 `airStripTypeSuffix()` 去类型后缀、`lookupAirBuiltin()` 查表、`parseAirBuiltinCalls()` 从 IR 提取调用、`parseAirConvertTargetType()` 解析转换目标类型、`airTypeSuffixToMSL()` 类型后缀转 MSL 类型。映射信息集成到 `ParsedShaderFunction.airBuiltinCalls`，生成的 MSL 注释中汇总。验证数据来自 test-data/test_builtins.metal→.air→llvm-dis→.ll（84 个 air 声明）| | |
-| E-004e4 | ↳↳ 完整函数体转换（IR 指令→MSL 语句） | TODO | |
+| E-004e4 | ↳↳ 完整函数体转换（IR 指令→MSL 语句）（已拆分） | 🔄 IN PROGRESS | |
+| E-004e4a | ↳↳↳ IR 函数体解析 + SSA→MSL 翻译框架 + 基础指令集 | ✅ DONE | |
+|  | `IRToMSLConverter.swift` 新增 `SSAContext` 类（SSA 寄存器→MSL 表达式映射、临时变量分配、语句发射）和 `translateFunctionBody()` 入口。翻译 20+ 种 IR 指令：算术（fadd/fmul/fsub/fneg/add/sub/mul/udiv/sdiv/shl/lshr/ashr/and/or/xor）、比较（fcmp/icmp 含全条件码映射）、选择（select→三目运算符）、向量（shufflevector→swizzle/splat、extractelement/insertelement/extractvalue/insertvalue）、内存（load→解引用、store→赋值、getelementptr→数组/结构体索引）、类型转换（zext/sext/trunc/fpext/fptrunc→MSL 类型构造器、bitcast→as_type<>、freeze→透传）、air.* 调用（查映射表生成 MSL 函数/方法调用，含纹理方法、barrier flags→mem_flags、convert→类型构造器）、控制流（ret→return、br→if 占位、phi→首值占位、alloca→局部变量）。`generateFunction` 从 stub 升级为真实函数体生成，空 irBody 时回退到 stub。已通过 PlayTools xcframework 构建验证 | | |
+| E-004e4b | ↳↳↳ 控制流图重建（phi/多基本块→MSL if/else） | TODO | |
+| E-004e4c | ↳↳↳ 复杂类型推断（结构体/数组 GEP 访问路径还原） | TODO | |
 | E-005 | **运行时 library 替换：用带源码的 library 替换原始返回** | TODO | |
 |  | 在 `pc_newLibraryWithData` hook 中，将 E-004e 生成的 MSL 经 `makeLibrary(source:)` 编译后替换原始返回值。需处理：函数签名一致性校验、编译失败 fallback（退回原始 library）、性能优化（缓存已处理的 metallib） | | |
 | E-006 | **端到端验证** | TODO | |
@@ -112,6 +116,10 @@ PlayCover 主应用 (macOS)
 - **air.atomic 带符号性和 scope**：`air.atomic.global.add.u.i32`（global/device 原子 add, unsigned i32）、`air.atomic.local.add.s.i32`（threadgroup 原子 add, signed i32）。strip 时需保留到 op 级别（`air.atomic.global.add`）
 - **air.clz/ctz 多一个 bool 参数**：IR 签名 `air.clz.i32(i32, i1)`，第二个参数是 "is_zero_undef" 标志，MSL 的 `clz(x)` 不需要此参数
 - **纹理 air 内建是方法调用**：`air.sample_texture_2d.v4f32(tex, sampler, coord, ...)` 对应 MSL `tex.sample(sampler, coord, ...)`，第一个参数是 texture 对象而非普通值参数
+- **IR 函数体提取**：`parseIRFunctions` 原来只取 define 行，E-004e4a 改为追踪到 `}` 行收集完整函数体。LLVM IR 的基本块标签有两种格式：纯数字+冒号（`10:`）和名字+冒号（`entry:`），后面可能跟 `; preds = %0, %1` 注释
+- **IR 向量 splat**：LLVM 19+ 使用 `splat (float 2.0)` 替代旧式 `<float 2.0, float 2.0, float 2.0, float 2.0>` 向量常量语法
+- **纹理 air 调用参数过滤**：`air.sample_texture_2d.v4f32` 除了用户可见参数（texture, sampler, coord）外，还有大量 i1/i32 控制标志（offset, bias 开关, LOD bias 值等），需在翻译时过滤
+- **barrier flags 常量映射**：`air.wg.barrier(i32 2, i32 1)` 第一个参数是 mem_flags（1=device, 2=threadgroup, 3=both），第二个是 scope（固定为 1）
 
 ## 参考信息
 

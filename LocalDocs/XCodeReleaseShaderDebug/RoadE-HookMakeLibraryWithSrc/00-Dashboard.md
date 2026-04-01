@@ -43,7 +43,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
-| E-001 | **可行性 PoC：手动 `-frecord-sources` 重编译单个 metallib 并验证 Xcode 能显示源码** | TODO | |
+| E-001 | **可行性 PoC：手动 `-frecord-sources` 重编译单个 metallib 并验证 Xcode 能显示源码** | ✅ DONE | [E-001-PoC](E-001-PoC-frecord-sources.md) |
 |  | 从 QQ飞车 app 包中提取一个 metallib → 用 `xcrun metal` 工具链反编译得到 MSL/IR → 用 `-frecord-sources` 重编译 → 替换回 gputrace → 打开 Xcode 验证 | | |
 | E-002 | **调研 `MTLDevice` 创建 Library 的全部 API 入口** | TODO | |
 |  | 枚举所有需要 hook 的 ObjC selector（`newLibraryWithData:error:`, `newLibraryWithSource:options:error:`, `newLibraryWithURL:error:` 等），确认运行时类名 | | |
@@ -62,7 +62,11 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 （由 agent 不断维护，保持简要，详情写子文档）
 
-_暂无_
+- **Metal 编译器调用**：必须用 `xcrun --sdk macosx metal` 方式调用，不能给 `metal` 传 `-sdk` 参数（它不认识），SDK 选择通过 xcrun 的 `--sdk` 参数完成
+- **SOURCES section**：`-frecord-sources` 在 metallib 中新增 `SOURCES` section（约占原体积的 90%+），包含完整 MSL 源码文本
+- **PRIVATE_METADATA 变化**：带源码版本的 PRIVATE_METADATA 大幅增长（0x18 → 0x27c），包含源文件路径等调试元数据
+- **运行时编译可行**：`MTLDevice.makeLibrary(source:options:)` 在 Apple M4 Pro 上验证通过，函数签名与从 metallib 加载完全一致
+- **PoC 脚本**：`Scripts/poc_e001_frecord_sources.sh` 可重复执行，含 Swift 运行时测试
 
 ## 参考信息
 

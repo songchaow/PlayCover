@@ -30,6 +30,8 @@ private final class LibrarySourceInjectionSwizzles: NSObject {
             dataSize: (data as? Data)?.count,
             extraInfo: nil
         )
+        // E-004: 解析 metallib 二进制格式，提取函数和 section 信息
+        MetallibParser.safeParseAndLog(dispatchData: data, selector: "newLibraryWithData:error:")
         return library
     }
 

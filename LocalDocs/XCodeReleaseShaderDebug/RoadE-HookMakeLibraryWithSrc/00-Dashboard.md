@@ -49,8 +49,11 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 |  | 枚举所有需要 hook 的 ObjC selector（`newLibraryWithData:error:`, `newLibraryWithSource:options:error:`, `newLibraryWithURL:error:` 等），确认运行时类名 | | |
 | E-003 | **在 PlayTools 中实现 makeLibrary swizzle 骨架** | ✅ DONE | [E-003-Swizzle](E-003-LibrarySwizzleSkeleton.md) |
 |  | 参考 `CommandQueueDiscoverySwizzles` 模式，添加 `LibrarySourceInjectionSwizzles` 类，拦截并记录每次 makeLibrary 调用（先 log-only，不修改返回） | | |
-| E-004 | **实现 metallib → MSL 源码提取** | TODO | |
+| E-004 | **实现 metallib → MSL 源码提取**（已拆分） | 🔄 IN PROGRESS | [E-004](E-004-MetallibSourceExtraction.md) |
 |  | 在运行时拦截到 metallib `Data` 后，提取 LLVM Bitcode（参考 MetalLibraryArchive 格式），生成可读 IR 文本或 MSL 伪源码 | | |
+| E-004a | ↳ metallib 二进制格式解析器（MTLB header + section + 函数 tag 解析） | ✅ DONE | |
+| E-004b | ↳ 从 MODULE_LIST 提取函数级 LLVM Bitcode | TODO | |
+| E-004c | ↳ LLVM Bitcode → 可读文本（MSL 伪源码或 IR） | TODO | |
 | E-005 | **实现 MSL 重编译为带源码的 metallib** | TODO | |
 |  | 用提取的源码 + `MTLDevice.makeLibrary(source:options:)` 在运行时重编译，生成自带调试信息的 library 并替换返回 | | |
 | E-006 | **端到端验证** | TODO | |
@@ -73,6 +76,10 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 - **Swizzle 骨架**：`LibrarySourceInjectionSwizzles` 采用与 `CommandQueueDiscoverySwizzles` 完全一致的模式——私有 `NSObject` 子类持有 `@objc dynamic` 替换方法，通过 `class_addMethod` + `method_exchangeImplementations` 安装到设备类上
 - **异步 API 的 hook**：`newLibraryWithSource:options:completionHandler:` 通过包装 `completionHandler` block 记录日志，不阻塞原始回调
 - **`newLibraryWithData:error:` 参数类型**：ObjC 层实际参数类型是 `dispatch_data_t`（桥接为 `__DispatchData`），不是 `NSData`；Swift swizzle 方法签名必须用 `__DispatchData` 才能正确交换
+- **metallib 格式（MTLB）**：文件头通常 56 或 88 字节，magic 为 `MTLB` (0x4D544C42 LE)。四大 section：FunctionList（函数 tag 元数据）、PublicMetadata、PrivateMetadata、Bitcode（LLVM IR）
+- **函数 Tag 格式**：每个函数由 `[4B tag_name][2B size][payload]...ENDT` 序列描述。关键 tag：NAME（函数名）、TYPE（vertex/fragment/kernel）、MDSZ（bitcode 大小）、OFFT（bitcode 偏移）、HASH（SHA256）。SARC tag 特殊，用 4B size
+- **dispatch_data_t → Data 转换**：不能直接 `as? Data`，需通过 `DispatchData.enumerateBytes` 逐段拷贝收集，因为 dispatch_data 可能是不连续的内存区域
+- **SOURCES section**：`-frecord-sources` 编译的 metallib 在四大 section 之后追加 SOURCES section，可能是 bzip2 压缩或纯文本 MSL 源码
 
 ## 参考信息
 

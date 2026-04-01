@@ -308,45 +308,43 @@ E-004e 工作量较大，拆分为四个子任务：
 
 | 文件 | 说明 |
 |------|------|
-| `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift` | 增强地址空间映射和参数类型推断 |
+| `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift` | 增强地址空间映射、IR metadata 解析和参数类型推断 |
 
 #### 改进内容
 
 1. **扩展 `AddressSpace` 枚举**：覆盖 Metal AIR 的全部 7 个地址空间（0-6）：
-   - `thread`(0) — 线程私有内存（默认，无限定符）
-   - `device`(1) — 设备内存，可读写
-   - `constant`(2) — 常量内存，只读
-   - `threadgroup`(3) — 线程组共享内存
-   - `threadgroup_imageblock`(4) — Metal 2+ imageblock
-   - `ray_data`(5) — Metal raytracing
-   - `object_data`(6) — Metal mesh shader
+   - `thread`(0)、`device`(1)、`constant`(2)、`threadgroup`(3)
+   - `threadgroup_imageblock`(4)、`ray_data`(5)、`object_data`(6)
    - 新增 `isBufferAddressSpace`、`isReadOnly`、`isThreadgroupAddressSpace` 辅助属性
 
-2. **新增 `PointerInfo` 结构**：精确描述指针参数信息（地址空间 + 指向元素类型 + 是否 opaque pointer）
+2. **新增 IR Metadata 解析器**（关键改进）：
+   - 解析 `!air.vertex`/`!air.fragment`/`!air.kernel` named metadata
+   - 从 metadata 中提取精确的参数信息：`air.arg_type_name`（MSL 类型名）、`air.arg_name`（参数名）、`air.location_index`（绑定索引）、`air.address_space`（地址空间）、`air.read`/`air.read_write`（读写属性）
+   - 新增 `MetadataArgInfo` / `MetadataFuncInfo` 类型
+   - 新增 `parseIRMetadata()` / `parseMetadataFuncNode()` / `parseMetadataArgNode()` 等解析方法
 
-3. **新增 `extractPointerInfo()` 方法**：从 IR 参数中提取指针信息，支持：
-   - Opaque pointer (LLVM 15+): `ptr addrspace(N)` — 使用启发式推断默认元素类型
-   - Typed pointer (旧式): `float addrspace(1)*`, `<4 x float> addrspace(2)*`, `%struct.X addrspace(1)*`
+3. **新增 `buildParametersFromMetadata()`**：从 metadata 信息构建精确的 `ParsedParameter` 列表，支持 buffer、texture、sampler、stage_in、内置属性等全部参数种类
 
-4. **新增 `irScalarTypeToMSL()` 公共方法**：精确的 IR→MSL 标量/向量类型映射：
-   - 整数: `i1`→`bool`, `i8`→`uint8_t`, `i16`→`short`, `i32`→`int`, `i64`→`long`
-   - 浮点: `float`, `half`, `double`→`float`（MSL 无 double）
-   - 向量: `<4 x float>`→`float4`, `<2 x i32>`→`int2`
-   - 结构体: `%struct.VertexIn`→`VertexIn`
+4. **新增 `generateAllParams()`**：替代原 `generateBufferParams()`，生成包含所有参数类型的完整声明：
+   - buffer: `device T* name [[buffer(N)]]` / `const constant T& name [[buffer(N)]]`
+   - threadgroup: `threadgroup T* name [[threadgroup(N)]]`
+   - texture: `texture2d<float> name [[texture(N)]]`
+   - sampler: `sampler name [[sampler(N)]]`
+   - 内置属性: `uint vid [[vertex_id]]`, `uint tid [[thread_position_in_grid]]` 等
+   - 结构体引用自动检测: 大写开头类型名用 `&` 引用而非 `*` 指针
 
-5. **增强 `ParsedParameter`**：新增 `pointerInfo` 字段和 `mslDeclaration` 计算属性，可自动生成正确的 MSL 参数声明
-
-6. **重写 `generateBufferParams()`**：根据地址空间生成差异化的 MSL 参数声明：
-   - `device` → `device T* name [[buffer(N)]]`
-   - `constant` → `const constant T* name [[buffer(N)]]`
-   - `threadgroup` → `threadgroup T* name [[threadgroup(N)]]`
-
-7. **改进参数绑定索引**：按地址空间分组计算 `bufferIndex`（device/constant 共享 buffer 索引空间，threadgroup 使用独立索引空间）
-
-8. **更新 fragment/kernel 函数生成**：现在也支持 buffer 参数（之前 fragment 不带 buffer，kernel 不带 buffer）
+5. **其他改进**：
+   - `irScalarTypeToMSL()` 公共方法：精确 IR→MSL 标量/向量类型映射
+   - `PointerInfo` 结构 + `extractPointerInfo()` 方法：opaque pointer 和 typed pointer 支持
+   - `isFullyParsed` 标志：有 metadata 信息的函数标记为 fully parsed
+   - `isStructTypeName()` / `cleanTextureTypeName()` 辅助方法
 
 #### 验证
 
+- 编写 5 个测试 MSL shader（vertex/fragment/kernel/多类型/简单 vertex）
+- 编译为 AIR 后用 llvm-dis 反汇编为 LLVM IR 文本（309 行）
+- 确认地址空间映射正确：addrspace(1)=device, addrspace(2)=constant, addrspace(3)=threadgroup ✅
+- 确认 metadata 中包含完整的类型信息：arg_type_name, arg_name, location_index, address_space ✅
+- 发现关键事实：Xcode 16 Metal 编译器使用 100% opaque pointer，类型信息仅在 metadata 中
 - PlayTools xcframework 构建通过（`BUILD SUCCEEDED`）
-- pbxproj 格式验证通过（`plutil -lint`）
 - 无 linter 错误

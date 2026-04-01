@@ -94,6 +94,9 @@ PlayCover 主应用 (macOS)
 - **运行时编译可行**：`MTLDevice.makeLibrary(source:options:)` 在 Apple M4 Pro 上验证通过，函数签名与从 metallib 加载完全一致
 - **Metal AIR 地址空间映射**：Metal 使用 LLVM addrspace(0-6)：0=thread, 1=device, 2=constant, 3=threadgroup, 4=threadgroup_imageblock, 5=ray_data, 6=object_data。`constant` 地址空间在 MSL 中隐含只读语义
 - **LLVM 15+ Opaque Pointer**：新版 LLVM 默认使用 `ptr addrspace(N)` 而非 `float addrspace(1)*`，丢失了指向的元素类型信息，需从上下文推断或使用通用字节指针 `uint8_t*`
+- **IR Metadata 是精确类型信息的唯一来源**：Xcode 16 Metal 编译器生成的 IR 全部使用 opaque pointer，但 `!air.vertex`/`!air.fragment`/`!air.kernel` named metadata 中包含完整的参数信息：`air.arg_type_name`（MSL 类型名）、`air.arg_name`（参数名）、`air.location_index`（绑定索引）、`air.address_space`（地址空间）、`air.read`/`air.read_write`（读写属性）。**必须解析 metadata 才能获取精确类型**
+- **stage_in 参数在 IR 层被展平**：vertex_input/fragment_input 在 IR 的 define 行中是值传递的 `<4 x float> %0, <2 x float> %1`，不是指针参数。metadata 中有 `air.vertex_input`/`air.fragment_input` + `air.location_index` 区分
+- **texture/sampler 也是 ptr addrspace**：texture 是 `ptr addrspace(1)`、sampler 是 `ptr addrspace(2)`，与普通 buffer 相同地址空间，只能通过 metadata 的 `air.texture`/`air.sampler` 标记区分
 - **MSL 不支持 double**：LLVM IR 中的 `double` 类型需降级为 MSL `float`
 - **MTLDevice 运行时类**：Apple Silicon 上的实际类是 GPU family 层类（如 M4 Pro=`AGXG16SDevice`），swizzle 必须通过 `object_getClass(device)` 动态获取
 - **`newLibraryWithData:error:` 参数类型**：ObjC 层实际参数类型是 `dispatch_data_t`（桥接为 `__DispatchData`），不是 `NSData`

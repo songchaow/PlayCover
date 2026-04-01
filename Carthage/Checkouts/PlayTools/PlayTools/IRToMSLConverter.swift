@@ -10,10 +10,12 @@
 //  - E-004e1: 基础骨架 + stub MSL 生成 ✅
 //  - E-004e2: addrspace → MSL 地址空间限定符完整映射 ✅
 //    · 扩展 AddressSpace 枚举覆盖 Metal 2+ 地址空间 (0-6)
-//    · 从 IR 参数中精确提取指针指向的元素类型 (opaque ptr / typed ptr)
+//    · 解析 IR metadata (!air.vertex/!air.fragment/!air.kernel) 获取精确参数信息
+//    · 从 metadata 提取: air.arg_type_name, air.arg_name, air.location_index,
+//      air.address_space, air.read/air.read_write, air.buffer/air.texture/air.sampler
 //    · 生成正确的 MSL 参数声明 (地址空间 + 精确元素类型 + 属性标注)
-//    · 支持 const/non-const 推断 (constant → const device)
-//    · 区分 buffer/threadgroup/stage_in 等不同 attribute 类型
+//    · 支持 const/non-const 推断 (constant + air.read → const constant)
+//    · 区分 buffer/threadgroup/texture/sampler/vertex_input 等参数类型
 //
 //  后续阶段将逐步提升转换保真度：
 //  - E-004e3: air.* 内建 → MSL 等效调用
@@ -220,6 +222,308 @@ struct IRToMSLConverter {
         }
     }
 
+    // MARK: - IR Metadata Types
+
+    /// 从 IR metadata 中解析出的参数信息。
+    ///
+    /// Metal AIR 在 LLVM IR 的 named metadata (!air.vertex, !air.fragment, !air.kernel)
+    /// 中包含完整的函数签名信息，包括参数类型名、参数名、绑定索引等。
+    /// 这些信息在 opaque pointer 时代（LLVM 15+）是获取精确类型的唯一途径。
+    struct MetadataArgInfo {
+        /// 参数在 IR define 中的位置索引
+        let argIndex: Int
+        /// 参数种类: "air.buffer", "air.texture", "air.sampler",
+        /// "air.vertex_input", "air.fragment_input", "air.vertex_id",
+        /// "air.thread_position_in_grid" 等
+        let kind: String
+        /// MSL 类型名 (来自 "air.arg_type_name"): "float4", "uint", "Uniforms" 等
+        let typeName: String
+        /// MSL 参数名 (来自 "air.arg_name"): "positions", "uniforms" 等
+        let argName: String
+        /// buffer/texture/sampler 绑定索引 (来自 "air.location_index")
+        let locationIndex: Int?
+        /// 地址空间 (来自 "air.address_space")
+        let addressSpace: Int?
+        /// 是否只读 (有 "air.read" 标记)
+        let isReadOnly: Bool
+    }
+
+    /// 从 IR metadata 中解析出的函数信息
+    struct MetadataFuncInfo {
+        /// 函数名
+        let name: String
+        /// shader 类型
+        let shaderType: ShaderType
+        /// 参数列表（按 argIndex 排序）
+        let args: [MetadataArgInfo]
+    }
+
+    // MARK: - IR Metadata Parsing
+
+    /// 从 IR 文本中解析 !air.vertex / !air.fragment / !air.kernel metadata，
+    /// 提取每个 shader 函数的完整参数信息。
+    ///
+    /// IR metadata 格式示例:
+    /// ```
+    /// !air.vertex = !{!9, !22}          ← 顶层：列出所有 vertex 函数
+    /// !9 = !{ptr @test_vertex, !10, !14} ← 函数节点：函数指针 + 返回描述 + 参数描述
+    /// !14 = !{!15, !16, !17, !18, !20, !21}  ← 参数列表节点
+    /// !18 = !{i32 3, !"air.buffer", !"air.buffer_size", i32 144,
+    ///         !"air.location_index", i32 0, i32 1, !"air.read",
+    ///         !"air.address_space", i32 2,
+    ///         !"air.arg_type_name", !"Uniforms", !"air.arg_name", !"uniforms"}
+    /// ```
+    private static func parseIRMetadata(_ irText: String) -> [MetadataFuncInfo] {
+        let lines = irText.components(separatedBy: "\n")
+
+        // Step 1: 构建 metadata 节点表 (!N → content)
+        var metadataNodes: [String: String] = [:]
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // 匹配 !N = !{...} 或 !N = distinct !{...}
+            guard trimmed.hasPrefix("!") else { continue }
+            guard let eqRange = trimmed.range(of: " = ") else { continue }
+            let nodeId = String(trimmed[trimmed.startIndex..<eqRange.lowerBound])
+            var content = String(trimmed[eqRange.upperBound...])
+            if content.hasPrefix("distinct ") {
+                content = String(content.dropFirst("distinct ".count))
+            }
+            metadataNodes[nodeId] = content
+        }
+
+        // Step 2: 找到 !air.vertex, !air.fragment, !air.kernel 的入口
+        var results: [MetadataFuncInfo] = []
+
+        let shaderTypeMap: [(String, ShaderType)] = [
+            ("!air.vertex", .vertex),
+            ("!air.fragment", .fragment),
+            ("!air.kernel", .kernel),
+        ]
+
+        for (metaKey, shaderType) in shaderTypeMap {
+            // 找 !air.vertex = !{!9, !22} 这样的行
+            guard let topContent = metadataNodes[metaKey] else { continue }
+            let funcNodeIds = parseMetadataRefList(topContent)
+
+            for funcNodeId in funcNodeIds {
+                guard let funcContent = metadataNodes[funcNodeId] else { continue }
+                if let funcInfo = parseMetadataFuncNode(
+                    funcContent,
+                    shaderType: shaderType,
+                    nodes: metadataNodes,
+                    irText: irText
+                ) {
+                    results.append(funcInfo)
+                }
+            }
+        }
+
+        return results
+    }
+
+    /// 解析 metadata 引用列表: !{!9, !22} → ["!9", "!22"]
+    private static func parseMetadataRefList(_ content: String) -> [String] {
+        // content 格式: !{!9, !22} 或 !{}
+        guard content.hasPrefix("!{") && content.hasSuffix("}") else { return [] }
+        let inner = String(content.dropFirst(2).dropLast())
+        if inner.trimmingCharacters(in: .whitespaces).isEmpty { return [] }
+
+        return inner.components(separatedBy: ",").compactMap { part in
+            let trimmed = part.trimmingCharacters(in: .whitespaces)
+            return trimmed.hasPrefix("!") ? trimmed : nil
+        }
+    }
+
+    /// 解析函数 metadata 节点。
+    ///
+    /// 格式: !{ptr @test_vertex, !10, !14}
+    /// - 第一个元素: 函数指针 (ptr @name)
+    /// - 第二个元素: 返回值描述引用
+    /// - 第三个元素: 参数列表引用
+    private static func parseMetadataFuncNode(
+        _ content: String,
+        shaderType: ShaderType,
+        nodes: [String: String],
+        irText: String
+    ) -> MetadataFuncInfo? {
+        guard content.hasPrefix("!{") && content.hasSuffix("}") else { return nil }
+        let inner = String(content.dropFirst(2).dropLast())
+
+        // 提取函数名: "ptr @test_vertex" 或 "ptr @\"quoted.name\""
+        let funcName: String
+        if let atRange = inner.range(of: "@") {
+            let afterAt = inner[atRange.upperBound...]
+            if afterAt.hasPrefix("\"") {
+                let nameStart = afterAt.index(after: afterAt.startIndex)
+                if let quoteEnd = afterAt[nameStart...].firstIndex(of: "\"") {
+                    funcName = String(afterAt[nameStart..<quoteEnd])
+                } else {
+                    return nil
+                }
+            } else {
+                let nameEnd = afterAt.firstIndex(where: { $0 == "," || $0 == " " }) ?? afterAt.endIndex
+                funcName = String(afterAt[afterAt.startIndex..<nameEnd])
+            }
+        } else {
+            return nil
+        }
+
+        // 找到参数列表引用（第三个 !N 引用）
+        let refs = parseMetadataRefList(content)
+        guard refs.count >= 3 else {
+            // 至少需要 函数指针 + 返回描述 + 参数列表
+            return MetadataFuncInfo(name: funcName, shaderType: shaderType, args: [])
+        }
+
+        let argsNodeId = refs[2]  // 第三个引用是参数列表
+        guard let argsContent = nodes[argsNodeId] else {
+            return MetadataFuncInfo(name: funcName, shaderType: shaderType, args: [])
+        }
+
+        // 解析参数列表: !{!15, !16, !17, !18, !20, !21}
+        let argNodeIds = parseMetadataRefList(argsContent)
+        var args: [MetadataArgInfo] = []
+
+        for argNodeId in argNodeIds {
+            guard let argContent = nodes[argNodeId] else { continue }
+            if let argInfo = parseMetadataArgNode(argContent) {
+                args.append(argInfo)
+            }
+        }
+
+        return MetadataFuncInfo(name: funcName, shaderType: shaderType, args: args)
+    }
+
+    /// 解析单个参数 metadata 节点。
+    ///
+    /// 格式示例:
+    /// ```
+    /// !{i32 3, !"air.buffer", !"air.buffer_size", i32 144,
+    ///   !"air.location_index", i32 0, i32 1, !"air.read",
+    ///   !"air.address_space", i32 2,
+    ///   !"air.arg_type_name", !"Uniforms", !"air.arg_name", !"uniforms"}
+    ///
+    /// !{i32 5, !"air.vertex_id", !"air.arg_type_name", !"uint", !"air.arg_name", !"vid"}
+    /// ```
+    private static func parseMetadataArgNode(_ content: String) -> MetadataArgInfo? {
+        guard content.hasPrefix("!{") && content.hasSuffix("}") else { return nil }
+        let inner = String(content.dropFirst(2).dropLast())
+        let tokens = splitMetadataTokens(inner)
+
+        guard tokens.count >= 2 else { return nil }
+
+        // 第一个 token: i32 N (参数索引)
+        let argIndex: Int
+        if tokens[0].hasPrefix("i32 ") {
+            argIndex = Int(String(tokens[0].dropFirst(4))) ?? 0
+        } else {
+            return nil
+        }
+
+        // 第二个 token: !"air.buffer" 或 !"air.vertex_id" 等（参数种类）
+        let kind = unquoteMetadataString(tokens[1])
+
+        // 扫描后续 token 提取 key-value 对
+        var typeName = ""
+        var argName = ""
+        var locationIndex: Int?
+        var addressSpace: Int?
+        var isReadOnly = false
+
+        var i = 2
+        while i < tokens.count {
+            let token = unquoteMetadataString(tokens[i])
+
+            switch token {
+            case "air.arg_type_name":
+                if i + 1 < tokens.count {
+                    typeName = unquoteMetadataString(tokens[i + 1])
+                    i += 2
+                } else { i += 1 }
+            case "air.arg_name":
+                if i + 1 < tokens.count {
+                    argName = unquoteMetadataString(tokens[i + 1])
+                    i += 2
+                } else { i += 1 }
+            case "air.location_index":
+                if i + 1 < tokens.count {
+                    locationIndex = parseMetadataInt(tokens[i + 1])
+                    i += 2
+                } else { i += 1 }
+            case "air.address_space":
+                if i + 1 < tokens.count {
+                    addressSpace = parseMetadataInt(tokens[i + 1])
+                    i += 2
+                } else { i += 1 }
+            case "air.read":
+                isReadOnly = true
+                i += 1
+            case "air.read_write":
+                isReadOnly = false
+                i += 1
+            default:
+                i += 1
+            }
+        }
+
+        return MetadataArgInfo(
+            argIndex: argIndex,
+            kind: kind,
+            typeName: typeName,
+            argName: argName.isEmpty ? "arg\(argIndex)" : argName,
+            locationIndex: locationIndex,
+            addressSpace: addressSpace,
+            isReadOnly: isReadOnly
+        )
+    }
+
+    /// 分割 metadata 节点内容为 token 列表。
+    /// 处理逗号分割，但保持 !{} 嵌套。
+    private static func splitMetadataTokens(_ content: String) -> [String] {
+        var tokens: [String] = []
+        var current = ""
+        var depth = 0
+
+        for char in content {
+            if char == "{" || char == "(" || char == "[" { depth += 1 }
+            else if char == "}" || char == ")" || char == "]" { depth -= 1 }
+
+            if char == "," && depth == 0 {
+                let trimmed = current.trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty { tokens.append(trimmed) }
+                current = ""
+            } else {
+                current.append(char)
+            }
+        }
+        let trimmed = current.trimmingCharacters(in: .whitespaces)
+        if !trimmed.isEmpty { tokens.append(trimmed) }
+        return tokens
+    }
+
+    /// 去掉 metadata 字符串的引号: !"air.buffer" → "air.buffer"
+    private static func unquoteMetadataString(_ token: String) -> String {
+        var s = token
+        if s.hasPrefix("!\"") && s.hasSuffix("\"") {
+            s = String(s.dropFirst(2).dropLast())
+        } else if s.hasPrefix("!") {
+            s = String(s.dropFirst())
+        }
+        if s.hasPrefix("\"") && s.hasSuffix("\"") {
+            s = String(s.dropFirst().dropLast())
+        }
+        return s
+    }
+
+    /// 从 metadata token 中提取整数: "i32 2" → 2
+    private static func parseMetadataInt(_ token: String) -> Int? {
+        let trimmed = token.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("i32 ") {
+            return Int(String(trimmed.dropFirst(4)))
+        }
+        return Int(trimmed)
+    }
+
     // MARK: - Public API
 
     /// 将 LLVM IR 文本转换为 MSL 源码。
@@ -241,17 +545,21 @@ struct IRToMSLConverter {
 
         let startTime = CFAbsoluteTimeGetCurrent()
 
-        // 1. 解析 IR 中的函数定义
+        // 1. 解析 IR metadata，获取精确的 shader 函数签名信息
+        let metadataFuncs = parseIRMetadata(irText)
+
+        // 2. 解析 IR 中的函数定义
         let (irFunctions, totalCount) = parseIRFunctions(irText)
 
-        // 2. 结合 metallib 函数信息，识别 shader 函数
+        // 3. 结合 metallib 函数信息和 metadata，识别 shader 函数
         let shaderFunctions = identifyShaderFunctions(
             irFunctions: irFunctions,
             metallibNames: functionNames,
-            metallibTypes: functionTypes
+            metallibTypes: functionTypes,
+            metadataFuncs: metadataFuncs
         )
 
-        // 3. 生成 MSL 源码
+        // 4. 生成 MSL 源码
         let mslSource = generateMSL(functions: shaderFunctions)
 
         let elapsed = CFAbsoluteTimeGetCurrent() - startTime
@@ -411,12 +719,19 @@ struct IRToMSLConverter {
 
     // MARK: - Shader Function Identification
 
-    /// 结合 IR 函数定义和 metallib 元数据，识别 shader 函数并推断其类型。
+    /// 结合 IR 函数定义、metallib 元数据和 IR metadata，识别 shader 函数并推断其类型。
     private static func identifyShaderFunctions(
         irFunctions: [IRFunctionDef],
         metallibNames: [String],
-        metallibTypes: [String]
+        metallibTypes: [String],
+        metadataFuncs: [MetadataFuncInfo] = []
     ) -> [ParsedShaderFunction] {
+        // 构建 metadata 函数名→信息的映射
+        var metadataMap: [String: MetadataFuncInfo] = [:]
+        for mf in metadataFuncs {
+            metadataMap[mf.name] = mf
+        }
+
         // 构建 metallib 函数名→类型的映射
         var nameToType: [String: ShaderType] = [:]
         for (i, name) in metallibNames.enumerated() {
@@ -437,8 +752,12 @@ struct IRToMSLConverter {
             // 判断是否是 shader 入口函数
             let shaderType: ShaderType?
 
-            // 优先使用 metallib 元数据中的类型信息
-            if let type = nameToType[irFunc.name] {
+            // 优先使用 IR metadata（最可靠的来源）
+            if let metaInfo = metadataMap[irFunc.name] {
+                shaderType = metaInfo.shaderType
+            }
+            // 其次使用 metallib 元数据中的类型信息
+            else if let type = nameToType[irFunc.name] {
                 shaderType = type
             } else if irFunc.name.contains("vertex") || irFunc.attributes.contains("vertex") {
                 shaderType = .vertex
@@ -447,22 +766,26 @@ struct IRToMSLConverter {
             } else if irFunc.name.contains("kernel") || irFunc.attributes.contains("kernel") {
                 shaderType = .kernel
             } else if metallibNames.contains(irFunc.name) {
-                // 名字在 metallib 中但无法确定类型，默认 vertex
                 shaderType = .vertex
             } else if irFunc.name.hasPrefix("air.") {
-                // air.* 是运行时内建，不是用户 shader
                 continue
             } else {
-                // 不在 metallib 名字列表中的内部辅助函数，跳过
-                if !metallibNames.isEmpty { continue }
-                // 如果没有 metallib 信息，尝试启发式判断
+                if !metallibNames.isEmpty && metadataMap.isEmpty { continue }
                 shaderType = inferShaderType(from: irFunc)
             }
 
             guard let type = shaderType else { continue }
 
-            // 解析参数
-            let params = parseParameters(irFunc.parameterList, shaderType: type)
+            // 解析参数：优先使用 metadata 信息
+            let params: [ParsedParameter]
+            let isFullyParsed: Bool
+            if let metaInfo = metadataMap[irFunc.name] {
+                params = buildParametersFromMetadata(metaInfo.args, irParamList: irFunc.parameterList)
+                isFullyParsed = true
+            } else {
+                params = parseParameters(irFunc.parameterList, shaderType: type)
+                isFullyParsed = false
+            }
 
             // 推断 MSL 返回类型
             let mslReturnType = irTypeToMSL(irFunc.returnType, forShaderType: type)
@@ -473,7 +796,7 @@ struct IRToMSLConverter {
                 returnType: mslReturnType,
                 parameters: params,
                 irSignature: "define \(irFunc.returnType) @\"\(irFunc.name)\"(\(irFunc.parameterList))",
-                isFullyParsed: false // 当前阶段均为 stub
+                isFullyParsed: isFullyParsed
             ))
         }
 
@@ -502,6 +825,93 @@ struct IRToMSLConverter {
         }
 
         return shaderFunctions
+    }
+
+    /// 从 IR metadata 参数信息构建 ParsedParameter 列表。
+    ///
+    /// metadata 提供了精确的 MSL 类型名、参数名、绑定索引和地址空间，
+    /// 比从 opaque pointer 参数推断要准确得多。
+    private static func buildParametersFromMetadata(
+        _ metaArgs: [MetadataArgInfo],
+        irParamList: String
+    ) -> [ParsedParameter] {
+        var params: [ParsedParameter] = []
+
+        for meta in metaArgs {
+            let addrSpace: AddressSpace?
+            if let as_ = meta.addressSpace {
+                addrSpace = AddressSpace(rawValue: as_)
+            } else {
+                addrSpace = nil
+            }
+
+            // 根据参数种类确定 attribute 和 pointerInfo
+            let attribute: String?
+            let ptrInfo: PointerInfo?
+
+            switch meta.kind {
+            case "air.buffer":
+                attribute = nil
+                let space = addrSpace ?? .device
+                ptrInfo = PointerInfo(
+                    addressSpace: space,
+                    pointedMSLType: meta.typeName.isEmpty ? "uint8_t" : meta.typeName,
+                    isOpaquePointer: true
+                )
+            case "air.vertex_input", "air.fragment_input":
+                // stage_in 参数在 IR 层被展平为值传递，不生成 MSL 参数
+                continue
+            case "air.position":
+                // 内置位置输出/输入，不生成 MSL 参数
+                continue
+            case "air.vertex_output":
+                continue
+            case "air.render_target":
+                continue
+            case "air.vertex_id":
+                attribute = "[[vertex_id]]"
+                ptrInfo = nil
+            case "air.instance_id":
+                attribute = "[[instance_id]]"
+                ptrInfo = nil
+            case "air.thread_position_in_grid":
+                attribute = "[[thread_position_in_grid]]"
+                ptrInfo = nil
+            case "air.thread_position_in_threadgroup":
+                attribute = "[[thread_position_in_threadgroup]]"
+                ptrInfo = nil
+            case "air.threadgroup_position_in_grid":
+                attribute = "[[threadgroup_position_in_grid]]"
+                ptrInfo = nil
+            case "air.threads_per_threadgroup":
+                attribute = "[[threads_per_threadgroup]]"
+                ptrInfo = nil
+            case "air.thread_index_in_threadgroup":
+                attribute = "[[thread_index_in_threadgroup]]"
+                ptrInfo = nil
+            case "air.texture":
+                // texture 参数需要特殊处理
+                attribute = meta.locationIndex.map { "[[texture(\($0))]]" }
+                ptrInfo = nil
+            case "air.sampler":
+                attribute = meta.locationIndex.map { "[[sampler(\($0))]]" }
+                ptrInfo = nil
+            default:
+                attribute = nil
+                ptrInfo = nil
+            }
+
+            params.append(ParsedParameter(
+                name: meta.argName,
+                irType: meta.typeName,
+                addressSpace: addrSpace,
+                bufferIndex: meta.locationIndex,
+                attribute: attribute,
+                pointerInfo: ptrInfo
+            ))
+        }
+
+        return params
     }
 
     /// 从 IR 函数特征启发式推断 shader 类型
@@ -905,16 +1315,10 @@ struct IRToMSLConverter {
         _ func_: ParsedShaderFunction,
         safeName: String
     ) -> String {
-        let bufferParams = generateBufferParams(func_.parameters)
-        let paramStr: String
-        if bufferParams.isEmpty {
-            paramStr = "uint vid [[vertex_id]]"
-        } else {
-            paramStr = "uint vid [[vertex_id]], \(bufferParams)"
-        }
+        let allParams = generateAllParams(func_.parameters, defaultBuiltin: "uint vid [[vertex_id]]")
 
         return """
-        vertex \(func_.returnType) \(safeName)(\(paramStr)) {
+        vertex \(func_.returnType) \(safeName)(\(allParams)) {
             return \(defaultReturnValue(for: func_.returnType));
         }
         """
@@ -925,16 +1329,10 @@ struct IRToMSLConverter {
         _ func_: ParsedShaderFunction,
         safeName: String
     ) -> String {
-        let bufferParams = generateBufferParams(func_.parameters)
-        let paramStr: String
-        if bufferParams.isEmpty {
-            paramStr = "float4 position [[position]]"
-        } else {
-            paramStr = "float4 position [[position]], \(bufferParams)"
-        }
+        let allParams = generateAllParams(func_.parameters, defaultBuiltin: "float4 position [[position]]")
 
         return """
-        fragment \(func_.returnType) \(safeName)(\(paramStr)) {
+        fragment \(func_.returnType) \(safeName)(\(allParams)) {
             return \(defaultReturnValue(for: func_.returnType));
         }
         """
@@ -945,56 +1343,119 @@ struct IRToMSLConverter {
         _ func_: ParsedShaderFunction,
         safeName: String
     ) -> String {
-        let bufferParams = generateBufferParams(func_.parameters)
-        let paramStr: String
-        if bufferParams.isEmpty {
-            paramStr = "uint tid [[thread_position_in_grid]]"
-        } else {
-            paramStr = "uint tid [[thread_position_in_grid]], \(bufferParams)"
-        }
+        let allParams = generateAllParams(func_.parameters, defaultBuiltin: "uint tid [[thread_position_in_grid]]")
 
         return """
-        kernel void \(safeName)(\(paramStr)) {
+        kernel void \(safeName)(\(allParams)) {
             // stub kernel
         }
         """
     }
 
-    /// 为 buffer/threadgroup 参数生成 MSL 参数列表。
+    /// 生成完整的参数列表，包括 buffer 参数、texture/sampler 参数和内置属性参数。
     ///
-    /// 根据参数的地址空间生成正确的 MSL 声明：
-    /// - device (addrspace 1) → `device T* name [[buffer(N)]]`
-    /// - constant (addrspace 2) → `const constant T* name [[buffer(N)]]` （注意 constant 隐含只读）
-    /// - threadgroup (addrspace 3) → `threadgroup T* name [[threadgroup(N)]]`
-    /// - 其他地址空间 → 使用对应的 MSL 限定符
-    private static func generateBufferParams(_ params: [ParsedParameter]) -> String {
+    /// 如果 metadata 提供了精确参数信息，使用它们；否则使用 defaultBuiltin 作为回退。
+    private static func generateAllParams(
+        _ params: [ParsedParameter],
+        defaultBuiltin: String
+    ) -> String {
         var mslParams: [String] = []
+        var hasBuiltin = false
 
         for param in params {
-            // 优先使用 ParsedParameter 自身的 mslDeclaration
-            if let decl = param.mslDeclaration {
-                mslParams.append(decl)
+            // 有 pointerInfo 的是 buffer/threadgroup 参数
+            if let ptr = param.pointerInfo {
+                let qualifier = ptr.addressSpace.mslQualifier
+                guard !qualifier.isEmpty else { continue }
+
+                let elemType = ptr.pointedMSLType
+                let constPrefix = ptr.addressSpace.isReadOnly ? "const " : ""
+
+                if ptr.addressSpace.isBufferAddressSpace {
+                    let idx = param.bufferIndex ?? 0
+                    // 检查类型名是否像是结构体（大写开头且不是 MSL 基本类型）
+                    if isStructTypeName(elemType) {
+                        // 结构体引用: constant Uniforms& name [[buffer(N)]]
+                        mslParams.append("\(constPrefix)\(qualifier) \(elemType)& \(param.name) [[buffer(\(idx))]]")
+                    } else {
+                        mslParams.append("\(constPrefix)\(qualifier) \(elemType)* \(param.name) [[buffer(\(idx))]]")
+                    }
+                } else if ptr.addressSpace.isThreadgroupAddressSpace {
+                    let idx = param.bufferIndex ?? 0
+                    mslParams.append("threadgroup \(elemType)* \(param.name) [[threadgroup(\(idx))]]")
+                } else {
+                    mslParams.append("\(qualifier) \(elemType)* \(param.name)")
+                }
                 continue
             }
 
-            // 回退：如果有地址空间但没有指针信息，使用旧逻辑
-            guard let addrSpace = param.addressSpace else { continue }
-            let qualifier = addrSpace.mslQualifier
-            if qualifier.isEmpty { continue }
+            // 有 attribute 的是内置属性 或 texture/sampler
+            if let attr = param.attribute {
+                hasBuiltin = true
+                let typeName = param.irType.isEmpty ? "uint" : param.irType
 
-            let idx = param.bufferIndex ?? 0
-            let constPrefix = addrSpace.isReadOnly ? "const " : ""
+                if param.irType.hasPrefix("texture") {
+                    // texture2d<float, sample> → texture2d<float>
+                    let cleanedTexType = cleanTextureTypeName(typeName)
+                    mslParams.append("\(cleanedTexType) \(param.name) \(attr)")
+                } else if param.irType == "sampler" {
+                    mslParams.append("sampler \(param.name) \(attr)")
+                } else {
+                    mslParams.append("\(typeName) \(param.name) \(attr)")
+                }
+                continue
+            }
 
-            if addrSpace.isBufferAddressSpace {
-                mslParams.append("\(constPrefix)\(qualifier) uint8_t* \(param.name) [[buffer(\(idx))]]")
-            } else if addrSpace.isThreadgroupAddressSpace {
-                mslParams.append("threadgroup uint8_t* \(param.name) [[threadgroup(\(idx))]]")
-            } else {
-                mslParams.append("\(qualifier) uint8_t* \(param.name)")
+            // 回退：有地址空间但没有详细信息
+            if let addrSpace = param.addressSpace {
+                let qualifier = addrSpace.mslQualifier
+                if qualifier.isEmpty { continue }
+                let idx = param.bufferIndex ?? 0
+                let constPrefix = addrSpace.isReadOnly ? "const " : ""
+                if addrSpace.isBufferAddressSpace {
+                    mslParams.append("\(constPrefix)\(qualifier) uint8_t* \(param.name) [[buffer(\(idx))]]")
+                } else if addrSpace.isThreadgroupAddressSpace {
+                    mslParams.append("threadgroup uint8_t* \(param.name) [[threadgroup(\(idx))]]")
+                }
             }
         }
 
+        // 如果没有从 metadata 获取内置属性，添加默认的
+        if !hasBuiltin && !defaultBuiltin.isEmpty {
+            mslParams.insert(defaultBuiltin, at: 0)
+        }
+
         return mslParams.joined(separator: ", ")
+    }
+
+    /// 判断类型名是否像是结构体（大写开头且不是 MSL 标准类型）
+    private static func isStructTypeName(_ name: String) -> Bool {
+        guard let first = name.first else { return false }
+        if !first.isUppercase { return false }
+        // 排除 MSL 标准类型
+        let standardTypes: Set<String> = [
+            "Float", "Half", "Int", "UInt", "Short", "UShort", "Char", "UChar", "Bool"
+        ]
+        return !standardTypes.contains(name)
+    }
+
+    /// 清理 texture 类型名：去掉 access 限定
+    /// "texture2d<float, sample>" → "texture2d<float>"
+    private static func cleanTextureTypeName(_ name: String) -> String {
+        // 从 metadata 拿到的类型名可能是 "texture2d<float, sample>"
+        guard let ltIdx = name.firstIndex(of: "<"),
+              let gtIdx = name.lastIndex(of: ">") else {
+            return name
+        }
+        let innerContent = name[name.index(after: ltIdx)..<gtIdx]
+        let parts = innerContent.components(separatedBy: ",")
+        if parts.count > 1 {
+            // 只保留元素类型，去掉 access
+            let elemType = parts[0].trimmingCharacters(in: .whitespaces)
+            let prefix = String(name[name.startIndex...ltIdx])
+            return "\(prefix)\(elemType)>"
+        }
+        return name
     }
 
     /// 生成给定类型的默认返回值

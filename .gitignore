@@ -138,3 +138,4 @@ __pycache__/
 # Temporary analysis data
 LocalDocs/XCodeOperation/renderanalysistask/pipeline_passes.json
 LocalDocs/XCodeOperation/renderanalysistask/re_breadcrumbs.json
+dependencies/

@@ -141,16 +141,22 @@ class XcodeGPU:
         let rows = outline.rows();
         let out = [];
         for (let i = 0; i < rows.length; i++) {
-            let statics = rows[i].uiElements[0].staticTexts();
-            let t = statics.map(s => s.value()).filter(v => v).join(" | ");
-            let sel = rows[i].selected();
-            let hasDisc = false, expanded = false;
             try {
-                let dts = rows[i].uiElements[0].uiElements.whose({role: "AXDisclosureTriangle"});
-                if (dts.length > 0) { hasDisc = true; expanded = dts[0].value() === 1; }
-            } catch(e) {}
-            out.push({index: i, text: t, selected: sel,
-                       has_disclosure: hasDisc, expanded: expanded});
+                let cell = rows[i].uiElements[0];
+                let statics = cell.staticTexts();
+                let t = statics.map(s => s.value()).filter(v => v).join(" | ");
+                let sel = rows[i].selected();
+                let hasDisc = false, expanded = false;
+                try {
+                    let dts = cell.uiElements.whose({role: "AXDisclosureTriangle"});
+                    if (dts.length > 0) { hasDisc = true; expanded = dts[0].value() === 1; }
+                } catch(e2) {}
+                out.push({index: i, text: t, selected: sel,
+                           has_disclosure: hasDisc, expanded: expanded});
+            } catch(e) {
+                out.push({index: i, text: "", selected: false,
+                           has_disclosure: false, expanded: false});
+            }
         }
         JSON.stringify(out);
         """)
@@ -225,12 +231,40 @@ class XcodeGPU:
         _cliclick(f"c:{result}")
         time.sleep(self.delay)
 
+    def double_click_navigator_row(self, index: int):
+        """双击 Navigator 中指定行 (需要 cliclick)。
+
+        双击 draw call 行可以激活 GPU 绑定表编辑器和步进功能。
+        仅 select 不够，必须双击才能进入分析模式。
+        """
+        if not self._has_cliclick:
+            raise RuntimeError("需要 cliclick: brew install cliclick")
+        # 先 select 确保行在可视区域
+        self.select_navigator_row(index)
+        time.sleep(0.3)
+        # 获取行的中心坐标
+        result = _jxa(_JXA_NAV_OUTLINE + f"""
+        let row = outline.rows[{index}];
+        let p = row.position(), s = row.size();
+        Math.round(p[0] + s[0]/2) + "," + Math.round(p[1] + s[1]/2);
+        """)
+        _cliclick(f"dc:{result}")
+        time.sleep(self.delay)
+
     # ═══════════════════ GPU Navigator Mode ═══════════════════
 
     def get_gpu_navigator_mode(self) -> str:
         """获取当前 GPU Navigator Mode。返回 'Group by API Call' 或 'Group by Pipeline State'。"""
         return _jxa(_JXA_NAV_OUTLINE + """
-        outline.rows[5].uiElements[0].popUpButtons[0].value();
+        let rows = outline.rows();
+        let val = "unknown";
+        for (let i = 0; i < Math.min(rows.length, 10); i++) {
+            try {
+                let pbs = rows[i].uiElements[0].popUpButtons();
+                if (pbs.length > 0) { val = pbs[0].value(); break; }
+            } catch(e) {}
+        }
+        val;
         """)
 
     def set_gpu_navigator_mode(self, mode: str):
@@ -240,7 +274,15 @@ class XcodeGPU:
             mode: 'Group by API Call' 或 'Group by Pipeline State'
         """
         _jxa(_JXA_NAV_OUTLINE + f"""
-        let popup = outline.rows[5].uiElements[0].popUpButtons[0];
+        let rows = outline.rows();
+        let popup = null;
+        for (let i = 0; i < Math.min(rows.length, 10); i++) {{
+            try {{
+                let pbs = rows[i].uiElements[0].popUpButtons();
+                if (pbs.length > 0) {{ popup = pbs[0]; break; }}
+            }} catch(e) {{}}
+        }}
+        if (!popup) throw new Error("找不到 Navigator mode popup");
         popup.click();
         delay(0.3);
         popup.menus[0].menuItems["{mode}"].click();
@@ -276,28 +318,58 @@ class XcodeGPU:
              editor_mode, inspector_mode, inspector_submode, navigator_mode}
         """
         result = _jxa(_JXA_PREAMBLE + """
+        // 编辑器区域: 通过多层 splitterGroup 查找
         let sg = win.splitterGroups[0].splitterGroups[0];
         let edGroup = sg.uiElements[0];
-        let innerSplit = edGroup.uiElements[0].uiElements[0];
 
-        // 左侧 Jump Bar (面包屑: gputrace > CB > RE > drawCall > Bound Resources)
-        let leftJumpBar = innerSplit.uiElements[1];
-        let leftPopups = leftJumpBar.popUpButtons();
-        let left = leftPopups.map(p => { try { return p.value(); } catch(e) { return ""; } });
+        // 健壮地查找 Jump Bar: 在编辑器 group 的深层子元素中搜索
+        function findJumpBars(root, depth) {
+            if (depth > 5) return [];
+            let bars = [];
+            try {
+                let ues = root.uiElements();
+                for (let i = 0; i < ues.length; i++) {
+                    try {
+                        if (ues[i].description() === "Jump Bar") {
+                            bars.push(ues[i]);
+                        } else {
+                            bars = bars.concat(findJumpBars(ues[i], depth + 1));
+                        }
+                    } catch(e) {}
+                }
+            } catch(e) {}
+            return bars;
+        }
 
-        // 右侧 Jump Bar (Inspector: Automatic > Attachments)
+        let jumpBars = findJumpBars(edGroup, 0);
+
+        // 面包屑 Jump Bar: 含有 gputrace / CB / RE 等 popup 的那个
+        let left = [];
         let right = [];
-        try {
-            let rightJumpBar = innerSplit.uiElements[3].uiElements[1];
-            let rightPopups = rightJumpBar.popUpButtons();
-            right = rightPopups.map(p => { try { return p.value(); } catch(e) { return ""; } });
-        } catch(e) {}
+        for (let jb of jumpBars) {
+            try {
+                let popups = jb.popUpButtons();
+                let vals = popups.map(p => { try { return p.value(); } catch(e) { return ""; } });
+                if (vals.length >= 3 && vals[0].indexOf("gputrace") >= 0) {
+                    left = vals;
+                } else if (vals.length >= 1 && vals.length <= 3) {
+                    right = vals;
+                }
+            } catch(e) {}
+        }
 
         // Navigator mode
         let navMode = "";
         try {
             let nav = win.groups.whose({description: "navigator"})[0];
-            navMode = nav.scrollAreas[0].outlines[0].rows[5].uiElements[0].popUpButtons[0].value();
+            let outline = nav.scrollAreas[0].outlines[0];
+            let rows = outline.rows();
+            for (let i = 0; i < Math.min(rows.length, 10); i++) {
+                try {
+                    let pbs = rows[i].uiElements[0].popUpButtons();
+                    if (pbs.length > 0) { navMode = pbs[0].value(); break; }
+                } catch(e) {}
+            }
         } catch(e) {}
 
         JSON.stringify({left: left, right: right, navigator_mode: navMode});
@@ -571,6 +643,213 @@ class XcodeGPU:
 
     # ═══════════════════ 高级组合操作 ═══════════════════
 
+    @staticmethod
+    def is_xcode_running() -> bool:
+        """检查 Xcode 是否正在运行。"""
+        r = subprocess.run(["pgrep", "-x", "Xcode"],
+                           capture_output=True, timeout=3)
+        return r.returncode == 0
+
+    @staticmethod
+    def wait_for_xcode(timeout: int = 30) -> bool:
+        """等待 Xcode 启动就绪，返回是否成功。"""
+        for _ in range(timeout):
+            if XcodeGPU.is_xcode_running():
+                time.sleep(1)  # 额外等待 UI 就绪
+                return True
+            time.sleep(1)
+        return False
+
+    def _find_and_click_replay(self) -> bool:
+        """在概览页查找并点击 Replay 按钮。返回是否成功。"""
+        try:
+            result = _jxa(_JXA_PREAMBLE + """
+            let all = win.entireContents();
+            for (let i = 0; i < Math.min(all.length, 200); i++) {
+                try {
+                    if (all[i].role() === "AXButton" && all[i].name() === "Replay") {
+                        all[i].click();
+                        "clicked";
+                    }
+                } catch(e) {}
+            }
+            "not_found";
+            """)
+            return "clicked" in result or result == "clicked"
+        except RuntimeError:
+            return False
+
+    def _wait_for_navigator_data(self, timeout: int = 30) -> bool:
+        """等待 Navigator 中出现 Command Buffer 数据。"""
+        for _ in range(timeout):
+            try:
+                rows = self.list_navigator_rows()
+                cbs = [r for r in rows if r["text"].startswith("Command Buffer")]
+                if cbs:
+                    return True
+            except RuntimeError:
+                pass
+            time.sleep(1)
+        return False
+
+    def _enter_draw_call_analysis(self) -> bool:
+        """展开第一个 CB 和 RE，双击第一个 draw call 进入分析模式。
+
+        Returns:
+            True 如果成功进入分析模式 (步进菜单已启用)
+        """
+        rows = self.list_navigator_rows()
+        cb0 = next((r for r in rows if r["text"].startswith("Command Buffer")), None)
+        if not cb0:
+            return False
+
+        # 展开 CB0
+        if not cb0["expanded"]:
+            self.select_navigator_row(cb0["index"])
+            time.sleep(0.3)
+            self.expand_navigator_row(cb0["index"])
+            time.sleep(0.8)
+
+        # 找 RE0 并展开
+        rows = self.list_navigator_rows()
+        re0 = next((r for r in rows if r["text"].startswith("Render Encoder 0 ")), None)
+        if not re0:
+            return False
+
+        if not re0["expanded"]:
+            self.select_navigator_row(re0["index"])
+            time.sleep(0.3)
+            self.expand_navigator_row(re0["index"])
+            time.sleep(0.8)
+
+        # 找第一个 draw call 行 (RE0 展开后的子节点中第二行通常是 draw call)
+        rows = self.list_navigator_rows()
+        draw_call_row = None
+        for r in rows:
+            idx = r["index"]
+            if idx > re0["index"] and not r["text"].startswith("Render Encoder"):
+                # 跳过 renderCommandEncoder 行，找 draw 行
+                if "draw" in r["text"].lower() or r["text"].strip().split()[0].isdigit():
+                    if "renderCommandEncoder" not in r["text"]:
+                        draw_call_row = r
+                        break
+                    # renderCommandEncoder 行之后的才是 draw call
+                    continue
+            if r["text"].startswith("Render Encoder") and idx > re0["index"]:
+                break  # 进入下一个 RE 了
+
+        if not draw_call_row:
+            # fallback: 双击 RE0 后面第二行
+            for r in rows:
+                if r["index"] == re0["index"] + 2:
+                    draw_call_row = r
+                    break
+
+        if not draw_call_row:
+            return False
+
+        # 双击 draw call 行
+        self.double_click_navigator_row(draw_call_row["index"])
+        time.sleep(1)
+
+        # 验证步进菜单是否启用
+        try:
+            menu = self.get_debug_menu_items()
+            for m in menu:
+                if m.get("name") == "Step to Next Draw/Dispatch Call":
+                    return m.get("enabled", False)
+        except RuntimeError:
+            pass
+        return False
+
+    def open_gputrace(self, gputrace_path: str,
+                      show_navigator: bool = True,
+                      enter_analysis: bool = True,
+                      timeout: int = 30) -> dict:
+        """一键打开 gputrace 文件并进入 GPU 分析模式。
+
+        完整流程:
+        1. 用 Xcode 打开 gputrace 文件
+        2. 等待 Xcode 启动
+        3. 显示 Debug Navigator
+        4. 点击 Replay 按钮
+        5. 等待 Command Buffer 数据出现
+        6. 展开 CB0 > RE0 → 双击 draw call → 激活步进功能
+
+        Args:
+            gputrace_path: .gputrace 文件的绝对路径
+            show_navigator: 是否自动显示 Debug Navigator
+            enter_analysis: 是否自动展开 CB 并进入 draw call 分析
+            timeout: 等待超时秒数
+
+        Returns:
+            {success, xcode_running, navigator_ready, replay_done,
+             cb_count, analysis_ready, message}
+        """
+        status = {
+            "success": False, "xcode_running": False,
+            "navigator_ready": False, "replay_done": False,
+            "cb_count": 0, "analysis_ready": False, "message": ""
+        }
+
+        # 1. 打开文件
+        if not os.path.exists(gputrace_path):
+            status["message"] = f"文件不存在: {gputrace_path}"
+            return status
+
+        subprocess.run(["open", "-a", "Xcode", gputrace_path],
+                       check=True, timeout=10)
+
+        # 2. 等待 Xcode 启动
+        if not self.wait_for_xcode(timeout):
+            status["message"] = "Xcode 启动超时"
+            return status
+        status["xcode_running"] = True
+        time.sleep(3)  # 额外等待窗口初始化
+
+        # 3. 显示 Debug Navigator
+        if show_navigator:
+            from xcode_general_ops import XcodeGeneral
+            xc = XcodeGeneral()
+            try:
+                xc.show_navigator("Debug")
+                time.sleep(1)
+                status["navigator_ready"] = True
+            except RuntimeError as e:
+                status["message"] = f"显示 Navigator 失败: {e}"
+                return status
+
+        # 4. 点击 Replay
+        if not self._find_and_click_replay():
+            status["message"] = "未找到 Replay 按钮"
+            return status
+
+        # 5. 等待 CB 数据
+        if not self._wait_for_navigator_data(timeout):
+            status["message"] = "等待 Command Buffer 数据超时"
+            return status
+        status["replay_done"] = True
+
+        rows = self.list_navigator_rows()
+        cbs = [r for r in rows if r["text"].startswith("Command Buffer")]
+        status["cb_count"] = len(cbs)
+
+        # 6. 进入 draw call 分析
+        if enter_analysis and self._has_cliclick:
+            if self._enter_draw_call_analysis():
+                status["analysis_ready"] = True
+            else:
+                status["message"] = "进入 draw call 分析失败 (步进菜单未启用)"
+                status["success"] = True  # Replay 已成功，分析入口可手动重试
+                return status
+
+        status["success"] = True
+        status["message"] = (
+            f"✅ 已就绪: {status['cb_count']} 个 Command Buffer"
+            + (", 步进已启用" if status["analysis_ready"] else "")
+        )
+        return status
+
     def walk_all_draw_calls(self, max_steps: int = 500,
                             callback=None) -> list[dict]:
         """遍历所有 draw call，每步收集信息。
@@ -681,16 +960,25 @@ def main():
     parser = argparse.ArgumentParser(description="Xcode GPU Frame Capture 自动化操作")
     sub = parser.add_subparsers(dest="command")
 
+    # 读取类命令
     sub.add_parser("info", help="显示窗口信息")
     sub.add_parser("nav", help="列出 Navigator 所有行")
     sub.add_parser("cbs", help="列出 Command Buffers")
     sub.add_parser("breadcrumbs", help="读取面包屑导航")
     sub.add_parser("location", help="显示当前位置")
-    sub.add_parser("editor", help="读取编辑器绑定表")
-    sub.add_parser("summary", help="读取编辑器摘要")
+    sub.add_parser("editor", help="读取编辑器绑定表 (慢, ~30s)")
+    sub.add_parser("summary", help="读取编辑器摘要 (慢, ~30s)")
     sub.add_parser("inspector", help="读取 Inspector 文本")
     sub.add_parser("filters", help="读取 filter 状态")
     sub.add_parser("menu", help="显示 Debug 菜单")
+    sub.add_parser("status", help="检查 Xcode 运行状态")
+
+    # 操作类命令
+    p = sub.add_parser("open", help="打开 gputrace 文件并进入分析模式")
+    p.add_argument("path", help=".gputrace 文件路径")
+    p.add_argument("--no-analysis", action="store_true",
+                   help="只 Replay，不自动进入 draw call 分析")
+    p.add_argument("--timeout", type=int, default=30, help="超时秒数")
 
     p = sub.add_parser("step", help="步进 draw call")
     p.add_argument("direction", choices=["next", "prev"], default="next", nargs="?")
@@ -699,7 +987,13 @@ def main():
     p = sub.add_parser("select", help="选中 Navigator 行")
     p.add_argument("index", type=int, help="行索引 (0-based)")
 
-    p = sub.add_parser("expand", help="展开 Navigator 行")
+    p = sub.add_parser("expand", help="展开 Navigator 行 (需要 cliclick)")
+    p.add_argument("index", type=int, help="行索引 (0-based)")
+
+    p = sub.add_parser("collapse", help="折叠 Navigator 行 (需要 cliclick)")
+    p.add_argument("index", type=int, help="行索引 (0-based)")
+
+    p = sub.add_parser("dclick", help="双击 Navigator 行 (进入绑定表视图)")
     p.add_argument("index", type=int, help="行索引 (0-based)")
 
     p = sub.add_parser("mode", help="切换 GPU Navigator Mode")
@@ -720,6 +1014,30 @@ def main():
 
     if args.command == "info":
         print(json.dumps(gpu.get_window_info(), indent=2, ensure_ascii=False))
+    elif args.command == "status":
+        running = gpu.is_xcode_running()
+        print(f"Xcode: {'running' if running else 'not running'}")
+        if running:
+            try:
+                info = gpu.get_window_info()
+                print(f"Window: {info.get('title', '(no title)')}")
+                print(f"Document: {info.get('document', '(none)')}")
+            except RuntimeError:
+                print("Window: (无法读取)")
+            try:
+                menu = gpu.get_debug_menu_items()
+                step_ok = any(m.get("name") == "Step to Next Draw/Dispatch Call"
+                              and m.get("enabled") for m in menu)
+                print(f"GPU Debug: {'active' if step_ok else 'inactive'}")
+            except RuntimeError:
+                print("GPU Debug: unknown")
+    elif args.command == "open":
+        result = gpu.open_gputrace(
+            args.path,
+            enter_analysis=not args.no_analysis,
+            timeout=args.timeout
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
     elif args.command == "nav":
         for r in gpu.list_navigator_rows():
             marker = " *" if r["selected"] else ""
@@ -761,6 +1079,12 @@ def main():
     elif args.command == "expand":
         gpu.expand_navigator_row(args.index)
         print(f"Expanded row {args.index}")
+    elif args.command == "collapse":
+        gpu.collapse_navigator_row(args.index)
+        print(f"Collapsed row {args.index}")
+    elif args.command == "dclick":
+        gpu.double_click_navigator_row(args.index)
+        print(f"Double-clicked row {args.index}")
     elif args.command == "mode":
         mode_map = {"api": "Group by API Call", "pipeline": "Group by Pipeline State"}
         gpu.set_gpu_navigator_mode(mode_map[args.mode])

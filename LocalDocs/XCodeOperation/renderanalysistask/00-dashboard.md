@@ -57,14 +57,15 @@ python3 $OPS/xcode_gpu_ops.py summary         # 结构化摘要
 
 ### P2 — 输出与优化
 - [x] **T6: 生成最终渲染流程文档** — ✅ `06-final-render-pipeline.md`
-- [ ] **T7: 完善工具脚本** — 已修复 3 个 bug（disclosureTriangles 兼容性、activate 方式、JXA 超时）
+- [x] **T7: 完善工具脚本** — ✅ 修复 3 个 bug + 整理脚本到 `XCodeOperation/` + 深度更新 README.md
 
 ## 当前状态
 
-**P0/P1/P2 核心任务已全部完成。** 最终渲染流程文档见 `06-final-render-pipeline.md`。T7 (工具脚本完善) 可按需进行。
+**全部任务已完成。** 最终渲染流程文档见 `06-final-render-pipeline.md`。工具脚本已整理到 `XCodeOperation/` 根目录，README.md 已深度更新。
 
 ## 踩坑与经验
 
+### 基础操作
 - **`editor` 操作耗时 30s**：逐 draw call 调用 editor 不现实。批量分析应优先用 `breadcrumbs`（0.3s）+ Pipeline State 模式 `nav`（4s）
 - **展开节点需要 cliclick**：JXA `.click()` 对 disclosure triangle 无效，必须用 `cliclick c:x,y` 坐标点击
 - **展开前必须 select**：cliclick 基于屏幕坐标，目标行不在可视区域时坐标指向错误位置。先 `select` 让行滚入视图
@@ -76,6 +77,15 @@ python3 $OPS/xcode_gpu_ops.py summary         # 结构化摘要
 - **23 个 CB 代表 23 帧**：多帧捕获中每帧结构完全一致，分析任意一帧即代表所有
 - **breadcrumb 不需要 entireContents**：通过精确 UI 路径 `edGroup > [0] > [0] > Jump Bar > popUpButtons` 读取，速度 0.25s
 - **步进操作会跨 CB**：`step_next_draw_call()` 到达一个 CB 末尾时会自动跳到下一个 CB
+
+### 全流程启动 (2026-04-01 新增)
+- **打开 gputrace 后需要 Replay**：`open -a Xcode <file>` 打开文件后处于概览页，必须点击 "Replay" 按钮才能进入 GPU Debug Navigator
+- **Replay 需要 10-15s**：23 帧 × 5300 draw call 的大文件，Replay 后才有 CB 列表
+- **Navigator select draw call 不够**：在概览页选中 draw call 行不会切换编辑器到绑定表视图，必须**双击** Navigator 中的 draw call 行
+- **双击 draw call 行后步进菜单才启用**：Step to Next/Previous Draw Call 菜单项在双击 draw call 前都是 disabled
+- **Navigator 空行会导致 -1728 错误**：`list_navigator_rows` 中 `rows[i].uiElements[0]` 对空行（如 row 5 分隔符）会抛异常，需要整行 try/catch
+- **面包屑 Jump Bar UI 路径不固定**：随 Navigator 展开/折叠，`splitterGroups` 嵌套层级会变化。改用递归搜索 `description === "Jump Bar"` 更健壮
+- **Navigator mode popup 位置不固定在 row[5]**：Replay 后 row 结构可能变化，改为遍历前 10 行查找 popUpButton
 
 ## 数据文件
 

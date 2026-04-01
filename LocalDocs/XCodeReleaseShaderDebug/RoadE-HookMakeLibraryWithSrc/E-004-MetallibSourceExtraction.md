@@ -243,7 +243,7 @@ E-004e 工作量较大，拆分为四个子任务：
 | # | 子任务 | 状态 | 说明 |
 |---|--------|------|------|
 | E-004e1 | **IRToMSLConverter 骨架 + stub MSL 生成** | ✅ DONE | 解析 IR 函数定义，生成 stub MSL 源码 |
-| E-004e2 | addrspace → MSL 地址空间限定符完整映射 | TODO | 完善参数类型转换 |
+| E-004e2 | addrspace → MSL 地址空间限定符完整映射 | ✅ DONE | 完善参数类型转换 |
 | E-004e3 | air.* 内建 → MSL 等效调用映射 | TODO | 映射 Metal runtime 内建函数 |
 | E-004e4 | 完整函数体转换（IR 指令→MSL 语句） | TODO | 将 IR 指令序列转换为 MSL 代码 |
 
@@ -298,6 +298,55 @@ E-004e 工作量较大，拆分为四个子任务：
 #### 已知限制（后续子任务解决）
 
 - 函数体为 stub（默认返回值），非真实 IR 指令转换
-- buffer 参数类型统一为 `device float*`，未从 IR 中精确推断
+- ~~buffer 参数类型统一为 `device float*`，未从 IR 中精确推断~~ → E-004e2 已解决
 - 未处理 `air.*` 内建函数的 MSL 映射
 - 未处理复杂结构体返回类型的 MSL 声明
+
+### E-004e2: addrspace → MSL 地址空间限定符完整映射
+
+#### 修改文件
+
+| 文件 | 说明 |
+|------|------|
+| `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift` | 增强地址空间映射和参数类型推断 |
+
+#### 改进内容
+
+1. **扩展 `AddressSpace` 枚举**：覆盖 Metal AIR 的全部 7 个地址空间（0-6）：
+   - `thread`(0) — 线程私有内存（默认，无限定符）
+   - `device`(1) — 设备内存，可读写
+   - `constant`(2) — 常量内存，只读
+   - `threadgroup`(3) — 线程组共享内存
+   - `threadgroup_imageblock`(4) — Metal 2+ imageblock
+   - `ray_data`(5) — Metal raytracing
+   - `object_data`(6) — Metal mesh shader
+   - 新增 `isBufferAddressSpace`、`isReadOnly`、`isThreadgroupAddressSpace` 辅助属性
+
+2. **新增 `PointerInfo` 结构**：精确描述指针参数信息（地址空间 + 指向元素类型 + 是否 opaque pointer）
+
+3. **新增 `extractPointerInfo()` 方法**：从 IR 参数中提取指针信息，支持：
+   - Opaque pointer (LLVM 15+): `ptr addrspace(N)` — 使用启发式推断默认元素类型
+   - Typed pointer (旧式): `float addrspace(1)*`, `<4 x float> addrspace(2)*`, `%struct.X addrspace(1)*`
+
+4. **新增 `irScalarTypeToMSL()` 公共方法**：精确的 IR→MSL 标量/向量类型映射：
+   - 整数: `i1`→`bool`, `i8`→`uint8_t`, `i16`→`short`, `i32`→`int`, `i64`→`long`
+   - 浮点: `float`, `half`, `double`→`float`（MSL 无 double）
+   - 向量: `<4 x float>`→`float4`, `<2 x i32>`→`int2`
+   - 结构体: `%struct.VertexIn`→`VertexIn`
+
+5. **增强 `ParsedParameter`**：新增 `pointerInfo` 字段和 `mslDeclaration` 计算属性，可自动生成正确的 MSL 参数声明
+
+6. **重写 `generateBufferParams()`**：根据地址空间生成差异化的 MSL 参数声明：
+   - `device` → `device T* name [[buffer(N)]]`
+   - `constant` → `const constant T* name [[buffer(N)]]`
+   - `threadgroup` → `threadgroup T* name [[threadgroup(N)]]`
+
+7. **改进参数绑定索引**：按地址空间分组计算 `bufferIndex`（device/constant 共享 buffer 索引空间，threadgroup 使用独立索引空间）
+
+8. **更新 fragment/kernel 函数生成**：现在也支持 buffer 参数（之前 fragment 不带 buffer，kernel 不带 buffer）
+
+#### 验证
+
+- PlayTools xcframework 构建通过（`BUILD SUCCEEDED`）
+- pbxproj 格式验证通过（`plutil -lint`）
+- 无 linter 错误

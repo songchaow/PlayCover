@@ -73,7 +73,7 @@ PlayCover 主应用 (macOS)
 |  | 实现 IR→MSL 的关键转换：`addrspace` 标注→地址空间限定符（`device`/`constant`/`threadgroup`）、`air.*` 内建→MSL 等效调用、IR 函数签名→MSL 函数声明。前序步骤（E-004a–d）已具备提取 bitcode 并生成 LLVM IR 文本的完整能力，本步骤在此基础上实现 IR 文本到可通过 `makeLibrary(source:)` 编译的 MSL 源码的转换 | | |
 | E-004e1 | ↳↳ IRToMSLConverter 骨架 + stub MSL 生成 | ✅ DONE | |
 |  | `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift` — 纯 Swift struct，从 LLVM IR 文本中解析函数定义（`define` 行）、提取函数名/返回类型/参数列表、识别 addrspace(N) 标注、推断 shader 类型（vertex/fragment/kernel，支持 metallib 元数据和启发式两种方式）。生成带正确 `[[attribute]]` 标注的 stub MSL 源码（函数体为默认返回值）。支持安全包装（`safeConvert`）。已通过 PlayTools xcframework 构建验证 | | |
-| E-004e2 | ↳↳ addrspace → MSL 地址空间限定符完整映射 | TODO | |
+| E-004e2 | ↳↳ addrspace → MSL 地址空间限定符完整映射 | ✅ DONE | |
 | E-004e3 | ↳↳ air.* 内建 → MSL 等效调用映射 | TODO | |
 | E-004e4 | ↳↳ 完整函数体转换（IR 指令→MSL 语句） | TODO | |
 | E-005 | **运行时 library 替换：用带源码的 library 替换原始返回** | TODO | |
@@ -92,6 +92,9 @@ PlayCover 主应用 (macOS)
 - **Metal 编译器调用**：必须用 `xcrun --sdk macosx metal` 方式调用，SDK 选择通过 xcrun 的 `--sdk` 参数完成
 - **SOURCES section**：`-frecord-sources` 在 metallib 中新增 `SOURCES` section（约占原体积的 90%+），包含完整 MSL 源码文本
 - **运行时编译可行**：`MTLDevice.makeLibrary(source:options:)` 在 Apple M4 Pro 上验证通过，函数签名与从 metallib 加载完全一致
+- **Metal AIR 地址空间映射**：Metal 使用 LLVM addrspace(0-6)：0=thread, 1=device, 2=constant, 3=threadgroup, 4=threadgroup_imageblock, 5=ray_data, 6=object_data。`constant` 地址空间在 MSL 中隐含只读语义
+- **LLVM 15+ Opaque Pointer**：新版 LLVM 默认使用 `ptr addrspace(N)` 而非 `float addrspace(1)*`，丢失了指向的元素类型信息，需从上下文推断或使用通用字节指针 `uint8_t*`
+- **MSL 不支持 double**：LLVM IR 中的 `double` 类型需降级为 MSL `float`
 - **MTLDevice 运行时类**：Apple Silicon 上的实际类是 GPU family 层类（如 M4 Pro=`AGXG16SDevice`），swizzle 必须通过 `object_getClass(device)` 动态获取
 - **`newLibraryWithData:error:` 参数类型**：ObjC 层实际参数类型是 `dispatch_data_t`（桥接为 `__DispatchData`），不是 `NSData`
 - **metallib 格式（MTLB）**：文件头 56 或 88 字节，magic `MTLB`。四大 section：FunctionList、PublicMetadata、PrivateMetadata、Bitcode。函数 Tag 格式详见 E-004 文档

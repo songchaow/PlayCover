@@ -6,13 +6,16 @@
 //  从 llvm-dis 生成的 LLVM IR 文本中提取 Metal shader 函数信息，
 //  生成可通过 makeLibrary(source:) 编译的 MSL 源码。
 //
-//  当前阶段（E-004e1）：基础骨架 + stub MSL 生成
-//  - 解析 IR 中的 Metal shader 函数签名（vertex/fragment/kernel）
-//  - 识别 air.* 内建调用和 addrspace 标注
-//  - 生成带正确函数签名的 stub MSL 代码（函数体为简单默认返回值）
+//  完成阶段：
+//  - E-004e1: 基础骨架 + stub MSL 生成 ✅
+//  - E-004e2: addrspace → MSL 地址空间限定符完整映射 ✅
+//    · 扩展 AddressSpace 枚举覆盖 Metal 2+ 地址空间 (0-6)
+//    · 从 IR 参数中精确提取指针指向的元素类型 (opaque ptr / typed ptr)
+//    · 生成正确的 MSL 参数声明 (地址空间 + 精确元素类型 + 属性标注)
+//    · 支持 const/non-const 推断 (constant → const device)
+//    · 区分 buffer/threadgroup/stage_in 等不同 attribute 类型
 //
 //  后续阶段将逐步提升转换保真度：
-//  - E-004e2: addrspace → MSL 地址空间限定符映射
 //  - E-004e3: air.* 内建 → MSL 等效调用
 //  - E-004e4: 完整函数体转换
 //
@@ -50,21 +53,65 @@ struct IRToMSLConverter {
     // MARK: - Parsed types
 
     /// Metal shader 函数的地址空间（对应 LLVM IR 中的 addrspace(N)）
+    ///
+    /// Metal AIR (Apple Intermediate Representation) 使用 LLVM 地址空间标注：
+    /// - addrspace(0): thread — 线程私有内存（默认）
+    /// - addrspace(1): device — 设备内存，可读写
+    /// - addrspace(2): constant — 常量内存，只读（硬件优化路径）
+    /// - addrspace(3): threadgroup — 线程组共享内存
+    /// - addrspace(4): threadgroup_imageblock — Metal 2+ imageblock 内存
+    /// - addrspace(5): ray_data — Metal raytracing intersection 数据
+    /// - addrspace(6): object_data — Metal mesh shader object 数据
     enum AddressSpace: Int {
-        case device = 1          // addrspace(1) → device
-        case constant = 2        // addrspace(2) → constant
-        case local = 3           // addrspace(3) → threadgroup
-        case thread = 0          // addrspace(0) → thread (default)
+        case thread = 0              // addrspace(0) → thread (default, no qualifier)
+        case device = 1              // addrspace(1) → device
+        case constant = 2            // addrspace(2) → constant
+        case threadgroup = 3         // addrspace(3) → threadgroup
+        case threadgroupImageblock = 4  // addrspace(4) → threadgroup_imageblock
+        case rayData = 5             // addrspace(5) → ray_data
+        case objectData = 6          // addrspace(6) → object_data
 
         /// MSL 地址空间限定符
         var mslQualifier: String {
             switch self {
+            case .thread: return ""
             case .device: return "device"
             case .constant: return "constant"
-            case .local: return "threadgroup"
-            case .thread: return ""
+            case .threadgroup: return "threadgroup"
+            case .threadgroupImageblock: return "threadgroup_imageblock"
+            case .rayData: return "ray_data"
+            case .objectData: return "object_data"
             }
         }
+
+        /// 该地址空间是否表示需要 [[buffer(N)]] 标注的参数
+        var isBufferAddressSpace: Bool {
+            switch self {
+            case .device, .constant: return true
+            default: return false
+            }
+        }
+
+        /// 该地址空间是否表示只读（constant 地址空间在 MSL 中是只读的）
+        var isReadOnly: Bool {
+            return self == .constant
+        }
+
+        /// 该地址空间是否需要 [[threadgroup(N)]] 标注
+        var isThreadgroupAddressSpace: Bool {
+            return self == .threadgroup
+        }
+    }
+
+    /// 从 IR 参数中解析出的指针信息
+    struct PointerInfo {
+        /// 地址空间
+        let addressSpace: AddressSpace
+        /// 指针指向的元素类型（MSL 类型字符串）
+        /// 对于 opaque pointer (`ptr addrspace(N)`)，需要从上下文推断
+        let pointedMSLType: String
+        /// 是否为 opaque pointer（LLVM 15+ 默认使用 opaque pointer）
+        let isOpaquePointer: Bool
     }
 
     /// Metal shader 函数类型
@@ -93,6 +140,38 @@ struct IRToMSLConverter {
         let bufferIndex: Int?
         /// 属性标注（如 [[stage_in]], [[position]] 等）
         let attribute: String?
+        /// 指针信息（如果参数是指针类型）
+        let pointerInfo: PointerInfo?
+
+        /// 生成该参数的 MSL 声明字符串
+        var mslDeclaration: String? {
+            // 有指针信息时生成精确声明
+            if let ptr = pointerInfo {
+                let qualifier = ptr.addressSpace.mslQualifier
+                guard !qualifier.isEmpty else { return nil }
+
+                let elemType = ptr.pointedMSLType
+                let constPrefix = ptr.addressSpace.isReadOnly ? "const " : ""
+
+                if ptr.addressSpace.isBufferAddressSpace {
+                    let idx = bufferIndex ?? 0
+                    return "\(constPrefix)\(qualifier) \(elemType)* \(name) [[buffer(\(idx))]]"
+                } else if ptr.addressSpace.isThreadgroupAddressSpace {
+                    let idx = bufferIndex ?? 0
+                    return "threadgroup \(elemType)* \(name) [[threadgroup(\(idx))]]"
+                } else {
+                    return "\(qualifier) \(elemType)* \(name)"
+                }
+            }
+
+            // 非指针参数
+            if let attr = attribute {
+                let mslType = IRToMSLConverter.irScalarTypeToMSL(irType)
+                return "\(mslType) \(name) \(attr)"
+            }
+
+            return nil
+        }
     }
 
     /// 从 IR 中解析出的 shader 函数
@@ -464,6 +543,8 @@ struct IRToMSLConverter {
 
         let rawParams = splitIRParameters(paramList)
         var params: [ParsedParameter] = []
+        var bufferIdx = 0
+        var threadgroupIdx = 0
 
         for (index, rawParam) in rawParams.enumerated() {
             let trimmed = rawParam.trimmingCharacters(in: .whitespaces)
@@ -475,12 +556,32 @@ struct IRToMSLConverter {
             // 提取参数名（%name 或 %N）
             let paramName = extractParamName(from: trimmed) ?? "param\(index)"
 
+            // 提取指针信息
+            let ptrInfo = extractPointerInfo(from: trimmed, addressSpace: addrSpace)
+
+            // 确定 buffer/threadgroup 绑定索引
+            let bindingIndex: Int?
+            if let space = addrSpace {
+                if space.isBufferAddressSpace {
+                    bindingIndex = bufferIdx
+                    bufferIdx += 1
+                } else if space.isThreadgroupAddressSpace {
+                    bindingIndex = threadgroupIdx
+                    threadgroupIdx += 1
+                } else {
+                    bindingIndex = index
+                }
+            } else {
+                bindingIndex = index
+            }
+
             params.append(ParsedParameter(
                 name: paramName,
                 irType: trimmed,
                 addressSpace: addrSpace,
-                bufferIndex: index,
-                attribute: nil
+                bufferIndex: bindingIndex,
+                attribute: nil,
+                pointerInfo: ptrInfo
             ))
         }
 
@@ -516,6 +617,163 @@ struct IRToMSLConverter {
         let numStr = String(afterParen[afterParen.startIndex..<closeParen])
         guard let num = Int(numStr) else { return nil }
         return AddressSpace(rawValue: num)
+    }
+
+    /// 从 IR 参数字符串中提取完整的指针信息（地址空间 + 指向的元素类型）。
+    ///
+    /// Metal LLVM IR 中指针参数的常见形式：
+    /// 1. Opaque pointer (LLVM 15+): `ptr addrspace(1) %buf`
+    /// 2. Typed pointer (旧式): `float addrspace(1)* %buf`, `<4 x float> addrspace(1)* %buf`
+    /// 3. 结构体指针: `%struct.MyStruct addrspace(1)* %buf`
+    private static func extractPointerInfo(
+        from irParam: String,
+        addressSpace: AddressSpace?
+    ) -> PointerInfo? {
+        guard let space = addressSpace else { return nil }
+
+        let trimmed = irParam.trimmingCharacters(in: .whitespaces)
+
+        // Case 1: Opaque pointer — `ptr addrspace(N)`
+        // LLVM 15+ 默认使用 opaque pointer，不携带元素类型信息
+        if trimmed.hasPrefix("ptr ") || trimmed == "ptr" {
+            return PointerInfo(
+                addressSpace: space,
+                pointedMSLType: inferDefaultElementType(for: space),
+                isOpaquePointer: true
+            )
+        }
+
+        // Case 2 & 3: Typed pointer — 提取 addrspace 前面的元素类型
+        let pointedType = extractPointedType(from: trimmed)
+        let mslType: String
+        if let pointed = pointedType {
+            mslType = irScalarTypeToMSL(pointed)
+        } else {
+            mslType = inferDefaultElementType(for: space)
+        }
+
+        return PointerInfo(
+            addressSpace: space,
+            pointedMSLType: mslType,
+            isOpaquePointer: false
+        )
+    }
+
+    /// 从 typed pointer IR 参数中提取指针指向的元素类型。
+    ///
+    /// 输入示例:
+    /// - `float addrspace(1)* %buf` → `float`
+    /// - `<4 x float> addrspace(2)* %0` → `<4 x float>`
+    /// - `%struct.VertexIn addrspace(1)* %input` → `%struct.VertexIn`
+    /// - `i32 addrspace(1)* %idx` → `i32`
+    private static func extractPointedType(from irParam: String) -> String? {
+        // 查找 "addrspace(" 位置
+        guard let addrRange = irParam.range(of: "addrspace(") else { return nil }
+
+        // addrspace 前面的部分就是元素类型
+        let beforeAddr = irParam[irParam.startIndex..<addrRange.lowerBound]
+            .trimmingCharacters(in: .whitespaces)
+
+        if beforeAddr.isEmpty { return nil }
+
+        // 如果以 "ptr" 开头说明是 opaque pointer，没有元素类型
+        if beforeAddr == "ptr" { return nil }
+
+        return beforeAddr
+    }
+
+    /// 对于 opaque pointer (LLVM 15+)，无法从 IR 参数中直接获取元素类型，
+    /// 根据地址空间推断合理的默认元素类型。
+    private static func inferDefaultElementType(for space: AddressSpace) -> String {
+        switch space {
+        case .device:
+            // device buffer 最常见的是 float 或结构体指针，用 uint8_t 作为通用字节指针
+            return "uint8_t"
+        case .constant:
+            // constant buffer 通常是 uniform 数据，用 uint8_t 作为通用字节指针
+            return "uint8_t"
+        case .threadgroup:
+            // threadgroup 共享内存，用 uint8_t
+            return "uint8_t"
+        case .thread:
+            // thread-local 默认 float
+            return "float"
+        case .threadgroupImageblock:
+            return "float"
+        case .rayData:
+            return "uint8_t"
+        case .objectData:
+            return "uint8_t"
+        }
+    }
+
+    /// 将单个 IR 标量/向量类型转换为 MSL 类型（公共方法，供 ParsedParameter 使用）。
+    ///
+    /// 处理 IR 中出现的所有基本类型：
+    /// - 整数: i1→bool, i8→char/uint8_t, i16→short, i32→int, i64→long
+    /// - 浮点: half, float, double
+    /// - 向量: <4 x float>→float4, <2 x i32>→int2
+    /// - 结构体名: %struct.X→X
+    static func irScalarTypeToMSL(_ irType: String) -> String {
+        let cleaned = irType.trimmingCharacters(in: .whitespaces)
+
+        // 基本整数类型
+        if cleaned == "i1" { return "bool" }
+        if cleaned == "i8" { return "uint8_t" }
+        if cleaned == "i16" { return "short" }
+        if cleaned == "i32" { return "int" }
+        if cleaned == "i64" { return "long" }
+
+        // 无符号整数变体（来自 zext/sext 上下文）
+        // LLVM IR 本身无符号区分，但 MSL 需要，此处默认有符号
+        if cleaned == "float" { return "float" }
+        if cleaned == "half" { return "half" }
+        if cleaned == "double" { return "float" } // MSL 不支持 double，降级为 float
+        if cleaned == "void" { return "void" }
+
+        // 向量类型: <N x T> → TN
+        if cleaned.hasPrefix("<") && cleaned.hasSuffix(">") && cleaned.contains(" x ") {
+            let inner = String(cleaned.dropFirst().dropLast())
+            let parts = inner.components(separatedBy: " x ")
+            if parts.count >= 2 {
+                let count = parts[0].trimmingCharacters(in: .whitespaces)
+                let elemType = irScalarTypeToMSL(
+                    parts.dropFirst().joined(separator: " x ").trimmingCharacters(in: .whitespaces)
+                )
+                return "\(elemType)\(count)"
+            }
+        }
+
+        // 结构体名: %struct.VertexIn → VertexIn, %"class::Name" → class_Name
+        if cleaned.hasPrefix("%struct.") {
+            let structName = String(cleaned.dropFirst("%struct.".count))
+            return sanitizeTypeName(structName)
+        }
+        if cleaned.hasPrefix("%") {
+            let typeName = String(cleaned.dropFirst())
+                .replacingOccurrences(of: "\"", with: "")
+            return sanitizeTypeName(typeName)
+        }
+
+        // 指针类型 → void* 等效
+        if cleaned.contains("*") || cleaned == "ptr" {
+            return "uint8_t"
+        }
+
+        return cleaned.isEmpty ? "uint8_t" : cleaned
+    }
+
+    /// 将类型名清理为合法的 MSL 标识符
+    private static func sanitizeTypeName(_ name: String) -> String {
+        var result = ""
+        for char in name {
+            if char.isLetter || char.isNumber || char == "_" {
+                result.append(char)
+            } else {
+                result.append("_")
+            }
+        }
+        return result.isEmpty ? "UnknownType" : result
     }
 
     /// 从 IR 参数字符串中提取参数名
@@ -647,11 +905,13 @@ struct IRToMSLConverter {
         _ func_: ParsedShaderFunction,
         safeName: String
     ) -> String {
-        // 生成带 buffer 参数的 vertex shader
         let bufferParams = generateBufferParams(func_.parameters)
-        let paramStr = bufferParams.isEmpty
-            ? "uint vid [[vertex_id]]"
-            : "uint vid [[vertex_id]], \(bufferParams)"
+        let paramStr: String
+        if bufferParams.isEmpty {
+            paramStr = "uint vid [[vertex_id]]"
+        } else {
+            paramStr = "uint vid [[vertex_id]], \(bufferParams)"
+        }
 
         return """
         vertex \(func_.returnType) \(safeName)(\(paramStr)) {
@@ -665,8 +925,16 @@ struct IRToMSLConverter {
         _ func_: ParsedShaderFunction,
         safeName: String
     ) -> String {
+        let bufferParams = generateBufferParams(func_.parameters)
+        let paramStr: String
+        if bufferParams.isEmpty {
+            paramStr = "float4 position [[position]]"
+        } else {
+            paramStr = "float4 position [[position]], \(bufferParams)"
+        }
+
         return """
-        fragment \(func_.returnType) \(safeName)(float4 position [[position]]) {
+        fragment \(func_.returnType) \(safeName)(\(paramStr)) {
             return \(defaultReturnValue(for: func_.returnType));
         }
         """
@@ -677,31 +945,56 @@ struct IRToMSLConverter {
         _ func_: ParsedShaderFunction,
         safeName: String
     ) -> String {
+        let bufferParams = generateBufferParams(func_.parameters)
+        let paramStr: String
+        if bufferParams.isEmpty {
+            paramStr = "uint tid [[thread_position_in_grid]]"
+        } else {
+            paramStr = "uint tid [[thread_position_in_grid]], \(bufferParams)"
+        }
+
         return """
-        kernel void \(safeName)(uint tid [[thread_position_in_grid]]) {
+        kernel void \(safeName)(\(paramStr)) {
             // stub kernel
         }
         """
     }
 
-    /// 为 buffer 参数生成 MSL 参数列表
+    /// 为 buffer/threadgroup 参数生成 MSL 参数列表。
+    ///
+    /// 根据参数的地址空间生成正确的 MSL 声明：
+    /// - device (addrspace 1) → `device T* name [[buffer(N)]]`
+    /// - constant (addrspace 2) → `const constant T* name [[buffer(N)]]` （注意 constant 隐含只读）
+    /// - threadgroup (addrspace 3) → `threadgroup T* name [[threadgroup(N)]]`
+    /// - 其他地址空间 → 使用对应的 MSL 限定符
     private static func generateBufferParams(_ params: [ParsedParameter]) -> String {
-        var bufferParams: [String] = []
+        var mslParams: [String] = []
 
-        for (i, param) in params.enumerated() {
-            let qualifier: String
-            if let addrSpace = param.addressSpace {
-                qualifier = addrSpace.mslQualifier
-            } else {
-                qualifier = "device"
+        for param in params {
+            // 优先使用 ParsedParameter 自身的 mslDeclaration
+            if let decl = param.mslDeclaration {
+                mslParams.append(decl)
+                continue
             }
 
+            // 回退：如果有地址空间但没有指针信息，使用旧逻辑
+            guard let addrSpace = param.addressSpace else { continue }
+            let qualifier = addrSpace.mslQualifier
             if qualifier.isEmpty { continue }
-            let idx = param.bufferIndex ?? i
-            bufferParams.append("\(qualifier) float* buf\(idx) [[buffer(\(idx))]]")
+
+            let idx = param.bufferIndex ?? 0
+            let constPrefix = addrSpace.isReadOnly ? "const " : ""
+
+            if addrSpace.isBufferAddressSpace {
+                mslParams.append("\(constPrefix)\(qualifier) uint8_t* \(param.name) [[buffer(\(idx))]]")
+            } else if addrSpace.isThreadgroupAddressSpace {
+                mslParams.append("threadgroup uint8_t* \(param.name) [[threadgroup(\(idx))]]")
+            } else {
+                mslParams.append("\(qualifier) uint8_t* \(param.name)")
+            }
         }
 
-        return bufferParams.joined(separator: ", ")
+        return mslParams.joined(separator: ", ")
     }
 
     /// 生成给定类型的默认返回值

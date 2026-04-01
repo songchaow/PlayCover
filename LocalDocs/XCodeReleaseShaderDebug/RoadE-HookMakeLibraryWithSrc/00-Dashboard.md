@@ -47,7 +47,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 |  | 从 QQ飞车 app 包中提取一个 metallib → 用 `xcrun metal` 工具链反编译得到 MSL/IR → 用 `-frecord-sources` 重编译 → 替换回 gputrace → 打开 Xcode 验证 | | |
 | E-002 | **调研 `MTLDevice` 创建 Library 的全部 API 入口** | ✅ DONE | [E-002-API](E-002-MTLDevice-Library-API.md) |
 |  | 枚举所有需要 hook 的 ObjC selector（`newLibraryWithData:error:`, `newLibraryWithSource:options:error:`, `newLibraryWithURL:error:` 等），确认运行时类名 | | |
-| E-003 | **在 PlayTools 中实现 makeLibrary swizzle 骨架** | TODO | |
+| E-003 | **在 PlayTools 中实现 makeLibrary swizzle 骨架** | ✅ DONE | [E-003-Swizzle](E-003-LibrarySwizzleSkeleton.md) |
 |  | 参考 `CommandQueueDiscoverySwizzles` 模式，添加 `LibrarySourceInjectionSwizzles` 类，拦截并记录每次 makeLibrary 调用（先 log-only，不修改返回） | | |
 | E-004 | **实现 metallib → MSL 源码提取** | TODO | |
 |  | 在运行时拦截到 metallib `Data` 后，提取 LLVM Bitcode（参考 MetalLibraryArchive 格式），生成可读 IR 文本或 MSL 伪源码 | | |
@@ -70,6 +70,9 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 - **MTLDevice 运行时类**：Apple Silicon 上的实际类不是 `MTLDevice`（协议），而是 GPU family 层类（如 M4 Pro=`AGXG16SDevice`），继承链 `AGXGxxSDevice → AGXGxxFamilyDevice → IOGPUMetalDevice → _MTLDevice → NSObject`。swizzle 必须通过 `object_getClass(device)` 动态获取，不能硬编码类名
 - **Library 方法分布**：`newLibraryWithData:error:` 等定义在 GPU family 层（`AGXGxxFamilyDevice`），`newLibraryWithURL:error:` 等定义在框架层（`_MTLDevice`），但 `class_getInstanceMethod` 能沿继承链找到，统一用 `object_getClass(device)` 作为 swizzle 目标即可
 - **完整 Library API 列表**：MTLDevice 协议共有 11 个 library 相关 required method（含 2 个 dynamic library），详见 [E-002](E-002-MTLDevice-Library-API.md)
+- **Swizzle 骨架**：`LibrarySourceInjectionSwizzles` 采用与 `CommandQueueDiscoverySwizzles` 完全一致的模式——私有 `NSObject` 子类持有 `@objc dynamic` 替换方法，通过 `class_addMethod` + `method_exchangeImplementations` 安装到设备类上
+- **异步 API 的 hook**：`newLibraryWithSource:options:completionHandler:` 通过包装 `completionHandler` block 记录日志，不阻塞原始回调
+- **`newLibraryWithData:error:` 参数类型**：ObjC 层实际参数类型是 `dispatch_data_t`（桥接为 `__DispatchData`），不是 `NSData`；Swift swizzle 方法签名必须用 `__DispatchData` 才能正确交换
 
 ## 参考信息
 

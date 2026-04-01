@@ -21,6 +21,9 @@ public class PlayCover: NSObject {
         // 初始化 Metal 截帧服务
         MetalCaptureService.shared.initialize()
 
+        // E-003: 安装 makeLibrary swizzle（shader 源码注入骨架，当前仅日志）
+        LibrarySourceInjectionService.shared.installIfNeeded()
+
         let runtimeBundleId = Bundle.main.bundleIdentifier
             ?? "playtools.runtime.\(ProcessInfo.processInfo.processIdentifier)"
         NSLog("%@", "[PlayTools] PlayCover.launch bundleId=\(runtimeBundleId)")

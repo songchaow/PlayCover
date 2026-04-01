@@ -87,6 +87,7 @@
 		B6D774FF2ACFC3D900C0D9D8 /* SwordRPC in Frameworks */ = {isa = PBXBuildFile; productRef = B6D774FE2ACFC3D900C0D9D8 /* SwordRPC */; };
 		A1F9B3012F5A000100000001 /* BridgeListener.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F9B3032F5A000100000001 /* BridgeListener.swift */; };
 		A1F9B3022F5A000100000001 /* MetalCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F9B3042F5A000100000001 /* MetalCaptureService.swift */; };
+		A1F9B3052F5A000200000001 /* LibrarySourceInjectionSwizzles.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F9B3062F5A000200000001 /* LibrarySourceInjectionSwizzles.swift */; };
 		D04B12CA2EF6F3DD008FEC14 /* MediaVolume.m in Sources */ = {isa = PBXBuildFile; fileRef = D04B12C92EF6F3DD008FEC14 /* MediaVolume.m */; };
 		EEB248592B81D074000C230A /* PlayedAppleDB.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEB248582B81D074000C230A /* PlayedAppleDB.swift */; };
 		1A44AE24EDFE440EA5084DAE /* GuardedCapture.m in Sources */ = {isa = PBXBuildFile; fileRef = 1EB35123F04341FB8D73C9A4 /* GuardedCapture.m */; };
@@ -192,6 +193,7 @@
 		B66E64FF2C936E9800E48FD0 /* PlayedAppleDBConstants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayedAppleDBConstants.swift; sourceTree = "<group>"; };
 		A1F9B3032F5A000100000001 /* BridgeListener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Bridge/BridgeListener.swift; sourceTree = "<group>"; };
 		A1F9B3042F5A000100000001 /* MetalCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalCaptureService.swift; sourceTree = "<group>"; };
+		A1F9B3062F5A000200000001 /* LibrarySourceInjectionSwizzles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySourceInjectionSwizzles.swift; sourceTree = "<group>"; };
 		D04B12C92EF6F3DD008FEC14 /* MediaVolume.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MediaVolume.m; sourceTree = "<group>"; };
 		D04B12CC2EF6F3F9008FEC14 /* MediaVolume.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MediaVolume.h; sourceTree = "<group>"; };
 		EEB248582B81D074000C230A /* PlayedAppleDB.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayedAppleDB.swift; sourceTree = "<group>"; };
@@ -456,6 +458,7 @@
 				AA719704287A44D200623C15 /* PlaySettings.swift */,
 				AA719706287A44D200623C15 /* PlayCover.swift */,
 				A1F9B3042F5A000100000001 /* MetalCaptureService.swift */,
+				A1F9B3062F5A000200000001 /* LibrarySourceInjectionSwizzles.swift */,
 				AA719705287A44D200623C15 /* PlayLoader.h */,
 				AA719702287A44D200623C15 /* PlayLoader.m */,
 				AA719708287A44D200623C15 /* PlayTools.h */,
@@ -730,6 +733,7 @@
 			files = (
 				A1F9B3012F5A000100000001 /* BridgeListener.swift in Sources */,
 				A1F9B3022F5A000100000001 /* MetalCaptureService.swift in Sources */,
+				A1F9B3052F5A000200000001 /* LibrarySourceInjectionSwizzles.swift in Sources */,
 				954389CA2B392D7800B063BB /* DraggableButton.swift in Sources */,
 				9562D16D2AB505D4002C329D /* ControllerEventAdapter.swift in Sources */,
 				B444BB0D2F49C1D100ADCC5A /* ControllerFocus.m in Sources */,

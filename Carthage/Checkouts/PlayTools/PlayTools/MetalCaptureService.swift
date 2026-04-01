@@ -22,12 +22,30 @@ import QuartzCore
 private final class CommandQueueDiscoverySwizzles: NSObject {
     @objc dynamic func pc_newCommandQueue() -> AnyObject? {
         let queue = self.pc_newCommandQueue()
+        // RC-015: Log deep class info to diagnose GPUToolsCapture proxy wrapping
+        if let obj = queue {
+            let isaClass = NSStringFromClass(object_getClass(obj)!)
+            let typeClass = NSStringFromClass(type(of: obj) as! AnyClass)
+            let respondsToTraceStream = obj.responds(to: NSSelectorFromString("traceStream"))
+            let classHierarchy = MetalCaptureService.classHierarchyString(of: obj)
+            NSLog("[PlayTools] RC-015 newCommandQueue: isa=%@, type=%@, traceStream=%d, hierarchy=[%@]",
+                  isaClass, typeClass, respondsToTraceStream ? 1 : 0, classHierarchy)
+        }
         MetalCaptureService.shared.recordObservedCommandQueue(queue, source: "newCommandQueue")
         return queue
     }
 
     @objc dynamic func pc_newCommandQueueWithMaxCommandBufferCount(_ maxCommandBufferCount: UInt) -> AnyObject? {
         let queue = self.pc_newCommandQueueWithMaxCommandBufferCount(maxCommandBufferCount)
+        // RC-015: Same deep diagnostics
+        if let obj = queue {
+            let isaClass = NSStringFromClass(object_getClass(obj)!)
+            let typeClass = NSStringFromClass(type(of: obj) as! AnyClass)
+            let respondsToTraceStream = obj.responds(to: NSSelectorFromString("traceStream"))
+            let classHierarchy = MetalCaptureService.classHierarchyString(of: obj)
+            NSLog("[PlayTools] RC-015 newCommandQueueWithMaxCount(%lu): isa=%@, type=%@, traceStream=%d, hierarchy=[%@]",
+                  maxCommandBufferCount, isaClass, typeClass, respondsToTraceStream ? 1 : 0, classHierarchy)
+        }
         MetalCaptureService.shared.recordObservedCommandQueue(
             queue,
             source: "newCommandQueueWithMaxCommandBufferCount(\(maxCommandBufferCount))"
@@ -295,6 +313,9 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
 
         // Lazily load libmtlcapture.dylib and re-acquire MTLCaptureManager (RC-009)
         _ = ensureGPUToolsCaptureLoaded()
+
+        // RC-015: One-time deep diagnostics at capture time
+        logRC015CaptureFrameDiagnostics()
 
         guard let manager = captureManager else {
             let status = makeStatus(manager: nil)
@@ -592,6 +613,10 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         }
 
         let deviceClass: AnyClass = object_getClass(device) ?? NSClassFromString(NSStringFromClass(type(of: device)))!
+
+        // RC-015: Pre-swizzle diagnostics — check if GPUToolsCapture already hooked newCommandQueue
+        logRC015PreSwizzleDiagnostics(deviceClass: deviceClass, device: device)
+
         let installedNewCommandQueue = swizzleInstanceMethod(
             on: deviceClass,
             original: NSSelectorFromString("newCommandQueue"),
@@ -602,6 +627,9 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
             original: NSSelectorFromString("newCommandQueueWithMaxCommandBufferCount:"),
             swizzled: #selector(CommandQueueDiscoverySwizzles.pc_newCommandQueueWithMaxCommandBufferCount(_:))
         )
+
+        // RC-015: Post-swizzle diagnostics
+        logRC015PostSwizzleDiagnostics(deviceClass: deviceClass)
 
         logStatusProbe(
             "queue discovery install finished. deviceClass=\(NSStringFromClass(deviceClass)), newCommandQueue=\(installedNewCommandQueue), newCommandQueueWithMaxCommandBufferCount=\(installedNewCommandQueueWithMaxCount)"
@@ -785,6 +813,108 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
 
     private static func describeOptionalString(_ value: String?) -> String {
         value ?? "nil"
+    }
+
+    // MARK: - RC-015: Deep diagnostics for GPUToolsCapture proxy investigation
+
+    /// Walk the class hierarchy of an object and return as a string "ClassName -> SuperClass -> ..."
+    static func classHierarchyString(of obj: AnyObject) -> String {
+        var hierarchy: [String] = []
+        var cls: AnyClass? = object_getClass(obj)
+        while let current = cls {
+            hierarchy.append(NSStringFromClass(current))
+            cls = class_getSuperclass(current)
+        }
+        return hierarchy.joined(separator: " -> ")
+    }
+
+    /// RC-015: Log IMP address of newCommandQueue before PlayTools swizzle,
+    /// to determine if GPUToolsCapture has already hooked it.
+    private func logRC015PreSwizzleDiagnostics(deviceClass: AnyClass, device: MTLDevice) {
+        let sel = NSSelectorFromString("newCommandQueue")
+        let selMax = NSSelectorFromString("newCommandQueueWithMaxCommandBufferCount:")
+
+        let method = class_getInstanceMethod(deviceClass, sel)
+        let methodMax = class_getInstanceMethod(deviceClass, selMax)
+
+        let impAddr = method.map { unsafeBitCast(method_getImplementation($0), to: UInt.self) } ?? 0
+        let impMaxAddr = methodMax.map { unsafeBitCast(method_getImplementation($0), to: UInt.self) } ?? 0
+
+        // Check if CaptureMTLCommandQueue class exists (indicates GPUToolsCapture loaded)
+        let captureQueueClass = NSClassFromString("CaptureMTLCommandQueue")
+        let captureDeviceClass = NSClassFromString("CaptureMTLDevice")
+        let gpuToolsCaptureLoaded = captureQueueClass != nil
+
+        // Check the device's class hierarchy
+        let deviceHierarchy = Self.classHierarchyString(of: device as AnyObject)
+
+        // Check if the device is a Capture* proxy
+        let deviceIsaClassName = NSStringFromClass(object_getClass(device as AnyObject)!)
+
+        // Try creating a queue to see what class it produces BEFORE our swizzle
+        let probeQueue = device.makeCommandQueue()
+        let probeQueueClass = probeQueue.map { NSStringFromClass(object_getClass($0 as AnyObject)!) } ?? "nil"
+        let probeQueueHierarchy = probeQueue.map { Self.classHierarchyString(of: $0 as AnyObject) } ?? "nil"
+
+        NSLog("[PlayTools] RC-015 PRE-SWIZZLE: deviceClass=%@, deviceIsa=%@, deviceHierarchy=[%@]",
+              NSStringFromClass(deviceClass), deviceIsaClassName, deviceHierarchy)
+        NSLog("[PlayTools] RC-015 PRE-SWIZZLE: newCommandQueue IMP=0x%lx, newCommandQueueWithMax IMP=0x%lx",
+              impAddr, impMaxAddr)
+        NSLog("[PlayTools] RC-015 PRE-SWIZZLE: CaptureMTLCommandQueue exists=%d, CaptureMTLDevice exists=%d, gpuToolsCaptureLoaded=%d",
+              captureQueueClass != nil ? 1 : 0, captureDeviceClass != nil ? 1 : 0, gpuToolsCaptureLoaded ? 1 : 0)
+        NSLog("[PlayTools] RC-015 PRE-SWIZZLE probe: queue class=%@, hierarchy=[%@]",
+              probeQueueClass, probeQueueHierarchy)
+
+        // Enumerate all loaded Capture* classes from GPUToolsCapture
+        logRC015CaptureClasses()
+    }
+
+    /// RC-015: Log IMP address of newCommandQueue after PlayTools swizzle
+    private func logRC015PostSwizzleDiagnostics(deviceClass: AnyClass) {
+        let sel = NSSelectorFromString("newCommandQueue")
+        let method = class_getInstanceMethod(deviceClass, sel)
+        let impAddr = method.map { unsafeBitCast(method_getImplementation($0), to: UInt.self) } ?? 0
+        NSLog("[PlayTools] RC-015 POST-SWIZZLE: newCommandQueue IMP=0x%lx (should be pc_newCommandQueue)", impAddr)
+    }
+
+    /// RC-015: Enumerate all ObjC classes that start with "Capture" (from GPUToolsCapture)
+    /// Delegates to C implementation to avoid Swift runtime crashes during class enumeration
+    private func logRC015CaptureClasses() {
+        PlayTools_logGPUToolsCaptureClasses()
+    }
+
+    /// RC-015: Detailed diagnostics run once per captureFrame call
+    private var rc015CaptureFrameDiagnosticsDone = false
+
+    func logRC015CaptureFrameDiagnostics() {
+        guard !rc015CaptureFrameDiagnosticsDone else { return }
+        rc015CaptureFrameDiagnosticsDone = true
+
+        // 1. Enumerate all tracked queues with deep class info
+        trackedQueueLock.lock()
+        let queuesCopy = trackedCommandQueues
+        let orderCopy = trackedCommandQueueOrder
+        trackedQueueLock.unlock()
+
+        NSLog("[PlayTools] RC-015 CAPTURE DIAG: %d tracked queues", queuesCopy.count)
+        for (idx, id) in orderCopy.enumerated() {
+            guard let tq = queuesCopy[id] else { continue }
+            let hierarchy = Self.classHierarchyString(of: tq.queue as AnyObject)
+            let respondsTraceStream = (tq.queue as AnyObject).responds(to: NSSelectorFromString("traceStream"))
+            let isCaptureProxy = NSStringFromClass(object_getClass(tq.queue as AnyObject)!).hasPrefix("Capture")
+            NSLog("[PlayTools] RC-015 CAPTURE DIAG: queue[%d] class=%@, isCaptureProxy=%d, traceStream=%d, hierarchy=[%@], label=%@, device=%@",
+                  idx, tq.className, isCaptureProxy ? 1 : 0, respondsTraceStream ? 1 : 0,
+                  hierarchy, tq.label ?? "nil", tq.deviceName)
+        }
+
+        // 2. Check the device being used for capture
+        if let device = MTLCreateSystemDefaultDevice() {
+            let deviceIsa = NSStringFromClass(object_getClass(device as AnyObject)!)
+            let deviceHierarchy = Self.classHierarchyString(of: device as AnyObject)
+            let isDeviceProxy = deviceIsa.hasPrefix("Capture")
+            NSLog("[PlayTools] RC-015 CAPTURE DIAG: device isa=%@, isProxy=%d, hierarchy=[%@]",
+                  deviceIsa, isDeviceProxy ? 1 : 0, deviceHierarchy)
+        }
     }
 
     private func defaultOutputURL() -> URL {

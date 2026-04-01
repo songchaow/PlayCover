@@ -16,7 +16,7 @@
 | E-004b | **从 MODULE_LIST 提取函数级 LLVM Bitcode** | ✅ DONE | 利用解析器定位每个函数的 bitcode 数据并提取为独立 Data |
 | E-004c | **LLVM 工具链管理：下载并部署 `llvm-dis`** | ✅ DONE | PlayCover 主应用中实现 LLVMToolManager，下载 LLVM 预编译包并提取 `llvm-dis` |
 | E-004d | **PlayTools 中调用 `llvm-dis` 转换 bitcode → IR** | ✅ DONE | 新增 LLVMDisassembler 类，使用 posix_spawn 调用 llvm-dis，支持路径自动发现、超时、批量处理 |
-| E-004e | **LLVM IR → MSL 转换器** | TODO | 实现 IR→MSL 关键转换（addrspace→地址空间限定符、air.*内建→MSL调用、IR函数签名→MSL声明），先做真实游戏 metallib 的 IR 样本分析 |
+| E-004e | **LLVM IR → MSL 转换器** | 🔄 IN PROGRESS | 已拆分为 E-004e1–e4 |
 
 ### 架构说明
 
@@ -235,3 +235,69 @@ Offset  Size   Field
 - pbxproj 格式验证通过（`plutil -lint`）
 - 文件已正确添加到 PlayTools target 的 Sources build phase
 - 运行时验证需在实际 app 上测试（需 llvm-dis 已安装）
+
+## E-004e 实现（已拆分）
+
+E-004e 工作量较大，拆分为四个子任务：
+
+| # | 子任务 | 状态 | 说明 |
+|---|--------|------|------|
+| E-004e1 | **IRToMSLConverter 骨架 + stub MSL 生成** | ✅ DONE | 解析 IR 函数定义，生成 stub MSL 源码 |
+| E-004e2 | addrspace → MSL 地址空间限定符完整映射 | TODO | 完善参数类型转换 |
+| E-004e3 | air.* 内建 → MSL 等效调用映射 | TODO | 映射 Metal runtime 内建函数 |
+| E-004e4 | 完整函数体转换（IR 指令→MSL 语句） | TODO | 将 IR 指令序列转换为 MSL 代码 |
+
+### E-004e1: IRToMSLConverter 骨架
+
+#### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift` | LLVM IR → MSL 转换器骨架 |
+
+#### IRToMSLConverter 架构
+
+`IRToMSLConverter` 是纯 Swift `struct`，将 LLVM IR 文本转换为可编译的 MSL 源码：
+
+1. **IR 解析**：`parseIRFunctions()` 逐行扫描 `define` 语句，提取：
+   - 函数名（支持 `@"quoted.name"` 和 `@plain_name`）
+   - 返回类型（处理 linkage/visibility/calling convention 前缀）
+   - 参数列表（保持尖括号嵌套平衡的逗号分割）
+   - 属性字符串
+
+2. **Shader 类型识别**：`identifyShaderFunctions()` 两阶段策略：
+   - 优先使用 MetallibParser 提供的 `functionTypes`（从 metallib TYPE tag 获取）
+   - 回退到启发式推断：calling convention（cc75=vertex, cc76=kernel, cc77=fragment）、返回类型特征、函数名关键词
+   - 过滤 `llvm.*` 和 `air.*` 内部函数
+
+3. **参数分析**：`parseParameters()` 从 IR 参数中提取：
+   - `addrspace(N)` → `AddressSpace` 枚举（device=1, constant=2, threadgroup=3）
+   - 参数名（`%name` 或 `%N`）
+   - buffer 绑定索引
+
+4. **IR→MSL 类型映射**：`irTypeToMSL()` 处理：
+   - 标量：`void`, `float`, `half`, `i32`→`int`, `i1`→`bool` 等
+   - 向量：`<4 x float>` → `float4`
+   - 结构体和指针 → 退回 shader 类型的默认返回类型
+
+5. **MSL 生成**：`generateMSL()` 为每个 shader 函数生成：
+   - vertex: 带 `[[vertex_id]]` 和 buffer 参数
+   - fragment: 带 `[[position]]` 输入
+   - kernel: 带 `[[thread_position_in_grid]]`
+   - 函数体为简单默认返回值（`float4(0.0)` / `void`）
+   - 函数名清理为合法 MSL 标识符
+
+6. **安全包装**：`safeConvert()` 失败不中断，返回 nil 并记录日志
+
+#### 验证
+
+- PlayTools xcframework 构建通过（`BUILD SUCCEEDED`）
+- pbxproj 格式验证通过（`plutil -lint`）
+- 文件已正确添加到 PlayTools target 的 Sources build phase
+
+#### 已知限制（后续子任务解决）
+
+- 函数体为 stub（默认返回值），非真实 IR 指令转换
+- buffer 参数类型统一为 `device float*`，未从 IR 中精确推断
+- 未处理 `air.*` 内建函数的 MSL 映射
+- 未处理复杂结构体返回类型的 MSL 声明

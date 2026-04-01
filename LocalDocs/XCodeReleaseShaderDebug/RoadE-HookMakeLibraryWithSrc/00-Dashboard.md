@@ -69,8 +69,13 @@ PlayCover 主应用 (macOS)
 |  | `PlayCover/Utils/LLVMToolManager.swift` — 单例管理器，从 GitHub Releases 下载 LLVM 19.1.0 macOS ARM64 预编译包，用 `tar --strip-components=2` 提取 `bin/llvm-dis`，安装到 `~/Library/Containers/io.playcover.PlayCover/llvm-tools/`。支持版本记录、可执行权限设置、ad-hoc 签名、`--version` 验证、进度跟踪（ObservableObject）、卸载 | | |
 | E-004d | ↳ **PlayTools 中调用 `llvm-dis` 将 bitcode → LLVM IR 文本** | ✅ DONE | |
 |  | `Carthage/Checkouts/PlayTools/PlayTools/LLVMDisassembler.swift` — 纯 Swift struct，使用 `posix_spawn` 调用 `llvm-dis` 将 bitcode 二进制转换为 LLVM IR 文本。支持路径自动发现（LLVMToolManager 安装位置 + Homebrew 路径）、超时控制（默认 30s）、bitcode magic 校验、stderr 捕获、批量处理（`disassembleBatch`）和安全包装（`safeDisassemble`/`safeDisassembleBatch`，失败不中断 hook 流程） | | |
-| E-004e | ↳ **LLVM IR → MSL 转换器** | TODO | |
-|  | 实现 IR→MSL 的关键转换：`addrspace` 标注→地址空间限定符（`device`/`constant`/`threadgroup`）、`air.*` 内建→MSL 等效调用、IR 函数签名→MSL 函数声明。前序步骤（E-004a–d）已具备提取 bitcode 并生成 LLVM IR 文本的完整能力，本步骤在此基础上实现 IR 文本到可通过 `makeLibrary(source:)` 编译的 MSL 源码的转换。首先需对真实游戏 metallib 的 IR 结构做样本分析 | | |
+| E-004e | ↳ **LLVM IR → MSL 转换器**（已拆分） | 🔄 IN PROGRESS | |
+|  | 实现 IR→MSL 的关键转换：`addrspace` 标注→地址空间限定符（`device`/`constant`/`threadgroup`）、`air.*` 内建→MSL 等效调用、IR 函数签名→MSL 函数声明。前序步骤（E-004a–d）已具备提取 bitcode 并生成 LLVM IR 文本的完整能力，本步骤在此基础上实现 IR 文本到可通过 `makeLibrary(source:)` 编译的 MSL 源码的转换 | | |
+| E-004e1 | ↳↳ IRToMSLConverter 骨架 + stub MSL 生成 | ✅ DONE | |
+|  | `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift` — 纯 Swift struct，从 LLVM IR 文本中解析函数定义（`define` 行）、提取函数名/返回类型/参数列表、识别 addrspace(N) 标注、推断 shader 类型（vertex/fragment/kernel，支持 metallib 元数据和启发式两种方式）。生成带正确 `[[attribute]]` 标注的 stub MSL 源码（函数体为默认返回值）。支持安全包装（`safeConvert`）。已通过 PlayTools xcframework 构建验证 | | |
+| E-004e2 | ↳↳ addrspace → MSL 地址空间限定符完整映射 | TODO | |
+| E-004e3 | ↳↳ air.* 内建 → MSL 等效调用映射 | TODO | |
+| E-004e4 | ↳↳ 完整函数体转换（IR 指令→MSL 语句） | TODO | |
 | E-005 | **运行时 library 替换：用带源码的 library 替换原始返回** | TODO | |
 |  | 在 `pc_newLibraryWithData` hook 中，将 E-004e 生成的 MSL 经 `makeLibrary(source:)` 编译后替换原始返回值。需处理：函数签名一致性校验、编译失败 fallback（退回原始 library）、性能优化（缓存已处理的 metallib） | | |
 | E-006 | **端到端验证** | TODO | |
@@ -82,6 +87,7 @@ PlayCover 主应用 (macOS)
 
 （由 agent 不断维护，保持简要，详情写子文档）
 
+- **PlayTools 最低部署目标低于 iOS 16**：`Substring.split(separator: StringProtocol, maxSplits:)` 方法仅 iOS 16+ 可用，PlayTools 中需使用 `components(separatedBy:)` 替代
 - **`-frecord-sources` 不适用于已有 bitcode**：该选项仅在 `metal -c`（MSL→.air）阶段有效，将 MSL 源码嵌入 .air 中。`metallib` 命令不接受此参数。从现有 metallib 提取的 bitcode 不含源码，无法通过重编译补回。因此**必须走 IR→MSL 转换路径**
 - **Metal 编译器调用**：必须用 `xcrun --sdk macosx metal` 方式调用，SDK 选择通过 xcrun 的 `--sdk` 参数完成
 - **SOURCES section**：`-frecord-sources` 在 metallib 中新增 `SOURCES` section（约占原体积的 90%+），包含完整 MSL 源码文本

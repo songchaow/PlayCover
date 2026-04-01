@@ -27,6 +27,7 @@
 !/Carthage/Checkouts/PlayTools/PlayTools/LibrarySourceInjectionSwizzles.swift
 !/Carthage/Checkouts/PlayTools/PlayTools/MetallibParser.swift
 !/Carthage/Checkouts/PlayTools/PlayTools/LLVMDisassembler.swift
+!/Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift
 !/Carthage/Checkouts/PlayTools/PlayTools/Controls/
 /Carthage/Checkouts/PlayTools/PlayTools/Controls/*
 !/Carthage/Checkouts/PlayTools/PlayTools/Controls/Backend/

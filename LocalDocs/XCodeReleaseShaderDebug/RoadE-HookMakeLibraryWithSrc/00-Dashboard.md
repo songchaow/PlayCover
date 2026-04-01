@@ -45,7 +45,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 |---|---|---|---|
 | E-001 | **可行性 PoC：手动 `-frecord-sources` 重编译单个 metallib 并验证 Xcode 能显示源码** | ✅ DONE | [E-001-PoC](E-001-PoC-frecord-sources.md) |
 |  | 从 QQ飞车 app 包中提取一个 metallib → 用 `xcrun metal` 工具链反编译得到 MSL/IR → 用 `-frecord-sources` 重编译 → 替换回 gputrace → 打开 Xcode 验证 | | |
-| E-002 | **调研 `MTLDevice` 创建 Library 的全部 API 入口** | TODO | |
+| E-002 | **调研 `MTLDevice` 创建 Library 的全部 API 入口** | ✅ DONE | [E-002-API](E-002-MTLDevice-Library-API.md) |
 |  | 枚举所有需要 hook 的 ObjC selector（`newLibraryWithData:error:`, `newLibraryWithSource:options:error:`, `newLibraryWithURL:error:` 等），确认运行时类名 | | |
 | E-003 | **在 PlayTools 中实现 makeLibrary swizzle 骨架** | TODO | |
 |  | 参考 `CommandQueueDiscoverySwizzles` 模式，添加 `LibrarySourceInjectionSwizzles` 类，拦截并记录每次 makeLibrary 调用（先 log-only，不修改返回） | | |
@@ -67,6 +67,9 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 - **PRIVATE_METADATA 变化**：带源码版本的 PRIVATE_METADATA 大幅增长（0x18 → 0x27c），包含源文件路径等调试元数据
 - **运行时编译可行**：`MTLDevice.makeLibrary(source:options:)` 在 Apple M4 Pro 上验证通过，函数签名与从 metallib 加载完全一致
 - **PoC 脚本**：`Scripts/poc_e001_frecord_sources.sh` 可重复执行，含 Swift 运行时测试
+- **MTLDevice 运行时类**：Apple Silicon 上的实际类不是 `MTLDevice`（协议），而是 GPU family 层类（如 M4 Pro=`AGXG16SDevice`），继承链 `AGXGxxSDevice → AGXGxxFamilyDevice → IOGPUMetalDevice → _MTLDevice → NSObject`。swizzle 必须通过 `object_getClass(device)` 动态获取，不能硬编码类名
+- **Library 方法分布**：`newLibraryWithData:error:` 等定义在 GPU family 层（`AGXGxxFamilyDevice`），`newLibraryWithURL:error:` 等定义在框架层（`_MTLDevice`），但 `class_getInstanceMethod` 能沿继承链找到，统一用 `object_getClass(device)` 作为 swizzle 目标即可
+- **完整 Library API 列表**：MTLDevice 协议共有 11 个 library 相关 required method（含 2 个 dynamic library），详见 [E-002](E-002-MTLDevice-Library-API.md)
 
 ## 参考信息
 

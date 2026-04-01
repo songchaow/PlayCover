@@ -66,8 +66,8 @@ PlayCover 主应用 (macOS)
 | E-004b | ↳ 提取函数级 LLVM Bitcode | ✅ DONE | |
 | E-004c | ↳ **LLVM 工具链管理：下载并部署 `llvm-dis`** | ✅ DONE | |
 |  | `PlayCover/Utils/LLVMToolManager.swift` — 单例管理器，从 GitHub Releases 下载 LLVM 19.1.0 macOS ARM64 预编译包，用 `tar --strip-components=2` 提取 `bin/llvm-dis`，安装到 `~/Library/Containers/io.playcover.PlayCover/llvm-tools/`。支持版本记录、可执行权限设置、ad-hoc 签名、`--version` 验证、进度跟踪（ObservableObject）、卸载 | | |
-| E-004d | ↳ **PlayTools 中调用 `llvm-dis` 将 bitcode → LLVM IR 文本** | TODO | |
-|  | 在 PlayTools 运行时中新增 `LLVMDisassembler` 类：将 E-004b 提取的 bitcode 模块写入临时文件，调用 `llvm-dis` 转换为 `.ll` 文本，读取结果。需处理路径发现（从已知安装位置查找 `llvm-dis`）、超时、错误恢复 | | |
+| E-004d | ↳ **PlayTools 中调用 `llvm-dis` 将 bitcode → LLVM IR 文本** | ✅ DONE | |
+|  | `Carthage/Checkouts/PlayTools/PlayTools/LLVMDisassembler.swift` — 纯 Swift struct，使用 `posix_spawn` 调用 `llvm-dis` 将 bitcode 二进制转换为 LLVM IR 文本。支持路径自动发现（LLVMToolManager 安装位置 + Homebrew 路径）、超时控制（默认 30s）、bitcode magic 校验、stderr 捕获、批量处理（`disassembleBatch`）和安全包装（`safeDisassemble`/`safeDisassembleBatch`，失败不中断 hook 流程） | | |
 | E-004e | ↳ **LLVM IR → 可编译 MSL 的转换/适配** | TODO | |
 |  | LLVM IR 文本不能直接传给 `makeLibrary(source:)`。需要：(1) 验证 IR 文本能否直接作为"伪源码"注入 SOURCES section；(2) 若不行，实现 IR→MSL 的关键转换（`addrspace` 标注→地址空间限定符、`air.*` 内建→MSL 等效调用等）；(3) 或者绕过 `makeLibrary(source:)`，直接用 `xcrun metal` 从 IR 重编译为带 `-frecord-sources` 的 metallib | | |
 | E-005 | **运行时 library 替换：用带源码的 library 替换原始返回** | TODO | |
@@ -104,6 +104,10 @@ PlayCover 主应用 (macOS)
 - **LLVM tar.xz 提取**：`tar xf` 支持 `--strip-components=2` 配合具体路径 `LLVM-{ver}-macOS-ARM64/bin/llvm-dis` 只提取单个文件，避免解压完整 1.4GB 包。若精确路径失败可用 `--include=*/bin/llvm-dis` 兜底
 - **llvm-dis ad-hoc 签名**：从 GitHub 下载的 llvm-dis 在 macOS 上可能被 Gatekeeper 阻止执行，需要 `codesign -fs-` 进行 ad-hoc 签名才能正常调用
 - **LLVMToolManager 安装位置**：选择 `~/Library/Containers/io.playcover.PlayCover/llvm-tools/` 而非 `~/Library/Frameworks/`，与 PlayTools 安装位置（`~/Library/Frameworks/`）分离，避免污染系统框架目录
+- **PlayTools 是 iOS target**：不能使用 `Foundation.Process`（`NSTask`），因为 iOS SDK 不暴露该类。必须使用 `posix_spawn` + `waitpid` 代替。虽然 PlayCover 管理的 app 实际运行在 macOS 用户态，但编译时仍受 iOS SDK 约束
+- **Swift 中 wait 宏不可用**：`WIFEXITED`、`WEXITSTATUS`、`WIFSIGNALED`、`WTERMSIG` 等 C 宏在 Swift 中不可用，需要手动用位操作实现：`WIFEXITED(s) = (s & 0x7F) == 0`，`WEXITSTATUS(s) = (s >> 8) & 0xFF`
+- **Swift 中 `environ` 不可用**：iOS SDK 中全局变量 `environ` 不直接暴露给 Swift，需通过 `dlsym(RTLD_DEFAULT, "environ")` 获取指针
+- **llvm-dis 路径发现**：`LLVMDisassembler.findLLVMDis()` 按优先级搜索：LLVMToolManager 安装路径 → Homebrew ARM → Homebrew x86 → /usr/bin
 
 ## 参考信息
 

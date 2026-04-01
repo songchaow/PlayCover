@@ -15,7 +15,7 @@
 | E-004a | **metallib 二进制格式解析器** | ✅ DONE | 解析 MTLB header + section 信息 + 函数 tag 元数据 |
 | E-004b | **从 MODULE_LIST 提取函数级 LLVM Bitcode** | ✅ DONE | 利用解析器定位每个函数的 bitcode 数据并提取为独立 Data |
 | E-004c | **LLVM 工具链管理：下载并部署 `llvm-dis`** | ✅ DONE | PlayCover 主应用中实现 LLVMToolManager，下载 LLVM 预编译包并提取 `llvm-dis` |
-| E-004d | **PlayTools 中调用 `llvm-dis` 转换 bitcode → IR** | TODO | 新增 LLVMDisassembler 类，将 bitcode 写临时文件 → 调用 llvm-dis → 读取 .ll 文本 |
+| E-004d | **PlayTools 中调用 `llvm-dis` 转换 bitcode → IR** | ✅ DONE | 新增 LLVMDisassembler 类，使用 posix_spawn 调用 llvm-dis，支持路径自动发现、超时、批量处理 |
 | E-004e | **LLVM IR → 可编译 MSL 的转换/适配** | TODO | 验证 IR 能否直接作为伪源码使用；必要时实现 IR→MSL 关键转换 |
 
 ### 架构说明
@@ -176,3 +176,62 @@ Offset  Size   Field
 - PlayCover GUI 构建通过（`BUILD SUCCEEDED`）
 - pbxproj 格式验证通过（`plutil -lint`）
 - 文件已正确添加到 PlayCover target 的 Utils group 和 Sources build phase
+
+## E-004d 实现
+
+### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `Carthage/Checkouts/PlayTools/PlayTools/LLVMDisassembler.swift` | LLVM bitcode → IR 文本反汇编器 |
+
+### LLVMDisassembler 架构
+
+`LLVMDisassembler` 是 PlayTools 运行时中的纯 Swift `struct`，负责将 LLVM Bitcode 二进制数据反汇编为 LLVM IR 文本：
+
+1. **路径发现**：`findLLVMDis()` 按优先级搜索已知安装路径：
+   - LLVMToolManager 安装位置：`~/Library/Containers/io.playcover.PlayCover/llvm-tools/llvm-dis`
+   - Homebrew ARM: `/opt/homebrew/bin/llvm-dis`
+   - Homebrew x86: `/usr/local/bin/llvm-dis`
+   - 系统路径: `/usr/bin/llvm-dis`
+
+2. **进程管理**：使用 `posix_spawn` + `waitpid`（非 `Foundation.Process`），因为 PlayTools 是 iOS target：
+   - `posix_spawn` 启动子进程
+   - `posix_spawn_file_actions_t` 重定向 stderr 到管道、stdout 到 /dev/null
+   - `waitpid` + `WNOHANG` 轮询实现超时等待
+
+3. **反汇编流程**：
+   ```
+   BitcodeModule.data
+     ↓ 校验 LLVM bitcode magic (DE C0 17 0B / 42 43)
+     ↓ 写入临时文件 /tmp/playtools-llvm-{uuid}/input.bc
+     ↓ posix_spawn("llvm-dis", "input.bc", "-o", "output.ll")
+     ↓ waitpid 超时等待 (默认 30s)
+     ↓ 读取 output.ll
+   DisassemblyResult { irText, functionNames, elapsed, inputSize, outputSize }
+   ```
+
+4. **批量处理**：`disassembleBatch()` 依次处理多个模块，单个失败不中断批次
+
+5. **安全包装**：`safeDisassemble()` / `safeDisassembleBatch()` 将失败降级为日志，供 hook 流程中调用时不会中断 library 创建
+
+6. **错误类型**：`DisassemblerError` 枚举覆盖：
+   - `llvmDisNotFound` — 所有已知路径均未找到
+   - `invalidBitcode` — bitcode magic 校验失败
+   - `processLaunchFailed` — posix_spawn 失败
+   - `processTimeout` — 等待超时
+   - `processNonZeroExit` — llvm-dis 返回非零退出码（附 stderr）
+   - `outputFileNotFound` / `outputReadFailed` — 输出文件问题
+
+### 关键技术决策
+
+- **为什么用 `posix_spawn` 而非 `Foundation.Process`**：PlayTools 编译为 iOS target（arm64-apple-ios），iOS SDK 不暴露 `NSTask`/`Process` 类。尽管运行时在 macOS 用户态，编译期受 SDK 约束
+- **为什么用 `dlsym` 获取 `environ`**：iOS SDK 不直接将 C 全局变量 `environ` 暴露给 Swift，通过 `dlsym(RTLD_DEFAULT, "environ")` 动态获取是最可靠方式
+- **为什么手动实现 wait 宏**：`WIFEXITED`/`WEXITSTATUS` 等是 C 宏，Swift 编译器不导入宏，需用等价位操作替代
+
+### 验证
+
+- PlayTools xcframework 构建通过（`BUILD SUCCEEDED`）
+- pbxproj 格式验证通过（`plutil -lint`）
+- 文件已正确添加到 PlayTools target 的 Sources build phase
+- 运行时验证需在实际 app 上测试（需 llvm-dis 已安装）

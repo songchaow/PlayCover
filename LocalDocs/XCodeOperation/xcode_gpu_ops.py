@@ -26,7 +26,7 @@ from typing import Optional
 
 # ─────────────────────── 底层 JXA 执行器 ───────────────────────
 
-def _jxa(script: str, timeout: int = 30) -> str:
+def _jxa(script: str, timeout: int = 120) -> str:
     """执行 JXA (JavaScript for Automation) 脚本，返回 stdout。"""
     result = subprocess.run(
         ["osascript", "-l", "JavaScript", "-e", script],
@@ -37,8 +37,19 @@ def _jxa(script: str, timeout: int = 30) -> str:
     return result.stdout.strip()
 
 
+def _activate_xcode():
+    """确保 Xcode 在前台 (cliclick 坐标点击需要窗口可见)。"""
+    subprocess.run(
+        ["osascript", "-l", "JavaScript", "-e",
+         'Application("System Events").processes["Xcode"].frontmost = true;'],
+        check=True, timeout=3,
+    )
+    time.sleep(0.2)
+
+
 def _cliclick(action: str):
     """执行 cliclick 命令。action 如 'c:100,200' 或 'kp:esc'"""
+    _activate_xcode()
     subprocess.run(["cliclick", action], check=True, timeout=5)
 
 
@@ -135,9 +146,8 @@ class XcodeGPU:
             let sel = rows[i].selected();
             let hasDisc = false, expanded = false;
             try {
-                let dt = rows[i].uiElements[0].disclosureTriangles[0];
-                hasDisc = true;
-                expanded = dt.value() === 1;
+                let dts = rows[i].uiElements[0].uiElements.whose({role: "AXDisclosureTriangle"});
+                if (dts.length > 0) { hasDisc = true; expanded = dts[0].value() === 1; }
             } catch(e) {}
             out.push({index: i, text: t, selected: sel,
                        has_disclosure: hasDisc, expanded: expanded});
@@ -175,7 +185,7 @@ class XcodeGPU:
         # 获取该行 disclosure triangle 的坐标
         result = _jxa(_JXA_NAV_OUTLINE + f"""
         let cell = outline.rows[{index}].uiElements[0];
-        let dts = cell.disclosureTriangles();
+        let dts = cell.uiElements.whose({{role: "AXDisclosureTriangle"}});
         if (dts.length === 0) {{ "none"; }}
         else {{
             let dt = dts[0];
@@ -199,7 +209,7 @@ class XcodeGPU:
             raise RuntimeError("需要 cliclick: brew install cliclick")
         result = _jxa(_JXA_NAV_OUTLINE + f"""
         let cell = outline.rows[{index}].uiElements[0];
-        let dts = cell.disclosureTriangles();
+        let dts = cell.uiElements.whose({{role: "AXDisclosureTriangle"}});
         if (dts.length === 0) {{ "none"; }}
         else {{
             let dt = dts[0];

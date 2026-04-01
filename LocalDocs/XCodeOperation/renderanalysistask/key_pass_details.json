@@ -1,0 +1,959 @@
+[
+  {
+    "command_buffer": "Command Buffer 5 0x3717addf0",
+    "render_encoder": "Render Encoder 15 0x14fd65180",
+    "draw_call": "30961 0x14fd65180 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "TempBuffer 27 1146x644",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Don't Care | Store",
+          "store_action": "--",
+          "size": "5.91 MiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 5 0x3717addf0",
+    "render_encoder": "Render Encoder 16 0x376b4aa90",
+    "draw_call": "31025 0x376b4aa90 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "Half Color Buffer",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Don't Care | Store",
+          "store_action": "--",
+          "size": "3.09 MiB"
+        },
+        {
+          "name": "Half Alpha Buffer",
+          "slot": "Color 1",
+          "type": "Texture 2D",
+          "load_action": "Don't Care | Store",
+          "store_action": "--",
+          "size": "864.00 KiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 5 0x3717addf0",
+    "render_encoder": "Render Encoder 17 0x371d33fc0",
+    "draw_call": "31088 0x371d33fc0 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "TempBuffer 31 573x322",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Don't Care | Store",
+          "store_action": "--",
+          "size": "864.00 KiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 5 0x3717addf0",
+    "render_encoder": "Render Encoder 18 0x371d36ca0",
+    "draw_call": "31149 0x371d36ca0 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "TempBuffer 32 573x322",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Don't Care | Store",
+          "store_action": "--",
+          "size": "864.00 KiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 5 0x3717addf0",
+    "render_encoder": "Render Encoder 19 0x371d1db30",
+    "draw_call": "31209 0x371d1db30 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "TempBuffer 31 573x322",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Don't Care | Store",
+          "store_action": "--",
+          "size": "864.00 KiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 5 0x3717addf0",
+    "render_encoder": "Render Encoder 20 0x315cd7850",
+    "draw_call": "31269 0x315cd7850 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "TempBuffer 34 152x158",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Clear | Store",
+          "store_action": "--",
+          "size": "144.00 KiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 5 0x3717addf0",
+    "render_encoder": "Render Encoder 21 0x371d32bc0",
+    "draw_call": "31334 0x371d32bc0 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "TempBuffer 35 152x158",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Clear | Store",
+          "store_action": "--",
+          "size": "144.00 KiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 5 0x3717addf0",
+    "render_encoder": "Render Encoder 22 0x371d32c50",
+    "draw_call": "31404 0x371d32c50 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "TempBuffer 34 152x158",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Clear | Store",
+          "store_action": "--",
+          "size": "144.00 KiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 5 0x3717addf0",
+    "render_encoder": "Render Encoder 23 0x371d32ce0",
+    "draw_call": "31474 0x371d32ce0 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "_MHYBloomTex",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Don't Care | Store",
+          "store_action": "--",
+          "size": "864.00 KiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 5 0x3717addf0",
+    "render_encoder": "Render Encoder 24 0x376b3bcb0",
+    "draw_call": "31536 0x376b3bcb0 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "Texture 0x371d1cf80",
+          "slot": "Color 0",
+          "type": "Texture 1D",
+          "load_action": "Don't Care | Store",
+          "store_action": "--",
+          "size": "11.81 MiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 5 0x3717addf0",
+    "render_encoder": "Render Encoder 25 0x371d2b0e0",
+    "draw_call": "31606 0x371d2b0e0 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "Texture 0x14fff4520",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Clear | Store",
+          "store_action": "--",
+          "size": "0 bytes"
+        },
+        {
+          "name": "Texture 0x30d026360",
+          "slot": "Depth ",
+          "type": "Texture 2D",
+          "load_action": "Clear | Don't Care",
+          "store_action": "--",
+          "size": "0 bytes"
+        },
+        {
+          "name": "Texture 0x30d026900",
+          "slot": "Stencil ",
+          "type": "Texture 2D",
+          "load_action": "Clear | Don't Care",
+          "store_action": "--",
+          "size": "0 bytes"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 5 0x3717addf0",
+    "render_encoder": "31721 [presentDrawable:0x376b35f60]",
+    "draw_call": "Bound Resources",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [],
+      "attachments": []
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 6 0x371d335a0",
+    "render_encoder": "Render Encoder 0 0x371d2b050",
+    "draw_call": "31731 0x371d2b050 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "TempBuffer 15 128x128",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Don't Care | Store",
+          "store_action": "--",
+          "size": "64.00 KiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 6 0x371d335a0",
+    "render_encoder": "Render Encoder 1 0x315c5c830",
+    "draw_call": "31792 0x315c5c830 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "TempBuffer 4 128x128",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Load | Store",
+          "store_action": "--",
+          "size": "64.00 KiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 6 0x371d335a0",
+    "render_encoder": "Render Encoder 2 0x376b4a810",
+    "draw_call": "31855 0x376b4a810 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "TempBuffer 18 256x256",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Don't Care | Store",
+          "store_action": "--",
+          "size": "128.00 KiB"
+        },
+        {
+          "name": "TempBuffer 19 256x256",
+          "slot": "Color 1",
+          "type": "Texture 2D",
+          "load_action": "Don't Care | Store",
+          "store_action": "--",
+          "size": "256.00 KiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 6 0x371d335a0",
+    "render_encoder": "Render Encoder 3 0x371d32fd0",
+    "draw_call": "31913 0x371d32fd0 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "Texture 0x371d37540",
+          "slot": "Color 0",
+          "type": "Texture 1D",
+          "load_action": "Clear | Store",
+          "store_action": "--",
+          "size": "11.81 MiB"
+        },
+        {
+          "name": "Texture 0x371d1cf80",
+          "slot": "Color 1",
+          "type": "Texture 1D",
+          "load_action": "Clear | Store",
+          "store_action": "--",
+          "size": "11.81 MiB"
+        },
+        {
+          "name": "Texture 0x3717aba00",
+          "slot": "Color 2",
+          "type": "Texture 1D",
+          "load_action": "Clear | Store",
+          "store_action": "--",
+          "size": "11.81 MiB"
+        },
+        {
+          "name": "InnerTarget of LoginCamera(Clone)",
+          "slot": "Depth ",
+          "type": "Texture 2D",
+          "load_action": "Clear | Store",
+          "store_action": "--",
+          "size": "12.06 MiB"
+        },
+        {
+          "name": "InnerTarget of LoginCamera(Clone)",
+          "slot": "Stencil ",
+          "type": "Texture 2D",
+          "load_action": "Clear | Store",
+          "store_action": "--",
+          "size": "3.34 MiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 6 0x371d335a0",
+    "render_encoder": "Render Encoder 4 0x376b3bcb0",
+    "draw_call": "34121 0x376b3bcb0 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "TempBuffer 23 1146x644",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Clear | Store",
+          "store_action": "--",
+          "size": "3.09 MiB"
+        },
+        {
+          "name": "TempBuffer 24 1146x644",
+          "slot": "Color 1",
+          "type": "Texture 2D",
+          "load_action": "Clear | Store",
+          "store_action": "--",
+          "size": "3.09 MiB"
+        },
+        {
+          "name": "TempBuffer 23 1146x644",
+          "slot": "Depth ",
+          "type": "Texture 2D",
+          "load_action": "Clear | Store",
+          "store_action": "--",
+          "size": "3.16 MiB"
+        },
+        {
+          "name": "TempBuffer 23 1146x644",
+          "slot": "Stencil ",
+          "type": "Texture 2D",
+          "load_action": "Clear | Don't Care",
+          "store_action": "--",
+          "size": "928.00 KiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 6 0x371d335a0",
+    "render_encoder": "Render Encoder 5 0x376b35ed0",
+    "draw_call": "34185 0x376b35ed0 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "TempBuffer 25 2048x2048",
+          "slot": "Depth ",
+          "type": "Texture 2D",
+          "load_action": "Load | Store",
+          "store_action": "--",
+          "size": "8.12 MiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 6 0x371d335a0",
+    "render_encoder": "Render Encoder 6 0x371d1d870",
+    "draw_call": "34453 0x371d1d870 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "TempBuffer 16 512x512",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Don't Care | Store",
+          "store_action": "--",
+          "size": "1.00 MiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 6 0x371d335a0",
+    "render_encoder": "Render Encoder 7 0x371d33fc0",
+    "draw_call": "34516 0x371d33fc0 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "TempBuffer 26 1146x644",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Clear | Store",
+          "store_action": "--",
+          "size": "3.09 MiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 6 0x371d335a0",
+    "render_encoder": "Render Encoder 8 0x371d2b0e0",
+    "draw_call": "34590 0x371d2b0e0 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "TempBuffer 27 1146x644",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Clear | Store",
+          "store_action": "--",
+          "size": "5.91 MiB"
+        },
+        {
+          "name": "TempBuffer 23 1146x644",
+          "slot": "Depth ",
+          "type": "Texture 2D",
+          "load_action": "Load | Don't Care",
+          "store_action": "--",
+          "size": "3.16 MiB"
+        },
+        {
+          "name": "TempBuffer 23 1146x644",
+          "slot": "Stencil ",
+          "type": "Texture 2D",
+          "load_action": "Clear | Don't Care",
+          "store_action": "--",
+          "size": "928.00 KiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 6 0x371d335a0",
+    "render_encoder": "Render Encoder 9 0x315c5c920",
+    "draw_call": "35261 0x315c5c920 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "TempBuffer 30 76x76",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Clear | Store",
+          "store_action": "--",
+          "size": "96.00 KiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 6 0x371d335a0",
+    "render_encoder": "Render Encoder 10 0x371d32f10",
+    "draw_call": "35323 0x371d32f10 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "TempBuffer 29 76x76",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Don't Care | Store",
+          "store_action": "--",
+          "size": "96.00 KiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 6 0x371d335a0",
+    "render_encoder": "Render Encoder 11 0x376b65df0",
+    "draw_call": "35384 0x376b65df0 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "TempBuffer 30 76x76",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Don't Care | Store",
+          "store_action": "--",
+          "size": "96.00 KiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 6 0x371d335a0",
+    "render_encoder": "Render Encoder 12 0x371d1dbf0",
+    "draw_call": "35444 0x371d1dbf0 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "InnerTarget of LoginCamera(Clone)",
+          "slot": "Color 0",
+          "type": "Texture 2D",
+          "load_action": "Clear | Store",
+          "store_action": "--",
+          "size": "11.81 MiB"
+        },
+        {
+          "name": "TempBuffer 28 2292x1288",
+          "slot": "Color 1",
+          "type": "Texture 2D",
+          "load_action": "Clear | Don't Care",
+          "store_action": "--",
+          "size": "11.81 MiB"
+        },
+        {
+          "name": "InnerTarget of LoginCamera(Clone)",
+          "slot": "Depth ",
+          "type": "Texture 2D",
+          "load_action": "Load | Don't Care",
+          "store_action": "--",
+          "size": "12.06 MiB"
+        },
+        {
+          "name": "InnerTarget of LoginCamera(Clone)",
+          "slot": "Stencil ",
+          "type": "Texture 2D",
+          "load_action": "Load | Don't Care",
+          "store_action": "--",
+          "size": "3.34 MiB"
+        }
+      ]
+    }
+  },
+  {
+    "command_buffer": "Command Buffer 6 0x371d335a0",
+    "render_encoder": "Render Encoder 13 0x371d34080",
+    "draw_call": "35639 0x371d34080 = [renderCommandEncoderWithDescriptor:<data>]",
+    "summary": {
+      "pipeline_state": null,
+      "vertex_function": null,
+      "fragment_function": null,
+      "vertex_resources": [],
+      "fragment_resources": [
+        {
+          "name": "Buffer 0x169746e60",
+          "binding": "Visibility Buffer",
+          "type": "Buffer",
+          "uniform": "--",
+          "access": "--",
+          "insights": "--",
+          "size": "64.00 KiB"
+        }
+      ],
+      "attachments": [
+        {
+          "name": "Texture 0x315cd7700",
+          "slot": "Color 0",
+          "type": "Texture 1D",
+          "load_action": "Don't Care | Store",
+          "store_action": "--",
+          "size": "11.81 MiB"
+        },
+        {
+          "name": "InnerTarget of LoginCamera(Clone)",
+          "slot": "Depth ",
+          "type": "Texture 2D",
+          "load_action": "Load | Don't Care",
+          "store_action": "--",
+          "size": "12.06 MiB"
+        },
+        {
+          "name": "InnerTarget of LoginCamera(Clone)",
+          "slot": "Stencil ",
+          "type": "Texture 2D",
+          "load_action": "Clear | Don't Care",
+          "store_action": "--",
+          "size": "3.34 MiB"
+        }
+      ]
+    }
+  }
+]

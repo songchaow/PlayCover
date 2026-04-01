@@ -2,7 +2,7 @@
 
 ## 背景
 
-当前 Xcode 打开了原神 (com.miHoYo.Yuanshen) 的 GPU Frame Capture 文件 `capture_20260401_011127.gputrace`。该帧包含 **23 个 Command Buffer**、**50 个 shader pass** (Pipeline State 模式下)。我们通过 `xcode_gpu_ops.py` 工具库自动化操控 Xcode GUI 来提取和分析整帧的渲染流程。
+当前 Xcode 打开了原神 (com.miHoYo.Yuanshen) 的 GPU Frame Capture 文件 `capture_20260401_011127.gputrace`。这是一个 **23 帧的多帧捕获**，每帧包含 **26 个 Render Encoder** + 1 个 presentDrawable，结构完全一致。每帧约 5,300 个 draw call，总计约 121,107 个 GPU 命令。我们通过 `xcode_gpu_ops.py` 工具库自动化操控 Xcode GUI 来提取和分析渲染流程。
 
 ## 最终目标
 
@@ -47,27 +47,33 @@ python3 $OPS/xcode_gpu_ops.py summary         # 结构化摘要
 ## 任务 TODO
 
 ### P0 — 帧结构骨架
-- [ ] **T1: 收集 Command Buffer 概览** — 逐个展开 CB，记录每个 CB 下的 Render Encoder 数量和名称
-- [ ] **T2: 收集 Render Pass 摘要** — 对每个 RE 读取 breadcrumb（shader 名 + draw call 描述），不需要完整 editor 数据
-- [ ] **T3: 整理渲染管线阶段** — 根据 T1/T2 数据，按 shader 名和 attachment 推断各 pass 属于哪个渲染阶段
+- [x] **T1: 收集 Command Buffer 概览** — ✅ 23 个 CB 结构一致，各含 26 RE + 1 presentDrawable
+- [x] **T2: 收集 Render Pass 摘要** — ✅ Pipeline State 模式获取 50 个 shader pass 名称及执行顺序
+- [x] **T3: 整理渲染管线阶段** — ✅ 划分为 7 大阶段：预处理 → G-Buffer → 光照 → 天空 → 运动矢量 → 后处理 → UI
 
 ### P1 — 关键 Pass 深入分析
-- [ ] **T4: 收集关键 pass 的完整绑定表** — 对主要渲染阶段的代表性 pass 使用 `editor` 获取完整资源绑定
-- [ ] **T5: 分析 Attachment 依赖链** — 记录哪些 pass 写入了哪些 texture，哪些 pass 读取了它们
+- [x] **T4: 收集关键 pass 的完整绑定表** — ✅ 步进遍历完整一帧，收集所有 26 RE 的 attachment 信息
+- [x] **T5: 分析 Attachment 依赖链** — ✅ 建立 InnerTarget / TempBuffer / Bloom 缓冲的依赖图
 
 ### P2 — 输出与优化
-- [ ] **T6: 生成最终渲染流程文档** — 结合所有数据，输出人类可读的整帧渲染流程
-- [ ] **T7: 完善工具脚本** — 根据分析过程中发现的需求，扩展 `xcode_gpu_ops.py`
+- [x] **T6: 生成最终渲染流程文档** — ✅ `06-final-render-pipeline.md`
+- [ ] **T7: 完善工具脚本** — 已修复 3 个 bug（disclosureTriangles 兼容性、activate 方式、JXA 超时）
 
-## 当前最高优先级
+## 当前状态
 
-**T1: 收集 Command Buffer 概览** — 这是所有后续分析的基础。需要逐个展开 23 个 CB，记录 RE 列表。
+**P0/P1/P2 核心任务已全部完成。** 最终渲染流程文档见 `06-final-render-pipeline.md`。T7 (工具脚本完善) 可按需进行。
 
 ## 踩坑与经验
 
 - **`editor` 操作耗时 30s**：逐 draw call 调用 editor 不现实。批量分析应优先用 `breadcrumbs`（0.3s）+ Pipeline State 模式 `nav`（4s）
 - **展开节点需要 cliclick**：JXA `.click()` 对 disclosure triangle 无效，必须用 `cliclick c:x,y` 坐标点击
+- **展开前必须 select**：cliclick 基于屏幕坐标，目标行不在可视区域时坐标指向错误位置。先 `select` 让行滚入视图
+- **cliclick 需要 Xcode 在前台**：用 System Events `frontmost=true`（不要用 AppleScript `activate`，会挂起）
+- **`disclosureTriangles()` 不兼容**：需要用 `uiElements.whose({role: "AXDisclosureTriangle"})` 替代
 - **所有 CB 初始都是折叠的**：每个 CB 需要先 `expand` 才能看到 RE 子节点
+- **Pipeline State 模式最快获取 shader 名**：`mode pipeline` + `nav` 在 4s 内获取 50 个 shader pass
+- **select 后 breadcrumb 不一定更新**：需要 step 或点击 draw call 行才能刷新 editor
+- **23 个 CB 代表 23 帧**：多帧捕获中每帧结构完全一致，分析任意一帧即代表所有
 - **breadcrumb 不需要 entireContents**：通过精确 UI 路径 `edGroup > [0] > [0] > Jump Bar > popUpButtons` 读取，速度 0.25s
 - **步进操作会跨 CB**：`step_next_draw_call()` 到达一个 CB 末尾时会自动跳到下一个 CB
 
@@ -76,9 +82,9 @@ python3 $OPS/xcode_gpu_ops.py summary         # 结构化摘要
 | 文件 | 说明 | 状态 |
 |---|---|---|
 | `00-dashboard.md` | 本文档 | 持续更新 |
-| `01-command-buffer-overview.md` | CB 概览 (T1 输出) | 待创建 |
-| `02-render-pass-summary.md` | RE 摘要 (T2 输出) | 待创建 |
-| `03-pipeline-stages.md` | 管线阶段划分 (T3 输出) | 待创建 |
-| `04-key-pass-details.md` | 关键 pass 绑定详情 (T4 输出) | 待创建 |
-| `05-attachment-dependencies.md` | Attachment 依赖链 (T5 输出) | 待创建 |
-| `06-final-render-pipeline.md` | 最终渲染流程 (T6 输出) | 待创建 |
+| `01-command-buffer-overview.md` | CB 概览 (T1 输出) | ✅ 完成 |
+| `02-render-pass-summary.md` | RE 摘要 (T2 输出) | ✅ 完成 |
+| `03-pipeline-stages.md` | 管线阶段划分 (T3 输出) | ✅ 完成 |
+| `04-key-pass-details.md` | 关键 pass 绑定详情 + 依赖链 (T4+T5 输出) | ✅ 完成 |
+| `05-attachment-dependencies.md` | (合并到 04) | — |
+| `06-final-render-pipeline.md` | 最终渲染流程 (T6 输出) | ✅ 完成 |

@@ -50,12 +50,12 @@ public final class IPADownloader: @unchecked Sendable {
     /// Create an IPADownloader.
     /// - Parameters:
     ///   - downloadDirectory: Where to store downloads. Default: ~/Library/Containers/.../tmp/mcp-downloads/
-    ///   - timeout: Download timeout in seconds. Default: 600 (10 minutes).
-    ///   - maxSize: Maximum file size in bytes. Default: 2 GB.
+    ///   - timeout: Download timeout in seconds. Default: 1800 (30 minutes).
+    ///   - maxSize: Maximum file size in bytes. Default: 50 GB.
     public init(
         downloadDirectory: URL? = nil,
-        timeout: TimeInterval = 600,
-        maxSize: Int64 = 2 * 1024 * 1024 * 1024
+        timeout: TimeInterval = 1800,
+        maxSize: Int64 = 50 * 1024 * 1024 * 1024
     ) {
         if let dir = downloadDirectory {
             self.downloadDirectory = dir
@@ -96,16 +96,14 @@ public final class IPADownloader: @unchecked Sendable {
     /// Download an IPA from a URL to a local file.
     /// - Parameters:
     ///   - url: The HTTP/HTTPS URL to download from.
-    ///   - progress: Progress callback (totalBytes, downloadedBytes, message).
+    ///   - progress: Progress callback (totalPercent, currentPercent, message).
     /// - Returns: Local file URL of the downloaded IPA.
     public func download(
         url: URL,
         progress: (@Sendable (_ total: Int, _ current: Int, _ message: String) -> Void)? = nil
     ) throws -> URL {
-        // Create download directory
         try FileManager.default.createDirectory(at: downloadDirectory, withIntermediateDirectories: true)
 
-        // Generate local filename
         let prefix = UUID().uuidString.prefix(8).lowercased()
         let originalName = url.lastPathComponent.isEmpty ? "downloaded.ipa" : url.lastPathComponent
         let sanitizedName = sanitizeFilename(originalName)
@@ -114,77 +112,45 @@ public final class IPADownloader: @unchecked Sendable {
 
         progress?(100, 0, "downloading from \(url.host ?? url.absoluteString)")
 
-        // Configure URLSession with timeout
+        let delegate = DownloadDelegate(
+            maxSize: maxSize,
+            progress: progress
+        )
+
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = timeout
         config.timeoutIntervalForResource = timeout
-        let session = URLSession(configuration: config)
+        let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
 
-        // Synchronous download using semaphore (we're already on a background queue)
-        var downloadError: Error?
-        var downloadedFileURL: URL?
-        var httpStatusCode: Int = 0
-
-        let semaphore = DispatchSemaphore(value: 0)
-
-        let task = session.downloadTask(with: request) { tempURL, response, error in
-            defer { semaphore.signal() }
-
-            if let error = error {
-                downloadError = error
-                return
-            }
-
-            if let httpResponse = response as? HTTPURLResponse {
-                httpStatusCode = httpResponse.statusCode
-                if httpStatusCode >= 400 {
-                    downloadError = IPADownloadError.httpError(httpStatusCode)
-                    return
-                }
-            }
-
-            guard let tempURL = tempURL else {
-                downloadError = IPADownloadError.downloadFailed("No file received")
-                return
-            }
-
-            downloadedFileURL = tempURL
-        }
-
+        let task = session.downloadTask(with: request)
         task.resume()
 
-        // Wait with timeout
-        let waitResult = semaphore.wait(timeout: .now() + timeout)
+        let waitResult = delegate.semaphore.wait(timeout: .now() + timeout)
+        session.invalidateAndCancel()
+
         if waitResult == .timedOut {
-            task.cancel()
             throw IPADownloadError.downloadTimeout(Int(timeout))
         }
 
-        // Check errors
-        if let error = downloadError {
+        if let error = delegate.error {
             if let dlError = error as? IPADownloadError {
                 throw dlError
             }
             let nsError = error as NSError
-            if nsError.code == NSURLErrorTimedOut {
+            if nsError.code == NSURLErrorTimedOut || nsError.code == NSURLErrorNetworkConnectionLost {
                 throw IPADownloadError.downloadTimeout(Int(timeout))
+            }
+            if nsError.code == NSURLErrorCancelled {
+                throw IPADownloadError.downloadFailed("Download was cancelled")
             }
             throw IPADownloadError.downloadFailed(error.localizedDescription)
         }
 
-        guard let tempFileURL = downloadedFileURL else {
+        guard let tempFileURL = delegate.downloadedFileURL else {
             throw IPADownloadError.downloadFailed("Download completed but no file available")
-        }
-
-        // Check file size
-        let attrs = try FileManager.default.attributesOfItem(atPath: tempFileURL.path)
-        let fileSize = (attrs[.size] as? Int64) ?? 0
-        if fileSize > maxSize {
-            try? FileManager.default.removeItem(at: tempFileURL)
-            throw IPADownloadError.fileTooLarge(Int(maxSize / (1024 * 1024)))
         }
 
         // Move to our download directory
@@ -193,6 +159,8 @@ public final class IPADownloader: @unchecked Sendable {
         }
         try FileManager.default.moveItem(at: tempFileURL, to: localURL)
 
+        let attrs = try FileManager.default.attributesOfItem(atPath: localURL.path)
+        let fileSize = (attrs[.size] as? Int64) ?? 0
         progress?(100, 100, "download complete (\(formatBytes(fileSize)))")
 
         return localURL
@@ -223,7 +191,121 @@ public final class IPADownloader: @unchecked Sendable {
         return name
     }
 
-    private func formatBytes(_ bytes: Int64) -> String {
+    func formatBytes(_ bytes: Int64) -> String {
+        if bytes < 1024 { return "\(bytes) B" }
+        if bytes < 1024 * 1024 { return String(format: "%.1f KB", Double(bytes) / 1024) }
+        if bytes < 1024 * 1024 * 1024 { return String(format: "%.1f MB", Double(bytes) / (1024 * 1024)) }
+        return String(format: "%.2f GB", Double(bytes) / (1024 * 1024 * 1024))
+    }
+}
+
+// MARK: - URLSession Download Delegate
+
+/// Delegate that provides real-time download progress and handles completion.
+private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
+
+    let maxSize: Int64
+    let progress: (@Sendable (_ total: Int, _ current: Int, _ message: String) -> Void)?
+    let semaphore = DispatchSemaphore(value: 0)
+
+    var downloadedFileURL: URL?
+    var error: Error?
+
+    private let downloader = IPADownloader(downloadDirectory: nil, timeout: 0, maxSize: 0)
+    private var lastReportedPercent: Int = -1
+
+    init(
+        maxSize: Int64,
+        progress: (@Sendable (_ total: Int, _ current: Int, _ message: String) -> Void)?
+    ) {
+        self.maxSize = maxSize
+        self.progress = progress
+    }
+
+    // Called periodically as data is received
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        // Check max size early if server reported Content-Length
+        if totalBytesExpectedToWrite > 0 && totalBytesExpectedToWrite > maxSize {
+            downloadTask.cancel()
+            error = IPADownloadError.fileTooLarge(Int(maxSize / (1024 * 1024)))
+            return
+        }
+
+        // Also check actual bytes written against limit
+        if totalBytesWritten > maxSize {
+            downloadTask.cancel()
+            error = IPADownloadError.fileTooLarge(Int(maxSize / (1024 * 1024)))
+            return
+        }
+
+        guard let progress = progress else { return }
+
+        if totalBytesExpectedToWrite > 0 {
+            let percent = Int(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite) * 100)
+            // Throttle: only report when percent changes
+            if percent != lastReportedPercent {
+                lastReportedPercent = percent
+                let written = formatBytesStatic(totalBytesWritten)
+                let total = formatBytesStatic(totalBytesExpectedToWrite)
+                progress(100, percent, "downloading (\(written) / \(total))")
+            }
+        } else {
+            // Unknown total size — report bytes downloaded
+            let written = formatBytesStatic(totalBytesWritten)
+            let newPercent = Int(totalBytesWritten / (1024 * 1024)) // change every ~1 MB
+            if newPercent != lastReportedPercent {
+                lastReportedPercent = newPercent
+                progress(100, 50, "downloading (\(written))")
+            }
+        }
+    }
+
+    // Called when download finishes successfully
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        // Check HTTP status code
+        if let httpResponse = downloadTask.response as? HTTPURLResponse,
+           httpResponse.statusCode >= 400 {
+            error = IPADownloadError.httpError(httpResponse.statusCode)
+            // Don't signal yet — didCompleteWithError will be called
+            return
+        }
+
+        // Copy file to a safe location before the delegate returns
+        // (the temp file at `location` is deleted after this method returns)
+        let safeCopy = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("ipa")
+        do {
+            try FileManager.default.copyItem(at: location, to: safeCopy)
+            downloadedFileURL = safeCopy
+        } catch {
+            self.error = IPADownloadError.downloadFailed("Failed to copy downloaded file: \(error.localizedDescription)")
+        }
+    }
+
+    // Called when the task completes (success or failure)
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError completionError: Error?
+    ) {
+        if error == nil, let completionError = completionError {
+            error = completionError
+        }
+        semaphore.signal()
+    }
+
+    private func formatBytesStatic(_ bytes: Int64) -> String {
         if bytes < 1024 { return "\(bytes) B" }
         if bytes < 1024 * 1024 { return String(format: "%.1f KB", Double(bytes) / 1024) }
         if bytes < 1024 * 1024 * 1024 { return String(format: "%.1f MB", Double(bytes) / (1024 * 1024)) }

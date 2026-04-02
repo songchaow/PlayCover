@@ -89,7 +89,7 @@ PlayCover 主应用 (macOS)
 | E-004d | ↳ **PlayTools 中调用 `llvm-dis` 将 bitcode → LLVM IR 文本** | ✅ DONE | |
 |  | `LLVMDisassembler.swift` — posix_spawn 调用 llvm-dis，支持路径自动发现、超时、批量处理、安全包装 | | |
 | E-004e | ↳ **LLVM IR → MSL 反编译器**（已拆分） | 🔄 IN PROGRESS | |
-|  | 逐指令翻译 IR 为语义等价的 MSL。采用方案 A（机械翻译）：每条 IR 指令对应一个 MSL 临时变量赋值，不追求还原原始代码风格，但保证语义等价且能通过 `makeLibrary(source:)` 编译。函数签名由 metadata 精确还原 | | |
+|  | 逐指令翻译 IR 为语义等价的 MSL。采用方案 A（机械翻译）：每条 IR 指令对应一个 MSL 临时变量赋值，不追求还原原始代码风格，但保证语义等价且能通过 `makeLibrary(source:)` 编译。函数签名由 metadata 精确还原。**当前评估**：基于现有 `test-data/*.ll` 与已落地 opcode/`air.*` 映射，暂未发现像 `phi` / `extractvalue` / 结构体 GEP 那样**明确且高概率**导致翻译失败的剩余大洞；后续 E-004e 补漏以 E-005 / E-006 真实样本驱动，不再先验扩张范围。 | | |
 | E-004e1 | ↳↳ IRToMSLConverter 骨架 + stub MSL 生成 | ✅ DONE | |
 |  | 解析 IR `define` 行、推断 shader 类型、生成带正确 `[[attribute]]` 标注的 stub MSL。`IRToMSLConverter.swift` | | |
 | E-004e2 | ↳↳ addrspace → MSL 地址空间限定符完整映射 | ✅ DONE | |
@@ -105,8 +105,16 @@ PlayCover 主应用 (macOS)
 |  | `extractvalue`：匿名聚合 `{<4xf32>, i8}`（air.sample 返回值）直接透传、命名结构体用 `.fieldName`。`insertvalue`：链式追踪已填充字段，最终生成 `{ val0, val1, ... }`。`GEP`：多级索引按类型层级解析——结构体字段索引查 metadata `air.struct_type_info` 获取字段名，数组索引生成 `[idx]`。新增解析方法：`parseIRStructTypes`（IR `%struct.XXX = type` 定义）、`parseStructTypeInfoNode`（5-token 格式字段信息）、`parseStructFieldInfoFromMetadata`（全局字段信息表）。SSAContext 扩展：`structTypeDefs`/`structFieldInfo`/`insertValueFields` + `lookupFieldName`/`lookupFieldType` 辅助方法。验证数据：`test_extractvalue.metal`→`test_extractvalue.ll`（覆盖 fragment extractvalue / vertex insertvalue / kernel GEP struct） | | |
 | E-004e4d | ↳↳↳ 补齐数值转换：`uitofp`/`sitofp`/`fptoui`/`fptosi` | ✅ DONE | |
 |  | `IRToMSLConverter.swift` 将上述 4 个 opcode 接入 `translateIntCast`，其中 `fptoui`/`fptosi` 按 signed/unsigned 语义选择 `uint`/`int`、`ushort`/`short`、`ulong`/`long` 等 MSL 目标类型；新增 `irIntegerTypeToMSL(_:signed:)` 辅助方法。验证数据：`test_casts.metal`→`test_casts.ll`，并执行 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 编译通过。额外确认：Metal 编译器通常将这组转换规范化为 `air.convert.*` 调用而非原生 LLVM cast 指令 | | |
-| E-005 | **运行时 library 替换：用带源码的 library 替换原始返回** | TODO | |
-|  | 在 `pc_newLibraryWithData` hook 中，将 E-004e 生成的 MSL 经 `makeLibrary(source:)` 编译后替换原始返回值。需处理：编译失败 fallback（退回原始 library）、函数签名一致性校验、性能优化（缓存已处理的 metallib） | | |
+| E-005 | **运行时 library 替换：用带源码的 library 替换原始返回**（已拆分，下一阶段主线） | 🔄 IN PROGRESS | |
+|  | 当前决策：**先转向 E-005**。优先建立“原始 `newLibraryWithData` 成功后，再尝试源码重编译并安全替换；任一步失败立即 fallback”的最小闭环，用端到端结果反向暴露 E-004e 剩余边角。 | | |
+| E-005a | ↳ `newLibraryWithData` 最小闭环接线 | TODO | |
+|  | 在 `pc_newLibraryWithData` 主路径中串起 `dispatch_data_t → Data → metallib 解析 → bitcode 提取 → llvm-dis → IRToMSLConverter → makeLibrary(source:)`；仅做单次尝试，不改变现有成功路径，任何一步失败都返回原始 library。**下个 agent 从这里开始。** | | |
+| E-005b | ↳ 多 bitcode module 的源码聚合策略 | TODO | |
+|  | 明确多个 bitcode module 对应多个函数/公共定义时的 MSL 拼接方案，避免重复 boilerplate、重复 helper、符号冲突；必要时允许先退化为“仅在可安全聚合时替换”。 | | |
+| E-005c | ↳ 替换前接口一致性校验 | TODO | |
+|  | 对重编译后的 library 做函数名/函数数量/关键 metadata 对齐校验；若与原始 metallib 接口不一致，则放弃替换并记录原因。 | | |
+| E-005d | ↳ 缓存与观测性 | TODO | |
+|  | 以 metallib 内容或 bitcode 模块 `(offset,size)`/hash 为键缓存处理结果，并补充 success/fallback reason 日志，避免重复反汇编/重编译造成明显性能开销。 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | TODO | |
 |  | 验证三层目标：① MSL 能通过 `makeLibrary(source:)` 编译 ② 函数签名与原始 metallib 一致 ③ Xcode 截帧 gputrace 中 shader 源码可见。测试目标：QQ飞车 / 原神外网包 | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
@@ -155,6 +163,7 @@ PlayCover 主应用 (macOS)
 - **GEP 结构体索引 vs 数组索引**：GEP 的第一个索引是基指针偏移（可以是变量），后续索引按类型层级解析——对结构体类型必须是常量 i32（字段编号），对数组类型可以是变量。区分方式：当前层类型是否以 `%` 开头（结构体）或 `[` 开头（数组）
 - **air.struct_type_info metadata 格式**：每个字段由 5 个 token 组成（offset, size, alignment, typeName, fieldName），如 `i32 0, i32 16, i32 0, !"float3", !"position"`。仅 buffer 参数有此信息，texture/sampler 无
 - **IR 结构体类型名映射**：`%struct.Particle` → MSL `Particle`，`%"struct.metal::matrix"` → MSL `metal::matrix`（注意 IR 中带引号的命名格式）
+- **E-004e 阶段性决策**：当前覆盖面已足以支撑进入运行时替换阶段；接下来不再凭空扩写 `IRToMSLConverter` 支持面，而是优先通过 `E-005` 最小闭环和 `E-006` 实测结果来反向定位真正会触发翻译/编译失败的 builtin 变体与边角 IR
 
 ## 参考信息
 

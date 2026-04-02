@@ -22,13 +22,13 @@
 
 ### 架构说明
 
-原方案试图在 PlayTools 内部纯代码实现 bitcode 反编译（受限于运行时无 LLVM 库）。新方案改为**下载 LLVM 预编译工具链**，利用 `llvm-dis` 完成 bitcode → LLVM IR 文本的完整转换，再实现 IR→MSL 的关键转换：
+原方案试图在 PlayTools 内部纯代码实现 bitcode 反编译（受限于运行时无 LLVM 库）。当前方案改为**下载 LLVM 预编译工具链**，并优先由**宿主 PlayCover 进程**代跑 `llvm-dis`：PlayTools runtime 只负责把 bitcode 通过 bridge 发给宿主；若宿主桥接不可用，才退回本地 `posix_spawn` 作为兼容/诊断路径。随后再进入 IR→MSL 转换：
 
 ```
 E-004b 提取的 BitcodeModule.data (LLVM Bitcode 二进制)
-    ↓ 写入临时 .bc 文件
-llvm-dis input.bc -o output.ll  (外部进程调用)
-    ↓ 读取 .ll 文件
+    ↓ runtime→host bridge（主路径）
+宿主 PlayCover 执行 llvm-dis input.bc -o output.ll
+    ↓ 返回 .ll 文本
 LLVM IR 文本 (完整的人类可读 IR, 包含函数签名/指令/元数据)
     ↓ E-004e: IRToMSLConverter
 可编译的 MSL 源码 (addrspace→device/constant, air.*→MSL内建, ...)
@@ -200,19 +200,18 @@ repeated entry_count times:
    - Homebrew x86: `/usr/local/bin/llvm-dis`
    - 系统路径: `/usr/bin/llvm-dis`
 
-2. **进程管理**：使用 `posix_spawn` + `waitpid`（非 `Foundation.Process`），因为 PlayTools 是 iOS target：
-   - `posix_spawn` 启动子进程
-   - `posix_spawn_file_actions_t` 重定向 stderr 到管道、stdout 到 /dev/null
-   - `waitpid` + `WNOHANG` 轮询实现超时等待
+2. **执行模型**：优先走 host bridge，必要时再 fallback 本地 `posix_spawn`：
+   - **主路径**：PlayTools runtime 通过 `RegistrationListener` 所在端口发送一次性 `host_disassemble_bitcode` 命令，由宿主 PlayCover 进程执行 `llvm-dis`
+   - **fallback**：仅当宿主桥接不可用时，才在 runtime 内走 `posix_spawn + waitpid`（非 `Foundation.Process`）
+   - 本地 fallback 仍保留 stderr 管道重定向和超时等待，便于兼容旧宿主版本或保留离线诊断能力
 
 3. **反汇编流程**：
    ```
    BitcodeModule.data
      ↓ 校验 LLVM bitcode magic (DE C0 17 0B / 42 43)
-     ↓ 写入临时文件 /tmp/playtools-llvm-{uuid}/input.bc
-     ↓ posix_spawn("llvm-dis", "input.bc", "-o", "output.ll")
-     ↓ waitpid 超时等待 (默认 30s)
-     ↓ 读取 output.ll
+     ↓ runtime→host bridge 请求宿主执行 llvm-dis（主路径）
+     ↓ 宿主写入临时 input.bc / output.ll 并返回 IR 文本
+     ↓ host bridge 不可用时再 fallback: posix_spawn("llvm-dis", ...)
    DisassemblyResult { irText, functionNames, elapsed, inputSize, outputSize }
    ```
 
@@ -230,16 +229,18 @@ repeated entry_count times:
 
 ### 关键技术决策
 
-- **为什么用 `posix_spawn` 而非 `Foundation.Process`**：PlayTools 编译为 iOS target（arm64-apple-ios），iOS SDK 不暴露 `NSTask`/`Process` 类。尽管运行时在 macOS 用户态，编译期受 SDK 约束
+- **为什么主路径改成 host bridge 而不是继续硬怼 runtime `posix_spawn`**：PlayTools 编译为 iOS target（arm64-apple-ios），目标 app 又运行在 PlayCover 注入后的 macOS sandbox 中；即使宿主路径找对了，runtime 内 `posix_spawn` 仍会被 `(deny process-fork)` 打回 `Operation not permitted`。把 `llvm-dis` 挪到宿主 PlayCover 进程执行，风险更低，也不需要给目标 app 继续放大 sandbox 能力
+- **为什么 fallback 仍保留 `posix_spawn` 路径**：便于兼容未升级到 host bridge 的宿主版本，也保留离线诊断能力；但它不再是 live 主路径
 - **为什么用 `dlsym` 获取 `environ`**：iOS SDK 不直接将 C 全局变量 `environ` 暴露给 Swift，通过 `dlsym(RTLD_DEFAULT, "environ")` 动态获取是最可靠方式
 - **为什么手动实现 wait 宏**：`WIFEXITED`/`WEXITSTATUS` 等是 C 宏，Swift 编译器不导入宏，需用等价位操作替代
 
 ### 验证
 
-- PlayTools xcframework 构建通过（`BUILD SUCCEEDED`）
-- pbxproj 格式验证通过（`plutil -lint`）
-- 文件已正确添加到 PlayTools target 的 Sources build phase
-- 2026-04-02 live：已修复 `NSHomeDirectory()` 导致的双层容器查找路径错误，原神日志已从 `llvm-dis not found` 推进到 `Failed to launch llvm-dis: Operation not permitted`；说明路径发现已命中宿主容器内的 `llvm-dis`，当前 blocker 转为 injected runtime 启动外部工具的执行权限，而不再是路径拼接本身
+- PlayTools xcframework 构建通过（`FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`，`BUILD SUCCEEDED`）
+- PlayCover GUI 构建通过（`./BuildScripts/build_gui.sh`，`BUILD SUCCEEDED`）
+- runtime→host registration command 单测通过（`./BuildScripts/test_mcp.sh RegistrationListenerHostCommandTests`，2 tests passed）
+- 文件已正确添加到既有 target 图中，无需额外 pbxproj 变更
+- 2026-04-02 的 live 样本仍是 host bridge 落地前的旧结果；新的重装 / 重注入 / 截帧复测待 `E-006a2` 执行
 
 ## E-004e 实现（已拆分）
 

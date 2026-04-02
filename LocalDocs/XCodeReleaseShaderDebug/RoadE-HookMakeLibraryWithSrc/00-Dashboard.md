@@ -37,7 +37,7 @@
 
 - **E-005e**：当前已知 `headerSize=15` 样本的 wrapper / header-compat / function list / `OFFT` slicing 已离线打通；raw `MTLB` / `xar` / `bplist_keyed_archive` recovered payload 均已推进到 `OK modules=3 functions=3` 且 `valid_llvm=3`
 - **E-005b**：多 bitcode module 的源码聚合 / 替换策略已落地：对全部有效 LLVM module 逐个执行 `llvm-dis + IRToMSLConverter`，去掉每份自动生成 MSL 的公共头部后聚合为单份源码，再单次 `makeLibrary(source:)` 重编译；若任一 module 失败或聚合后函数名冲突，则整体 fallback 原始 library。本轮已用 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 编译通过
-- **E-006**：原神 6.4.0 live 复测已执行：重启 PlayCover、重注入 PlayTools 后，`session` / `capture_metal_frame` 链路稳定，`.gputrace` 可持续生成，但 `valid_msl` 仍为 0。当前 blocker 已从 payload 恢复转到 `LLVMDisassembler` 执行阶段：本轮先修复了 `NSHomeDirectory()` 导致的双层容器查找路径错误，随后 live 日志确认候选路径已命中宿主容器内的 `llvm-dis`，但 `posix_spawn` 统一失败为 `Operation not permitted`；下一步应优先解决 injected runtime 内 `llvm-dis` 的执行模型/落点，而不是继续回头排查 payload
+- **E-006**：原神 6.4.0 live 复测的旧 blocker（injected runtime 内 `posix_spawn(llvm-dis)` 报 `Operation not permitted`）本轮已转入代码修复：`LLVMDisassembler` 现改为**优先通过 runtime→host bridge 请求宿主 PlayCover 进程执行 `llvm-dis`**，仅在宿主桥接不可用时才 fallback 本地 `posix_spawn`；GUI 侧 `RegistrationListener` / `MCPManager` / `LLVMToolManager` 已接通对应 handler，并已通过 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`、`./BuildScripts/build_gui.sh`、`./BuildScripts/test_mcp.sh RegistrationListenerHostCommandTests` 验证编译与桥接链路。下一步应做重装 GUI + 重注入 PlayTools 后的 live 复测，确认 `valid_msl` 是否开始出现，而不是继续回头排查 payload
 
 ## 验证方式
 
@@ -55,7 +55,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 | 样本 | 结果 |
 |---|---|
-| 原神 6.4.0 外网包（2026-04-02，retry + diag） | 多轮 live 复测已完成：重启 PlayCover、`remove_playtools` / `inject_playtools` 后，`session` 与 `capture_metal_frame` 均稳定；`capture_20260402_roadE_e006_retry.gputrace`（349MB）结果为 `valid_msl=0`、`index 引用=854`，`capture_20260402_roadE_e006_diag.gputrace`（388MB）结果为 `valid_msl=0`、`index 引用=922`。本轮已先修复 `LLVMDisassembler` 使用 `NSHomeDirectory()` 导致的宿主路径错误；live 日志随后确认搜索路径已转正，但 `posix_spawn(llvm-dis)` 统一报 `Operation not permitted`，因此当前 blocker 已从 `headerSize=0` / payload 恢复链路切换为“注入 runtime 中如何合法执行 `llvm-dis`” |
+| 原神 6.4.0 外网包（2026-04-02，retry + diag，**host bridge 修复前**） | 多轮 live 复测已完成：重启 PlayCover、`remove_playtools` / `inject_playtools` 后，`session` 与 `capture_metal_frame` 均稳定；`capture_20260402_roadE_e006_retry.gputrace`（349MB）结果为 `valid_msl=0`、`index 引用=854`，`capture_20260402_roadE_e006_diag.gputrace`（388MB）结果为 `valid_msl=0`、`index 引用=922`。这些样本对应的是 host bridge 落地前的旧构建：当时宿主路径查找已修复，但 injected runtime 内 `posix_spawn(llvm-dis)` 仍统一报 `Operation not permitted`。本轮代码已把 `llvm-dis` 主路径切换为 runtime→host bridge，新的 live 结果待 `E-006a2` 补充 |
 
 **人工确认（最终）**：Xcode 打开 `.gputrace` → 选 Draw Call → 查看 Shader 面板是否显示源码而非 `Shader source not found`。
 
@@ -65,10 +65,12 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 PlayCover 主应用 (macOS)
   ├── LLVMToolManager: 下载/管理 LLVM 预编译工具链 (llvm-dis)
   │     → 安装到 ~/Library/Containers/io.playcover.PlayCover/llvm-tools/
+  ├── RegistrationListener / MCPManager: runtime→host bridge 命令入口
+  │     → 承接 injected runtime 的 `host_disassemble_bitcode` 请求
   └── PlayTools.framework (注入到 iOS app)
         ├── LibrarySourceInjectionSwizzles: hook makeLibrary 系列 API
         ├── MetallibParser: 解析 metallib, 提取 LLVM Bitcode
-        ├── LLVMDisassembler: 调用 llvm-dis 将 bitcode → LLVM IR 文本
+        ├── LLVMDisassembler: 优先经 bridge 请求宿主执行 `llvm-dis`，失败再 fallback 本地 spawn
         ├── IRToMSLConverter: 将 LLVM IR 逐指令翻译为语义等价的 MSL 源码
         └── LibrarySourceInjectionService: 聚合单/多 module MSL，并调用 `makeLibrary(source:)` 编译替换原始 library
 ```
@@ -128,9 +130,13 @@ PlayCover 主应用 (macOS)
 | E-005e2b2b2b | ↳ 其他自定义 archive / keyed archive 真实样本驱动 | TODO | |
 |  | 继续等待下一轮 live `ShaderPayloadSamples` 真实样本，再决定是否需要补 keyed archive 之外的自定义 archive 家族，或把 `$top` 精确追踪扩成完整对象图解引用 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
-|  | 本轮 live 复测已执行：原神在重启 PlayCover、重注入 PlayTools 后可稳定进入 `session ready`，`capture_metal_frame` 多次成功且 `.gputrace` 已生成；但 `valid_msl` 仍为 0。当前 blocker 已从 payload 恢复转为 `LLVMDisassembler` 在 injected runtime 内启动外部 `llvm-dis` 时 `posix_spawn` 返回 `Operation not permitted` | | |
-| E-006a | ↳ 解决 injected runtime 调 `llvm-dis` 的执行权限 blocker | TODO | |
-|  | 已确认路径查找 bug（`NSHomeDirectory()` 指向目标 app 容器）已修复，宿主容器路径会被正确命中；下一步需要改为能在注入环境合法执行的方案（调整工具落点、helper 形态，或避免直接 spawn 外部二进制） | | |
+|  | 旧 live blocker `posix_spawn(llvm-dis) -> Operation not permitted` 已转入代码修复：runtime→host 的 `llvm-dis` bridge 已接通并通过编译/单测验证；当前下一步是重装 GUI、重注入 PlayTools 后做新一轮 live 复测，确认 `valid_msl` 是否出现 | | |
+| E-006a | ↳ 解决 injected runtime 调 `llvm-dis` 的执行权限 blocker | 🔄 IN PROGRESS | |
+|  | 已将任务拆成“host bridge 落地”和“live 复测”两步，避免继续在旧 `posix_spawn` 设计上空转 | | |
+| E-006a1 | ↳ runtime→host `llvm-dis` bridge 落地 | ✅ DONE | |
+|  | `RegistrationListener` 现支持 runtime→host `command`；GUI 侧 `MCPManager` / `LLVMToolManager` 已实现 `host_disassemble_bitcode` handler；`LLVMDisassembler` 改为优先走 host bridge，失败才 fallback 本地 `posix_spawn`。已通过 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`、`./BuildScripts/build_gui.sh`、`./BuildScripts/test_mcp.sh RegistrationListenerHostCommandTests` 验证 | | |
+| E-006a2 | ↳ host bridge 版本的 live 重装 / 重注入 / 截帧复测 | TODO | |
+|  | 按 `sync_playtools_xcframework.sh` → `build_and_install.sh` → `remove_playtools` / `inject_playtools` → `capture_metal_frame` 的顺序复测，确认 `.gputrace` 是否开始出现 `valid_msl` | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
 |  | 添加 `injectShaderSources` 开关到 AppSettings / AppSettingsView；添加 LLVM 工具链下载 / 状态 UI | | |
 
@@ -154,8 +160,9 @@ PlayCover 主应用 (macOS)
 - **`MTLB` magic 不是 raw metallib 的充分条件，但 `headerSize` 异常也不等于假头**：真实样本存在 `headerSize=15` 的 raw `MTLB`，其 `fileSize` / `funcList` / `pub/priv metadata` / `bitcode` 仍与 88-byte 扩展 header 自洽；因此对可疑 `MTLB` 应先尝试兼容解析，失败后再继续把它当 wrapper 候选向内扫描 embedded `MTLB`
 - **wrapper 恢复链路要先尝试 direct compat parse**：`xar` / `NSKeyedArchiver` 解包后拿到的 payload 可能就是 offset 0 的异常 raw `MTLB`；若 `recoverMetallibCandidate` 只扫 non-zero offset 的 embedded `MTLB`，会把本可解析的样本误判成未恢复
 - **`NSHomeDirectory()` 在 injected runtime 中返回的是目标 app 容器，不是宿主用户 Home**：像 `~/Library/Containers/io.playcover.PlayCover/llvm-tools/llvm-dis` 这类宿主路径不能直接基于 `NSHomeDirectory()` 拼接，否则会误变成双层容器路径；本轮已改为优先用 `getpwuid(getuid())` / `NSUserName()` 推导宿主目录
-- **PlayTools 是 iOS target**：调用 `llvm-dis` 仍需走 `posix_spawn`，不能依赖 `Foundation.Process`
-- **修正路径后，当前 live blocker 是 `posix_spawn(llvm-dis)` 返回 `Operation not permitted`**：这说明问题已不再是“找不到 `llvm-dis`”，而是 injected runtime 启动外部工具的执行权限/落点设计；下一步应优先解决 helper 执行模型，而不是继续排查 payload 恢复链路
+- **PlayTools 是 iOS target**：不能依赖 `Foundation.Process`；若必须在 injected runtime 内起子进程，只能自己走 `posix_spawn`
+- **真正拦住 `llvm-dis` 的不是“找不到工具”，而是目标 app 的 macOS sandbox**：`composeEntitlements()` 会附带 `com.apple.security.app-sandbox = true`，且 SBPL 里明确有 `(deny process-fork)`；因此修正宿主路径后，`posix_spawn(llvm-dis)` 仍会被内核直接打回 `Operation not permitted`
+- **现有 `RegistrationListener` 足够承接一次性 runtime→host 工具请求**：不必额外新开一套 IPC；复用现有 registration 端口，新增短连接 `command` / `commandResponse` 即可把 `llvm-dis` 挪到宿主进程执行，同时保留 runtime 侧最小改动和本地 fallback
 
 ## 参考信息
 

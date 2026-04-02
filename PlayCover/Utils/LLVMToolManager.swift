@@ -136,6 +136,101 @@ class LLVMToolManager: ObservableObject {
         statusMessage = "LLVM tools removed"
     }
 
+    struct HostDisassemblyResult {
+        let irText: String
+        let elapsedSeconds: Double
+        let inputSize: Int
+        let outputSize: Int
+        let executablePath: String
+    }
+
+    /// 在宿主 PlayCover 进程内执行 `llvm-dis`。
+    ///
+    /// 该入口用于被注入的 PlayTools runtime 通过 bridge 把 bitcode 转交给宿主，
+    /// 从而绕开目标 app 沙盒中的 `process-fork` 限制。
+    static func disassembleBitcodeForRuntime(
+        _ bitcodeData: Data,
+        timeoutSeconds: Int = 30
+    ) throws -> HostDisassemblyResult {
+        guard let executablePath = findHostLLVMDisExecutable() else {
+            throw LLVMToolError.binaryNotFound(
+                "llvm-dis not found for host runtime bridge. Searched: \(hostDisassemblerCandidatePaths.joined(separator: ", "))"
+            )
+        }
+
+        let fm = FileManager.default
+        let tmpDir = fm.temporaryDirectory.appendingPathComponent("llvm-host-dis-\(UUID().uuidString)")
+        try fm.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tmpDir) }
+
+        let inputPath = tmpDir.appendingPathComponent("input.bc")
+        let outputPath = tmpDir.appendingPathComponent("output.ll")
+        try bitcodeData.write(to: inputPath)
+
+        let stderrPipe = Pipe()
+        let stdoutPipe = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = [inputPath.path, "-o", outputPath.path]
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        let startTime = CFAbsoluteTimeGetCurrent()
+        try process.run()
+
+        let exitSemaphore = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            process.waitUntilExit()
+            exitSemaphore.signal()
+        }
+
+        if exitSemaphore.wait(timeout: .now() + .seconds(max(1, timeoutSeconds))) == .timedOut {
+            process.terminate()
+            throw LLVMToolError.runtimeDisassemblyTimedOut(timeoutSeconds)
+        }
+
+        let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+        let stderrData = try stderrPipe.fileHandleForReading.readToEnd() ?? Data()
+        let stderrText = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        guard process.terminationStatus == 0 else {
+            throw LLVMToolError.runtimeDisassemblyFailed(
+                "llvm-dis exited with code \(process.terminationStatus): \(stderrText.prefix(500))"
+            )
+        }
+
+        guard fm.fileExists(atPath: outputPath.path) else {
+            throw LLVMToolError.runtimeDisassemblyFailed(
+                "llvm-dis did not produce output file at \(outputPath.path)"
+            )
+        }
+
+        let irText = try String(contentsOf: outputPath, encoding: .utf8)
+        return HostDisassemblyResult(
+            irText: irText,
+            elapsedSeconds: elapsed,
+            inputSize: bitcodeData.count,
+            outputSize: irText.utf8.count,
+            executablePath: executablePath
+        )
+    }
+
+    private static var hostDisassemblerCandidatePaths: [String] {
+        [
+            llvmDisPath.path,
+            "/opt/homebrew/bin/llvm-dis",
+            "/usr/local/bin/llvm-dis",
+            "/usr/bin/llvm-dis",
+        ]
+    }
+
+    private static func findHostLLVMDisExecutable() -> String? {
+        let fm = FileManager.default
+        return hostDisassemblerCandidatePaths.first {
+            fm.fileExists(atPath: $0) && fm.isExecutableFile(atPath: $0)
+        }
+    }
+
     // MARK: - Private Implementation
 
     private func performInstall(version: String) async throws {
@@ -299,6 +394,8 @@ enum LLVMToolError: Error, LocalizedError {
     case extractionFailed(String)
     case binaryNotFound(String)
     case verificationFailed(String)
+    case runtimeDisassemblyTimedOut(Int)
+    case runtimeDisassemblyFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -312,6 +409,10 @@ enum LLVMToolError: Error, LocalizedError {
             return "llvm-dis binary not found: \(msg)"
         case .verificationFailed(let msg):
             return "llvm-dis verification failed: \(msg)"
+        case .runtimeDisassemblyTimedOut(let seconds):
+            return "Host llvm-dis timed out after \(seconds) seconds"
+        case .runtimeDisassemblyFailed(let msg):
+            return "Host llvm-dis failed: \(msg)"
         }
     }
 }

@@ -26,13 +26,21 @@ public final class RegistrationListener: Sendable {
 
     // MARK: - Private
 
+    public typealias CommandHandler = (CommandPayload) -> CommandResponsePayload
+
     private let requestedPort: UInt16
     private let registry: SessionRegistry
+    private let commandHandler: CommandHandler?
     private var listener: NWListener?
     private let lock = NSLock()
     private var activeConnections: [String: NWConnection] = [:]
     private var readBuffers: [ObjectIdentifier: Data] = [:]
     private let callbackQueue = DispatchQueue(label: "com.playcover.registration-listener")
+    private let commandHandlerQueue = DispatchQueue(
+        label: "com.playcover.registration-listener.command-handler",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
 
     // MARK: - Init
 
@@ -40,9 +48,15 @@ public final class RegistrationListener: Sendable {
     /// - Parameters:
     ///   - port: Port to bind to. Use 0 for an ephemeral port, or `defaultPort` for the well-known port.
     ///   - registry: The session registry to register sessions into.
-    public init(port: UInt16 = defaultPort, registry: SessionRegistry) {
+    ///   - commandHandler: Optional runtime→host command handler used for one-shot utility requests.
+    public init(
+        port: UInt16 = defaultPort,
+        registry: SessionRegistry,
+        commandHandler: CommandHandler? = nil
+    ) {
         self.requestedPort = port
         self.registry = registry
+        self.commandHandler = commandHandler
         self.isRunning = false
     }
 
@@ -175,6 +189,8 @@ public final class RegistrationListener: Sendable {
             handleRegister(payload, connection: connection)
         case .ping(let payload):
             handlePing(payload, connection: connection)
+        case .command(let payload):
+            handleCommand(payload, connection: connection)
         case .close(let payload):
             handleUnregister(payload.sessionId, connection: connection)
         default:
@@ -236,6 +252,36 @@ public final class RegistrationListener: Sendable {
         sendToConnection(connection, message: pong)
     }
 
+    private func handleCommand(_ payload: CommandPayload, connection: NWConnection) {
+        guard registry.get(payload.sessionId) != nil else {
+            sendToConnection(
+                connection,
+                message: .commandResponse(commandErrorResponse(for: payload, message: "Session not registered: \(payload.sessionId)"))
+            )
+            return
+        }
+
+        guard let commandHandler else {
+            sendToConnection(
+                connection,
+                message: .commandResponse(commandErrorResponse(for: payload, message: "Host command handler is unavailable"))
+            )
+            return
+        }
+
+        commandHandlerQueue.async { [weak self] in
+            guard let self else { return }
+            let handled = commandHandler(payload)
+            let normalized = CommandResponsePayload(
+                sessionId: payload.sessionId,
+                commandId: payload.commandId,
+                status: handled.status,
+                result: handled.result
+            )
+            self.sendToConnection(connection, message: .commandResponse(normalized))
+        }
+    }
+
     private func handleUnregister(_ sessionId: String, connection: NWConnection) {
         try? registry.unregister(sessionId: sessionId)
         removeConnection(connection)
@@ -249,6 +295,15 @@ public final class RegistrationListener: Sendable {
     private func sendToConnection(_ connection: NWConnection, message: BridgeMessage) {
         guard let data = try? bridgeFrame(message) else { return }
         connection.send(content: data, completion: .contentProcessed { _ in })
+    }
+
+    private func commandErrorResponse(for payload: CommandPayload, message: String) -> CommandResponsePayload {
+        CommandResponsePayload(
+            sessionId: payload.sessionId,
+            commandId: payload.commandId,
+            status: "error",
+            result: AnyCodable(["message": message] as [String: Any])
+        )
     }
 
     private func removeConnection(_ connection: NWConnection) {

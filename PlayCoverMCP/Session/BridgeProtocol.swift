@@ -368,6 +368,21 @@ public enum BridgeCommandName {
     public static let typeText = "type_text"
     public static let toggleDebugOverlay = "toggle_debug_overlay"
 
+    // -- Runtime -> Host utility commands --
+    /// Ask the host PlayCover process to run `llvm-dis` on behalf of the injected runtime.
+    ///
+    /// Params:
+    /// - `bitcode_base64` (String): base64-encoded LLVM bitcode payload.
+    /// - `timeout_seconds` (Int, optional): host-side execution timeout.
+    ///
+    /// Response data:
+    /// - `ir_text` (String): disassembled LLVM IR text.
+    /// - `elapsed_seconds` (Double): host-side execution time.
+    /// - `input_size` (Int): input bitcode size.
+    /// - `output_size` (Int): output IR text size.
+    /// - `executable_path` (String): actual `llvm-dis` path used by host.
+    public static let hostDisassembleBitcode = "host_disassemble_bitcode"
+
     // -- Metal Capture (R03) --
     /// Trigger a one-frame GPU capture.
     ///

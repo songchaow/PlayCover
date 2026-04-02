@@ -2,15 +2,17 @@
 //  LLVMDisassembler.swift
 //  PlayTools
 //
-//  E-004d: 调用 llvm-dis 将 LLVM Bitcode → LLVM IR 文本
-//  将 MetallibParser.BitcodeModule 的二进制数据写入临时 .bc 文件，
-//  通过 posix_spawn 调用 llvm-dis 转换为 .ll 文本，读取结果返回。
+//  E-004d / E-006a: 调用 llvm-dis 将 LLVM Bitcode → LLVM IR 文本
+//  优先通过 bridge 请求宿主 PlayCover 进程执行 llvm-dis；若宿主桥接不可用，
+//  再回退到本地 posix_spawn 路径（主要用于兼容旧宿主或保留诊断能力）。
 //
 //  注意：PlayTools 是 iOS target，不能使用 Foundation.Process (NSTask)。
-//  但 PlayCover 管理的 app 实际运行在 macOS 用户态，posix_spawn 可用。
+//  且目标 app 运行在 PlayCover 的 macOS sandbox 中时，本地 posix_spawn 可能被
+//  `process-fork` 规则拦截，因此宿主代理执行是当前主路径。
 //
 
 import Foundation
+import Network
 import Darwin
 
 /// C environ 全局变量（posix_spawn 传递环境变量需要）
@@ -29,10 +31,11 @@ private let posixEnviron: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?> = {
 
 /// 将 LLVM Bitcode 二进制数据反汇编为 LLVM IR 文本。
 ///
-/// PlayCover 管理的 iOS app 运行在 macOS 用户态（翻译执行），不受 iOS 沙盒限制，
-/// PlayTools 中可以使用 `Process()` 调用本地二进制。
+/// 主路径：通过运行时 bridge 请求宿主 PlayCover 进程执行 `llvm-dis`，
+/// 避免 injected runtime 受到目标 app sandbox 的 `process-fork` 限制。
 ///
-/// `llvm-dis` 由 `LLVMToolManager`（PlayCover 主应用）安装到已知路径。
+/// fallback：若宿主桥接不可用，再尝试本地 `posix_spawn`，便于兼容旧宿主版本
+/// 或保留离线诊断能力。
 struct LLVMDisassembler {
 
     // MARK: - Error types
@@ -94,6 +97,38 @@ struct LLVMDisassembler {
 
     /// llvm-dis 进程超时时间（秒）
     static let defaultTimeoutSeconds: Int = 30
+    private static let hostBridgeCommandTimeout: TimeInterval = 5.0
+    private static let hostBridgeCommandName = "host_disassemble_bitcode"
+    private static let hostBridgeQueue = DispatchQueue(label: "com.playtools.llvm-dis.host-bridge")
+
+    private enum HostBridgeError: LocalizedError {
+        case sessionUnavailable
+        case invalidPort(UInt16)
+        case connectionFailed(String)
+        case connectionTimedOut(TimeInterval)
+        case sendTimedOut(TimeInterval)
+        case invalidResponse(String)
+        case remoteError(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .sessionUnavailable:
+                return "Host bridge session is unavailable"
+            case .invalidPort(let port):
+                return "Invalid host bridge port: \(port)"
+            case .connectionFailed(let message):
+                return "Failed to connect to host bridge: \(message)"
+            case .connectionTimedOut(let timeout):
+                return "Timed out connecting to host bridge after \(String(format: "%.1f", timeout))s"
+            case .sendTimedOut(let timeout):
+                return "Timed out sending host bridge request after \(String(format: "%.1f", timeout))s"
+            case .invalidResponse(let message):
+                return "Invalid host bridge response: \(message)"
+            case .remoteError(let message):
+                return "Host bridge reported an error: \(message)"
+            }
+        }
+    }
 
     // MARK: - Known install paths
 
@@ -216,12 +251,21 @@ struct LLVMDisassembler {
             throw DisassemblerError.invalidBitcode(reason: "unrecognized magic: \(hex)")
         }
 
-        // 2. 查找 llvm-dis
+        // 2. 优先尝试让宿主 PlayCover 进程代跑 llvm-dis，绕开 injected runtime 的 spawn 权限限制。
+        if let hostBridgeResult = safeDisassembleViaHostBridge(
+            bitcodeData: bitcodeData,
+            functionNames: functionNames,
+            timeoutSeconds: timeoutSeconds
+        ) {
+            return hostBridgeResult
+        }
+
+        // 3. fallback：直接在当前 runtime 中查找并调用 llvm-dis。
         guard let llvmDisPath = findLLVMDis() else {
             throw DisassemblerError.llvmDisNotFound(searchedPaths: knownLLVMDisPathDiagnostics)
         }
 
-        // 3. 创建临时文件
+        // 4. 创建临时文件
         let tmpDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("playtools-llvm-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
@@ -234,7 +278,7 @@ struct LLVMDisassembler {
 
         try bitcodeData.write(to: inputPath)
 
-        // 4. 调用 llvm-dis（使用 posix_spawn，因为 PlayTools 是 iOS target 无法使用 Foundation.Process）
+        // 5. 调用 llvm-dis（使用 posix_spawn，因为 PlayTools 是 iOS target 无法使用 Foundation.Process）
         let startTime = CFAbsoluteTimeGetCurrent()
 
         // 设置 stderr 重定向到管道
@@ -259,7 +303,7 @@ struct LLVMDisassembler {
             )
         }
 
-        // 5. 等待完成（带超时）
+        // 6. 等待完成（带超时）
         let (exitCode, completed) = waitForPid(pid, timeoutSeconds: timeoutSeconds)
         let elapsed = CFAbsoluteTimeGetCurrent() - startTime
 
@@ -274,13 +318,13 @@ struct LLVMDisassembler {
             throw DisassemblerError.processTimeout(seconds: timeoutSeconds)
         }
 
-        // 6. 检查退出状态
+        // 7. 检查退出状态
         if exitCode != 0 {
             let stderrText = String(data: stderrData, encoding: .utf8) ?? "<binary>"
             throw DisassemblerError.processNonZeroExit(code: exitCode, stderr: stderrText)
         }
 
-        // 7. 读取输出
+        // 8. 读取输出
         guard FileManager.default.fileExists(atPath: outputPath.path) else {
             throw DisassemblerError.outputFileNotFound(path: outputPath.path)
         }
@@ -382,11 +426,250 @@ struct LLVMDisassembler {
         return successes
     }
 
+    private static func safeDisassembleViaHostBridge(
+        bitcodeData: Data,
+        functionNames: [String],
+        timeoutSeconds: Int
+    ) -> DisassemblyResult? {
+        do {
+            let result = try disassembleViaHostBridge(
+                bitcodeData: bitcodeData,
+                functionNames: functionNames,
+                timeoutSeconds: timeoutSeconds
+            )
+            NSLog("[PlayTools] LLVMDisassembler: host bridge success — %@", result.summary)
+            return result
+        } catch {
+            NSLog("[PlayTools] LLVMDisassembler: host bridge unavailable, fallback to local spawn — %@",
+                  error.localizedDescription)
+            return nil
+        }
+    }
+
+    private static func disassembleViaHostBridge(
+        bitcodeData: Data,
+        functionNames: [String],
+        timeoutSeconds: Int
+    ) throws -> DisassemblyResult {
+        guard let sessionId = BridgeListener.shared.sessionId else {
+            throw HostBridgeError.sessionUnavailable
+        }
+
+        guard let port = NWEndpoint.Port(rawValue: BridgeListener.defaultRegistrationPort) else {
+            throw HostBridgeError.invalidPort(BridgeListener.defaultRegistrationPort)
+        }
+
+        let connection = NWConnection(host: "127.0.0.1", port: port, using: .tcp)
+        defer { connection.cancel() }
+
+        let readySemaphore = DispatchSemaphore(value: 0)
+        var readyError: Error?
+        var isReady = false
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                isReady = true
+                readySemaphore.signal()
+            case .failed(let error):
+                readyError = error
+                readySemaphore.signal()
+            case .cancelled:
+                if !isReady {
+                    readyError = HostBridgeError.connectionFailed("connection cancelled")
+                    readySemaphore.signal()
+                }
+            default:
+                break
+            }
+        }
+        connection.start(queue: hostBridgeQueue)
+
+        if readySemaphore.wait(timeout: .now() + hostBridgeCommandTimeout) == .timedOut {
+            throw HostBridgeError.connectionTimedOut(hostBridgeCommandTimeout)
+        }
+        if let readyError {
+            throw HostBridgeError.connectionFailed(readyError.localizedDescription)
+        }
+
+        let commandId = "llvm-dis-\(UUID().uuidString.lowercased())"
+        try sendHostBridgeMessage(
+            [
+                "type": "command",
+                "sessionId": sessionId,
+                "commandId": commandId,
+                "command": hostBridgeCommandName,
+                "params": [
+                    "bitcode_base64": bitcodeData.base64EncodedString(),
+                    "timeout_seconds": timeoutSeconds,
+                ],
+            ],
+            on: connection,
+            timeout: hostBridgeCommandTimeout
+        )
+
+        let response = try receiveSingleHostBridgeMessage(
+            on: connection,
+            timeout: max(hostBridgeCommandTimeout, Double(timeoutSeconds) + 5.0)
+        )
+
+        guard hostBridgeStringValue("type", in: response) == "commandResponse" else {
+            throw HostBridgeError.invalidResponse("unexpected message type")
+        }
+        guard hostBridgeStringValue("commandId", in: response) == commandId else {
+            throw HostBridgeError.invalidResponse("commandId mismatch")
+        }
+
+        let status = hostBridgeStringValue("status", in: response) ?? ""
+        let result = response["result"] as? [String: Any]
+
+        if status != "ok" {
+            let message = hostBridgeStringValue("message", in: result) ?? "unknown host bridge error"
+            throw HostBridgeError.remoteError(message)
+        }
+
+        guard let irText = hostBridgeStringValue("ir_text", in: result) else {
+            throw HostBridgeError.invalidResponse("missing ir_text")
+        }
+
+        return DisassemblyResult(
+            irText: irText,
+            functionNames: functionNames,
+            elapsedSeconds: hostBridgeDoubleValue("elapsed_seconds", in: result) ?? 0,
+            inputSize: hostBridgeIntValue("input_size", in: result) ?? bitcodeData.count,
+            outputSize: hostBridgeIntValue("output_size", in: result) ?? irText.utf8.count
+        )
+    }
+
+    private static func sendHostBridgeMessage(
+        _ message: [String: Any],
+        on connection: NWConnection,
+        timeout: TimeInterval
+    ) throws {
+        let framedData = try frameHostBridgeMessage(message)
+        let semaphore = DispatchSemaphore(value: 0)
+        var sendError: NWError?
+        connection.send(content: framedData, completion: .contentProcessed { error in
+            sendError = error
+            semaphore.signal()
+        })
+        if semaphore.wait(timeout: .now() + timeout) == .timedOut {
+            throw HostBridgeError.sendTimedOut(timeout)
+        }
+        if let sendError {
+            throw HostBridgeError.connectionFailed(sendError.localizedDescription)
+        }
+    }
+
+    private static func frameHostBridgeMessage(_ message: [String: Any]) throws -> Data {
+        let data = try JSONSerialization.data(withJSONObject: message, options: [])
+        var framed = data
+        framed.append("\n".data(using: .utf8)!)
+        return framed
+    }
+
+    private static func receiveSingleHostBridgeMessage(
+        on connection: NWConnection,
+        timeout: TimeInterval
+    ) throws -> [String: Any] {
+        var localBuffer = Data()
+        let semaphore = DispatchSemaphore(value: 0)
+        var receivedMessage: [String: Any]?
+        var receiveError: Error?
+
+        func receiveNextChunk() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, isComplete, error in
+                if let data, !data.isEmpty {
+                    localBuffer.append(data)
+                    let (messages, remaining) = parseHostBridgeMessages(localBuffer)
+                    localBuffer = remaining
+                    if let first = messages.first {
+                        receivedMessage = first
+                        semaphore.signal()
+                    } else {
+                        receiveNextChunk()
+                    }
+                    return
+                }
+
+                if let error {
+                    receiveError = error
+                } else if isComplete {
+                    receiveError = HostBridgeError.connectionFailed("connection closed")
+                } else {
+                    receiveError = HostBridgeError.invalidResponse("empty response from host bridge")
+                }
+                semaphore.signal()
+            }
+        }
+
+        receiveNextChunk()
+
+        if semaphore.wait(timeout: .now() + timeout) == .timedOut {
+            throw HostBridgeError.connectionTimedOut(timeout)
+        }
+        if let receiveError {
+            throw receiveError
+        }
+        if let receivedMessage {
+            return receivedMessage
+        }
+        throw HostBridgeError.invalidResponse("missing host bridge payload")
+    }
+
+    private static func parseHostBridgeMessages(_ data: Data) -> ([[String: Any]], Data) {
+        var messages: [[String: Any]] = []
+        var remaining = data
+        let newline = Data("\n".utf8)
+
+        while let newlineRange = remaining.range(of: newline) {
+            let line = Data(remaining[..<newlineRange.lowerBound])
+            remaining = Data(remaining[newlineRange.upperBound...])
+
+            guard !line.isEmpty else { continue }
+            if let object = try? JSONSerialization.jsonObject(with: line, options: []),
+               let dictionary = object as? [String: Any] {
+                messages.append(dictionary)
+            }
+        }
+
+        return (messages, remaining)
+    }
+
+    private static func hostBridgeStringValue(_ key: String, in dictionary: [String: Any]?) -> String? {
+        dictionary?[key] as? String
+    }
+
+    private static func hostBridgeDoubleValue(_ key: String, in dictionary: [String: Any]?) -> Double? {
+        if let value = dictionary?[key] as? Double {
+            return value
+        }
+        if let value = dictionary?[key] as? Int {
+            return Double(value)
+        }
+        if let value = dictionary?[key] as? NSNumber {
+            return value.doubleValue
+        }
+        return nil
+    }
+
+    private static func hostBridgeIntValue(_ key: String, in dictionary: [String: Any]?) -> Int? {
+        if let value = dictionary?[key] as? Int {
+            return value
+        }
+        if let value = dictionary?[key] as? Double {
+            return Int(value)
+        }
+        if let value = dictionary?[key] as? NSNumber {
+            return value.intValue
+        }
+        return nil
+    }
+
     // MARK: - Private helpers (posix_spawn based)
 
     /// 使用 posix_spawn 启动 llvm-dis 进程。
-    /// PlayTools 运行在 iOS target 上，不能使用 Foundation.Process，
-    /// 但 PlayCover 管理的 app 实际运行在 macOS 用户态，posix_spawn 可用。
+    /// PlayTools 运行在 iOS target 上，不能使用 Foundation.Process；
+    /// 此路径现在只作为 host bridge 不可用时的本地 fallback / 诊断手段。
     private static func spawnLLVMDis(
         executablePath: String,
         arguments: [String],

@@ -479,7 +479,11 @@ class MCPManager: ObservableObject {
             }
             self.runtimeSessions = grouped
         }
-        let registrationListener = RegistrationListener(port: RegistrationListener.defaultPort, registry: sessionRegistry)
+        let registrationListener = RegistrationListener(
+            port: RegistrationListener.defaultPort,
+            registry: sessionRegistry,
+            commandHandler: Self.handleRuntimeHostCommand
+        )
         do {
             let boundPort = try registrationListener.start()
             self.logger?.log(.info, "Registration listener started on port \(boundPort)")
@@ -514,6 +518,92 @@ class MCPManager: ObservableObject {
     }
 
     // MARK: - Private Helpers
+
+    private static func handleRuntimeHostCommand(_ payload: CommandPayload) -> CommandResponsePayload {
+        switch payload.command {
+        case BridgeCommandName.hostDisassembleBitcode:
+            return handleHostDisassembleBitcodeCommand(payload)
+        default:
+            return hostCommandErrorResponse(
+                sessionId: payload.sessionId,
+                commandId: payload.commandId,
+                message: "Unknown host bridge command: \(payload.command)"
+            )
+        }
+    }
+
+    private static func handleHostDisassembleBitcodeCommand(_ payload: CommandPayload) -> CommandResponsePayload {
+        guard let params = payload.params?.dictionary else {
+            return hostCommandErrorResponse(
+                sessionId: payload.sessionId,
+                commandId: payload.commandId,
+                message: "Missing host disassembly params"
+            )
+        }
+        guard let bitcodeBase64 = params["bitcode_base64"] as? String,
+              let bitcodeData = Data(base64Encoded: bitcodeBase64)
+        else {
+            return hostCommandErrorResponse(
+                sessionId: payload.sessionId,
+                commandId: payload.commandId,
+                message: "Invalid or missing bitcode_base64"
+            )
+        }
+
+        let timeoutSeconds = max(1, min(120, intValue(from: params["timeout_seconds"]) ?? 30))
+
+        do {
+            let result = try LLVMToolManager.disassembleBitcodeForRuntime(
+                bitcodeData,
+                timeoutSeconds: timeoutSeconds
+            )
+            return CommandResponsePayload(
+                sessionId: payload.sessionId,
+                commandId: payload.commandId,
+                status: "ok",
+                result: AnyCodable([
+                    "ir_text": result.irText,
+                    "elapsed_seconds": result.elapsedSeconds,
+                    "input_size": result.inputSize,
+                    "output_size": result.outputSize,
+                    "executable_path": result.executablePath,
+                ] as [String: Any])
+            )
+        } catch {
+            NSLog("%@", "[PlayCover] host_disassemble_bitcode failed: \(error.localizedDescription)")
+            return hostCommandErrorResponse(
+                sessionId: payload.sessionId,
+                commandId: payload.commandId,
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    private static func hostCommandErrorResponse(
+        sessionId: String,
+        commandId: String,
+        message: String
+    ) -> CommandResponsePayload {
+        CommandResponsePayload(
+            sessionId: sessionId,
+            commandId: commandId,
+            status: "error",
+            result: AnyCodable(["message": message] as [String: Any])
+        )
+    }
+
+    private static func intValue(from raw: Any?) -> Int? {
+        if let value = raw as? Int {
+            return value
+        }
+        if let value = raw as? Double {
+            return Int(value)
+        }
+        if let value = raw as? NSNumber {
+            return value.intValue
+        }
+        return nil
+    }
 
     private func createServer(logger: MCPLogger, taskManager: TaskManager, uploadManager: UploadManager?) -> MCPServer {
         let serverInfo = Implementation(

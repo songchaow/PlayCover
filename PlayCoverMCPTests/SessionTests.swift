@@ -943,6 +943,190 @@ final class SessionHandshakeTests: XCTestCase {
     }
 }
 
+final class RegistrationListenerHostCommandTests: XCTestCase {
+
+    private var registry: SessionRegistry!
+    private var registrationListener: RegistrationListener!
+
+    override func setUp() {
+        super.setUp()
+        registry = SessionRegistry()
+        registrationListener = RegistrationListener(
+            port: 0,
+            registry: registry,
+            commandHandler: { payload in
+                CommandResponsePayload(
+                    sessionId: payload.sessionId,
+                    commandId: payload.commandId,
+                    status: "ok",
+                    result: AnyCodable([
+                        "handled": true,
+                        "command": payload.command,
+                    ] as [String: Any])
+                )
+            }
+        )
+    }
+
+    override func tearDown() {
+        registrationListener?.stop()
+        registry?.removeAll()
+        registrationListener = nil
+        registry = nil
+        super.tearDown()
+    }
+
+    func testRuntimeCanSendHostCommandOverRegistrationPort() async throws {
+        let sessionId = "sess-host-bridge"
+        try registry.register(SessionInfo(sessionId: sessionId, bundleId: "com.example.app", pid: 42, runtimePort: 52742))
+        let port = try registrationListener.start()
+
+        let response = try await sendRegistrationCommand(
+            port: port,
+            payload: CommandPayload(
+                sessionId: sessionId,
+                commandId: "cmd-host-1",
+                command: BridgeCommandName.hostDisassembleBitcode,
+                params: AnyCodable(["bitcode_base64": "QQ=="] as [String: Any])
+            )
+        )
+
+        guard case .commandResponse(let payload) = response else {
+            return XCTFail("Expected commandResponse from registration listener")
+        }
+        XCTAssertEqual(payload.sessionId, sessionId)
+        XCTAssertEqual(payload.commandId, "cmd-host-1")
+        XCTAssertEqual(payload.status, "ok")
+        XCTAssertEqual(payload.result?.dictionary?["handled"] as? Bool, true)
+        XCTAssertEqual(payload.result?.dictionary?["command"] as? String, BridgeCommandName.hostDisassembleBitcode)
+    }
+
+    func testRegistrationCommandRequiresKnownSession() async throws {
+        let port = try registrationListener.start()
+
+        let response = try await sendRegistrationCommand(
+            port: port,
+            payload: CommandPayload(
+                sessionId: "missing-session",
+                commandId: "cmd-host-2",
+                command: BridgeCommandName.hostDisassembleBitcode,
+                params: nil
+            )
+        )
+
+        guard case .commandResponse(let payload) = response else {
+            return XCTFail("Expected commandResponse for missing session")
+        }
+        XCTAssertEqual(payload.status, "error")
+        XCTAssertEqual(payload.result?.dictionary?["message"] as? String, "Session not registered: missing-session")
+    }
+
+    private func sendRegistrationCommand(
+        port: UInt16,
+        payload: CommandPayload,
+        timeout: TimeInterval = 3.0
+    ) async throws -> BridgeMessage {
+        let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+        defer { connection.cancel() }
+
+        try await waitForConnectionReady(connection, timeout: timeout)
+        try await sendBridgeMessage(.command(payload), on: connection)
+        return try await receiveBridgeMessage(on: connection, timeout: timeout)
+    }
+
+    private func waitForConnectionReady(_ connection: NWConnection, timeout: TimeInterval) async throws {
+        connection.start(queue: .global(qos: .userInitiated))
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            var resumed = false
+            let resumeOnce: (Result<Void, Error>) -> Void = { result in
+                guard !resumed else { return }
+                resumed = true
+                switch result {
+                case .success:
+                    continuation.resume()
+                case .failure(let error):
+                    continuation.resume(throwing: error)
+                }
+            }
+
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                resumeOnce(.failure(BridgeProtocolError.timeout("registration command connect timed out")))
+            }
+
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    resumeOnce(.success(()))
+                case .failed(let error):
+                    resumeOnce(.failure(error))
+                case .cancelled:
+                    resumeOnce(.failure(BridgeProtocolError.connectionClosed))
+                default:
+                    break
+                }
+            }
+        }
+    }
+
+    private func sendBridgeMessage(_ message: BridgeMessage, on connection: NWConnection) async throws {
+        let data = try bridgeFrame(message)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            connection.send(content: data, completion: .contentProcessed { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            })
+        }
+    }
+
+    private func receiveBridgeMessage(on connection: NWConnection, timeout: TimeInterval) async throws -> BridgeMessage {
+        var buffer = Data()
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<BridgeMessage, Error>) in
+            var resumed = false
+            let resumeOnce: (Result<BridgeMessage, Error>) -> Void = { result in
+                guard !resumed else { return }
+                resumed = true
+                switch result {
+                case .success(let message):
+                    continuation.resume(returning: message)
+                case .failure(let error):
+                    continuation.resume(throwing: error)
+                }
+            }
+
+            func receiveNext() {
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, isComplete, error in
+                    if let data, !data.isEmpty {
+                        buffer.append(data)
+                        let (messages, remaining) = bridgeParseFramed(buffer)
+                        buffer = remaining
+                        if let first = messages.first {
+                            resumeOnce(.success(first))
+                        } else {
+                            receiveNext()
+                        }
+                        return
+                    }
+                    if let error {
+                        resumeOnce(.failure(error))
+                    } else if isComplete {
+                        resumeOnce(.failure(BridgeProtocolError.connectionClosed))
+                    } else {
+                        resumeOnce(.failure(BridgeProtocolError.invalidMessage("Empty registration command response")))
+                    }
+                }
+            }
+
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                resumeOnce(.failure(BridgeProtocolError.timeout("registration command receive timed out")))
+            }
+            receiveNext()
+        }
+    }
+}
+
 // MARK: - Session Error Tests
 
 final class SessionErrorTests: XCTestCase {

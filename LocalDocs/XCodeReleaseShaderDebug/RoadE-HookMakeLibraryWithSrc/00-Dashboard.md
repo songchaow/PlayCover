@@ -96,8 +96,12 @@ PlayCover 主应用 (macOS)
 |  | **当前最高优先级**。原神 6.4.0 live 验证表明：即使最新 GUI 与最新 PlayTools 已重新注入，`MetallibParser` 仍会对大量 `newLibraryWithData:error:` 输入报 `unsupported metallib header size: 0`。说明该入口收到的很多 payload **并非原始 `MTLB` metallib blob**，需先识别前导字节 / wrapper / archive / 上游调用路径，必要时补解包逻辑 | | |
 | E-005e1 | ↳ `payload` 指纹 / 前导字节诊断日志 | ✅ DONE | |
 |  | 已在 `pc_newLibraryWithData` 与 `MetallibParser.safeExtractBitcodeModules` 补充 `dispatch_data` 运行时类名、payload 前 16 字节 hex / ASCII、以及 `MTLB/bplist/zip/gzip/bzip2/llvm bitcode` 等格式指纹日志；`headerSize=0` 失败场景现在会直接带出摘要，便于下一轮 live 复现锁定真实 wrapper 形态 | | |
-| E-005e2 | ↳ 基于真实 payload 样本实现解包 | TODO | |
-|  | 待用新增日志在 live 环境采到实际前导字节 / class 信息后，再决定是 `bplist` 解档、压缩解包，还是自定义 wrapper 剥离 | | |
+| E-005e2 | ↳ 基于真实 payload 样本实现解包 | 🔄 IN PROGRESS | |
+|  | 已将任务拆分为“通用 wrapper 剥离 / 样本采集”与“定向格式解包”两步，先优先拿到可复现的真实 payload，而不是盲猜完整格式族 | | |
+| E-005e2a | ↳ 通用 wrapper 剥离 + payload 样本落盘 | ✅ DONE | |
+|  | 已在 `MetallibParser` 增加两级 fallback：1) 对 `bplist` 递归扫描嵌套 `Data` 中的原始或 embedded `MTLB`；2) 在原始 payload / 嵌套 `Data` 中扫描 embedded `MTLB` 并按 `fileSize` 裁剪。对未识别或已 recovered 的非 `MTLB` payload，会落盘到 `~/Library/Containers/io.playcover.PlayCover/ShaderPayloadSamples/<bundleId>/`（含 `.bin`、`.txt`，`bplist` 额外导出 `.plist`）供后续离线分析 | | |
+| E-005e2b | ↳ 基于样本补定向解包（`gzip` / `zip` / `xar` / 自定义 archive） | TODO | |
+|  | 待下一轮 live 复现后，基于落盘样本决定是否需要增加真正的压缩解包、archive 拆包或 keyed archive 定向取值逻辑 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
 |  | 首轮真实样本（原神外网包）已执行：runtime 与 capture 链路正常，`.gputrace` 成功生成，但当前 `valid_msl=0`；后续验证优先服务于 `E-005e2` 的解包实现，而不是继续盲目截帧 | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
@@ -112,6 +116,7 @@ PlayCover 主应用 (macOS)
 - **`E-005a` 当前只做单 module 闭环**：多 module 场景尚未定义聚合策略，先回退原始 library
 - **原神当前的主 blocker 不是 IR→MSL 覆盖率，而是 payload 形态**：live 样本已证明很多 `newLibraryWithData` 输入并非原始 `MTLB`，必须先完成 `E-005e`
 - **`headerSize=0` 现在应优先看 payload 指纹日志**：新日志会同时给出 `dispatch_data` 运行时类名、前 16 字节 hex / ASCII，以及 `MTLB/bplist/zip/gzip/bzip2/llvm bitcode` 等格式指纹，先确认 wrapper 形态再决定是否需要解包
+- **`E-005e2` 先做“通用剥离 + 样本落盘”比盲猜格式更稳**：当前已支持从 `bplist` 递归扫描嵌套 `Data`、以及从 payload / 嵌套 `Data` 中剥离 embedded `MTLB`；即使还原成功，也会把原始非 `MTLB` payload 落盘到 `~/Library/Containers/io.playcover.PlayCover/ShaderPayloadSamples/<bundleId>/`，便于下一轮定向补 `gzip` / `zip` / archive 解包
 - **PlayTools 是 iOS target**：调用 `llvm-dis` 仍需走 `posix_spawn`，不能依赖 `Foundation.Process`
 
 ## 参考信息

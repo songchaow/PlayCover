@@ -632,6 +632,20 @@ struct MetallibParser {
 
 extension MetallibParser {
 
+    private struct UnwrappedPayload {
+        let data: Data
+        let strategy: String
+    }
+
+    private struct EmbeddedDataCandidate {
+        let path: String
+        let data: Data
+    }
+
+    private static let payloadDumpLock = NSLock()
+    private static var dumpedPayloadKeys: Set<String> = []
+    private static let maxPayloadDumpsPerLaunch = 8
+
     /// dispatch_data_t → Data 转换辅助方法
     static func convertDispatchData(_ dispatchData: __DispatchData) -> Data {
         let nsData = dispatchData as AnyObject
@@ -667,32 +681,51 @@ extension MetallibParser {
         })
 
         let kind: String
-        if hasPrefix(data, ascii: "MTLB") {
+        switch payloadKindLabel(for: data) {
+        case "mtlb_like":
             let headerSize = data.count >= 14 ? readUInt16(data, offset: 12) : 0
             let fileType = data.count >= 15 ? readUInt8(data, offset: 14) : 0
             let targetPlatform = data.count >= 16 ? readUInt8(data, offset: 15) : 0
             kind = "mtlb_like(headerSize=\(headerSize),fileType=\(fileType),target=0x\(String(format: "%02X", targetPlatform)))"
-        } else if hasPrefix(data, ascii: "bplist00") {
-            kind = "bplist"
-        } else if hasPrefix(data, ascii: "BC") {
-            kind = "llvm_bitstream"
-        } else if data.count >= 2 && data[0] == 0xDE && data[1] == 0xC0 {
-            kind = "llvm_wrapper"
-        } else if data.count >= 2 && data[0] == 0x1F && data[1] == 0x8B {
-            kind = "gzip"
-        } else if data.count >= 2 && data[0] == 0x42 && data[1] == 0x5A {
-            kind = "bzip2"
-        } else if data.count >= 4 && data[0] == 0x50 && data[1] == 0x4B && data[2] == 0x03 && data[3] == 0x04 {
-            kind = "zip"
-        } else if data.count >= 4 && data[0] == 0x78 && data[1] == 0x61 && data[2] == 0x72 && data[3] == 0x21 {
-            kind = "xar"
-        } else if data.count >= 1 && (data[0] == 0x7B || data[0] == 0x5B) {
-            kind = "json_like"
-        } else {
-            kind = "unknown"
+        default:
+            kind = payloadKindLabel(for: data)
         }
 
         return "kind=\(kind), bytes=\(data.count), prefixHex=\(prefixHex), ascii=\(asciiPreview)"
+    }
+
+    private static func payloadKindLabel(for data: Data) -> String {
+        guard !data.isEmpty else {
+            return "empty"
+        }
+        if hasPrefix(data, ascii: "MTLB") {
+            return "mtlb_like"
+        }
+        if hasPrefix(data, ascii: "bplist00") {
+            return "bplist"
+        }
+        if hasPrefix(data, ascii: "BC") {
+            return "llvm_bitstream"
+        }
+        if data.count >= 2 && data[0] == 0xDE && data[1] == 0xC0 {
+            return "llvm_wrapper"
+        }
+        if data.count >= 2 && data[0] == 0x1F && data[1] == 0x8B {
+            return "gzip"
+        }
+        if data.count >= 2 && data[0] == 0x42 && data[1] == 0x5A {
+            return "bzip2"
+        }
+        if data.count >= 4 && data[0] == 0x50 && data[1] == 0x4B && data[2] == 0x03 && data[3] == 0x04 {
+            return "zip"
+        }
+        if data.count >= 4 && data[0] == 0x78 && data[1] == 0x61 && data[2] == 0x72 && data[3] == 0x21 {
+            return "xar"
+        }
+        if data.count >= 1 && (data[0] == 0x7B || data[0] == 0x5B) {
+            return "json_like"
+        }
+        return "unknown"
     }
 
     private static func hasPrefix(_ data: Data, ascii: String) -> Bool {
@@ -704,6 +737,208 @@ extension MetallibParser {
             return NSStringFromClass(runtimeClass)
         }
         return NSStringFromClass(type(of: object))
+    }
+
+    private static func unwrapMetallibPayloadIfNeeded(_ data: Data) -> UnwrappedPayload? {
+        guard payloadKindLabel(for: data) != "mtlb_like" else {
+            return nil
+        }
+
+        if let embedded = findEmbeddedMetallib(in: data, path: "payload", includeZeroOffset: false) {
+            return UnwrappedPayload(data: embedded.data, strategy: embedded.strategy)
+        }
+
+        if hasPrefix(data, ascii: "bplist00"),
+           let embedded = unwrapMetallibFromPropertyList(data) {
+            return embedded
+        }
+
+        return nil
+    }
+
+    private static func unwrapMetallibFromPropertyList(_ data: Data) -> UnwrappedPayload? {
+        var format = PropertyListSerialization.PropertyListFormat.binary
+        guard let propertyList = try? PropertyListSerialization.propertyList(from: data, options: [], format: &format) else {
+            return nil
+        }
+
+        let candidates = collectEmbeddedDataCandidates(from: propertyList, path: "$root")
+        for candidate in candidates {
+            if hasPrefix(candidate.data, ascii: "MTLB") {
+                let trimmed = trimMetallibDataIfNeeded(candidate.data)
+                return UnwrappedPayload(data: trimmed, strategy: "bplist:\(candidate.path)"
+                )
+            }
+            if let embedded = findEmbeddedMetallib(in: candidate.data, path: "bplist:\(candidate.path)", includeZeroOffset: false) {
+                return UnwrappedPayload(data: embedded.data, strategy: embedded.strategy)
+            }
+        }
+
+        return nil
+    }
+
+    private static func collectEmbeddedDataCandidates(from value: Any, path: String) -> [EmbeddedDataCandidate] {
+        var results: [EmbeddedDataCandidate] = []
+        collectEmbeddedDataCandidates(from: value, path: path, into: &results)
+        return results
+    }
+
+    private static func collectEmbeddedDataCandidates(
+        from value: Any,
+        path: String,
+        into results: inout [EmbeddedDataCandidate]
+    ) {
+        if results.count >= 64 {
+            return
+        }
+
+        switch value {
+        case let data as Data:
+            results.append(EmbeddedDataCandidate(path: path, data: data))
+        case let array as NSArray:
+            for (index, element) in array.enumerated() {
+                collectEmbeddedDataCandidates(from: element, path: "\(path)[\(index)]", into: &results)
+                if results.count >= 64 {
+                    return
+                }
+            }
+        case let dictionary as NSDictionary:
+            let sortedKeys = dictionary.allKeys.sorted {
+                String(describing: $0) < String(describing: $1)
+            }
+            for key in sortedKeys {
+                guard let element = dictionary[key] else { continue }
+                collectEmbeddedDataCandidates(from: element, path: "\(path).\(String(describing: key))", into: &results)
+                if results.count >= 64 {
+                    return
+                }
+            }
+        default:
+            break
+        }
+    }
+
+    private static func findEmbeddedMetallib(
+        in data: Data,
+        path: String,
+        includeZeroOffset: Bool
+    ) -> UnwrappedPayload? {
+        guard data.count >= 8 else {
+            return nil
+        }
+
+        let magic = Array("MTLB".utf8)
+        let bytes = [UInt8](data)
+        let startOffset = includeZeroOffset ? 0 : 1
+        guard startOffset <= bytes.count - magic.count else {
+            return nil
+        }
+
+        for offset in startOffset...(bytes.count - magic.count) {
+            let matches = bytes[offset] == magic[0]
+                && bytes[offset + 1] == magic[1]
+                && bytes[offset + 2] == magic[2]
+                && bytes[offset + 3] == magic[3]
+            guard matches else { continue }
+
+            let candidate = data.subdata(in: offset..<data.count)
+            do {
+                let parsed = try parse(candidate)
+                let trimmed = trimMetallibDataIfNeeded(candidate, parsedHeader: parsed.header)
+                return UnwrappedPayload(data: trimmed, strategy: "\(path).embeddedMTLB@\(offset)")
+            } catch {
+                continue
+            }
+        }
+
+        return nil
+    }
+
+    private static func trimMetallibDataIfNeeded(_ data: Data, parsedHeader: Header? = nil) -> Data {
+        let header: Header
+        if let parsedHeader {
+            header = parsedHeader
+        } else if let parsed = try? parse(data) {
+            header = parsed.header
+        } else {
+            return data
+        }
+
+        let declaredSize = Int(header.fileSize)
+        guard declaredSize > 0, declaredSize <= data.count else {
+            return data
+        }
+        return data.subdata(in: 0..<declaredSize)
+    }
+
+    private static func dumpPayloadSampleIfNeeded(
+        _ data: Data,
+        reason: String,
+        recoveredBy strategy: String? = nil
+    ) {
+        let kind = payloadKindLabel(for: data)
+        guard kind != "mtlb_like", !data.isEmpty else {
+            return
+        }
+
+        let prefixHex = data.prefix(8).map { String(format: "%02X", $0) }.joined()
+        let dumpKey = "\(kind)|\(data.count)|\(prefixHex)"
+
+        payloadDumpLock.lock()
+        defer { payloadDumpLock.unlock() }
+
+        guard dumpedPayloadKeys.count < maxPayloadDumpsPerLaunch else {
+            return
+        }
+        guard dumpedPayloadKeys.insert(dumpKey).inserted else {
+            return
+        }
+
+        let bundleIdentifier = Bundle.main.bundleIdentifier ?? "unknown.bundle"
+        let dumpDirectory = URL(fileURLWithPath: "/Users/\(NSUserName())/Library/Containers/io.playcover.PlayCover")
+            .appendingPathComponent("ShaderPayloadSamples", isDirectory: true)
+            .appendingPathComponent(bundleIdentifier, isDirectory: true)
+
+        do {
+            try FileManager.default.createDirectory(at: dumpDirectory, withIntermediateDirectories: true)
+
+            let timestamp = ISO8601DateFormatter().string(from: Date())
+                .replacingOccurrences(of: ":", with: "-")
+            let baseName = sanitizeFilenameComponent("\(timestamp)_\(kind)_\(data.count)B")
+            let binaryURL = dumpDirectory.appendingPathComponent("\(baseName).bin")
+            let metaURL = dumpDirectory.appendingPathComponent("\(baseName).txt")
+            try data.write(to: binaryURL, options: .atomic)
+
+            var metadataLines = [
+                "reason=\(reason)",
+                "bundleIdentifier=\(bundleIdentifier)",
+                "summary=\(payloadDebugSummary(data))",
+            ]
+            if let strategy {
+                metadataLines.append("recoveredBy=\(strategy)")
+            }
+            try metadataLines.joined(separator: "\n").write(to: metaURL, atomically: true, encoding: .utf8)
+
+            if kind == "bplist" {
+                var format = PropertyListSerialization.PropertyListFormat.binary
+                if let propertyList = try? PropertyListSerialization.propertyList(from: data, options: [], format: &format),
+                   let xmlData = try? PropertyListSerialization.data(fromPropertyList: propertyList, format: .xml, options: 0) {
+                    let plistURL = dumpDirectory.appendingPathComponent("\(baseName).plist")
+                    try? xmlData.write(to: plistURL, options: .atomic)
+                }
+            }
+
+            NSLog("[PlayTools] MetallibParser: dumped payload sample to %@ (reason=%@)",
+                  binaryURL.path, reason)
+        } catch {
+            NSLog("[PlayTools] MetallibParser: payload dump failed: %@ (%@)",
+                  error.localizedDescription, payloadDebugSummary(data))
+        }
+    }
+
+    private static func sanitizeFilenameComponent(_ value: String) -> String {
+        let invalid = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.")).inverted
+        return value.components(separatedBy: invalid).joined(separator: "_")
     }
 
     /// 安全地尝试解析 metallib 数据并记录结果。
@@ -725,6 +960,22 @@ extension MetallibParser {
                 NSLog("[PlayTools] MetallibParser:   [%d] %@", i, mod.summary)
             }
         } catch {
+            if let unwrapped = unwrapMetallibPayloadIfNeeded(data),
+               let result = try? parse(unwrapped.data) {
+                let modules = result.extractBitcodeModules()
+                NSLog("[PlayTools] MetallibParser: %@ — recovered wrapped metallib via %@ (%@)",
+                      selector, unwrapped.strategy, payloadDebugSummary(data))
+                NSLog("[PlayTools] MetallibParser: %@ — %@",
+                      selector,
+                      result.summary.replacingOccurrences(of: "\n", with: " | "))
+                for (i, mod) in modules.enumerated() {
+                    NSLog("[PlayTools] MetallibParser:   [%d] %@", i, mod.summary)
+                }
+                dumpPayloadSampleIfNeeded(data, reason: "safeParseAndLog_recovered", recoveredBy: unwrapped.strategy)
+                return
+            }
+
+            dumpPayloadSampleIfNeeded(data, reason: "safeParseAndLog_failed")
             NSLog("[PlayTools] MetallibParser: %@ — parse failed: %@ (%@)",
                   selector,
                   error.localizedDescription,
@@ -746,6 +997,23 @@ extension MetallibParser {
             let modules = result.extractBitcodeModules()
             return (result, modules)
         } catch {
+            if let unwrapped = unwrapMetallibPayloadIfNeeded(data) {
+                do {
+                    let result = try parse(unwrapped.data)
+                    let modules = result.extractBitcodeModules()
+                    NSLog("[PlayTools] MetallibParser: extractBitcodeModules recovered via %@ — original=%@, unwrapped=%@",
+                          unwrapped.strategy,
+                          payloadDebugSummary(data),
+                          payloadDebugSummary(unwrapped.data))
+                    dumpPayloadSampleIfNeeded(data, reason: "extractBitcodeModules_recovered", recoveredBy: unwrapped.strategy)
+                    return (result, modules)
+                } catch {
+                    NSLog("[PlayTools] MetallibParser: unwrap candidate failed via %@: %@",
+                          unwrapped.strategy, error.localizedDescription)
+                }
+            }
+
+            dumpPayloadSampleIfNeeded(data, reason: "extractBitcodeModules_failed")
             NSLog("[PlayTools] MetallibParser: extractBitcodeModules failed: %@ (%@)",
                   error.localizedDescription,
                   payloadDebugSummary(data))

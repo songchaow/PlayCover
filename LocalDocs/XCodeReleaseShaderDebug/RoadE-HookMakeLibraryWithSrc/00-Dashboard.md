@@ -35,8 +35,8 @@
 
 ## 当前主线
 
-- **E-005e**：识别 / 解包 `newLibraryWithData:error:` 中的**非原始 MTLB payload**
-- **E-006**：继续真实样本验证，但当前优先服务于 `E-005e` 的定位，而不是盲目重复截帧
+- **E-005e**：围绕真实 `headerSize=15` 样本继续打通 `newLibraryWithData:error:` 的 bitcode module 提取；`xar` / `bplist_keyed_archive` / raw `MTLB` 的 header-compat 恢复已离线验证
+- **E-006**：下一轮 live 验证先等待 `OK modules=0 functions=1` 继续推进，不再为已定位的 header / wrapper 问题盲目重复截帧
 
 ## 验证方式
 
@@ -54,7 +54,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 | 样本 | 结果 |
 |---|---|
-| 原神 6.4.0 外网包（2026-04-02） | `capture_metal_frame` 成功，`.gputrace` 已生成；`valid_msl=0`、`index 引用=875`，当前 blocker 为 `MetallibParser: unsupported metallib header size: 0` |
+| 原神 6.4.0 外网包（2026-04-02） | `capture_metal_frame` 成功，`.gputrace` 已生成；`valid_msl=0`、`index 引用=875`。该轮 live 观测到的 blocker 是 `MetallibParser: unsupported metallib header size: 0`；本轮离线修复后已确认 `xar` / `bplist_keyed_archive` / raw `MTLB` 都可恢复到 `OK modules=0 functions=1`，下一 blocker 转为 bitcode module 提取 |
 
 **人工确认（最终）**：Xcode 打开 `.gputrace` → 选 Draw Call → 查看 Shader 面板是否显示源码而非 `Shader source not found`。
 
@@ -93,7 +93,7 @@ PlayCover 主应用 (macOS)
 | E-005d | ↳ 缓存与观测性 | TODO | |
 |  | 以 metallib 内容或 bitcode 模块 `(offset,size)` / hash 为键缓存处理结果，并补充 success / fallback reason 日志 | | |
 | E-005e | ↳ **非 MTLB `newLibraryWithData` payload 识别/解包** | 🔄 IN PROGRESS | |
-|  | **当前最高优先级**。原神 6.4.0 live 验证表明：即使最新 GUI 与最新 PlayTools 已重新注入，`MetallibParser` 仍会对大量 `newLibraryWithData:error:` 输入报 `unsupported metallib header size: 0`。说明该入口收到的很多 payload **并非原始 `MTLB` metallib blob**，需先识别前导字节 / wrapper / archive / 上游调用路径，必要时补解包逻辑 | | |
+|  | **当前最高优先级**。原神 6.4.0 live 验证已证明该入口收到的很多 payload **并非原始 `MTLB` metallib blob**；本轮又离线确认 `xar` / `bplist_keyed_archive` / raw `MTLB(headerSize=15)` 的 wrapper 与 header-compat 都已可恢复，下一步应继续定位为何 recovered 样本仍停在 `OK modules=0 functions=1`，而不是重复盲猜 wrapper 家族 | | |
 | E-005e1 | ↳ `payload` 指纹 / 前导字节诊断日志 | ✅ DONE | |
 |  | 已在 `pc_newLibraryWithData` 与 `MetallibParser.safeExtractBitcodeModules` 补充 `dispatch_data` 运行时类名、payload 前 16 字节 hex / ASCII、以及 `MTLB/bplist/zip/gzip/bzip2/llvm bitcode` 等格式指纹日志；`headerSize=0` 失败场景现在会直接带出摘要，便于下一轮 live 复现锁定真实 wrapper 形态 | | |
 | E-005e1b | ↳ 非 `MTLB` payload 上游调用栈诊断 | ✅ DONE | |
@@ -104,6 +104,8 @@ PlayCover 主应用 (macOS)
 |  | 已在 `MetallibParser` 增加两级 fallback：1) 对 `bplist` 递归扫描嵌套 `Data` 中的原始或 embedded `MTLB`；2) 在原始 payload / 嵌套 `Data` 中扫描 embedded `MTLB` 并按 `fileSize` 裁剪。对未识别或已 recovered 的非 `MTLB` payload，会落盘到 `~/Library/Containers/io.playcover.PlayCover/ShaderPayloadSamples/<bundleId>/`（含 `.bin`、`.txt`，`bplist` 额外导出 `.plist`）供后续离线分析 | | |
 | E-005e2a1 | ↳ 可疑 `mtlb_like` payload 二次剥离 + 样本保留 | ✅ DONE | |
 |  | 已将 `MTLB` 前缀细分为“可直接解析的 raw metallib”和“`headerSize` / `fileSize` 明显异常的 `mtlb_suspicious`”；对后者不再直接短路，而是继续保留 origin / payload sample，并统一复用 `gzip` / `zip` / `xar` / `bplist` entry 的 embedded `MTLB` 扫描路径。这样像 `headerSize=15` 这类解包后仍带伪 `MTLB` 头的 payload，不会再因为前 4 字节命中 magic 就提前停止恢复 | | |
+| E-005e2a2 | ↳ 非标准 raw `MTLB` header 兼容解析 | ✅ DONE | |
+|  | 已在 `parseHeader` 增加兼容分支：当 `headerSize < 56` 但 `fileSize`、`funcList`、`pub/priv metadata`、`bitcode` 边界自洽时，仍按 88-byte 扩展布局解析；同时 `recoverMetallibCandidate` 对 `mtlb_suspicious` 改为先尝试 direct compat parse，再 fallback embedded `MTLB` 扫描。已用真实 `mtlb_suspicious` / `xar` / `NSKeyedArchiver bplist` 三类 payload 离线验证，三者均从 parse failure 推进到 `OK modules=0 functions=1` | | |
 | E-005e2b | ↳ 基于样本补定向解包（`gzip` / `zip` / `xar` / 自定义 archive） | 🔄 IN PROGRESS | |
 |  | 已拆分为按格式逐个落地，避免在缺真实样本前一次性铺太大范围 | | |
 | E-005e2b1 | ↳ `gzip` payload 解包 + 递归恢复 | ✅ DONE | |
@@ -115,11 +117,11 @@ PlayCover 主应用 (macOS)
 | E-005e2b2b | ↳ `xar` / 自定义 archive 定向解包 | 🔄 IN PROGRESS | |
 |  | 已拆分为“`xar` 最小 TOC/heap 解包”与“自定义 archive / keyed archive 样本驱动”两步，先把确定格式的 `xar` 路径接通 | | |
 | E-005e2b2b1 | ↳ `xar` payload 解包 + 递归恢复 | ✅ DONE | |
-|  | 已在 `MetallibParser` 增加最小 `xar` reader：解析 big-endian header、zlib 压缩 TOC XML、遍历 `file/data` 节点并按 heap offset 取 entry data；对 `application/x-gzip` / `zlib` entry 会先解压，再继续递归尝试 `MTLB` / `gzip` / `zip` / `bplist` / embedded `MTLB` 恢复。已用 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 做编译验证；另用 synthetic `metallib → xar` 样本确认运行时已命中 `xar:test.metallib` 解包路径，但最终仍受现有 raw `MTLB headerSize=15` 解析限制阻塞 | | |
+|  | 已在 `MetallibParser` 增加最小 `xar` reader：解析 big-endian header、zlib 压缩 TOC XML、遍历 `file/data` 节点并按 heap offset 取 entry data；对 `application/x-gzip` / `zlib` entry 会先解压，再继续递归尝试 `MTLB` / `gzip` / `zip` / `bplist` / embedded `MTLB` 恢复。已用 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 做编译验证；synthetic `metallib → xar` 与真实 `xar` payload 都已确认恢复路径能命中 `xar:test.metallib.headerCompat`，当前剩余 blocker 已转为 recovered `MTLB` 的 bitcode module 提取，而不是 `xar` entry 定位或 header 兼容本身 | | |
 | E-005e2b2b2 | ↳ 自定义 archive / keyed archive 定向取值 | 🔄 IN PROGRESS | |
 |  | 已拆分为“`NSKeyedArchiver` bplist 先落地”与“其他自定义 archive 继续样本驱动”两步，避免继续把所有 `bplist` 都只当成无语义的通用容器 | | |
 | E-005e2b2b2a | ↳ `NSKeyedArchiver` bplist 定向取值 + 诊断 | ✅ DONE | |
-|  | 已将 `bplist` 进一步细分为 `bplist_keyed_archive`；`MetallibParser` 对该类 payload 会先尝试按 `$top` / `$objects` / `CF$UID` 追踪 reachable object graph，若未先命中再 fallback 扫描 `$objects[...]` 内的 `Data`。synthetic 最小 `raw MTLB → NSKeyedArchiver` 样本已验证恢复路径命中 `bplist:$keyedArchive.$objects[2]`；并已用 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 做编译验证 | | |
+|  | 已将 `bplist` 进一步细分为 `bplist_keyed_archive`；`MetallibParser` 对该类 payload 会先尝试按 `$top` / `$objects` / `CF$UID` 追踪 reachable object graph，若未先命中再 fallback 扫描 `$objects[...]` 内的 `Data`。synthetic 最小 `raw MTLB → NSKeyedArchiver` 样本已验证恢复路径命中 `bplist:$keyedArchive.$objects[2]`；本轮又用真实 `bplist_keyed_archive_12064B` 样本确认 `bplist:$keyedArchive.$objects[2].headerCompat` 已命中；并已用 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 做编译验证 | | |
 | E-005e2b2b2b | ↳ 其他自定义 archive / keyed archive 真实样本驱动 | TODO | |
 |  | 继续等待下一轮 live `ShaderPayloadSamples` 真实样本，再决定是否需要补 keyed archive 之外的自定义 archive 家族，或把 `$top` 精确追踪扩成完整对象图解引用 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
@@ -134,15 +136,16 @@ PlayCover 主应用 (macOS)
 - **`newLibraryWithData:error:` 的参数类型是 `dispatch_data_t`**：不能按 `NSData` 直接假设处理
 - **live 验证前必须刷新 GUI 和 app 注入**：`sync_playtools_xcframework.sh` 后，还需要 `build_and_install.sh` 重装 GUI，并对目标 app 执行 `remove_playtools` / `inject_playtools`，否则 live runtime 可能仍是旧版本
 - **`E-005a` 当前只做单 module 闭环**：多 module 场景尚未定义聚合策略，先回退原始 library
-- **原神当前的主 blocker 不是 IR→MSL 覆盖率，而是 payload 形态**：live 样本已证明很多 `newLibraryWithData` 输入并非原始 `MTLB`，必须先完成 `E-005e`
+- **原神当前的主 blocker 已从 wrapper / header 形态推进到 recovered sample 的 module extraction**：`xar` / `bplist_keyed_archive` / raw `MTLB(headerSize=15)` 的恢复已离线打通，下一步应继续追踪为何仍停在 `OK modules=0 functions=1`
 - **`headerSize=0` 现在应优先看 payload 指纹日志**：新日志会同时给出 `dispatch_data` 运行时类名、前 16 字节 hex / ASCII，以及 `MTLB/bplist/zip/gzip/bzip2/llvm bitcode` 等格式指纹，先确认 wrapper 形态再决定是否需要解包
 - **`E-005e2` 先做“通用剥离 + 样本落盘”比盲猜格式更稳**：当前已支持从 `bplist` 递归扫描嵌套 `Data`、以及从 payload / 嵌套 `Data` 中剥离 embedded `MTLB`；即使还原成功，也会把原始非 `MTLB` payload 落盘到 `~/Library/Containers/io.playcover.PlayCover/ShaderPayloadSamples/<bundleId>/`，便于下一轮定向补 `gzip` / `zip` / archive 解包
 - **非 `MTLB` payload 现在要连同调用栈一起看**：`ShaderPayloadSamples` 的 `.txt` 元数据会带上首次命中的 `selector` / `dispatchClass` / `callStack[*]`，能直接帮助判断 wrapper 是 App 侧、Metal 桥接层还是系统解包链路生成的
 - **`gzip` wrapper 解包优先走 `zlib inflateInit2(15 + 32)`**：这样能自动识别 `gzip/zlib` header，比分别手拆 header 或仅依赖高层压缩 API 更适合当前 iOS target 内的小型定向恢复逻辑；解压后继续递归跑 `bplist` / embedded `MTLB` 剥离即可
 - **`zip` wrapper 先读 central directory，再 fallback 扫 local header 更稳**：不少 ZIP entry 会把可靠的大小信息放在 central directory；只有拿不到 central directory 时，才退回顺序扫描 local file header。当前已支持 stored / deflate，两种 entry 都会继续递归尝试 `MTLB` / `gzip` / `bplist` / embedded `MTLB` 恢复
-- **`xar` 最小解包先抓 `header + zlib TOC + heap entry` 就能验证主路径**：`xar` header 使用 big-endian，TOC 是 zlib 压缩 XML，`file/data/offset/length/encoding` 足以定位 heap entry；本轮 synthetic `metallib → xar` 样本已确认运行时能命中 `xar:test.metallib` 解包路径，当前剩余 blocker 已转为 raw `MTLB headerSize=15` 解析兼容，而不是 `xar` entry 定位本身
+- **`xar` 最小解包先抓 `header + zlib TOC + heap entry` 就能验证主路径**：`xar` header 使用 big-endian，TOC 是 zlib 压缩 XML，`file/data/offset/length/encoding` 足以定位 heap entry；本轮 synthetic `metallib → xar` 与真实 `xar` payload 都已确认恢复路径可命中 `xar:test.metallib.headerCompat`，当前剩余 blocker 已转为 recovered `MTLB` 的 bitcode module 提取，而不是 `xar` entry 定位或 header 兼容本身
 - **`NSKeyedArchiver` 本质仍是 `bplist`，但应单独标成 `bplist_keyed_archive`**：单靠泛化的 `$root` 递归扫描虽然偶尔能捞到 `Data`，但 keyed archive 的诊断语义会丢失；当前更稳妥的路径是优先把 `$objects[...]` 当作专用候选空间，并保留 `$top` / `CF$UID` 追踪作为后续可继续精细化的方向。synthetic 最小 `raw MTLB → NSKeyedArchiver` 样本已确认恢复日志会命中 `bplist:$keyedArchive.$objects[2]`
-- **`MTLB` magic 不是 raw metallib 的充分条件**：若 `headerSize` / `fileSize` 明显不可信（如 `headerSize=15`），不能因为前 4 字节命中 `MTLB` 就停止；应继续把它当作 wrapper 候选处理，保留 origin / sample，并向内扫描 non-zero offset 的 embedded `MTLB`
+- **`MTLB` magic 不是 raw metallib 的充分条件，但 `headerSize` 异常也不等于假头**：真实样本存在 `headerSize=15` 的 raw `MTLB`，其 `fileSize` / `funcList` / `pub/priv metadata` / `bitcode` 仍与 88-byte 扩展 header 自洽；因此对可疑 `MTLB` 应先尝试兼容解析，失败后再继续把它当 wrapper 候选向内扫描 embedded `MTLB`
+- **wrapper 恢复链路要先尝试 direct compat parse**：`xar` / `NSKeyedArchiver` 解包后拿到的 payload 可能就是 offset 0 的异常 raw `MTLB`；若 `recoverMetallibCandidate` 只扫 non-zero offset 的 embedded `MTLB`，会把本可解析的样本误判成未恢复
 - **PlayTools 是 iOS target**：调用 `llvm-dis` 仍需走 `posix_spawn`，不能依赖 `Foundation.Process`
 
 ## 参考信息

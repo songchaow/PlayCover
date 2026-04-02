@@ -389,6 +389,16 @@ struct MetallibParser {
 
     /// 最小 header 大小（MTLB 基础 header）
     private static let minimumHeaderSize = 56
+    private static let extendedHeaderSize = 88
+
+    private struct ExtendedSectionLayout {
+        let publicMetadataOffset: UInt64
+        let publicMetadataSize: UInt64
+        let privateMetadataOffset: UInt64
+        let privateMetadataSize: UInt64
+        let bitcodeOffset: UInt64
+        let bitcodeSize: UInt64
+    }
 
     private static func parseHeader(_ data: Data) throws -> Header {
         guard data.count >= minimumHeaderSize else {
@@ -414,34 +424,45 @@ struct MetallibParser {
 
         // 根据 header size 决定后续 section 信息的布局
         // 最常见的 headerSize: 56 (0x38) 或 88 (0x58)
-        let pubMetaOffset: UInt64
-        let pubMetaSize: UInt64
-        let privMetaOffset: UInt64
-        let privMetaSize: UInt64
-        let bitcodeOffset: UInt64
-        let bitcodeSize: UInt64
+        let sectionLayout: ExtendedSectionLayout?
 
-        if headerSize >= 80 && data.count >= 80 {
+        if headerSize >= 80 && data.count >= extendedHeaderSize {
             // 扩展 header 格式（常见于较新版本的 metallib）
-            pubMetaOffset = readUInt64(data, offset: 40)
-            pubMetaSize = readUInt64(data, offset: 48)
-            privMetaOffset = readUInt64(data, offset: 56)
-            privMetaSize = readUInt64(data, offset: 64)
-            bitcodeOffset = readUInt64(data, offset: 72)
-            bitcodeSize = readUInt64(data, offset: 80)
-        } else if headerSize >= 56 && data.count >= 56 {
+            sectionLayout = readExtendedSectionLayout(data)
+        } else if headerSize >= minimumHeaderSize && data.count >= minimumHeaderSize {
             // 紧凑 header 格式
-            pubMetaOffset = readUInt64(data, offset: 40)
-            pubMetaSize = readUInt64(data, offset: 48)
+            let pubMetaOffset = readUInt64(data, offset: 40)
+            let pubMetaSize = readUInt64(data, offset: 48)
             // 私有元数据和 bitcode 通过推算得出
-            privMetaOffset = pubMetaOffset + pubMetaSize
+            let privMetaOffset = pubMetaOffset + pubMetaSize
             let remainingAfterPubMeta = UInt64(data.count) - privMetaOffset
             // 简单启发：私有元数据和 bitcode 各占剩余空间一半
             // 实际上需要从函数 tag OFFT 中推断，先用保守估计
-            privMetaSize = 0
-            bitcodeOffset = privMetaOffset
-            bitcodeSize = remainingAfterPubMeta
+            sectionLayout = ExtendedSectionLayout(
+                publicMetadataOffset: pubMetaOffset,
+                publicMetadataSize: pubMetaSize,
+                privateMetadataOffset: privMetaOffset,
+                privateMetadataSize: 0,
+                bitcodeOffset: privMetaOffset,
+                bitcodeSize: remainingAfterPubMeta
+            )
+        } else if data.count >= extendedHeaderSize,
+                  let candidate = readExtendedSectionLayout(data),
+                  isPlausibleNonStandardExtendedHeader(
+                    candidate,
+                    declaredFileSize: fileSize,
+                    functionListOffset: funcListOffset,
+                    functionListSize: funcListSize,
+                    actualByteCount: data.count
+                  ) {
+            // 某些 live payload 会携带非标准 headerSize（如 15），但 section 布局仍然遵循扩展 header。
+            // 对这类样本优先用 section 边界自洽性做兜底判断，避免被异常 headerSize 直接拒绝。
+            sectionLayout = candidate
         } else {
+            sectionLayout = nil
+        }
+
+        guard let sectionLayout else {
             throw ParseError.unsupportedHeaderSize(headerSize)
         }
 
@@ -455,13 +476,59 @@ struct MetallibParser {
             fileSize: fileSize,
             functionListOffset: funcListOffset,
             functionListSize: funcListSize,
-            publicMetadataOffset: pubMetaOffset,
-            publicMetadataSize: pubMetaSize,
-            privateMetadataOffset: privMetaOffset,
-            privateMetadataSize: privMetaSize,
-            bitcodeOffset: bitcodeOffset,
-            bitcodeSize: bitcodeSize
+            publicMetadataOffset: sectionLayout.publicMetadataOffset,
+            publicMetadataSize: sectionLayout.publicMetadataSize,
+            privateMetadataOffset: sectionLayout.privateMetadataOffset,
+            privateMetadataSize: sectionLayout.privateMetadataSize,
+            bitcodeOffset: sectionLayout.bitcodeOffset,
+            bitcodeSize: sectionLayout.bitcodeSize
         )
+    }
+
+    private static func readExtendedSectionLayout(_ data: Data) -> ExtendedSectionLayout? {
+        guard data.count >= extendedHeaderSize else {
+            return nil
+        }
+        return ExtendedSectionLayout(
+            publicMetadataOffset: readUInt64(data, offset: 40),
+            publicMetadataSize: readUInt64(data, offset: 48),
+            privateMetadataOffset: readUInt64(data, offset: 56),
+            privateMetadataSize: readUInt64(data, offset: 64),
+            bitcodeOffset: readUInt64(data, offset: 72),
+            bitcodeSize: readUInt64(data, offset: 80)
+        )
+    }
+
+    private static func isPlausibleNonStandardExtendedHeader(
+        _ layout: ExtendedSectionLayout,
+        declaredFileSize: UInt64,
+        functionListOffset: UInt64,
+        functionListSize: UInt64,
+        actualByteCount: Int
+    ) -> Bool {
+        let actualFileSize = UInt64(actualByteCount)
+        guard declaredFileSize >= UInt64(extendedHeaderSize),
+              declaredFileSize <= actualFileSize,
+              functionListOffset >= UInt64(minimumHeaderSize),
+              functionListSize > 0,
+              sectionFitsWithinFile(offset: functionListOffset, size: functionListSize, fileSize: declaredFileSize),
+              sectionFitsWithinFile(offset: layout.publicMetadataOffset, size: layout.publicMetadataSize, fileSize: declaredFileSize),
+              sectionFitsWithinFile(offset: layout.privateMetadataOffset, size: layout.privateMetadataSize, fileSize: declaredFileSize),
+              sectionFitsWithinFile(offset: layout.bitcodeOffset, size: layout.bitcodeSize, fileSize: declaredFileSize),
+              layout.publicMetadataOffset >= functionListOffset + functionListSize,
+              layout.privateMetadataOffset >= layout.publicMetadataOffset + layout.publicMetadataSize,
+              layout.bitcodeOffset >= layout.privateMetadataOffset + layout.privateMetadataSize,
+              layout.bitcodeSize > 0 else {
+            return false
+        }
+        return true
+    }
+
+    private static func sectionFitsWithinFile(offset: UInt64, size: UInt64, fileSize: UInt64) -> Bool {
+        guard offset <= fileSize else {
+            return false
+        }
+        return size <= (fileSize - offset)
     }
 
     // MARK: - Function list parsing
@@ -1013,9 +1080,15 @@ extension MetallibParser {
         let kind = payloadKindLabel(for: data)
         switch kind {
         case "mtlb_like":
+            if let direct = recoverDirectMetallibPayload(data, strategy: path) {
+                return direct
+            }
             let trimmed = trimMetallibDataIfNeeded(data)
             return UnwrappedPayload(data: trimmed, strategy: path)
         case "mtlb_suspicious":
+            if let direct = recoverDirectMetallibPayload(data, strategy: "\(path).headerCompat") {
+                return direct
+            }
             if let embedded = findEmbeddedMetallib(in: data, path: path, includeZeroOffset: false) {
                 return embedded
             }
@@ -1031,6 +1104,14 @@ extension MetallibParser {
             return UnwrappedPayload(data: embedded.data, strategy: embedded.strategy)
         }
         return nil
+    }
+
+    private static func recoverDirectMetallibPayload(_ data: Data, strategy: String) -> UnwrappedPayload? {
+        guard let parsed = try? parse(data) else {
+            return nil
+        }
+        let trimmed = trimMetallibDataIfNeeded(data, parsedHeader: parsed.header)
+        return UnwrappedPayload(data: trimmed, strategy: strategy)
     }
 
     private static func unwrapMetallibFromPropertyList(_ data: Data, depth: Int) -> UnwrappedPayload? {

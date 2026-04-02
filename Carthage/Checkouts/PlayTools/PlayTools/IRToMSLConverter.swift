@@ -2497,8 +2497,14 @@ struct IRToMSLConverter {
         if cleaned == "i64" { return "long" }
         if cleaned == "double" { return "double" }
 
+        // packed/anonymous aggregate 返回值（如 fragment 的 <{ <4 x float> }> 或 live 样本中的 <{ <4 x float>, i8 }>）
+        // 必须先于向量分支处理，否则会被误识别成 `<N x T>` 并产出类似 `float4{ <4` 的坏签名。
+        if cleaned.hasPrefix("<{") || cleaned.hasPrefix("{") || cleaned.hasPrefix("%struct") {
+            return defaultReturnType(for: shaderType)
+        }
+
         // 向量类型: <N x T> → TN
-        if cleaned.hasPrefix("<") && cleaned.contains(" x ") {
+        if cleaned.hasPrefix("<") && cleaned.hasSuffix(">") && cleaned.contains(" x ") {
             let inner = String(cleaned.dropFirst().dropLast())  // 去掉 < >
             let parts = inner.components(separatedBy: " x ")
             if parts.count >= 2 {
@@ -2509,11 +2515,6 @@ struct IRToMSLConverter {
                 )
                 return "\(elemType)\(count)"
             }
-        }
-
-        // 结构体类型 → 使用默认
-        if cleaned.hasPrefix("{") || cleaned.hasPrefix("%struct") {
-            return defaultReturnType(for: shaderType)
         }
 
         // 指针类型
@@ -2733,7 +2734,7 @@ struct IRToMSLConverter {
         ctx.structFieldInfo = structFieldInfo
 
         // 建立参数名映射：IR 的 %0, %1, ... → MSL 参数名
-        setupParameterMappings(ctx, params: func_.parameters, irParamList: irParamList)
+        setupParameterMappings(ctx, params: func_.parameters, irParamList: irParamList, shaderType: func_.shaderType)
 
         let bodyLines = func_.irBody.components(separatedBy: "\n")
 
@@ -2966,9 +2967,25 @@ struct IRToMSLConverter {
     private static func setupParameterMappings(
         _ ctx: SSAContext,
         params: [ParsedParameter],
-        irParamList: String
+        irParamList: String,
+        shaderType: ShaderType
     ) {
         let irParams = splitIRParameters(irParamList)
+
+        // 极小 fragment/kernel/vertex builtin 场景：metadata 可能把 position / vertex_id / tid 过滤掉，
+        // 但 generateAllParams 仍会补默认 builtin 参数；此时把唯一 IR 参数接回默认 builtin 名，
+        // 避免函数体继续引用 `param0` 之类的占位名。
+        if params.isEmpty,
+           irParams.count == 1,
+           let builtinName = defaultBuiltinParamName(for: shaderType),
+           let builtinIRType = defaultBuiltinIRType(for: shaderType) {
+            let irName = extractParamName(from: irParams[0]) ?? "0"
+            let ssaName = "%\(irName)"
+            ctx.paramNames[ssaName] = builtinName
+            ctx.paramTypes[ssaName] = builtinIRType
+            return
+        }
+
         // metadata 参数通常过滤了 stage_in/position 等，
         // 需要遍历 IR 参数并与 metadata 参数对应
         var metaIdx = 0
@@ -2983,6 +3000,28 @@ struct IRToMSLConverter {
             } else {
                 ctx.paramNames[ssaName] = "param\(i)"
             }
+        }
+    }
+
+    private static func defaultBuiltinParamName(for type: ShaderType) -> String? {
+        switch type {
+        case .vertex:
+            return "vid"
+        case .fragment:
+            return "position"
+        case .kernel:
+            return "tid"
+        }
+    }
+
+    private static func defaultBuiltinIRType(for type: ShaderType) -> String? {
+        switch type {
+        case .vertex:
+            return "i32"
+        case .fragment:
+            return "float4"
+        case .kernel:
+            return "i32"
         }
     }
 

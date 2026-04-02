@@ -3069,7 +3069,7 @@ struct IRToMSLConverter {
         case "getelementptr":
             translateGEP(lhs: lhs, rhs: rhs, ctx: ctx)
         // ── 类型转换 ──
-        case "zext", "sext", "trunc", "fpext", "fptrunc":
+        case "zext", "sext", "trunc", "fpext", "fptrunc", "uitofp", "sitofp", "fptoui", "fptosi":
             translateIntCast(lhs: lhs, rhs: rhs, opcode: opcode, ctx: ctx)
         case "bitcast":
             translateBitcast(lhs: lhs, rhs: rhs, ctx: ctx)
@@ -3651,9 +3651,9 @@ struct IRToMSLConverter {
         ctx.define(lhs, expr: "&\(expr)")
     }
 
-    /// 翻译整数类型转换: zext/sext/trunc/fpext/fptrunc
+    /// 翻译类型转换: zext/sext/trunc/fpext/fptrunc/uitofp/sitofp/fptoui/fptosi
     private static func translateIntCast(lhs: String, rhs: String, opcode: String, ctx: SSAContext) {
-        // zext <src_type> <val> to <dst_type>
+        // <opcode> <src_type> <val> to <dst_type>
         let cleaned = rhs.replacingOccurrences(of: "\(opcode) ", with: "")
         guard let toRange = cleaned.range(of: " to ") else {
             ctx.define(lhs, expr: "/* cast error */")
@@ -3664,8 +3664,50 @@ struct IRToMSLConverter {
 
         let srcParts = splitTypedOperands(srcPart, count: 1)
         let srcVal = srcParts.isEmpty ? "0" : resolveIROperand(srcParts[0].value, ctx: ctx)
-        let mslDstType = irScalarTypeToMSL(dstType)
+
+        let mslDstType: String
+        switch opcode {
+        case "fptoui":
+            mslDstType = irIntegerTypeToMSL(dstType, signed: false)
+        case "fptosi":
+            mslDstType = irIntegerTypeToMSL(dstType, signed: true)
+        default:
+            mslDstType = irScalarTypeToMSL(dstType)
+        }
+
         ctx.emitAutoAssign(lhs, expr: "\(mslDstType)(\(srcVal))", knownType: mslDstType)
+    }
+
+    /// 将 IR 整数类型映射到带符号性语义的 MSL 类型。
+    private static func irIntegerTypeToMSL(_ irType: String, signed: Bool) -> String {
+        let cleaned = irType.trimmingCharacters(in: .whitespaces)
+
+        switch cleaned {
+        case "i1":
+            return "bool"
+        case "i8":
+            return signed ? "char" : "uint8_t"
+        case "i16":
+            return signed ? "short" : "ushort"
+        case "i32":
+            return signed ? "int" : "uint"
+        case "i64":
+            return signed ? "long" : "ulong"
+        default:
+            if cleaned.hasPrefix("<") && cleaned.hasSuffix(">") && cleaned.contains(" x ") {
+                let inner = String(cleaned.dropFirst().dropLast())
+                let parts = inner.components(separatedBy: " x ")
+                if parts.count >= 2 {
+                    let count = parts[0].trimmingCharacters(in: .whitespaces)
+                    let elemType = irIntegerTypeToMSL(
+                        parts.dropFirst().joined(separator: " x ").trimmingCharacters(in: .whitespaces),
+                        signed: signed
+                    )
+                    return "\(elemType)\(count)"
+                }
+            }
+            return irScalarTypeToMSL(cleaned)
+        }
     }
 
     /// 翻译 bitcast

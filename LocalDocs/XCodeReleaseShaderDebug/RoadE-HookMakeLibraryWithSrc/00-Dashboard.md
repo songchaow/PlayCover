@@ -103,6 +103,8 @@ PlayCover 主应用 (macOS)
 |  | 两遍翻译策略：`prescanPhiAndCFG` 预扫描所有 phi 节点和 CFG 结构，`translateFunctionBody` 第二遍利用预扫描信息。phi→变量预声明+前驱 BB 分支处赋值（语义等价），条件 br→if/else 块（含嵌套 phi 赋值），无条件 br→phi 赋值+fall-through。新增测试数据 `test_phi.metal`→`test_phi.ll`（含循环 phi、多前驱汇合） | | |
 | E-004e4c | ↳↳↳ extractvalue/insertvalue + GEP 结构体路径还原 | ✅ DONE | |
 |  | `extractvalue`：匿名聚合 `{<4xf32>, i8}`（air.sample 返回值）直接透传、命名结构体用 `.fieldName`。`insertvalue`：链式追踪已填充字段，最终生成 `{ val0, val1, ... }`。`GEP`：多级索引按类型层级解析——结构体字段索引查 metadata `air.struct_type_info` 获取字段名，数组索引生成 `[idx]`。新增解析方法：`parseIRStructTypes`（IR `%struct.XXX = type` 定义）、`parseStructTypeInfoNode`（5-token 格式字段信息）、`parseStructFieldInfoFromMetadata`（全局字段信息表）。SSAContext 扩展：`structTypeDefs`/`structFieldInfo`/`insertValueFields` + `lookupFieldName`/`lookupFieldType` 辅助方法。验证数据：`test_extractvalue.metal`→`test_extractvalue.ll`（覆盖 fragment extractvalue / vertex insertvalue / kernel GEP struct） | | |
+| E-004e4d | ↳↳↳ 补齐数值转换：`uitofp`/`sitofp`/`fptoui`/`fptosi` | ✅ DONE | |
+|  | `IRToMSLConverter.swift` 将上述 4 个 opcode 接入 `translateIntCast`，其中 `fptoui`/`fptosi` 按 signed/unsigned 语义选择 `uint`/`int`、`ushort`/`short`、`ulong`/`long` 等 MSL 目标类型；新增 `irIntegerTypeToMSL(_:signed:)` 辅助方法。验证数据：`test_casts.metal`→`test_casts.ll`，并执行 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 编译通过。额外确认：Metal 编译器通常将这组转换规范化为 `air.convert.*` 调用而非原生 LLVM cast 指令 | | |
 | E-005 | **运行时 library 替换：用带源码的 library 替换原始返回** | TODO | |
 |  | 在 `pc_newLibraryWithData` hook 中，将 E-004e 生成的 MSL 经 `makeLibrary(source:)` 编译后替换原始返回值。需处理：编译失败 fallback（退回原始 library）、函数签名一致性校验、性能优化（缓存已处理的 metallib） | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | TODO | |
@@ -147,6 +149,7 @@ PlayCover 主应用 (macOS)
 - **基本块标签多格式**：IR 中 BB 标签有三种：纯名字 `entry:`、纯数字 `10:`、带前驱注释 `10:  ; preds = %7, %4`。解析时需同时处理，且要区分标签行和普通含冒号的指令
 - **fast-math 下 fdiv/frem 不存在**：Metal 默认开启 fast-math，`fdiv` 被优化为 `fmul` 乘以倒数，`frem` 被翻译为 `air.fast_fmod` 调用。实际 metallib IR 中几乎不会出现 `fdiv`/`frem` 指令
 - **trunc 被编译器省略**：`int→short` 截断在 IR 中被优化为直接在 i16 上做 `mul`+`and`，不生成显式 `trunc` 指令。编写测试数据时注意编译器可能优化掉目标指令
+- **float↔int 转换常降级为 `air.convert.*`**：即使 MSL 中显式写 `float(u)` / `uint(f)` / `int4(f4)`，在 AIR 中通常不会出现原生 `uitofp`/`sitofp`/`fptoui`/`fptosi` 指令，而是被规范化为 `air.convert.f.f32.u.i32`、`air.convert.u.v4i32.f.v4f32` 等调用。编写测试数据和统计覆盖率时应同时关注 `air.convert` 变体
 - **air.sample 返回值是匿名聚合**：`air.sample_texture_2d.v4f32` 在 IR 中返回 `{ <4 x float>, i8 }`，第二个字段是 coverage mask（片元覆盖信息），绝大多数情况只用 `extractvalue ..., 0` 取 float4。MSL 侧 `tex.sample()` 直接返回 float4，因此 extractvalue 可以透传
 - **insertvalue 链式构建返回值**：vertex shader 的返回值结构体（如 `<{ <4 x float>, <2 x float> }>`）在 IR 中通过多步 insertvalue 从 undef 逐字段填充。需在 SSAContext 中追踪中间状态，最终生成 `{ val0, val1, ... }` 的 MSL 初始化列表
 - **GEP 结构体索引 vs 数组索引**：GEP 的第一个索引是基指针偏移（可以是变量），后续索引按类型层级解析——对结构体类型必须是常量 i32（字段编号），对数组类型可以是变量。区分方式：当前层类型是否以 `%` 开头（结构体）或 `[` 开头（数组）

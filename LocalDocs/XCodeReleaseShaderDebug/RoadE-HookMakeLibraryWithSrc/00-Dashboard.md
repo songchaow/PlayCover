@@ -55,7 +55,8 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 | 样本 | 结果 |
 |---|---|
-| 原神 6.4.0 外网包（2026-04-02，host bridge 修复后受控 5 轮复测） | 已按 `build_and_install.sh` 重装 GUI，并在 `remove_playtools` / `inject_playtools` 后做 **5 轮受控复测**；每轮都从 `pkill Yuanshen` 干净状态开始，再执行 `launch_app` / `create_session`。结果为 **5/5 稳定复现**：session 先 `ready` 后很快变 `disconnected`，进程退出，且每轮都新增 `Yuanshen-*.ips`。新 crash 以 worker 线程 `objc_release -> objc_autoreleasePoolPop -> Yuanshen offsets` 的 `EXC_BAD_ACCESS / SIGSEGV` 为主，夹杂少量主线程 `EXC_CRASH / SIGTRAP`；统一日志同时显示 `LibrarySourceInjection` 主路径已执行，并稳定出现 `source recompile failed: program_source:15:16: error: expected unqualified-id`。说明 live 复测的当前 blocker 已转为“稳定崩溃 + 无效 MSL 重编译线索”，而不是旧的 `llvm-dis` 权限问题 |
+| 原神 6.4.0 外网包（2026-04-03，preflight guard 后单轮对照复测） | 已用 `PLAYCOVER_INSTALL_MODE=user FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/build_and_install.sh` 重装 GUI，并从 `pkill Yuanshen` 干净状态执行 `remove_playtools` / `inject_playtools` / `launch_app` / `create_session`。`session` 在 `2026-04-03 00:29:33 +0800` ready 后至少维持约 **73 秒**，前 10 秒内未再复现旧的“很快 `disconnected` + 新增 `.ips`”基线；`get_capture_status` 返回 `available=true`，但 `trackedCommandQueueCount=0`，且 `ShaderSourceDiagnostics/com.miHoYo.Yuanshen/` 仍无新样本。最终 app 在 `00:30:46 +0800` 退出并新增 `Yuanshen-2026-04-03-003046.ips`，随后 `session` 变为 `disconnected`；新 crash 为 `EXC_BREAKPOINT / SIGTRAP`，faulting thread=40，dispatch queue=`playcover.toucher`，栈顶是 `Toucher.touchcam(...)` 的 `Unexpectedly found nil while unwrapping an Optional value`。说明 preflight guard 已显著改变 live 表现，当前 blocker 更像是 toucher / keymapping 路径，而不是此前稳定出现的 `source recompile failed` |
+| 原神 6.4.0 外网包（2026-04-02，host bridge 修复后受控 5 轮复测） | 已按 `build_and_install.sh` 重装 GUI，并在 `remove_playtools` / `inject_playtools` 后做 **5 轮受控复测**；每轮都从 `pkill Yuanshen` 干净状态开始，再执行 `launch_app` / `create_session`。结果为 **5/5 稳定复现**：session 先 `ready` 后很快变 `disconnected`，进程退出，且每轮都新增 `Yuanshen-*.ips`。新 crash 以 worker 线程 `objc_release -> objc_autoreleasePoolPop -> Yuanshen offsets` 的 `EXC_BAD_ACCESS / SIGSEGV` 为主，夹杂少量主线程 `EXC_CRASH / SIGTRAP`；统一日志同时显示 `LibrarySourceInjection` 主路径已执行，并稳定出现 `source recompile failed: program_source:15:16: error: expected unqualified-id`。可作为 preflight guard 落地前的 host bridge 基线 |
 | 原神 6.4.0 外网包（2026-04-02，retry + diag，**host bridge 修复前**） | 多轮 live 复测已完成：重启 PlayCover、`remove_playtools` / `inject_playtools` 后，`session` 与 `capture_metal_frame` 均稳定；`capture_20260402_roadE_e006_retry.gputrace`（349MB）结果为 `valid_msl=0`、`index 引用=854`，`capture_20260402_roadE_e006_diag.gputrace`（388MB）结果为 `valid_msl=0`、`index 引用=922`。这些样本对应的是 host bridge 落地前的旧构建：当时宿主路径查找已修复，但 injected runtime 内 `posix_spawn(llvm-dis)` 仍统一报 `Operation not permitted`；可作为 host bridge 修复前的基线对照 |
 
 **人工确认（最终）**：Xcode 打开 `.gputrace` → 选 Draw Call → 查看 Shader 面板是否显示源码而非 `Shader source not found`。
@@ -131,17 +132,19 @@ PlayCover 主应用 (macOS)
 | E-005e2b2b2b | ↳ 其他自定义 archive / keyed archive 真实样本驱动 | TODO | |
 |  | 继续等待下一轮 live `ShaderPayloadSamples` 真实样本，再决定是否需要补 keyed archive 之外的自定义 archive 家族，或把 `$top` 精确追踪扩成完整对象图解引用 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
-|  | runtime→host 的 `llvm-dis` bridge 已接通并通过编译/单测验证；当前 host bridge 版本 live 复测已升级为受控 5 轮，且 5/5 都稳定复现 `ready -> disconnected -> 新增 Yuanshen-*.ips`。统一日志显示 `LibrarySourceInjection` 主路径稳定执行，并伴随 `source recompile failed`，当前新 blocker 已前移到 IR→MSL 产物 / fallback / 运行时稳定性，而不是旧的 `posix_spawn` 权限问题 | | |
+|  | runtime→host 的 `llvm-dis` bridge 与聚合 MSL preflight guard 均已接通并通过编译/单测验证。2026-04-03 的最新单轮 live 对照复测显示：旧的“很快 `ready -> disconnected -> source recompile failed`”模式已被打破，但 app 仍会在约 73 秒后崩溃退出，并新增 `Yuanshen-2026-04-03-003046.ips`；当前最突出的新 crash 摘要落在 `playcover.toucher` queue，而不是 `program_source:15:16` 这类已知 compile failure | | |
 | E-006a | ↳ 解决 injected runtime 调 `llvm-dis` 的执行权限 blocker | 🔄 IN PROGRESS | |
-|  | 已将任务拆成“host bridge 落地”和“live 复测”两步，避免继续在旧 `posix_spawn` 设计上空转 | | |
+|  | 已将任务拆成“host bridge 落地”和“live 复测 / blocker 重新归因”两步，避免继续在旧 `posix_spawn` 设计上空转 | | |
 | E-006a1 | ↳ runtime→host `llvm-dis` bridge 落地 | ✅ DONE | |
 |  | `RegistrationListener` 现支持 runtime→host `command`；GUI 侧 `MCPManager` / `LLVMToolManager` 已实现 `host_disassemble_bitcode` handler；`LLVMDisassembler` 改为优先走 host bridge，失败才 fallback 本地 `posix_spawn`。已通过 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`、`./BuildScripts/build_gui.sh`、`./BuildScripts/test_mcp.sh RegistrationListenerHostCommandTests` 验证 | | |
 | E-006a2 | ↳ host bridge 版本的 live 重装 / 重注入 / 截帧复测 | 🔄 IN PROGRESS | |
-|  | 已拆成“`E-006a2a` 先拦截明显非法的聚合 MSL 并落盘诊断样本”与“`E-006a2b` 基于新 guard 做 live 对照复测”两步，避免继续对已知坏源码盲编译 | | |
+|  | 已拆成“`E-006a2a` 先拦截明显非法的聚合 MSL 并落盘诊断样本”“`E-006a2b` 基于新 guard 做 live 对照复测”“`E-006a2c` 隔离 toucher / keymapping 干扰后继续截帧”三步，避免把源码无效、输入路径崩溃和 capture 条件不足混在一起 | | |
 | E-006a2a | ↳ 重编译前 preflight + 失败源码落盘 | ✅ DONE | |
 |  | `LibrarySourceInjectionService` 现会在 `makeLibrary(source:)` 前扫描聚合 MSL 中残留的 LLVM token（如 `<N x T>` / `ptr` / `addrspace` / `%...` / 原始 `i32` / `undef`），若命中则直接 fallback 原始 library，并把 `.metal` / `.txt` 样本落到 `~/Library/Containers/io.playcover.PlayCover/ShaderSourceDiagnostics/<bundleId>/`；若仍进入 compile failure，也会补 `program_source` 行列与附近上下文。已通过 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 与 `./BuildScripts/build_gui.sh` 编译验证 | | |
-| E-006a2b | ↳ 基于 preflight guard 的 live 对照复测 | TODO | |
-|  | 重装 GUI、重新 `remove_playtools` / `inject_playtools` 后复测，优先比较“明显非法源码被 preflight 直接 fallback”时是否仍稳定出现 `ready -> disconnected -> 新增 Yuanshen-*.ips`；若崩溃缓解，再继续追 `valid_msl` | | |
+| E-006a2b | ↳ 基于 preflight guard 的 live 对照复测 | ✅ DONE | |
+|  | 已按 `PLAYCOVER_INSTALL_MODE=user FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/build_and_install.sh` 重装 GUI，并对原神执行 `pkill`、`remove_playtools` / `inject_playtools`、`launch_app` / `create_session`。结果显示：`session` 不再像旧基线那样很快掉线，而是先稳定 ready，`get_capture_status` 也返回 `available=true`；但最终 app 仍在约 73 秒后退出、`session` 变为 `disconnected`，并新增 `Yuanshen-2026-04-03-003046.ips`。本轮未产出新的 `ShaderSourceDiagnostics` 样本，最新 crash 栈顶则落在 `playcover.toucher` 的 `Toucher.touchcam(...)` Optional unwrap | | |
+| E-006a2c | ↳ 隔离 `playcover.toucher` / keymapping 干扰后继续截帧 | TODO | |
+|  | 在保留当前 preflight guard 的前提下，优先禁用或绕开 toucher / keymapping 路径，再复测 `launch_app` / `create_session` / `get_capture_status` / `capture_metal_frame`，确认新的 crash 是否与 shader 注入主线无关，并继续追 `valid_msl` | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
 |  | 添加 `injectShaderSources` 开关到 AppSettings / AppSettingsView；添加 LLVM 工具链下载 / 状态 UI | | |
 

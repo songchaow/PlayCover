@@ -831,7 +831,7 @@ extension MetallibParser {
             return isPlausibleRawMetallib(data) ? "mtlb_like" : "mtlb_suspicious"
         }
         if hasPrefix(data, ascii: "bplist00") {
-            return "bplist"
+            return isLikelyNSKeyedArchivePropertyList(data) ? "bplist_keyed_archive" : "bplist"
         }
         if hasPrefix(data, ascii: "BC") {
             return "llvm_bitstream"
@@ -859,6 +859,14 @@ extension MetallibParser {
 
     private static func hasPrefix(_ data: Data, ascii: String) -> Bool {
         data.starts(with: ascii.utf8)
+    }
+
+    private static func isLikelyNSKeyedArchivePropertyList(_ data: Data) -> Bool {
+        guard hasPrefix(data, ascii: "bplist00") else {
+            return false
+        }
+        return data.range(of: Data("NSKeyedArchiver".utf8)) != nil
+            || data.range(of: Data("NSKeyedUnarchiver".utf8)) != nil
     }
 
     private static func suspiciousMTLBReason(for data: Data) -> String? {
@@ -985,7 +993,7 @@ extension MetallibParser {
             return embedded
         }
 
-        if hasPrefix(data, ascii: "bplist00"),
+        if (kind == "bplist" || kind == "bplist_keyed_archive"),
            let embedded = unwrapMetallibFromPropertyList(data, depth: depth + 1) {
             return embedded
         }
@@ -1031,7 +1039,12 @@ extension MetallibParser {
             return nil
         }
 
-        let candidates = collectEmbeddedDataCandidates(from: propertyList, path: "$root")
+        var candidates: [EmbeddedDataCandidate] = []
+        if isKeyedArchivePropertyList(propertyList) {
+            candidates.append(contentsOf: collectKeyedArchiveDataCandidates(from: propertyList))
+        }
+        candidates.append(contentsOf: collectEmbeddedDataCandidates(from: propertyList, path: "$root"))
+
         for candidate in candidates {
             if let recovered = recoverMetallibCandidate(
                 candidate.data,
@@ -1547,6 +1560,143 @@ extension MetallibParser {
         }
     }
 
+    private static func isKeyedArchivePropertyList(_ value: Any) -> Bool {
+        guard let dictionary = value as? NSDictionary,
+              let archiver = dictionary["$archiver"] as? String,
+              archiver.contains("KeyedArchiver"),
+              dictionary["$top"] is NSDictionary,
+              dictionary["$objects"] is NSArray else {
+            return false
+        }
+        return true
+    }
+
+    private static func collectKeyedArchiveDataCandidates(from propertyList: Any) -> [EmbeddedDataCandidate] {
+        guard let archive = propertyList as? NSDictionary,
+              let top = archive["$top"] as? NSDictionary,
+              let objects = archive["$objects"] as? NSArray else {
+            return []
+        }
+
+        var results: [EmbeddedDataCandidate] = []
+        let sortedKeys = top.allKeys.sorted {
+            String(describing: $0) < String(describing: $1)
+        }
+        for key in sortedKeys {
+            guard let value = top[key] else { continue }
+            var visitedUIDs: Set<Int> = []
+            collectKeyedArchiveDataCandidates(
+                from: value,
+                path: "$keyedArchive.$top.\(String(describing: key))",
+                objects: objects,
+                visitedUIDs: &visitedUIDs,
+                into: &results
+            )
+            if results.count >= 64 {
+                break
+            }
+        }
+
+        if results.isEmpty {
+            for (index, object) in objects.enumerated() {
+                collectEmbeddedDataCandidates(
+                    from: object,
+                    path: "$keyedArchive.$objects[\(index)]",
+                    into: &results
+                )
+                if results.count >= 64 {
+                    break
+                }
+            }
+        }
+
+        return results
+    }
+
+    private static func collectKeyedArchiveDataCandidates(
+        from value: Any,
+        path: String,
+        objects: NSArray,
+        visitedUIDs: inout Set<Int>,
+        into results: inout [EmbeddedDataCandidate]
+    ) {
+        guard results.count < 64 else {
+            return
+        }
+
+        if let uid = keyedArchiveUIDValue(from: value) {
+            guard uid >= 0, uid < objects.count else {
+                return
+            }
+            guard visitedUIDs.insert(uid).inserted else {
+                return
+            }
+            collectKeyedArchiveDataCandidates(
+                from: objects[uid],
+                path: "\(path)→$objects[\(uid)]",
+                objects: objects,
+                visitedUIDs: &visitedUIDs,
+                into: &results
+            )
+            return
+        }
+
+        switch value {
+        case let data as Data:
+            results.append(EmbeddedDataCandidate(path: path, data: data))
+        case let array as NSArray:
+            for (index, element) in array.enumerated() {
+                collectKeyedArchiveDataCandidates(
+                    from: element,
+                    path: "\(path)[\(index)]",
+                    objects: objects,
+                    visitedUIDs: &visitedUIDs,
+                    into: &results
+                )
+                if results.count >= 64 {
+                    return
+                }
+            }
+        case let dictionary as NSDictionary:
+            let sortedKeys = dictionary.allKeys
+                .filter { String(describing: $0) != "$class" }
+                .sorted { String(describing: $0) < String(describing: $1) }
+            for key in sortedKeys {
+                guard let element = dictionary[key] else { continue }
+                collectKeyedArchiveDataCandidates(
+                    from: element,
+                    path: "\(path).\(String(describing: key))",
+                    objects: objects,
+                    visitedUIDs: &visitedUIDs,
+                    into: &results
+                )
+                if results.count >= 64 {
+                    return
+                }
+            }
+        default:
+            break
+        }
+    }
+
+    private static func keyedArchiveUIDValue(from value: Any) -> Int? {
+        if let dictionary = value as? NSDictionary,
+           let uidNumber = dictionary["CF$UID"] as? NSNumber {
+            return uidNumber.intValue
+        }
+
+        let description = String(describing: value)
+        guard description.contains("CFKeyedArchiverUID"),
+              let valueRange = description.range(of: "value = ") else {
+            return nil
+        }
+        let digits = description[valueRange.upperBound...].prefix { $0.isNumber }
+        guard !digits.isEmpty else {
+            return nil
+        }
+        return Int(digits)
+    }
+
     private static func findEmbeddedMetallib(
         in data: Data,
         path: String,
@@ -1655,7 +1805,7 @@ extension MetallibParser {
 
             try metadataLines.joined(separator: "\n").write(to: metaURL, atomically: true, encoding: .utf8)
 
-            if kind == "bplist" {
+            if kind == "bplist" || kind == "bplist_keyed_archive" {
                 var format = PropertyListSerialization.PropertyListFormat.binary
                 if let propertyList = try? PropertyListSerialization.propertyList(from: data, options: [], format: &format),
                    let xmlData = try? PropertyListSerialization.data(fromPropertyList: propertyList, format: .xml, options: 0) {

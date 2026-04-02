@@ -116,8 +116,12 @@ PlayCover 主应用 (macOS)
 |  | 已拆分为“`xar` 最小 TOC/heap 解包”与“自定义 archive / keyed archive 样本驱动”两步，先把确定格式的 `xar` 路径接通 | | |
 | E-005e2b2b1 | ↳ `xar` payload 解包 + 递归恢复 | ✅ DONE | |
 |  | 已在 `MetallibParser` 增加最小 `xar` reader：解析 big-endian header、zlib 压缩 TOC XML、遍历 `file/data` 节点并按 heap offset 取 entry data；对 `application/x-gzip` / `zlib` entry 会先解压，再继续递归尝试 `MTLB` / `gzip` / `zip` / `bplist` / embedded `MTLB` 恢复。已用 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 做编译验证；另用 synthetic `metallib → xar` 样本确认运行时已命中 `xar:test.metallib` 解包路径，但最终仍受现有 raw `MTLB headerSize=15` 解析限制阻塞 | | |
-| E-005e2b2b2 | ↳ 自定义 archive / keyed archive 定向取值 | TODO | |
-|  | 继续等待下一轮 live `ShaderPayloadSamples` 真实样本，再决定是否需要补 keyed archive / 其他 archive 家族的定向解包 | | |
+| E-005e2b2b2 | ↳ 自定义 archive / keyed archive 定向取值 | 🔄 IN PROGRESS | |
+|  | 已拆分为“`NSKeyedArchiver` bplist 先落地”与“其他自定义 archive 继续样本驱动”两步，避免继续把所有 `bplist` 都只当成无语义的通用容器 | | |
+| E-005e2b2b2a | ↳ `NSKeyedArchiver` bplist 定向取值 + 诊断 | ✅ DONE | |
+|  | 已将 `bplist` 进一步细分为 `bplist_keyed_archive`；`MetallibParser` 对该类 payload 会先尝试按 `$top` / `$objects` / `CF$UID` 追踪 reachable object graph，若未先命中再 fallback 扫描 `$objects[...]` 内的 `Data`。synthetic 最小 `raw MTLB → NSKeyedArchiver` 样本已验证恢复路径命中 `bplist:$keyedArchive.$objects[2]`；并已用 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 做编译验证 | | |
+| E-005e2b2b2b | ↳ 其他自定义 archive / keyed archive 真实样本驱动 | TODO | |
+|  | 继续等待下一轮 live `ShaderPayloadSamples` 真实样本，再决定是否需要补 keyed archive 之外的自定义 archive 家族，或把 `$top` 精确追踪扩成完整对象图解引用 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
 |  | 首轮真实样本（原神外网包）已执行：runtime 与 capture 链路正常，`.gputrace` 成功生成，但当前 `valid_msl=0`；后续验证优先服务于 `E-005e2` 的解包实现，而不是继续盲目截帧 | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
@@ -137,6 +141,7 @@ PlayCover 主应用 (macOS)
 - **`gzip` wrapper 解包优先走 `zlib inflateInit2(15 + 32)`**：这样能自动识别 `gzip/zlib` header，比分别手拆 header 或仅依赖高层压缩 API 更适合当前 iOS target 内的小型定向恢复逻辑；解压后继续递归跑 `bplist` / embedded `MTLB` 剥离即可
 - **`zip` wrapper 先读 central directory，再 fallback 扫 local header 更稳**：不少 ZIP entry 会把可靠的大小信息放在 central directory；只有拿不到 central directory 时，才退回顺序扫描 local file header。当前已支持 stored / deflate，两种 entry 都会继续递归尝试 `MTLB` / `gzip` / `bplist` / embedded `MTLB` 恢复
 - **`xar` 最小解包先抓 `header + zlib TOC + heap entry` 就能验证主路径**：`xar` header 使用 big-endian，TOC 是 zlib 压缩 XML，`file/data/offset/length/encoding` 足以定位 heap entry；本轮 synthetic `metallib → xar` 样本已确认运行时能命中 `xar:test.metallib` 解包路径，当前剩余 blocker 已转为 raw `MTLB headerSize=15` 解析兼容，而不是 `xar` entry 定位本身
+- **`NSKeyedArchiver` 本质仍是 `bplist`，但应单独标成 `bplist_keyed_archive`**：单靠泛化的 `$root` 递归扫描虽然偶尔能捞到 `Data`，但 keyed archive 的诊断语义会丢失；当前更稳妥的路径是优先把 `$objects[...]` 当作专用候选空间，并保留 `$top` / `CF$UID` 追踪作为后续可继续精细化的方向。synthetic 最小 `raw MTLB → NSKeyedArchiver` 样本已确认恢复日志会命中 `bplist:$keyedArchive.$objects[2]`
 - **`MTLB` magic 不是 raw metallib 的充分条件**：若 `headerSize` / `fileSize` 明显不可信（如 `headerSize=15`），不能因为前 4 字节命中 `MTLB` 就停止；应继续把它当作 wrapper 候选处理，保留 origin / sample，并向内扫描 non-zero offset 的 embedded `MTLB`
 - **PlayTools 是 iOS target**：调用 `llvm-dis` 仍需走 `posix_spawn`，不能依赖 `Foundation.Process`
 

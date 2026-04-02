@@ -805,11 +805,17 @@ extension MetallibParser {
 
         let kind: String
         switch payloadKindLabel(for: data) {
-        case "mtlb_like":
+        case "mtlb_like", "mtlb_suspicious":
             let headerSize = data.count >= 14 ? readUInt16(data, offset: 12) : 0
             let fileType = data.count >= 15 ? readUInt8(data, offset: 14) : 0
             let targetPlatform = data.count >= 16 ? readUInt8(data, offset: 15) : 0
-            kind = "mtlb_like(headerSize=\(headerSize),fileType=\(fileType),target=0x\(String(format: "%02X", targetPlatform)))"
+            let fileSize = data.count >= 24 ? readUInt64(data, offset: 16) : 0
+            let base = payloadKindLabel(for: data)
+            if let reason = suspiciousMTLBReason(for: data) {
+                kind = "\(base)(\(reason),headerSize=\(headerSize),fileType=\(fileType),target=0x\(String(format: "%02X", targetPlatform)),fileSize=\(fileSize))"
+            } else {
+                kind = "\(base)(headerSize=\(headerSize),fileType=\(fileType),target=0x\(String(format: "%02X", targetPlatform)),fileSize=\(fileSize))"
+            }
         default:
             kind = payloadKindLabel(for: data)
         }
@@ -822,7 +828,7 @@ extension MetallibParser {
             return "empty"
         }
         if hasPrefix(data, ascii: "MTLB") {
-            return "mtlb_like"
+            return isPlausibleRawMetallib(data) ? "mtlb_like" : "mtlb_suspicious"
         }
         if hasPrefix(data, ascii: "bplist00") {
             return "bplist"
@@ -853,6 +859,37 @@ extension MetallibParser {
 
     private static func hasPrefix(_ data: Data, ascii: String) -> Bool {
         data.starts(with: ascii.utf8)
+    }
+
+    private static func suspiciousMTLBReason(for data: Data) -> String? {
+        guard hasPrefix(data, ascii: "MTLB") else {
+            return nil
+        }
+        if data.count < minimumHeaderSize {
+            return "too_short=\(data.count)"
+        }
+
+        let headerSize = data.count >= 14 ? readUInt16(data, offset: 12) : 0
+        if headerSize < minimumHeaderSize {
+            return "headerSize=\(headerSize)"
+        }
+
+        let declaredFileSize = data.count >= 24 ? readUInt64(data, offset: 16) : 0
+        if declaredFileSize == 0 {
+            return "fileSize=0"
+        }
+        if declaredFileSize < UInt64(minimumHeaderSize) {
+            return "fileSize=\(declaredFileSize)"
+        }
+        if declaredFileSize > UInt64(data.count) {
+            return "fileSize=\(declaredFileSize)>bytes=\(data.count)"
+        }
+
+        return nil
+    }
+
+    private static func isPlausibleRawMetallib(_ data: Data) -> Bool {
+        suspiciousMTLBReason(for: data) == nil
     }
 
     private static func payloadFingerprint(_ data: Data) -> String {
@@ -928,18 +965,14 @@ extension MetallibParser {
             return nil
         }
 
+        if kind == "mtlb_suspicious" {
+            return recoverMetallibCandidate(data, path: "payload", depth: depth + 1)
+        }
+
         if kind == "gzip",
-           let decompressed = decompressGzipPayload(data) {
-            if hasPrefix(decompressed, ascii: "MTLB") {
-                let trimmed = trimMetallibDataIfNeeded(decompressed)
-                return UnwrappedPayload(data: trimmed, strategy: "gzip")
-            }
-            if let nested = unwrapMetallibPayloadIfNeeded(decompressed, depth: depth + 1) {
-                return UnwrappedPayload(data: nested.data, strategy: "gzip→\(nested.strategy)")
-            }
-            if let embedded = findEmbeddedMetallib(in: decompressed, path: "gzip", includeZeroOffset: false) {
-                return UnwrappedPayload(data: embedded.data, strategy: embedded.strategy)
-            }
+           let decompressed = decompressGzipPayload(data),
+           let recovered = recoverMetallibCandidate(decompressed, path: "gzip", depth: depth + 1) {
+            return recovered
         }
 
         if kind == "zip",
@@ -964,6 +997,34 @@ extension MetallibParser {
         return nil
     }
 
+    private static func recoverMetallibCandidate(
+        _ data: Data,
+        path: String,
+        depth: Int
+    ) -> UnwrappedPayload? {
+        let kind = payloadKindLabel(for: data)
+        switch kind {
+        case "mtlb_like":
+            let trimmed = trimMetallibDataIfNeeded(data)
+            return UnwrappedPayload(data: trimmed, strategy: path)
+        case "mtlb_suspicious":
+            if let embedded = findEmbeddedMetallib(in: data, path: path, includeZeroOffset: false) {
+                return embedded
+            }
+            return nil
+        default:
+            break
+        }
+
+        if let nested = unwrapMetallibPayloadIfNeeded(data, depth: depth) {
+            return UnwrappedPayload(data: nested.data, strategy: "\(path)→\(nested.strategy)")
+        }
+        if let embedded = findEmbeddedMetallib(in: data, path: path, includeZeroOffset: false) {
+            return UnwrappedPayload(data: embedded.data, strategy: embedded.strategy)
+        }
+        return nil
+    }
+
     private static func unwrapMetallibFromPropertyList(_ data: Data, depth: Int) -> UnwrappedPayload? {
         var format = PropertyListSerialization.PropertyListFormat.binary
         guard let propertyList = try? PropertyListSerialization.propertyList(from: data, options: [], format: &format) else {
@@ -972,15 +1033,12 @@ extension MetallibParser {
 
         let candidates = collectEmbeddedDataCandidates(from: propertyList, path: "$root")
         for candidate in candidates {
-            if hasPrefix(candidate.data, ascii: "MTLB") {
-                let trimmed = trimMetallibDataIfNeeded(candidate.data)
-                return UnwrappedPayload(data: trimmed, strategy: "bplist:\(candidate.path)")
-            }
-            if let nested = unwrapMetallibPayloadIfNeeded(candidate.data, depth: depth) {
-                return UnwrappedPayload(data: nested.data, strategy: "bplist:\(candidate.path)→\(nested.strategy)")
-            }
-            if let embedded = findEmbeddedMetallib(in: candidate.data, path: "bplist:\(candidate.path)", includeZeroOffset: false) {
-                return UnwrappedPayload(data: embedded.data, strategy: embedded.strategy)
+            if let recovered = recoverMetallibCandidate(
+                candidate.data,
+                path: "bplist:\(candidate.path)",
+                depth: depth
+            ) {
+                return recovered
             }
         }
 
@@ -1065,15 +1123,8 @@ extension MetallibParser {
             }
 
             let entryPath = "zip:\(entry.path)"
-            if hasPrefix(entryData, ascii: "MTLB") {
-                let trimmed = trimMetallibDataIfNeeded(entryData)
-                return UnwrappedPayload(data: trimmed, strategy: entryPath)
-            }
-            if let nested = unwrapMetallibPayloadIfNeeded(entryData, depth: depth) {
-                return UnwrappedPayload(data: nested.data, strategy: "\(entryPath)→\(nested.strategy)")
-            }
-            if let embedded = findEmbeddedMetallib(in: entryData, path: entryPath, includeZeroOffset: false) {
-                return UnwrappedPayload(data: embedded.data, strategy: embedded.strategy)
+            if let recovered = recoverMetallibCandidate(entryData, path: entryPath, depth: depth) {
+                return recovered
             }
         }
 
@@ -1268,15 +1319,8 @@ extension MetallibParser {
             }
 
             let entryPath = "xar:\(entry.path)"
-            if hasPrefix(entryData, ascii: "MTLB") {
-                let trimmed = trimMetallibDataIfNeeded(entryData)
-                return UnwrappedPayload(data: trimmed, strategy: entryPath)
-            }
-            if let nested = unwrapMetallibPayloadIfNeeded(entryData, depth: depth) {
-                return UnwrappedPayload(data: nested.data, strategy: "\(entryPath)→\(nested.strategy)")
-            }
-            if let embedded = findEmbeddedMetallib(in: entryData, path: entryPath, includeZeroOffset: false) {
-                return UnwrappedPayload(data: embedded.data, strategy: embedded.strategy)
+            if let recovered = recoverMetallibCandidate(entryData, path: entryPath, depth: depth) {
+                return recovered
             }
         }
 

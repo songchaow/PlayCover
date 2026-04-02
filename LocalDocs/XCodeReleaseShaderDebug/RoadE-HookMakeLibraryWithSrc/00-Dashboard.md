@@ -102,6 +102,8 @@ PlayCover 主应用 (macOS)
 |  | 已将任务拆分为“通用 wrapper 剥离 / 样本采集”与“定向格式解包”两步，先优先拿到可复现的真实 payload，而不是盲猜完整格式族 | | |
 | E-005e2a | ↳ 通用 wrapper 剥离 + payload 样本落盘 | ✅ DONE | |
 |  | 已在 `MetallibParser` 增加两级 fallback：1) 对 `bplist` 递归扫描嵌套 `Data` 中的原始或 embedded `MTLB`；2) 在原始 payload / 嵌套 `Data` 中扫描 embedded `MTLB` 并按 `fileSize` 裁剪。对未识别或已 recovered 的非 `MTLB` payload，会落盘到 `~/Library/Containers/io.playcover.PlayCover/ShaderPayloadSamples/<bundleId>/`（含 `.bin`、`.txt`，`bplist` 额外导出 `.plist`）供后续离线分析 | | |
+| E-005e2a1 | ↳ 可疑 `mtlb_like` payload 二次剥离 + 样本保留 | ✅ DONE | |
+|  | 已将 `MTLB` 前缀细分为“可直接解析的 raw metallib”和“`headerSize` / `fileSize` 明显异常的 `mtlb_suspicious`”；对后者不再直接短路，而是继续保留 origin / payload sample，并统一复用 `gzip` / `zip` / `xar` / `bplist` entry 的 embedded `MTLB` 扫描路径。这样像 `headerSize=15` 这类解包后仍带伪 `MTLB` 头的 payload，不会再因为前 4 字节命中 magic 就提前停止恢复 | | |
 | E-005e2b | ↳ 基于样本补定向解包（`gzip` / `zip` / `xar` / 自定义 archive） | 🔄 IN PROGRESS | |
 |  | 已拆分为按格式逐个落地，避免在缺真实样本前一次性铺太大范围 | | |
 | E-005e2b1 | ↳ `gzip` payload 解包 + 递归恢复 | ✅ DONE | |
@@ -135,6 +137,7 @@ PlayCover 主应用 (macOS)
 - **`gzip` wrapper 解包优先走 `zlib inflateInit2(15 + 32)`**：这样能自动识别 `gzip/zlib` header，比分别手拆 header 或仅依赖高层压缩 API 更适合当前 iOS target 内的小型定向恢复逻辑；解压后继续递归跑 `bplist` / embedded `MTLB` 剥离即可
 - **`zip` wrapper 先读 central directory，再 fallback 扫 local header 更稳**：不少 ZIP entry 会把可靠的大小信息放在 central directory；只有拿不到 central directory 时，才退回顺序扫描 local file header。当前已支持 stored / deflate，两种 entry 都会继续递归尝试 `MTLB` / `gzip` / `bplist` / embedded `MTLB` 恢复
 - **`xar` 最小解包先抓 `header + zlib TOC + heap entry` 就能验证主路径**：`xar` header 使用 big-endian，TOC 是 zlib 压缩 XML，`file/data/offset/length/encoding` 足以定位 heap entry；本轮 synthetic `metallib → xar` 样本已确认运行时能命中 `xar:test.metallib` 解包路径，当前剩余 blocker 已转为 raw `MTLB headerSize=15` 解析兼容，而不是 `xar` entry 定位本身
+- **`MTLB` magic 不是 raw metallib 的充分条件**：若 `headerSize` / `fileSize` 明显不可信（如 `headerSize=15`），不能因为前 4 字节命中 `MTLB` 就停止；应继续把它当作 wrapper 候选处理，保留 origin / sample，并向内扫描 non-zero offset 的 embedded `MTLB`
 - **PlayTools 是 iOS target**：调用 `llvm-dis` 仍需走 `posix_spawn`，不能依赖 `Foundation.Process`
 
 ## 参考信息

@@ -10,6 +10,7 @@
 
 import Foundation
 import ObjectiveC
+import zlib
 
 // MARK: - MetallibParser
 
@@ -811,24 +812,46 @@ extension MetallibParser {
         return NSStringFromClass(type(of: object))
     }
 
-    private static func unwrapMetallibPayloadIfNeeded(_ data: Data) -> UnwrappedPayload? {
-        guard payloadKindLabel(for: data) != "mtlb_like" else {
+    private static let maxPayloadUnwrapDepth = 4
+    private static let maxDecompressedPayloadBytes = 64 * 1024 * 1024
+
+    private static func unwrapMetallibPayloadIfNeeded(_ data: Data, depth: Int = 0) -> UnwrappedPayload? {
+        guard depth < maxPayloadUnwrapDepth else {
             return nil
+        }
+
+        let kind = payloadKindLabel(for: data)
+        guard kind != "mtlb_like" else {
+            return nil
+        }
+
+        if kind == "gzip",
+           let decompressed = decompressGzipPayload(data) {
+            if hasPrefix(decompressed, ascii: "MTLB") {
+                let trimmed = trimMetallibDataIfNeeded(decompressed)
+                return UnwrappedPayload(data: trimmed, strategy: "gzip")
+            }
+            if let nested = unwrapMetallibPayloadIfNeeded(decompressed, depth: depth + 1) {
+                return UnwrappedPayload(data: nested.data, strategy: "gzip→\(nested.strategy)")
+            }
+            if let embedded = findEmbeddedMetallib(in: decompressed, path: "gzip", includeZeroOffset: false) {
+                return UnwrappedPayload(data: embedded.data, strategy: embedded.strategy)
+            }
+        }
+
+        if hasPrefix(data, ascii: "bplist00"),
+           let embedded = unwrapMetallibFromPropertyList(data, depth: depth + 1) {
+            return embedded
         }
 
         if let embedded = findEmbeddedMetallib(in: data, path: "payload", includeZeroOffset: false) {
             return UnwrappedPayload(data: embedded.data, strategy: embedded.strategy)
         }
 
-        if hasPrefix(data, ascii: "bplist00"),
-           let embedded = unwrapMetallibFromPropertyList(data) {
-            return embedded
-        }
-
         return nil
     }
 
-    private static func unwrapMetallibFromPropertyList(_ data: Data) -> UnwrappedPayload? {
+    private static func unwrapMetallibFromPropertyList(_ data: Data, depth: Int) -> UnwrappedPayload? {
         var format = PropertyListSerialization.PropertyListFormat.binary
         guard let propertyList = try? PropertyListSerialization.propertyList(from: data, options: [], format: &format) else {
             return nil
@@ -838,8 +861,10 @@ extension MetallibParser {
         for candidate in candidates {
             if hasPrefix(candidate.data, ascii: "MTLB") {
                 let trimmed = trimMetallibDataIfNeeded(candidate.data)
-                return UnwrappedPayload(data: trimmed, strategy: "bplist:\(candidate.path)"
-                )
+                return UnwrappedPayload(data: trimmed, strategy: "bplist:\(candidate.path)")
+            }
+            if let nested = unwrapMetallibPayloadIfNeeded(candidate.data, depth: depth) {
+                return UnwrappedPayload(data: nested.data, strategy: "bplist:\(candidate.path)→\(nested.strategy)")
             }
             if let embedded = findEmbeddedMetallib(in: candidate.data, path: "bplist:\(candidate.path)", includeZeroOffset: false) {
                 return UnwrappedPayload(data: embedded.data, strategy: embedded.strategy)
@@ -847,6 +872,61 @@ extension MetallibParser {
         }
 
         return nil
+    }
+
+    private static func decompressGzipPayload(_ data: Data) -> Data? {
+        guard !data.isEmpty, data.count <= Int(UInt32.max) else {
+            return nil
+        }
+
+        var stream = z_stream()
+        let initStatus = data.withUnsafeBytes { rawBuffer -> Int32 in
+            guard let baseAddress = rawBuffer.bindMemory(to: Bytef.self).baseAddress else {
+                return Z_DATA_ERROR
+            }
+            stream.next_in = UnsafeMutablePointer<Bytef>(mutating: baseAddress)
+            stream.avail_in = uInt(data.count)
+            return inflateInit2_(&stream, 15 + 32, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
+        }
+        guard initStatus == Z_OK else {
+            return nil
+        }
+        defer {
+            inflateEnd(&stream)
+        }
+
+        let chunkSize = 64 * 1024
+        var buffer = [UInt8](repeating: 0, count: chunkSize)
+        var output = Data()
+
+        while true {
+            let status = buffer.withUnsafeMutableBytes { rawBuffer -> Int32 in
+                guard let baseAddress = rawBuffer.bindMemory(to: Bytef.self).baseAddress else {
+                    return Z_BUF_ERROR
+                }
+                stream.next_out = baseAddress
+                stream.avail_out = uInt(chunkSize)
+                return inflate(&stream, Z_NO_FLUSH)
+            }
+
+            let producedBytes = chunkSize - Int(stream.avail_out)
+            if producedBytes > 0 {
+                output.append(contentsOf: buffer[..<producedBytes])
+                if output.count > maxDecompressedPayloadBytes {
+                    return nil
+                }
+            }
+
+            if status == Z_STREAM_END {
+                return output
+            }
+            if status != Z_OK {
+                return nil
+            }
+            if producedBytes == 0 && stream.avail_in == 0 {
+                return nil
+            }
+        }
     }
 
     private static func collectEmbeddedDataCandidates(from value: Any, path: String) -> [EmbeddedDataCandidate] {

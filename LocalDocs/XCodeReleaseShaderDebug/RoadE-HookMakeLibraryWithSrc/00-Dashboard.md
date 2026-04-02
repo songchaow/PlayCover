@@ -102,8 +102,12 @@ PlayCover 主应用 (macOS)
 |  | 已将任务拆分为“通用 wrapper 剥离 / 样本采集”与“定向格式解包”两步，先优先拿到可复现的真实 payload，而不是盲猜完整格式族 | | |
 | E-005e2a | ↳ 通用 wrapper 剥离 + payload 样本落盘 | ✅ DONE | |
 |  | 已在 `MetallibParser` 增加两级 fallback：1) 对 `bplist` 递归扫描嵌套 `Data` 中的原始或 embedded `MTLB`；2) 在原始 payload / 嵌套 `Data` 中扫描 embedded `MTLB` 并按 `fileSize` 裁剪。对未识别或已 recovered 的非 `MTLB` payload，会落盘到 `~/Library/Containers/io.playcover.PlayCover/ShaderPayloadSamples/<bundleId>/`（含 `.bin`、`.txt`，`bplist` 额外导出 `.plist`）供后续离线分析 | | |
-| E-005e2b | ↳ 基于样本补定向解包（`gzip` / `zip` / `xar` / 自定义 archive） | TODO | |
-|  | 待下一轮 live 复现后，基于落盘样本决定是否需要增加真正的压缩解包、archive 拆包或 keyed archive 定向取值逻辑 | | |
+| E-005e2b | ↳ 基于样本补定向解包（`gzip` / `zip` / `xar` / 自定义 archive） | 🔄 IN PROGRESS | |
+|  | 已拆分为按格式逐个落地，避免在缺真实样本前一次性铺太大范围 | | |
+| E-005e2b1 | ↳ `gzip` payload 解包 + 递归恢复 | ✅ DONE | |
+|  | 已在 `MetallibParser` 增加 `gzip` 解压路径（`zlib inflateInit2` 自动识别 `gzip/zlib` header），解压后会继续递归执行 `bplist` / embedded `MTLB` 剥离；支持 `gzip → MTLB`、`gzip → bplist → Data`、`gzip → wrapper → embedded MTLB` 等链路 | | |
+| E-005e2b2 | ↳ `zip` / `xar` / 自定义 archive 定向解包 | TODO | |
+|  | 待下一轮 live 复现结合落盘样本，再决定是否需要补真正的 archive 拆包或 keyed archive 定向取值逻辑 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
 |  | 首轮真实样本（原神外网包）已执行：runtime 与 capture 链路正常，`.gputrace` 成功生成，但当前 `valid_msl=0`；后续验证优先服务于 `E-005e2` 的解包实现，而不是继续盲目截帧 | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
@@ -120,6 +124,7 @@ PlayCover 主应用 (macOS)
 - **`headerSize=0` 现在应优先看 payload 指纹日志**：新日志会同时给出 `dispatch_data` 运行时类名、前 16 字节 hex / ASCII，以及 `MTLB/bplist/zip/gzip/bzip2/llvm bitcode` 等格式指纹，先确认 wrapper 形态再决定是否需要解包
 - **`E-005e2` 先做“通用剥离 + 样本落盘”比盲猜格式更稳**：当前已支持从 `bplist` 递归扫描嵌套 `Data`、以及从 payload / 嵌套 `Data` 中剥离 embedded `MTLB`；即使还原成功，也会把原始非 `MTLB` payload 落盘到 `~/Library/Containers/io.playcover.PlayCover/ShaderPayloadSamples/<bundleId>/`，便于下一轮定向补 `gzip` / `zip` / archive 解包
 - **非 `MTLB` payload 现在要连同调用栈一起看**：`ShaderPayloadSamples` 的 `.txt` 元数据会带上首次命中的 `selector` / `dispatchClass` / `callStack[*]`，能直接帮助判断 wrapper 是 App 侧、Metal 桥接层还是系统解包链路生成的
+- **`gzip` wrapper 解包优先走 `zlib inflateInit2(15 + 32)`**：这样能自动识别 `gzip/zlib` header，比分别手拆 header 或仅依赖高层压缩 API 更适合当前 iOS target 内的小型定向恢复逻辑；解压后继续递归跑 `bplist` / embedded `MTLB` 剥离即可
 - **PlayTools 是 iOS target**：调用 `llvm-dis` 仍需走 `posix_spawn`，不能依赖 `Foundation.Process`
 
 ## 参考信息

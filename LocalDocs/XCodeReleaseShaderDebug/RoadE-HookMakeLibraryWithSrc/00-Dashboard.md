@@ -36,7 +36,8 @@
 ## 当前主线
 
 - **E-005e**：当前已知 `headerSize=15` 样本的 wrapper / header-compat / function list / `OFFT` slicing 已离线打通；raw `MTLB` / `xar` / `bplist_keyed_archive` recovered payload 均已推进到 `OK modules=3 functions=3` 且 `valid_llvm=3`
-- **E-005b / E-006**：下一轮不要再回头重复 payload 恢复链路；应优先定义多 bitcode module 的源码聚合 / 替换策略，再继续 live 截帧验证
+- **E-005b**：多 bitcode module 的源码聚合 / 替换策略已落地：对全部有效 LLVM module 逐个执行 `llvm-dis + IRToMSLConverter`，去掉每份自动生成 MSL 的公共头部后聚合为单份源码，再单次 `makeLibrary(source:)` 重编译；若任一 module 失败或聚合后函数名冲突，则整体 fallback 原始 library。本轮已用 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 编译通过
+- **E-006**：下一轮应优先基于原神 live capture 复测 `valid_msl` / Shader 面板是否转正，而不是继续重复旧 payload 恢复链路
 
 ## 验证方式
 
@@ -54,7 +55,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 | 样本 | 结果 |
 |---|---|
-| 原神 6.4.0 外网包（2026-04-02） | `capture_metal_frame` 成功，`.gputrace` 已生成；`valid_msl=0`、`index 引用=875`。该轮 live 最早观测到的 blocker 是 `MetallibParser: unsupported metallib header size: 0`；同批落盘 payload 后续离线修复已先后把 `xar` / `bplist_keyed_archive` / raw `MTLB` recovered 样本从 `OK modules=0 functions=1` 推进到 `OK modules=3 functions=3`，再推进到 `valid_llvm=3`。当前已知 blocker 已从 payload 恢复 / bitcode slicing 转为多 module 替换策略（`E-005b`） |
+| 原神 6.4.0 外网包（2026-04-02） | `capture_metal_frame` 成功，`.gputrace` 已生成；当时 `valid_msl=0`、`index 引用=875`。该轮 live 最早观测到的 blocker 是 `MetallibParser: unsupported metallib header size: 0`；同批落盘 payload 后续离线修复已先后把 `xar` / `bplist_keyed_archive` / raw `MTLB` recovered 样本从 `OK modules=0 functions=1` 推进到 `OK modules=3 functions=3`，再推进到 `valid_llvm=3`。本轮已补上 `E-005b` 的多 module 聚合替换实现，但**尚未做新的 live capture 复测** |
 
 **人工确认（最终）**：Xcode 打开 `.gputrace` → 选 Draw Call → 查看 Shader 面板是否显示源码而非 `Shader source not found`。
 
@@ -69,7 +70,7 @@ PlayCover 主应用 (macOS)
         ├── MetallibParser: 解析 metallib, 提取 LLVM Bitcode
         ├── LLVMDisassembler: 调用 llvm-dis 将 bitcode → LLVM IR 文本
         ├── IRToMSLConverter: 将 LLVM IR 逐指令翻译为语义等价的 MSL 源码
-        └── ShaderSourceRecompiler: 调 makeLibrary(source:) 编译 MSL, 替换原始 library
+        └── LibrarySourceInjectionService: 聚合单/多 module MSL，并调用 `makeLibrary(source:)` 编译替换原始 library
 ```
 
 ## TODO
@@ -83,11 +84,11 @@ PlayCover 主应用 (macOS)
 |  | E-004a–d 已完成：`MetallibParser`、bitcode 提取、`llvm-dis` 工具链、PlayTools 内 `llvm-dis` 调用均已落地 | | |
 |  | E-004e 持续中：IR→MSL 主体已落地，`E-004e1/e2/e3/e4a/e4b/e4c/e4d` 均已完成；后续补洞以真实样本驱动，不再先验扩张范围 | | |
 | E-005 | **运行时 library 替换：用带源码的 library 替换原始返回** | 🔄 IN PROGRESS | |
-|  | 当前策略：优先建立“原始 `newLibraryWithData` 成功后，再尝试源码重编译并安全替换；任一步失败立即 fallback”的最小闭环 | | |
+|  | 当前策略：先让原始 `newLibraryWithData` 正常成功，再尝试 `bitcode 提取 → llvm-dis → IRToMSLConverter → 单/多 module 源码聚合 → makeLibrary(source:)`；任一步失败立即 fallback | | |
 | E-005a | ↳ `newLibraryWithData` 最小闭环接线 | ✅ DONE | |
 |  | 已在 `pc_newLibraryWithData` 主路径接入 `bitcode 提取 → llvm-dis → IRToMSLConverter → makeLibrary(source:)` 单次尝试；保留原始返回/错误语义，失败只记录日志并 fallback | | |
-| E-005b | ↳ 多 bitcode module 的源码聚合策略 | TODO | |
-|  | 当前仅在**单个 bitcode module** 场景尝试替换；多 module 先 fallback | | |
+| E-005b | ↳ 多 bitcode module 的源码聚合策略 | ✅ DONE | |
+|  | 已改为对全部有效 LLVM module 逐个执行 `llvm-dis + IRToMSLConverter`，再把多份自动生成 MSL 去头聚合成单份源码并单次重编译；若任一 module 失败或聚合后函数名冲突，则整体 fallback | | |
 | E-005c | ↳ 替换前接口一致性校验 | TODO | |
 |  | 对重编译后的 library 做函数名 / 数量 / 关键 metadata 对齐校验 | | |
 | E-005d | ↳ 缓存与观测性 | TODO | |
@@ -127,7 +128,7 @@ PlayCover 主应用 (macOS)
 | E-005e2b2b2b | ↳ 其他自定义 archive / keyed archive 真实样本驱动 | TODO | |
 |  | 继续等待下一轮 live `ShaderPayloadSamples` 真实样本，再决定是否需要补 keyed archive 之外的自定义 archive 家族，或把 `$top` 精确追踪扩成完整对象图解引用 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
-|  | 首轮真实样本（原神外网包）已执行：runtime 与 capture 链路正常，`.gputrace` 成功生成，但当前 `valid_msl=0`；在已知 payload 恢复 / bitcode slicing 打通后，后续 live 验证应优先服务于 `E-005b` 的多 module 替换策略，而不是继续重复解包链路 | | |
+|  | 首轮真实样本（原神外网包）已执行：runtime 与 capture 链路正常，`.gputrace` 成功生成，但当时 `valid_msl=0`；在已知 payload 恢复 / bitcode slicing 与 `E-005b` 多 module 聚合替换都已打通后，下一轮应优先做新的 live 复测，而不是继续重复旧解包链路 | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
 |  | 添加 `injectShaderSources` 开关到 AppSettings / AppSettingsView；添加 LLVM 工具链下载 / 状态 UI | | |
 
@@ -137,7 +138,7 @@ PlayCover 主应用 (macOS)
 - **IR metadata 是精确类型信息的主要来源**：新版 LLVM 使用 opaque pointer，很多精确参数类型只能从 `!air.vertex` / `!air.fragment` / `!air.kernel` metadata 获取
 - **`newLibraryWithData:error:` 的参数类型是 `dispatch_data_t`**：不能按 `NSData` 直接假设处理
 - **live 验证前必须刷新 GUI 和 app 注入**：`sync_playtools_xcframework.sh` 后，还需要 `build_and_install.sh` 重装 GUI，并对目标 app 执行 `remove_playtools` / `inject_playtools`，否则 live runtime 可能仍是旧版本
-- **`E-005a` 当前只做单 module 闭环**：多 module 场景尚未定义聚合策略，先回退原始 library
+- **多 module 聚合要坚持“全成全退”**：当前策略要求所有 module 都能完成 `llvm-dis + IRToMSLConverter`，再剥掉每份自动生成 MSL 的公共头部后合并为单次 `makeLibrary(source:)` 输入；若任一 module 失败或聚合后出现重名函数，宁可整体 fallback，也不要做部分替换
 - **真实 `headerSize=15` 样本里的 `OFFT` payload 是 3×`UInt64` 三元组**：前两项分别是 public/private metadata 偏移，第 3 项才是 bitcode section 内相对偏移；此前误读首个 `UInt64` 才会把 3 个 module 错切成 `0/8/16`，修正后同一样本已恢复到 `0/3552/7104` 且 `valid_llvm=3`
 - **`functionList` section 不能从 offset 0 直接按 tag 流读取**：真实 `headerSize=15` 样本在 section 开头先放 `4-byte entryCount`，每个函数 entry 再以 `4-byte tagGroupSize` 开头；此外 `functionListSize` 看起来只覆盖各 entry 的 size 总和，不包含最前面的 `entryCount`
 - **`OFFT` / `MDSZ` 这类 payload 的定长字段不要直接 `withUnsafeBytes.load(as:)`**：在 macOS/iOS 运行时可能触发未对齐访问崩溃，统一走按字节拼装的 `UInt16/32/64` helper 更稳；本轮 `MetallibParser` 已改成复用 `readUInt64`

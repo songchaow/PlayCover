@@ -271,8 +271,9 @@ class LibrarySourceInjectionService {
         return snapshot
     }
 
-    /// **E-005a**: 在 `newLibraryWithData:error:` 成功后，尝试将 bitcode 反编译为 MSL 再重编译。
-    /// 仅做最小闭环：当前仅处理单个 bitcode module，任一步失败都回退原始 library。
+    /// **E-005a / E-005b**: 在 `newLibraryWithData:error:` 成功后，
+    /// 尝试将一个或多个 bitcode module 反编译为 MSL，再聚合后单次重编译。
+    /// 当前策略保持保守：任一步失败都回退原始 library。
     func attemptLibraryReplacement(
         originalLibrary: AnyObject?,
         device: AnyObject,
@@ -287,54 +288,188 @@ class LibrarySourceInjectionService {
         guard !modules.isEmpty else {
             return nil
         }
-        guard modules.count == 1, let module = modules.first else {
-            NSLog("[PlayTools] LibrarySourceInjection: %@ — skip replacement, %d bitcode modules found (E-005b pending)",
-                  selector, modules.count)
-            return nil
-        }
-        guard module.isValidLLVMBitcode else {
-            NSLog("[PlayTools] LibrarySourceInjection: %@ — skip replacement, invalid LLVM bitcode (%@)",
-                  selector, module.summary)
+
+        let invalidModules = modules.filter { !$0.isValidLLVMBitcode }
+        guard invalidModules.isEmpty else {
+            NSLog("[PlayTools] LibrarySourceInjection: %@ — skip replacement, %d/%d modules are invalid LLVM (%@)",
+                  selector,
+                  invalidModules.count,
+                  modules.count,
+                  invalidModules.map(\.summary).joined(separator: "; "))
             return nil
         }
 
         do {
-            let irResult = try LLVMDisassembler.disassemble(module: module)
-            let conversion = try IRToMSLConverter.convert(
-                irText: irResult.irText,
-                functionNames: module.functionNames,
-                functionTypes: module.functionTypes
-            )
+            var preparedModules: [PreparedModuleReplacement] = []
+            preparedModules.reserveCapacity(modules.count)
+
+            for (index, module) in modules.enumerated() {
+                let irResult = try LLVMDisassembler.disassemble(module: module)
+                let conversion = try IRToMSLConverter.convert(
+                    irText: irResult.irText,
+                    functionNames: module.functionNames,
+                    functionTypes: module.functionTypes
+                )
+                preparedModules.append(PreparedModuleReplacement(
+                    module: module,
+                    irResult: irResult,
+                    conversion: conversion
+                ))
+                NSLog("[PlayTools] LibrarySourceInjection: %@ — prepared module %d/%d (%@, %@)",
+                      selector,
+                      index + 1,
+                      modules.count,
+                      irResult.summary,
+                      module.summary)
+            }
+
+            let aggregate = try buildAggregateReplacementSource(from: preparedModules)
 
             var compileError: NSError?
-            let replacementLibrary = compileSource(conversion.mslSource as NSString, &compileError)
+            let replacementLibrary = compileSource(aggregate.source as NSString, &compileError)
             guard let replacementLibrary else {
-                NSLog("[PlayTools] LibrarySourceInjection: %@ — source recompile failed: %@",
-                      selector, compileError?.localizedDescription ?? "unknown error")
+                NSLog("[PlayTools] LibrarySourceInjection: %@ — source recompile failed: %@ (modules=%d, sourceFuncs=%d)",
+                      selector,
+                      compileError?.localizedDescription ?? "unknown error",
+                      aggregate.moduleCount,
+                      aggregate.functionCount)
                 return nil
             }
 
-            let replacedFunctionCount: Int
-            if replacementLibrary.responds(to: NSSelectorFromString("functionNames")) {
-                let names = replacementLibrary.value(forKey: "functionNames") as? [String] ?? []
-                replacedFunctionCount = names.count
-            } else {
-                replacedFunctionCount = -1
-            }
+            let replacedFunctionCount = functionCount(of: replacementLibrary)
             let deviceClassName = NSStringFromClass(object_getClass(device)!)
-            NSLog("[PlayTools] LibrarySourceInjection: %@ — replacement success (device=%@, functions=%d, irSize=%d, mslSize=%d, module=%@)",
+            NSLog("[PlayTools] LibrarySourceInjection: %@ — replacement success (device=%@, functions=%d, modules=%d, sourceFuncs=%d, irSize=%d, mslSize=%d, moduleSummaries=%@)",
                   selector,
                   deviceClassName,
                   replacedFunctionCount,
-                  irResult.outputSize,
-                  conversion.mslSource.utf8.count,
-                  module.summary)
+                  aggregate.moduleCount,
+                  aggregate.functionCount,
+                  aggregate.totalIRSize,
+                  aggregate.source.utf8.count,
+                  aggregate.moduleSummaries)
             return replacementLibrary
         } catch {
-            NSLog("[PlayTools] LibrarySourceInjection: %@ — replacement fallback: %@ (%@)",
-                  selector, error.localizedDescription, module.summary)
+            let moduleSummaries = modules.map(\.summary).joined(separator: "; ")
+            NSLog("[PlayTools] LibrarySourceInjection: %@ — replacement fallback: %@ (modules=%d, %@)",
+                  selector,
+                  error.localizedDescription,
+                  modules.count,
+                  moduleSummaries)
             return nil
         }
+    }
+
+    private struct PreparedModuleReplacement {
+        let module: MetallibParser.BitcodeModule
+        let irResult: LLVMDisassembler.DisassemblyResult
+        let conversion: IRToMSLConverter.ConversionResult
+    }
+
+    private struct AggregateReplacementSource {
+        let source: String
+        let moduleCount: Int
+        let functionCount: Int
+        let totalIRSize: Int
+        let moduleSummaries: String
+    }
+
+    private enum ReplacementAggregationError: LocalizedError {
+        case emptyModuleBody(String)
+        case duplicateFunctionNames([String])
+
+        var errorDescription: String? {
+            switch self {
+            case .emptyModuleBody(let moduleSummary):
+                return "Aggregated MSL module body is empty: \(moduleSummary)"
+            case .duplicateFunctionNames(let names):
+                return "Duplicate MSL function names across modules: \(names.joined(separator: ", "))"
+            }
+        }
+    }
+
+    private func buildAggregateReplacementSource(
+        from preparedModules: [PreparedModuleReplacement]
+    ) throws -> AggregateReplacementSource {
+        var seenFunctionNames: Set<String> = []
+        var duplicateFunctionNames: Set<String> = []
+        for prepared in preparedModules {
+            for function in prepared.conversion.functions {
+                let sanitized = sanitizeMSLIdentifier(function.name)
+                if !seenFunctionNames.insert(sanitized).inserted {
+                    duplicateFunctionNames.insert(sanitized)
+                }
+            }
+        }
+        if !duplicateFunctionNames.isEmpty {
+            throw ReplacementAggregationError.duplicateFunctionNames(duplicateFunctionNames.sorted())
+        }
+
+        var lines: [String] = [
+            "//",
+            "// Auto-generated aggregated MSL source by PlayTools LibrarySourceInjection",
+            "// E-005b: multi-module source aggregation",
+            "// Generated at: \(ISO8601DateFormatter().string(from: Date()))",
+            "// Modules: \(preparedModules.count)",
+            "// Functions: \(preparedModules.reduce(0) { $0 + $1.conversion.functions.count })",
+            "//",
+            "",
+            "#include <metal_stdlib>",
+            "using namespace metal;",
+            ""
+        ]
+
+        for (index, prepared) in preparedModules.enumerated() {
+            let body = stripGeneratedMSLHeader(from: prepared.conversion.mslSource)
+            guard !body.isEmpty else {
+                throw ReplacementAggregationError.emptyModuleBody(prepared.module.summary)
+            }
+            lines.append("// ===== Module \(index) \(prepared.module.summary) =====")
+            lines.append(body)
+            lines.append("")
+        }
+
+        return AggregateReplacementSource(
+            source: lines.joined(separator: "\n"),
+            moduleCount: preparedModules.count,
+            functionCount: preparedModules.reduce(0) { $0 + $1.conversion.functions.count },
+            totalIRSize: preparedModules.reduce(0) { $0 + $1.irResult.outputSize },
+            moduleSummaries: preparedModules.map { $0.module.summary }.joined(separator: "; ")
+        )
+    }
+
+    private func stripGeneratedMSLHeader(from source: String) -> String {
+        let lines = source.components(separatedBy: "\n")
+        if let headerIndex = lines.firstIndex(of: "using namespace metal;") {
+            var bodyStart = headerIndex + 1
+            while bodyStart < lines.count, lines[bodyStart].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                bodyStart += 1
+            }
+            return lines[bodyStart...].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return source.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func sanitizeMSLIdentifier(_ name: String) -> String {
+        var result = ""
+        for char in name {
+            if char.isLetter || char.isNumber || char == "_" {
+                result.append(char)
+            } else {
+                result.append("_")
+            }
+        }
+        if let first = result.first, first.isNumber {
+            result = "_" + result
+        }
+        return result.isEmpty ? "_unnamed" : result
+    }
+
+    private func functionCount(of library: AnyObject) -> Int {
+        if library.responds(to: NSSelectorFromString("functionNames")) {
+            let names = library.value(forKey: "functionNames") as? [String] ?? []
+            return names.count
+        }
+        return -1
     }
 
     private func computeCacheKey(_ data: Data) -> String {

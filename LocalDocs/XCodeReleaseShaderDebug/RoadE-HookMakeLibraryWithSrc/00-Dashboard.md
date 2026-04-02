@@ -35,8 +35,8 @@
 
 ## 当前主线
 
-- **E-005e**：围绕真实 `headerSize=15` 样本继续打通 `newLibraryWithData:error:` 的 bitcode module 提取；`xar` / `bplist_keyed_archive` / raw `MTLB` 的 header-compat 恢复已离线验证
-- **E-006**：下一轮 live 验证先等待 `OK modules=0 functions=1` 继续推进，不再为已定位的 header / wrapper 问题盲目重复截帧
+- **E-005e**：当前已知 `headerSize=15` 样本的 wrapper / header-compat / function list / `OFFT` slicing 已离线打通；raw `MTLB` / `xar` / `bplist_keyed_archive` recovered payload 均已推进到 `OK modules=3 functions=3` 且 `valid_llvm=3`
+- **E-005b / E-006**：下一轮不要再回头重复 payload 恢复链路；应优先定义多 bitcode module 的源码聚合 / 替换策略，再继续 live 截帧验证
 
 ## 验证方式
 
@@ -54,7 +54,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 | 样本 | 结果 |
 |---|---|
-| 原神 6.4.0 外网包（2026-04-02） | `capture_metal_frame` 成功，`.gputrace` 已生成；`valid_msl=0`、`index 引用=875`。该轮 live 观测到的 blocker 是 `MetallibParser: unsupported metallib header size: 0`；本轮离线修复后已确认 `xar` / `bplist_keyed_archive` / raw `MTLB` 都可恢复到 `OK modules=0 functions=1`，下一 blocker 转为 bitcode module 提取 |
+| 原神 6.4.0 外网包（2026-04-02） | `capture_metal_frame` 成功，`.gputrace` 已生成；`valid_msl=0`、`index 引用=875`。该轮 live 最早观测到的 blocker 是 `MetallibParser: unsupported metallib header size: 0`；同批落盘 payload 后续离线修复已先后把 `xar` / `bplist_keyed_archive` / raw `MTLB` recovered 样本从 `OK modules=0 functions=1` 推进到 `OK modules=3 functions=3`，再推进到 `valid_llvm=3`。当前已知 blocker 已从 payload 恢复 / bitcode slicing 转为多 module 替换策略（`E-005b`） |
 
 **人工确认（最终）**：Xcode 打开 `.gputrace` → 选 Draw Call → 查看 Shader 面板是否显示源码而非 `Shader source not found`。
 
@@ -93,7 +93,9 @@ PlayCover 主应用 (macOS)
 | E-005d | ↳ 缓存与观测性 | TODO | |
 |  | 以 metallib 内容或 bitcode 模块 `(offset,size)` / hash 为键缓存处理结果，并补充 success / fallback reason 日志 | | |
 | E-005e | ↳ **非 MTLB `newLibraryWithData` payload 识别/解包** | 🔄 IN PROGRESS | |
-|  | **当前最高优先级**。wrapper / header-compat 路径与 function list 前缀解析都已离线打通，raw `MTLB` / `xar` recovered 样本现已推进到 `OK modules=3 functions=3`；下一步应继续定位 `OFFT` 相对偏移语义与 bitcode slicing，为何后两个 module 仍未命中有效 LLVM magic，而不是回头重复 wrapper 家族验证 | | |
+|  | 对当前已知真实样本，wrapper / header-compat / function list / `OFFT` slicing 已离线打通；raw `MTLB` / `xar` / `bplist_keyed_archive` recovered payload 现已推进到 `OK modules=3 functions=3` 且 `valid_llvm=3`。对这些已知样本，下一步不应再回头重复 payload 恢复链路，而应转向 `E-005b` 的多 module 替换策略；`E-005e` 后续只保留给新的未知 wrapper 样本 | | |
+| E-005e3 | ↳ `OFFT` 三元组语义校正 + bitcode slicing 修复 | ✅ DONE | |
+|  | 已确认真实 `OFFT` payload 不是单个偏移，而是 `(publicMetaOffset, privateMetaOffset, bitcodeOffset)` 三个 `UInt64`；`MetallibParser` 现改为读取第 3 项作为 bitcode 相对偏移，并统一复用按字节拼装的 `readUInt64` 避免未对齐访问。离线验证显示同一 `headerSize=15` 样本已从 `0/8/16` 错切片恢复到 `0/3552/7104`，raw / `xar` / `bplist_keyed_archive` 三种入口均为 `valid_llvm=3` | | |
 | E-005e1 | ↳ `payload` 指纹 / 前导字节诊断日志 | ✅ DONE | |
 |  | 已在 `pc_newLibraryWithData` 与 `MetallibParser.safeExtractBitcodeModules` 补充 `dispatch_data` 运行时类名、payload 前 16 字节 hex / ASCII、以及 `MTLB/bplist/zip/gzip/bzip2/llvm bitcode` 等格式指纹日志；`headerSize=0` 失败场景现在会直接带出摘要，便于下一轮 live 复现锁定真实 wrapper 形态 | | |
 | E-005e1b | ↳ 非 `MTLB` payload 上游调用栈诊断 | ✅ DONE | |
@@ -125,7 +127,7 @@ PlayCover 主应用 (macOS)
 | E-005e2b2b2b | ↳ 其他自定义 archive / keyed archive 真实样本驱动 | TODO | |
 |  | 继续等待下一轮 live `ShaderPayloadSamples` 真实样本，再决定是否需要补 keyed archive 之外的自定义 archive 家族，或把 `$top` 精确追踪扩成完整对象图解引用 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
-|  | 首轮真实样本（原神外网包）已执行：runtime 与 capture 链路正常，`.gputrace` 成功生成，但当前 `valid_msl=0`；后续验证优先服务于 `E-005e2` 的解包实现，而不是继续盲目截帧 | | |
+|  | 首轮真实样本（原神外网包）已执行：runtime 与 capture 链路正常，`.gputrace` 成功生成，但当前 `valid_msl=0`；在已知 payload 恢复 / bitcode slicing 打通后，后续 live 验证应优先服务于 `E-005b` 的多 module 替换策略，而不是继续重复解包链路 | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
 |  | 添加 `injectShaderSources` 开关到 AppSettings / AppSettingsView；添加 LLVM 工具链下载 / 状态 UI | | |
 
@@ -136,9 +138,9 @@ PlayCover 主应用 (macOS)
 - **`newLibraryWithData:error:` 的参数类型是 `dispatch_data_t`**：不能按 `NSData` 直接假设处理
 - **live 验证前必须刷新 GUI 和 app 注入**：`sync_playtools_xcframework.sh` 后，还需要 `build_and_install.sh` 重装 GUI，并对目标 app 执行 `remove_playtools` / `inject_playtools`，否则 live runtime 可能仍是旧版本
 - **`E-005a` 当前只做单 module 闭环**：多 module 场景尚未定义聚合策略，先回退原始 library
-- **原神当前的主 blocker 已从 wrapper / header 形态进一步推进到 `OFFT` 相对偏移语义 / module slicing**：`xar` / `bplist_keyed_archive` / raw `MTLB(headerSize=15)` 的恢复、header-compat 与 function list 前缀解析都已离线打通，样本已从 `OK modules=0 functions=1` 推进到 `OK modules=3 functions=3`
+- **真实 `headerSize=15` 样本里的 `OFFT` payload 是 3×`UInt64` 三元组**：前两项分别是 public/private metadata 偏移，第 3 项才是 bitcode section 内相对偏移；此前误读首个 `UInt64` 才会把 3 个 module 错切成 `0/8/16`，修正后同一样本已恢复到 `0/3552/7104` 且 `valid_llvm=3`
 - **`functionList` section 不能从 offset 0 直接按 tag 流读取**：真实 `headerSize=15` 样本在 section 开头先放 `4-byte entryCount`，每个函数 entry 再以 `4-byte tagGroupSize` 开头；此外 `functionListSize` 看起来只覆盖各 entry 的 size 总和，不包含最前面的 `entryCount`
-- **`Data` 子切片里的定长字段不要直接 `withUnsafeBytes.load(as:)`**：`OFFT` / `MDSZ` 这类 payload 在 macOS/iOS 运行时可能触发未对齐访问崩溃，统一走按字节拼装的 `UInt16/32/64` helper 更稳
+- **`OFFT` / `MDSZ` 这类 payload 的定长字段不要直接 `withUnsafeBytes.load(as:)`**：在 macOS/iOS 运行时可能触发未对齐访问崩溃，统一走按字节拼装的 `UInt16/32/64` helper 更稳；本轮 `MetallibParser` 已改成复用 `readUInt64`
 - **`headerSize=0` 现在应优先看 payload 指纹日志**：新日志会同时给出 `dispatch_data` 运行时类名、前 16 字节 hex / ASCII，以及 `MTLB/bplist/zip/gzip/bzip2/llvm bitcode` 等格式指纹，先确认 wrapper 形态再决定是否需要解包
 - **`E-005e2` 先做“通用剥离 + 样本落盘”比盲猜格式更稳**：当前已支持从 `bplist` 递归扫描嵌套 `Data`、以及从 payload / 嵌套 `Data` 中剥离 embedded `MTLB`；即使还原成功，也会把原始非 `MTLB` payload 落盘到 `~/Library/Containers/io.playcover.PlayCover/ShaderPayloadSamples/<bundleId>/`，便于下一轮定向补 `gzip` / `zip` / archive 解包
 - **非 `MTLB` payload 现在要连同调用栈一起看**：`ShaderPayloadSamples` 的 `.txt` 元数据会带上首次命中的 `selector` / `dispatchClass` / `callStack[*]`，能直接帮助判断 wrapper 是 App 侧、Metal 桥接层还是系统解包链路生成的

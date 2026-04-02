@@ -151,17 +151,22 @@ struct MetallibParser {
         }
 
         /// bitcode 偏移和大小（从 OFFT tag 提取；偏移量是相对于 bitcode section 起始位置的）
+        ///
+        /// OFFT payload 是 3 个 little-endian UInt64：
+        /// 1. public metadata 偏移
+        /// 2. private metadata 偏移
+        /// 3. bitcode section 内相对偏移
         var bitcodeOffset: UInt64? {
             guard let offtTag = tags.first(where: { $0.name == "OFFT" }) else { return nil }
-            guard offtTag.payload.count >= 8 else { return nil }
-            return offtTag.payload.withUnsafeBytes { $0.load(as: UInt64.self).littleEndian }
+            guard offtTag.payload.count >= 24 else { return nil }
+            return MetallibParser.readUInt64(offtTag.payload, offset: 16)
         }
 
         /// bitcode 数据大小（从 MDSZ tag 提取）
         var bitcodeSize: UInt64? {
             guard let mdszTag = tags.first(where: { $0.name == "MDSZ" }) else { return nil }
             guard mdszTag.payload.count >= 8 else { return nil }
-            return mdszTag.payload.withUnsafeBytes { $0.load(as: UInt64.self).littleEndian }
+            return MetallibParser.readUInt64(mdszTag.payload, offset: 0)
         }
 
         /// SHA256 hash（从 HASH tag 提取）

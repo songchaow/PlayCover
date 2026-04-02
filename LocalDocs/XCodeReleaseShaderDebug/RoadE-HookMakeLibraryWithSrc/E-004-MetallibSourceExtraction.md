@@ -239,7 +239,7 @@ repeated entry_count times:
 - PlayTools xcframework 构建通过（`BUILD SUCCEEDED`）
 - pbxproj 格式验证通过（`plutil -lint`）
 - 文件已正确添加到 PlayTools target 的 Sources build phase
-- 运行时验证需在实际 app 上测试（需 llvm-dis 已安装）
+- 2026-04-02 live：已修复 `NSHomeDirectory()` 导致的双层容器查找路径错误，原神日志已从 `llvm-dis not found` 推进到 `Failed to launch llvm-dis: Operation not permitted`；说明路径发现已命中宿主容器内的 `llvm-dis`，当前 blocker 转为 injected runtime 启动外部工具的执行权限，而不再是路径拼接本身
 
 ## E-004e 实现（已拆分）
 

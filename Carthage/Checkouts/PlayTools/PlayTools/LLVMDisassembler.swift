@@ -11,6 +11,7 @@
 //
 
 import Foundation
+import Darwin
 
 /// C environ 全局变量（posix_spawn 传递环境变量需要）
 private let posixEnviron: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?> = {
@@ -96,12 +97,24 @@ struct LLVMDisassembler {
 
     // MARK: - Known install paths
 
+    /// 解析当前登录用户的宿主 Home 目录。
+    ///
+    /// 注意：PlayTools 运行在 PlayCover 管理的 app 容器内时，`NSHomeDirectory()`
+    /// 返回的是 app 自己的容器路径，而不是 macOS 用户主目录；直接拿它去拼
+    /// `~/Library/Containers/io.playcover.PlayCover/...` 会得到错误的双层容器路径。
+    private static var hostUserHomeDirectoryPath: String {
+        let currentUID = getuid()
+        if let pw = getpwuid(currentUID), let dir = pw.pointee.pw_dir {
+            return String(cString: dir)
+        }
+        return URL(fileURLWithPath: "/Users/\(NSUserName())").path
+    }
+
     /// llvm-dis 的已知安装位置（按优先级排序）
     private static var knownLLVMDisPaths: [String] {
-        let home = NSHomeDirectory()
-        return [
+        [
             // LLVMToolManager 安装位置（PlayCover 主应用管理）
-            "\(home)/Library/Containers/io.playcover.PlayCover/llvm-tools/llvm-dis",
+            "\(hostUserHomeDirectoryPath)/Library/Containers/io.playcover.PlayCover/llvm-tools/llvm-dis",
             // Homebrew (ARM)
             "/opt/homebrew/bin/llvm-dis",
             // Homebrew (x86)
@@ -113,16 +126,44 @@ struct LLVMDisassembler {
 
     // MARK: - Public API
 
+    /// 描述某个 llvm-dis 候选路径的探测结果。
+    private static func describeLLVMDisCandidate(at path: String) -> String {
+        let fm = FileManager.default
+        let exists = fm.fileExists(atPath: path)
+        let executable = exists && fm.isExecutableFile(atPath: path)
+        let accessXOK = exists && access(path, X_OK) == 0
+        return "\(path) [exists=\(exists), isExecutable=\(executable), accessXOK=\(accessXOK)]"
+    }
+
+    /// llvm-dis 候选路径的诊断摘要。
+    private static var knownLLVMDisPathDiagnostics: [String] {
+        knownLLVMDisPaths.map { describeLLVMDisCandidate(at: $0) }
+    }
+
     /// 查找 llvm-dis 二进制路径。
-    /// 按已知路径优先级依次检查，返回第一个存在且可执行的路径。
+    ///
+    /// 优先返回首个已存在且通过 `isExecutableFile` 或 `access(X_OK)` 校验的路径；
+    /// 若候选路径已存在但执行位探测异常，也先返回它，让后续 `posix_spawn`
+    /// 给出更准确的错误，而不是过早降级成“not found”。
     static func findLLVMDis() -> String? {
         let fm = FileManager.default
+        var existingButNotExecutablePath: String?
+
         for path in knownLLVMDisPaths {
-            if fm.fileExists(atPath: path), fm.isExecutableFile(atPath: path) {
+            guard fm.fileExists(atPath: path) else {
+                continue
+            }
+            let executable = fm.isExecutableFile(atPath: path)
+            let accessXOK = access(path, X_OK) == 0
+            if executable || accessXOK {
                 return path
             }
+            if existingButNotExecutablePath == nil {
+                existingButNotExecutablePath = path
+            }
         }
-        return nil
+
+        return existingButNotExecutablePath
     }
 
     /// 将单个 BitcodeModule 反汇编为 LLVM IR 文本。
@@ -177,7 +218,7 @@ struct LLVMDisassembler {
 
         // 2. 查找 llvm-dis
         guard let llvmDisPath = findLLVMDis() else {
-            throw DisassemblerError.llvmDisNotFound(searchedPaths: knownLLVMDisPaths)
+            throw DisassemblerError.llvmDisNotFound(searchedPaths: knownLLVMDisPathDiagnostics)
         }
 
         // 3. 创建临时文件

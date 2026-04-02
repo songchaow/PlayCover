@@ -20,9 +20,21 @@
 1. 读取本文档
 2. 从 **TODO** 中选取当前最高优先级的 **一个** 未完成任务执行
 3. 若发现任务工作量过大或涉及较多子任务，**拆分到 TODO 并只完成其中一个**
-4. 执行完毕后更新本文档（任务状态、踩坑经验、参考信息）
+4. **编写或补充测试数据，用工具链实际验证**（见下方说明）
+5. 执行完毕后更新本文档（任务状态、踩坑经验、参考信息）
 
 > **严禁对着最终目标死磕，每个 agent 只完成一个任务。**
+
+### 测试验证要求
+
+每次修改 IR→MSL 转换逻辑后，**必须尽量做实际验证**，而非仅靠代码审查判断正确性：
+
+- **编写针对性的测试 Metal shader**：在 `test-data/` 下新建 `.metal` 文件，覆盖本次修改涉及的 IR 模式（如 phi 节点→写 `test_phi.metal` 含循环/分支）
+- **用工具链生成 IR 并检查**：`xcrun --sdk macosx metal -c xxx.metal -o xxx.air && llvm-dis xxx.air -o xxx.ll`，确认编译器确实生成了目标 IR 模式
+- **编译验证**：运行 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 确认 PlayTools 编译通过
+- **测试数据入库**：将 `.metal` 和 `.ll` 文件提交到 `test-data/`，供后续任务回归使用；清理中间产物（`.air`、`.metallib`）
+
+> 仅凭肉眼 review 代码容易遗漏边界情况（如编译器优化掉 phi、BB 标签格式差异等），实际编译+检查 IR 能暴露这些问题。
 
 ## 验证方式
 

@@ -1436,14 +1436,16 @@ struct IRToMSLConverter {
             return nil
         }
 
-        // 找到参数列表引用（第三个 !N 引用）
+        // 找到参数列表引用。
+        // `parseMetadataRefList(...)` 只会返回 `!N` 引用，不会把开头的 `ptr @func` 算进去；
+        // 因此这里的 refs 实际是 `[返回描述引用, 参数列表引用]`，参数列表应取第 2 个引用而不是第 3 个。
         let refs = parseMetadataRefList(content)
-        guard refs.count >= 3 else {
-            // 至少需要 函数指针 + 返回描述 + 参数列表
+        guard refs.count >= 2 else {
+            // 至少需要 返回描述 + 参数列表
             return MetadataFuncInfo(name: funcName, shaderType: shaderType, args: [])
         }
 
-        let argsNodeId = refs[2]  // 第三个引用是参数列表
+        let argsNodeId = refs[1]
         guard let argsContent = nodes[argsNodeId] else {
             return MetadataFuncInfo(name: funcName, shaderType: shaderType, args: [])
         }
@@ -2480,6 +2482,26 @@ struct IRToMSLConverter {
         return name.isEmpty ? nil : String(name)
     }
 
+    /// 从 `define ...(<params>)` 形式的 IR 签名里提取纯参数列表。
+    private static func extractIRParameterList(from irSignature: String) -> String {
+        guard let openParen = irSignature.firstIndex(of: "(") else { return irSignature }
+        var depth = 0
+        var cursor = openParen
+        while cursor < irSignature.endIndex {
+            let char = irSignature[cursor]
+            if char == "(" { depth += 1 }
+            else if char == ")" {
+                depth -= 1
+                if depth == 0 {
+                    let start = irSignature.index(after: openParen)
+                    return String(irSignature[start..<cursor])
+                }
+            }
+            cursor = irSignature.index(after: cursor)
+        }
+        return irSignature
+    }
+
     // MARK: - IR Type → MSL Type Mapping
 
     /// 将 IR 返回类型转换为 MSL 类型
@@ -2634,6 +2656,15 @@ struct IRToMSLConverter {
                 return IRToMSLConverter.irScalarTypeToMSL(def.fieldIRTypes[fieldIndex])
             }
             return nil
+        }
+
+        /// 从 insertvalue 链追踪缓存中读取指定字段值。
+        func lookupInsertedFieldValue(aggregateSSA: String, fieldIndex: Int) -> String? {
+            let key = aggregateSSA.trimmingCharacters(in: .whitespaces)
+            guard let fields = insertValueFields[key], fieldIndex >= 0, fieldIndex < fields.count else {
+                return nil
+            }
+            return fields[fieldIndex]
         }
 
         /// 将 IR 结构体类型名转换为 MSL 类型名
@@ -3143,7 +3174,8 @@ struct IRToMSLConverter {
         default: op = "??"
         }
 
-        let (type, operands) = parseBinaryOperands(rhs, skipKeywords: ["fast", "nnan", "ninf", "nsz", "arcp", "contract", "reassoc", "afn"])
+        let cleaned = rhs.replacingOccurrences(of: "\(opcode) ", with: "", options: .anchored)
+        let (type, operands) = parseBinaryOperands(cleaned, skipKeywords: ["fast", "nnan", "ninf", "nsz", "arcp", "contract", "reassoc", "afn"])
         guard operands.count >= 2 else {
             ctx.define(lhs, expr: "/* parse error: \(rhs.prefix(60)) */")
             return
@@ -3191,7 +3223,8 @@ struct IRToMSLConverter {
         default: op = "??"
         }
 
-        let (type, operands) = parseBinaryOperands(rhs, skipKeywords: ["nsw", "nuw", "exact"])
+        let cleaned = rhs.replacingOccurrences(of: "\(opcode) ", with: "", options: .anchored)
+        let (type, operands) = parseBinaryOperands(cleaned, skipKeywords: ["nsw", "nuw", "exact"])
         guard operands.count >= 2 else {
             ctx.define(lhs, expr: "/* parse error */")
             return
@@ -3392,6 +3425,7 @@ struct IRToMSLConverter {
             return
         }
         let aggType = first.type
+        let aggregateSSA = first.value.trimmingCharacters(in: .whitespaces)
         let agg = resolveIROperand(first.value, ctx: ctx)
         // 后续索引在逗号后
         let afterFirst = cleaned.dropFirst(first.rawLength)
@@ -3399,6 +3433,12 @@ struct IRToMSLConverter {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
             .compactMap { Int($0) }
+
+        if indices.count == 1,
+           let cachedField = ctx.lookupInsertedFieldValue(aggregateSSA: aggregateSSA, fieldIndex: indices[0]) {
+            ctx.define(lhs, expr: resolveIROperand(cachedField, ctx: ctx))
+            return
+        }
 
         // 判断是否为匿名聚合类型（花括号开头，非命名结构体）
         let trimmedType = aggType.trimmingCharacters(in: .whitespaces)
@@ -3414,6 +3454,9 @@ struct IRToMSLConverter {
             let fieldIdx = indices[0]
             if let fieldName = ctx.lookupFieldName(irStructType: trimmedType, fieldIndex: fieldIdx) {
                 ctx.define(lhs, expr: "\(agg).\(fieldName)")
+            } else if let def = ctx.structTypeDefs[trimmedType], def.fieldIRTypes.count == 1, fieldIdx == 0 {
+                // 单字段 wrapper（如 matrix wrapper）直接透传，避免落回非法/无意义的 `.field0`
+                ctx.define(lhs, expr: agg)
             } else {
                 ctx.define(lhs, expr: "\(agg).field\(fieldIdx)")
             }
@@ -3641,8 +3684,11 @@ struct IRToMSLConverter {
                         expr = "\(expr).\(fieldName)"
                     } else if let def = ctx.structTypeDefs[currentType],
                               fieldIdx < def.fieldIRTypes.count {
-                        // 有 IR 定义但无 metadata 名字
-                        expr = "\(expr).field\(fieldIdx)"
+                        // 单字段 wrapper（如 `%\"struct.metal::matrix\" = type { [4 x <4 x float>] }`）
+                        // 访问 field0 时直接透传到内部字段，避免继续构造 `%0.field0[...]` 这类坏路径。
+                        if !(def.fieldIRTypes.count == 1 && fieldIdx == 0) {
+                            expr = "\(expr).field\(fieldIdx)"
+                        }
                     } else {
                         expr = "\(expr).field\(fieldIdx)"
                     }
@@ -4272,23 +4318,31 @@ struct IRToMSLConverter {
         skipKeywords: [String]
     ) -> (String, [String]) {
         var s = rhs
-        // 跳过 opcode（已经在外面 strip 了）
         // 跳过 flags
         var words = s.components(separatedBy: " ").filter { !$0.isEmpty }
-        // 去掉开头的 opcode（如果还留着）
         while let first = words.first, skipKeywords.contains(first) {
             words.removeFirst()
         }
-        s = words.joined(separator: " ")
+        s = words.joined(separator: " ").trimmingCharacters(in: .whitespaces)
 
-        let parts = splitTypedOperands(s, count: 2)
-        if parts.count >= 2 {
-            return (parts[0].type, [parts[0].value, parts[1].value])
-        } else if parts.count == 1 {
-            // type op1, op2 格式（type 共享）
-            return (parts[0].type, [parts[0].value])
+        // LLVM 二元算术统一是 `<type> lhs, rhs`，第二个操作数复用前面的类型声明。
+        let (type, afterType) = parseIRType(s)
+        guard !type.isEmpty else { return ("", []) }
+
+        let afterTypeTrimmed = afterType.trimmingCharacters(in: .whitespaces)
+        let (firstOperand, remainderAfterFirst) = parseIRValue(afterTypeTrimmed)
+        guard !firstOperand.isEmpty else { return (type, []) }
+
+        var operands: [String] = [firstOperand]
+        let remainder = remainderAfterFirst.trimmingCharacters(in: .whitespaces)
+        if remainder.hasPrefix(",") {
+            let second = String(remainder.dropFirst()).trimmingCharacters(in: .whitespaces)
+            if !second.isEmpty {
+                operands.append(second)
+            }
         }
-        return ("", [])
+
+        return (type, operands)
     }
 
     /// 分割 select 的三个操作数
@@ -4301,8 +4355,34 @@ struct IRToMSLConverter {
     private static func resolveIROperand(_ operand: String, ctx: SSAContext) -> String {
         let s = operand.trimmingCharacters(in: .whitespaces)
 
-        // SSA 名
-        if s.hasPrefix("%") { return ctx.resolve(s) }
+        // SSA 名 / SSA 名后缀访问（如 `%1.xyz`、`%0.field3[0]`）
+        if s.hasPrefix("%") {
+            let direct = ctx.resolve(s)
+            if direct != s { return direct }
+
+            for separator in [".", "["] {
+                if let range = s.range(of: separator) {
+                    let base = String(s[s.startIndex..<range.lowerBound])
+                    let suffix = String(s[range.lowerBound...])
+                    let resolvedBase = ctx.resolve(base)
+                    if resolvedBase != base {
+                        return resolvedBase + suffix
+                    }
+                }
+            }
+        }
+
+        // 某些 call 参数 value 仍会残留 IR 限定词（如 `nocapture readonly %2`），
+        // 这里兜底取最后一个 SSA token 再递归解析，避免 `%N` 直接泄漏到 MSL。
+        if s.contains("%") {
+            let tailToken = s
+                .components(separatedBy: .whitespaces)
+                .last { $0.contains("%") }
+                .map { String($0) }
+            if let tailToken, !tailToken.isEmpty, tailToken != s {
+                return resolveIROperand(tailToken, ctx: ctx)
+            }
+        }
 
         // 布尔常量
         if s == "true" { return "true" }
@@ -4613,7 +4693,7 @@ struct IRToMSLConverter {
             defaultBuiltin: defaultBuiltinParam(for: func_.shaderType))
 
         let bodyStatements = translateFunctionBody(
-            func_, irParamList: func_.irSignature,
+            func_, irParamList: extractIRParameterList(from: func_.irSignature),
             structTypeDefs: structTypeDefs,
             structFieldInfo: structFieldInfo
         )

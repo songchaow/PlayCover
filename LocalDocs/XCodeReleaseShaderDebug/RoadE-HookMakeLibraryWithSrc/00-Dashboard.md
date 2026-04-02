@@ -93,6 +93,7 @@ PlayCover 主应用 (macOS)
 | E-004e1 | ↳↳ IRToMSLConverter 骨架 + stub MSL 生成 | ✅ DONE | |
 |  | 解析 IR `define` 行、推断 shader 类型、生成带正确 `[[attribute]]` 标注的 stub MSL。`IRToMSLConverter.swift` | | |
 | E-004e2 | ↳↳ addrspace → MSL 地址空间限定符完整映射 | ✅ DONE | |
+|  | `AddressSpace` 枚举完整映射 addrspace(0-6)→MSL 限定符（thread/device/constant/threadgroup/threadgroup_imageblock/ray_data/object_data），含 `isBufferAddressSpace`、`isReadOnly` 辅助属性。验证数据：test-data/test_addrspace.metal→.ll（覆盖 device/constant/threadgroup + vertex/fragment/kernel） | | |
 | E-004e3 | ↳↳ air.* 内建 → MSL 等效调用映射 | ✅ DONE | |
 |  | 84+ 个 air.* 内建映射表（数学/纹理/同步/SIMD/原子/导数/pack），含命名规则解析（strip type suffix、前缀匹配）。验证数据：test-data/test_builtins.metal→.ll | | |
 | E-004e4 | ↳↳ 完整函数体转换（IR 指令→MSL 语句）（已拆分） | 🔄 IN PROGRESS | |

@@ -37,7 +37,7 @@
 
 - **E-005e**：当前已知 `headerSize=15` 样本的 wrapper / header-compat / function list / `OFFT` slicing 已离线打通；raw `MTLB` / `xar` / `bplist_keyed_archive` recovered payload 均已推进到 `OK modules=3 functions=3` 且 `valid_llvm=3`
 - **E-005b**：多 bitcode module 的源码聚合 / 替换策略已落地：对全部有效 LLVM module 逐个执行 `llvm-dis + IRToMSLConverter`，去掉每份自动生成 MSL 的公共头部后聚合为单份源码，再单次 `makeLibrary(source:)` 重编译；若任一 module 失败或聚合后函数名冲突，则整体 fallback 原始 library。本轮已用 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 编译通过
-- **E-006**：`LLVMDisassembler` 的 runtime→host `llvm-dis` bridge 与 `makeLibrary(source:)` 前的 MSL preflight guard 均已落地，并已通过 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`、`./BuildScripts/build_gui.sh`、`./BuildScripts/test_mcp.sh RegistrationListenerHostCommandTests` 验证构建与桥接链路。2026-04-03 基于这版构建完成了 `E-006a2b` 的单轮受控 live 对照复测：按 `build_and_install.sh` 重装 GUI，并对原神执行 `pkill`、`remove_playtools` / `inject_playtools`、`launch_app` / `create_session`；`session` 在 ready 后至少维持了约 73 秒，且前 10 秒内未再复现旧的“很快 `disconnected` + 新增 `Yuanshen-*.ips`”模式。与此同时，`get_capture_status` 已返回 `available=true`，但 `trackedCommandQueueCount=0`，且 `~/Library/Containers/io.playcover.PlayCover/ShaderSourceDiagnostics/com.miHoYo.Yuanshen/` 仍未产生新的 preflight / compile failure 诊断样本。最终 app 仍退出并新增 `Yuanshen-2026-04-03-003046.ips`，对应 `session: disconnected`；新 crash 摘要为 `EXC_BREAKPOINT / SIGTRAP`，faulting thread 落在 `playcover.toucher` queue，栈顶是 `Toucher.touchcam(...)` 的 Optional unwrap。说明 preflight guard 已显著改变 live 表现，当前 blocker 不再等同于此前稳定复现的 `source recompile failed: program_source:15:16`，下一步应优先隔离 `playcover.toucher` / keymapping 干扰后再继续截帧与 `valid_msl` 验证
+- **E-006**：`LLVMDisassembler` 的 runtime→host `llvm-dis` bridge 与 `makeLibrary(source:)` 前的 MSL preflight guard 均已落地，并已通过 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`、`./BuildScripts/build_gui.sh`、`./BuildScripts/test_mcp.sh RegistrationListenerHostCommandTests` 验证构建与桥接链路。2026-04-03 基于这版构建完成了 `E-006a2b` 的单轮受控 live 对照复测：按 `build_and_install.sh` 重装 GUI，并对原神执行 `pkill`、`remove_playtools` / `inject_playtools`、`launch_app` / `create_session`；`session` 在 ready 后至少维持了约 73 秒，且前 10 秒内未再复现旧的“很快 `disconnected` + 新增 `Yuanshen-*.ips`”模式。与此同时，`get_capture_status` 已返回 `available=true`，但 `trackedCommandQueueCount=0`，且 `~/Library/Containers/io.playcover.PlayCover/ShaderSourceDiagnostics/com.miHoYo.Yuanshen/` 仍未产生新的 preflight / compile failure 诊断样本。最终 app 仍退出并新增 `Yuanshen-2026-04-03-003046.ips`，对应 `session: disconnected`；新 crash 摘要为 `EXC_BREAKPOINT / SIGTRAP`，faulting thread 落在 `playcover.toucher` queue，栈顶是 `Toucher.touchcam(...)` 的 Optional unwrap。针对这个新 blocker，本轮已把 `E-006a2c` 拆成“`E-006a2c1` 先修 `Toucher.touchcam` 的 `keyWindow` 空值崩溃”“`E-006a2c2` 再在禁用 / 绕开 keymapping 后做 live 复测”两步；其中 `E-006a2c1` 已落地：`touchcam` 在 `phase == .began` 时改为 `guard` `screen.keyWindow`，并使用 `hitTest(...) ?? window` 作为 view fallback，避免 `playcover.toucher` queue 上的强制解包崩溃。本轮已通过 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 与 `./BuildScripts/build_gui.sh` 编译验证；新的 live 复测留待 `E-006a2c2`。
 
 ## 验证方式
 
@@ -132,19 +132,23 @@ PlayCover 主应用 (macOS)
 | E-005e2b2b2b | ↳ 其他自定义 archive / keyed archive 真实样本驱动 | TODO | |
 |  | 继续等待下一轮 live `ShaderPayloadSamples` 真实样本，再决定是否需要补 keyed archive 之外的自定义 archive 家族，或把 `$top` 精确追踪扩成完整对象图解引用 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
-|  | runtime→host 的 `llvm-dis` bridge 与聚合 MSL preflight guard 均已接通并通过编译/单测验证。2026-04-03 的最新单轮 live 对照复测显示：旧的“很快 `ready -> disconnected -> source recompile failed`”模式已被打破，但 app 仍会在约 73 秒后崩溃退出，并新增 `Yuanshen-2026-04-03-003046.ips`；当前最突出的新 crash 摘要落在 `playcover.toucher` queue，而不是 `program_source:15:16` 这类已知 compile failure | | |
+|  | runtime→host 的 `llvm-dis` bridge 与聚合 MSL preflight guard 均已接通并通过编译/单测验证。2026-04-03 的最新单轮 live 对照复测显示：旧的“很快 `ready -> disconnected -> source recompile failed`”模式已被打破，但 app 仍会在约 73 秒后崩溃退出，并新增 `Yuanshen-2026-04-03-003046.ips`；当前最突出的新 crash 摘要落在 `playcover.toucher` queue，而不是 `program_source:15:16` 这类已知 compile failure。本轮已完成 `E-006a2c1` 的 `Toucher.touchcam` 空值防护并通过编译验证，下一步转向 `E-006a2c2` 的 keymapping 隔离后 live 复测 | | |
 | E-006a | ↳ 解决 injected runtime 调 `llvm-dis` 的执行权限 blocker | 🔄 IN PROGRESS | |
 |  | 已将任务拆成“host bridge 落地”和“live 复测 / blocker 重新归因”两步，避免继续在旧 `posix_spawn` 设计上空转 | | |
 | E-006a1 | ↳ runtime→host `llvm-dis` bridge 落地 | ✅ DONE | |
 |  | `RegistrationListener` 现支持 runtime→host `command`；GUI 侧 `MCPManager` / `LLVMToolManager` 已实现 `host_disassemble_bitcode` handler；`LLVMDisassembler` 改为优先走 host bridge，失败才 fallback 本地 `posix_spawn`。已通过 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`、`./BuildScripts/build_gui.sh`、`./BuildScripts/test_mcp.sh RegistrationListenerHostCommandTests` 验证 | | |
 | E-006a2 | ↳ host bridge 版本的 live 重装 / 重注入 / 截帧复测 | 🔄 IN PROGRESS | |
-|  | 已拆成“`E-006a2a` 先拦截明显非法的聚合 MSL 并落盘诊断样本”“`E-006a2b` 基于新 guard 做 live 对照复测”“`E-006a2c` 隔离 toucher / keymapping 干扰后继续截帧”三步，避免把源码无效、输入路径崩溃和 capture 条件不足混在一起 | | |
+|  | 已拆成“`E-006a2a` 先拦截明显非法的聚合 MSL 并落盘诊断样本”“`E-006a2b` 基于新 guard 做 live 对照复测”“`E-006a2c` 先修 toucher 自身崩溃，再做 keymapping 隔离后的 live 复测”三步，避免把源码无效、输入路径崩溃和 capture 条件不足混在一起 | | |
 | E-006a2a | ↳ 重编译前 preflight + 失败源码落盘 | ✅ DONE | |
 |  | `LibrarySourceInjectionService` 现会在 `makeLibrary(source:)` 前扫描聚合 MSL 中残留的 LLVM token（如 `<N x T>` / `ptr` / `addrspace` / `%...` / 原始 `i32` / `undef`），若命中则直接 fallback 原始 library，并把 `.metal` / `.txt` 样本落到 `~/Library/Containers/io.playcover.PlayCover/ShaderSourceDiagnostics/<bundleId>/`；若仍进入 compile failure，也会补 `program_source` 行列与附近上下文。已通过 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 与 `./BuildScripts/build_gui.sh` 编译验证 | | |
 | E-006a2b | ↳ 基于 preflight guard 的 live 对照复测 | ✅ DONE | |
 |  | 已按 `PLAYCOVER_INSTALL_MODE=user FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/build_and_install.sh` 重装 GUI，并对原神执行 `pkill`、`remove_playtools` / `inject_playtools`、`launch_app` / `create_session`。结果显示：`session` 不再像旧基线那样很快掉线，而是先稳定 ready，`get_capture_status` 也返回 `available=true`；但最终 app 仍在约 73 秒后退出、`session` 变为 `disconnected`，并新增 `Yuanshen-2026-04-03-003046.ips`。本轮未产出新的 `ShaderSourceDiagnostics` 样本，最新 crash 栈顶则落在 `playcover.toucher` 的 `Toucher.touchcam(...)` Optional unwrap | | |
-| E-006a2c | ↳ 隔离 `playcover.toucher` / keymapping 干扰后继续截帧 | TODO | |
-|  | 在保留当前 preflight guard 的前提下，优先禁用或绕开 toucher / keymapping 路径，再复测 `launch_app` / `create_session` / `get_capture_status` / `capture_metal_frame`，确认新的 crash 是否与 shader 注入主线无关，并继续追 `valid_msl` | | |
+| E-006a2c | ↳ 隔离 `playcover.toucher` / keymapping 干扰后继续截帧 | 🔄 IN PROGRESS | |
+|  | 已拆成“`E-006a2c1` 先修 `Toucher.touchcam` 的 `keyWindow` 空值崩溃”“`E-006a2c2` 再在禁用 / 绕开 keymapping 后做 live 复测”两步，避免把输入路径自身崩溃与 shader 注入主线混在一起 | | |
+| E-006a2c1 | ↳ `Toucher.touchcam` 空值防护 + window fallback | ✅ DONE | |
+|  | `Toucher.touchcam` 在 `phase == .began` 时现改为 `guard let window = screen.keyWindow`，若拿不到 key window 则记录日志并跳过本次 touch；拿到 window 后使用 `window.hitTest(point, with: nil) ?? window` 作为 view fallback，避免 `playcover.toucher` queue 上的 `keyWindow!` 崩溃。已通过 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 与 `./BuildScripts/build_gui.sh` 编译验证 | | |
+| E-006a2c2 | ↳ 禁用 / 绕开 keymapping 后继续 live 截帧复测 | TODO | |
+|  | 在保留当前 preflight guard 与 `E-006a2c1` 防护的前提下，优先对目标 app 关闭 `keymapping`（或等价绕开输入路径）后，再复测 `launch_app` / `create_session` / `get_capture_status` / `capture_metal_frame`，确认 toucher 路径是否已与 shader 注入主线解耦 | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
 |  | 添加 `injectShaderSources` 开关到 AppSettings / AppSettingsView；添加 LLVM 工具链下载 / 状态 UI | | |
 
@@ -175,7 +179,7 @@ PlayCover 主应用 (macOS)
 - **“`llvm-dis` 权限问题已解”不等于 Road E live 已通**：当前统一日志已能看到 `LibrarySourceInjection` 主路径稳定执行，甚至走到了 `source recompile failed`；这说明问题已经前移到 IR→MSL 产物 / fallback / 运行时稳定性层，而不是继续卡在 injected runtime 无法执行 `llvm-dis`
 - **已知坏 MSL 不要继续盲编译**：像 `program_source:15:16: expected unqualified-id` 这类稳定 compile failure，下一轮 live 前应先在聚合源码层面做 preflight，把 `<N x T>` / `ptr` / `addrspace` / `%...` / 原始 `i32` / `undef` 等 LLVM 残留直接拦下；否则会把“源码无效”和“编译/运行时副作用”两类问题混在一起，难以判断崩溃是否真由 `makeLibrary(source:)` 触发
 - **聚合 MSL 诊断要保留源码和行号上下文**：当前 `LibrarySourceInjectionService` 已把 preflight 拒绝或 compile failure 的聚合源码落到 `~/Library/Containers/io.playcover.PlayCover/ShaderSourceDiagnostics/<bundleId>/`；若错误信息包含 `program_source:line:column`，侧车 `.txt` 会一并记录对应行列和附近上下文，便于离线直接定位无效产物
-- **preflight guard 改变了 live crash 画像，不要再把所有新 crash 都默认归因到 shader 重编译**：2026-04-03 的原神单轮对照复测里，`session` 已能稳定 ready 约 73 秒、`get_capture_status` 返回 `available=true`，且没有新的 `ShaderSourceDiagnostics` 样本；最终新增的 `.ips` 栈顶落在 `playcover.toucher` queue 的 `Toucher.touchcam(...)` Optional unwrap。后续复测应先隔离 toucher / keymapping，再判断 shader 注入链路是否仍有独立 blocker
+- **先把 toucher 自身的硬崩溃口堵上，再做 keymapping 隔离 live 复测**：2026-04-03 的原神单轮对照复测显示，新 crash 栈顶落在 `playcover.toucher` queue 的 `Toucher.touchcam(...)` Optional unwrap；因此 `E-006a2c` 已先拆出 `E-006a2c1`，在 `phase == .began` 时对 `screen.keyWindow` 做 `guard`，并用 `hitTest(...) ?? window` 兜底，避免因为 key window 短暂缺失直接崩溃。完成这一步后，再对目标 app 禁用 / 绕开 keymapping 做 live 复测，更容易判断 shader 注入链路是否仍有独立 blocker
 
 ## 参考信息
 

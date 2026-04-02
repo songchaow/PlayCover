@@ -27,6 +27,17 @@ private final class LibrarySourceInjectionSwizzles: NSObject {
         let dispatchObject = data as AnyObject
         let dispatchClassName = object_getClass(dispatchObject).map(NSStringFromClass) ?? NSStringFromClass(type(of: dispatchObject))
         let payloadSummary = MetallibParser.payloadDebugSummary(metallibData)
+        if let originLog = MetallibParser.capturePayloadOriginIfNeeded(
+            metallibData,
+            selector: "newLibraryWithData:error:",
+            dispatchClassName: dispatchClassName,
+            callStackSymbols: Thread.callStackSymbols
+        ) {
+            NSLog("[PlayTools] LibrarySourceInjection: captured non-MTLB payload origin (dispatchClass=%@, payload={%@})\n%@",
+                  dispatchClassName,
+                  payloadSummary,
+                  originLog)
+        }
         LibrarySourceInjectionService.shared.logLibraryCreation(
             selector: "newLibraryWithData:error:",
             device: self,

@@ -642,9 +642,28 @@ extension MetallibParser {
         let data: Data
     }
 
+    private struct PayloadDiagnosticContext {
+        let selector: String
+        let dispatchClassName: String
+        let callStackLines: [String]
+
+        var metadataLines: [String] {
+            [
+                "originSelector=\(selector)",
+                "dispatchClass=\(dispatchClassName)",
+            ] + callStackLines
+        }
+
+        var logSummary: String {
+            callStackLines.joined(separator: "\n")
+        }
+    }
+
     private static let payloadDumpLock = NSLock()
     private static var dumpedPayloadKeys: Set<String> = []
     private static let maxPayloadDumpsPerLaunch = 8
+    private static let payloadDiagnosticContextLock = NSLock()
+    private static var payloadDiagnosticContexts: [String: PayloadDiagnosticContext] = [:]
 
     /// dispatch_data_t → Data 转换辅助方法
     static func convertDispatchData(_ dispatchData: __DispatchData) -> Data {
@@ -730,6 +749,59 @@ extension MetallibParser {
 
     private static func hasPrefix(_ data: Data, ascii: String) -> Bool {
         data.starts(with: ascii.utf8)
+    }
+
+    private static func payloadFingerprint(_ data: Data) -> String {
+        let kind = payloadKindLabel(for: data)
+        let prefixHex = data.prefix(8).map { String(format: "%02X", $0) }.joined()
+        let suffixHex = data.suffix(8).map { String(format: "%02X", $0) }.joined()
+        return "\(kind)|\(data.count)|\(prefixHex)|\(suffixHex)"
+    }
+
+    static func shouldCapturePayloadOrigin(_ data: Data) -> Bool {
+        !data.isEmpty && payloadKindLabel(for: data) != "mtlb_like"
+    }
+
+    /// **E-005e1b**: 对首次观测到的非 `MTLB` payload 记录上游调用上下文，
+    /// 便于下一轮 live 复现时直接从日志或样本元数据反推是谁喂给了 `newLibraryWithData`。
+    static func capturePayloadOriginIfNeeded(
+        _ data: Data,
+        selector: String,
+        dispatchClassName: String,
+        callStackSymbols: [String]
+    ) -> String? {
+        guard shouldCapturePayloadOrigin(data) else {
+            return nil
+        }
+
+        let key = payloadFingerprint(data)
+        let context = PayloadDiagnosticContext(
+            selector: selector,
+            dispatchClassName: dispatchClassName,
+            callStackLines: formatPayloadCallStack(callStackSymbols)
+        )
+
+        payloadDiagnosticContextLock.lock()
+        defer { payloadDiagnosticContextLock.unlock() }
+        guard payloadDiagnosticContexts[key] == nil else {
+            return nil
+        }
+        payloadDiagnosticContexts[key] = context
+        return context.logSummary
+    }
+
+    private static func formatPayloadCallStack(_ callStackSymbols: [String]) -> [String] {
+        let frames = callStackSymbols
+            .dropFirst(2)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let limitedFrames = Array(frames.prefix(12))
+        if limitedFrames.isEmpty {
+            return ["callStack=unavailable"]
+        }
+        return limitedFrames.enumerated().map { index, frame in
+            "callStack[\(index)]=\(frame)"
+        }
     }
 
     private static func objectClassName(_ object: AnyObject) -> String {
@@ -881,8 +953,7 @@ extension MetallibParser {
             return
         }
 
-        let prefixHex = data.prefix(8).map { String(format: "%02X", $0) }.joined()
-        let dumpKey = "\(kind)|\(data.count)|\(prefixHex)"
+        let dumpKey = payloadFingerprint(data)
 
         payloadDumpLock.lock()
         defer { payloadDumpLock.unlock() }
@@ -917,6 +988,14 @@ extension MetallibParser {
             if let strategy {
                 metadataLines.append("recoveredBy=\(strategy)")
             }
+
+            payloadDiagnosticContextLock.lock()
+            let diagnosticContext = payloadDiagnosticContexts[dumpKey]
+            payloadDiagnosticContextLock.unlock()
+            if let diagnosticContext {
+                metadataLines.append(contentsOf: diagnosticContext.metadataLines)
+            }
+
             try metadataLines.joined(separator: "\n").write(to: metaURL, atomically: true, encoding: .utf8)
 
             if kind == "bplist" {

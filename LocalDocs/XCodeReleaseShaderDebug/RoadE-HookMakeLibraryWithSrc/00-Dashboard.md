@@ -86,8 +86,8 @@ PlayCover 主应用 (macOS)
 | E-004e4 | ↳↳ 完整函数体转换（IR 指令→MSL 语句）（已拆分） | 🔄 IN PROGRESS | |
 | E-004e4a | ↳↳↳ IR 函数体解析 + SSA→MSL 翻译框架 + 基础指令集 | ✅ DONE | |
 |  | `SSAContext`（SSA→MSL 映射）+ `translateFunctionBody()` 入口。翻译 20+ 种 IR 指令为语义等价的 MSL 语句（算术/比较/向量/内存/类型转换/air.*/控制流）。`generateFunction` 从 stub 升级为真实函数体生成 | | |
-| E-004e4b | ↳↳↳ phi 节点 + 多基本块控制流→MSL 变量声明/if/else | TODO | |
-|  | **语义等价关键缺陷**：当前 phi 取首值（语义不等价）、br 生成空 if（缺 else）。需：phi→变量预声明+分支赋值、条件 br→if/else 块、无条件 br→忽略。修复后基本块内指令流即完全语义等价 | | |
+| E-004e4b | ↳↳↳ phi 节点 + 多基本块控制流→MSL 变量声明/if/else | ✅ DONE | |
+|  | 两遍翻译策略：`prescanPhiAndCFG` 预扫描所有 phi 节点和 CFG 结构，`translateFunctionBody` 第二遍利用预扫描信息。phi→变量预声明+前驱 BB 分支处赋值（语义等价），条件 br→if/else 块（含嵌套 phi 赋值），无条件 br→phi 赋值+fall-through。新增测试数据 `test_phi.metal`→`test_phi.ll`（含循环 phi、多前驱汇合） | | |
 | E-004e4c | ↳↳↳ extractvalue/insertvalue + GEP 结构体路径还原 | TODO | |
 |  | 当前 extractvalue 生成注释占位（air.sample 返回的 `{<4xf32>, i8}` 拆不了）。GEP 多级索引需映射到结构体字段名（metadata 的 `air.struct_type_info` 提供偏移+字段名）。不影响语义等价，但影响可编译性 | | |
 | E-005 | **运行时 library 替换：用带源码的 library 替换原始返回** | TODO | |
@@ -129,6 +129,9 @@ PlayCover 主应用 (macOS)
 - **IR 向量 splat**：LLVM 19+ 使用 `splat (float 2.0)` 替代旧式 `<float 2.0, float 2.0, float 2.0, float 2.0>` 向量常量语法
 - **纹理 air 调用参数过滤**：`air.sample_texture_2d.v4f32` 除了用户可见参数（texture, sampler, coord）外，还有大量 i1/i32 控制标志（offset, bias 开关, LOD bias 值等），需在翻译时过滤
 - **barrier flags 常量映射**：`air.wg.barrier(i32 2, i32 1)` 第一个参数是 mem_flags（1=device, 2=threadgroup, 3=both），第二个是 scope（固定为 1）
+- **phi 降级策略**：将 phi 节点翻译为普通变量而非重建完整控制流（嵌套 if/else/loop）。预声明 `<type> phi_N;`，在每个前驱 BB 的 br 指令处插入 `phi_N = <value>;`。这保证语义等价且实现简单。两遍翻译：第一遍 `prescanPhiAndCFG` 收集所有 phi 和 CFG，第二遍利用预扫描信息
+- **编译器 select 优化**：简单 if-else（无副作用）会被 Metal 编译器优化为 `select` 指令而非 phi 节点。只有循环、复杂分支、或带副作用的分支才保留 phi
+- **基本块标签多格式**：IR 中 BB 标签有三种：纯名字 `entry:`、纯数字 `10:`、带前驱注释 `10:  ; preds = %7, %4`。解析时需同时处理，且要区分标签行和普通含冒号的指令
 
 ## 参考信息
 

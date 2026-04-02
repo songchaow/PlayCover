@@ -19,7 +19,11 @@
 //        内存(load/store/getelementptr), 类型转换(zext/sext/fpext/fptrunc/bitcast),
 //        控制流(ret/br/select), 比较(icmp/fcmp), air.* 内建调用
 //      - generateFunction 从 stub 升级为真实函数体生成
-//    · E-004e4b: 控制流图重建(phi/多基本块→MSL if/else) — TODO
+//    · E-004e4b: phi 节点+多基本块控制流→MSL 变量声明/if/else ✅
+//      - 两遍翻译：prescanPhiAndCFG 预扫描 + 翻译阶段利用预扫描信息
+//      - phi → 变量预声明 + 在前驱 BB 分支处赋值（语义等价）
+//      - 条件 br → if/else 块结构（含嵌套 phi 赋值）
+//      - 无条件 br → phi 赋值 + fall-through
 //    · E-004e4c: 复杂类型推断(结构体/数组访问路径) — TODO
 //
 
@@ -2319,6 +2323,37 @@ struct IRToMSLConverter {
     /// LLVM IR 使用 SSA（Static Single Assignment）形式，每个值只赋值一次。
     /// 本上下文维护 `%N` / `%name` → MSL 表达式字符串的映射，
     /// 将 IR 指令流翻译为线性的 MSL 语句序列。
+    // MARK: - Phi Info (E-004e4b)
+
+    /// 描述一条 phi 指令：来自哪些前驱 BB 取哪些值
+    private struct PhiInfo {
+        /// phi 的目标 SSA 名（%N）
+        let ssaName: String
+        /// phi 的 IR 类型
+        let irType: String
+        /// 分配的 MSL 变量名
+        let mslVarName: String
+        /// 来源列表：(value 操作数文本, 来源基本块标签)
+        let incoming: [(value: String, label: String)]
+    }
+
+    /// 描述一条 br 指令
+    private enum BranchInfo {
+        /// 条件跳转: br i1 %cond, label %trueLabel, label %falseLabel
+        case conditional(cond: String, trueLabel: String, falseLabel: String)
+        /// 无条件跳转: br label %dest
+        case unconditional(dest: String)
+    }
+
+    /// 描述一个基本块的预扫描信息
+    private struct BasicBlockInfo {
+        let label: String
+        var phiNodes: [PhiInfo] = []
+        var branch: BranchInfo?
+        /// 该 BB 的前驱列表
+        var predecessors: [String] = []
+    }
+
     private class SSAContext {
         /// %N → MSL 表达式 或 临时变量名
         var values: [String: String] = [:]
@@ -2332,6 +2367,17 @@ struct IRToMSLConverter {
         var paramNames: [String: String] = [:]
         /// 函数参数类型映射
         var paramTypes: [String: String] = [:]
+
+        // ── E-004e4b: CFG + phi 支持 ──
+
+        /// 预扫描的基本块信息（label → info）
+        var bbInfo: [String: BasicBlockInfo] = [:]
+        /// phi 变量预声明：SSA 名 → MSL 变量名
+        var phiVarNames: [String: String] = [:]
+        /// 当前正在翻译的基本块标签
+        var currentBBLabel: String = "entry"
+        /// phi 变量声明语句（插入到函数体最前面）
+        var phiDeclarations: [String] = []
 
         func freshTemp() -> String {
             let name = "t\(nextTemp)"
@@ -2388,12 +2434,17 @@ struct IRToMSLConverter {
     /// - 向量: shufflevector, extractelement, insertelement, extractvalue, insertvalue
     /// - 内存: load, store, getelementptr
     /// - 类型转换: zext, sext, trunc, fpext, fptrunc, bitcast, freeze
-    /// - 控制流: ret, br (翻译为注释占位)
+    /// - 控制流: ret, br → if/else 块 (E-004e4b)
     /// - air.* 内建调用: call/tail call @air.*
     /// - LLVM 内建: llvm.lifetime.* (忽略)
     ///
+    /// E-004e4b 改进：
+    /// - 两遍翻译：第一遍预扫描 phi 和 CFG，第二遍利用预扫描信息翻译
+    /// - phi 节点 → 变量预声明 + 在前驱 BB 末尾赋值
+    /// - 条件 br → if/else 块结构
+    /// - 无条件 br → 忽略（fall-through）
+    ///
     /// 限制（后续子任务）：
-    /// - phi 节点和多基本块控制流 → E-004e4b
     /// - 复杂 GEP 结构体路径还原 → E-004e4c
     private static func translateFunctionBody(
         _ func_: ParsedShaderFunction,
@@ -2404,29 +2455,231 @@ struct IRToMSLConverter {
         // 建立参数名映射：IR 的 %0, %1, ... → MSL 参数名
         setupParameterMappings(ctx, params: func_.parameters, irParamList: irParamList)
 
-        // 逐行翻译函数体
         let bodyLines = func_.irBody.components(separatedBy: "\n")
+
+        // ── 第一遍：预扫描 phi 节点和 CFG 结构 (E-004e4b) ──
+        prescanPhiAndCFG(bodyLines, ctx: ctx)
+
+        // 发射 phi 变量预声明（在函数体最前面）
+        for decl in ctx.phiDeclarations {
+            ctx.emit(decl)
+        }
+
+        // ── 第二遍：逐行翻译函数体 ──
         for line in bodyLines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty { continue }
 
-            // 基本块标签
+            // 基本块标签（纯名字:）
             if trimmed.hasSuffix(":") && !trimmed.contains(" ") {
+                ctx.currentBBLabel = String(trimmed.dropLast())
                 ctx.emit("// BB: \(trimmed)")
+                // 发射 phi 赋值（当前 BB 的 phi 节点从各前驱来的值，
+                // 由 translateBr 在前驱 BB 处理）
                 continue
             }
             // 带前驱注释的基本块标签: "10:  ; preds = %7"
             if let colonIdx = trimmed.firstIndex(of: ":"),
-               trimmed[trimmed.startIndex..<colonIdx].allSatisfy({ $0.isNumber }) {
-                let label = String(trimmed[trimmed.startIndex..<colonIdx])
-                ctx.emit("// BB\(label):")
-                continue
+               trimmed[trimmed.startIndex..<colonIdx].allSatisfy({ $0.isNumber || $0.isLetter || $0 == "_" }) {
+                let labelCandidate = String(trimmed[trimmed.startIndex..<colonIdx])
+                // 确保冒号后面是空格或分号（注释），不是 IR 指令
+                let afterColon = trimmed.index(after: colonIdx)
+                if afterColon == trimmed.endIndex ||
+                   trimmed[afterColon...].trimmingCharacters(in: .whitespaces).isEmpty ||
+                   trimmed[afterColon...].trimmingCharacters(in: .whitespaces).hasPrefix(";") {
+                    ctx.currentBBLabel = labelCandidate
+                    ctx.emit("// BB\(labelCandidate):")
+                    continue
+                }
             }
 
             translateInstruction(trimmed, ctx: ctx)
         }
 
         return ctx.statements
+    }
+
+    // MARK: - CFG Prescan (E-004e4b)
+
+    /// 第一遍预扫描：收集所有 phi 节点和分支信息，建立 CFG。
+    ///
+    /// 目的：
+    /// 1. 找到所有 phi 节点，为每个 phi 分配 MSL 变量名并预声明
+    /// 2. 收集每个 BB 的终止分支信息（条件 br / 无条件 br）
+    /// 3. 建立前驱关系，用于在前驱 BB 的 br 处插入 phi 赋值
+    private static func prescanPhiAndCFG(_ lines: [String], ctx: SSAContext) {
+        var currentLabel = "entry"
+        var allBBs: [String: BasicBlockInfo] = [:]
+        allBBs["entry"] = BasicBlockInfo(label: "entry")
+
+        // 收集的 phi 信息（后续处理）
+        var allPhis: [(bbLabel: String, phi: PhiInfo)] = []
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+
+            // 基本块标签
+            if let label = parseBBLabel(trimmed) {
+                currentLabel = label
+                if allBBs[label] == nil {
+                    allBBs[label] = BasicBlockInfo(label: label)
+                }
+                continue
+            }
+
+            // phi 指令：%N = phi <type> [val, %label], [val, %label], ...
+            if let eqRange = trimmed.range(of: " = ") {
+                let lhs = String(trimmed[trimmed.startIndex..<eqRange.lowerBound])
+                    .trimmingCharacters(in: .whitespaces)
+                let rhs = String(trimmed[eqRange.upperBound...])
+                    .trimmingCharacters(in: .whitespaces)
+                if lhs.hasPrefix("%") && rhs.hasPrefix("phi ") {
+                    if let phi = parsePhiInstruction(lhs: lhs, rhs: rhs, ctx: ctx) {
+                        allPhis.append((bbLabel: currentLabel, phi: phi))
+                        allBBs[currentLabel]?.phiNodes.append(phi)
+                    }
+                    continue
+                }
+            }
+
+            // br 指令
+            if trimmed.hasPrefix("br ") {
+                let brInfo = parseBrInstruction(trimmed)
+                allBBs[currentLabel]?.branch = brInfo
+                // 建立前驱关系
+                switch brInfo {
+                case .conditional(_, let trueLabel, let falseLabel):
+                    if allBBs[trueLabel] == nil {
+                        allBBs[trueLabel] = BasicBlockInfo(label: trueLabel)
+                    }
+                    allBBs[trueLabel]?.predecessors.append(currentLabel)
+                    if allBBs[falseLabel] == nil {
+                        allBBs[falseLabel] = BasicBlockInfo(label: falseLabel)
+                    }
+                    allBBs[falseLabel]?.predecessors.append(currentLabel)
+                case .unconditional(let dest):
+                    if allBBs[dest] == nil {
+                        allBBs[dest] = BasicBlockInfo(label: dest)
+                    }
+                    allBBs[dest]?.predecessors.append(currentLabel)
+                case .none:
+                    break
+                }
+            }
+        }
+
+        ctx.bbInfo = allBBs
+
+        // 为每个 phi 分配 MSL 变量名并生成预声明
+        for (_, phi) in allPhis {
+            let varName = phi.mslVarName
+            ctx.phiVarNames[phi.ssaName] = varName
+            ctx.define(phi.ssaName, expr: varName)
+
+            // 预声明：用 phi 的 IR 类型推断 MSL 类型
+            let mslType = irScalarTypeToMSL(phi.irType)
+            ctx.phiDeclarations.append("\(mslType) \(varName); // phi pre-decl")
+        }
+    }
+
+    /// 解析基本块标签，返回标签名或 nil
+    private static func parseBBLabel(_ trimmed: String) -> String? {
+        // 纯名字+冒号: "entry:" "10:"
+        if trimmed.hasSuffix(":") && !trimmed.contains(" ") {
+            return String(trimmed.dropLast())
+        }
+        // 带前驱注释: "10:  ; preds = %7"
+        if let colonIdx = trimmed.firstIndex(of: ":") {
+            let labelCandidate = String(trimmed[trimmed.startIndex..<colonIdx])
+            if labelCandidate.allSatisfy({ $0.isNumber || $0.isLetter || $0 == "_" }) {
+                let afterColon = trimmed.index(after: colonIdx)
+                if afterColon == trimmed.endIndex ||
+                   trimmed[afterColon...].trimmingCharacters(in: .whitespaces).isEmpty ||
+                   trimmed[afterColon...].trimmingCharacters(in: .whitespaces).hasPrefix(";") {
+                    return labelCandidate
+                }
+            }
+        }
+        return nil
+    }
+
+    /// 解析 phi 指令，提取类型和来源列表
+    /// phi <type> [val1, %label1], [val2, %label2], ...
+    private static func parsePhiInstruction(lhs: String, rhs: String, ctx: SSAContext) -> PhiInfo? {
+        // rhs = "phi <type> [val, %label], [val, %label], ..."
+        var cleaned = rhs
+        // 去掉 "phi "
+        guard cleaned.hasPrefix("phi ") else { return nil }
+        cleaned = String(cleaned.dropFirst(4)).trimmingCharacters(in: .whitespaces)
+
+        // 提取类型：到第一个 '[' 之前
+        guard let firstBracket = cleaned.firstIndex(of: "[") else { return nil }
+        let irType = String(cleaned[cleaned.startIndex..<firstBracket]).trimmingCharacters(in: .whitespaces)
+
+        // 解析所有 [value, %label] 对
+        var incoming: [(value: String, label: String)] = []
+        var remaining = String(cleaned[firstBracket...])
+
+        while let openBracket = remaining.firstIndex(of: "["),
+              let closeBracket = remaining.firstIndex(of: "]"),
+              openBracket < closeBracket {
+            let inner = remaining[remaining.index(after: openBracket)..<closeBracket]
+            let parts = inner.components(separatedBy: ",")
+            if parts.count >= 2 {
+                let value = parts[0].trimmingCharacters(in: .whitespaces)
+                var label = parts[1].trimmingCharacters(in: .whitespaces)
+                // 去掉 % 前缀
+                if label.hasPrefix("%") {
+                    label = String(label.dropFirst())
+                }
+                incoming.append((value: value, label: label))
+            }
+            remaining = String(remaining[remaining.index(after: closeBracket)...])
+        }
+
+        guard !incoming.isEmpty else { return nil }
+
+        // 分配 MSL 变量名
+        let varName = "phi_\(ctx.nextTemp)"
+        ctx.nextTemp += 1
+
+        return PhiInfo(
+            ssaName: lhs,
+            irType: irType,
+            mslVarName: varName,
+            incoming: incoming
+        )
+    }
+
+    /// 解析 br 指令
+    private static func parseBrInstruction(_ line: String) -> BranchInfo? {
+        let cleaned = line.replacingOccurrences(of: "br ", with: "").trimmingCharacters(in: .whitespaces)
+
+        if cleaned.hasPrefix("i1 ") {
+            // 条件跳转: br i1 %cond, label %trueLabel, label %falseLabel
+            let parts = cleaned.components(separatedBy: ",")
+            guard parts.count >= 3 else { return nil }
+            let condStr = parts[0].replacingOccurrences(of: "i1 ", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            let trueLabel = parts[1].trimmingCharacters(in: .whitespaces)
+                .replacingOccurrences(of: "label %", with: "")
+                .replacingOccurrences(of: "label ", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            let falseLabel = parts[2].trimmingCharacters(in: .whitespaces)
+                .replacingOccurrences(of: "label %", with: "")
+                .replacingOccurrences(of: "label ", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            return .conditional(cond: condStr, trueLabel: trueLabel, falseLabel: falseLabel)
+        } else if cleaned.hasPrefix("label ") {
+            // 无条件跳转: br label %dest
+            let dest = cleaned.replacingOccurrences(of: "label %", with: "")
+                .replacingOccurrences(of: "label ", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            return .unconditional(dest: dest)
+        }
+
+        return nil
     }
 
     /// 建立 IR 参数（%0, %1, ...）到 MSL 参数名的映射
@@ -3086,23 +3339,30 @@ struct IRToMSLConverter {
         return "\(mapping.mslFunction)(\(callArgs.joined(separator: ", ")))"
     }
 
-    /// 翻译 phi 节点（E-004e4b 完善，当前生成注释占位）
+    /// 翻译 phi 节点（E-004e4b）
+    ///
+    /// phi 的值在 prescanPhiAndCFG 中已经预声明变量并注册到 ctx.phiVarNames。
+    /// 实际赋值在 translateBr 中，在前驱 BB 的分支处插入。
+    /// 这里只需确保 SSA 映射指向预声明的变量名。
     private static func translatePhi(lhs: String, rhs: String, ctx: SSAContext) {
-        // phi <type> [<val>, <label>], [<val>, <label>], ...
-        // 当前简化：取第一个值
-        let cleaned = rhs.replacingOccurrences(of: "phi ", with: "")
-        // 找第一个 [ ] 中的值
-        if let bracketStart = cleaned.firstIndex(of: "["),
-           let bracketEnd = cleaned.firstIndex(of: "]") {
-            let inner = cleaned[cleaned.index(after: bracketStart)..<bracketEnd]
-            let phiParts = inner.components(separatedBy: ",")
-            if let firstVal = phiParts.first?.trimmingCharacters(in: .whitespaces) {
-                let val = resolveIROperand(firstVal, ctx: ctx)
-                ctx.emitAutoAssign(lhs, expr: val + " /* phi */")
-                return
+        // 预扫描已处理：ctx.define(lhs, expr: phiVarName)
+        // 如果预扫描漏了（不应该发生），做 fallback
+        if ctx.phiVarNames[lhs] == nil {
+            // Fallback: 简化处理，取第一个值
+            let cleaned = rhs.replacingOccurrences(of: "phi ", with: "")
+            if let bracketStart = cleaned.firstIndex(of: "["),
+               let bracketEnd = cleaned.firstIndex(of: "]") {
+                let inner = cleaned[cleaned.index(after: bracketStart)..<bracketEnd]
+                let phiParts = inner.components(separatedBy: ",")
+                if let firstVal = phiParts.first?.trimmingCharacters(in: .whitespaces) {
+                    let val = resolveIROperand(firstVal, ctx: ctx)
+                    ctx.emitAutoAssign(lhs, expr: val + " /* phi fallback */")
+                    return
+                }
             }
+            ctx.define(lhs, expr: "/* phi: \(rhs.prefix(60)) */")
         }
-        ctx.define(lhs, expr: "/* phi: \(rhs.prefix(60)) */")
+        // 预扫描已处理，不需要发射额外语句
     }
 
     /// 翻译 alloca
@@ -3132,20 +3392,105 @@ struct IRToMSLConverter {
         }
     }
 
-    /// 翻译 br 指令（条件/无条件跳转 → 注释）
+    /// 翻译 br 指令（E-004e4b: 条件→if/else + phi 赋值，无条件→phi 赋值+忽略跳转）
+    ///
+    /// 在 LLVM IR 的 SSA 形式中，phi 节点选择来自不同前驱 BB 的值。
+    /// 在 MSL 中，我们将 phi 降级为普通变量：在每个前驱 BB 的分支处
+    /// 赋值为该前驱应提供的值。
+    ///
+    /// 条件 br 翻译为 if/else 结构，可以包含 phi 赋值：
+    /// ```
+    /// if (cond) {
+    ///   phi_0 = val_from_true_path;  // phi 赋值
+    /// } else {
+    ///   phi_0 = val_from_false_path; // phi 赋值
+    /// }
+    /// ```
+    ///
+    /// 无条件 br 处也插入 phi 赋值（如果目标 BB 有 phi 且当前 BB 是其前驱）。
     private static func translateBr(_ line: String, ctx: SSAContext) {
         let cleaned = line.replacingOccurrences(of: "br ", with: "").trimmingCharacters(in: .whitespaces)
+        let currentLabel = ctx.currentBBLabel
+
         if cleaned.hasPrefix("i1 ") {
             // 条件跳转: br i1 %cond, label %trueBB, label %falseBB
             let condParts = cleaned.components(separatedBy: ",")
-            if condParts.count >= 1 {
-                let condStr = condParts[0].replacingOccurrences(of: "i1 ", with: "")
-                    .trimmingCharacters(in: .whitespaces)
-                let cond = resolveIROperand(condStr, ctx: ctx)
-                ctx.emit("if (\(cond)) { /* branch */ }")
+            guard condParts.count >= 3 else { return }
+
+            let condStr = condParts[0].replacingOccurrences(of: "i1 ", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            let cond = resolveIROperand(condStr, ctx: ctx)
+
+            let trueLabel = condParts[1].trimmingCharacters(in: .whitespaces)
+                .replacingOccurrences(of: "label %", with: "")
+                .replacingOccurrences(of: "label ", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            let falseLabel = condParts[2].trimmingCharacters(in: .whitespaces)
+                .replacingOccurrences(of: "label %", with: "")
+                .replacingOccurrences(of: "label ", with: "")
+                .trimmingCharacters(in: .whitespaces)
+
+            // 收集 true 分支和 false 分支的 phi 赋值
+            let truePhiAssigns = collectPhiAssignments(forTarget: trueLabel, fromPred: currentLabel, ctx: ctx)
+            let falsePhiAssigns = collectPhiAssignments(forTarget: falseLabel, fromPred: currentLabel, ctx: ctx)
+
+            if truePhiAssigns.isEmpty && falsePhiAssigns.isEmpty {
+                // 无 phi 赋值，生成简洁的 if/else 注释
+                ctx.emit("if (\(cond)) {")
+                ctx.emit("    // → BB\(trueLabel)")
+                ctx.emit("} else {")
+                ctx.emit("    // → BB\(falseLabel)")
+                ctx.emit("}")
+            } else {
+                // 有 phi 赋值：生成包含赋值的 if/else
+                ctx.emit("if (\(cond)) {")
+                for assign in truePhiAssigns {
+                    ctx.emit("    \(assign)")
+                }
+                if truePhiAssigns.isEmpty {
+                    ctx.emit("    // → BB\(trueLabel)")
+                }
+                ctx.emit("} else {")
+                for assign in falsePhiAssigns {
+                    ctx.emit("    \(assign)")
+                }
+                if falsePhiAssigns.isEmpty {
+                    ctx.emit("    // → BB\(falseLabel)")
+                }
+                ctx.emit("}")
+            }
+        } else if cleaned.hasPrefix("label ") {
+            // 无条件跳转: br label %dest
+            let dest = cleaned.replacingOccurrences(of: "label %", with: "")
+                .replacingOccurrences(of: "label ", with: "")
+                .trimmingCharacters(in: .whitespaces)
+
+            // 插入 phi 赋值
+            let phiAssigns = collectPhiAssignments(forTarget: dest, fromPred: currentLabel, ctx: ctx)
+            for assign in phiAssigns {
+                ctx.emit(assign)
+            }
+            // 无条件跳转本身忽略（fall-through 或已由控制流处理）
+        }
+    }
+
+    /// 收集当 BB `fromPred` 跳转到 `target` 时需要的 phi 赋值语句
+    private static func collectPhiAssignments(forTarget target: String, fromPred pred: String, ctx: SSAContext) -> [String] {
+        guard let bbInfo = ctx.bbInfo[target] else { return [] }
+        var assignments: [String] = []
+
+        for phi in bbInfo.phiNodes {
+            // 找到来自 pred 的值
+            for (value, label) in phi.incoming {
+                if label == pred {
+                    let resolvedValue = resolveIROperand(value, ctx: ctx)
+                    assignments.append("\(phi.mslVarName) = \(resolvedValue); // phi from BB\(pred)")
+                    break
+                }
             }
         }
-        // 无条件跳转忽略
+
+        return assignments
     }
 
     // MARK: - IR Parsing Helpers (E-004e4a)

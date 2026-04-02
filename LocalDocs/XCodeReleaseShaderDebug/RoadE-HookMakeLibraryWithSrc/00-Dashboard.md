@@ -97,7 +97,7 @@ PlayCover 主应用 (macOS)
 |  | 84+ 个 air.* 内建映射表（数学/纹理/同步/SIMD/原子/导数/pack），含命名规则解析（strip type suffix、前缀匹配）。验证数据：test-data/test_builtins.metal→.ll | | |
 | E-004e4 | ↳↳ 完整函数体转换（IR 指令→MSL 语句）（已拆分） | 🔄 IN PROGRESS | |
 | E-004e4a | ↳↳↳ IR 函数体解析 + SSA→MSL 翻译框架 + 基础指令集 | ✅ DONE | |
-|  | `SSAContext`（SSA→MSL 映射）+ `translateFunctionBody()` 入口。翻译 20+ 种 IR 指令为语义等价的 MSL 语句（算术/比较/向量/内存/类型转换/air.*/控制流）。`generateFunction` 从 stub 升级为真实函数体生成 | | |
+|  | `SSAContext`（SSA→MSL 映射）+ `translateFunctionBody()` 入口。翻译 20+ 种 IR 指令为语义等价的 MSL 语句（算术/比较/向量/内存/类型转换/air.*/控制流）。`generateFunction` 从 stub 升级为真实函数体生成。验证数据：`test_instructions.metal`→`.ll`（覆盖 sdiv/udiv/srem/urem/shl/lshr/ashr/and/or/xor/sext/fptrunc/mul，fdiv→编译器优化为 fmul 倒数，frem→air.fast_fmod，trunc→i16 直接运算） | | |
 | E-004e4b | ↳↳↳ phi 节点 + 多基本块控制流→MSL 变量声明/if/else | ✅ DONE | |
 |  | 两遍翻译策略：`prescanPhiAndCFG` 预扫描所有 phi 节点和 CFG 结构，`translateFunctionBody` 第二遍利用预扫描信息。phi→变量预声明+前驱 BB 分支处赋值（语义等价），条件 br→if/else 块（含嵌套 phi 赋值），无条件 br→phi 赋值+fall-through。新增测试数据 `test_phi.metal`→`test_phi.ll`（含循环 phi、多前驱汇合） | | |
 | E-004e4c | ↳↳↳ extractvalue/insertvalue + GEP 结构体路径还原 | TODO | |
@@ -144,6 +144,8 @@ PlayCover 主应用 (macOS)
 - **phi 降级策略**：将 phi 节点翻译为普通变量而非重建完整控制流（嵌套 if/else/loop）。预声明 `<type> phi_N;`，在每个前驱 BB 的 br 指令处插入 `phi_N = <value>;`。这保证语义等价且实现简单。两遍翻译：第一遍 `prescanPhiAndCFG` 收集所有 phi 和 CFG，第二遍利用预扫描信息
 - **编译器 select 优化**：简单 if-else（无副作用）会被 Metal 编译器优化为 `select` 指令而非 phi 节点。只有循环、复杂分支、或带副作用的分支才保留 phi
 - **基本块标签多格式**：IR 中 BB 标签有三种：纯名字 `entry:`、纯数字 `10:`、带前驱注释 `10:  ; preds = %7, %4`。解析时需同时处理，且要区分标签行和普通含冒号的指令
+- **fast-math 下 fdiv/frem 不存在**：Metal 默认开启 fast-math，`fdiv` 被优化为 `fmul` 乘以倒数，`frem` 被翻译为 `air.fast_fmod` 调用。实际 metallib IR 中几乎不会出现 `fdiv`/`frem` 指令
+- **trunc 被编译器省略**：`int→short` 截断在 IR 中被优化为直接在 i16 上做 `mul`+`and`，不生成显式 `trunc` 指令。编写测试数据时注意编译器可能优化掉目标指令
 
 ## 参考信息
 

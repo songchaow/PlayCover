@@ -23,19 +23,28 @@ private final class LibrarySourceInjectionSwizzles: NSObject {
         error: UnsafeMutablePointer<NSError?>?
     ) -> AnyObject? {
         let library = self.pc_newLibraryWithData(data, error: error)
+        let metallibData = MetallibParser.convertDispatchData(data)
         LibrarySourceInjectionService.shared.logLibraryCreation(
             selector: "newLibraryWithData:error:",
             device: self,
             library: library,
-            dataSize: (data as? Data)?.count,
+            dataSize: metallibData.count,
             extraInfo: nil
         )
-        // E-004b: 提取并缓存 bitcode 模块（替代 E-004a 的纯日志解析）
-        _ = LibrarySourceInjectionService.shared.extractAndCacheBitcodeModules(
-            from: data,
+        // E-004b / E-005a: 提取 bitcode，并在安全条件下尝试重编译带源码的替换 library。
+        let modules = LibrarySourceInjectionService.shared.extractAndCacheBitcodeModules(
+            from: metallibData,
             selector: "newLibraryWithData:error:"
         )
-        return library
+        return LibrarySourceInjectionService.shared.attemptLibraryReplacement(
+            originalLibrary: library,
+            device: self,
+            modules: modules,
+            selector: "newLibraryWithData:error:",
+            compileSource: { source, compileError in
+                self.pc_newLibraryWithSource(source, options: nil, error: compileError)
+            }
+        ) ?? library
     }
 
     // MARK: 2. newLibraryWithURL:error: — 从文件 URL 加载 metallib
@@ -246,6 +255,72 @@ class LibrarySourceInjectionService {
         let snapshot = bitcodeCache
         bitcodeCacheLock.unlock()
         return snapshot
+    }
+
+    /// **E-005a**: 在 `newLibraryWithData:error:` 成功后，尝试将 bitcode 反编译为 MSL 再重编译。
+    /// 仅做最小闭环：当前仅处理单个 bitcode module，任一步失败都回退原始 library。
+    func attemptLibraryReplacement(
+        originalLibrary: AnyObject?,
+        device: AnyObject,
+        modules: [MetallibParser.BitcodeModule],
+        selector: String,
+        compileSource: (_ source: NSString, _ error: UnsafeMutablePointer<NSError?>?) -> AnyObject?
+    ) -> AnyObject? {
+        guard originalLibrary != nil else {
+            NSLog("[PlayTools] LibrarySourceInjection: %@ — skip replacement, original library creation failed", selector)
+            return nil
+        }
+        guard !modules.isEmpty else {
+            return nil
+        }
+        guard modules.count == 1, let module = modules.first else {
+            NSLog("[PlayTools] LibrarySourceInjection: %@ — skip replacement, %d bitcode modules found (E-005b pending)",
+                  selector, modules.count)
+            return nil
+        }
+        guard module.isValidLLVMBitcode else {
+            NSLog("[PlayTools] LibrarySourceInjection: %@ — skip replacement, invalid LLVM bitcode (%@)",
+                  selector, module.summary)
+            return nil
+        }
+
+        do {
+            let irResult = try LLVMDisassembler.disassemble(module: module)
+            let conversion = try IRToMSLConverter.convert(
+                irText: irResult.irText,
+                functionNames: module.functionNames,
+                functionTypes: module.functionTypes
+            )
+
+            var compileError: NSError?
+            let replacementLibrary = compileSource(conversion.mslSource as NSString, &compileError)
+            guard let replacementLibrary else {
+                NSLog("[PlayTools] LibrarySourceInjection: %@ — source recompile failed: %@",
+                      selector, compileError?.localizedDescription ?? "unknown error")
+                return nil
+            }
+
+            let replacedFunctionCount: Int
+            if replacementLibrary.responds(to: NSSelectorFromString("functionNames")) {
+                let names = replacementLibrary.value(forKey: "functionNames") as? [String] ?? []
+                replacedFunctionCount = names.count
+            } else {
+                replacedFunctionCount = -1
+            }
+            let deviceClassName = NSStringFromClass(object_getClass(device)!)
+            NSLog("[PlayTools] LibrarySourceInjection: %@ — replacement success (device=%@, functions=%d, irSize=%d, mslSize=%d, module=%@)",
+                  selector,
+                  deviceClassName,
+                  replacedFunctionCount,
+                  irResult.outputSize,
+                  conversion.mslSource.utf8.count,
+                  module.summary)
+            return replacementLibrary
+        } catch {
+            NSLog("[PlayTools] LibrarySourceInjection: %@ — replacement fallback: %@ (%@)",
+                  selector, error.localizedDescription, module.summary)
+            return nil
+        }
     }
 
     private func computeCacheKey(_ data: Data) -> String {

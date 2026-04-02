@@ -107,10 +107,10 @@ PlayCover 主应用 (macOS)
 |  | `IRToMSLConverter.swift` 将上述 4 个 opcode 接入 `translateIntCast`，其中 `fptoui`/`fptosi` 按 signed/unsigned 语义选择 `uint`/`int`、`ushort`/`short`、`ulong`/`long` 等 MSL 目标类型；新增 `irIntegerTypeToMSL(_:signed:)` 辅助方法。验证数据：`test_casts.metal`→`test_casts.ll`，并执行 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 编译通过。额外确认：Metal 编译器通常将这组转换规范化为 `air.convert.*` 调用而非原生 LLVM cast 指令 | | |
 | E-005 | **运行时 library 替换：用带源码的 library 替换原始返回**（已拆分，下一阶段主线） | 🔄 IN PROGRESS | |
 |  | 当前决策：**先转向 E-005**。优先建立“原始 `newLibraryWithData` 成功后，再尝试源码重编译并安全替换；任一步失败立即 fallback”的最小闭环，用端到端结果反向暴露 E-004e 剩余边角。 | | |
-| E-005a | ↳ `newLibraryWithData` 最小闭环接线 | TODO | |
-|  | 在 `pc_newLibraryWithData` 主路径中串起 `dispatch_data_t → Data → metallib 解析 → bitcode 提取 → llvm-dis → IRToMSLConverter → makeLibrary(source:)`；仅做单次尝试，不改变现有成功路径，任何一步失败都返回原始 library。**下个 agent 从这里开始。** | | |
+| E-005a | ↳ `newLibraryWithData` 最小闭环接线 | ✅ DONE | |
+|  | `LibrarySourceInjectionSwizzles.swift` 在 `pc_newLibraryWithData` 主路径中接入 `dispatch_data_t → Data → bitcode 提取 → llvm-dis → IRToMSLConverter → makeLibrary(source:)` 单次尝试；原始 `newLibraryWithData:error:` 先执行并保留其返回/错误语义，后续任一步失败都仅记录日志并 fallback 到原始 library。当前通过 `attemptLibraryReplacement(...)` 统一封装该闭环，并显式复用 `module.functionNames/functionTypes` 传给 IR→MSL 转换。 | | |
 | E-005b | ↳ 多 bitcode module 的源码聚合策略 | TODO | |
-|  | 明确多个 bitcode module 对应多个函数/公共定义时的 MSL 拼接方案，避免重复 boilerplate、重复 helper、符号冲突；必要时允许先退化为“仅在可安全聚合时替换”。 | | |
+|  | 当前 `E-005a` 仅在 **单个 bitcode module** 场景尝试替换；若 metallib 中存在多个 module，会记录 `E-005b pending` 并直接 fallback。后续需明确多个 module 对应多个函数/公共定义时的 MSL 拼接方案，避免重复 boilerplate、重复 helper、符号冲突；必要时允许先退化为“仅在可安全聚合时替换”。 | | |
 | E-005c | ↳ 替换前接口一致性校验 | TODO | |
 |  | 对重编译后的 library 做函数名/函数数量/关键 metadata 对齐校验；若与原始 metallib 接口不一致，则放弃替换并记录原因。 | | |
 | E-005d | ↳ 缓存与观测性 | TODO | |
@@ -164,6 +164,7 @@ PlayCover 主应用 (macOS)
 - **air.struct_type_info metadata 格式**：每个字段由 5 个 token 组成（offset, size, alignment, typeName, fieldName），如 `i32 0, i32 16, i32 0, !"float3", !"position"`。仅 buffer 参数有此信息，texture/sampler 无
 - **IR 结构体类型名映射**：`%struct.Particle` → MSL `Particle`，`%"struct.metal::matrix"` → MSL `metal::matrix`（注意 IR 中带引号的命名格式）
 - **E-004e 阶段性决策**：当前覆盖面已足以支撑进入运行时替换阶段；接下来不再凭空扩写 `IRToMSLConverter` 支持面，而是优先通过 `E-005` 最小闭环和 `E-006` 实测结果来反向定位真正会触发翻译/编译失败的 builtin 变体与边角 IR
+- **E-005a 当前只做单 module 闭环**：`pc_newLibraryWithData` 已串起 bitcode 提取 → `llvm-dis` → `IRToMSLConverter` → `makeLibrary(source:)` 的最小替换路径，但仅在 metallib 恰好只有一个 bitcode module 时才尝试替换；多 module 场景先记录 `E-005b pending` 并回退原始 library，避免在未定义聚合策略前引入错误替换
 
 ## 参考信息
 

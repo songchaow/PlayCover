@@ -174,6 +174,12 @@ class LibrarySourceInjectionService {
     /// 已观测到的 library 创建计数（按 selector 分类）
     private var creationCounts: [String: Int] = [:]
     private let countsLock = NSLock()
+    private lazy var shaderSourceDiagnosticDirectoryURL: URL = {
+        let bundleIdentifier = Bundle.main.bundleIdentifier ?? "unknown.bundle"
+        return URL(fileURLWithPath: "/Users/\(NSUserName())/Library/Containers/io.playcover.PlayCover")
+            .appendingPathComponent("ShaderSourceDiagnostics", isDirectory: true)
+            .appendingPathComponent(bundleIdentifier, isDirectory: true)
+    }()
 
     // MARK: - E-004b: Bitcode 模块缓存
 
@@ -324,15 +330,48 @@ class LibrarySourceInjectionService {
             }
 
             let aggregate = try buildAggregateReplacementSource(from: preparedModules)
+            let validationIssues = validateAggregateReplacementSource(aggregate.source)
+            if !validationIssues.isEmpty {
+                let issueSummary = validationIssues.prefix(3).map(\.summary).joined(separator: " | ")
+                let dumpPath = dumpAggregateReplacementSource(
+                    aggregate.source,
+                    selector: selector,
+                    reason: "preflight_rejected",
+                    detail: issueSummary,
+                    moduleSummaries: aggregate.moduleSummaries,
+                    validationIssues: validationIssues,
+                    compilerErrorDescription: nil
+                ) ?? "n/a"
+                NSLog("[PlayTools] LibrarySourceInjection: %@ — source preflight rejected: %@ (modules=%d, sourceFuncs=%d, dump=%@)",
+                      selector,
+                      issueSummary,
+                      aggregate.moduleCount,
+                      aggregate.functionCount,
+                      dumpPath)
+                return nil
+            }
 
             var compileError: NSError?
             let replacementLibrary = compileSource(aggregate.source as NSString, &compileError)
             guard let replacementLibrary else {
-                NSLog("[PlayTools] LibrarySourceInjection: %@ — source recompile failed: %@ (modules=%d, sourceFuncs=%d)",
+                let compilerMessage = compileError?.localizedDescription ?? "unknown error"
+                let dumpPath = dumpAggregateReplacementSource(
+                    aggregate.source,
+                    selector: selector,
+                    reason: "compile_failed",
+                    detail: compilerMessage,
+                    moduleSummaries: aggregate.moduleSummaries,
+                    validationIssues: [],
+                    compilerErrorDescription: compilerMessage
+                ) ?? "n/a"
+                let compilerContext = compileErrorContext(in: aggregate.source, errorDescription: compilerMessage)
+                NSLog("[PlayTools] LibrarySourceInjection: %@ — source recompile failed: %@ (modules=%d, sourceFuncs=%d, dump=%@%@)",
                       selector,
-                      compileError?.localizedDescription ?? "unknown error",
+                      compilerMessage,
                       aggregate.moduleCount,
-                      aggregate.functionCount)
+                      aggregate.functionCount,
+                      dumpPath,
+                      compilerContext.map { ", \($0)" } ?? "")
                 return nil
             }
 
@@ -372,6 +411,63 @@ class LibrarySourceInjectionService {
         let totalIRSize: Int
         let moduleSummaries: String
     }
+
+    private struct ReplacementSourceValidationRule {
+        let reason: String
+        let regex: NSRegularExpression
+
+        init(reason: String, pattern: String) {
+            self.reason = reason
+            self.regex = try! NSRegularExpression(pattern: pattern)
+        }
+    }
+
+    private struct ReplacementSourceValidationIssue {
+        let lineNumber: Int
+        let reason: String
+        let line: String
+
+        var summary: String {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            let preview = trimmed.count > 160 ? String(trimmed.prefix(160)) + "…" : trimmed
+            return "L\(lineNumber): \(reason) — \(preview)"
+        }
+    }
+
+    private static let replacementSourceValidationRules: [ReplacementSourceValidationRule] = [
+        ReplacementSourceValidationRule(
+            reason: "LLVM vector syntax leaked into generated MSL",
+            pattern: #"<\s*\d+\s+x\s+"#
+        ),
+        ReplacementSourceValidationRule(
+            reason: "LLVM opaque pointer token leaked into generated MSL",
+            pattern: #"(^|[^A-Za-z0-9_])ptr([^A-Za-z0-9_]|$)"#
+        ),
+        ReplacementSourceValidationRule(
+            reason: "LLVM addrspace token leaked into generated MSL",
+            pattern: #"addrspace\s*\("#
+        ),
+        ReplacementSourceValidationRule(
+            reason: "LLVM SSA or struct token leaked into generated MSL",
+            pattern: #"%[A-Za-z0-9_\.\"]+"#
+        ),
+        ReplacementSourceValidationRule(
+            reason: "LLVM raw integer type leaked into generated MSL",
+            pattern: #"(^|[^A-Za-z0-9_])(i1|i8|i16|i32|i64)([^A-Za-z0-9_]|$)"#
+        ),
+        ReplacementSourceValidationRule(
+            reason: "LLVM symbol token leaked into generated MSL",
+            pattern: #"@[A-Za-z0-9_\.\"]+"#
+        ),
+        ReplacementSourceValidationRule(
+            reason: "LLVM placeholder token leaked into generated MSL",
+            pattern: #"\b(?:undef|poison|zeroinitializer)\b"#
+        )
+    ]
+
+    private static let compilerErrorLocationRegex = try! NSRegularExpression(
+        pattern: #"program_source:(\d+):(\d+):"#
+    )
 
     private enum ReplacementAggregationError: LocalizedError {
         case emptyModuleBody(String)
@@ -447,6 +543,124 @@ class LibrarySourceInjectionService {
             return lines[bodyStart...].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         }
         return source.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func validateAggregateReplacementSource(_ source: String) -> [ReplacementSourceValidationIssue] {
+        let lines = source.components(separatedBy: "\n")
+        var issues: [ReplacementSourceValidationIssue] = []
+
+        for (index, rawLine) in lines.enumerated() {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("//") else { continue }
+
+            let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+            for rule in Self.replacementSourceValidationRules {
+                if rule.regex.firstMatch(in: trimmed, options: [], range: range) != nil {
+                    issues.append(ReplacementSourceValidationIssue(
+                        lineNumber: index + 1,
+                        reason: rule.reason,
+                        line: rawLine
+                    ))
+                    break
+                }
+            }
+
+            if issues.count >= 12 {
+                break
+            }
+        }
+
+        return issues
+    }
+
+    private func compileErrorContext(in source: String, errorDescription: String) -> String? {
+        guard let location = extractCompilerErrorLocation(from: errorDescription) else {
+            return nil
+        }
+
+        let lines = source.components(separatedBy: "\n")
+        guard location.line > 0, location.line <= lines.count else {
+            return "errorLine=\(location.line), errorColumn=\(location.column)"
+        }
+
+        let sourceLine = lines[location.line - 1].trimmingCharacters(in: .whitespacesAndNewlines)
+        return "errorLine=\(location.line), errorColumn=\(location.column), sourceLine=\(sourceLine)"
+    }
+
+    private func extractCompilerErrorLocation(from errorDescription: String) -> (line: Int, column: Int)? {
+        let range = NSRange(errorDescription.startIndex..<errorDescription.endIndex, in: errorDescription)
+        guard let match = Self.compilerErrorLocationRegex.firstMatch(in: errorDescription, options: [], range: range),
+              match.numberOfRanges == 3,
+              let lineRange = Range(match.range(at: 1), in: errorDescription),
+              let columnRange = Range(match.range(at: 2), in: errorDescription),
+              let line = Int(errorDescription[lineRange]),
+              let column = Int(errorDescription[columnRange]) else {
+            return nil
+        }
+        return (line, column)
+    }
+
+    @discardableResult
+    private func dumpAggregateReplacementSource(
+        _ source: String,
+        selector: String,
+        reason: String,
+        detail: String,
+        moduleSummaries: String,
+        validationIssues: [ReplacementSourceValidationIssue],
+        compilerErrorDescription: String?
+    ) -> String? {
+        let fileManager = FileManager.default
+        do {
+            try fileManager.createDirectory(at: shaderSourceDiagnosticDirectoryURL, withIntermediateDirectories: true)
+
+            let timestamp = ISO8601DateFormatter().string(from: Date())
+            let baseName = sanitizeDiagnosticFilenameComponent("\(timestamp)_\(selector)_\(reason)")
+            let sourceURL = shaderSourceDiagnosticDirectoryURL.appendingPathComponent("\(baseName).metal")
+            let metaURL = shaderSourceDiagnosticDirectoryURL.appendingPathComponent("\(baseName).txt")
+
+            try source.write(to: sourceURL, atomically: true, encoding: .utf8)
+
+            var metadataLines: [String] = [
+                "selector=\(selector)",
+                "reason=\(reason)",
+                "detail=\(detail)",
+                "source_bytes=\(source.utf8.count)",
+                "module_summaries=\(moduleSummaries)"
+            ]
+
+            if !validationIssues.isEmpty {
+                metadataLines.append("validation_issue_count=\(validationIssues.count)")
+                metadataLines.append(contentsOf: validationIssues.map { "validation_issue=\($0.summary)" })
+            }
+
+            if let compilerErrorDescription {
+                metadataLines.append("compiler_error=\(compilerErrorDescription)")
+                if let location = extractCompilerErrorLocation(from: compilerErrorDescription) {
+                    metadataLines.append("compiler_error_line=\(location.line)")
+                    metadataLines.append("compiler_error_column=\(location.column)")
+                    let sourceLines = source.components(separatedBy: "\n")
+                    let lowerBound = max(1, location.line - 2)
+                    let upperBound = min(sourceLines.count, location.line + 2)
+                    for lineNumber in lowerBound...upperBound {
+                        metadataLines.append(String(format: "context_%03d=%@", lineNumber, sourceLines[lineNumber - 1]))
+                    }
+                }
+            }
+
+            try metadataLines.joined(separator: "\n").write(to: metaURL, atomically: true, encoding: .utf8)
+            return sourceURL.path
+        } catch {
+            NSLog("[PlayTools] LibrarySourceInjection: failed to dump aggregate source diagnostic — %@",
+                  error.localizedDescription)
+            return nil
+        }
+    }
+
+    private func sanitizeDiagnosticFilenameComponent(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+        let sanitized = value.unicodeScalars.map { allowed.contains($0) ? String($0) : "_" }.joined()
+        return sanitized.isEmpty ? "diagnostic" : sanitized
     }
 
     private func sanitizeMSLIdentifier(_ name: String) -> String {

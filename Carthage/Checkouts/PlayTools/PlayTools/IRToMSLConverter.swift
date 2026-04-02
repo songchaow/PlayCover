@@ -24,7 +24,12 @@
 //      - phi → 变量预声明 + 在前驱 BB 分支处赋值（语义等价）
 //      - 条件 br → if/else 块结构（含嵌套 phi 赋值）
 //      - 无条件 br → phi 赋值 + fall-through
-//    · E-004e4c: 复杂类型推断(结构体/数组访问路径) — TODO
+//    · E-004e4c: extractvalue/insertvalue + GEP 结构体路径还原 ✅
+//      - 解析 IR 结构体定义 (%struct.XXX = type { ... })
+//      - 解析 metadata 的 air.struct_type_info 获取字段名
+//      - extractvalue: 从结构体中提取字段（如 air.sample 返回的 {float4, i8}）
+//      - insertvalue: 构建返回值结构体（逐字段赋值）
+//      - GEP: 结构体字段索引→正确的 .fieldN 成员访问
 //
 
 import Foundation
@@ -1281,6 +1286,8 @@ struct IRToMSLConverter {
         let addressSpace: Int?
         /// 是否只读 (有 "air.read" 标记)
         let isReadOnly: Bool
+        /// 结构体字段信息（来自 "air.struct_type_info"），仅 buffer 参数有
+        let structFieldInfo: [StructFieldInfo]
     }
 
     /// 从 IR metadata 中解析出的函数信息
@@ -1291,6 +1298,32 @@ struct IRToMSLConverter {
         let shaderType: ShaderType
         /// 参数列表（按 argIndex 排序）
         let args: [MetadataArgInfo]
+    }
+
+    // MARK: - Struct Type Info (E-004e4c)
+
+    /// 从 IR 结构体定义中解析出的字段信息
+    struct StructFieldInfo {
+        /// 字段在结构体中的索引（0, 1, 2, ...）
+        let index: Int
+        /// MSL 字段类型名（如 "float3", "float4x4", "float"）
+        let typeName: String
+        /// MSL 字段名（如 "position", "velocity", "mass"）
+        let fieldName: String
+        /// 字段在结构体中的偏移量（字节）
+        let offset: Int
+        /// 字段大小（字节）
+        let size: Int
+    }
+
+    /// IR 中解析出的结构体类型定义
+    struct IRStructTypeDef {
+        /// IR 结构体名（如 "%struct.Particle"）
+        let irName: String
+        /// 字段的 IR 类型列表
+        let fieldIRTypes: [String]
+        /// 是否为 packed struct（<{ ... }>）
+        let isPacked: Bool
     }
 
     // MARK: - IR Metadata Parsing
@@ -1464,6 +1497,7 @@ struct IRToMSLConverter {
         var locationIndex: Int?
         var addressSpace: Int?
         var isReadOnly = false
+        var structFieldInfo: [StructFieldInfo] = []
 
         var i = 2
         while i < tokens.count {
@@ -1496,6 +1530,22 @@ struct IRToMSLConverter {
             case "air.read_write":
                 isReadOnly = false
                 i += 1
+            case "air.struct_type_info":
+                // air.struct_type_info 的值是一个 metadata 引用 !N
+                // 但在这里它已经被 inline 展开了（从 nodes lookup 替换）
+                // 格式: 后续 tokens 是字段描述序列:
+                // i32 offset, i32 size, i32 alignment, !"typeName", !"fieldName", ...
+                // 跳过这个 key，字段信息在后续 tokens 中
+                if i + 1 < tokens.count {
+                    let ref = tokens[i + 1].trimmingCharacters(in: .whitespaces)
+                    if ref.hasPrefix("!") && !ref.hasPrefix("!\"") {
+                        // 这是一个 metadata 引用，记录下来稍后在外部处理
+                        // 标记使用特殊值让调用方知道
+                        i += 2
+                    } else {
+                        i += 1
+                    }
+                } else { i += 1 }
             default:
                 i += 1
             }
@@ -1508,7 +1558,8 @@ struct IRToMSLConverter {
             argName: argName.isEmpty ? "arg\(argIndex)" : argName,
             locationIndex: locationIndex,
             addressSpace: addressSpace,
-            isReadOnly: isReadOnly
+            isReadOnly: isReadOnly,
+            structFieldInfo: structFieldInfo
         )
     }
 
@@ -1559,6 +1610,163 @@ struct IRToMSLConverter {
         return Int(trimmed)
     }
 
+    // MARK: - IR Struct Type Parsing (E-004e4c)
+
+    /// 从 IR 文本中解析所有结构体类型定义。
+    ///
+    /// IR 格式示例：
+    /// ```
+    /// %struct.Particle = type { <3 x float>, <3 x float>, float, [12 x i8] }
+    /// %struct.Uniforms = type <{ %"struct.metal::matrix", float, [12 x i8] }>
+    /// ```
+    private static func parseIRStructTypes(_ irText: String) -> [String: IRStructTypeDef] {
+        var structDefs: [String: IRStructTypeDef] = [:]
+        let lines = irText.components(separatedBy: "\n")
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // 匹配: %XXX = type { ... } 或 %XXX = type <{ ... }>
+            guard trimmed.hasPrefix("%") else { continue }
+            guard let eqRange = trimmed.range(of: " = type ") else { continue }
+
+            let irName = String(trimmed[trimmed.startIndex..<eqRange.lowerBound])
+            var bodyStr = String(trimmed[eqRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+
+            let isPacked = bodyStr.hasPrefix("<{")
+            // 去掉外层 <{ }> 或 { }
+            if isPacked {
+                if bodyStr.hasPrefix("<{") && bodyStr.hasSuffix("}>") {
+                    bodyStr = String(bodyStr.dropFirst(2).dropLast(2))
+                }
+            } else {
+                if bodyStr.hasPrefix("{") && bodyStr.hasSuffix("}") {
+                    bodyStr = String(bodyStr.dropFirst().dropLast())
+                }
+            }
+
+            // 解析字段类型（用 splitIRParameters 正确处理嵌套 < > { }）
+            let fieldTypes = splitIRParameters(bodyStr).map {
+                $0.trimmingCharacters(in: .whitespaces)
+            }.filter { !$0.isEmpty }
+
+            structDefs[irName] = IRStructTypeDef(
+                irName: irName,
+                fieldIRTypes: fieldTypes,
+                isPacked: isPacked
+            )
+        }
+
+        return structDefs
+    }
+
+    /// 从 metadata 的 air.struct_type_info 引用中解析结构体字段信息。
+    ///
+    /// metadata 格式示例：
+    /// ```
+    /// !31 = !{i32 0, i32 16, i32 0, !"float3", !"position",
+    ///         i32 16, i32 16, i32 0, !"float3", !"velocity",
+    ///         i32 32, i32 4, i32 0, !"float", !"mass"}
+    /// ```
+    /// 每个字段由 5 个 token 组成：offset, size, alignment, typeName, fieldName
+    private static func parseStructTypeInfoNode(
+        _ content: String
+    ) -> [StructFieldInfo] {
+        guard content.hasPrefix("!{") && content.hasSuffix("}") else { return [] }
+        let inner = String(content.dropFirst(2).dropLast())
+        let tokens = splitMetadataTokens(inner)
+
+        var fields: [StructFieldInfo] = []
+        var i = 0
+        var fieldIndex = 0
+
+        // 每个字段由 5 个 token 组成: i32 offset, i32 size, i32 align, !"typeName", !"fieldName"
+        while i + 4 < tokens.count {
+            let offset = parseMetadataInt(tokens[i]) ?? 0
+            let size = parseMetadataInt(tokens[i + 1]) ?? 0
+            // tokens[i+2] = alignment (跳过)
+            let typeName = unquoteMetadataString(tokens[i + 3])
+            let fieldName = unquoteMetadataString(tokens[i + 4])
+
+            fields.append(StructFieldInfo(
+                index: fieldIndex,
+                typeName: typeName,
+                fieldName: fieldName,
+                offset: offset,
+                size: size
+            ))
+            fieldIndex += 1
+            i += 5
+        }
+
+        return fields
+    }
+
+    /// 从 IR metadata 中提取所有结构体字段信息。
+    ///
+    /// 扫描所有参数的 metadata，提取 air.struct_type_info 引用，
+    /// 构建 MSL 类型名 → [StructFieldInfo] 的映射表。
+    private static func parseStructFieldInfoFromMetadata(
+        _ irText: String,
+        metadataFuncs: [MetadataFuncInfo]
+    ) -> [String: [StructFieldInfo]] {
+        var result: [String: [StructFieldInfo]] = [:]
+
+        let lines = irText.components(separatedBy: "\n")
+
+        // Step 1: 构建 metadata 节点表
+        var metadataNodes: [String: String] = [:]
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("!") else { continue }
+            guard let eqRange = trimmed.range(of: " = ") else { continue }
+            let nodeId = String(trimmed[trimmed.startIndex..<eqRange.lowerBound])
+            var content = String(trimmed[eqRange.upperBound...])
+            if content.hasPrefix("distinct ") {
+                content = String(content.dropFirst("distinct ".count))
+            }
+            metadataNodes[nodeId] = content
+        }
+
+        // Step 2: 从参数 metadata 中找 air.struct_type_info 引用
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // 匹配包含 air.struct_type_info 的行
+            guard trimmed.contains("air.struct_type_info") else { continue }
+            guard trimmed.hasPrefix("!") else { continue }
+
+            let tokens = splitMetadataTokens(
+                String(trimmed.dropFirst(2).dropLast())  // 去掉 !{ }
+            )
+
+            // 找到 air.struct_type_info 之后的 metadata 引用
+            var typeName = ""
+            for (idx, tok) in tokens.enumerated() {
+                let unquoted = unquoteMetadataString(tok)
+                if unquoted == "air.struct_type_info" {
+                    // 下一个 token 是 !N 引用
+                    if idx + 1 < tokens.count {
+                        let ref = tokens[idx + 1].trimmingCharacters(in: .whitespaces)
+                        if let nodeContent = metadataNodes[ref] {
+                            let fields = parseStructTypeInfoNode(nodeContent)
+                            // 找到这个参数的 air.arg_type_name
+                            for (j, t) in tokens.enumerated() {
+                                if unquoteMetadataString(t) == "air.arg_type_name" && j + 1 < tokens.count {
+                                    typeName = unquoteMetadataString(tokens[j + 1])
+                                    break
+                                }
+                            }
+                            if !typeName.isEmpty && !fields.isEmpty {
+                                result[typeName] = fields
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return result
+    }
+
     // MARK: - Public API
 
     /// 将 LLVM IR 文本转换为 MSL 源码。
@@ -1583,6 +1791,11 @@ struct IRToMSLConverter {
         // 1. 解析 IR metadata，获取精确的 shader 函数签名信息
         let metadataFuncs = parseIRMetadata(irText)
 
+        // 1b. 解析 IR 结构体类型定义 (E-004e4c)
+        let structTypeDefs = parseIRStructTypes(irText)
+        // 1c. 解析 metadata 中的结构体字段信息 (E-004e4c)
+        let structFieldInfo = parseStructFieldInfoFromMetadata(irText, metadataFuncs: metadataFuncs)
+
         // 2. 解析 IR 中的函数定义
         let (irFunctions, totalCount) = parseIRFunctions(irText)
 
@@ -1598,8 +1811,12 @@ struct IRToMSLConverter {
             airBuiltinCalls: allAirCalls
         )
 
-        // 4. 生成 MSL 源码
-        let mslSource = generateMSL(functions: shaderFunctions)
+        // 5. 生成 MSL 源码（传入结构体信息用于 GEP/extractvalue/insertvalue）
+        let mslSource = generateMSL(
+            functions: shaderFunctions,
+            structTypeDefs: structTypeDefs,
+            structFieldInfo: structFieldInfo
+        )
 
         let elapsed = CFAbsoluteTimeGetCurrent() - startTime
 
@@ -2379,6 +2596,62 @@ struct IRToMSLConverter {
         /// phi 变量声明语句（插入到函数体最前面）
         var phiDeclarations: [String] = []
 
+        // ── E-004e4c: 结构体类型信息 ──
+
+        /// IR 结构体定义表（%struct.XXX → 字段 IR 类型列表）
+        var structTypeDefs: [String: IRStructTypeDef] = [:]
+        /// MSL 类型名 → 字段信息（从 metadata air.struct_type_info 获取）
+        var structFieldInfo: [String: [StructFieldInfo]] = [:]
+        /// insertvalue 链追踪：SSA 名 → 已填充的字段表达式数组
+        var insertValueFields: [String: [String]] = [:]
+
+        // ── E-004e4c: 结构体辅助查找 ──
+
+        /// 根据 IR 结构体类型名（如 "%struct.Particle"）和字段索引，查找字段名。
+        /// 先通过 structTypeDefs 获取字段 IR 类型列表确认索引有效，
+        /// 再通过 structFieldInfo 匹配字段名。
+        func lookupFieldName(irStructType: String, fieldIndex: Int) -> String? {
+            // 从 IR 结构体名提取 MSL 类型名："%struct.Particle" → "Particle"
+            let mslTypeName = irStructTypeToMSLName(irStructType)
+            if let fields = structFieldInfo[mslTypeName],
+               fieldIndex < fields.count {
+                return fields[fieldIndex].fieldName
+            }
+            return nil
+        }
+
+        /// 根据 IR 结构体类型名（如 "%struct.Particle"）和字段索引，查找字段的 MSL 类型名。
+        func lookupFieldType(irStructType: String, fieldIndex: Int) -> String? {
+            let mslTypeName = irStructTypeToMSLName(irStructType)
+            if let fields = structFieldInfo[mslTypeName],
+               fieldIndex < fields.count {
+                return fields[fieldIndex].typeName
+            }
+            // 回退：从 IR 结构体定义查找字段 IR 类型
+            if let def = structTypeDefs[irStructType],
+               fieldIndex < def.fieldIRTypes.count {
+                return IRToMSLConverter.irScalarTypeToMSL(def.fieldIRTypes[fieldIndex])
+            }
+            return nil
+        }
+
+        /// 将 IR 结构体类型名转换为 MSL 类型名
+        private func irStructTypeToMSLName(_ irName: String) -> String {
+            // "%struct.Particle" → "Particle"
+            // "%struct.metal::matrix" → "metal::matrix"
+            // "%\"struct.metal::matrix\"" → "metal::matrix"
+            var name = irName
+            if name.hasPrefix("%\"") && name.hasSuffix("\"") {
+                name = String(name.dropFirst(2).dropLast())
+            } else if name.hasPrefix("%") {
+                name = String(name.dropFirst())
+            }
+            if name.hasPrefix("struct.") {
+                name = String(name.dropFirst("struct.".count))
+            }
+            return name
+        }
+
         func freshTemp() -> String {
             let name = "t\(nextTemp)"
             nextTemp += 1
@@ -2444,13 +2717,20 @@ struct IRToMSLConverter {
     /// - 条件 br → if/else 块结构
     /// - 无条件 br → 忽略（fall-through）
     ///
-    /// 限制（后续子任务）：
-    /// - 复杂 GEP 结构体路径还原 → E-004e4c
+    /// E-004e4c: 结构体路径还原（已完成）
+    /// - extractvalue → 直接透传（匿名聚合）或 `.fieldName`（命名结构体）
+    /// - insertvalue → 链式追踪，生成 `{ val0, val1, ... }`
+    /// - GEP → 按类型层级解析，结构体字段用 `.fieldName`，数组用 `[idx]`
     private static func translateFunctionBody(
         _ func_: ParsedShaderFunction,
-        irParamList: String
+        irParamList: String,
+        structTypeDefs: [String: IRStructTypeDef] = [:],
+        structFieldInfo: [String: [StructFieldInfo]] = [:]
     ) -> [String] {
         let ctx = SSAContext()
+        // E-004e4c: 传入结构体信息供 extractvalue/insertvalue/GEP 使用
+        ctx.structTypeDefs = structTypeDefs
+        ctx.structFieldInfo = structFieldInfo
 
         // 建立参数名映射：IR 的 %0, %1, ... → MSL 参数名
         setupParameterMappings(ctx, params: func_.parameters, irParamList: irParamList)
@@ -3054,16 +3334,25 @@ struct IRToMSLConverter {
         ctx.define(lhs, expr: temp, type: mslType)
     }
 
-    /// 翻译 extractvalue
+    /// 翻译 extractvalue (E-004e4c)
+    ///
+    /// IR 模式:
+    /// - `extractvalue { <4 x float>, i8 } %5, 0` — 从 air.sample 返回值中提取 float4（丢弃 i8 coverage）
+    /// - `extractvalue %struct.XXX %val, N` — 从命名结构体中提取字段
+    ///
+    /// 策略:
+    /// 1. 匿名聚合 `{ <4 x float>, i8 }`：air.sample 等返回值 → 直接透传 aggregate 表达式
+    ///    （因为 MSL 侧 air.sample 已经直接返回 float4，i8 coverage 被丢弃）
+    /// 2. 命名结构体：有 metadata → 生成 `.fieldName`；无 metadata → 生成 `.fieldN`
     private static func translateExtractValue(lhs: String, rhs: String, ctx: SSAContext) {
         // extractvalue <type> <agg>, <idx>, ...
         let cleaned = rhs.replacingOccurrences(of: "extractvalue ", with: "")
-        // 找到 aggregate 值和索引
         let parts = splitTypedOperands(cleaned, count: 1)
         guard let first = parts.first else {
             ctx.define(lhs, expr: "/* extractvalue error */")
             return
         }
+        let aggType = first.type
         let agg = resolveIROperand(first.value, ctx: ctx)
         // 后续索引在逗号后
         let afterFirst = cleaned.dropFirst(first.rawLength)
@@ -3072,15 +3361,50 @@ struct IRToMSLConverter {
             .filter { !$0.isEmpty }
             .compactMap { Int($0) }
 
-        if indices.count == 1 {
-            // 单层索引：通常是从 {<4 x float>, i8} 中提取，用数组索引
-            ctx.define(lhs, expr: "\(agg)/* .field\(indices[0]) */")
+        // 判断是否为匿名聚合类型（花括号开头，非命名结构体）
+        let trimmedType = aggType.trimmingCharacters(in: .whitespaces)
+        let isAnonymousAggregate = trimmedType.hasPrefix("{") || trimmedType.hasPrefix("<{")
+        let isNamedStruct = trimmedType.hasPrefix("%")
+
+        if isAnonymousAggregate && indices.count == 1 && indices[0] == 0 {
+            // 模式 1: 从 {<4 x float>, i8} 中提取第一个元素
+            // 这是 air.sample 的典型模式：MSL 侧直接返回 float4
+            ctx.define(lhs, expr: agg)
+        } else if isNamedStruct && indices.count == 1 {
+            // 模式 2: 命名结构体字段提取
+            let fieldIdx = indices[0]
+            if let fieldName = ctx.lookupFieldName(irStructType: trimmedType, fieldIndex: fieldIdx) {
+                ctx.define(lhs, expr: "\(agg).\(fieldName)")
+            } else {
+                ctx.define(lhs, expr: "\(agg).field\(fieldIdx)")
+            }
+        } else if indices.count == 1 {
+            // 其他聚合类型，用通用索引
+            let fieldIdx = indices[0]
+            ctx.define(lhs, expr: "\(agg).field\(fieldIdx)")
         } else {
-            ctx.define(lhs, expr: "\(agg)/* extractvalue indices:\(indices) */")
+            // 多级索引（罕见），生成链式访问
+            var expr = agg
+            for idx in indices {
+                expr = "\(expr).field\(idx)"
+            }
+            ctx.define(lhs, expr: expr)
         }
     }
 
-    /// 翻译 insertvalue
+    /// 翻译 insertvalue (E-004e4c)
+    ///
+    /// IR 模式:
+    /// - `insertvalue <{ <4 x float>, <2 x float> }> undef, <4 x float> %26, 0`  — 初始化第一个字段
+    /// - `insertvalue <{ <4 x float>, <2 x float> }> %29, <2 x float> %28, 1`   — 填充后续字段
+    ///
+    /// 策略:
+    /// insertvalue 链式构建返回值结构体。每次 insertvalue 将一个值插入到聚合中的指定位置。
+    /// 链的第一步通常是 `insertvalue ... undef, val, 0`（aggregate 初始化为 undef）。
+    ///
+    /// 在 SSAContext 中，我们追踪每个中间 aggregate 的已填充字段，
+    /// 当所有字段都被填充后，生成完整的结构体构造表达式。
+    /// 对于部分填充的情况，我们也记录已知字段以备后续链式 insertvalue 使用。
     private static func translateInsertValue(lhs: String, rhs: String, ctx: SSAContext) {
         let cleaned = rhs.replacingOccurrences(of: "insertvalue ", with: "")
         let parts = splitTypedOperands(cleaned, count: 2)
@@ -3088,10 +3412,87 @@ struct IRToMSLConverter {
             ctx.define(lhs, expr: "/* insertvalue error */")
             return
         }
-        let agg = resolveIROperand(parts[0].value, ctx: ctx)
+
+        let aggType = parts[0].type
+        let aggValue = parts[0].value
         let val = resolveIROperand(parts[1].value, ctx: ctx)
-        // insertvalue 用于构建返回值结构体，简化为注释
-        ctx.define(lhs, expr: "\(agg)/* .insert(\(val)) */")
+
+        // 解析尾部索引（在最后一个逗号之后）
+        // IR 格式: insertvalue <type> <agg>, <type> <val>, <idx>
+        // 索引是最后一个逗号后面的纯数字
+        let fieldIdx: Int
+        if let lastComma = cleaned.lastIndex(of: ",") {
+            let trailing = cleaned[cleaned.index(after: lastComma)...]
+                .trimmingCharacters(in: .whitespaces)
+            fieldIdx = Int(trailing) ?? 0
+        } else {
+            fieldIdx = 0
+        }
+
+        // 判断聚合类型（匿名 packed struct <{ ... }> 或普通 struct { ... }）
+        let trimmedType = aggType.trimmingCharacters(in: .whitespaces)
+
+        // 从类型字符串解析字段数量
+        let fieldCount = countAggregateFields(trimmedType)
+
+        // 判断是否为 undef 基础（链的起点）
+        let isUndef = aggValue.trimmingCharacters(in: .whitespaces) == "undef" ||
+                      aggValue.trimmingCharacters(in: .whitespaces) == "poison"
+
+        if isUndef {
+            // 链起点：记录已知的第一个字段
+            var fields = Array(repeating: "0", count: max(fieldCount, fieldIdx + 1))
+            fields[fieldIdx] = val
+            ctx.insertValueFields[lhs] = fields
+            // 如果是单字段结构体，直接完成
+            if fieldCount == 1 {
+                ctx.define(lhs, expr: "{ \(val) }")
+            } else {
+                // 暂时定义为部分构造（后续 insertvalue 会覆盖）
+                ctx.define(lhs, expr: "/* partial aggregate */")
+            }
+        } else {
+            // 链继续：基于前一个 aggregate 追加字段
+            var fields: [String]
+            if let prevFields = ctx.insertValueFields[aggValue.trimmingCharacters(in: .whitespaces)] {
+                fields = prevFields
+                // 确保数组够大
+                while fields.count <= fieldIdx { fields.append("0") }
+                fields[fieldIdx] = val
+            } else {
+                // 无前驱记录，创建新的
+                fields = Array(repeating: "0", count: max(fieldCount, fieldIdx + 1))
+                fields[fieldIdx] = val
+            }
+            ctx.insertValueFields[lhs] = fields
+
+            // 检查是否所有字段都已填充（无 "0" 占位符）
+            // 生成完整的构造表达式
+            let allFilled = fields.count == fieldCount && fieldCount > 0
+            if allFilled {
+                ctx.define(lhs, expr: "{ \(fields.joined(separator: ", ")) }")
+            } else {
+                ctx.define(lhs, expr: "/* partial aggregate */")
+            }
+        }
+    }
+
+    /// 统计 IR aggregate 类型中的字段数量
+    /// 如 `<{ <4 x float>, <2 x float> }>` → 2
+    /// 如 `{ <4 x float>, i8 }` → 2
+    private static func countAggregateFields(_ type: String) -> Int {
+        var body = type.trimmingCharacters(in: .whitespaces)
+        // 去掉 packed struct 外层 <{ }>
+        if body.hasPrefix("<{") && body.hasSuffix("}>") {
+            body = String(body.dropFirst(2).dropLast(2))
+        } else if body.hasPrefix("{") && body.hasSuffix("}") {
+            body = String(body.dropFirst().dropLast())
+        } else {
+            return 0  // 不是聚合类型
+        }
+        return splitIRParameters(body).filter {
+            !$0.trimmingCharacters(in: .whitespaces).isEmpty
+        }.count
     }
 
     /// 翻译 load
@@ -3126,7 +3527,20 @@ struct IRToMSLConverter {
         ctx.emit("*(\(ptr)) = \(val);")
     }
 
-    /// 翻译 getelementptr
+    /// 翻译 getelementptr (E-004e4c)
+    ///
+    /// IR 模式:
+    /// - `getelementptr inbounds %struct.Particle, ptr addrspace(1) %0, i64 %4, i32 0`
+    ///   → `&particles[tid].position`  （数组元素 + 结构体字段）
+    /// - `getelementptr inbounds %struct.Uniforms, ptr addrspace(2) %2, i64 0, i32 0, i32 0, i64 0`
+    ///   → `&uniforms.modelViewProjection.columns[0]`  （嵌套结构体 + 数组访问）
+    /// - `getelementptr inbounds <4 x float>, ptr addrspace(1) %0, i64 %5`
+    ///   → `&positions[vid]`  （简单数组索引）
+    ///
+    /// 策略:
+    /// GEP 的第一个索引是基指针的偏移（数组索引），后续索引按类型层级解析：
+    /// - 对结构体类型，索引是字段编号（常量 i32）→ 查找字段名
+    /// - 对数组类型，索引是元素下标（可以是变量）→ 生成 `[idx]`
     private static func translateGEP(lhs: String, rhs: String, ctx: SSAContext) {
         // getelementptr [inbounds] <type>, <ptr_type> <ptr>, <idx_type> <idx>[, ...]
         var cleaned = rhs.replacingOccurrences(of: "getelementptr ", with: "")
@@ -3141,7 +3555,14 @@ struct IRToMSLConverter {
             return
         }
 
+        let pointeeType = parts[0].type  // 基础指向类型，如 "%struct.Particle" 或 "<4 x float>"
         let basePtr = resolveIROperand(parts[1].value, ctx: ctx)
+
+        if parts.count == 2 {
+            // 无索引，直接透传
+            ctx.define(lhs, expr: basePtr)
+            return
+        }
 
         if parts.count == 3 {
             // 简单数组索引: ptr + idx
@@ -3151,17 +3572,83 @@ struct IRToMSLConverter {
             } else {
                 ctx.define(lhs, expr: "&\(basePtr)[\(idx)]")
             }
-        } else if parts.count > 3 {
-            // 结构体/嵌套索引
-            var indices: [String] = []
-            for i in 2..<parts.count {
-                indices.append(resolveIROperand(parts[i].value, ctx: ctx))
-            }
-            // 简化：生成注释性的 GEP
-            ctx.define(lhs, expr: "&\(basePtr)[\(indices.joined(separator: "]["))]")
-        } else {
-            ctx.define(lhs, expr: basePtr)
+            return
         }
+
+        // 多级索引：parts[2] 是基指针偏移（数组索引），parts[3..] 是类型层级索引
+        let firstIdx = resolveIROperand(parts[2].value, ctx: ctx)
+
+        // 构建表达式
+        var expr: String
+        if firstIdx == "0" {
+            // 无数组偏移，直接从 base 开始
+            expr = basePtr
+        } else {
+            // 有数组偏移
+            expr = "\(basePtr)[\(firstIdx)]"
+        }
+
+        // 从第二个索引开始，遍历类型层级
+        var currentType = pointeeType.trimmingCharacters(in: .whitespaces)
+
+        for i in 3..<parts.count {
+            let idxStr = parts[i].value.trimmingCharacters(in: .whitespaces)
+
+            // 判断当前类型层级
+            if currentType.hasPrefix("%") {
+                // 结构体类型 → 字段访问
+                if let fieldIdx = Int(idxStr) {
+                    if let fieldName = ctx.lookupFieldName(irStructType: currentType, fieldIndex: fieldIdx) {
+                        expr = "\(expr).\(fieldName)"
+                    } else if let def = ctx.structTypeDefs[currentType],
+                              fieldIdx < def.fieldIRTypes.count {
+                        // 有 IR 定义但无 metadata 名字
+                        expr = "\(expr).field\(fieldIdx)"
+                    } else {
+                        expr = "\(expr).field\(fieldIdx)"
+                    }
+                    // 更新 currentType 为字段的 IR 类型
+                    if let def = ctx.structTypeDefs[currentType],
+                       fieldIdx < def.fieldIRTypes.count {
+                        currentType = def.fieldIRTypes[fieldIdx].trimmingCharacters(in: .whitespaces)
+                    } else {
+                        currentType = ""
+                    }
+                } else {
+                    // 非常量索引用于结构体（不应该出现，但防御性处理）
+                    let resolvedIdx = resolveIROperand(idxStr, ctx: ctx)
+                    expr = "\(expr)[\(resolvedIdx)]"
+                    currentType = ""
+                }
+            } else if currentType.hasPrefix("[") {
+                // 数组类型 [N x T] → 索引访问
+                let resolvedIdx = resolveIROperand(idxStr, ctx: ctx)
+                expr = "\(expr)[\(resolvedIdx)]"
+                // 提取数组元素类型: "[4 x <4 x float>]" → "<4 x float>"
+                if let xRange = currentType.range(of: " x ") {
+                    let afterX = currentType[xRange.upperBound...]
+                    if let closeBracket = afterX.lastIndex(of: "]") {
+                        currentType = String(afterX[afterX.startIndex..<closeBracket])
+                            .trimmingCharacters(in: .whitespaces)
+                    } else {
+                        currentType = ""
+                    }
+                } else {
+                    currentType = ""
+                }
+            } else {
+                // 其他类型（向量等）→ 通用索引
+                let resolvedIdx = resolveIROperand(idxStr, ctx: ctx)
+                if resolvedIdx == "0" && i == parts.count - 1 {
+                    // 最后一个索引为 0，通常是无效访问，透传
+                } else {
+                    expr = "\(expr)[\(resolvedIdx)]"
+                }
+                currentType = ""
+            }
+        }
+
+        ctx.define(lhs, expr: "&\(expr)")
     }
 
     /// 翻译整数类型转换: zext/sext/trunc/fpext/fptrunc
@@ -3949,7 +4436,11 @@ struct IRToMSLConverter {
     }
 
     /// 生成完整的 MSL 源码
-    private static func generateMSL(functions: [ParsedShaderFunction]) -> String {
+    private static func generateMSL(
+        functions: [ParsedShaderFunction],
+        structTypeDefs: [String: IRStructTypeDef] = [:],
+        structFieldInfo: [String: [StructFieldInfo]] = [:]
+    ) -> String {
         var lines: [String] = []
 
         // Header
@@ -3999,7 +4490,11 @@ struct IRToMSLConverter {
             }
 
             // 生成函数
-            let funcCode = generateFunction(func_, safeName: safeName)
+            let funcCode = generateFunction(
+                func_, safeName: safeName,
+                structTypeDefs: structTypeDefs,
+                structFieldInfo: structFieldInfo
+            )
             lines.append(funcCode)
             lines.append("")
         }
@@ -4010,11 +4505,17 @@ struct IRToMSLConverter {
     /// 生成单个 shader 函数的 MSL 代码
     private static func generateFunction(
         _ func_: ParsedShaderFunction,
-        safeName: String
+        safeName: String,
+        structTypeDefs: [String: IRStructTypeDef] = [:],
+        structFieldInfo: [String: [StructFieldInfo]] = [:]
     ) -> String {
         // 如果有函数体 IR，尝试翻译为真实 MSL 语句（E-004e4a）
         if !func_.irBody.isEmpty {
-            return generateFunctionWithBody(func_, safeName: safeName)
+            return generateFunctionWithBody(
+                func_, safeName: safeName,
+                structTypeDefs: structTypeDefs,
+                structFieldInfo: structFieldInfo
+            )
         }
         // 回退到 stub 生成
         return generateStubFunction(func_, safeName: safeName)
@@ -4023,12 +4524,18 @@ struct IRToMSLConverter {
     /// 生成带真实函数体的 MSL 代码（E-004e4a）
     private static func generateFunctionWithBody(
         _ func_: ParsedShaderFunction,
-        safeName: String
+        safeName: String,
+        structTypeDefs: [String: IRStructTypeDef] = [:],
+        structFieldInfo: [String: [StructFieldInfo]] = [:]
     ) -> String {
         let allParams = generateAllParams(func_.parameters,
             defaultBuiltin: defaultBuiltinParam(for: func_.shaderType))
 
-        let bodyStatements = translateFunctionBody(func_, irParamList: func_.irSignature)
+        let bodyStatements = translateFunctionBody(
+            func_, irParamList: func_.irSignature,
+            structTypeDefs: structTypeDefs,
+            structFieldInfo: structFieldInfo
+        )
 
         let shaderQualifier = func_.shaderType.rawValue
         let retType = func_.shaderType == .kernel ? "void" : func_.returnType

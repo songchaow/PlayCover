@@ -150,10 +150,14 @@ struct IRToMSLConverter {
         let addressSpace: AddressSpace?
         /// buffer 绑定索引（如果有 [[buffer(N)]]）
         let bufferIndex: Int?
-        /// 属性标注（如 [[stage_in]], [[position]] 等）
+        /// 属性标注（如 [[position]]、[[vertex_id]]、[[texture(N)]] 等）
         let attribute: String?
         /// 指针信息（如果参数是指针类型）
         let pointerInfo: PointerInfo?
+        /// 参数在原始 IR `define` 参数列表中的索引（来自 metadata）
+        let irArgIndex: Int?
+        /// 参数在 AIR metadata 中的语义种类（如 `air.buffer` / `air.fragment_input` / `air.texture`）
+        let kind: String?
 
         /// 生成该参数的 MSL 声明字符串
         var mslDeclaration: String? {
@@ -178,6 +182,12 @@ struct IRToMSLConverter {
 
             // 非指针参数
             if let attr = attribute {
+                if irType.hasPrefix("texture") {
+                    return "\(IRToMSLConverter.cleanTextureTypeName(irType)) \(name) \(attr)"
+                }
+                if irType == "sampler" {
+                    return "sampler \(name) \(attr)"
+                }
                 let mslType = IRToMSLConverter.irScalarTypeToMSL(irType)
                 return "\(mslType) \(name) \(attr)"
             }
@@ -1571,18 +1581,26 @@ struct IRToMSLConverter {
         var tokens: [String] = []
         var current = ""
         var depth = 0
+        var inQuotedString = false
+        var previousChar: Character?
 
         for char in content {
-            if char == "{" || char == "(" || char == "[" { depth += 1 }
-            else if char == "}" || char == ")" || char == "]" { depth -= 1 }
+            if char == "\"" && previousChar != "\\" {
+                inQuotedString.toggle()
+            } else if !inQuotedString {
+                if char == "{" || char == "(" || char == "[" { depth += 1 }
+                else if char == "}" || char == ")" || char == "]" { depth -= 1 }
+            }
 
-            if char == "," && depth == 0 {
+            if char == "," && depth == 0 && !inQuotedString {
                 let trimmed = current.trimmingCharacters(in: .whitespaces)
                 if !trimmed.isEmpty { tokens.append(trimmed) }
                 current = ""
             } else {
                 current.append(char)
             }
+
+            previousChar = char
         }
         let trimmed = current.trimmingCharacters(in: .whitespaces)
         if !trimmed.isEmpty { tokens.append(trimmed) }
@@ -1711,6 +1729,7 @@ struct IRToMSLConverter {
         _ irText: String,
         metadataFuncs: [MetadataFuncInfo]
     ) -> [String: [StructFieldInfo]] {
+        _ = metadataFuncs
         var result: [String: [StructFieldInfo]] = [:]
 
         let lines = irText.components(separatedBy: "\n")
@@ -1735,9 +1754,16 @@ struct IRToMSLConverter {
             // 匹配包含 air.struct_type_info 的行
             guard trimmed.contains("air.struct_type_info") else { continue }
             guard trimmed.hasPrefix("!") else { continue }
+            guard let eqRange = trimmed.range(of: " = ") else { continue }
+
+            var nodeContent = String(trimmed[eqRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+            if nodeContent.hasPrefix("distinct ") {
+                nodeContent = String(nodeContent.dropFirst("distinct ".count))
+            }
+            guard nodeContent.hasPrefix("!{") && nodeContent.hasSuffix("}") else { continue }
 
             let tokens = splitMetadataTokens(
-                String(trimmed.dropFirst(2).dropLast())  // 去掉 !{ }
+                String(nodeContent.dropFirst(2).dropLast())
             )
 
             // 找到 air.struct_type_info 之后的 metadata 引用
@@ -2122,6 +2148,7 @@ struct IRToMSLConverter {
         _ metaArgs: [MetadataArgInfo],
         irParamList: String
     ) -> [ParsedParameter] {
+        _ = irParamList
         var params: [ParsedParameter] = []
 
         for meta in metaArgs {
@@ -2145,12 +2172,18 @@ struct IRToMSLConverter {
                     pointedMSLType: meta.typeName.isEmpty ? "uint8_t" : meta.typeName,
                     isOpaquePointer: true
                 )
-            case "air.vertex_input", "air.fragment_input":
-                // stage_in 参数在 IR 层被展平为值传递，不生成 MSL 参数
+            case "air.vertex_input":
+                // 当前主线尚未恢复 vertex `stage_in` struct；先跳过，避免发射无效形参。
                 continue
+            case "air.fragment_input":
+                // fragment varying 需要后续在函数签名里聚合成合成的 `stage_in` struct。
+                attribute = nil
+                ptrInfo = nil
             case "air.position":
-                // 内置位置输出/输入，不生成 MSL 参数
-                continue
+                // fragment position 在无 fragment_input 时可直接作为 builtin；
+                // 若存在 fragment_input，则会在签名生成阶段并入合成的 stage_in struct。
+                attribute = "[[position]]"
+                ptrInfo = nil
             case "air.vertex_output":
                 continue
             case "air.render_target":
@@ -2194,7 +2227,9 @@ struct IRToMSLConverter {
                 addressSpace: addrSpace,
                 bufferIndex: meta.locationIndex,
                 attribute: attribute,
-                pointerInfo: ptrInfo
+                pointerInfo: ptrInfo,
+                irArgIndex: meta.argIndex,
+                kind: meta.kind
             ))
         }
 
@@ -2278,7 +2313,9 @@ struct IRToMSLConverter {
                 addressSpace: addrSpace,
                 bufferIndex: bindingIndex,
                 attribute: nil,
-                pointerInfo: ptrInfo
+                pointerInfo: ptrInfo,
+                irArgIndex: index,
+                kind: nil
             ))
         }
 
@@ -2462,15 +2499,32 @@ struct IRToMSLConverter {
 
     /// 将类型名清理为合法的 MSL 标识符
     private static func sanitizeTypeName(_ name: String) -> String {
+        sanitizeIdentifier(name, fallback: "UnknownType", uppercaseFirst: true)
+    }
+
+    private static func sanitizeIdentifier(
+        _ name: String,
+        fallback: String,
+        uppercaseFirst: Bool
+    ) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return fallback }
+
         var result = ""
-        for char in name {
-            if char.isLetter || char.isNumber || char == "_" {
-                result.append(char)
-            } else {
+        for (index, char) in trimmed.enumerated() {
+            let isAllowed = char.isLetter || char.isNumber || char == "_"
+            let normalized: Character = isAllowed ? char : "_"
+            if index == 0 && normalized.isNumber {
                 result.append("_")
             }
+            result.append(normalized)
         }
-        return result.isEmpty ? "UnknownType" : result
+
+        if result.isEmpty { return fallback }
+        if uppercaseFirst, let first = result.first {
+            return String(first).uppercased() + result.dropFirst()
+        }
+        return result
     }
 
     /// 从 IR 参数字符串中提取参数名
@@ -3002,10 +3056,10 @@ struct IRToMSLConverter {
         shaderType: ShaderType
     ) {
         let irParams = splitIRParameters(irParamList)
+        let usesFragmentStageIn = shouldUseFragmentStageInStruct(params, shaderType: shaderType)
 
-        // 极小 fragment/kernel/vertex builtin 场景：metadata 可能把 position / vertex_id / tid 过滤掉，
-        // 但 generateAllParams 仍会补默认 builtin 参数；此时把唯一 IR 参数接回默认 builtin 名，
-        // 避免函数体继续引用 `param0` 之类的占位名。
+        // 极小 fragment/kernel/vertex builtin 场景：metadata 可能把唯一 builtin 参数过滤掉，
+        // 但 generateAllParams 仍会补默认 builtin 参数；此时把唯一 IR 参数接回默认 builtin 名。
         if params.isEmpty,
            irParams.count == 1,
            let builtinName = defaultBuiltinParamName(for: shaderType),
@@ -3017,20 +3071,37 @@ struct IRToMSLConverter {
             return
         }
 
-        // metadata 参数通常过滤了 stage_in/position 等，
-        // 需要遍历 IR 参数并与 metadata 参数对应
-        var metaIdx = 0
-        for (i, irParam) in irParams.enumerated() {
+        var mappedArgIndices: Set<Int> = []
+
+        for param in params {
+            guard let irArgIndex = param.irArgIndex else { continue }
+            let ssaName: String
+            if irArgIndex < irParams.count {
+                let irName = extractParamName(from: irParams[irArgIndex]) ?? "\(irArgIndex)"
+                ssaName = "%\(irName)"
+            } else {
+                ssaName = "%\(irArgIndex)"
+            }
+
+            let fallbackName = "arg\(irArgIndex)"
+            let resolvedName: String
+            if usesFragmentStageIn && isFragmentStageInParameter(param) {
+                resolvedName = "\(fragmentStageInParamName).\(sanitizeIdentifier(param.name, fallback: fallbackName, uppercaseFirst: false))"
+            } else {
+                resolvedName = sanitizeIdentifier(param.name, fallback: fallbackName, uppercaseFirst: false)
+            }
+
+            ctx.paramNames[ssaName] = resolvedName
+            if !param.irType.isEmpty {
+                ctx.paramTypes[ssaName] = param.irType
+            }
+            mappedArgIndices.insert(irArgIndex)
+        }
+
+        for (i, irParam) in irParams.enumerated() where !mappedArgIndices.contains(i) {
             let irName = extractParamName(from: irParam) ?? "\(i)"
             let ssaName = "%\(irName)"
-            if metaIdx < params.count {
-                let p = params[metaIdx]
-                ctx.paramNames[ssaName] = p.name
-                ctx.paramTypes[ssaName] = p.irType
-                metaIdx += 1
-            } else {
-                ctx.paramNames[ssaName] = "param\(i)"
-            }
+            ctx.paramNames[ssaName] = "param\(i)"
         }
     }
 
@@ -3053,6 +3124,25 @@ struct IRToMSLConverter {
             return "float4"
         case .kernel:
             return "i32"
+        }
+    }
+
+    private static let fragmentStageInParamName = "stageIn"
+
+    private static func shouldUseFragmentStageInStruct(
+        _ params: [ParsedParameter],
+        shaderType: ShaderType
+    ) -> Bool {
+        guard shaderType == .fragment else { return false }
+        return params.contains { $0.kind == "air.fragment_input" }
+    }
+
+    private static func isFragmentStageInParameter(_ param: ParsedParameter) -> Bool {
+        switch param.kind {
+        case "air.fragment_input", "air.position":
+            return true
+        default:
+            return false
         }
     }
 
@@ -4621,14 +4711,27 @@ struct IRToMSLConverter {
             return lines.joined(separator: "\n")
         }
 
+        let userStructDefinitions = generateUserStructDefinitions(structFieldInfo)
+        if !userStructDefinitions.isEmpty {
+            lines.append(contentsOf: userStructDefinitions)
+            lines.append("")
+        }
+
         // 用于去重
         var emittedNames: Set<String> = []
+        var emittedAuxiliaryStructs: Set<String> = []
 
         for (index, func_) in functions.enumerated() {
             // MSL 不允许重复的函数名
             let safeName = sanitizeFunctionName(func_.name)
             if emittedNames.contains(safeName) { continue }
             emittedNames.insert(safeName)
+
+            if let stageInStruct = generateFragmentStageInStructDefinition(for: func_, safeName: safeName),
+               emittedAuxiliaryStructs.insert(stageInStruct.name).inserted {
+                lines.append(stageInStruct.definition)
+                lines.append("")
+            }
 
             lines.append("// [\(index)] \(func_.shaderType.rawValue): \(func_.name)")
             if !func_.isFullyParsed {
@@ -4663,6 +4766,80 @@ struct IRToMSLConverter {
         return lines.joined(separator: "\n")
     }
 
+    private static func generateUserStructDefinitions(
+        _ structFieldInfo: [String: [StructFieldInfo]]
+    ) -> [String] {
+        guard !structFieldInfo.isEmpty else { return [] }
+
+        let knownTypes = Set(structFieldInfo.keys)
+        var emitted: Set<String> = []
+        var lines: [String] = []
+
+        func emitStruct(named rawTypeName: String) {
+            let sanitizedTypeName = sanitizeTypeName(rawTypeName)
+            guard emitted.insert(sanitizedTypeName).inserted else { return }
+            guard let fields = structFieldInfo[rawTypeName], !fields.isEmpty else { return }
+
+            for field in fields {
+                if knownTypes.contains(field.typeName) {
+                    emitStruct(named: field.typeName)
+                }
+            }
+
+            lines.append("struct \(sanitizedTypeName) {")
+            for field in fields.sorted(by: { $0.index < $1.index }) {
+                let fieldType = knownTypes.contains(field.typeName)
+                    ? sanitizeTypeName(field.typeName)
+                    : field.typeName
+                let fieldName = sanitizeIdentifier(field.fieldName, fallback: "field\(field.index)", uppercaseFirst: false)
+                lines.append("    \(fieldType) \(fieldName);")
+            }
+            lines.append("};")
+            lines.append("")
+        }
+
+        for rawTypeName in structFieldInfo.keys.sorted() {
+            emitStruct(named: rawTypeName)
+        }
+
+        if lines.last == "" {
+            lines.removeLast()
+        }
+        return lines
+    }
+
+    private static func fragmentStageInStructName(for safeName: String) -> String {
+        sanitizeTypeName(safeName) + "_StageIn"
+    }
+
+    private static func generateFragmentStageInStructDefinition(
+        for func_: ParsedShaderFunction,
+        safeName: String
+    ) -> (name: String, definition: String)? {
+        guard shouldUseFragmentStageInStruct(func_.parameters, shaderType: func_.shaderType) else {
+            return nil
+        }
+
+        let stageParams = func_.parameters
+            .filter { isFragmentStageInParameter($0) }
+            .sorted { ($0.irArgIndex ?? .min) < ($1.irArgIndex ?? .min) }
+        guard !stageParams.isEmpty else { return nil }
+
+        let structName = fragmentStageInStructName(for: safeName)
+        var lines: [String] = ["struct \(structName) {"]
+        for param in stageParams {
+            let fieldType = irScalarTypeToMSL(param.irType.isEmpty ? "float" : param.irType)
+            let fieldName = sanitizeIdentifier(param.name, fallback: "arg\(param.irArgIndex ?? 0)", uppercaseFirst: false)
+            if param.kind == "air.position" {
+                lines.append("    \(fieldType) \(fieldName) [[position]];")
+            } else {
+                lines.append("    \(fieldType) \(fieldName);")
+            }
+        }
+        lines.append("};")
+        return (structName, lines.joined(separator: "\n"))
+    }
+
     /// 生成单个 shader 函数的 MSL 代码
     private static func generateFunction(
         _ func_: ParsedShaderFunction,
@@ -4689,8 +4866,12 @@ struct IRToMSLConverter {
         structTypeDefs: [String: IRStructTypeDef] = [:],
         structFieldInfo: [String: [StructFieldInfo]] = [:]
     ) -> String {
-        let allParams = generateAllParams(func_.parameters,
-            defaultBuiltin: defaultBuiltinParam(for: func_.shaderType))
+        let allParams = generateAllParams(
+            func_.parameters,
+            safeName: safeName,
+            shaderType: func_.shaderType,
+            defaultBuiltin: defaultBuiltinParam(for: func_.shaderType)
+        )
 
         let bodyStatements = translateFunctionBody(
             func_, irParamList: extractIRParameterList(from: func_.irSignature),
@@ -4743,7 +4924,12 @@ struct IRToMSLConverter {
         _ func_: ParsedShaderFunction,
         safeName: String
     ) -> String {
-        let allParams = generateAllParams(func_.parameters, defaultBuiltin: "uint vid [[vertex_id]]")
+        let allParams = generateAllParams(
+            func_.parameters,
+            safeName: safeName,
+            shaderType: .vertex,
+            defaultBuiltin: "uint vid [[vertex_id]]"
+        )
 
         return """
         vertex \(func_.returnType) \(safeName)(\(allParams)) {
@@ -4757,7 +4943,12 @@ struct IRToMSLConverter {
         _ func_: ParsedShaderFunction,
         safeName: String
     ) -> String {
-        let allParams = generateAllParams(func_.parameters, defaultBuiltin: "float4 position [[position]]")
+        let allParams = generateAllParams(
+            func_.parameters,
+            safeName: safeName,
+            shaderType: .fragment,
+            defaultBuiltin: "float4 position [[position]]"
+        )
 
         return """
         fragment \(func_.returnType) \(safeName)(\(allParams)) {
@@ -4771,7 +4962,12 @@ struct IRToMSLConverter {
         _ func_: ParsedShaderFunction,
         safeName: String
     ) -> String {
-        let allParams = generateAllParams(func_.parameters, defaultBuiltin: "uint tid [[thread_position_in_grid]]")
+        let allParams = generateAllParams(
+            func_.parameters,
+            safeName: safeName,
+            shaderType: .kernel,
+            defaultBuiltin: "uint tid [[thread_position_in_grid]]"
+        )
 
         return """
         kernel void \(safeName)(\(allParams)) {
@@ -4785,12 +4981,30 @@ struct IRToMSLConverter {
     /// 如果 metadata 提供了精确参数信息，使用它们；否则使用 defaultBuiltin 作为回退。
     private static func generateAllParams(
         _ params: [ParsedParameter],
+        safeName: String,
+        shaderType: ShaderType,
         defaultBuiltin: String
     ) -> String {
         var mslParams: [String] = []
-        var hasBuiltin = false
+        let usesFragmentStageIn = shouldUseFragmentStageInStruct(params, shaderType: shaderType)
+        var hasEntryInput = usesFragmentStageIn
+
+        if usesFragmentStageIn {
+            let stageInType = fragmentStageInStructName(for: safeName)
+            mslParams.append("\(stageInType) \(fragmentStageInParamName) [[stage_in]]")
+        }
 
         for param in params {
+            if usesFragmentStageIn && isFragmentStageInParameter(param) {
+                continue
+            }
+
+            let emittedName = sanitizeIdentifier(
+                param.name,
+                fallback: "arg\(param.irArgIndex ?? 0)",
+                uppercaseFirst: false
+            )
+
             // 有 pointerInfo 的是 buffer/threadgroup 参数
             if let ptr = param.pointerInfo {
                 let qualifier = ptr.addressSpace.mslQualifier
@@ -4801,35 +5015,34 @@ struct IRToMSLConverter {
 
                 if ptr.addressSpace.isBufferAddressSpace {
                     let idx = param.bufferIndex ?? 0
-                    // 检查类型名是否像是结构体（大写开头且不是 MSL 基本类型）
-                    if isStructTypeName(elemType) {
-                        // 结构体引用: constant Uniforms& name [[buffer(N)]]
-                        mslParams.append("\(constPrefix)\(qualifier) \(elemType)& \(param.name) [[buffer(\(idx))]]")
+                    if isStructTypeName(elemType) && ptr.addressSpace == .constant {
+                        // constant struct 往往是单个 uniforms 对象，更贴近 `constant Uniforms& uniforms`。
+                        mslParams.append("\(constPrefix)\(qualifier) \(elemType)& \(emittedName) [[buffer(\(idx))]]")
                     } else {
-                        mslParams.append("\(constPrefix)\(qualifier) \(elemType)* \(param.name) [[buffer(\(idx))]]")
+                        mslParams.append("\(constPrefix)\(qualifier) \(elemType)* \(emittedName) [[buffer(\(idx))]]")
                     }
                 } else if ptr.addressSpace.isThreadgroupAddressSpace {
                     let idx = param.bufferIndex ?? 0
-                    mslParams.append("threadgroup \(elemType)* \(param.name) [[threadgroup(\(idx))]]")
+                    mslParams.append("threadgroup \(elemType)* \(emittedName) [[threadgroup(\(idx))]]")
                 } else {
-                    mslParams.append("\(qualifier) \(elemType)* \(param.name)")
+                    mslParams.append("\(qualifier) \(elemType)* \(emittedName)")
                 }
                 continue
             }
 
             // 有 attribute 的是内置属性 或 texture/sampler
             if let attr = param.attribute {
-                hasBuiltin = true
-                let typeName = param.irType.isEmpty ? "uint" : param.irType
+                let rawTypeName = param.irType.isEmpty ? "uint" : param.irType.replacingOccurrences(of: "\"", with: "")
 
-                if param.irType.hasPrefix("texture") {
-                    // texture2d<float, sample> → texture2d<float>
-                    let cleanedTexType = cleanTextureTypeName(typeName)
-                    mslParams.append("\(cleanedTexType) \(param.name) \(attr)")
-                } else if param.irType == "sampler" {
-                    mslParams.append("sampler \(param.name) \(attr)")
+                if attr.hasPrefix("[[texture(") || rawTypeName.hasPrefix("texture") {
+                    let cleanedTexType = cleanTextureTypeName(rawTypeName)
+                    mslParams.append("\(cleanedTexType) \(emittedName) \(attr)")
+                } else if attr.hasPrefix("[[sampler(") || rawTypeName == "sampler" {
+                    mslParams.append("sampler \(emittedName) \(attr)")
                 } else {
-                    mslParams.append("\(typeName) \(param.name) \(attr)")
+                    hasEntryInput = true
+                    let emittedType = irScalarTypeToMSL(rawTypeName)
+                    mslParams.append("\(emittedType) \(emittedName) \(attr)")
                 }
                 continue
             }
@@ -4841,15 +5054,15 @@ struct IRToMSLConverter {
                 let idx = param.bufferIndex ?? 0
                 let constPrefix = addrSpace.isReadOnly ? "const " : ""
                 if addrSpace.isBufferAddressSpace {
-                    mslParams.append("\(constPrefix)\(qualifier) uint8_t* \(param.name) [[buffer(\(idx))]]")
+                    mslParams.append("\(constPrefix)\(qualifier) uint8_t* \(emittedName) [[buffer(\(idx))]]")
                 } else if addrSpace.isThreadgroupAddressSpace {
-                    mslParams.append("threadgroup uint8_t* \(param.name) [[threadgroup(\(idx))]]")
+                    mslParams.append("threadgroup uint8_t* \(emittedName) [[threadgroup(\(idx))]]")
                 }
             }
         }
 
-        // 如果没有从 metadata 获取内置属性，添加默认的
-        if !hasBuiltin && !defaultBuiltin.isEmpty {
+        // 如果没有从 metadata 获取入口输入参数，添加默认的 builtin。
+        if !hasEntryInput && !defaultBuiltin.isEmpty {
             mslParams.insert(defaultBuiltin, at: 0)
         }
 
@@ -4870,20 +5083,23 @@ struct IRToMSLConverter {
     /// 清理 texture 类型名：去掉 access 限定
     /// "texture2d<float, sample>" → "texture2d<float>"
     private static func cleanTextureTypeName(_ name: String) -> String {
-        // 从 metadata 拿到的类型名可能是 "texture2d<float, sample>"
-        guard let ltIdx = name.firstIndex(of: "<"),
-              let gtIdx = name.lastIndex(of: ">") else {
-            return name
+        // 从 metadata 拿到的类型名可能是 `texture2d<float, sample>`，
+        // 若上游 token 里夹了残余引号，也一并去掉。
+        let normalizedName = name.replacingOccurrences(of: "\"", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let ltIdx = normalizedName.firstIndex(of: "<"),
+              let gtIdx = normalizedName.lastIndex(of: ">") else {
+            return normalizedName
         }
-        let innerContent = name[name.index(after: ltIdx)..<gtIdx]
+        let innerContent = normalizedName[normalizedName.index(after: ltIdx)..<gtIdx]
         let parts = innerContent.components(separatedBy: ",")
         if parts.count > 1 {
             // 只保留元素类型，去掉 access
             let elemType = parts[0].trimmingCharacters(in: .whitespaces)
-            let prefix = String(name[name.startIndex...ltIdx])
+            let prefix = String(normalizedName[normalizedName.startIndex...ltIdx])
             return "\(prefix)\(elemType)>"
         }
-        return name
+        return normalizedName
     }
 
     /// 生成给定类型的默认返回值

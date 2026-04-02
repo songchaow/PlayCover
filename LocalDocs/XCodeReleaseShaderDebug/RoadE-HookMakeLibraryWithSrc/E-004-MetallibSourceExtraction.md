@@ -4,7 +4,9 @@
 
 ## 目标
 
-在运行时拦截到 metallib `Data` 后，提取 LLVM Bitcode，经 `llvm-dis` 反汇编为 LLVM IR 文本，再转换为可通过 `makeLibrary(source:)` 编译的 MSL 源码。
+在运行时拦截到 metallib `Data` 后，提取 LLVM Bitcode，经 `llvm-dis` 反汇编为 LLVM IR 文本，再**逐指令翻译为语义等价的 MSL 源码**，使其能通过 `makeLibrary(source:)` 编译。
+
+**翻译策略（方案 A：机械翻译）**：每条 IR 指令对应一个 MSL 临时变量赋值语句。不追求还原原始代码风格，但保证语义等价。函数签名由 IR metadata 精确还原。
 
 ## 任务拆分
 
@@ -34,7 +36,7 @@ LLVM IR 文本 (完整的人类可读 IR, 包含函数签名/指令/元数据)
 带源码信息的 MTLLibrary (替换原始返回值)
 ```
 
-**核心技术挑战（E-004e）**：Metal LLVM IR 中的 `addrspace(N)` 标注需映射到 MSL 地址空间限定符，`air.*` 系列内建函数需映射到 MSL 等效调用。这是 IR→MSL 转换的关键。前序步骤 E-004a–d 已具备完整的 bitcode 提取和 IR 反汇编能力，为此奠定了基础。
+**核心技术挑战（E-004e）**：这是一个公开领域中没有先例的 Metal AIR → MSL 反编译器。LLVM 生态没有 IR→源码 的通用工具，Apple 也没有公开 AIR 规范。采用逐指令机械翻译——每条 IR 指令都有语义等价的 MSL 写法（`fadd`→`+`、`air.fast_sin`→`sin()`、`shufflevector`→swizzle），因为 MSL 本身就是编译到这些 IR 的源语言。函数签名由 IR metadata（`!air.vertex`/`!air.fragment`/`!air.kernel`）精确还原。
 
 ## E-004a 实现
 
@@ -238,14 +240,17 @@ Offset  Size   Field
 
 ## E-004e 实现（已拆分）
 
-E-004e 工作量较大，拆分为四个子任务：
+E-004e 工作量较大，拆分为子任务：
 
 | # | 子任务 | 状态 | 说明 |
 |---|--------|------|------|
 | E-004e1 | **IRToMSLConverter 骨架 + stub MSL 生成** | ✅ DONE | 解析 IR 函数定义，生成 stub MSL 源码 |
-| E-004e2 | addrspace → MSL 地址空间限定符完整映射 | ✅ DONE | 完善参数类型转换 |
-| E-004e3 | air.* 内建 → MSL 等效调用映射 | ✅ DONE | 映射 84+ 个 air.* 内建函数到 MSL |
-| E-004e4 | 完整函数体转换（IR 指令→MSL 语句） | TODO | 将 IR 指令序列转换为 MSL 代码 |
+| E-004e2 | addrspace → MSL 地址空间限定符完整映射 | ✅ DONE | IR metadata 精确还原函数签名 |
+| E-004e3 | air.* 内建 → MSL 等效调用映射 | ✅ DONE | 84+ 个 air.* 内建到 MSL 的映射 |
+| E-004e4 | **完整函数体转换（逐指令语义等价翻译）** | 🔄 IN PROGRESS | 已拆分为 e4a–e4c |
+| E-004e4a | ↳ SSA→MSL 翻译框架 + 基础指令集 | ✅ DONE | 20+ 种 IR 指令翻译，generateFunction 升级 |
+| E-004e4b | ↳ phi 节点 + 多基本块控制流 | TODO | **语义等价关键缺陷**，phi/br 需修复 |
+| E-004e4c | ↳ extractvalue/insertvalue + GEP 结构体路径 | TODO | **可编译性关键缺陷**，air.sample 返回值拆解 |
 
 ### E-004e1: IRToMSLConverter 骨架
 

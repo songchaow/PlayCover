@@ -6,7 +6,14 @@
 
 ## 最终目标
 
-在 PlayTools 运行时中 hook `MTLDevice.makeLibrary(data:)` 系列 API，从 metallib 中提取 LLVM Bitcode，经 `llvm-dis` 反汇编为 LLVM IR，再**转换为可编译的 MSL 源码**，通过 `makeLibrary(source:)` 重新编译并替换原始返回，使后续截帧的 gputrace 中自动携带可读的 shader 源码。
+在 PlayTools 运行时中 hook `MTLDevice.makeLibrary(data:)` 系列 API，从 metallib 中提取 LLVM Bitcode，经 `llvm-dis` 反汇编为 LLVM IR，再**逐指令翻译为语义等价的 MSL 源码**，通过 `makeLibrary(source:)` 重新编译并替换原始返回，使后续截帧的 gputrace 中自动携带 shader 源码。
+
+**核心约束（按优先级）**：
+1. **语义等价**：生成的 MSL 必须与原始 IR 逐指令语义等价（不追求还原原始代码风格，接受机械翻译的低可读性代码）
+2. **可编译**：生成的 MSL 必须能通过 `makeLibrary(source:)` 编译，且函数签名与原始 metallib 一致
+3. **可读性**：在满足 1、2 的前提下尽量提升（如识别 swizzle 模式、还原控制流结构）
+
+**技术路线**：这是一个公开领域中没有先例的 Metal AIR → MSL 反编译器。LLVM 生态没有 IR→源码 的通用工具，Apple 也没有公开 AIR 规范。我们采用逐指令机械翻译（方案 A）——每条 IR 指令都有语义等价的 MSL 写法，因为 MSL 本身就是编译到这些 IR 的源语言。
 
 ## Agent 工作流
 
@@ -49,7 +56,7 @@ PlayCover 主应用 (macOS)
         ├── LibrarySourceInjectionSwizzles: hook makeLibrary 系列 API
         ├── MetallibParser: 解析 metallib, 提取 LLVM Bitcode
         ├── LLVMDisassembler: 调用 llvm-dis 将 bitcode → LLVM IR 文本
-        ├── IRToMSLConverter: 将 LLVM IR 转换为可编译的 MSL 源码
+        ├── IRToMSLConverter: 将 LLVM IR 逐指令翻译为语义等价的 MSL 源码
         └── ShaderSourceRecompiler: 调 makeLibrary(source:) 编译 MSL, 替换原始 library
 ```
 
@@ -66,25 +73,27 @@ PlayCover 主应用 (macOS)
 | E-004a | ↳ metallib 二进制格式解析器 | ✅ DONE | |
 | E-004b | ↳ 提取函数级 LLVM Bitcode | ✅ DONE | |
 | E-004c | ↳ **LLVM 工具链管理：下载并部署 `llvm-dis`** | ✅ DONE | |
-|  | `PlayCover/Utils/LLVMToolManager.swift` — 单例管理器，从 GitHub Releases 下载 LLVM 19.1.0 macOS ARM64 预编译包，用 `tar --strip-components=2` 提取 `bin/llvm-dis`，安装到 `~/Library/Containers/io.playcover.PlayCover/llvm-tools/`。支持版本记录、可执行权限设置、ad-hoc 签名、`--version` 验证、进度跟踪（ObservableObject）、卸载 | | |
+|  | `PlayCover/Utils/LLVMToolManager.swift` — 从 GitHub Releases 下载 LLVM 19.1.0 macOS ARM64 预编译包，提取 `llvm-dis` 安装到 `~/Library/Containers/io.playcover.PlayCover/llvm-tools/` | | |
 | E-004d | ↳ **PlayTools 中调用 `llvm-dis` 将 bitcode → LLVM IR 文本** | ✅ DONE | |
-|  | `Carthage/Checkouts/PlayTools/PlayTools/LLVMDisassembler.swift` — 纯 Swift struct，使用 `posix_spawn` 调用 `llvm-dis` 将 bitcode 二进制转换为 LLVM IR 文本。支持路径自动发现（LLVMToolManager 安装位置 + Homebrew 路径）、超时控制（默认 30s）、bitcode magic 校验、stderr 捕获、批量处理（`disassembleBatch`）和安全包装（`safeDisassemble`/`safeDisassembleBatch`，失败不中断 hook 流程） | | |
-| E-004e | ↳ **LLVM IR → MSL 转换器**（已拆分） | 🔄 IN PROGRESS | |
-|  | 实现 IR→MSL 的关键转换：`addrspace` 标注→地址空间限定符（`device`/`constant`/`threadgroup`）、`air.*` 内建→MSL 等效调用、IR 函数签名→MSL 函数声明。前序步骤（E-004a–d）已具备提取 bitcode 并生成 LLVM IR 文本的完整能力，本步骤在此基础上实现 IR 文本到可通过 `makeLibrary(source:)` 编译的 MSL 源码的转换 | | |
+|  | `LLVMDisassembler.swift` — posix_spawn 调用 llvm-dis，支持路径自动发现、超时、批量处理、安全包装 | | |
+| E-004e | ↳ **LLVM IR → MSL 反编译器**（已拆分） | 🔄 IN PROGRESS | |
+|  | 逐指令翻译 IR 为语义等价的 MSL。采用方案 A（机械翻译）：每条 IR 指令对应一个 MSL 临时变量赋值，不追求还原原始代码风格，但保证语义等价且能通过 `makeLibrary(source:)` 编译。函数签名由 metadata 精确还原 | | |
 | E-004e1 | ↳↳ IRToMSLConverter 骨架 + stub MSL 生成 | ✅ DONE | |
-|  | `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift` — 纯 Swift struct，从 LLVM IR 文本中解析函数定义（`define` 行）、提取函数名/返回类型/参数列表、识别 addrspace(N) 标注、推断 shader 类型（vertex/fragment/kernel，支持 metallib 元数据和启发式两种方式）。生成带正确 `[[attribute]]` 标注的 stub MSL 源码（函数体为默认返回值）。支持安全包装（`safeConvert`）。已通过 PlayTools xcframework 构建验证 | | |
+|  | 解析 IR `define` 行、推断 shader 类型、生成带正确 `[[attribute]]` 标注的 stub MSL。`IRToMSLConverter.swift` | | |
 | E-004e2 | ↳↳ addrspace → MSL 地址空间限定符完整映射 | ✅ DONE | |
 | E-004e3 | ↳↳ air.* 内建 → MSL 等效调用映射 | ✅ DONE | |
-|  | `IRToMSLConverter.swift` 新增 `AirBuiltinMapping` 映射表（覆盖 84+ 个实际 air.* 内建），包括纹理采样/读写（sample/read/write/get_width/get_height）、同步屏障（wg.barrier/simdgroup.barrier）、数学函数（fast_*/non-fast 全覆盖）、整数位操作（popcount/clz/ctz/extract_bits/reverse_bits）、SIMD group（shuffle/reduce/broadcast/prefix_sum）、原子操作（global/local 全 11 种）、片段导数（dfdx/dfdy/fwidth）、pack/unpack、类型转换（air.convert）。新增 `airStripTypeSuffix()` 去类型后缀、`lookupAirBuiltin()` 查表、`parseAirBuiltinCalls()` 从 IR 提取调用、`parseAirConvertTargetType()` 解析转换目标类型、`airTypeSuffixToMSL()` 类型后缀转 MSL 类型。映射信息集成到 `ParsedShaderFunction.airBuiltinCalls`，生成的 MSL 注释中汇总。验证数据来自 test-data/test_builtins.metal→.air→llvm-dis→.ll（84 个 air 声明）| | |
+|  | 84+ 个 air.* 内建映射表（数学/纹理/同步/SIMD/原子/导数/pack），含命名规则解析（strip type suffix、前缀匹配）。验证数据：test-data/test_builtins.metal→.ll | | |
 | E-004e4 | ↳↳ 完整函数体转换（IR 指令→MSL 语句）（已拆分） | 🔄 IN PROGRESS | |
 | E-004e4a | ↳↳↳ IR 函数体解析 + SSA→MSL 翻译框架 + 基础指令集 | ✅ DONE | |
-|  | `IRToMSLConverter.swift` 新增 `SSAContext` 类（SSA 寄存器→MSL 表达式映射、临时变量分配、语句发射）和 `translateFunctionBody()` 入口。翻译 20+ 种 IR 指令：算术（fadd/fmul/fsub/fneg/add/sub/mul/udiv/sdiv/shl/lshr/ashr/and/or/xor）、比较（fcmp/icmp 含全条件码映射）、选择（select→三目运算符）、向量（shufflevector→swizzle/splat、extractelement/insertelement/extractvalue/insertvalue）、内存（load→解引用、store→赋值、getelementptr→数组/结构体索引）、类型转换（zext/sext/trunc/fpext/fptrunc→MSL 类型构造器、bitcast→as_type<>、freeze→透传）、air.* 调用（查映射表生成 MSL 函数/方法调用，含纹理方法、barrier flags→mem_flags、convert→类型构造器）、控制流（ret→return、br→if 占位、phi→首值占位、alloca→局部变量）。`generateFunction` 从 stub 升级为真实函数体生成，空 irBody 时回退到 stub。已通过 PlayTools xcframework 构建验证 | | |
-| E-004e4b | ↳↳↳ 控制流图重建（phi/多基本块→MSL if/else） | TODO | |
-| E-004e4c | ↳↳↳ 复杂类型推断（结构体/数组 GEP 访问路径还原） | TODO | |
+|  | `SSAContext`（SSA→MSL 映射）+ `translateFunctionBody()` 入口。翻译 20+ 种 IR 指令为语义等价的 MSL 语句（算术/比较/向量/内存/类型转换/air.*/控制流）。`generateFunction` 从 stub 升级为真实函数体生成 | | |
+| E-004e4b | ↳↳↳ phi 节点 + 多基本块控制流→MSL 变量声明/if/else | TODO | |
+|  | **语义等价关键缺陷**：当前 phi 取首值（语义不等价）、br 生成空 if（缺 else）。需：phi→变量预声明+分支赋值、条件 br→if/else 块、无条件 br→忽略。修复后基本块内指令流即完全语义等价 | | |
+| E-004e4c | ↳↳↳ extractvalue/insertvalue + GEP 结构体路径还原 | TODO | |
+|  | 当前 extractvalue 生成注释占位（air.sample 返回的 `{<4xf32>, i8}` 拆不了）。GEP 多级索引需映射到结构体字段名（metadata 的 `air.struct_type_info` 提供偏移+字段名）。不影响语义等价，但影响可编译性 | | |
 | E-005 | **运行时 library 替换：用带源码的 library 替换原始返回** | TODO | |
-|  | 在 `pc_newLibraryWithData` hook 中，将 E-004e 生成的 MSL 经 `makeLibrary(source:)` 编译后替换原始返回值。需处理：函数签名一致性校验、编译失败 fallback（退回原始 library）、性能优化（缓存已处理的 metallib） | | |
-| E-006 | **端到端验证** | TODO | |
-|  | 对 QQ飞车 / 原神 启用功能 → 截帧 → Xcode 打开 gputrace → 确认 shader 源码可见 | | |
+|  | 在 `pc_newLibraryWithData` hook 中，将 E-004e 生成的 MSL 经 `makeLibrary(source:)` 编译后替换原始返回值。需处理：编译失败 fallback（退回原始 library）、函数签名一致性校验、性能优化（缓存已处理的 metallib） | | |
+| E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | TODO | |
+|  | 验证三层目标：① MSL 能通过 `makeLibrary(source:)` 编译 ② 函数签名与原始 metallib 一致 ③ Xcode 截帧 gputrace 中 shader 源码可见。测试目标：QQ飞车 / 原神外网包 | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
 |  | 添加 `injectShaderSources` 开关到 AppSettings / AppSettingsView；添加 LLVM 工具链下载/状态 UI | | |
 

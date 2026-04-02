@@ -115,8 +115,10 @@ PlayCover 主应用 (macOS)
 |  | 对重编译后的 library 做函数名/函数数量/关键 metadata 对齐校验；若与原始 metallib 接口不一致，则放弃替换并记录原因。 | | |
 | E-005d | ↳ 缓存与观测性 | TODO | |
 |  | 以 metallib 内容或 bitcode 模块 `(offset,size)`/hash 为键缓存处理结果，并补充 success/fallback reason 日志，避免重复反汇编/重编译造成明显性能开销。 | | |
-| E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | TODO | |
-|  | 验证三层目标：① MSL 能通过 `makeLibrary(source:)` 编译 ② 函数签名与原始 metallib 一致 ③ Xcode 截帧 gputrace 中 shader 源码可见。测试目标：QQ飞车 / 原神外网包 | | |
+| E-005e | ↳ **非 MTLB `newLibraryWithData` payload 识别/解包** | TODO | |
+|  | **原神 6.4.0 外网包 live 验证暴露的新主 blocker**：在完成 `sync_playtools_xcframework.sh` → `build_and_install.sh` → `remove_playtools`/`inject_playtools` 后，原神 runtime 已确认使用最新 PlayTools（`~/Library/Frameworks/PlayTools.framework` 与 GUI 内嵌 framework MD5 一致，且日志出现新的 `newLibraryWithSource` 编译记录），但 `MetallibParser` 对大量 `newLibraryWithData:error:` 输入持续报 `unsupported metallib header size: 0`。说明该入口收到的很多 payload **并非原始 `MTLB` metallib blob**（可能是 wrapper / archive / 预处理后二进制），导致 E-005a 目前无法进入 bitcode 提取。下一步需先识别前导字节/包裹格式，必要时追上游 API 或添加解包逻辑。 | | |
+| E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
+|  | 首轮真实样本已执行：**原神外网包**。在最新 GUI + 最新 PlayTools 重新注入后，`get_capture_status` 显示 `supports_gpu_trace=true`、`queueDiscoveryInstalled=true`，`capture_metal_frame` 成功产出 `.gputrace`；但 `Scripts/check_gputrace_sources.py` 检查结果仍为 `源码文件=9, valid_msl=0, index 引用=875`，9 个 hash 文件均为 bplist 而非 MSL 文本。当前结论：真实截帧链路已跑通，但源码注入对原神样本尚未生效，优先受阻于 `E-005e`。 | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
 |  | 添加 `injectShaderSources` 开关到 AppSettings / AppSettingsView；添加 LLVM 工具链下载/状态 UI | | |
 
@@ -165,6 +167,8 @@ PlayCover 主应用 (macOS)
 - **IR 结构体类型名映射**：`%struct.Particle` → MSL `Particle`，`%"struct.metal::matrix"` → MSL `metal::matrix`（注意 IR 中带引号的命名格式）
 - **E-004e 阶段性决策**：当前覆盖面已足以支撑进入运行时替换阶段；接下来不再凭空扩写 `IRToMSLConverter` 支持面，而是优先通过 `E-005` 最小闭环和 `E-006` 实测结果来反向定位真正会触发翻译/编译失败的 builtin 变体与边角 IR
 - **E-005a 当前只做单 module 闭环**：`pc_newLibraryWithData` 已串起 bitcode 提取 → `llvm-dis` → `IRToMSLConverter` → `makeLibrary(source:)` 的最小替换路径，但仅在 metallib 恰好只有一个 bitcode module 时才尝试替换；多 module 场景先记录 `E-005b pending` 并回退原始 library，避免在未定义聚合策略前引入错误替换
+- **live 验证前必须刷新 GUI + app 注入**：仓库里 `Carthage/Build/PlayTools.xcframework` 更新后，已安装的 `~/Applications/PlayCover.app` 与目标 app 内的 live runtime **不会自动同步**。原神这轮实测只有在执行 `build_and_install.sh` 重装 GUI，并重新对 app 做 `remove_playtools` / `inject_playtools` 后，`~/Library/Frameworks/PlayTools.framework` 的 MD5 才与 GUI 内嵌 framework 对齐，runtime 日志也才开始出现新的 `newLibraryWithSource` 编译记录
+- **原神 `newLibraryWithData` 很多 payload 不是原始 MTLB**：真实样本里在新 runtime 下会持续命中 `MetallibParser: extractBitcodeModules failed: unsupported metallib header size: 0`。这说明当前 hook 到的 `dispatch_data_t` 并不总是 `MTLB` metallib 原文；在继续扩展 IR→MSL 覆盖面前，必须先解决 `E-005e` 的 payload 识别/解包问题
 
 ## 参考信息
 

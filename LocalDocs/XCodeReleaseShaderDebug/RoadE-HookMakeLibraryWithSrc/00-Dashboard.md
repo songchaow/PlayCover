@@ -106,8 +106,12 @@ PlayCover 主应用 (macOS)
 |  | 已拆分为按格式逐个落地，避免在缺真实样本前一次性铺太大范围 | | |
 | E-005e2b1 | ↳ `gzip` payload 解包 + 递归恢复 | ✅ DONE | |
 |  | 已在 `MetallibParser` 增加 `gzip` 解压路径（`zlib inflateInit2` 自动识别 `gzip/zlib` header），解压后会继续递归执行 `bplist` / embedded `MTLB` 剥离；支持 `gzip → MTLB`、`gzip → bplist → Data`、`gzip → wrapper → embedded MTLB` 等链路 | | |
-| E-005e2b2 | ↳ `zip` / `xar` / 自定义 archive 定向解包 | TODO | |
-|  | 待下一轮 live 复现结合落盘样本，再决定是否需要补真正的 archive 拆包或 keyed archive 定向取值逻辑 | | |
+| E-005e2b2 | ↳ `zip` / `xar` / 自定义 archive 定向解包 | 🔄 IN PROGRESS | |
+|  | 已继续拆分为“`zip` 先落地、`xar` / 自定义 archive 等样本驱动”两步，避免在无真实 payload 时盲猜整套 archive 家族 | | |
+| E-005e2b2a | ↳ `zip` payload 解包 + 递归恢复 | ✅ DONE | |
+|  | 已在 `MetallibParser` 增加最小 ZIP reader：优先读取 central directory，失败再顺序扫描 local file header；支持 stored / deflate entry，并会对 entry data 继续递归执行 `MTLB` / `gzip` / `bplist` / embedded `MTLB` 恢复。已用 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 做编译验证 | | |
+| E-005e2b2b | ↳ `xar` / 自定义 archive 定向解包 | TODO | |
+|  | 等下一轮 live 复现结合 `ShaderPayloadSamples` 的真实样本，再决定是否需要补真正的 `xar` parser 或 keyed archive 定向取值逻辑 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
 |  | 首轮真实样本（原神外网包）已执行：runtime 与 capture 链路正常，`.gputrace` 成功生成，但当前 `valid_msl=0`；后续验证优先服务于 `E-005e2` 的解包实现，而不是继续盲目截帧 | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
@@ -125,6 +129,7 @@ PlayCover 主应用 (macOS)
 - **`E-005e2` 先做“通用剥离 + 样本落盘”比盲猜格式更稳**：当前已支持从 `bplist` 递归扫描嵌套 `Data`、以及从 payload / 嵌套 `Data` 中剥离 embedded `MTLB`；即使还原成功，也会把原始非 `MTLB` payload 落盘到 `~/Library/Containers/io.playcover.PlayCover/ShaderPayloadSamples/<bundleId>/`，便于下一轮定向补 `gzip` / `zip` / archive 解包
 - **非 `MTLB` payload 现在要连同调用栈一起看**：`ShaderPayloadSamples` 的 `.txt` 元数据会带上首次命中的 `selector` / `dispatchClass` / `callStack[*]`，能直接帮助判断 wrapper 是 App 侧、Metal 桥接层还是系统解包链路生成的
 - **`gzip` wrapper 解包优先走 `zlib inflateInit2(15 + 32)`**：这样能自动识别 `gzip/zlib` header，比分别手拆 header 或仅依赖高层压缩 API 更适合当前 iOS target 内的小型定向恢复逻辑；解压后继续递归跑 `bplist` / embedded `MTLB` 剥离即可
+- **`zip` wrapper 先读 central directory，再 fallback 扫 local header 更稳**：不少 ZIP entry 会把可靠的大小信息放在 central directory；只有拿不到 central directory 时，才退回顺序扫描 local file header。当前已支持 stored / deflate，两种 entry 都会继续递归尝试 `MTLB` / `gzip` / `bplist` / embedded `MTLB` 恢复
 - **PlayTools 是 iOS target**：调用 `llvm-dis` 仍需走 `posix_spawn`，不能依赖 `Foundation.Process`
 
 ## 参考信息

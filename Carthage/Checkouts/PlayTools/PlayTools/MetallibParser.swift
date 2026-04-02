@@ -643,6 +643,14 @@ extension MetallibParser {
         let data: Data
     }
 
+    private struct ZipArchiveEntry {
+        let path: String
+        let compressionMethod: UInt16
+        let compressedSize: UInt32
+        let uncompressedSize: UInt32
+        let payloadOffset: Int
+    }
+
     private struct PayloadDiagnosticContext {
         let selector: String
         let dispatchClassName: String
@@ -839,6 +847,11 @@ extension MetallibParser {
             }
         }
 
+        if kind == "zip",
+           let embedded = unwrapMetallibFromZipPayload(data, depth: depth + 1) {
+            return embedded
+        }
+
         if hasPrefix(data, ascii: "bplist00"),
            let embedded = unwrapMetallibFromPropertyList(data, depth: depth + 1) {
             return embedded
@@ -875,6 +888,14 @@ extension MetallibParser {
     }
 
     private static func decompressGzipPayload(_ data: Data) -> Data? {
+        inflatePayload(data, windowBits: 15 + 32)
+    }
+
+    private static func decompressDeflatedZipEntry(_ data: Data, uncompressedSizeHint: Int) -> Data? {
+        inflatePayload(data, windowBits: -15, sizeHint: uncompressedSizeHint)
+    }
+
+    private static func inflatePayload(_ data: Data, windowBits: Int32, sizeHint: Int? = nil) -> Data? {
         guard !data.isEmpty, data.count <= Int(UInt32.max) else {
             return nil
         }
@@ -886,7 +907,7 @@ extension MetallibParser {
             }
             stream.next_in = UnsafeMutablePointer<Bytef>(mutating: baseAddress)
             stream.avail_in = uInt(data.count)
-            return inflateInit2_(&stream, 15 + 32, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
+            return inflateInit2_(&stream, windowBits, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
         }
         guard initStatus == Z_OK else {
             return nil
@@ -898,6 +919,9 @@ extension MetallibParser {
         let chunkSize = 64 * 1024
         var buffer = [UInt8](repeating: 0, count: chunkSize)
         var output = Data()
+        if let sizeHint, sizeHint > 0 {
+            output.reserveCapacity(min(sizeHint, maxDecompressedPayloadBytes))
+        }
 
         while true {
             let status = buffer.withUnsafeMutableBytes { rawBuffer -> Int32 in
@@ -927,6 +951,209 @@ extension MetallibParser {
                 return nil
             }
         }
+    }
+
+    private static func unwrapMetallibFromZipPayload(_ data: Data, depth: Int) -> UnwrappedPayload? {
+        let entries = zipArchiveEntries(in: data)
+        guard !entries.isEmpty else {
+            return nil
+        }
+
+        for entry in entries {
+            guard let entryData = extractZipEntryPayload(data, entry: entry), !entryData.isEmpty else {
+                continue
+            }
+
+            let entryPath = "zip:\(entry.path)"
+            if hasPrefix(entryData, ascii: "MTLB") {
+                let trimmed = trimMetallibDataIfNeeded(entryData)
+                return UnwrappedPayload(data: trimmed, strategy: entryPath)
+            }
+            if let nested = unwrapMetallibPayloadIfNeeded(entryData, depth: depth) {
+                return UnwrappedPayload(data: nested.data, strategy: "\(entryPath)→\(nested.strategy)")
+            }
+            if let embedded = findEmbeddedMetallib(in: entryData, path: entryPath, includeZeroOffset: false) {
+                return UnwrappedPayload(data: embedded.data, strategy: embedded.strategy)
+            }
+        }
+
+        return nil
+    }
+
+    private static func zipArchiveEntries(in data: Data) -> [ZipArchiveEntry] {
+        let centralDirectoryEntries = parseZipCentralDirectoryEntries(in: data)
+        if !centralDirectoryEntries.isEmpty {
+            return centralDirectoryEntries
+        }
+        return parseZipLocalFileEntries(in: data)
+    }
+
+    private static func parseZipCentralDirectoryEntries(in data: Data) -> [ZipArchiveEntry] {
+        guard let endOfCentralDirectoryOffset = findZipEndOfCentralDirectory(in: data),
+              endOfCentralDirectoryOffset + 22 <= data.count else {
+            return []
+        }
+
+        let totalEntries = Int(readUInt16(data, offset: endOfCentralDirectoryOffset + 10))
+        let centralDirectorySize = Int(readUInt32(data, offset: endOfCentralDirectoryOffset + 12))
+        let centralDirectoryOffset = Int(readUInt32(data, offset: endOfCentralDirectoryOffset + 16))
+        guard totalEntries > 0,
+              centralDirectorySize >= 0,
+              centralDirectoryOffset >= 0,
+              centralDirectoryOffset + centralDirectorySize <= data.count else {
+            return []
+        }
+
+        var entries: [ZipArchiveEntry] = []
+        var cursor = centralDirectoryOffset
+        while cursor + 46 <= data.count,
+              readUInt32(data, offset: cursor) == 0x02014B50,
+              entries.count < totalEntries {
+            let compressionMethod = readUInt16(data, offset: cursor + 10)
+            let compressedSize = readUInt32(data, offset: cursor + 20)
+            let uncompressedSize = readUInt32(data, offset: cursor + 24)
+            let fileNameLength = Int(readUInt16(data, offset: cursor + 28))
+            let extraFieldLength = Int(readUInt16(data, offset: cursor + 30))
+            let commentLength = Int(readUInt16(data, offset: cursor + 32))
+            let localHeaderOffset = Int(readUInt32(data, offset: cursor + 42))
+            let recordEnd = cursor + 46 + fileNameLength + extraFieldLength + commentLength
+            guard recordEnd <= data.count else {
+                break
+            }
+
+            let fileNameData = data.subdata(in: (cursor + 46)..<(cursor + 46 + fileNameLength))
+            let path = sanitizeZipEntryPath(fileNameData, fallbackIndex: entries.count)
+            if let payloadOffset = zipLocalFilePayloadOffset(in: data, localHeaderOffset: localHeaderOffset),
+               !path.hasSuffix("/") {
+                entries.append(ZipArchiveEntry(
+                    path: path,
+                    compressionMethod: compressionMethod,
+                    compressedSize: compressedSize,
+                    uncompressedSize: uncompressedSize,
+                    payloadOffset: payloadOffset
+                ))
+            }
+            cursor = recordEnd
+        }
+
+        return entries
+    }
+
+    private static func parseZipLocalFileEntries(in data: Data) -> [ZipArchiveEntry] {
+        var entries: [ZipArchiveEntry] = []
+        var cursor = 0
+
+        while cursor + 30 <= data.count {
+            let signature = readUInt32(data, offset: cursor)
+            if signature == 0x02014B50 || signature == 0x06054B50 {
+                break
+            }
+            guard signature == 0x04034B50 else {
+                return entries.isEmpty ? [] : entries
+            }
+
+            let generalPurposeFlags = readUInt16(data, offset: cursor + 6)
+            let compressionMethod = readUInt16(data, offset: cursor + 8)
+            let compressedSize = readUInt32(data, offset: cursor + 18)
+            let uncompressedSize = readUInt32(data, offset: cursor + 22)
+            let fileNameLength = Int(readUInt16(data, offset: cursor + 26))
+            let extraFieldLength = Int(readUInt16(data, offset: cursor + 28))
+            let payloadOffset = cursor + 30 + fileNameLength + extraFieldLength
+            guard payloadOffset <= data.count else {
+                break
+            }
+
+            let fileNameData = data.subdata(in: (cursor + 30)..<(cursor + 30 + fileNameLength))
+            let path = sanitizeZipEntryPath(fileNameData, fallbackIndex: entries.count)
+            let usesDataDescriptor = (generalPurposeFlags & 0x0008) != 0
+            if !path.hasSuffix("/"), !usesDataDescriptor {
+                entries.append(ZipArchiveEntry(
+                    path: path,
+                    compressionMethod: compressionMethod,
+                    compressedSize: compressedSize,
+                    uncompressedSize: uncompressedSize,
+                    payloadOffset: payloadOffset
+                ))
+            }
+
+            let nextCursor = payloadOffset + Int(compressedSize)
+            guard nextCursor > cursor else {
+                break
+            }
+            cursor = nextCursor
+        }
+
+        return entries
+    }
+
+    private static func findZipEndOfCentralDirectory(in data: Data) -> Int? {
+        let minimumEOCDSize = 22
+        guard data.count >= minimumEOCDSize else {
+            return nil
+        }
+
+        let searchStart = max(0, data.count - minimumEOCDSize - 65_535)
+        let signature: [UInt8] = [0x50, 0x4B, 0x05, 0x06]
+        let bytes = [UInt8](data)
+        guard bytes.count >= signature.count else {
+            return nil
+        }
+
+        var offset = bytes.count - signature.count
+        while offset >= searchStart {
+            if bytes[offset] == signature[0],
+               bytes[offset + 1] == signature[1],
+               bytes[offset + 2] == signature[2],
+               bytes[offset + 3] == signature[3] {
+                return offset
+            }
+            offset -= 1
+        }
+
+        return nil
+    }
+
+    private static func zipLocalFilePayloadOffset(in data: Data, localHeaderOffset: Int) -> Int? {
+        guard localHeaderOffset >= 0,
+              localHeaderOffset + 30 <= data.count,
+              readUInt32(data, offset: localHeaderOffset) == 0x04034B50 else {
+            return nil
+        }
+
+        let fileNameLength = Int(readUInt16(data, offset: localHeaderOffset + 26))
+        let extraFieldLength = Int(readUInt16(data, offset: localHeaderOffset + 28))
+        let payloadOffset = localHeaderOffset + 30 + fileNameLength + extraFieldLength
+        guard payloadOffset <= data.count else {
+            return nil
+        }
+        return payloadOffset
+    }
+
+    private static func extractZipEntryPayload(_ archiveData: Data, entry: ZipArchiveEntry) -> Data? {
+        let compressedSize = Int(entry.compressedSize)
+        guard compressedSize >= 0,
+              entry.payloadOffset >= 0,
+              entry.payloadOffset + compressedSize <= archiveData.count else {
+            return nil
+        }
+
+        let compressedData = archiveData.subdata(in: entry.payloadOffset..<(entry.payloadOffset + compressedSize))
+        switch entry.compressionMethod {
+        case 0:
+            return compressedData
+        case 8:
+            return decompressDeflatedZipEntry(compressedData, uncompressedSizeHint: Int(entry.uncompressedSize))
+        default:
+            return nil
+        }
+    }
+
+    private static func sanitizeZipEntryPath(_ data: Data, fallbackIndex: Int) -> String {
+        if let path = String(data: data, encoding: .utf8), !path.isEmpty {
+            return path
+        }
+        let hex = data.prefix(12).map { String(format: "%02X", $0) }.joined()
+        return "entry_\(fallbackIndex)_\(hex.isEmpty ? "unknown" : hex)"
     }
 
     private static func collectEmbeddedDataCandidates(from value: Any, path: String) -> [EmbeddedDataCandidate] {

@@ -535,8 +535,8 @@ struct MetallibParser {
 
     private static func parseFunctionList(_ data: Data, header: Header) throws -> [FunctionEntry] {
         let start = Int(header.functionListOffset)
-        let end = start + Int(header.functionListSize)
-        guard start >= 0, end <= data.count, start < end else {
+        let nominalEnd = start + Int(header.functionListSize)
+        guard start >= 0, nominalEnd <= data.count, start < nominalEnd else {
             if header.functionListSize == 0 { return [] }
             throw ParseError.sectionOutOfBounds(
                 name: "FunctionList",
@@ -546,58 +546,84 @@ struct MetallibParser {
             )
         }
 
-        var functions: [FunctionEntry] = []
-        var cursor = start
+        // 真实样本显示 functionListSize 只覆盖各 entry 的 size 总和，
+        // 不包含 section 开头的 4-byte entryCount，因此这里额外放宽 4 字节窗口。
+        let end = min(data.count, nominalEnd + 4)
 
-        // 函数列表由连续的 tag group 组成，每个 tag group 以 ENDT 结束
-        while cursor < end {
-            let remaining = end - cursor
-            guard remaining >= 4 else { break }
+        // metallib function list 的标准布局：
+        // [4B entryCount]
+        //   repeated entryCount times:
+        //     [4B tagGroupSize(including this size field)]
+        //     [tag group bytes: NAME/TYPE/HASH/MDSZ/OFFT/.../ENDT]
+        //
+        // 早期实现把 section 起点直接当成 tag name 读取，遇到真实样本中
+        // `entryCount` / `tagGroupSize` 前缀时会错位解析，最终拿不到 OFFT/MDSZ。
+        guard start + 4 <= end else {
+            return []
+        }
+
+        let entryCount = Int(readUInt32(data, offset: start))
+        guard entryCount > 0 else {
+            return []
+        }
+
+        var functions: [FunctionEntry] = []
+        functions.reserveCapacity(min(entryCount, 64))
+        var cursor = start + 4
+
+        for _ in 0..<entryCount {
+            guard cursor + 4 <= end else { break }
+
+            let groupStart = cursor
+            let groupSize = Int(readUInt32(data, offset: cursor))
+            guard groupSize >= 4 else { break }
+
+            let groupEnd = groupStart + groupSize
+            guard groupEnd <= end else { break }
+            cursor += 4
 
             var tags: [Tag] = []
             var tagGroupValid = false
 
-            while cursor < end {
-                guard cursor + 6 <= end else { break }  // tag name(4) + size(2) minimum
+            while cursor < groupEnd {
+                guard cursor + 4 <= groupEnd else { break }
 
                 let tagName = readFourCC(data, offset: cursor)
                 cursor += 4
 
-                // ENDT 标签标记 tag group 结束
                 if tagName == "ENDT" {
                     tagGroupValid = true
                     break
                 }
 
-                // 读取 payload 大小
                 let payloadSize: Int
                 if tagName == "SARC" {
-                    // SARC tag 使用 4 字节大小
-                    guard cursor + 4 <= end else { break }
+                    guard cursor + 4 <= groupEnd else { break }
                     payloadSize = Int(readUInt32(data, offset: cursor))
                     cursor += 4
                 } else {
-                    guard cursor + 2 <= end else { break }
+                    guard cursor + 2 <= groupEnd else { break }
                     payloadSize = Int(readUInt16(data, offset: cursor))
                     cursor += 2
                 }
 
-                guard cursor + payloadSize <= end else { break }
+                guard payloadSize >= 0, cursor + payloadSize <= groupEnd else { break }
                 let payload = data.subdata(in: cursor..<(cursor + payloadSize))
                 cursor += payloadSize
-
                 tags.append(Tag(name: tagName, payload: payload))
             }
 
             if tagGroupValid && !tags.isEmpty {
                 functions.append(FunctionEntry(tags: tags))
             } else if !tags.isEmpty {
-                // 部分解析的 tag group（可能数据截断）
                 functions.append(FunctionEntry(tags: tags))
                 break
             } else {
                 break
             }
+
+            // 即使提前遇到 ENDT，也按声明的 groupSize 对齐到下一条 entry。
+            cursor = groupEnd
         }
 
         return functions
@@ -678,15 +704,24 @@ struct MetallibParser {
     }
 
     private static func readUInt16(_ data: Data, offset: Int) -> UInt16 {
-        data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt16.self).littleEndian }
+        UInt16(data[offset])
+            | (UInt16(data[offset + 1]) << 8)
     }
 
     private static func readUInt32(_ data: Data, offset: Int) -> UInt32 {
-        data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt32.self).littleEndian }
+        var value: UInt32 = 0
+        for index in 0..<4 {
+            value |= UInt32(data[offset + index]) << (8 * index)
+        }
+        return value
     }
 
     private static func readUInt64(_ data: Data, offset: Int) -> UInt64 {
-        data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt64.self).littleEndian }
+        var value: UInt64 = 0
+        for index in 0..<8 {
+            value |= UInt64(data[offset + index]) << (8 * index)
+        }
+        return value
     }
 
     private static func readFourCC(_ data: Data, offset: Int) -> String {
@@ -1589,15 +1624,24 @@ extension MetallibParser {
     }
 
     private static func readBigEndianUInt16(_ data: Data, offset: Int) -> UInt16 {
-        data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt16.self).bigEndian }
+        (UInt16(data[offset]) << 8)
+            | UInt16(data[offset + 1])
     }
 
     private static func readBigEndianUInt32(_ data: Data, offset: Int) -> UInt32 {
-        data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt32.self).bigEndian }
+        var value: UInt32 = 0
+        for index in 0..<4 {
+            value = (value << 8) | UInt32(data[offset + index])
+        }
+        return value
     }
 
     private static func readBigEndianUInt64(_ data: Data, offset: Int) -> UInt64 {
-        data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt64.self).bigEndian }
+        var value: UInt64 = 0
+        for index in 0..<8 {
+            value = (value << 8) | UInt64(data[offset + index])
+        }
+        return value
     }
 
     private static func collectEmbeddedDataCandidates(from value: Any, path: String) -> [EmbeddedDataCandidate] {

@@ -93,7 +93,7 @@ PlayCover 主应用 (macOS)
 | E-005d | ↳ 缓存与观测性 | TODO | |
 |  | 以 metallib 内容或 bitcode 模块 `(offset,size)` / hash 为键缓存处理结果，并补充 success / fallback reason 日志 | | |
 | E-005e | ↳ **非 MTLB `newLibraryWithData` payload 识别/解包** | 🔄 IN PROGRESS | |
-|  | **当前最高优先级**。原神 6.4.0 live 验证已证明该入口收到的很多 payload **并非原始 `MTLB` metallib blob**；本轮又离线确认 `xar` / `bplist_keyed_archive` / raw `MTLB(headerSize=15)` 的 wrapper 与 header-compat 都已可恢复，下一步应继续定位为何 recovered 样本仍停在 `OK modules=0 functions=1`，而不是重复盲猜 wrapper 家族 | | |
+|  | **当前最高优先级**。wrapper / header-compat 路径与 function list 前缀解析都已离线打通，raw `MTLB` / `xar` recovered 样本现已推进到 `OK modules=3 functions=3`；下一步应继续定位 `OFFT` 相对偏移语义与 bitcode slicing，为何后两个 module 仍未命中有效 LLVM magic，而不是回头重复 wrapper 家族验证 | | |
 | E-005e1 | ↳ `payload` 指纹 / 前导字节诊断日志 | ✅ DONE | |
 |  | 已在 `pc_newLibraryWithData` 与 `MetallibParser.safeExtractBitcodeModules` 补充 `dispatch_data` 运行时类名、payload 前 16 字节 hex / ASCII、以及 `MTLB/bplist/zip/gzip/bzip2/llvm bitcode` 等格式指纹日志；`headerSize=0` 失败场景现在会直接带出摘要，便于下一轮 live 复现锁定真实 wrapper 形态 | | |
 | E-005e1b | ↳ 非 `MTLB` payload 上游调用栈诊断 | ✅ DONE | |
@@ -136,7 +136,9 @@ PlayCover 主应用 (macOS)
 - **`newLibraryWithData:error:` 的参数类型是 `dispatch_data_t`**：不能按 `NSData` 直接假设处理
 - **live 验证前必须刷新 GUI 和 app 注入**：`sync_playtools_xcframework.sh` 后，还需要 `build_and_install.sh` 重装 GUI，并对目标 app 执行 `remove_playtools` / `inject_playtools`，否则 live runtime 可能仍是旧版本
 - **`E-005a` 当前只做单 module 闭环**：多 module 场景尚未定义聚合策略，先回退原始 library
-- **原神当前的主 blocker 已从 wrapper / header 形态推进到 recovered sample 的 module extraction**：`xar` / `bplist_keyed_archive` / raw `MTLB(headerSize=15)` 的恢复已离线打通，下一步应继续追踪为何仍停在 `OK modules=0 functions=1`
+- **原神当前的主 blocker 已从 wrapper / header 形态进一步推进到 `OFFT` 相对偏移语义 / module slicing**：`xar` / `bplist_keyed_archive` / raw `MTLB(headerSize=15)` 的恢复、header-compat 与 function list 前缀解析都已离线打通，样本已从 `OK modules=0 functions=1` 推进到 `OK modules=3 functions=3`
+- **`functionList` section 不能从 offset 0 直接按 tag 流读取**：真实 `headerSize=15` 样本在 section 开头先放 `4-byte entryCount`，每个函数 entry 再以 `4-byte tagGroupSize` 开头；此外 `functionListSize` 看起来只覆盖各 entry 的 size 总和，不包含最前面的 `entryCount`
+- **`Data` 子切片里的定长字段不要直接 `withUnsafeBytes.load(as:)`**：`OFFT` / `MDSZ` 这类 payload 在 macOS/iOS 运行时可能触发未对齐访问崩溃，统一走按字节拼装的 `UInt16/32/64` helper 更稳
 - **`headerSize=0` 现在应优先看 payload 指纹日志**：新日志会同时给出 `dispatch_data` 运行时类名、前 16 字节 hex / ASCII，以及 `MTLB/bplist/zip/gzip/bzip2/llvm bitcode` 等格式指纹，先确认 wrapper 形态再决定是否需要解包
 - **`E-005e2` 先做“通用剥离 + 样本落盘”比盲猜格式更稳**：当前已支持从 `bplist` 递归扫描嵌套 `Data`、以及从 payload / 嵌套 `Data` 中剥离 embedded `MTLB`；即使还原成功，也会把原始非 `MTLB` payload 落盘到 `~/Library/Containers/io.playcover.PlayCover/ShaderPayloadSamples/<bundleId>/`，便于下一轮定向补 `gzip` / `zip` / archive 解包
 - **非 `MTLB` payload 现在要连同调用栈一起看**：`ShaderPayloadSamples` 的 `.txt` 元数据会带上首次命中的 `selector` / `dispatchClass` / `callStack[*]`，能直接帮助判断 wrapper 是 App 侧、Metal 桥接层还是系统解包链路生成的

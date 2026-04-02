@@ -92,10 +92,13 @@ Offset  Size   Field
 0x50    8      Bitcode Size (扩展 header)
 ```
 
-函数 Tag 格式：
+函数列表 section 格式：
 ```
-[4B tag_name][2B payload_size][payload_size bytes payload]...
-[ENDT]
+[4B entry_count]
+repeated entry_count times:
+  [4B tag_group_size (包含这 4 字节 size 字段本身)]
+  [4B tag_name][2B payload_size][payload_size bytes payload]...
+  [ENDT]
 ```
 
 常见 tag：NAME, TYPE, HASH, MDSZ (bitcode size), OFFT (bitcode offset), VERS, SARC (4B size)

@@ -651,6 +651,101 @@ extension MetallibParser {
         let payloadOffset: Int
     }
 
+    private struct XarArchiveHeader {
+        let headerSize: Int
+        let tocCompressedSize: Int
+        let tocUncompressedSize: Int
+    }
+
+    private struct XarArchiveEntry {
+        let path: String
+        let encodingStyle: String?
+        let payloadOffset: Int
+        let payloadLength: Int
+        let uncompressedSize: Int?
+    }
+
+    private final class XarXMLNode {
+        let name: String
+        let attributes: [String: String]
+        var children: [XarXMLNode] = []
+        private var textParts: [String] = []
+
+        init(name: String, attributes: [String: String]) {
+            self.name = name
+            self.attributes = attributes
+        }
+
+        func appendText(_ text: String) {
+            textParts.append(text)
+        }
+
+        var textContent: String {
+            textParts.joined().trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        func firstChild(named childName: String) -> XarXMLNode? {
+            children.first { $0.name == childName }
+        }
+
+        func childText(named childName: String) -> String? {
+            firstChild(named: childName)?.textContent
+        }
+
+        func childElements(named childName: String) -> [XarXMLNode] {
+            children.filter { $0.name == childName }
+        }
+    }
+
+    private final class XarTOCXMLParser: NSObject, XMLParserDelegate {
+        private var stack: [XarXMLNode] = []
+        private(set) var root: XarXMLNode?
+
+        func parse(_ data: Data) -> XarXMLNode? {
+            let parser = XMLParser(data: data)
+            parser.delegate = self
+            guard parser.parse() else {
+                return nil
+            }
+            return root
+        }
+
+        func parser(
+            _ parser: XMLParser,
+            didStartElement elementName: String,
+            namespaceURI: String?,
+            qualifiedName qName: String?,
+            attributes attributeDict: [String : String] = [:]
+        ) {
+            let node = XarXMLNode(name: elementName, attributes: attributeDict)
+            if let parent = stack.last {
+                parent.children.append(node)
+            } else {
+                root = node
+            }
+            stack.append(node)
+        }
+
+        func parser(_ parser: XMLParser, foundCharacters string: String) {
+            stack.last?.appendText(string)
+        }
+
+        func parser(_ parser: XMLParser, foundCDATA CDATABlock: Data) {
+            if let string = String(data: CDATABlock, encoding: .utf8) {
+                stack.last?.appendText(string)
+            }
+        }
+
+        func parser(
+            _ parser: XMLParser,
+            didEndElement elementName: String,
+            namespaceURI: String?,
+            qualifiedName qName: String?
+        ) {
+            _ = stack.popLast()
+        }
+    }
+
     private struct PayloadDiagnosticContext {
         let selector: String
         let dispatchClassName: String
@@ -849,6 +944,11 @@ extension MetallibParser {
 
         if kind == "zip",
            let embedded = unwrapMetallibFromZipPayload(data, depth: depth + 1) {
+            return embedded
+        }
+
+        if kind == "xar",
+           let embedded = unwrapMetallibFromXarPayload(data, depth: depth + 1) {
             return embedded
         }
 
@@ -1154,6 +1254,212 @@ extension MetallibParser {
         }
         let hex = data.prefix(12).map { String(format: "%02X", $0) }.joined()
         return "entry_\(fallbackIndex)_\(hex.isEmpty ? "unknown" : hex)"
+    }
+
+    private static func unwrapMetallibFromXarPayload(_ data: Data, depth: Int) -> UnwrappedPayload? {
+        let entries = parseXarArchiveEntries(in: data)
+        guard !entries.isEmpty else {
+            return nil
+        }
+
+        for entry in entries {
+            guard let entryData = extractXarEntryPayload(data, entry: entry), !entryData.isEmpty else {
+                continue
+            }
+
+            let entryPath = "xar:\(entry.path)"
+            if hasPrefix(entryData, ascii: "MTLB") {
+                let trimmed = trimMetallibDataIfNeeded(entryData)
+                return UnwrappedPayload(data: trimmed, strategy: entryPath)
+            }
+            if let nested = unwrapMetallibPayloadIfNeeded(entryData, depth: depth) {
+                return UnwrappedPayload(data: nested.data, strategy: "\(entryPath)→\(nested.strategy)")
+            }
+            if let embedded = findEmbeddedMetallib(in: entryData, path: entryPath, includeZeroOffset: false) {
+                return UnwrappedPayload(data: embedded.data, strategy: embedded.strategy)
+            }
+        }
+
+        return nil
+    }
+
+    private static func parseXarArchiveEntries(in data: Data) -> [XarArchiveEntry] {
+        guard let header = parseXarArchiveHeader(data) else {
+            return []
+        }
+
+        let tocStart = header.headerSize
+        let tocEnd = tocStart + header.tocCompressedSize
+        guard tocStart >= 0,
+              tocEnd >= tocStart,
+              tocEnd <= data.count else {
+            return []
+        }
+
+        let compressedTOC = data.subdata(in: tocStart..<tocEnd)
+        guard let tocXMLData = decompressXarTOC(compressedTOC, expectedSize: header.tocUncompressedSize) else {
+            return []
+        }
+
+        let parser = XarTOCXMLParser()
+        guard let rootNode = parser.parse(tocXMLData) else {
+            return []
+        }
+
+        let heapStart = tocEnd
+        let tocNode = rootNode.name == "toc" ? rootNode : rootNode.firstChild(named: "toc")
+        guard let tocNode else {
+            return []
+        }
+
+        var entries: [XarArchiveEntry] = []
+        for fileNode in tocNode.childElements(named: "file") {
+            collectXarArchiveEntries(
+                from: fileNode,
+                parentPath: "",
+                heapStart: heapStart,
+                archiveSize: data.count,
+                into: &entries
+            )
+        }
+        return entries
+    }
+
+    private static func parseXarArchiveHeader(_ data: Data) -> XarArchiveHeader? {
+        let minimumHeaderBytes = 28
+        guard data.count >= minimumHeaderBytes,
+              readBigEndianUInt32(data, offset: 0) == 0x78617221 else {
+            return nil
+        }
+
+        let headerSize = Int(readBigEndianUInt16(data, offset: 4))
+        let tocCompressedSize = Int(readBigEndianUInt64(data, offset: 8))
+        let tocUncompressedSize = Int(readBigEndianUInt64(data, offset: 16))
+        guard headerSize >= minimumHeaderBytes,
+              headerSize <= data.count,
+              tocCompressedSize >= 0,
+              tocUncompressedSize >= 0,
+              headerSize + tocCompressedSize <= data.count else {
+            return nil
+        }
+
+        return XarArchiveHeader(
+            headerSize: headerSize,
+            tocCompressedSize: tocCompressedSize,
+            tocUncompressedSize: tocUncompressedSize
+        )
+    }
+
+    private static func decompressXarTOC(_ data: Data, expectedSize: Int) -> Data? {
+        inflatePayload(data, windowBits: 15, sizeHint: expectedSize)
+            ?? inflatePayload(data, windowBits: 15 + 32, sizeHint: expectedSize)
+            ?? inflatePayload(data, windowBits: -15, sizeHint: expectedSize)
+    }
+
+    private static func collectXarArchiveEntries(
+        from fileNode: XarXMLNode,
+        parentPath: String,
+        heapStart: Int,
+        archiveSize: Int,
+        into entries: inout [XarArchiveEntry]
+    ) {
+        let rawName = fileNode.childText(named: "name")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let entryName = sanitizeXarEntryName(rawName, fallbackIndex: entries.count)
+        let fullPath = parentPath.isEmpty ? entryName : "\(parentPath)/\(entryName)"
+
+        if let dataNode = fileNode.firstChild(named: "data"),
+           let offsetText = dataNode.childText(named: "offset")?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let lengthText = dataNode.childText(named: "length")?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let relativeOffset = Int(offsetText),
+           let payloadLength = Int(lengthText),
+           relativeOffset >= 0,
+           payloadLength > 0 {
+            let payloadOffset = heapStart + relativeOffset
+            if payloadOffset >= 0, payloadOffset + payloadLength <= archiveSize {
+                let uncompressedSize = dataNode.childText(named: "size")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .flatMap(Int.init)
+                let encodingStyle = dataNode.firstChild(named: "encoding")?.attributes["style"]
+                entries.append(XarArchiveEntry(
+                    path: fullPath,
+                    encodingStyle: encodingStyle,
+                    payloadOffset: payloadOffset,
+                    payloadLength: payloadLength,
+                    uncompressedSize: uncompressedSize
+                ))
+            }
+        }
+
+        for childFile in fileNode.childElements(named: "file") {
+            collectXarArchiveEntries(
+                from: childFile,
+                parentPath: fullPath,
+                heapStart: heapStart,
+                archiveSize: archiveSize,
+                into: &entries
+            )
+        }
+    }
+
+    private static func sanitizeXarEntryName(_ value: String?, fallbackIndex: Int) -> String {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let normalized = trimmed.replacingOccurrences(of: "/", with: "_")
+        if !normalized.isEmpty {
+            return normalized
+        }
+        return "entry_\(fallbackIndex)"
+    }
+
+    private static func extractXarEntryPayload(_ archiveData: Data, entry: XarArchiveEntry) -> Data? {
+        guard entry.payloadOffset >= 0,
+              entry.payloadLength > 0,
+              entry.payloadOffset + entry.payloadLength <= archiveData.count else {
+            return nil
+        }
+
+        let storedData = archiveData.subdata(in: entry.payloadOffset..<(entry.payloadOffset + entry.payloadLength))
+        let encodingStyle = normalizedXarEncodingStyle(entry.encodingStyle)
+        switch encodingStyle {
+        case "none":
+            return storedData
+        case "gzip", "zlib":
+            return inflatePayload(storedData, windowBits: 15 + 32, sizeHint: entry.uncompressedSize)
+                ?? inflatePayload(storedData, windowBits: 15, sizeHint: entry.uncompressedSize)
+                ?? inflatePayload(storedData, windowBits: -15, sizeHint: entry.uncompressedSize)
+                ?? storedData
+        default:
+            return storedData
+        }
+    }
+
+    private static func normalizedXarEncodingStyle(_ style: String?) -> String {
+        guard let normalized = style?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !normalized.isEmpty else {
+            return "none"
+        }
+
+        switch normalized {
+        case "application/octet-stream", "application/x-raw", "application/x-uncompressed", "none":
+            return "none"
+        case "application/x-gzip", "application/gzip", "gzip":
+            return "gzip"
+        case "application/zlib", "application/x-zlib", "zlib":
+            return "zlib"
+        default:
+            return normalized
+        }
+    }
+
+    private static func readBigEndianUInt16(_ data: Data, offset: Int) -> UInt16 {
+        data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt16.self).bigEndian }
+    }
+
+    private static func readBigEndianUInt32(_ data: Data, offset: Int) -> UInt32 {
+        data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt32.self).bigEndian }
+    }
+
+    private static func readBigEndianUInt64(_ data: Data, offset: Int) -> UInt64 {
+        data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt64.self).bigEndian }
     }
 
     private static func collectEmbeddedDataCandidates(from value: Any, path: String) -> [EmbeddedDataCandidate] {

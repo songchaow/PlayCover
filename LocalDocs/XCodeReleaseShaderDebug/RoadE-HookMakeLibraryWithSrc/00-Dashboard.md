@@ -110,8 +110,12 @@ PlayCover 主应用 (macOS)
 |  | 已继续拆分为“`zip` 先落地、`xar` / 自定义 archive 等样本驱动”两步，避免在无真实 payload 时盲猜整套 archive 家族 | | |
 | E-005e2b2a | ↳ `zip` payload 解包 + 递归恢复 | ✅ DONE | |
 |  | 已在 `MetallibParser` 增加最小 ZIP reader：优先读取 central directory，失败再顺序扫描 local file header；支持 stored / deflate entry，并会对 entry data 继续递归执行 `MTLB` / `gzip` / `bplist` / embedded `MTLB` 恢复。已用 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 做编译验证 | | |
-| E-005e2b2b | ↳ `xar` / 自定义 archive 定向解包 | TODO | |
-|  | 等下一轮 live 复现结合 `ShaderPayloadSamples` 的真实样本，再决定是否需要补真正的 `xar` parser 或 keyed archive 定向取值逻辑 | | |
+| E-005e2b2b | ↳ `xar` / 自定义 archive 定向解包 | 🔄 IN PROGRESS | |
+|  | 已拆分为“`xar` 最小 TOC/heap 解包”与“自定义 archive / keyed archive 样本驱动”两步，先把确定格式的 `xar` 路径接通 | | |
+| E-005e2b2b1 | ↳ `xar` payload 解包 + 递归恢复 | ✅ DONE | |
+|  | 已在 `MetallibParser` 增加最小 `xar` reader：解析 big-endian header、zlib 压缩 TOC XML、遍历 `file/data` 节点并按 heap offset 取 entry data；对 `application/x-gzip` / `zlib` entry 会先解压，再继续递归尝试 `MTLB` / `gzip` / `zip` / `bplist` / embedded `MTLB` 恢复。已用 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 做编译验证；另用 synthetic `metallib → xar` 样本确认运行时已命中 `xar:test.metallib` 解包路径，但最终仍受现有 raw `MTLB headerSize=15` 解析限制阻塞 | | |
+| E-005e2b2b2 | ↳ 自定义 archive / keyed archive 定向取值 | TODO | |
+|  | 继续等待下一轮 live `ShaderPayloadSamples` 真实样本，再决定是否需要补 keyed archive / 其他 archive 家族的定向解包 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
 |  | 首轮真实样本（原神外网包）已执行：runtime 与 capture 链路正常，`.gputrace` 成功生成，但当前 `valid_msl=0`；后续验证优先服务于 `E-005e2` 的解包实现，而不是继续盲目截帧 | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
@@ -130,6 +134,7 @@ PlayCover 主应用 (macOS)
 - **非 `MTLB` payload 现在要连同调用栈一起看**：`ShaderPayloadSamples` 的 `.txt` 元数据会带上首次命中的 `selector` / `dispatchClass` / `callStack[*]`，能直接帮助判断 wrapper 是 App 侧、Metal 桥接层还是系统解包链路生成的
 - **`gzip` wrapper 解包优先走 `zlib inflateInit2(15 + 32)`**：这样能自动识别 `gzip/zlib` header，比分别手拆 header 或仅依赖高层压缩 API 更适合当前 iOS target 内的小型定向恢复逻辑；解压后继续递归跑 `bplist` / embedded `MTLB` 剥离即可
 - **`zip` wrapper 先读 central directory，再 fallback 扫 local header 更稳**：不少 ZIP entry 会把可靠的大小信息放在 central directory；只有拿不到 central directory 时，才退回顺序扫描 local file header。当前已支持 stored / deflate，两种 entry 都会继续递归尝试 `MTLB` / `gzip` / `bplist` / embedded `MTLB` 恢复
+- **`xar` 最小解包先抓 `header + zlib TOC + heap entry` 就能验证主路径**：`xar` header 使用 big-endian，TOC 是 zlib 压缩 XML，`file/data/offset/length/encoding` 足以定位 heap entry；本轮 synthetic `metallib → xar` 样本已确认运行时能命中 `xar:test.metallib` 解包路径，当前剩余 blocker 已转为 raw `MTLB headerSize=15` 解析兼容，而不是 `xar` entry 定位本身
 - **PlayTools 是 iOS target**：调用 `llvm-dis` 仍需走 `posix_spawn`，不能依赖 `Foundation.Process`
 
 ## 参考信息

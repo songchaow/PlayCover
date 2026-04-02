@@ -9,6 +9,7 @@
 //
 
 import Foundation
+import ObjectiveC
 
 // MARK: - MetallibParser
 
@@ -642,7 +643,67 @@ extension MetallibParser {
         dd.enumerateBytes { buffer, _, _ in
             collected.append(contentsOf: buffer)
         }
+        if collected.isEmpty {
+            NSLog("[PlayTools] MetallibParser: dispatch_data converted to empty Data (class=%@)",
+                  objectClassName(nsData))
+        }
         return collected
+    }
+
+    /// **E-005e1**: 对 `newLibraryWithData` 收到的 payload 做前导字节指纹识别，
+    /// 用于定位非原始 MTLB wrapper / archive / compression 形态。
+    static func payloadDebugSummary(_ data: Data) -> String {
+        guard !data.isEmpty else {
+            return "kind=empty, bytes=0"
+        }
+
+        let prefixBytes = Array(data.prefix(16))
+        let prefixHex = prefixBytes.map { String(format: "%02X", $0) }.joined()
+        let asciiPreview = String(prefixBytes.map { byte in
+            if byte >= 0x20 && byte <= 0x7E {
+                return Character(UnicodeScalar(byte))
+            }
+            return "."
+        })
+
+        let kind: String
+        if hasPrefix(data, ascii: "MTLB") {
+            let headerSize = data.count >= 14 ? readUInt16(data, offset: 12) : 0
+            let fileType = data.count >= 15 ? readUInt8(data, offset: 14) : 0
+            let targetPlatform = data.count >= 16 ? readUInt8(data, offset: 15) : 0
+            kind = "mtlb_like(headerSize=\(headerSize),fileType=\(fileType),target=0x\(String(format: "%02X", targetPlatform)))"
+        } else if hasPrefix(data, ascii: "bplist00") {
+            kind = "bplist"
+        } else if hasPrefix(data, ascii: "BC") {
+            kind = "llvm_bitstream"
+        } else if data.count >= 2 && data[0] == 0xDE && data[1] == 0xC0 {
+            kind = "llvm_wrapper"
+        } else if data.count >= 2 && data[0] == 0x1F && data[1] == 0x8B {
+            kind = "gzip"
+        } else if data.count >= 2 && data[0] == 0x42 && data[1] == 0x5A {
+            kind = "bzip2"
+        } else if data.count >= 4 && data[0] == 0x50 && data[1] == 0x4B && data[2] == 0x03 && data[3] == 0x04 {
+            kind = "zip"
+        } else if data.count >= 4 && data[0] == 0x78 && data[1] == 0x61 && data[2] == 0x72 && data[3] == 0x21 {
+            kind = "xar"
+        } else if data.count >= 1 && (data[0] == 0x7B || data[0] == 0x5B) {
+            kind = "json_like"
+        } else {
+            kind = "unknown"
+        }
+
+        return "kind=\(kind), bytes=\(data.count), prefixHex=\(prefixHex), ascii=\(asciiPreview)"
+    }
+
+    private static func hasPrefix(_ data: Data, ascii: String) -> Bool {
+        data.starts(with: ascii.utf8)
+    }
+
+    private static func objectClassName(_ object: AnyObject) -> String {
+        if let runtimeClass = object_getClass(object) {
+            return NSStringFromClass(runtimeClass)
+        }
+        return NSStringFromClass(type(of: object))
     }
 
     /// 安全地尝试解析 metallib 数据并记录结果。
@@ -664,8 +725,10 @@ extension MetallibParser {
                 NSLog("[PlayTools] MetallibParser:   [%d] %@", i, mod.summary)
             }
         } catch {
-            NSLog("[PlayTools] MetallibParser: %@ — parse failed: %@",
-                  selector, error.localizedDescription)
+            NSLog("[PlayTools] MetallibParser: %@ — parse failed: %@ (%@)",
+                  selector,
+                  error.localizedDescription,
+                  payloadDebugSummary(data))
         }
     }
 
@@ -683,8 +746,9 @@ extension MetallibParser {
             let modules = result.extractBitcodeModules()
             return (result, modules)
         } catch {
-            NSLog("[PlayTools] MetallibParser: extractBitcodeModules failed: %@",
-                  error.localizedDescription)
+            NSLog("[PlayTools] MetallibParser: extractBitcodeModules failed: %@ (%@)",
+                  error.localizedDescription,
+                  payloadDebugSummary(data))
             return nil
         }
     }

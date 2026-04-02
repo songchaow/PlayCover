@@ -92,10 +92,14 @@ PlayCover 主应用 (macOS)
 |  | 对重编译后的 library 做函数名 / 数量 / 关键 metadata 对齐校验 | | |
 | E-005d | ↳ 缓存与观测性 | TODO | |
 |  | 以 metallib 内容或 bitcode 模块 `(offset,size)` / hash 为键缓存处理结果，并补充 success / fallback reason 日志 | | |
-| E-005e | ↳ **非 MTLB `newLibraryWithData` payload 识别/解包** | TODO | |
+| E-005e | ↳ **非 MTLB `newLibraryWithData` payload 识别/解包** | 🔄 IN PROGRESS | |
 |  | **当前最高优先级**。原神 6.4.0 live 验证表明：即使最新 GUI 与最新 PlayTools 已重新注入，`MetallibParser` 仍会对大量 `newLibraryWithData:error:` 输入报 `unsupported metallib header size: 0`。说明该入口收到的很多 payload **并非原始 `MTLB` metallib blob**，需先识别前导字节 / wrapper / archive / 上游调用路径，必要时补解包逻辑 | | |
+| E-005e1 | ↳ `payload` 指纹 / 前导字节诊断日志 | ✅ DONE | |
+|  | 已在 `pc_newLibraryWithData` 与 `MetallibParser.safeExtractBitcodeModules` 补充 `dispatch_data` 运行时类名、payload 前 16 字节 hex / ASCII、以及 `MTLB/bplist/zip/gzip/bzip2/llvm bitcode` 等格式指纹日志；`headerSize=0` 失败场景现在会直接带出摘要，便于下一轮 live 复现锁定真实 wrapper 形态 | | |
+| E-005e2 | ↳ 基于真实 payload 样本实现解包 | TODO | |
+|  | 待用新增日志在 live 环境采到实际前导字节 / class 信息后，再决定是 `bplist` 解档、压缩解包，还是自定义 wrapper 剥离 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
-|  | 首轮真实样本（原神外网包）已执行：runtime 与 capture 链路正常，`.gputrace` 成功生成，但当前 `valid_msl=0`；后续验证优先服务于 `E-005e` 定位 | | |
+|  | 首轮真实样本（原神外网包）已执行：runtime 与 capture 链路正常，`.gputrace` 成功生成，但当前 `valid_msl=0`；后续验证优先服务于 `E-005e2` 的解包实现，而不是继续盲目截帧 | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
 |  | 添加 `injectShaderSources` 开关到 AppSettings / AppSettingsView；添加 LLVM 工具链下载 / 状态 UI | | |
 
@@ -107,6 +111,7 @@ PlayCover 主应用 (macOS)
 - **live 验证前必须刷新 GUI 和 app 注入**：`sync_playtools_xcframework.sh` 后，还需要 `build_and_install.sh` 重装 GUI，并对目标 app 执行 `remove_playtools` / `inject_playtools`，否则 live runtime 可能仍是旧版本
 - **`E-005a` 当前只做单 module 闭环**：多 module 场景尚未定义聚合策略，先回退原始 library
 - **原神当前的主 blocker 不是 IR→MSL 覆盖率，而是 payload 形态**：live 样本已证明很多 `newLibraryWithData` 输入并非原始 `MTLB`，必须先完成 `E-005e`
+- **`headerSize=0` 现在应优先看 payload 指纹日志**：新日志会同时给出 `dispatch_data` 运行时类名、前 16 字节 hex / ASCII，以及 `MTLB/bplist/zip/gzip/bzip2/llvm bitcode` 等格式指纹，先确认 wrapper 形态再决定是否需要解包
 - **PlayTools 是 iOS target**：调用 `llvm-dis` 仍需走 `posix_spawn`，不能依赖 `Foundation.Process`
 
 ## 参考信息

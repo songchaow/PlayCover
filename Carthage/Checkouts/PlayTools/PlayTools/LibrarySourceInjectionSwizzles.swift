@@ -24,12 +24,15 @@ private final class LibrarySourceInjectionSwizzles: NSObject {
     ) -> AnyObject? {
         let library = self.pc_newLibraryWithData(data, error: error)
         let metallibData = MetallibParser.convertDispatchData(data)
+        let dispatchObject = data as AnyObject
+        let dispatchClassName = object_getClass(dispatchObject).map(NSStringFromClass) ?? NSStringFromClass(type(of: dispatchObject))
+        let payloadSummary = MetallibParser.payloadDebugSummary(metallibData)
         LibrarySourceInjectionService.shared.logLibraryCreation(
             selector: "newLibraryWithData:error:",
             device: self,
             library: library,
             dataSize: metallibData.count,
-            extraInfo: nil
+            extraInfo: "dispatchClass=\(dispatchClassName), payload={\(payloadSummary)}"
         )
         // E-004b / E-005a: 提取 bitcode，并在安全条件下尝试重编译带源码的替换 library。
         let modules = LibrarySourceInjectionService.shared.extractAndCacheBitcodeModules(

@@ -95,20 +95,22 @@ makeLibrary(source:) 重编译替换
 
 这意味着真实运行中采到的成功样本，已经具备长期可复用的目录、索引和去重约束；后续 replay / diff / 回归可以默认建立在这套稳定 corpus 之上。
 
-### 2. `makeLibrary` 覆盖面还不完整
+### 2. `makeLibrary` 覆盖面已扩展到 `URL/default/file`
 
-当前真正进入 bitcode 提取和替换主链路的是：
+截至 2026-04-04，以下入口都已在代码路径上接入统一的 bitcode 提取、IR 反汇编、MSL 转换、`makeLibrary(source:)` 替换与 `ShaderCorpus/` 导出链路：
 
 - `newLibraryWithData:error:`
-
-而这些入口虽然已 hook，但目前主要仍是日志：
-
 - `newLibraryWithURL:error:`
 - `newDefaultLibrary`
 - `newDefaultLibraryWithBundle:error:`
 - `newLibraryWithFile:error:`
 
-若要提升 corpus 覆盖率，需要逐步把这些路径纳入统一的导出逻辑。
+其中 default 路径当前通过两级保守策略定位 bundle 内的默认 `.metallib`：
+
+1. 优先按 `CFBundleExecutable` / `CFBundleName` / bundle 名 / `default` 显式匹配
+2. 若显式名称未命中，再扫描 bundle `resourceURL` 下的 `.metallib` 资源并按路径稳定排序后选择
+
+因此当前剩余工作已从“把这些入口接入统一导出逻辑”转为“在真实 app 上确认这些入口的命中情况与最小 live 验证”。
 
 ### 3. 缺少离线 replay 的稳定输入规范
 
@@ -318,7 +320,7 @@ build_and_install.sh
 |---|---|---|---|
 | E-004f1 | 成功路径导出 `.bc/.ll/.metal/.json` | ✅ DONE | `attemptLibraryReplacement(...)` 成功时已按 module 落盘真实样本 |
 | E-004f2 | corpus 命名 / 去重 / manifest 规范 | ✅ DONE | 已落地 `modules/<moduleKey>`、`manifest.jsonl` 与基线保护策略 |
-| E-004f3 | 扩展 `URL/default/file` 路径覆盖 | TODO | 提高采集完整性 |
+| E-004f3 | 扩展 `URL/default/file` 路径覆盖 | ✅ DONE | 相关 selector 已在代码路径上复用统一导出 / 替换逻辑；default 路径增加了 bundle `.metallib` 保守定位策略 |
 | E-004f4 | MCP / 脚本化导出接口 | TODO | 降低手工操作成本 |
 
 ## 与 E-005 / E-006 的衔接

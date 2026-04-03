@@ -21,7 +21,7 @@ public class PlayCover: NSObject {
         // 初始化 Metal 截帧服务
         MetalCaptureService.shared.initialize()
 
-        // E-003: 安装 makeLibrary swizzle（shader 源码注入骨架，当前仅日志）
+        // E-003 / E-004f3: 安装 makeLibrary swizzle（运行时 shader corpus 导出 + 源码替换入口）
         LibrarySourceInjectionService.shared.installIfNeeded()
 
         let runtimeBundleId = Bundle.main.bundleIdentifier

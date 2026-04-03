@@ -19,10 +19,10 @@ E-002 的原始结论没有变化：我们已经识别出 `MTLDevice` 创建 `MT
 | # | Swift API | ObjC Selector | 当前离线价值 | 备注 |
 |---|---|---|---|---|
 | 1 | `makeLibrary(data:)` | `newLibraryWithData:error:` | **P0：最高** | 当前最常见，也已真正进入 `metallib -> bitcode -> IR -> MSL` 主链路 |
-| 2 | `makeLibrary(URL:)` | `newLibraryWithURL:error:` | **P1：高** | 可能影响 corpus 覆盖率，目前主要是日志 |
-| 3 | `makeDefaultLibrary()` | `newDefaultLibrary` | **P1：高** | 默认 metallib 路径；若不接入导出，可能漏采一类 shader |
+| 2 | `makeLibrary(URL:)` | `newLibraryWithURL:error:` | **P1：高** | 已在代码路径上读取 `.metallib` 并接入统一导出 / 替换链路；后续重点是确认真实命中率 |
+| 3 | `makeDefaultLibrary()` | `newDefaultLibrary` | **P1：高** | 已接入统一导出链路；当前通过 bundle 显式名称 + 资源扫描保守定位默认 `.metallib` |
 | 4 | `makeDefaultLibrary(bundle:)` | `newDefaultLibraryWithBundle:error:` | **P1：高** | 同上 |
-| 5 | `makeLibrary(filepath:)` *(deprecated)* | `newLibraryWithFile:error:` | **P1：中** | 兼容旧路径，覆盖率补洞价值高于实现复杂度 |
+| 5 | `makeLibrary(filepath:)` *(deprecated)* | `newLibraryWithFile:error:` | **P1：中** | 兼容旧路径，已复用统一导出 / 替换逻辑 |
 
 ### 已有源码或辅助路径
 
@@ -51,24 +51,22 @@ E-002 的原始结论没有变化：我们已经识别出 `MTLDevice` 创建 `MT
 ### 当前真正进入主链路的入口
 
 - **`newLibraryWithData:error:`**
+- **`newLibraryWithURL:error:`**
+- **`newDefaultLibrary`**
+- **`newDefaultLibraryWithBundle:error:`**
+- **`newLibraryWithFile:error:`**
 
-它已经具备：
-- payload 转 `Data`
+它们现在都已具备或复用了以下能力：
+- metallib / payload 转 `Data`
 - bitcode 提取
 - `llvm-dis`
 - `IRToMSLConverter`
 - `makeLibrary(source:)` 替换
-
-### 当前仍停留在日志层的入口
-
-- `newLibraryWithURL:error:`
-- `newDefaultLibrary`
-- `newDefaultLibraryWithBundle:error:`
-- `newLibraryWithFile:error:`
+- `ShaderCorpus/` 导出
 
 这意味着：
 
-**当前离线 corpus 的覆盖范围，本质上仍受限于 `newLibraryWithData:error:` 的真实命中率。**
+**当前离线 corpus 的覆盖范围已经不再只受限于 `newLibraryWithData:error:` 的真实命中率，而是取决于真实 app 是否会命中这些入口以及 default 路径的 bundle `.metallib` 解析是否与目标包体一致。**
 
 ## 为什么这个优先级对新流程很重要
 

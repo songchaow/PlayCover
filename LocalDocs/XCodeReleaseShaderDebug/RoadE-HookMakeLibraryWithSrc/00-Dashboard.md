@@ -131,9 +131,9 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 ## 当前主线
 
-- **E-004（当前最高优先级：`E-004f3` 扩展 `makeLibrary(URL/default/file)` 路径的采集覆盖）**：`newLibraryWithData:error:` 成功路径已经具备长期稳定的 corpus 落盘规范；下一步应把 `URL/default/file` 入口逐步接入统一 corpus 导出，以扩充真实样本覆盖。
-- **E-006（下一步：`E-006b` 先挑离线 batch compile 已绿的一组样本做最小 live）**：live 保留为**扩覆盖**与**最终真实验证**环节，只在离线 replay / compile 已经收敛后再投入。
-- **E-005（本轮已完成：`E-005c` 新旧转换结果 diff / 回归基线）**：`Scripts/corpus_replay_runner.py` 现已支持保存 baseline snapshot、比较新旧 replay / compile 结果、输出 `baseline-diffs/` 与结构化回归统计；日常离线回归已经具备“改前 vs 改后”防退化能力。
+- **E-004（本轮已完成：`E-004f3` 扩展 `makeLibrary(URL/default/file)` 路径的采集覆盖）**：`newLibraryWithURL:error:`、`newDefaultLibrary`、`newDefaultLibraryWithBundle:error:`、`newLibraryWithFile:error:` 现已读取 `.metallib` 并复用统一的 `bitcode -> IR -> MSL -> makeLibrary(source:) -> ShaderCorpus` 主链路；default 路径额外加入了 bundle 内 `.metallib` 的保守定位策略。
+- **E-006（当前最高优先级：`E-006b` 先挑离线 batch compile 已绿的一组样本做最小 live）**：本轮已完成 `build_and_install.sh` 与新版 `PlayCover.app` 启动确认，但 injected app 的 `remove_playtools / inject_playtools / launch_app` 最小 live 仍待下一轮继续；当前 PlayCover MCP 应用列表通道未就绪。
+- **E-005（已完成：`E-005c` 新旧转换结果 diff / 回归基线）**：`Scripts/corpus_replay_runner.py` 现已支持保存 baseline snapshot、比较新旧 replay / compile 结果、输出 `baseline-diffs/` 与结构化回归统计；日常离线回归已经具备“改前 vs 改后”防退化能力。
 
 ## 最新基线
 
@@ -141,10 +141,11 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 |---|---|
 | 流程基线（2026-04-03，offline-first 切换完成） | Road E 的日常迭代主回路已经明确为 **采集 corpus → 离线 replay → 批量编译 → 最小 live 复测 → `.gputrace` 最终确认** |
 | 原神 6.4.0（最近一轮 live 基线） | 已确认 `ShaderSourceDiagnostics`、host bridge 与 runtime 注入主路径可用；真实 app 仍是 corpus 的生产来源与最终验证环境 |
-| 当前落盘能力 | 失败的 MSL 会进入 `ShaderSourceDiagnostics/`；异常 payload 会进入 `ShaderPayloadSamples/`；`attemptLibraryReplacement(...)` 成功路径现已按 `ShaderCorpus/<bundleId>/modules/<moduleKey>/` 落盘 canonical `module.bc`、`module.ll`、`module.generated.metal` 与 `module.meta.json`，并在根目录追加 `manifest.jsonl` 事件索引；`moduleKey` 由 `sha256(module.bc)` 生成，重复样本默认复用基线，不再静默覆盖 |
+| 当前落盘能力（2026-04-04） | 失败的 MSL 会进入 `ShaderSourceDiagnostics/`；异常 payload 会进入 `ShaderPayloadSamples/`；`attemptLibraryReplacement(...)` 成功路径现已按 `ShaderCorpus/<bundleId>/modules/<moduleKey>/` 落盘 canonical `module.bc`、`module.ll`、`module.generated.metal` 与 `module.meta.json`，并在根目录追加 `manifest.jsonl` 事件索引；`moduleKey` 由 `sha256(module.bc)` 生成，重复样本默认复用基线，不再静默覆盖；`newLibraryWithURL:error:`、`newDefaultLibrary`、`newDefaultLibraryWithBundle:error:`、`newLibraryWithFile:error:` 代码路径也已接入同一套导出与替换逻辑 |
 | 当前离线 replay / batch compile / diff 能力（2026-04-03，`E-005a`/`E-005b`/`E-005c` 完成） | `Scripts/corpus_replay_runner.py` 现已支持扫描 `ShaderCorpus/` 或显式 `.ll`，读取 `module.meta.json` 中的 `functionNames/functionTypes` 做 `IRToMSLConverter.convert(...)`，并在 `--compile` 模式下继续输出 `.air`、`compile-summary.json`、逐样本 `primaryDiagnostic/sourceContext` 与 failure clusters；同时支持 `--save-baseline` 生成 `baseline.json + generated-sources/` 快照、`--baseline-report` 产出结构化 replay / compile / generated MSL 对比与 `baseline-diffs/`；`Scripts/ir_to_msl_smoketest.sh` 继续作为单样本兼容 wrapper |
 | 当前最小离线验证基线（2026-04-03） | 已对 `test-data/*.ll` 执行一轮 batch replay + compile + baseline 保存 / 对比：replay `18/18` 成功，Metal compile `10/18` 成功；同一批样本二次回放对 baseline 的结果为 matched/new/removed `18/0/0`、replay changed `0`、generated MSL changed `0`、compile changed `0` |
-| 当前构建验证基线（2026-04-03） | 已运行 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`，PlayTools 标准构建链路通过 |
+| 当前构建验证基线（2026-04-04） | 已运行 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 与 `PLAYCOVER_INSTALL_MODE=user ./BuildScripts/build_and_install.sh`，PlayTools 标准构建链路、PlayCover Release 构建、安装与 ad-hoc 重签名均通过，并已成功拉起 `~/Applications/PlayCover.app` |
+| 当前最小 live 验证状态（2026-04-04） | 已完成桌面端 `PlayCover.app` 启动确认；受限于当前 PlayCover MCP 应用列表通道不可用，尚未继续执行 injected app 级别的 `remove_playtools / inject_playtools / launch_app` 最小复测 |
 | 历史 live blocker 时间线 | 见 [00-Dashboard-Archive](00-Dashboard-Archive.md)；dashboard 主体不再重复堆叠逐轮 live 细节 |
 
 ## 整体架构
@@ -176,7 +177,7 @@ PlayTools.framework (注入到 iOS app)
 
 ## TODO
 
-> 当前最高优先级：`E-004f3`（扩展 `makeLibrary(URL/default/file)` 路径的采集覆盖）。`E-005a` / `E-005b` / `E-005c` 已完成，当前 `ShaderCorpus/` 与显式 `.ll` 已具备稳定的 replay + batch compile + baseline diff 入口；下一步应把离线回归能力继续喂给更广的真实 corpus 覆盖。历史 live blocker 归因链路见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
+> 当前最高优先级：`E-006b`（先挑离线 batch compile 已绿的一组样本做最小 live）。`E-004f3` 已完成，`URL/default/file` 代码路径已接入统一导出链路；下一步应在一组已离线收敛样本上继续完成 injected app 级别的最小复测。历史 live blocker 归因链路见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -190,8 +191,8 @@ PlayTools.framework (注入到 iOS app)
 |  | `attemptLibraryReplacement(...)` 成功时已为每个 module 落盘 `module.bc`、`module.ll`、`module.generated.metal` 与 `module.meta.json`，后续回放不再只依赖失败 diagnostics | | |
 | E-004f2 | ↳ corpus 目录结构、去重键与 manifest 规范 | ✅ DONE | |
 |  | 已落地 `ShaderCorpus/<bundleId>/modules/<moduleKey>/`、`manifest.jsonl`、`moduleKey = sha256(module.bc)` 与“冲突不覆盖基线”的持久化策略；`cacheKey` 退回为 metallib 上下文信息 | | |
-| E-004f3 | ↳ 扩展 `makeLibrary(URL/default/file)` 路径的采集覆盖 | TODO | |
-|  | 当前只有 `newLibraryWithData:error:` 真正进入 bitcode 提取主路径；需评估是否把 URL / default / file 路径也接入统一 corpus 导出 | | |
+| E-004f3 | ↳ 扩展 `makeLibrary(URL/default/file)` 路径的采集覆盖 | ✅ DONE | |
+|  | `newLibraryWithURL:error:`、`newDefaultLibrary`、`newDefaultLibraryWithBundle:error:`、`newLibraryWithFile:error:` 已在代码路径上接入统一 `bitcode -> IR -> MSL -> makeLibrary(source:) -> ShaderCorpus` 导出链路；default 路径当前通过 bundle 显式名称 + `.metallib` 资源扫描做保守定位 | | |
 | E-005 | **离线 replay / batch compile / diff 工具链** | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
 | E-005a | ↳ `IR -> MSL` 离线回放 runner | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
 |  | 已落地 `Scripts/corpus_replay_runner.py`；支持扫描 `ShaderCorpus/`、读取 `manifest.jsonl` / `module.meta.json`、把 `functionNames/functionTypes` 传给 `IRToMSLConverter.convert(...)`，并稳定输出 replay `.metal` 与 `replay-summary.json`；`Scripts/ir_to_msl_smoketest.sh` 已改为兼容 wrapper | | |
@@ -215,7 +216,7 @@ PlayTools.framework (注入到 iOS app)
 - **`moduleKey` 与 `cacheKey` 分层使用**：`moduleKey = sha256(module.bc)` 是长期稳定的 module 级去重键；`cacheKey` 只用于 metallib 级上下文与运行时缓存，不能再拿来当持久化目录主键
 - **最终目标不变，但日常主回路必须切到离线**：live 负责采集和最终验证，不适合作为日常 blocker 归因与回归主路径
 - **`test-data/` 和 `ShaderCorpus/` 不能混用**：`test-data/` 是手工构造的最小样本，适合验证单个 lowering；`ShaderCorpus/` 是真实运行时样本，适合批量 replay、diff 与回归基线
-- **`newLibraryWithData:error:` 是当前最可靠的真实采集入口**：其他 `URL/default/file` 路径已 hook 但目前主要是日志；若要提高 corpus 覆盖率，需要把这些路径逐步纳入统一导出逻辑
+- **`newLibraryWithData:error:` 仍是当前最可靠的真实采集入口，但已不再是唯一入口**：`URL/default/file` 代码路径现已接入统一导出逻辑；其中 default 路径当前通过 bundle 显式名称 + `.metallib` 资源扫描保守定位，后续仍需结合真实 app 命中情况继续做最小 live 验证
 - **`build_and_install.sh` 是更新运行时 framework 的唯一可靠路径**：`sync_playtools_xcframework.sh` 只更新构建产物；涉及 live 时必须 `build_and_install.sh`，否则注入的还是旧 framework
 - **多 module 聚合仍要坚持“全成全退”**：所有 module 都能完成 `llvm-dis + IRToMSLConverter` 且聚合后无重名时才重编译；否则整体 fallback，避免部分替换把问题混淆
 - **离线 replay 可以替代大部分回归，但不能替代最终真实渲染验证**：`IR -> MSL -> Metal 编译` 只能证明“更接近正确”，不能替代真实 GPU 渲染、时序与 `.gputrace` 可见性的最终确认

@@ -15,7 +15,7 @@ import ObjectiveC
 
 /// Swizzle 替换方法容器类。
 /// swizzle 后 `self` 指向 MTLDevice 实例（与 CommandQueueDiscoverySwizzles 一致）。
-/// 当前阶段仅记录日志，不修改返回值。
+/// 对 metallib 路径会在安全条件下尝试源码重编译替换；源码路径仍以日志观测为主。
 private final class LibrarySourceInjectionSwizzles: NSObject {
 
     // MARK: 1. newLibraryWithData:error: — 最常用，从 metallib 二进制数据创建
@@ -46,22 +46,11 @@ private final class LibrarySourceInjectionSwizzles: NSObject {
             dataSize: metallibData.count,
             extraInfo: "dispatchClass=\(dispatchClassName), payload={\(payloadSummary)}"
         )
-        let cacheKey = LibrarySourceInjectionService.shared.cacheKey(for: metallibData)
-        // E-004b / E-005a: 提取 bitcode，并在安全条件下尝试重编译带源码的替换 library。
-        let modules = LibrarySourceInjectionService.shared.extractAndCacheBitcodeModules(
-            from: metallibData,
+        return attemptReplacementForMetallibData(
+            metallibData,
+            originalLibrary: library,
             selector: "newLibraryWithData:error:"
         )
-        return LibrarySourceInjectionService.shared.attemptLibraryReplacement(
-            originalLibrary: library,
-            device: self,
-            modules: modules,
-            selector: "newLibraryWithData:error:",
-            cacheKey: cacheKey,
-            compileSource: { source, compileError in
-                self.pc_newLibraryWithSource(source, options: nil, error: compileError)
-            }
-        ) ?? library
     }
 
     // MARK: 2. newLibraryWithURL:error: — 从文件 URL 加载 metallib
@@ -70,27 +59,45 @@ private final class LibrarySourceInjectionSwizzles: NSObject {
         error: UnsafeMutablePointer<NSError?>?
     ) -> AnyObject? {
         let library = self.pc_newLibraryWithURL(url, error: error)
+        let metallibData = try? Data(contentsOf: url)
         LibrarySourceInjectionService.shared.logLibraryCreation(
             selector: "newLibraryWithURL:error:",
             device: self,
             library: library,
-            dataSize: nil,
+            dataSize: metallibData?.count,
             extraInfo: "url=\(url.path)"
         )
-        return library
+        guard let metallibData else {
+            NSLog("[PlayTools] LibrarySourceInjection: newLibraryWithURL:error: — unable to read metallib at %@", url.path)
+            return library
+        }
+        return attemptReplacementForMetallibData(
+            metallibData,
+            originalLibrary: library,
+            selector: "newLibraryWithURL:error:"
+        )
     }
 
     // MARK: 3. newDefaultLibrary — 从 App Bundle 加载默认 metallib
     @objc dynamic func pc_newDefaultLibrary() -> AnyObject? {
         let library = self.pc_newDefaultLibrary()
+        let defaultMetallib = Self.loadDefaultMetallibData(from: Bundle.main)
         LibrarySourceInjectionService.shared.logLibraryCreation(
             selector: "newDefaultLibrary",
             device: self,
             library: library,
-            dataSize: nil,
-            extraInfo: "bundle=main"
+            dataSize: defaultMetallib?.data.count,
+            extraInfo: "bundle=main, metallib=\(defaultMetallib?.url.path ?? "unresolved")"
         )
-        return library
+        guard let defaultMetallib else {
+            NSLog("[PlayTools] LibrarySourceInjection: newDefaultLibrary — unable to resolve default metallib in main bundle")
+            return library
+        }
+        return attemptReplacementForMetallibData(
+            defaultMetallib.data,
+            originalLibrary: library,
+            selector: "newDefaultLibrary"
+        )
     }
 
     // MARK: 4. newDefaultLibraryWithBundle:error: — 从指定 Bundle 加载 metallib
@@ -99,14 +106,23 @@ private final class LibrarySourceInjectionSwizzles: NSObject {
         error: UnsafeMutablePointer<NSError?>?
     ) -> AnyObject? {
         let library = self.pc_newDefaultLibraryWithBundle(bundle, error: error)
+        let defaultMetallib = Self.loadDefaultMetallibData(from: bundle)
         LibrarySourceInjectionService.shared.logLibraryCreation(
             selector: "newDefaultLibraryWithBundle:error:",
             device: self,
             library: library,
-            dataSize: nil,
-            extraInfo: "bundle=\(bundle.bundlePath)"
+            dataSize: defaultMetallib?.data.count,
+            extraInfo: "bundle=\(bundle.bundlePath), metallib=\(defaultMetallib?.url.path ?? "unresolved")"
         )
-        return library
+        guard let defaultMetallib else {
+            NSLog("[PlayTools] LibrarySourceInjection: newDefaultLibraryWithBundle:error: — unable to resolve default metallib in %@", bundle.bundlePath)
+            return library
+        }
+        return attemptReplacementForMetallibData(
+            defaultMetallib.data,
+            originalLibrary: library,
+            selector: "newDefaultLibraryWithBundle:error:"
+        )
     }
 
     // MARK: 5. newLibraryWithFile:error: — 从文件路径加载（已废弃但部分 App 仍用）
@@ -115,14 +131,90 @@ private final class LibrarySourceInjectionSwizzles: NSObject {
         error: UnsafeMutablePointer<NSError?>?
     ) -> AnyObject? {
         let library = self.pc_newLibraryWithFile(filepath, error: error)
+        let fileURL = URL(fileURLWithPath: filepath as String)
+        let metallibData = try? Data(contentsOf: fileURL)
         LibrarySourceInjectionService.shared.logLibraryCreation(
             selector: "newLibraryWithFile:error:",
             device: self,
             library: library,
-            dataSize: nil,
+            dataSize: metallibData?.count,
             extraInfo: "path=\(filepath)"
         )
-        return library
+        guard let metallibData else {
+            NSLog("[PlayTools] LibrarySourceInjection: newLibraryWithFile:error: — unable to read metallib at %@", fileURL.path)
+            return library
+        }
+        return attemptReplacementForMetallibData(
+            metallibData,
+            originalLibrary: library,
+            selector: "newLibraryWithFile:error:"
+        )
+    }
+
+    private func attemptReplacementForMetallibData(
+        _ metallibData: Data,
+        originalLibrary: AnyObject?,
+        selector: String
+    ) -> AnyObject? {
+        let cacheKey = LibrarySourceInjectionService.shared.cacheKey(for: metallibData)
+        let modules = LibrarySourceInjectionService.shared.extractAndCacheBitcodeModules(
+            from: metallibData,
+            selector: selector
+        )
+        return LibrarySourceInjectionService.shared.attemptLibraryReplacement(
+            originalLibrary: originalLibrary,
+            device: self,
+            modules: modules,
+            selector: selector,
+            cacheKey: cacheKey,
+            compileSource: { source, compileError in
+                self.pc_newLibraryWithSource(source, options: nil, error: compileError)
+            }
+        ) ?? originalLibrary
+    }
+
+    private static func loadDefaultMetallibData(from bundle: Bundle) -> (data: Data, url: URL)? {
+        var candidateURLs: [URL] = []
+        func appendCandidate(_ url: URL?) {
+            guard let url else { return }
+            guard !candidateURLs.contains(url) else { return }
+            candidateURLs.append(url)
+        }
+
+        let explicitNames = [
+            bundle.object(forInfoDictionaryKey: "CFBundleExecutable") as? String,
+            bundle.object(forInfoDictionaryKey: "CFBundleName") as? String,
+            bundle.bundleURL.deletingPathExtension().lastPathComponent,
+            "default"
+        ]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        for name in explicitNames {
+            appendCandidate(bundle.url(forResource: name, withExtension: "metallib"))
+        }
+
+        if let resourceURL = bundle.resourceURL,
+           let enumerator = FileManager.default.enumerator(
+            at: resourceURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+           ) {
+            let discoveredURLs = enumerator
+                .compactMap { $0 as? URL }
+                .filter { $0.pathExtension.lowercased() == "metallib" }
+                .sorted { $0.path < $1.path }
+            for url in discoveredURLs {
+                appendCandidate(url)
+            }
+        }
+
+        for url in candidateURLs {
+            if let data = try? Data(contentsOf: url) {
+                return (data, url)
+            }
+        }
+        return nil
     }
 
     // MARK: 6. newLibraryWithSource:options:error: — 从 MSL 源码编译（仅日志，源码已有）

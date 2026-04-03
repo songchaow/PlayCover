@@ -29,10 +29,10 @@ E-003 已经完成“能 hook 到 `MTLDevice.makeLibrary(...)` 系列 API”这�
 | # | ObjC Selector | 当前状态 | 备注 |
 |---|---|---|---|
 | 1 | `newLibraryWithData:error:` | **已接入主链路** | 当前最关键入口；已进入 bitcode 提取、IR 反汇编、MSL 转换与替换 |
-| 2 | `newLibraryWithURL:error:` | 已 hook，当前以日志为主 | 后续应评估是否纳入统一 corpus 导出 |
-| 3 | `newDefaultLibrary` | 已 hook，当前以日志为主 | 可能影响默认 metallib 覆盖率 |
-| 4 | `newDefaultLibraryWithBundle:error:` | 已 hook，当前以日志为主 | 同上 |
-| 5 | `newLibraryWithFile:error:` | 已 hook，当前以日志为主 | 兼容旧路径 |
+| 2 | `newLibraryWithURL:error:` | **已接入主链路** | 已在代码路径上读取 `.metallib` 并复用统一 corpus 导出 / 替换逻辑 |
+| 3 | `newDefaultLibrary` | **已接入主链路** | 已通过 bundle 内默认 `.metallib` 定位逻辑接入统一导出链路 |
+| 4 | `newDefaultLibraryWithBundle:error:` | **已接入主链路** | 同上 |
+| 5 | `newLibraryWithFile:error:` | **已接入主链路** | 兼容旧路径，并复用统一导出 / 替换逻辑 |
 
 #### 第二批：源码或辅助路径
 
@@ -52,12 +52,12 @@ E-003 决定了我们能从哪些真实 runtime API 入口观察到 shader 加�
 
 ### 角色 2：覆盖率边界定义
 
-当前只有 `newLibraryWithData:error:` 真正进入主链路，这意味着：
+截至 2026-04-04，`newLibraryWithData:error:` 与 `URL/default/file` 入口都已真正进入主链路，这意味着：
 
-- 我们当前的 corpus 覆盖率，本质上等于这个 selector 覆盖到的 shader 集合
-- 如果某些 shader 主要通过 `URL/default/file` 路径进入，当前就只能看到日志，看不到完整 `.bc/.ll/.metal`
+- 我们当前的 corpus 覆盖边界已经不再只受单一 selector 限制
+- 后续 coverage boundary 更主要取决于真实 app 在 live 中是否命中这些入口，以及 default 路径的 bundle `.metallib` 定位是否与目标 app 的打包方式一致
 
-因此 E-003 也是**coverage boundary** 文档：它告诉我们离线 corpus 目前为什么还不够“全”。
+因此 E-003 仍然是 **coverage boundary** 文档：它现在更关注“哪些入口已经接通、哪些还需要真实样本验证”，而不再只是解释为什么 corpus 只来自 `data` 路径。
 
 ### 角色 3：后续 E-004f 的扩展起点
 
@@ -100,9 +100,9 @@ E-003 决定了我们能从哪些真实 runtime API 入口观察到 shader 加�
 
 ## 经验结论
 
-- E-003 已经证明 swizzle 面是够用的，当前瓶颈**不在 hook 能不能装上**，而在**hook 后成功样本没有系统落盘**
+- E-003 已经证明 swizzle 面是够用的，当前瓶颈**不在 hook 能不能装上**，而在**真实 app 上如何继续扩大 corpus 覆盖并完成最小 live 复测**
 - 在离线优先流程下，`makeLibrary` hook 的首要职责是**采集真实 corpus**，不是继续扩大 live 日志量
-- 如果后续要提升 corpus 覆盖率，应优先扩展 `URL/default/file` 到统一导出逻辑，而不是继续在 dashboard 中堆更多单次 live 复测记录
+- `URL/default/file` 已完成统一导出逻辑接入；下一步更值得投入的是验证真实 app 命中情况，而不是继续停留在文档层面的 selector 讨论
 
 ## 与后续任务的关系
 

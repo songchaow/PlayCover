@@ -76,21 +76,24 @@ makeLibrary(source:) 重编译替换
 
 ## 当前缺口
 
-### 1. 成功路径持久化已打通，但规范仍待收敛
+### 1. 成功路径持久化已打通，且基础规范已落地
 
 当前已有落盘目录：
 
 - `ShaderSourceDiagnostics/`：**失败的** `.metal + .txt`
 - `ShaderPayloadSamples/`：**异常 payload** 的 `.bin + .txt (+ .plist)`
-- `ShaderCorpus/`：`attemptLibraryReplacement(...)` 成功路径下导出的 `module.bc` / `module.ll` / `module.generated.metal` / `module.meta.json`
+- `ShaderCorpus/`：`attemptLibraryReplacement(...)` 成功路径下导出的稳定 corpus
 
-当前**仍需收敛**：
+其中 `ShaderCorpus/` 已收敛为：
 
-- corpus 目录结构与总索引规范
-- manifest 字段的长期稳定定义
-- 重复样本覆盖 / 复写策略
+- 根目录：`ShaderCorpus/<bundleId>/`
+- 模块目录：`modules/<moduleKey>/`
+- 总索引：`manifest.jsonl`
+- `moduleKey`：`sha256(module.bc)`，作为长期稳定的 module 级去重键
+- `cacheKey`：仅保留为 metallib 级上下文，不再承担长期去重职责
+- 覆盖策略：`.bc/.ll/.metal` 采用**基线优先**；若后续同一 `moduleKey` 再次出现但产物不同，则**不覆盖已有基线**，只在 `manifest.jsonl` 中记录 `conflict_preserved` 事件
 
-这意味着我们已经开始积累可离线复用的真实 shader，但要让 corpus 长期稳定服务 replay / diff / 回归，还需要完成命名、去重和 manifest 规范化。
+这意味着真实运行中采到的成功样本，已经具备长期可复用的目录、索引和去重约束；后续 replay / diff / 回归可以默认建立在这套稳定 corpus 之上。
 
 ### 2. `makeLibrary` 覆盖面还不完整
 
@@ -177,51 +180,74 @@ build_and_install.sh
 真实 .gputrace 查看源码是否可见
 ```
 
-## 推荐导出物与目录结构
+## 导出物与目录结构（已落地）
 
-建议在 PlayCover 容器目录下新增：
+当前成功样本在 PlayCover 容器目录下采用如下结构：
 
 ```text
 ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus/<bundleId>/
-  manifest.jsonl                      # 可选：总索引
-  <cacheKey>/
-    <selector>__module_<offset>_<size>/
+  manifest.jsonl
+  modules/
+    <moduleKey>/
       module.bc
       module.ll
       module.generated.metal
       module.meta.json
 ```
 
-### `module.meta.json` 建议字段
+其中：
 
-至少包含：
+- `moduleKey = sha256(module.bc)`
+- `manifest.jsonl` 按 **一行一个 capture 事件** 追加，记录 selector / cacheKey / moduleKey / artifact 状态
+- `module.meta.json` 保存 **module 级稳定元数据**，包括首捕获时间、最近捕获时间、累计捕获次数、`observedSelectors`、`sourceCacheKeys` 与 canonical artifact 路径
 
+### `module.meta.json` 当前核心字段
+
+当前已稳定写入：
+
+- `schemaVersion`
 - `bundleId`
-- `selector`
-- `cacheKey`
+- `moduleKey`
+- `moduleKeyStrategy`
+- `selector`（首个 canonical selector）
+- `observedSelectors`
+- `cacheKey`（首个 canonical metallib cacheKey）
+- `sourceCacheKeys`
 - `moduleRelativeOffset`
 - `moduleSize`
 - `functionNames`
 - `functionTypes`
+- `generatedFunctionNames`
+- `generatedFunctionTypes`
 - `timestamp`
-- `payloadKind`
-- `hasSources`
+- `firstCapturedAt`
+- `lastCapturedAt`
+- `captureCount`
+- `baselineConflictCount`
 - `llvmDisStatus`
 - `converterStatus`
 - `compileStatus`
-- `compilerError`（如有）
-- `diagnosticPath`（如有）
+- `bitcodeBytes`
+- `llvmIRBytes`
+- `generatedMSLBytes`
+- `moduleSummary`
+- `irSummary`
+- `conversionSummary`
+- `corpusRelativeDirectory`
+- `artifactPaths`
 
-### 去重建议
+### 去重与覆盖策略（已落地）
 
-建议把以下字段组合作为稳定 key：
+当前策略分两层：
 
-- `bundleId`
-- `selector`
-- metallib `cacheKey`
-- module `(relativeOffset, size)`
+- **metallib 级缓存**：仍使用快速 `cacheKey` 做运行时内存缓存，避免重复解析同一份 metallib
+- **module 级持久化**：使用 `moduleKey = sha256(module.bc)` 做长期去重与目录命名
 
-这样既能避免同一次运行重复写入，也便于比较不同 app / 不同入口下的相同 shader module。
+覆盖策略为：
+
+- 若 canonical artifact 不存在：写入基线文件
+- 若已存在且内容相同：复用，不重复覆盖
+- 若已存在但内容不同：保持已有基线不变，并在 `manifest.jsonl` 中记录 `conflict_preserved`，避免静默覆写破坏后续 replay / diff 基线
 
 ## 现有代码中的最佳插入点
 
@@ -291,7 +317,7 @@ build_and_install.sh
 | # | 子任务 | 状态 | 说明 |
 |---|---|---|---|
 | E-004f1 | 成功路径导出 `.bc/.ll/.metal/.json` | ✅ DONE | `attemptLibraryReplacement(...)` 成功时已按 module 落盘真实样本 |
-| E-004f2 | corpus 命名 / 去重 / manifest 规范 | TODO | 保证样本长期可复用 |
+| E-004f2 | corpus 命名 / 去重 / manifest 规范 | ✅ DONE | 已落地 `modules/<moduleKey>`、`manifest.jsonl` 与基线保护策略 |
 | E-004f3 | 扩展 `URL/default/file` 路径覆盖 | TODO | 提高采集完整性 |
 | E-004f4 | MCP / 脚本化导出接口 | TODO | 降低手工操作成本 |
 

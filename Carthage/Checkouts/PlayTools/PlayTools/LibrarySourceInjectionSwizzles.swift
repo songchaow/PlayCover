@@ -6,6 +6,7 @@
 //  参考 CommandQueueDiscoverySwizzles 模式实现
 //
 
+import CryptoKit
 import Foundation
 import Metal
 import ObjectiveC
@@ -192,11 +193,18 @@ class LibrarySourceInjectionService {
             .appendingPathComponent("ShaderCorpus", isDirectory: true)
             .appendingPathComponent(runtimeBundleIdentifier, isDirectory: true)
     }()
+    private lazy var shaderCorpusModulesDirectoryURL: URL = {
+        shaderCorpusDirectoryURL.appendingPathComponent("modules", isDirectory: true)
+    }()
+    private lazy var shaderCorpusManifestIndexURL: URL = {
+        shaderCorpusDirectoryURL.appendingPathComponent("manifest.jsonl")
+    }()
+    private let corpusManifestSchemaVersion = 2
 
     // MARK: - E-004b: Bitcode 模块缓存
 
     /// 缓存的 bitcode 提取结果。
-    /// Key: metallib 数据的 SHA256 hash（前 16 字节 hex），Value: 提取的模块列表。
+    /// Key: metallib 数据的快速 cache key，Value: 提取的模块列表。
     private var bitcodeCache: [String: [MetallibParser.BitcodeModule]] = [:]
     private let bitcodeCacheLock = NSLock()
 
@@ -432,10 +440,22 @@ class LibrarySourceInjectionService {
         let moduleSummaries: String
     }
 
+    private struct CorpusArtifactPaths: Codable {
+        let bitcodePath: String
+        let llvmIRPath: String
+        let generatedMSLPath: String
+        let metadataPath: String
+    }
+
     private struct CorpusModuleManifest: Codable {
+        let schemaVersion: Int
         let bundleId: String
+        let moduleKey: String
+        let moduleKeyStrategy: String
         let selector: String
+        let observedSelectors: [String]
         let cacheKey: String
+        let sourceCacheKeys: [String]
         let moduleRelativeOffset: UInt64
         let moduleSize: UInt64
         let functionNames: [String]
@@ -443,6 +463,10 @@ class LibrarySourceInjectionService {
         let generatedFunctionNames: [String]
         let generatedFunctionTypes: [String]
         let timestamp: String
+        let firstCapturedAt: String
+        let lastCapturedAt: String
+        let captureCount: Int
+        let baselineConflictCount: Int
         let llvmDisStatus: String
         let converterStatus: String
         let compileStatus: String
@@ -452,6 +476,37 @@ class LibrarySourceInjectionService {
         let moduleSummary: String
         let irSummary: String
         let conversionSummary: String
+        let corpusRelativeDirectory: String
+        let artifactPaths: CorpusArtifactPaths
+    }
+
+    private struct CorpusManifestIndexEntry: Codable {
+        let schemaVersion: Int
+        let event: String
+        let bundleId: String
+        let selector: String
+        let cacheKey: String
+        let moduleKey: String
+        let timestamp: String
+        let captureAction: String
+        let moduleRelativeOffset: UInt64
+        let moduleSize: UInt64
+        let corpusRelativeDirectory: String
+        let metadataPath: String
+        let artifactStatuses: [String: String]
+        let functionNames: [String]
+        let generatedFunctionNames: [String]
+    }
+
+    private enum CorpusArtifactWriteStatus: String {
+        case created
+        case reused
+        case conflictPreserved
+    }
+
+    private struct CorpusArtifactWriteResult {
+        let path: String
+        let status: CorpusArtifactWriteStatus
     }
 
     private struct ReplacementSourceValidationRule {
@@ -706,11 +761,17 @@ class LibrarySourceInjectionService {
         cacheKey: String
     ) -> [String] {
         let fileManager = FileManager.default
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let manifestEncoder = JSONEncoder()
+        manifestEncoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let indexEncoder = JSONEncoder()
+        indexEncoder.outputFormatting = [.sortedKeys]
 
         do {
             try fileManager.createDirectory(at: shaderCorpusDirectoryURL, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: shaderCorpusModulesDirectoryURL, withIntermediateDirectories: true)
+            if !fileManager.fileExists(atPath: shaderCorpusManifestIndexURL.path) {
+                fileManager.createFile(atPath: shaderCorpusManifestIndexURL.path, contents: nil)
+            }
         } catch {
             NSLog("[PlayTools] LibrarySourceInjection: failed to create shader corpus root %@ — %@",
                   shaderCorpusDirectoryURL.path,
@@ -723,34 +784,55 @@ class LibrarySourceInjectionService {
         dumpedDirectories.reserveCapacity(preparedModules.count)
 
         for prepared in preparedModules {
-            let moduleDirectoryURL = shaderCorpusDirectoryURL(
-                selector: selector,
-                cacheKey: cacheKey,
-                module: prepared.module
+            let moduleKey = stableCorpusModuleKey(for: prepared.module)
+            let moduleDirectoryURL = shaderCorpusModuleDirectoryURL(moduleKey: moduleKey)
+            let bitcodeURL = moduleDirectoryURL.appendingPathComponent("module.bc")
+            let irURL = moduleDirectoryURL.appendingPathComponent("module.ll")
+            let generatedMSLURL = moduleDirectoryURL.appendingPathComponent("module.generated.metal")
+            let metadataURL = moduleDirectoryURL.appendingPathComponent("module.meta.json")
+            let relativeDirectory = corpusRelativePath(for: moduleDirectoryURL)
+            let artifactPaths = CorpusArtifactPaths(
+                bitcodePath: corpusRelativePath(for: bitcodeURL),
+                llvmIRPath: corpusRelativePath(for: irURL),
+                generatedMSLPath: corpusRelativePath(for: generatedMSLURL),
+                metadataPath: corpusRelativePath(for: metadataURL)
             )
+
             do {
                 try fileManager.createDirectory(at: moduleDirectoryURL, withIntermediateDirectories: true)
 
-                let bitcodeURL = moduleDirectoryURL.appendingPathComponent("module.bc")
-                let irURL = moduleDirectoryURL.appendingPathComponent("module.ll")
-                let generatedMSLURL = moduleDirectoryURL.appendingPathComponent("module.generated.metal")
-                let metadataURL = moduleDirectoryURL.appendingPathComponent("module.meta.json")
-
-                try prepared.module.data.write(to: bitcodeURL, options: .atomic)
-                try prepared.irResult.irText.write(to: irURL, atomically: true, encoding: .utf8)
-                try prepared.conversion.mslSource.write(to: generatedMSLURL, atomically: true, encoding: .utf8)
-
+                let bitcodeWrite = try writeCorpusArtifact(prepared.module.data, to: bitcodeURL)
+                let irWrite = try writeCorpusArtifact(Data(prepared.irResult.irText.utf8), to: irURL)
+                let generatedMSLWrite = try writeCorpusArtifact(Data(prepared.conversion.mslSource.utf8), to: generatedMSLURL)
+                let artifactResults = [
+                    "module.bc": bitcodeWrite,
+                    "module.ll": irWrite,
+                    "module.generated.metal": generatedMSLWrite,
+                ]
+                let existingManifest = loadCorpusModuleManifest(at: metadataURL)
+                let hasConflict = artifactResults.values.contains { $0.status == .conflictPreserved }
+                let mergedSelectors = appendingUnique(existingManifest?.observedSelectors ?? [existingManifest?.selector].compactMap { $0 }, value: selector)
+                let mergedCacheKeys = appendingUnique(existingManifest?.sourceCacheKeys ?? [existingManifest?.cacheKey].compactMap { $0 }, value: cacheKey)
                 let manifest = CorpusModuleManifest(
+                    schemaVersion: corpusManifestSchemaVersion,
                     bundleId: runtimeBundleIdentifier,
-                    selector: selector,
-                    cacheKey: cacheKey,
-                    moduleRelativeOffset: prepared.module.relativeOffset,
+                    moduleKey: moduleKey,
+                    moduleKeyStrategy: "sha256(module.bc)",
+                    selector: existingManifest?.selector ?? selector,
+                    observedSelectors: mergedSelectors,
+                    cacheKey: existingManifest?.cacheKey ?? cacheKey,
+                    sourceCacheKeys: mergedCacheKeys,
+                    moduleRelativeOffset: existingManifest?.moduleRelativeOffset ?? prepared.module.relativeOffset,
                     moduleSize: prepared.module.size,
                     functionNames: prepared.module.functionNames,
                     functionTypes: prepared.module.functionTypes,
                     generatedFunctionNames: prepared.conversion.functions.map(\.name),
                     generatedFunctionTypes: prepared.conversion.functions.map { $0.shaderType.rawValue },
                     timestamp: timestamp,
+                    firstCapturedAt: existingManifest?.firstCapturedAt ?? timestamp,
+                    lastCapturedAt: timestamp,
+                    captureCount: (existingManifest?.captureCount ?? 0) + 1,
+                    baselineConflictCount: (existingManifest?.baselineConflictCount ?? 0) + (hasConflict ? 1 : 0),
                     llvmDisStatus: "success",
                     converterStatus: "success",
                     compileStatus: "success",
@@ -759,10 +841,47 @@ class LibrarySourceInjectionService {
                     generatedMSLBytes: prepared.conversion.mslSource.utf8.count,
                     moduleSummary: prepared.module.summary,
                     irSummary: prepared.irResult.summary,
-                    conversionSummary: prepared.conversion.summary
+                    conversionSummary: prepared.conversion.summary,
+                    corpusRelativeDirectory: relativeDirectory,
+                    artifactPaths: artifactPaths
                 )
-                let metadataData = try encoder.encode(manifest)
+                let metadataData = try manifestEncoder.encode(manifest)
                 try metadataData.write(to: metadataURL, options: .atomic)
+
+                let captureAction: String
+                if hasConflict {
+                    captureAction = "conflict_preserved"
+                } else if existingManifest == nil {
+                    captureAction = "new"
+                } else {
+                    captureAction = "reused"
+                }
+
+                let indexEntry = CorpusManifestIndexEntry(
+                    schemaVersion: corpusManifestSchemaVersion,
+                    event: "capture",
+                    bundleId: runtimeBundleIdentifier,
+                    selector: selector,
+                    cacheKey: cacheKey,
+                    moduleKey: moduleKey,
+                    timestamp: timestamp,
+                    captureAction: captureAction,
+                    moduleRelativeOffset: prepared.module.relativeOffset,
+                    moduleSize: prepared.module.size,
+                    corpusRelativeDirectory: relativeDirectory,
+                    metadataPath: artifactPaths.metadataPath,
+                    artifactStatuses: artifactResults.mapValues { $0.status.rawValue },
+                    functionNames: prepared.module.functionNames,
+                    generatedFunctionNames: prepared.conversion.functions.map(\.name)
+                )
+                try appendCorpusManifestIndexEntry(indexEntry, encoder: indexEncoder)
+
+                if hasConflict {
+                    NSLog("[PlayTools] LibrarySourceInjection: corpus baseline preserved for %@ (moduleKey=%@, statuses=%@)",
+                          prepared.module.summary,
+                          moduleKey,
+                          artifactResults.map { "\($0.key)=\($0.value.status.rawValue)" }.sorted().joined(separator: ", "))
+                }
 
                 dumpedDirectories.append(moduleDirectoryURL.path)
             } catch {
@@ -775,17 +894,79 @@ class LibrarySourceInjectionService {
         return dumpedDirectories
     }
 
-    private func shaderCorpusDirectoryURL(
-        selector: String,
-        cacheKey: String,
-        module: MetallibParser.BitcodeModule
-    ) -> URL {
-        shaderCorpusDirectoryURL
-            .appendingPathComponent(cacheKey, isDirectory: true)
-            .appendingPathComponent(
-                "\(sanitizeDiagnosticFilenameComponent(selector))__module_\(module.relativeOffset)_\(module.size)",
-                isDirectory: true
-            )
+    private func shaderCorpusModuleDirectoryURL(moduleKey: String) -> URL {
+        shaderCorpusModulesDirectoryURL.appendingPathComponent(moduleKey, isDirectory: true)
+    }
+
+    private func stableCorpusModuleKey(for module: MetallibParser.BitcodeModule) -> String {
+        sha256Hex(for: module.data)
+    }
+
+    private func sha256Hex(for data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func corpusRelativePath(for url: URL) -> String {
+        let rootPath = shaderCorpusDirectoryURL.path
+        let fullPath = url.path
+        guard fullPath.hasPrefix(rootPath) else {
+            return url.lastPathComponent
+        }
+        let relativePath = String(fullPath.dropFirst(rootPath.count))
+        return relativePath.hasPrefix("/") ? String(relativePath.dropFirst()) : relativePath
+    }
+
+    private func appendingUnique(_ values: [String], value: String) -> [String] {
+        guard !values.contains(value) else {
+            return values
+        }
+        return values + [value]
+    }
+
+    private func loadCorpusModuleManifest(at url: URL) -> CorpusModuleManifest? {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: url.path) else {
+            return nil
+        }
+        do {
+            let data = try Data(contentsOf: url)
+            return try JSONDecoder().decode(CorpusModuleManifest.self, from: data)
+        } catch {
+            NSLog("[PlayTools] LibrarySourceInjection: failed to decode existing corpus manifest %@ — %@",
+                  url.path,
+                  error.localizedDescription)
+            return nil
+        }
+    }
+
+    private func writeCorpusArtifact(_ data: Data, to url: URL) throws -> CorpusArtifactWriteResult {
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: url.path) {
+            let existingData = try Data(contentsOf: url)
+            if existingData == data {
+                return CorpusArtifactWriteResult(path: corpusRelativePath(for: url), status: .reused)
+            }
+            return CorpusArtifactWriteResult(path: corpusRelativePath(for: url), status: .conflictPreserved)
+        }
+        try data.write(to: url, options: .atomic)
+        return CorpusArtifactWriteResult(path: corpusRelativePath(for: url), status: .created)
+    }
+
+    private func appendCorpusManifestIndexEntry(
+        _ entry: CorpusManifestIndexEntry,
+        encoder: JSONEncoder
+    ) throws {
+        let entryData = try encoder.encode(entry)
+        if !FileManager.default.fileExists(atPath: shaderCorpusManifestIndexURL.path) {
+            FileManager.default.createFile(atPath: shaderCorpusManifestIndexURL.path, contents: nil)
+        }
+        let handle = try FileHandle(forWritingTo: shaderCorpusManifestIndexURL)
+        defer {
+            try? handle.close()
+        }
+        _ = try handle.seekToEnd()
+        try handle.write(contentsOf: entryData)
+        try handle.write(contentsOf: Data("\n".utf8))
     }
 
     private func sanitizeDiagnosticFilenameComponent(_ value: String) -> String {

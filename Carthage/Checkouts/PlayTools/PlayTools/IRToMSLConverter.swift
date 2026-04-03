@@ -4064,10 +4064,35 @@ struct IRToMSLConverter {
                     currentType = ""
                 }
             } else {
-                // 其他类型（向量等）→ 通用索引
+                // 其他类型（向量、标量、ptr 等）→ 通用索引
                 let resolvedIdx = resolveIROperand(idxStr, ctx: ctx)
                 if resolvedIdx == "0" && i == parts.count - 1 {
                     // 最后一个索引为 0，通常是无效访问，透传
+                } else if currentType.hasPrefix("<") {
+                    // 向量类型 → 直接 subscript（MSL 支持向量下标）
+                    expr = "\(expr)[\(resolvedIdx)]"
+                } else if !currentType.isEmpty && !currentType.hasPrefix("ptr") {
+                    // E-006a2e14: 标量类型 subscript（float, half, i32 等）
+                    // IR GEP with opaque pointer 允许对 scalar field 做 array-like index
+                    // （将 scalar 地址视为数组首元素地址），但 MSL 不允许 scalar subscript
+                    // Fix: 取字段地址放入 temp 变量，然后通过 pointer subscript
+                    let ptrTemp = ctx.freshTemp()
+                    ctx.emit("auto \(ptrTemp) = &(\(expr));")
+                    // 后续剩余索引也做 pointer offset 累加
+                    // （after scalar type, remaining indices are all scalar arithmetic）
+                    var offsetExpr = resolvedIdx
+                    var j = i + 1
+                    while j < parts.count {
+                        let nextIdxStr = parts[j].value.trimmingCharacters(in: .whitespaces)
+                        let nextIdx = resolveIROperand(nextIdxStr, ctx: ctx)
+                        if !nextIdx.isEmpty && nextIdx != "0" {
+                            offsetExpr += " + \(nextIdx)"
+                        }
+                        j += 1
+                    }
+                    expr = "\(ptrTemp)[\(offsetExpr)]"
+                    currentType = ""
+                    break
                 } else {
                     expr = "\(expr)[\(resolvedIdx)]"
                 }

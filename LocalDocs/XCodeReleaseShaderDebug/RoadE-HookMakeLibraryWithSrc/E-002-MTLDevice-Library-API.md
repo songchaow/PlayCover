@@ -1,104 +1,115 @@
-# E-002: MTLDevice 创建 Library 的全部 API 入口
+## E-002: `MTLDevice` Library API 入口与 corpus 覆盖优先级
 
-## 状态：✅ DONE
+## 状态：✅ DONE（结论保留，组织方式重写）
 
-## 调研方法
+## 文档目的
 
-1. 查阅 Apple Developer Documentation — `MTLDevice` protocol
-2. 通过 ObjC runtime 枚举 `MTLDevice` 协议的 required/optional 方法
-3. 对运行时设备类执行 `responds(to:)` 和 `class_getInstanceMethod` 验证
-4. 沿类继承链定位每个 selector 的实际实现类
+E-002 的原始结论没有变化：我们已经识别出 `MTLDevice` 创建 `MTLLibrary` 的主要 API 入口，并据此完成了 E-003 的 swizzle 骨架。
 
-## MTLDevice 协议中的 Library 创建 API 完整列表
+随着 Road E 转向**离线优先**，本文件的重点也从“列全 API 名单”变成：
 
-### 核心 API（需要 hook）
+1. **哪些入口决定真实 shader corpus 的覆盖面**
+2. **哪些入口已经被纳入主链路，哪些还只是日志**
+3. **后续若要提高离线 corpus 完整性，应该先补哪些 selector**
 
-| # | Swift API | ObjC Selector | Type Encoding | 优先级 | 说明 |
-|---|---|---|---|---|---|
-| 1 | `makeLibrary(data:)` | `newLibraryWithData:error:` | `@32@0:8@16^@24` | 🔴 最高 | 从 metallib 二进制数据创建，**App 最常用的方式** |
-| 2 | `makeLibrary(source:options:)` | `newLibraryWithSource:options:error:` | - | 🟡 中 | 从 MSL 源码编译，源码已有不需注入 |
-| 3 | `makeLibrary(source:options:completionHandler:)` | `newLibraryWithSource:options:completionHandler:` | - | 🟡 中 | 异步版本，源码已有不需注入 |
-| 4 | `makeLibrary(URL:)` | `newLibraryWithURL:error:` | - | 🔴 高 | 从 URL 加载 metallib |
-| 5 | `makeDefaultLibrary()` | `newDefaultLibrary` | - | 🔴 高 | 从 App Bundle 加载默认 metallib |
-| 6 | `makeDefaultLibrary(bundle:)` | `newDefaultLibraryWithBundle:error:` | - | 🔴 高 | 从指定 Bundle 加载 metallib |
-| 7 | `makeLibrary(filepath:)` *(deprecated)* | `newLibraryWithFile:error:` | - | 🟢 低 | 已废弃，但部分旧 App 仍使用 |
-| 8 | `makeLibrary(stitchedDescriptor:)` | `newLibraryWithStitchedDescriptor:error:` | - | 🟢 低 | Function Stitching API（iOS 15+） |
-| 9 | `makeLibrary(stitchedDescriptor:completionHandler:)` | `newLibraryWithStitchedDescriptor:completionHandler:` | - | 🟢 低 | 异步版本 |
+## 完整入口清单
 
-### 动态库 API（不需要 hook）
+### 真实加载 metallib 的核心 API
+
+| # | Swift API | ObjC Selector | 当前离线价值 | 备注 |
+|---|---|---|---|---|
+| 1 | `makeLibrary(data:)` | `newLibraryWithData:error:` | **P0：最高** | 当前最常见，也已真正进入 `metallib -> bitcode -> IR -> MSL` 主链路 |
+| 2 | `makeLibrary(URL:)` | `newLibraryWithURL:error:` | **P1：高** | 可能影响 corpus 覆盖率，目前主要是日志 |
+| 3 | `makeDefaultLibrary()` | `newDefaultLibrary` | **P1：高** | 默认 metallib 路径；若不接入导出，可能漏采一类 shader |
+| 4 | `makeDefaultLibrary(bundle:)` | `newDefaultLibraryWithBundle:error:` | **P1：高** | 同上 |
+| 5 | `makeLibrary(filepath:)` *(deprecated)* | `newLibraryWithFile:error:` | **P1：中** | 兼容旧路径，覆盖率补洞价值高于实现复杂度 |
+
+### 已有源码或辅助路径
+
+| # | Swift API | ObjC Selector | 当前离线价值 | 备注 |
+|---|---|---|---|---|
+| 6 | `makeLibrary(source:options:)` | `newLibraryWithSource:options:error:` | P2：低 | 主要服务于我们自己重编译生成的 MSL |
+| 7 | `makeLibrary(source:options:completionHandler:)` | `newLibraryWithSource:options:completionHandler:` | P2：低 | 异步版本 |
+| 8 | `makeLibrary(stitchedDescriptor:)` | `newLibraryWithStitchedDescriptor:error:` | P3：观察即可 | 目前不是 Road E 主路径 |
+| 9 | `makeLibrary(stitchedDescriptor:completionHandler:)` | `newLibraryWithStitchedDescriptor:completionHandler:` | P3：观察即可 | 异步版本 |
+
+### 不需要作为主采集面的动态库 API
 
 | Swift API | ObjC Selector | 说明 |
 |---|---|---|
-| `makeDynamicLibrary(library:)` | `newDynamicLibrary:error:` | 从已有 MTLLibrary 创建动态库 |
-| `makeDynamicLibrary(url:)` | `newDynamicLibraryWithURL:error:` | 从 URL 加载动态库 |
+| `makeDynamicLibrary(library:)` | `newDynamicLibrary:error:` | 对已有 `MTLLibrary` 的封装，不是原始 shader 入口 |
+| `makeDynamicLibrary(url:)` | `newDynamicLibraryWithURL:error:` | 同上 |
 
-> Dynamic Library 本质是对已编译 Library 的封装，不直接加载 metallib 数据，不需要 hook。
+## 当前实现与覆盖状态
 
-## 运行时类信息
+### 已完成
 
-### 设备类继承链（Apple M4 Pro）
+- 已识别完整 API 集合
+- 已确认 selector 分布在 GPU family 层与 `_MTLDevice` 层，但统一用 `object_getClass(device)` 安装 swizzle 即可
+- E-003 已对关键入口完成 hook
 
-```
-AGXG16SDevice
-  → AGXG16XFamilyDevice
-    → IOGPUMetalDevice
-      → _MTLDevice
-        → NSObject
-```
+### 当前真正进入主链路的入口
 
-> **注意**：不同 GPU 型号的类名不同（如 M1=`AGXG13GDevice`，M2=`AGXG14SDevice`），
-> 但 swizzle 通过 `object_getClass(device)` 动态获取，不硬编码类名。
-> 这与现有 `CommandQueueDiscoverySwizzles` 的做法一致。
+- **`newLibraryWithData:error:`**
 
-### 方法定义位置
+它已经具备：
+- payload 转 `Data`
+- bitcode 提取
+- `llvm-dis`
+- `IRToMSLConverter`
+- `makeLibrary(source:)` 替换
 
-| Selector | 定义类 |
-|---|---|
-| `newLibraryWithData:error:` | `AGXG16XFamilyDevice`（GPU Family 层） |
-| `newLibraryWithSource:options:error:` | `AGXG16XFamilyDevice` |
-| `newLibraryWithSource:options:completionHandler:` | `AGXG16XFamilyDevice` |
-| `newLibraryWithURL:error:` | `_MTLDevice`（Metal 框架层） |
-| `newDefaultLibrary` | `AGXG16XFamilyDevice` |
-| `newDefaultLibraryWithBundle:error:` | `_MTLDevice` |
-| `newLibraryWithFile:error:` | `AGXG16XFamilyDevice` |
-| `newLibraryWithStitchedDescriptor:error:` | `_MTLDevice` |
-| `newLibraryWithStitchedDescriptor:completionHandler:` | `_MTLDevice` |
+### 当前仍停留在日志层的入口
 
-> 方法分布在 GPU family 层和 Metal 框架层，但 `class_getInstanceMethod(deviceClass, sel)` 
-> 能沿继承链自动找到，所以 swizzle 目标类统一用 `object_getClass(device)` 即可。
+- `newLibraryWithURL:error:`
+- `newDefaultLibrary`
+- `newDefaultLibraryWithBundle:error:`
+- `newLibraryWithFile:error:`
 
-## E-003 Hook 策略建议
+这意味着：
 
-### 第一批（必须 hook）
+**当前离线 corpus 的覆盖范围，本质上仍受限于 `newLibraryWithData:error:` 的真实命中率。**
 
-这些是 App 从 metallib 数据创建 Library 的主要路径：
+## 为什么这个优先级对新流程很重要
 
-1. **`newLibraryWithData:error:`** — App 内嵌 metallib，通过 NSData 加载（最常见）
-2. **`newLibraryWithURL:error:`** — 从文件 URL 加载 metallib
-3. **`newDefaultLibrary`** — 从 App Bundle 的默认 metallib 加载
-4. **`newDefaultLibraryWithBundle:error:`** — 从指定 Bundle 加载
-5. **`newLibraryWithFile:error:`** — 从文件路径加载（已废弃但部分 App 仍用）
+在旧流程里，我们更关心“哪个入口最容易触发 live 问题”。
+在新流程里，我们更关心：
 
-### 第二批（可选 hook / 仅日志）
+**哪个入口最决定离线 corpus 的完整性。**
 
-6. **`newLibraryWithSource:options:error:`** — 源码编译，源码已有（仅需日志记录）
-7. **`newLibraryWithSource:options:completionHandler:`** — 异步源码编译
-8. **`newLibraryWithStitchedDescriptor:error:`** — Stitching API（少见）
-9. **`newLibraryWithStitchedDescriptor:completionHandler:`** — 异步 Stitching
+因此优先级判断也要变化：
 
-### Swizzle 实现要点
+- 不是“哪个入口最常见就只做哪个”
+- 而是“在成本可接受的前提下，尽快让更多真实加载路径进入统一导出逻辑”
 
-1. **目标类获取**：`let deviceClass = object_getClass(MTLCreateSystemDefaultDevice()!)!`
-   - 与现有 `installQueueDiscoveryIfNeeded()` 模式完全一致
-2. **方法签名匹配**：用 `NSSelectorFromString()` 指定 selector，`class_getInstanceMethod` 找方法
-3. **返回值类型**：所有同步方法返回 `AnyObject?`（即 `id _Nullable`），符合现有 swizzle 模式
-4. **异步方法处理**：completionHandler 版本的 hook 需要包装 callback
-5. **`self` 语义**：swizzle 后 `self` 指向 MTLDevice 实例，与 `CommandQueueDiscoverySwizzles` 一致
+换句话说，E-002 现在不仅是 API 清单，也是 **corpus coverage roadmap**。
 
-### 注意事项
+## 建议的后续补齐顺序
 
-- `makeLibrary(source:options:)` 的 hook 策略不同：不需要注入源码（已有源码），但可以记录日志
-- `newLibraryWithURL:error:` 和 `newDefaultLibrary` 底层可能调用 `newLibraryWithData:error:`，
-  需要实测是否会重复触发。如果重复，可以在 hook 中用 data hash 去重
-- `newLibraryWithStitchedDescriptor:` 是 Function Stitching API（iOS 15+ / macOS 12+），
-  用于组合 visible function table，较少见但理论上也需要覆盖
+### 第一步
+
+继续把 `newLibraryWithData:error:` 打磨成稳定的成功路径导出入口：
+- `.bc`
+- `.ll`
+- `.metal`
+- manifest
+
+### 第二步
+
+把以下路径纳入与 `newLibraryWithData:error:` 同级的采集逻辑：
+- `newLibraryWithURL:error:`
+- `newDefaultLibrary`
+- `newDefaultLibraryWithBundle:error:`
+- `newLibraryWithFile:error:`
+
+### 第三步
+
+只在确有必要时，再考虑 stitched / source 路径是否需要更多处理。
+
+## 结论
+
+E-002 的核心结论仍然成立：Library API 入口已经被识别清楚。新的变化在于：
+
+- 这些入口不再只是 hook 覆盖清单
+- 它们现在决定了离线 corpus 的真实覆盖边界
+- 后续若要减少原神 live 次数，最值得投入的不是继续补文档，而是把 P1 入口逐步纳入统一导出链路

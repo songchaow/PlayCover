@@ -81,6 +81,17 @@ Xcode 自动获取源码 ✅
 - 需要将这些映射为 MSL 地址空间限定符（`device`/`constant`/`threadgroup`）和 MSL 内建调用
 - 这是整个方案最难的部分，前序步骤 E-004a–d 已为此做好准备
 
+### 与当前主线的关系
+
+> 上面的流程图描述的是 **技术链路本身**，不是今天的日常迭代组织方式。
+>
+> 当前 Road E 已转向 **corpus-driven / offline-first**：
+> - 真实 app 主要负责采集 `ShaderCorpus/` 与最终 `.gputrace` 验证
+> - 日常修复与回归优先在离线完成（`IR -> MSL -> Metal 编译`）
+> - `test-data/` 继续用于手工构造的最小 lowering 样本，不等同于真实 corpus
+>
+> 具体流程与优先级以 `00-Dashboard.md` 为准。
+
 ### 注意
 
 - **`-frecord-sources` 不适用于此场景**：该选项仅在从 MSL 编译到 .air 时有效。从现有 metallib 提取的 bitcode 不含源码，无法通过重编译补回

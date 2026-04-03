@@ -1,101 +1,332 @@
-# E-004: 实现 metallib → MSL 源码提取
+## E-004: 将运行时 metallib 提升为可复用的离线 corpus
 
-## 状态：🔄 IN PROGRESS（已拆分）
+## 状态：🔄 IN PROGRESS
 
 ## 目标
 
-在运行时拦截到 metallib `Data` 后，提取 LLVM Bitcode，经 `llvm-dis` 反汇编为 LLVM IR 文本，再**逐指令翻译为语义等价的 MSL 源码**，使其能通过 `makeLibrary(source:)` 编译。
+E-004 的目标已经从“证明可以在运行时做 metallib → IR → MSL”升级为：
 
-**翻译策略（方案 A：机械翻译）**：每条 IR 指令对应一个 MSL 临时变量赋值语句。不追求还原原始代码风格，但保证语义等价。函数签名由 IR metadata 精确还原。
+1. 在真实 app 里稳定拦截 shader 加载
+2. 从 metallib 提取可复用的 **bitcode / IR / MSL**
+3. 将这些产物沉淀为宿主机可访问的 **离线 corpus**
+4. 让后续大部分 `IRToMSLConverter` 修复都可以脱离原神、直接对 corpus 回放验证
 
-## 任务拆分
+**本阶段仍严格遵守主优先级**：
+1. **语义等价**
+2. **可编译**
+3. **可读性**
 
-由于工作量较大，E-004 拆分为五个子任务：
+## 为什么要转向 corpus 驱动
 
-| # | 子任务 | 状态 | 说明 |
-|---|--------|------|------|
-| E-004a | **metallib 二进制格式解析器** | ✅ DONE | `MetallibParser` 已能解析已知 metallib / wrapper 样本并提取 section / function / bitcode 信息 |
-| E-004b | **从 MODULE_LIST 提取函数级 LLVM Bitcode** | ✅ DONE | 已完成 bitcode module 提取、去重、缓存与有效性判断 |
-| E-004c | **LLVM 工具链管理：下载并部署 `llvm-dis`** | ✅ DONE | 宿主 PlayCover 已具备 LLVM 工具链下载、安装、校验能力 |
-| E-004d | **PlayTools 中调用 `llvm-dis` 转换 bitcode → IR** | ✅ DONE | 现以 runtime→host bridge 为主路径，runtime 内 `posix_spawn` 仅保留为兼容 / 诊断 fallback |
-| E-004e | **LLVM IR → MSL 转换器** | 🔄 IN PROGRESS | 当前已收敛为真实 live diagnostics 驱动的 lowering 补洞；下一步见 `E-006a2e2` |
-
-### 架构说明
-
-当前主路径已经稳定为：
+到目前为止，runtime 主链路已经打通：
 
 ```text
-metallib / wrapper payload
-  ↓ E-004a / E-004b
-BitcodeModule.data
-  ↓ E-004d（主路径：runtime→host bridge）
-宿主 PlayCover 执行 llvm-dis
+app 调 makeLibrary(...)
   ↓
-LLVM IR 文本
-  ↓ E-004e（IRToMSLConverter）
-可编译的 MSL 源码
-  ↓ E-005
-makeLibrary(source:) 重编译并替换原始返回
+hook 拦截 metallib / payload
+  ↓
+MetallibParser 提取 BitcodeModule
+  ↓
+LLVMDisassembler 反汇编为 IR
+  ↓
+IRToMSLConverter 生成 MSL
+  ↓
+makeLibrary(source:) 重编译替换
 ```
 
-**当前关注点不再是 payload 恢复或 `llvm-dis` 执行权限**，而是 `IRToMSLConverter` 如何继续把 live diagnostics 中暴露出来的 lowering 缺口补齐。
+真正拖慢效率的，不再是“链路能不能跑通”，而是：
 
-> 详细实现过程、旧架构细节、阶段性验证记录与历史子任务说明已下沉到 [E-004-MetallibSourceExtraction-Archive](E-004-MetallibSourceExtraction-Archive.md)。
+- 每次修 `IRToMSLConverter` 都要重装 / 重注入 / 启动原神
+- live 覆盖面受地图、场景、加载时机影响，**不稳定且随机**
+- 当前只有**失败样本**会落盘，成功路径没有形成可复用 corpus
 
-## E-004a 实现
+因此 E-004 这一阶段的主目标是：
 
-- `MetallibParser` 已落地，并能解析 `MTLB` header、function list、public/private metadata 与 bitcode section。
-- 对当前已知真实样本，`headerSize=15` 的兼容解析、`OFFT` 三元组语义修正，以及 raw `MTLB` / `xar` / `bplist_keyed_archive` recovered payload 提取均已打通。
-- 这部分当前**不是主 blocker**；仅在出现新的未知 wrapper 样本时再回头扩展。
+**把真实运行中遇到的 shader 系统性导出为离线 corpus，使 `IR -> MSL -> 编译` 成为日常回归主路径。**
 
-## E-004b 实现
+## 当前已具备的能力
 
-- 已完成 bitcode module 提取与去重：按 `(offset, size)` 合并引用同一模块的函数，避免重复处理。
-- 已具备 LLVM bitcode 有效性判断与基础缓存能力，供后续 `llvm-dis` 与聚合重编译复用。
-- 当前阶段只需保证提取链路稳定，不再把精力投入到已知样本的重复恢复。
+### E-004a：metallib / payload 解析
 
-## E-004c 实现
+- `MetallibParser` 已能解析原始 `MTLB`，并支持当前已知 wrapper / archive / payload 恢复
+- 已能识别 `SOURCES` section、有无 wrapper、payload 指纹等
+- 对异常 payload 已有 `ShaderPayloadSamples/` 落盘机制
 
-- `LLVMToolManager` 已在宿主 PlayCover 中落地，负责下载、安装、校验和管理 `llvm-dis`。
-- 当前对 Road E 的价值主要体现在：为 runtime→host bridge 提供稳定的宿主工具执行环境。
-- 工具链管理本身当前已相对稳定，不是主线矛盾。
+### E-004b：bitcode module 提取
 
-## E-004d 实现
+- 已能从 metallib 中提取 `BitcodeModule.data`
+- 已按 `(offset, size)` 去重，附带函数名与函数类型
+- 已具备基础内存缓存能力
 
-- `LLVMDisassembler` 已完成，且**主路径已切换为 runtime→host bridge**：PlayTools runtime 发送 `host_disassemble_bitcode` 请求，由宿主进程执行 `llvm-dis`。
-- runtime 内的 `posix_spawn` 路径仍保留，但仅用于兼容旧宿主版本或离线诊断，不再作为 live 主路径。
-- 这一阶段的核心目标已经达成：主线不再卡在 injected runtime 的 `process-fork` / sandbox 限制上。
+### E-004c：宿主 LLVM 工具链
 
-## E-004e 实现（持续中）
+- `LLVMToolManager` 已能下载、安装、校验宿主 `llvm-dis`
+- 工具路径已统一到 `~/Library/Containers/io.playcover.PlayCover/llvm-tools/`
 
-E-004e 仍是 E-004 的核心，也是当前仍在演进的部分。
+### E-004d：bitcode -> IR
 
-| # | 当前结论 | 状态 |
-|---|---|---|
-| E-004e1–e3 | 骨架、metadata 驱动的类型恢复、`air.*` 内建映射均已完成 | ✅ DONE |
-| E-004e4（历史拆分） | 早期的 `e4a/e4b/e4c` 划分已不再能准确反映当前推进方式 | ✅ 已由 live diagnostics 驱动模式替代 |
-| 当前推进方式 | 以 `ShaderSourceDiagnostics` 和 live 样本为准，按 blocker 前移顺序逐个补 lowering 缺口 | 🔄 IN PROGRESS |
+- `LLVMDisassembler` 主路径已切到 **runtime → host bridge**
+- runtime 侧不再依赖本地 `posix_spawn` 作为主方案
+- 宿主机已经可以稳定代跑 `llvm-dis`
 
-### 当前已完成能力
+### E-004e：IR -> MSL
 
-- **函数签名恢复**：已能基于 IR metadata 恢复 vertex / fragment / kernel 的参数与返回信息。
-- **参数发射**：`buffer`、`texture`、`sampler`、`stage_in`、内置属性等路径已基本打通。
-- **`air.*` 映射**：常见 `air.*` 内建到 MSL 的映射已建立并集成到转换流程。
-- **返回值与结构体**：packed return、vertex aggregate return、自定义 struct 定义与字段名恢复均已具备基础能力。
-- **SSA / pointer 发射**：`stage_in` 参数回接、pointer-like SSA 追踪、`*(&...)` 消除、`device T*` 访问收敛等关键问题已完成一轮 live 验证。
+- `IRToMSLConverter` 已能完成大部分基础 lowering
+- 当前改进方式不应再是“看到一个 live blocker 修一个”，而应逐步切到“对 corpus 批量回放，按错误模式聚类修复”
 
-### 当前主 blocker
+## 当前缺口
 
-结合 `00-Dashboard.md` 中最新 `E-006a2e2` 修复，`undef` lowering 与 half immediate lowering 已完成。当前 E-004e 无已知离线 blocker，下一步等待 `E-006a2e3` live 复测后根据新 diagnostics 继续补洞。
+### 1. 成功路径没有持久化
 
-### 当前交接方式
+当前已有落盘目录：
 
-- **如果要继续做实现**：直接从 `IRToMSLConverter.swift` 入手，围绕 `undef` 与 half immediate 的 lowering 修复展开。
-- **如果动了 IR→MSL 逻辑**：按 `00-Dashboard.md` 的要求补 `test-data/` 样本，并至少执行 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`。
-- **如果要回看历史修复脉络**：去读 [E-004-MetallibSourceExtraction-Archive](E-004-MetallibSourceExtraction-Archive.md) 与 `00-Dashboard-Archive.md`，不要再把那些历史细节堆回本文主体。
+- `ShaderSourceDiagnostics/`：**失败的** `.metal + .txt`
+- `ShaderPayloadSamples/`：**异常 payload** 的 `.bin + .txt (+ .plist)`
+
+当前**缺少**：
+
+- 成功提取的 `.bc`
+- 成功反汇编的 `.ll`
+- 成功转换的 `.metal`
+- 用于后续去重 / diff / replay 的 manifest
+
+这意味着我们现在虽然“跑过了”很多真实 shader，但真正可离线复用的样本并没有积累下来。
+
+### 2. `makeLibrary` 覆盖面还不完整
+
+当前真正进入 bitcode 提取和替换主链路的是：
+
+- `newLibraryWithData:error:`
+
+而这些入口虽然已 hook，但目前主要仍是日志：
+
+- `newLibraryWithURL:error:`
+- `newDefaultLibrary`
+- `newDefaultLibraryWithBundle:error:`
+- `newLibraryWithFile:error:`
+
+若要提升 corpus 覆盖率，需要逐步把这些路径纳入统一的导出逻辑。
+
+### 3. 缺少离线 replay 的稳定输入规范
+
+现在已经存在两类离线输入，但边界还不够明确：
+
+- `test-data/`：手工构造的**最小样本**，用于验证单个 lowering、air builtin 或特定 IR 模式
+- `ShaderCorpus/`：真实运行时采集的**真实样本集**，用于批量 replay、diff、失败聚类与回归基线
+
+当前的问题不是“完全没有离线输入”，而是还没有一个统一的**真实 corpus 样本规范**。
+
+后续需要统一约定：
+
+- 目录结构
+- 命名规则
+- 去重键
+- manifest 字段
+- 成功 / 失败 / fallback 的状态标记
+- `test-data/` 与 `ShaderCorpus/` 的职责边界
+
+## 推荐的新主路径
+
+### 采集层（runtime / host）
+
+```text
+makeLibrary(...) hook
+  ↓
+提取 BitcodeModule
+  ↓
+为每个 module 生成稳定 key
+  ↓
+保存 .bc
+  ↓
+host llvm-dis
+  ↓
+保存 .ll
+  ↓
+IRToMSLConverter
+  ↓
+保存 .metal
+  ↓
+记录 manifest（模块信息、编译信息、错误摘要、时间戳）
+```
+
+### 回放层（offline replay）
+
+```text
+读 corpus 中的 .ll
+  ↓
+IRToMSLConverter.convert(...)
+  ↓
+输出新的 .metal
+  ↓
+Metal 编译
+  ↓
+汇总错误 / diff / 回归结果
+```
+
+### 最终验证层（minimal live）
+
+```text
+当一批 corpus 在离线回放中已通过
+  ↓
+build_and_install.sh
+  ↓
+重注入 app
+  ↓
+最小 live 复测
+  ↓
+真实 .gputrace 查看源码是否可见
+```
+
+## 推荐导出物与目录结构
+
+建议在 PlayCover 容器目录下新增：
+
+```text
+~/Library/Containers/io.playcover.PlayCover/ShaderCorpus/<bundleId>/
+  manifest.jsonl                      # 可选：总索引
+  <cacheKey>/
+    <selector>__module_<offset>_<size>/
+      module.bc
+      module.ll
+      module.generated.metal
+      module.meta.json
+```
+
+### `module.meta.json` 建议字段
+
+至少包含：
+
+- `bundleId`
+- `selector`
+- `cacheKey`
+- `moduleRelativeOffset`
+- `moduleSize`
+- `functionNames`
+- `functionTypes`
+- `timestamp`
+- `payloadKind`
+- `hasSources`
+- `llvmDisStatus`
+- `converterStatus`
+- `compileStatus`
+- `compilerError`（如有）
+- `diagnosticPath`（如有）
+
+### 去重建议
+
+建议把以下字段组合作为稳定 key：
+
+- `bundleId`
+- `selector`
+- metallib `cacheKey`
+- module `(relativeOffset, size)`
+
+这样既能避免同一次运行重复写入，也便于比较不同 app / 不同入口下的相同 shader module。
+
+## 现有代码中的最佳插入点
+
+### 插入点 1：`extractAndCacheBitcodeModules(...)`
+
+职责：**最早拿到成功的 `BitcodeModule.data`**
+
+适合新增：
+- `.bc` 原始落盘
+- metallib / module manifest 的初步记录
+
+优点：
+- 拿到的是最原始、最稳定的 bitcode
+- 便于后续离线重复 `llvm-dis`
+
+限制：
+- 此时还没有 `.ll` / `.metal`
+
+### 插入点 2：`attemptLibraryReplacement(...)`
+
+职责：**最自然的成功路径汇总点**
+
+当前这里已经顺序拿到了：
+- `module`
+- `irResult.irText`
+- `conversion.mslSource`
+- `compileError` / success
+
+这是当前最适合先落地的点。建议在这里直接写：
+- `module.bc`
+- `module.ll`
+- `module.generated.metal`
+- `module.meta.json`
+
+优点：
+- 一次函数调用内拿齐所有关键产物
+- 能在同一个 manifest 里记录“提取成功 / 反汇编成功 / 转换成功 / 编译成功或失败”
+
+### 插入点 3：host bridge 命令处理
+
+职责：**在宿主进程保存 `.bc/.ll`**
+
+可作为第二阶段优化：
+- 让 `host_disassemble_bitcode` 在返回 `ir_text` 的同时，把 `.bc/.ll` 存到宿主目录
+- 这样运行时只负责发命令，不负责文件写入
+
+优点：
+- 文件权限与调试体验更好
+- 更适合未来 MCP / UI 暴露导出功能
+
+限制：
+- 需要 runtime 额外把上下文（bundleId、selector、cacheKey、offset/size）带给宿主
+
+## E-004 新的任务拆分
+
+| # | 子任务 | 状态 | 说明 |
+|---|---|---|---|
+| E-004a | metallib / payload 解析器 | ✅ DONE | `MetallibParser` 已稳定支撑当前样本 |
+| E-004b | bitcode module 提取与去重 | ✅ DONE | `BitcodeModule` 已具备数据、函数名、类型信息 |
+| E-004c | 宿主 LLVM 工具链管理 | ✅ DONE | `LLVMToolManager` 已可下载 / 校验 `llvm-dis` |
+| E-004d | runtime→host `llvm-dis` 主路径 | ✅ DONE | host bridge 已成为主路径 |
+| E-004e | IR→MSL 转换器 | 🔄 IN PROGRESS | 后续迭代应改为 corpus 驱动 |
+| E-004f | 成功路径导出 corpus | 🔄 IN PROGRESS | 当前最高优先级 |
+
+### E-004f 细分
+
+| # | 子任务 | 状态 | 说明 |
+|---|---|---|---|
+| E-004f1 | 成功路径导出 `.bc/.ll/.metal/.json` | TODO | 先把成功路径样本稳定落盘 |
+| E-004f2 | corpus 命名 / 去重 / manifest 规范 | TODO | 保证样本长期可复用 |
+| E-004f3 | 扩展 `URL/default/file` 路径覆盖 | TODO | 提高采集完整性 |
+| E-004f4 | MCP / 脚本化导出接口 | TODO | 降低手工操作成本 |
+
+## 与 E-005 / E-006 的衔接
+
+### E-005：离线回放与批量编译
+
+E-004 的价值不是“把文件存下来”，而是为 E-005 提供真实输入：
+
+- `module.ll` 成为 replay runner 的输入
+- `module.generated.metal` 成为新旧输出 diff 的基线
+- `module.meta.json` 成为错误聚类和回归报告的数据源
+
+### E-006：live 只做必要工作
+
+E-004 完成后，E-006 的职责应明显收缩：
+
+- **做覆盖扩充**：采更多真实 shader
+- **做最终验证**：真实 `.gputrace` 是否可见源码
+
+而不是继续用 live 当成日常 blocker 分析器。
+
+## 本阶段完成标准
+
+E-004 这一阶段完成，不等于最终 `.gputrace` 目标完成；它的完成标准是：
+
+1. **真实运行中加载到的 shader 能稳定导出为 corpus**
+2. corpus 中每个 module 至少具备 `.bc/.ll/.metal/.json`
+3. 后续 `IRToMSLConverter` 修复能对 corpus 做离线 replay
+4. 新 blocker 的首轮归因，默认优先在 corpus 上完成，而不是回到原神里反复试错
 
 ## 参考
 
-- 当前主线、live 样本与跨任务 TODO：`00-Dashboard.md`
-- dashboard 历史归档：`00-Dashboard-Archive.md`
-- 本文历史实现细节归档：`E-004-MetallibSourceExtraction-Archive.md`
+- 当前主线与跨任务 TODO：`00-Dashboard.md`
+- live blocker 历史归档：`00-Dashboard-Archive.md`
+- 早期 E-004 历史细节：`E-004-MetallibSourceExtraction-Archive.md`
+- Library API 入口优先级：`E-002-MTLDevice-Library-API.md`
+- swizzle 骨架与 hook 角色：`E-003-LibrarySwizzleSkeleton.md`

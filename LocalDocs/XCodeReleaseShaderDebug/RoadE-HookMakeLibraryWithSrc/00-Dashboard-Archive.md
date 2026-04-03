@@ -4,6 +4,8 @@
 
 本文档用于承接从 `00-Dashboard.md` 主体下沉的历史信息：旧 live 样本、已完成子任务的详细脉络，以及当前不再需要长期占据 dashboard 主体的经验。`00-Dashboard.md` 只保留当前主线、最新验证、正在推进的 TODO 和仍会影响决策的经验。
 
+> ⚠️ **本文档是历史归档，不代表当前日常工作流。** 当前流程已经切换为 **corpus-driven / offline-first**：先采集真实样本形成 `ShaderCorpus/`，再做离线 replay、批量编译与最小 live 验证；详见 `00-Dashboard.md`。
+
 ## 历史 live 样本归档
 
 > 当前最新 live 结果以 `00-Dashboard.md` 为准；这里仅保留更早样本的简要脉络，方便回看 blocker 是如何逐步前移的。

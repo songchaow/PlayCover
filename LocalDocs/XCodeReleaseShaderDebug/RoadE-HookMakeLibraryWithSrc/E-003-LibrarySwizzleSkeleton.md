@@ -1,77 +1,111 @@
-# E-003: 在 PlayTools 中实现 makeLibrary swizzle 骨架
+## E-003: `makeLibrary` swizzle 骨架与采集入口
 
 ## 状态：✅ DONE
 
-## 目标
+## 当前定位
 
-参考 `CommandQueueDiscoverySwizzles` 模式，添加 `LibrarySourceInjectionSwizzles` 类，拦截并记录每次 makeLibrary 调用（先 log-only，不修改返回值）。
+E-003 已经完成“能 hook 到 `MTLDevice.makeLibrary(...)` 系列 API”这一基础目标。随着 Road E 主流程转向**离线优先**，E-003 的定位也从“单纯 log-only 骨架”升级为：
 
-## 实现方案
+**所有后续 shader corpus 采集能力的统一入口。**
+
+也就是说，E-003 现在的价值不是继续扩展 swizzle 技巧本身，而是回答两个问题：
+
+1. 哪些 Library API 入口已经被 hook？
+2. 哪些入口已经真正进入了 `metallib -> bitcode -> IR -> MSL` 主链路，哪些还只是日志？
+
+## 已有实现
 
 ### 文件结构
 
 | 文件 | 说明 |
-|------|------|
-| `Carthage/Checkouts/PlayTools/PlayTools/LibrarySourceInjectionSwizzles.swift` | 核心实现：swizzle 方法 + 安装服务 |
-| `Carthage/Checkouts/PlayTools/PlayTools/PlayCover.swift` | 修改：在 `launch()` 中调用安装 |
-| `Carthage/Checkouts/PlayTools/PlayTools.xcodeproj/project.pbxproj` | 修改：添加新文件引用 |
+|---|---|
+| `Carthage/Checkouts/PlayTools/PlayTools/LibrarySourceInjectionSwizzles.swift` | 核心实现：swizzle 方法 + `LibrarySourceInjectionService` |
+| `Carthage/Checkouts/PlayTools/PlayTools/PlayCover.swift` | 启动时安装 hook |
 
-### 架构设计
+### 当前 hook 的 API 列表
 
-1. **`LibrarySourceInjectionSwizzles`**（private final class）
-   - 与 `CommandQueueDiscoverySwizzles` 完全一致的模式
-   - 包含 7 个 `@objc dynamic` swizzle 替换方法
-   - swizzle 后 `self` 指向 MTLDevice 实例
+#### 第一批：真实 shader 采集相关入口
 
-2. **`LibrarySourceInjectionService`**（class，singleton）
-   - `installIfNeeded()`：通过 `object_getClass(device)` 获取设备类，安装所有 swizzle
-   - `logLibraryCreation()`：统一日志记录，输出 selector、device 类、library 类、label、函数数量等
-   - `statisticsSummary()`：返回调用统计摘要
+| # | ObjC Selector | 当前状态 | 备注 |
+|---|---|---|---|
+| 1 | `newLibraryWithData:error:` | **已接入主链路** | 当前最关键入口；已进入 bitcode 提取、IR 反汇编、MSL 转换与替换 |
+| 2 | `newLibraryWithURL:error:` | 已 hook，当前以日志为主 | 后续应评估是否纳入统一 corpus 导出 |
+| 3 | `newDefaultLibrary` | 已 hook，当前以日志为主 | 可能影响默认 metallib 覆盖率 |
+| 4 | `newDefaultLibraryWithBundle:error:` | 已 hook，当前以日志为主 | 同上 |
+| 5 | `newLibraryWithFile:error:` | 已 hook，当前以日志为主 | 兼容旧路径 |
 
-### Hook 的 API 列表
+#### 第二批：源码或辅助路径
 
-**第一批（必须 hook）**——从 metallib 数据创建的主要路径：
+| # | ObjC Selector | 当前状态 | 备注 |
+|---|---|---|---|
+| 6 | `newLibraryWithSource:options:error:` | 已 hook，日志 / 回编译使用 | 主要用于 `makeLibrary(source:)` 重编译 |
+| 7 | `newLibraryWithSource:options:completionHandler:` | 已 hook，日志 / 回编译使用 | 异步版本 |
 
-| # | ObjC Selector | 替换方法 |
-|---|---|---|
-| 1 | `newLibraryWithData:error:` | `pc_newLibraryWithData(_:error:)` |
-| 2 | `newLibraryWithURL:error:` | `pc_newLibraryWithURL(_:error:)` |
-| 3 | `newDefaultLibrary` | `pc_newDefaultLibrary()` |
-| 4 | `newDefaultLibraryWithBundle:error:` | `pc_newDefaultLibraryWithBundle(_:error:)` |
-| 5 | `newLibraryWithFile:error:` | `pc_newLibraryWithFile(_:error:)` |
+## 在新流程中的角色
 
-**第二批（仅日志）**——源码编译路径：
+### 角色 1：真实世界采集面
 
-| # | ObjC Selector | 替换方法 |
-|---|---|---|
-| 6 | `newLibraryWithSource:options:error:` | `pc_newLibraryWithSource(_:options:error:)` |
-| 7 | `newLibraryWithSource:options:completionHandler:` | `pc_newLibraryWithSourceAsync(_:options:completionHandler:)` |
+E-003 决定了我们能从哪些真实 runtime API 入口观察到 shader 加载行为。对于离线优先流程，它的核心意义是：
 
-### 初始化时机
+- **让真实 app 成为 corpus 生产器**
+- 而不是只作为一个现场调试环境
 
-在 `PlayCover.launch()` 中，紧跟 `MetalCaptureService.shared.initialize()` 之后调用：
+### 角色 2：覆盖率边界定义
 
-```swift
-LibrarySourceInjectionService.shared.installIfNeeded()
-```
+当前只有 `newLibraryWithData:error:` 真正进入主链路，这意味着：
 
-无需额外的开关控制——当前阶段仅输出日志，性能影响极小。
+- 我们当前的 corpus 覆盖率，本质上等于这个 selector 覆盖到的 shader 集合
+- 如果某些 shader 主要通过 `URL/default/file` 路径进入，当前就只能看到日志，看不到完整 `.bc/.ll/.metal`
 
-### 日志格式
+因此 E-003 也是**coverage boundary** 文档：它告诉我们离线 corpus 目前为什么还不够“全”。
 
-```
-[PlayTools] LibrarySourceInjection: sel=newLibraryWithData:error:, device=AGXG16SDevice, library=AGXGxxFamilyMTLLibrary, label=nil, functions=42, call#1/total#1, dataSize=12345
-```
+### 角色 3：后续 E-004f 的扩展起点
 
-## 验证
+后续若要做“成功路径全量导出 corpus”，最自然的扩展顺序是：
 
-- PlayTools xcframework 构建通过（`BUILD SUCCEEDED`）
-- pbxproj 格式验证通过（`plutil -lint`）
-- 运行时验证需等 E-004/E-005 完成后在实际 app 上测试
+1. 继续把 `newLibraryWithData:error:` 打磨成稳定导出主路径
+2. 再逐步把 `URL/default/file` 路径纳入同样的提取 / 导出逻辑
+3. 最后再看是否需要处理更少见的 stitched / source 路径
 
-## 后续 E-004 衔接点
+## 当前建议的覆盖优先级
 
-E-004 需要在 `pc_newLibraryWithData(_:error:)` 中添加：
-1. 从 `dispatch_data_t` 提取 metallib 二进制
-2. 解析 metallib 格式，提取 LLVM Bitcode / MSL 源码
-3. 将提取的源码存储以供 E-005 重编译使用
+### P0：必须完整采集
+
+- `newLibraryWithData:error:`
+
+原因：
+- 当前真实 app 最常见
+- 已有 `dispatch_data_t -> Data`、bitcode 提取、替换逻辑
+- 是建立 corpus 的最低成本主入口
+
+### P1：尽快补齐
+
+- `newLibraryWithURL:error:`
+- `newDefaultLibrary`
+- `newDefaultLibraryWithBundle:error:`
+- `newLibraryWithFile:error:`
+
+原因：
+- 这些入口会直接影响 corpus 的完整性
+- 在离线优先流程下，它们的意义已经高于“单纯记录日志”
+
+### P2：继续观测即可
+
+- `newLibraryWithSource:options:error:`
+- `newLibraryWithSource:options:completionHandler:`
+
+原因：
+- 这些路径主要服务于我们自己回编译生成的 MSL
+- 对“抓真实 shader 样本”帮助有限
+
+## 经验结论
+
+- E-003 已经证明 swizzle 面是够用的，当前瓶颈**不在 hook 能不能装上**，而在**hook 后成功样本没有系统落盘**
+- 在离线优先流程下，`makeLibrary` hook 的首要职责是**采集真实 corpus**，不是继续扩大 live 日志量
+- 如果后续要提升 corpus 覆盖率，应优先扩展 `URL/default/file` 到统一导出逻辑，而不是继续在 dashboard 中堆更多单次 live 复测记录
+
+## 与后续任务的关系
+
+- 与 `E-004`：E-003 提供采集面，E-004 负责把采集面转成可复用 corpus
+- 与 `E-005`：离线 replay 依赖 E-003/E-004 先把真实样本抓下来
+- 与 `E-006`：live 的作用将缩减为补覆盖和做最终验证，不再是主要调试路径

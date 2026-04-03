@@ -37,9 +37,9 @@
 
 ## 当前主线
 
-- **E-006（下一步：`E-006a2e3` live 重装 / 重注入复测）**：`E-006a2e2` 已完成 — `undef` lowering 与 `0xH` half hex 立即数修复均已落地并通过 PlayTools 编译验证。当前最高优先级是按标准流程重装 GUI + 重新注入 app，做 live 复测确认 blocker 是否进一步前移。
-- **E-005b**：多 bitcode module 的源码聚合 / 替换策略已稳定，仍坚持"**全成全退**"。：全部有效 LLVM module 都能完成 `llvm-dis + IRToMSLConverter` 且聚合后无重名时才单次 `makeLibrary(source:)` 重编译，否则整体 fallback。该策略已通过 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 编译验证。
-- **E-005e**：当前已知 `headerSize=15` 样本的 wrapper / header-compat / function list / `OFFT` slicing 已离线打通；raw `MTLB` / `xar` / `bplist_keyed_archive` recovered payload 均已推进到 `OK modules=3 functions=3` 且 `valid_llvm=3`。对这些已知样本，payload 恢复链路**不再是当前主线**；后续仅在出现新的未知 wrapper 样本时再回到 `E-005e`。
+- **E-006（下一步：`E-006a2e4` intrinsic 类型歧义 lowering 修复）**：`E-006a2e3` live 复测已完成 — `undef` / `0xH8000` / `stage_in` / `device T*` / `*(&...)` 旧 blocker 全部消失。新 blocker 收敛到三类 IR→MSL lowering 问题：①`clamp`/`fma` intrinsic 的 `half`/`float` 重载歧义（`half` 操作数 + `double` literal → Metal 无法选择重载）；②`icmp` 对 `<N x half>` 产出 `boolN` 却赋给 `bool`；③`zext <N x i1> to <N x i8>` 翻译为不存在的 `uint8_t2`（应为 `uchar2`）。下一步修复这三类 lowering。
+- **E-005b**：多 bitcode module 的源码聚合 / 替换策略已稳定，仍坚持"**全成全退**"。全部有效 LLVM module 都能完成 `llvm-dis + IRToMSLConverter` 且聚合后无重名时才单次 `makeLibrary(source:)` 重编译，否则整体 fallback。
+- **E-005e**：payload 恢复链路对已知样本已打通，**不再是当前主线**。
 
 ## 验证方式
 
@@ -57,8 +57,8 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 | 样本 | 结果 |
 |---|---|
-| 原神 6.4.0 外网包（2026-04-03，`E-006a2d4` 后单轮 live 复测 / `E-006a2e1`） | 已按 `PLAYCOVER_INSTALL_MODE=user FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/build_and_install.sh` 重装 GUI，并从 `pkill Yuanshen` 干净状态执行 `remove_playtools` / `inject_playtools` / `launch_app` / `create_session(timeout=30)`。`session` 在 `11:34:00 +0800` 成功 `ready`，约 **20 秒**后 `disconnected`，并新增 `Yuanshen-2026-04-03-113425.ips`；新的 `ShaderSourceDiagnostics` 已不再出现 vertex `stage_in` / `device T*` / `*(&...)` 旧 blocker，而是前移到 `float2(undef, 0.5)` 与 `half t54 = 0xH8000 - t47;`。当前验证重点已收敛到 **`undef` 与 half 常量 lowering** |
-| 历史 live 样本摘要（2026-04-02 ～ 2026-04-03） | 主线演进为：`host bridge` 修复前卡在 injected runtime 内 `posix_spawn(llvm-dis)` 权限问题；修复后进入 `source recompile failed`；`preflight guard` 落地后先把明显坏 MSL 拦下；`keymapping` 隔离后确认 toucher 干扰已基本剥离；`E-006a2d4` 后旧 blocker 再前移到 `undef` / `0xH8000`。更早每轮样本、crash 与 diagnostics 细节见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
+| 原神 6.4.0 外网包（2026-04-03，`E-006a2e3` live 复测） | 按 `PLAYCOVER_INSTALL_MODE=user FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/build_and_install.sh` 重装 GUI + `remove_playtools` / `inject_playtools` / `launch_app` / `create_session(timeout=30)`。`session` 在 10 秒内 `ready` 后约 10 秒 `disconnected`（无新 crash report）。`ShaderSourceDiagnostics` 仅出现 `compile_failed`（无 `preflight_rejected`），旧 blocker（`undef`/`0xH8000`/`stage_in`/`device T*`/`*(&...)`）全部消失。新 blocker 收敛到三类：①`clamp(t78, 0.0, 1.0)` 歧义（`half` + `double` literal → Metal 重载冲突）；②`bool t183 = half2 == half2`（`bool2` 赋给 `bool`）；③`uint8_t2` 不存在（`zext bool2 → i8` 应为 `uchar2`）。sample 为 fragment `xlatMtlMain`（天空 shader） |
+| 历史 live 样本摘要（2026-04-02 ～ 2026-04-03） | 主线演进：`host bridge` 权限 → `source recompile failed` → preflight guard → toucher/keymapping 隔离 → vertex `stage_in`/pointer → `undef`/`0xH8000` → intrinsic 类型歧义。更早细节见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
 
 **人工确认（最终）**：Xcode 打开 `.gputrace` → 选 Draw Call → 查看 Shader 面板是否显示源码而非 `Shader source not found`。
 
@@ -80,7 +80,7 @@ PlayCover 主应用 (macOS)
 
 ## TODO
 
-> 当前最高优先级：`E-006a2e3`（live 重装 / 重注入复测）。更早 live 样本、已完成子任务的详细归因，以及旧 blocker 的完整历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
+> 当前最高优先级：`E-006a2e4`（intrinsic 类型歧义 + vector icmp/zext lowering 修复）。更早 live 样本、已完成子任务的详细归因，以及旧 blocker 的完整历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -96,19 +96,23 @@ PlayCover 主应用 (macOS)
 | E-005d | ↳ 缓存与观测性 | TODO | |
 |  | 以 metallib 内容或 bitcode 模块 `(offset,size)` / hash 为键缓存处理结果，并补充 success / fallback reason 日志 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
-|  | 当前主线：先完成 `E-006a2e2` 修掉 `undef` 与 half immediate lowering，再回到 live 重装 / 重注入复测，确认是否能重新进入 `get_capture_status` / capture 阶段 | | |
-| E-006a | ↳ 解决 injected runtime 调 `llvm-dis` 的执行权限 blocker | 🔄 IN PROGRESS | |
-|  | 核心权限 blocker 已在 `E-006a1` 解决；当前剩余工作是 host bridge 版本的 live 复测与后续 blocker 归因 | | |
+|  | 当前主线：`E-006a2e3` 已确认旧 blocker 全清，新 blocker 收敛到 intrinsic 类型歧义（`clamp`/`fma` 的 half/float 重载）、vector icmp 赋值类型（`bool2` → `bool`）、vector zext 整型映射（`uint8_t2` → `uchar2`） | | |
+| E-006a | ↳ 解决 injected runtime 调 `llvm-dis` 的执行权限 blocker | ✅ DONE | |
+|  | 核心权限 blocker 已在 `E-006a1` 解决；host bridge 已通过 live 复测稳定运行 | | |
 | E-006a1 | ↳ runtime→host `llvm-dis` bridge 落地 | ✅ DONE | |
 |  | `RegistrationListener` 现支持 runtime→host `command`；GUI 侧 `MCPManager` / `LLVMToolManager` 已实现 `host_disassemble_bitcode` handler；`LLVMDisassembler` 改为优先走 host bridge，失败才 fallback 本地 `posix_spawn`。已通过 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`、`./BuildScripts/build_gui.sh`、`./BuildScripts/test_mcp.sh RegistrationListenerHostCommandTests` 验证 | | |
 | E-006a2 | ↳ host bridge 版本的 live 重装 / 重注入 / 截帧复测 | 🔄 IN PROGRESS | |
-|  | `E-006a2a`–`E-006a2d` 已完成并把 blocker 从 preflight / toucher / keymapping / vertex `stage_in` / pointer 发射一路前移到新的 IR→MSL lowering 问题；详细过程见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | | |
-| E-006a2e | ↳ 基于 `E-006a2d4` 的 live 重装 / 重注入 / diagnostics 复测 | 🔄 IN PROGRESS | |
-|  | `E-006a2e1` 已确认旧 blocker 已清掉；`E-006a2e2` 已修掉 `undef` 与 `0xH` half hex lowering；下一步 `E-006a2e3` 做 live 重装 / 重注入复测 | | |
+|  | `E-006a2a`–`E-006a2e` 已把 blocker 从 preflight / toucher / keymapping / vertex `stage_in` / pointer / `undef` / `0xH8000` 一路前移到 intrinsic 类型歧义与 vector icmp/zext lowering；详细过程见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | | |
+| E-006a2e | ↳ `E-006a2d4` 后的 IR→MSL lowering 补洞与 live 复测轮次 | 🔄 IN PROGRESS | |
+|  | `E-006a2e1`–`E-006a2e3` 已完成；`E-006a2e3` 确认旧 blocker 全清，新 blocker 为 intrinsic 类型歧义 + vector icmp/zext | | |
 | E-006a2e1 | ↳ `E-006a2d4` 后首轮 live 归因复测 | ✅ DONE | |
 |  | 已确认 vertex `stage_in` / `device T*` / `*(&...)` 旧 blocker 不再出现；`session` 已能 `ready` 后再掉线，诊断已前移到 `undef` 与 `0xH8000` | | |
 | E-006a2e2 | ↳ `undef` / half 十六进制字面量 lowering 修复 | ✅ DONE | |
 |  | 在 `IRToMSLConverter` 中修了三处：①`resolveIROperand()` 新增 IR typed constant 分发（`float undef` → 递归解析 `undef` → `0`）；②`formatIRLiteral()` 新增 `undef`/`poison` 守卫 + `0xH` half hex → IEEE-754 转十进制 / `as_type<half>(ushort(...))`；③`SSAContext.resolve()` 新增 `undef`/`poison` → `0`。`test-data/test_undef_half.metal/.ll` 已补，确认 IR 含 `<4 x float> undef` 与 `0xH4000` 等目标模式。`FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 编译通过 | | |
+| E-006a2e3 | ↳ `E-006a2e2` 后 live 重装 / 重注入复测 | ✅ DONE | |
+|  | 按 `build_and_install.sh` + `remove_playtools` / `inject_playtools` / `launch_app` / `create_session(timeout=30)` 完成。`session` 10 秒内 `ready` 后 ~10 秒 `disconnected`（无新 crash report）。`ShaderSourceDiagnostics` 仅 `compile_failed`，`undef`/`0xH8000`/`stage_in`/`device T*`/`*(&...)` 旧 blocker 全部消失。新 blocker：①`clamp`/`fma` 的 `half`/`float` 重载歧义（`half` 操作数 + `double` literal）；②vector `icmp` 产出 `boolN` 赋给 `bool`；③`uint8_t2` 不存在（应为 `uchar2`） | | |
+| E-006a2e4 | ↳ intrinsic 类型歧义 + vector icmp/zext lowering 修复 | TODO | |
+|  | 三类修复：①intrinsic（`clamp`/`fma` 等）调用时 literal 参数类型应匹配首个操作数类型（`half` → `0.0h`）；②vector `icmp` 结果应为 `boolN` 而非 `bool`；③`zext <N x i1> to <N x i8>` 应映射为 `ucharN` 而非 `uint8_tN` | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
 |  | 添加 `injectShaderSources` 开关到 AppSettings / AppSettingsView；添加 LLVM 工具链下载 / 状态 UI | | |
 
@@ -124,6 +128,9 @@ PlayCover 主应用 (macOS)
 - **地址类 SSA 仍要显式区分"地址表达式"和"值表达式"**：`getelementptr` / `alloca` 统一产出地址表达式，再由 `load/store` 还原成合法 lvalue，才能稳定消除 `*(&...)` 并收敛 `device T*` 访问
 - **`undef` 不能泄漏到生成的 MSL**：`E-006a2e2` 已统一修掉 — `resolveIROperand()` 新增 typed constant 分发、`formatIRLiteral()` 新增 `undef`/`poison` 守卫、`SSAContext.resolve()` 新增字面量处理；`float undef` / `half undef` 等带类型前缀的变体也会被递归解析为 `0`
 - **half 十六进制立即数需在 lowering 阶段转为合法 MSL**：`E-006a2e2` 已修 — `formatIRLiteral()` 新增 `0xH` half hex 识别，通过 `formatHalfIRLiteral()` 将 16-bit IEEE-754 转十进制（常用值）或 `as_type<half>(ushort(...))`（Inf/NaN 特殊值）
+- **`auto` + intrinsic 调用会暴露操作数类型歧义**：`clamp(half_var, 0.0, 1.0)` 中 `0.0`/`1.0` 是 `double` literal，Metal 的 `clamp(half,half,half)` 和 `clamp(float,float,float)` 都不精确匹配，编译器报 ambiguous。fix：intrinsic 发射时 literal 参数类型应跟随首个操作数
+- **vector `icmp` 结果是 `boolN`，不能赋给 `bool`**：`<2 x half>` 的 `icmp eq` 产出 `<2 x i1>`，应翻译为 `bool2` 而非 `bool`
+- **`zext <N x i1> to <N x i8>` 不能映射为 `uint8_tN`**：MSL 没有 `uint8_t2` 类型，应使用 `uchar2`（即 `vector<uint8_t, 2>`）
 - **更早的 wrapper 恢复、host bridge、live 基线与 IR→MSL 历史修复经验见 [00-Dashboard-Archive](00-Dashboard-Archive.md)**：dashboard 主体只保留当前仍会影响决策的经验
 
 ## 参考信息

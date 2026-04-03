@@ -15,6 +15,7 @@
 | 2026-04-03，preflight guard 后单轮对照复测 | `session` 一度可维持约 73 秒，`get_capture_status` 返回 `available=true`，但最终 crash 栈顶落在 `playcover.toucher` 的 `Toucher.touchcam(...)` Optional unwrap | preflight guard 已显著改变 live 表现，说明应先隔离 toucher / keymapping 干扰 |
 | 2026-04-03，关闭 `keymapping` 后 2 轮受控复测 | crash 从 `playcover.toucher` 转回 `UnityGfxDeviceWorker`；同时 `ShaderSourceDiagnostics` 再次出现 `preflight_rejected` / `compile_failed`，坏行示例为 `fragment float4{ <4 xlatMtlMain(...)` | toucher / keymapping 干扰已基本剥离，主 blocker 回到 IR→MSL lowering |
 | 2026-04-03，`E-006a2d3` 后单轮 live 复测 | `create_session(timeout=30)` 在 30 秒内未等到 runtime 注册；新的 diagnostics 已从 `<N x T>` / `%...` 残留前移到 vertex `xlatMtlMain` 的参数映射 / pointer 访问坏行 | 说明 `E-006a2d3` 已清掉一批 SSA/vector 问题，但仍被 vertex `stage_in` / pointer 发射拦住 |
+| 2026-04-03，`E-006a2e3` 后单轮 live 复测 | `session` 10 秒内 `ready` 后 ~10 秒 `disconnected`，无新 crash report。diagnostics 仅 `compile_failed`（无 `preflight_rejected`）；旧 blocker 全清。新 blocker 为 `clamp`/`fma` 歧义、`bool2` → `bool` 赋值、`uint8_t2` 不存在 | `undef` / `0xH8000` 修复有效，blocker 进一步前移到 intrinsic 类型系统与 vector 整型映射 |
 
 ## 已完成子任务归档
 
@@ -37,7 +38,8 @@
 - **`E-006a2d2b`**：修 texture/sampler 形参发射、自定义 struct 字段命名/定义、`air.struct_type_info` 提取和 fragment `stage_in` 合成。
 - **`E-006a2d3`**：修 vertex aggregate return 与向量维度收敛；return metadata 现可驱动真正的 entry output struct 发射。
 - **`E-006a2d4`**：修 vertex `stage_in` 参数映射与 pointer-like SSA 发射；live 已确认 `param1/param2/param3`、`device T*` 坏访问与 `*(&...)` 不再出现。
-- **`E-006a2e2`**：修 `undef` / `0xH` half hex lowering；在 `IRToMSLConverter` 中统一处理了带类型前缀的 `undef`/`poison`（如 `float undef`）和 LLVM IR half 立即数（如 `0xH8000` → IEEE-754 转十进制或 `as_type<half>(ushort(...))`）。当前已交接 `E-006a2e3`（live 重装 / 重注入复测）。
+- **`E-006a2e2`**：修 `undef` / `0xH` half hex lowering；在 `IRToMSLConverter` 中统一处理了带类型前缀的 `undef`/`poison`（如 `float undef`）和 LLVM IR half 立即数（如 `0xH8000` → IEEE-754 转十进制或 `as_type<half>(ushort(...))`）。
+- **`E-006a2e3`**：live 重装 / 重注入复测确认旧 blocker 全清。`session` 10 秒内 `ready` 后 ~10 秒 `disconnected`（无新 crash report）。diagnostics 仅 `compile_failed`，`undef`/`0xH8000`/`stage_in`/`device T*`/`*(&...)` 全部消失。新 blocker 收敛到：①`clamp`/`fma` 的 `half`/`float` 重载歧义；②vector `icmp` 产出 `boolN` 赋给 `bool`；③`uint8_t2` 不存在（应为 `uchar2`）。当前已交接 `E-006a2e4`。
 
 ## 经验归档
 

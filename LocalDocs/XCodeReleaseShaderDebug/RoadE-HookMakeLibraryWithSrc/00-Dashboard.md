@@ -37,7 +37,7 @@
 
 ## 当前主线
 
-- **E-006（下一步：`E-006a2e13` live 重装 / 重注入复测）**：`E-006a2e12` 修复了 `uint8_t2` 第二实例 + `sample_compare` 参数不匹配。三类修复：①`airTypeSuffixToMSL` 增加 `i8`/`u8` 向量后缀特殊处理（`vNi8` → `ucharN` 而非 `uint8_tN`），覆盖 `air.convert` 的 AIR 类型后缀 code path ②`parseVectorLiteral` 增加 `i8` 元素类型特殊处理 ③`generateMSLForAirCall` 将 bias/level 选项包装逻辑从 `sample` 扩展到 `sample_compare`。新增 `test_air_convert_i8_vector.ll` + `test_sample_compare.ll` smoketest。`FORCE_PLAYTOOLS_REBUILD=1` + `test_mcp.sh` 687 tests 通过（1 pre-existing failure 无关）。需 live 复测确认 blocker 消除。
+- **E-006（下一步：`E-006a2e14` 修复数组下标 `subscripted value is not an array` blocker）**：`E-006a2e13` live 复测确认 `E-006a2e12` 的两个 blocker（`uint8_t2` 第二实例 + `sample_compare` bias/level 误包装）已消除 ✅。`E-006a2e13` 额外修复：①`generateMSLForAirCall` 的 bias/level 包装逻辑改为检查原始 `methodArgTypes` 中 bias/level float 值是否被 `filterTextureArgs` 过滤（零值），仅在值被保留时才包装，避免误包装 `sample_compare` 的 `compare_value` ②`resolveIROperand` 的 `@` 前缀匹配增加 opaque pointer fallback（查找 MSL 名称含 `sampler` 的参数）③发现并记录：`build_and_install.sh` 是 PlayTools 更新到运行时 app 的唯一可靠路径，`sync_playtools_xcframework.sh` 仅更新构建产物。新 blocker：`FGlobals[0]._MainLightClipPlaneAlphas[t196]` — 数组下标访问类型不匹配。
 - **E-005b**：多 bitcode module 的源码聚合 / 替换策略已稳定，仍坚持"**全成全退**"。全部有效 LLVM module 都能完成 `llvm-dis + IRToMSLConverter` 且聚合后无重名时才单次 `makeLibrary(source:)` 重编译，否则整体 fallback。
 - **E-005e**：payload 恢复链路对已知样本已打通，**不再是当前主线**。
 
@@ -57,6 +57,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 | 样本 | 结果 |
 |---|---|
+| 原神 6.4.0 外网包（2026-04-03，`E-006a2e13` live 复测） | `build_and_install.sh` + `remove_playtools` / `inject_playtools` / `launch_app`。`E-006a2e12` 两个 blocker（`uint8_t2` 第二实例 + `sample_compare` bias/level 误包装）已消除 ✅（`sample_compare` shader 不再 compile_failed）。额外修复：①bias/level 包装逻辑改为检查原始参数中 bias/level float 是否被过滤 ②`@` 全局 symbol 匹配增加 opaque pointer fallback。发现 `build_and_install.sh` 是更新运行时 framework 的唯一可靠路径。新 blocker：数组下标 `FGlobals[0]._MainLightClipPlaneAlphas[t196]`（`subscripted value is not an array, pointer, or vector`） |
 | 原神 6.4.0 外网包（2026-04-03，`E-006a2e11` live 复测） | `build_and_install.sh` + `remove_playtools` / `inject_playtools` / `launch_app` / `create_session(timeout=30)`。原神间歇性 `EXC_BAD_ACCESS` 崩溃（`objc_release` Thread 48/49，与 PlayTools 无关，同偏移 0xd44b804），需多次重试。成功 session 中 `ShaderSourceDiagnostics` 确认：天空 shader `[[color]]` depth blocker ✅ 已消除、`fract(x, 0)` 参数溢出 ✅ 已消除、`E-006a2e10` 三 blocker ✅ 均未再现。新 blocker：①大 shader（28KB+）`uint8_t2` 再现（不同 code path）②`sample_compare` 参数不匹配 |
 | 原神 6.4.0 外网包（2026-04-03，`E-006a2e10` smoketest） | `FORCE_PLAYTOOLS_REBUILD=1` + `sync_playtools_xcframework.sh` 编译通过 ✅，`test_mcp.sh` 687 tests (1 pre-existing failure 无关)。新增 `test_metal_intrinsic_sampler_state.ll` smoketest通过 |
 | 原神 6.4.0 外网包（2026-04-03，`E-006a2e9` live 复测） | session 30 秒+ 持续 `ready`。`E-006a2e8` texture sample bias/level ambiguous blocker 已消除 ✅ |
@@ -82,7 +83,7 @@ PlayCover 主应用 (macOS)
 
 ## TODO
 
-> 当前最高优先级：`E-006a2e13`（`E-006a2e12` 后 live 重装 / 重注入复测）。更早 live 样本、已完成子任务的详细归因，以及旧 blocker 的完整历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
+> 当前最高优先级：`E-006a2e14`（修复数组下标 `subscripted value is not an array` blocker）。更早 live 样本、已完成子任务的详细归因，以及旧 blocker 的完整历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -98,7 +99,7 @@ PlayCover 主应用 (macOS)
 | E-005d | ↳ 缓存与观测性 | TODO | |
 |  | 以 metallib 内容或 bitcode 模块 `(offset,size)` / hash 为键缓存处理结果，并补充 success / fallback reason 日志 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
-|  | 当前主线：`E-006a2e12` 修复 `uint8_t2` 第二实例 + `sample_compare` 参数不匹配 ✅，新 blocker 待 live 复测确认 | | |
+|  | 当前主线：`E-006a2e13` 确认 `E-006a2e12` 两个 blocker 已消除 ✅，新 blocker 为数组下标类型不匹配 | | |
 | E-006a | ↳ 解决 injected runtime 调 `llvm-dis` 的执行权限 blocker | ✅ DONE | |
 |  | 核心权限 blocker 已在 `E-006a1` 解决；host bridge 已通过 live 复测稳定运行 | | |
 | E-006a1 | ↳ runtime→host `llvm-dis` bridge 落地 | ✅ DONE | |
@@ -106,7 +107,7 @@ PlayCover 主应用 (macOS)
 | E-006a2 | ↳ host bridge 版本的 live 重装 / 重注入 / 截帧复测 | 🔄 IN PROGRESS | |
 |  | `E-006a2a`–`E-006a2e` 已把 blocker 从 preflight / toucher / keymapping / vertex `stage_in` / pointer / `undef` / `0xH8000` 一路前移到 intrinsic 类型歧义与 vector icmp/zext lowering；详细过程见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | | |
 | E-006a2e | ↳ `E-006a2d4` 后的 IR→MSL lowering 补洞与 live 复测轮次 | 🔄 IN PROGRESS | |
-|  | `E-006a2e1`–`E-006a2e12` 已完成；`E-006a2e12` 修复 `uint8_t2` 第二实例（`airTypeSuffixToMSL` + `parseVectorLiteral`）+ `sample_compare` bias/level 包装 ✅ | | |
+|  | `E-006a2e1`–`E-006a2e13` 已完成；`E-006a2e13` 确认 `E-006a2e12` blocker 已消除 ✅，新 blocker 为数组下标类型不匹配 | | |
 | E-006a2e1 | ↳ `E-006a2d4` 后首轮 live 归因复测 | ✅ DONE | |
 |  | 已确认 vertex `stage_in` / `device T*` / `*(&...)` 旧 blocker 不再出现；`session` 已能 `ready` 后再掉线，诊断已前移到 `undef` 与 `0xH8000` | | |
 | E-006a2e2 | ↳ `undef` / half 十六进制字面量 lowering 修复 | ✅ DONE | |
@@ -131,7 +132,10 @@ PlayCover 主应用 (macOS)
 |  | Live 复测确认 `E-006a2e10` 三 blocker（`___metal_fract`/`@__air_sampler_state`/`uint8_t2`）全部消除 ✅。同时修复两个新 blocker：①天空 shader `[[color]]` depth 属性缺失 — `generateEntryOutputStructDefinition` 增加 `air.depth` kind 映射 + 字段名 heuristic（含 "depth" → `[[depth(any)]]`）②`translateMetalIntrinsic` 参数溢出 — `metalIntrinsicMappings` 增加 `mslArgCount` 字段，unary/binary/ternary/vector 分类定义期望参数数，`translateMetalIntrinsic` 按 `mslArgCount` 过滤多余元数据参数。`test-data/test_fragment_depth_output.ll` 已补，Metal 编译通过。原神间歇性 `EXC_BAD_ACCESS` 崩溃（Thread 48/49 `objc_release`，与 PlayTools 无关）。新 blocker：①大 shader（28KB+）`uint8_t2` 再现 ②`sample_compare` 参数不匹配 | | |
 | E-006a2e12 | ↳ 修复 `uint8_t2` 第二实例 + `sample_compare` 参数不匹配 | ✅ DONE | |
 |  | 三类修复：①`airTypeSuffixToMSL` 增加 `i8`/`u8` 向量后缀特殊处理（`vNi8` → `ucharN` 而非 `uint8_tN`），覆盖 `air.convert` 的 AIR 类型后缀 code path ②`parseVectorLiteral` 增加 `i8` 元素类型特殊处理 ③`generateMSLForAirCall` 将 bias/level 选项包装逻辑从 `sample` 扩展到 `sample_compare`（Metal 的 `sample_compare` 也有 `bias`/`level` 重载，裸传 float 会导致 ambiguous）。`test-data/test_air_convert_i8_vector.ll` + `test_sample_compare.ll` 已补。`FORCE_PLAYTOOLS_REBUILD=1` + `test_mcp.sh` 687 tests 通过（1 pre-existing failure 无关） | | |
-| E-006a2e13 | ↳ `E-006a2e12` 后 live 重装 / 重注入复测 | TODO | | |
+| E-006a2e13 | ↳ `E-006a2e12` 后 live 重装 / 重注入复测 + bias/level 修复 | ✅ DONE | |
+|  | 三类修复：①`generateMSLForAirCall` 的 bias/level 包装逻辑改为检查原始 `methodArgTypes` 中 bias/level float 值是否被 `filterTextureArgs` 过滤（零值），仅在值被保留时才包装，避免误包装 `sample_compare` 的 `compare_value`（之前的逻辑无条件检查 `filtered.types.last` 是否为 float/half 并 removeLast，`sample_compare` 的 `compare_value` 会被误消费）②`resolveIROperand` 的 `@` 全局 symbol 匹配增加 opaque pointer fallback（查找 MSL 名称含 `sampler` 的参数）③确认 `build_and_install.sh` 是更新运行时 framework 的唯一可靠路径（`sync_playtools_xcframework.sh` 仅更新 `Carthage/Build/` 构建产物，`inject_playtools` 使用的 `~/Library/Frameworks/` 需通过 `build_and_install.sh` 部署）。Live 复测确认 `E-006a2e12` 两个 blocker（`uint8_t2` + `sample_compare`）已消除 ✅。新 blocker：数组下标 `FGlobals[0]._MainLightClipPlaneAlphas[t196]`（`subscripted value is not an array, pointer, or vector`） | | |
+| E-006a2e14 | ↳ 修复数组下标 `subscripted value is not an array` blocker | TODO | |
+|  | `FGlobals[0]._MainLightClipPlaneAlphas[t196]` — 数组下标访问的值类型不匹配，被访问的字段可能不是数组/向量/指针类型。需分析 IR 中 `_MainLightClipPlaneAlphas` 的类型和下标操作 | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
 |  | 添加 `injectShaderSources` 开关到 AppSettings / AppSettingsView；添加 LLVM 工具链下载 / 状态 UI | | |
 
@@ -161,6 +165,8 @@ PlayCover 主应用 (macOS)
 - **`___metal_*` intrinsic 的 IR 参数可能包含元数据标志**：`@___metal_fract_v2float(<2 x float>, i32 0)` 的第二个参数 `i32 0` 是 Metal 编译器内部标志，MSL 的 `fract()` 不接受。`E-006a2e11` 已修 — `metalIntrinsicMappings` 增加 `mslArgCount` 字段，`translateMetalIntrinsic` 按 `mslArgCount` 过滤多余参数
 - **`airTypeSuffixToMSL` 也有 `uint8_tN` 风险**：`air.convert.f.v2f32.u.v2i8` 等指令使用 `vNi8` 后缀，`airScalarSuffixToMSL("i8")` 返回 `"uint8_t"`，拼接维度后产生非法 `uint8_t2`。与 `irScalarTypeToMSL`/`irIntegerTypeToMSL` 修复 `<N x i8>` 路径不同，这是 AIR 类型后缀路径。`E-006a2e12` 已修 — `airTypeSuffixToMSL` 和 `parseVectorLiteral` 增加 `i8`/`u8` 特殊处理。经验教训：所有涉及"标量类型名 + 维度拼接"的代码路径都必须检查 `i8`/`u8`
 - **`sample_compare` 也需要 bias/level 选项包装**：Metal 的 `depth2d::sample_compare` 有 `bias(float)` / `level(float)` 重载，裸传 float 同样 ambiguous。`E-006a2e12` 已修 — `generateMSLForAirCall` 将 bias/level 包装条件从 `mslFunction == "sample"` 扩展为 `mslFunction == "sample" || mslFunction == "sample_compare"`
+- **bias/level 包装不能无条件检查 `filtered.types.last`**：`sample` 的 bias/level 在 coord 之后，`sample_compare` 的 `compare_value` 在 bias/level 之前。`E-006a2e13` 修复 — 不再无条件检查 `filtered.types.last`，而是回查原始 `methodArgTypes` 中 bias/level i1 标志对应的 float 值是否被 `filterTextureArgs` 过滤（零值 float 被 `filterTextureArgs` 规则过滤），仅在值被保留时才包装
+- **`build_and_install.sh` 是更新运行时 framework 的唯一可靠路径**：`sync_playtools_xcframework.sh` 仅更新 `Carthage/Build/PlayTools.xcframework/` 构建产物；`inject_playtools` 使用的 `~/Library/Frameworks/PlayTools.framework/` 需通过 `build_and_install.sh` 部署（PlayCover 启动时从 app bundle 复制到 `~/Library/Frameworks/`）。仅执行 `sync_playtools_xcframework.sh` + `remove_playtools` + `inject_playtools` 不会更新运行时 framework
 - **更早的 wrapper 恢复、host bridge、live 基线与 IR→MSL 历史修复经验见 [00-Dashboard-Archive](00-Dashboard-Archive.md)**：dashboard 主体只保留当前仍会影响决策的经验
 
 ## 参考信息

@@ -4413,23 +4413,46 @@ struct IRToMSLConverter {
                 let filtered = filterTextureArgs(methodArgs, argTypes: methodArgTypes)
                 var finalArgs = filtered.args
 
-                // E-006a2e8 → E-006a2e12: sample / sample_compare 的 bias/level float 需包装为选项结构
+                // E-006a2e8 → E-006a2e13: sample / sample_compare 的 bias/level float 需包装为选项结构
                 // Metal 的 sample/sample_compare 都有 bias/level/min_lod_clamp 重载接受 float 参数，
                 // 裸传 float 会导致 ambiguous。Air IR 中通过 i1 标志区分：i1 false → bias, i1 true → level(显式LOD)
+                //
+                // 参数结构（去掉 texture 后）:
+                //   air.sample_texture_*:     [sampler, [i32,] coord, [i1_offset, offset,] [i1_bias/level, float_bias/level, float_min_lod, i32]]
+                //   air.sample_compare_depth_2d: [sampler, [i32,] coord, float compare_value, [i1_offset, <2xi32>,] [i1_bias/level, float_bias/level, float_min_lod, i32]]
+                // 对 sample_compare，compare_value 在 coord 之后，不能被误当作 bias/level 消费
                 if (mapping.mslFunction == "sample" || mapping.mslFunction == "sample_compare") && !finalArgs.isEmpty {
                     let lastType = filtered.types.last ?? ""
                     if lastType == "float" || lastType == "half" {
                         // 查找 LOD/bias 标志：原始参数中 i1 紧接 float/half 的位置
                         var useLevel = false
+                        var biasLevelArgIdx = -1  // bias/level float 在 methodArgs 中的索引
                         for i in 0..<(methodArgTypes.count - 1) {
                             if methodArgTypes[i] == "i1" &&
                                (methodArgTypes[i + 1] == "float" || methodArgTypes[i + 1] == "half") {
                                 if methodArgs[i] == "true" { useLevel = true }
+                                biasLevelArgIdx = i + 1
                                 break
                             }
                         }
-                        let val = finalArgs.removeLast()
-                        finalArgs.append(useLevel ? "level(\(val))" : "bias(\(val))")
+                        if biasLevelArgIdx >= 0 && biasLevelArgIdx < methodArgs.count {
+                            let biasLevelVal = methodArgs[biasLevelArgIdx]
+                            let biasLevelType = methodArgTypes[biasLevelArgIdx]
+                            // 检查 bias/level 的 float 值是否被 filterTextureArgs 过滤掉（零值 float 会被过滤）
+                            let isZeroFloat = (biasLevelType == "float" || biasLevelType == "half") &&
+                                (biasLevelVal == "0.0" || biasLevelVal == "0.000000e+00")
+                            let isFilteredByEmpty = biasLevelVal.isEmpty
+                            if isZeroFloat || isFilteredByEmpty {
+                                // bias/level 值已被 filterTextureArgs 过滤，不需要包装。
+                                // finalArgs 末尾的 float 是 compare_value（sample_compare）或 coord 相关，保留原样
+                            } else {
+                                // bias/level 值被 filterTextureArgs 保留 → 它出现在 finalArgs 尾部
+                                if finalArgs.count >= 2 {
+                                    let val = finalArgs.removeLast()
+                                    finalArgs.append(useLevel ? "level(\(val))" : "bias(\(val))")
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -4882,13 +4905,21 @@ struct IRToMSLConverter {
     private static func resolveIROperand(_ operand: String, ctx: SSAContext) -> String {
         let s = operand.trimmingCharacters(in: .whitespaces)
 
-        // E-006a2e10: 全局 IR symbols (@...) 不应出现在 MSL 中
+        // E-006a2e10 → E-006a2e13: 全局 IR symbols (@...) 不应出现在 MSL 中
         // @__air_sampler_state 等 AIR 内部 symbol 需映射到对应的 MSL sampler 参数
         if s.hasPrefix("@") {
-            // 尝试映射到 sampler 参数（addrspace(2) = constant address space = sampler）
+            // 尝试映射到 sampler 参数
+            // 优先匹配 addrspace(2)（typed pointer 模式），
+            // fallback 匹配 MSL 属性为 [[sampler(N)]] 的参数（opaque pointer 模式）
             for (irParam, mslName) in ctx.paramNames {
                 if let irType = ctx.paramTypes[irParam],
                    irType.contains("addrspace(2)") {
+                    return mslName
+                }
+            }
+            // Opaque pointer fallback：查找 MSL 属性包含 sampler 的参数
+            for (irParam, mslName) in ctx.paramNames {
+                if mslName.contains("sampler") {
                     return mslName
                 }
             }

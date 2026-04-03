@@ -2615,9 +2615,12 @@ struct IRToMSLConverter {
             let parts = inner.components(separatedBy: " x ")
             if parts.count >= 2 {
                 let count = parts[0].trimmingCharacters(in: .whitespaces)
-                let elemType = irScalarTypeToMSL(
-                    parts.dropFirst().joined(separator: " x ").trimmingCharacters(in: .whitespaces)
-                )
+                let elemRaw = parts.dropFirst().joined(separator: " x ").trimmingCharacters(in: .whitespaces)
+                // E-006a2e10: i8 向量特殊处理 — MSL 不支持 uint8_tN，必须用 ucharN
+                if elemRaw == "i8" {
+                    return "uchar\(count)"
+                }
+                let elemType = irScalarTypeToMSL(elemRaw)
                 return "\(elemType)\(count)"
             }
         }
@@ -4167,15 +4170,113 @@ struct IRToMSLConverter {
         }
     }
 
-    /// 翻译 call/tail call（包括 air.* 和普通函数）
+    /// 翻译 call/tail call（包括 air.*、___metal_* 和普通函数）
     private static func translateCall(lhs: String, rhs: String, ctx: SSAContext) {
         // 检查是否是 air.* 调用
         if rhs.contains("@air.") {
             translateAirCall(lhs: lhs, fullRhs: rhs, ctx: ctx)
             return
         }
-        // 其他函数调用
+        // E-006a2e10: 检查是否是 ___metal_* 内联 intrinsic
+        // LLVM Metal 编译器会将部分标准库函数内联为 @___metal_fract_v2float 等形式
+        if rhs.contains("@___metal_") {
+            translateMetalIntrinsic(lhs: lhs, fullRhs: rhs, ctx: ctx)
+            return
+        }
+        // 其他函数调用（包括 @llvm.* 等）
         ctx.define(lhs, expr: "/* call: \(rhs.prefix(80)) */")
+    }
+
+    /// 已知的 ___metal_* intrinsic 映射到 MSL 函数名
+    /// 命名规则：___metal_<msl_name>[_<type_suffix>]
+    /// 例如：___metal_fract_v2float → fract(), ___metal_fast_sin_v4f32 → fast_sin()
+    private static let metalIntrinsicMappings: [(pattern: String, mslFunc: String)] = {
+        var list: [(String, String)] = []
+        let unaryMath = [
+            "fract", "sin", "cos", "tan", "sqrt", "rsqrt",
+            "exp", "exp2", "log", "log2", "floor", "ceil", "round", "trunc",
+            "saturate", "sign", "asin", "acos", "atan",
+            "sinh", "cosh", "tanh",
+        ]
+        for name in unaryMath {
+            list.append(("___metal_\(name)", name))
+            list.append(("___metal_fast_\(name)", "fast_\(name)"))
+        }
+        let binaryMath = [
+            "fmin", "fmax", "pow", "fmod", "atan2", "copysign", "fdim", "step",
+            "min", "max",
+        ]
+        for name in binaryMath {
+            list.append(("___metal_\(name)", name))
+            list.append(("___metal_fast_\(name)", "fast_\(name)"))
+        }
+        let ternaryMath = ["clamp", "mix", "smoothstep", "fma"]
+        for name in ternaryMath {
+            list.append(("___metal_\(name)", name))
+            list.append(("___metal_fast_\(name)", "fast_\(name)"))
+        }
+        let vectorMath = [
+            "dot", "cross", "length", "normalize", "distance",
+            "reflect", "refract", "faceforward",
+        ]
+        for name in vectorMath {
+            list.append(("___metal_\(name)", name))
+            list.append(("___metal_fast_\(name)", "fast_\(name)"))
+        }
+        list.append(("___metal_abs", "abs"))
+        list.append(("___metal_fabs", "abs"))
+        return list
+    }()
+
+    /// 翻译 ___metal_* 内联 intrinsic 调用
+    /// 从函数名提取 MSL 函数名（去掉类型后缀），解析参数后生成直接 MSL 调用
+    private static func translateMetalIntrinsic(lhs: String, fullRhs: String, ctx: SSAContext) {
+        // 提取 @___metal_ 后的函数名（到 ( 为止）
+        guard let atRange = fullRhs.range(of: "@___metal_") else {
+            ctx.define(lhs, expr: "/* metal intrinsic error */")
+            return
+        }
+        let afterAt = fullRhs[fullRhs.index(after: atRange.lowerBound)...]
+        guard let parenIdx = afterAt.firstIndex(of: "(") else {
+            ctx.define(lhs, expr: "/* metal intrinsic error */")
+            return
+        }
+        let fullName = String(afterAt[afterAt.startIndex..<parenIdx])
+
+        // 从完整名称（含类型后缀）查找 MSL 函数名
+        // 例如：fract_v2float → fract, fast_sin_v4f32 → fast_sin
+        let mslFunc = lookupMetalIntrinsic(fullName) ?? fullName
+
+        // 提取参数列表
+        let argsStart = afterAt.index(after: parenIdx)
+        var depth = 1
+        var cursor = argsStart
+        while cursor < afterAt.endIndex && depth > 0 {
+            if afterAt[cursor] == "(" { depth += 1 }
+            else if afterAt[cursor] == ")" { depth -= 1 }
+            if depth > 0 { cursor = afterAt.index(after: cursor) }
+        }
+        let argsStr = String(afterAt[argsStart..<cursor])
+        let argParts = splitTypedOperands(argsStr, count: 20)
+        let resolvedArgs = argParts.map { resolveIROperand($0.value, ctx: ctx) }
+
+        ctx.emitAutoAssign(lhs, expr: "\(mslFunc)(\(resolvedArgs.joined(separator: ", ")))")
+    }
+
+    /// 查找 ___metal_* intrinsic 对应的 MSL 函数名
+    /// 支持：___metal_fract_v2float → fract, ___metal_fast_sin_v4f32 → fast_sin
+    private static func lookupMetalIntrinsic(_ fullName: String) -> String? {
+        // 按模式长度降序匹配，避免 "fast_sin" 被 "sin" 先匹配
+        let sorted = metalIntrinsicMappings.sorted { $0.pattern.count > $1.pattern.count }
+        for mapping in sorted {
+            if fullName == mapping.pattern {
+                return mapping.mslFunc
+            }
+            if fullName.hasPrefix(mapping.pattern + "_") {
+                return mapping.mslFunc
+            }
+        }
+        return nil
     }
 
     /// 翻译 air.* 内建调用
@@ -4751,6 +4852,20 @@ struct IRToMSLConverter {
     private static func resolveIROperand(_ operand: String, ctx: SSAContext) -> String {
         let s = operand.trimmingCharacters(in: .whitespaces)
 
+        // E-006a2e10: 全局 IR symbols (@...) 不应出现在 MSL 中
+        // @__air_sampler_state 等 AIR 内部 symbol 需映射到对应的 MSL sampler 参数
+        if s.hasPrefix("@") {
+            // 尝试映射到 sampler 参数（addrspace(2) = constant address space = sampler）
+            for (irParam, mslName) in ctx.paramNames {
+                if let irType = ctx.paramTypes[irParam],
+                   irType.contains("addrspace(2)") {
+                    return mslName
+                }
+            }
+            // 未识别的全局 symbol — 不应泄漏到 MSL，返回空由调用方过滤
+            return ""
+        }
+
         // SSA 名 / SSA 名后缀访问（如 `%1.xyz`、`%0.field3[0]`）
         if s.hasPrefix("%") {
             let direct = ctx.resolve(s)
@@ -4774,6 +4889,18 @@ struct IRToMSLConverter {
             let tailToken = s
                 .components(separatedBy: .whitespaces)
                 .last { $0.contains("%") }
+                .map { String($0) }
+            if let tailToken, !tailToken.isEmpty, tailToken != s {
+                return resolveIROperand(tailToken, ctx: ctx)
+            }
+        }
+
+        // E-006a2e10: 同理，全局 symbol 也可能被 IR 限定词包裹
+        // （如 `readonly captures(none) @__air_sampler_state`），需提取 @ token 再递归
+        if s.contains("@") {
+            let tailToken = s
+                .components(separatedBy: .whitespaces)
+                .last { $0.hasPrefix("@") }
                 .map { String($0) }
             if let tailToken, !tailToken.isEmpty, tailToken != s {
                 return resolveIROperand(tailToken, ctx: ctx)
@@ -5067,6 +5194,8 @@ struct IRToMSLConverter {
         var resultTypes: [String] = []
         for (i, arg) in args.enumerated() {
             let type = i < argTypes.count ? argTypes[i] : ""
+            // E-006a2e10: 跳过未解析的全局 symbol（resolveIROperand 对 @ 符号返回空）
+            if arg.isEmpty { continue }
             // 跳过 i1 (bool 控制标志) 和 i32 控制参数（但保留坐标/颜色）
             if type == "i1" { continue }
             // 跳过零值 i32 控制标志（如 mip level=0, slice=0）

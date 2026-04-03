@@ -131,9 +131,9 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 ## 当前主线
 
-- **E-004（下一步：`E-004f1` 成功路径全量导出 corpus）**：当前阶段的最高优先级是把真实运行中加载到的 shader **系统性沉淀为离线 corpus**。目标导出物至少包括：`.bc`、`.ll`、`.metal`、manifest（模块偏移 / 大小 / 函数名 / 选择器 / bundleId / 时间戳 / 编译结果）。
-- **E-005（下一步：`E-005f1` corpus replay runner）**：建立面向 corpus 的离线回放与批量编译验证工具，让 `IRToMSLConverter` 的日常回归稳定落在“离线 replay + batch compile”。
-- **E-006（下一步：`E-006b1` 离线批量 green 后再做最小 live）**：live 保留为**扩覆盖**与**最终真实验证**环节，只在离线结果已经收敛后再投入。
+- **E-004（下一步：`E-004f2` corpus 目录结构、去重键与 manifest 规范）**：成功路径的 `.bc/.ll/.metal/.json` 已开始落盘到 `ShaderCorpus/`；当前最高优先级转为把目录结构、去重键与 manifest 字段收敛为长期稳定规范。
+- **E-005（下一步：`E-005a` corpus replay runner）**：建立面向 corpus 的离线回放与批量编译验证工具，让 `IRToMSLConverter` 的日常回归稳定落在“离线 replay + batch compile”。
+- **E-006（下一步：`E-006b` 离线批量 green 后再做最小 live）**：live 保留为**扩覆盖**与**最终真实验证**环节，只在离线结果已经收敛后再投入。
 
 ## 最新基线
 
@@ -141,7 +141,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 |---|---|
 | 流程基线（2026-04-03，offline-first 切换完成） | Road E 的日常迭代主回路已经明确为 **采集 corpus → 离线 replay → 批量编译 → 最小 live 复测 → `.gputrace` 最终确认** |
 | 原神 6.4.0（最近一轮 live 基线） | 已确认 `ShaderSourceDiagnostics`、host bridge 与 runtime 注入主路径可用；真实 app 仍是 corpus 的生产来源与最终验证环境 |
-| 当前落盘能力 | 失败的 MSL 会进入 `ShaderSourceDiagnostics/`；异常 payload 会进入 `ShaderPayloadSamples/`；**成功路径的 `.bc/.ll/.metal` 目前尚未系统持久化**，这是本阶段最高优先级缺口 |
+| 当前落盘能力 | 失败的 MSL 会进入 `ShaderSourceDiagnostics/`；异常 payload 会进入 `ShaderPayloadSamples/`；`attemptLibraryReplacement(...)` 成功路径已开始按 `ShaderCorpus/<bundleId>/<cacheKey>/<selector>__module_<offset>_<size>/` 落盘 `module.bc`、`module.ll`、`module.generated.metal` 与 `module.meta.json` |
 | 历史 live blocker 时间线 | 见 [00-Dashboard-Archive](00-Dashboard-Archive.md)；dashboard 主体不再重复堆叠逐轮 live 细节 |
 
 ## 整体架构
@@ -173,7 +173,7 @@ PlayTools.framework (注入到 iOS app)
 
 ## TODO
 
-> 当前最高优先级：`E-004f1`（成功路径全量导出 corpus）。历史 live blocker 归因链路见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
+> 当前最高优先级：`E-004f2`（corpus 目录结构、去重键与 manifest 规范）。历史 live blocker 归因链路见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -183,10 +183,10 @@ PlayTools.framework (注入到 iOS app)
 | E-004 | **metallib → bitcode / IR / MSL 采集与导出** | 🔄 IN PROGRESS | [E-004](E-004-MetallibSourceExtraction.md) |
 |  | `E-004a–e` 已完成基础链路；当前主线切换为 **corpus 导出优先** | | |
 | E-004f | ↳ 成功路径全量导出 corpus | 🔄 IN PROGRESS | |
-| E-004f1 | ↳ 成功路径保存 `.bc/.ll/.metal/.json` | TODO | |
-|  | 在 `attemptLibraryReplacement(...)` 成功路径落盘每个 module 的 bitcode、IR、转换后的 MSL 与 manifest；不再只有失败 diagnostics 才有文件可查 | | |
+| E-004f1 | ↳ 成功路径保存 `.bc/.ll/.metal/.json` | ✅ DONE | |
+|  | `attemptLibraryReplacement(...)` 成功时已为每个 module 落盘 `module.bc`、`module.ll`、`module.generated.metal` 与 `module.meta.json`，后续回放不再只依赖失败 diagnostics | | |
 | E-004f2 | ↳ corpus 目录结构、去重键与 manifest 规范 | TODO | |
-|  | 以 `bundleId + selector + cacheKey + module(offset,size)` 组织样本，避免重复写入；manifest 至少记录函数名、函数类型、时间戳、编译结果、错误摘要 | | |
+|  | 当前实现已按 `bundleId + selector + cacheKey + module(offset,size)` 基本组织样本；下一步需要把去重策略、manifest 字段与总索引规范进一步收敛 | | |
 | E-004f3 | ↳ 扩展 `makeLibrary(URL/default/file)` 路径的采集覆盖 | TODO | |
 |  | 当前只有 `newLibraryWithData:error:` 真正进入 bitcode 提取主路径；需评估是否把 URL / default / file 路径也接入统一 corpus 导出 | | |
 | E-005 | **离线 replay / batch compile / diff 工具链** | 🔄 IN PROGRESS | |
@@ -208,7 +208,7 @@ PlayTools.framework (注入到 iOS app)
 
 ## 踩坑与经验
 
-- **核心原则：优先沉淀成功样本，再去扩 lowering**：失败的 `.metal` 已经会写入 `ShaderSourceDiagnostics/`，异常 payload 已有 `ShaderPayloadSamples/`，但成功路径还没有统一的 `.bc/.ll/.metal/.json` corpus；在这个缺口补上之前，继续靠 live 追新 blocker 的收益会持续偏低
+- **核心原则：优先沉淀成功样本，再去扩 lowering**：失败的 `.metal` 已经会写入 `ShaderSourceDiagnostics/`，异常 payload 已有 `ShaderPayloadSamples/`；现在成功路径也会把 `.bc/.ll/.metal/.json` 写入 `ShaderCorpus/`，后续应优先围绕这些真实样本做 replay、diff 和回归，而不是重新回到高成本 live 试错
 - **最终目标不变，但日常主回路必须切到离线**：live 负责采集和最终验证，不适合作为日常 blocker 归因与回归主路径
 - **`test-data/` 和 `ShaderCorpus/` 不能混用**：`test-data/` 是手工构造的最小样本，适合验证单个 lowering；`ShaderCorpus/` 是真实运行时样本，适合批量 replay、diff 与回归基线
 - **`newLibraryWithData:error:` 是当前最可靠的真实采集入口**：其他 `URL/default/file` 路径已 hook 但目前主要是日志；若要提高 corpus 覆盖率，需要把这些路径逐步纳入统一导出逻辑

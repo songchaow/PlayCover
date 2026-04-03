@@ -76,21 +76,21 @@ makeLibrary(source:) 重编译替换
 
 ## 当前缺口
 
-### 1. 成功路径没有持久化
+### 1. 成功路径持久化已打通，但规范仍待收敛
 
 当前已有落盘目录：
 
 - `ShaderSourceDiagnostics/`：**失败的** `.metal + .txt`
 - `ShaderPayloadSamples/`：**异常 payload** 的 `.bin + .txt (+ .plist)`
+- `ShaderCorpus/`：`attemptLibraryReplacement(...)` 成功路径下导出的 `module.bc` / `module.ll` / `module.generated.metal` / `module.meta.json`
 
-当前**缺少**：
+当前**仍需收敛**：
 
-- 成功提取的 `.bc`
-- 成功反汇编的 `.ll`
-- 成功转换的 `.metal`
-- 用于后续去重 / diff / replay 的 manifest
+- corpus 目录结构与总索引规范
+- manifest 字段的长期稳定定义
+- 重复样本覆盖 / 复写策略
 
-这意味着我们现在虽然“跑过了”很多真实 shader，但真正可离线复用的样本并没有积累下来。
+这意味着我们已经开始积累可离线复用的真实 shader，但要让 corpus 长期稳定服务 replay / diff / 回归，还需要完成命名、去重和 manifest 规范化。
 
 ### 2. `makeLibrary` 覆盖面还不完整
 
@@ -284,13 +284,13 @@ build_and_install.sh
 | E-004c | 宿主 LLVM 工具链管理 | ✅ DONE | `LLVMToolManager` 已可下载 / 校验 `llvm-dis` |
 | E-004d | runtime→host `llvm-dis` 主路径 | ✅ DONE | host bridge 已成为主路径 |
 | E-004e | IR→MSL 转换器 | 🔄 IN PROGRESS | 后续迭代应改为 corpus 驱动 |
-| E-004f | 成功路径导出 corpus | 🔄 IN PROGRESS | 当前最高优先级 |
+| E-004f | 成功路径导出 corpus | 🔄 IN PROGRESS | `E-004f1` 已完成，当前推进到 `E-004f2` |
 
 ### E-004f 细分
 
 | # | 子任务 | 状态 | 说明 |
 |---|---|---|---|
-| E-004f1 | 成功路径导出 `.bc/.ll/.metal/.json` | TODO | 先把成功路径样本稳定落盘 |
+| E-004f1 | 成功路径导出 `.bc/.ll/.metal/.json` | ✅ DONE | `attemptLibraryReplacement(...)` 成功时已按 module 落盘真实样本 |
 | E-004f2 | corpus 命名 / 去重 / manifest 规范 | TODO | 保证样本长期可复用 |
 | E-004f3 | 扩展 `URL/default/file` 路径覆盖 | TODO | 提高采集完整性 |
 | E-004f4 | MCP / 脚本化导出接口 | TODO | 降低手工操作成本 |

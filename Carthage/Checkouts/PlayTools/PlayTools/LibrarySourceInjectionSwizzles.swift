@@ -45,6 +45,7 @@ private final class LibrarySourceInjectionSwizzles: NSObject {
             dataSize: metallibData.count,
             extraInfo: "dispatchClass=\(dispatchClassName), payload={\(payloadSummary)}"
         )
+        let cacheKey = LibrarySourceInjectionService.shared.cacheKey(for: metallibData)
         // E-004b / E-005a: 提取 bitcode，并在安全条件下尝试重编译带源码的替换 library。
         let modules = LibrarySourceInjectionService.shared.extractAndCacheBitcodeModules(
             from: metallibData,
@@ -55,6 +56,7 @@ private final class LibrarySourceInjectionSwizzles: NSObject {
             device: self,
             modules: modules,
             selector: "newLibraryWithData:error:",
+            cacheKey: cacheKey,
             compileSource: { source, compileError in
                 self.pc_newLibraryWithSource(source, options: nil, error: compileError)
             }
@@ -174,11 +176,21 @@ class LibrarySourceInjectionService {
     /// 已观测到的 library 创建计数（按 selector 分类）
     private var creationCounts: [String: Int] = [:]
     private let countsLock = NSLock()
+    private lazy var runtimeBundleIdentifier: String = {
+        Bundle.main.bundleIdentifier ?? "unknown.bundle"
+    }()
+    private lazy var playCoverContainerURL: URL = {
+        URL(fileURLWithPath: "/Users/\(NSUserName())/Library/Containers/io.playcover.PlayCover", isDirectory: true)
+    }()
     private lazy var shaderSourceDiagnosticDirectoryURL: URL = {
-        let bundleIdentifier = Bundle.main.bundleIdentifier ?? "unknown.bundle"
-        return URL(fileURLWithPath: "/Users/\(NSUserName())/Library/Containers/io.playcover.PlayCover")
+        playCoverContainerURL
             .appendingPathComponent("ShaderSourceDiagnostics", isDirectory: true)
-            .appendingPathComponent(bundleIdentifier, isDirectory: true)
+            .appendingPathComponent(runtimeBundleIdentifier, isDirectory: true)
+    }()
+    private lazy var shaderCorpusDirectoryURL: URL = {
+        playCoverContainerURL
+            .appendingPathComponent("ShaderCorpus", isDirectory: true)
+            .appendingPathComponent(runtimeBundleIdentifier, isDirectory: true)
     }()
 
     // MARK: - E-004b: Bitcode 模块缓存
@@ -285,6 +297,7 @@ class LibrarySourceInjectionService {
         device: AnyObject,
         modules: [MetallibParser.BitcodeModule],
         selector: String,
+        cacheKey: String,
         compileSource: (_ source: NSString, _ error: UnsafeMutablePointer<NSError?>?) -> AnyObject?
     ) -> AnyObject? {
         guard originalLibrary != nil else {
@@ -376,8 +389,13 @@ class LibrarySourceInjectionService {
             }
 
             let replacedFunctionCount = functionCount(of: replacementLibrary)
+            let dumpedCorpusPaths = dumpSuccessfulReplacementCorpus(
+                preparedModules,
+                selector: selector,
+                cacheKey: cacheKey
+            )
             let deviceClassName = NSStringFromClass(object_getClass(device)!)
-            NSLog("[PlayTools] LibrarySourceInjection: %@ — replacement success (device=%@, functions=%d, modules=%d, sourceFuncs=%d, irSize=%d, mslSize=%d, moduleSummaries=%@)",
+            NSLog("[PlayTools] LibrarySourceInjection: %@ — replacement success (device=%@, functions=%d, modules=%d, sourceFuncs=%d, irSize=%d, mslSize=%d, corpus=%d, cacheKey=%@, moduleSummaries=%@)",
                   selector,
                   deviceClassName,
                   replacedFunctionCount,
@@ -385,6 +403,8 @@ class LibrarySourceInjectionService {
                   aggregate.functionCount,
                   aggregate.totalIRSize,
                   aggregate.source.utf8.count,
+                  dumpedCorpusPaths.count,
+                  cacheKey,
                   aggregate.moduleSummaries)
             return replacementLibrary
         } catch {
@@ -410,6 +430,28 @@ class LibrarySourceInjectionService {
         let functionCount: Int
         let totalIRSize: Int
         let moduleSummaries: String
+    }
+
+    private struct CorpusModuleManifest: Codable {
+        let bundleId: String
+        let selector: String
+        let cacheKey: String
+        let moduleRelativeOffset: UInt64
+        let moduleSize: UInt64
+        let functionNames: [String]
+        let functionTypes: [String]
+        let generatedFunctionNames: [String]
+        let generatedFunctionTypes: [String]
+        let timestamp: String
+        let llvmDisStatus: String
+        let converterStatus: String
+        let compileStatus: String
+        let bitcodeBytes: Int
+        let llvmIRBytes: Int
+        let generatedMSLBytes: Int
+        let moduleSummary: String
+        let irSummary: String
+        let conversionSummary: String
     }
 
     private struct ReplacementSourceValidationRule {
@@ -657,6 +699,95 @@ class LibrarySourceInjectionService {
         }
     }
 
+    @discardableResult
+    private func dumpSuccessfulReplacementCorpus(
+        _ preparedModules: [PreparedModuleReplacement],
+        selector: String,
+        cacheKey: String
+    ) -> [String] {
+        let fileManager = FileManager.default
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+
+        do {
+            try fileManager.createDirectory(at: shaderCorpusDirectoryURL, withIntermediateDirectories: true)
+        } catch {
+            NSLog("[PlayTools] LibrarySourceInjection: failed to create shader corpus root %@ — %@",
+                  shaderCorpusDirectoryURL.path,
+                  error.localizedDescription)
+            return []
+        }
+
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        var dumpedDirectories: [String] = []
+        dumpedDirectories.reserveCapacity(preparedModules.count)
+
+        for prepared in preparedModules {
+            let moduleDirectoryURL = shaderCorpusDirectoryURL(
+                selector: selector,
+                cacheKey: cacheKey,
+                module: prepared.module
+            )
+            do {
+                try fileManager.createDirectory(at: moduleDirectoryURL, withIntermediateDirectories: true)
+
+                let bitcodeURL = moduleDirectoryURL.appendingPathComponent("module.bc")
+                let irURL = moduleDirectoryURL.appendingPathComponent("module.ll")
+                let generatedMSLURL = moduleDirectoryURL.appendingPathComponent("module.generated.metal")
+                let metadataURL = moduleDirectoryURL.appendingPathComponent("module.meta.json")
+
+                try prepared.module.data.write(to: bitcodeURL, options: .atomic)
+                try prepared.irResult.irText.write(to: irURL, atomically: true, encoding: .utf8)
+                try prepared.conversion.mslSource.write(to: generatedMSLURL, atomically: true, encoding: .utf8)
+
+                let manifest = CorpusModuleManifest(
+                    bundleId: runtimeBundleIdentifier,
+                    selector: selector,
+                    cacheKey: cacheKey,
+                    moduleRelativeOffset: prepared.module.relativeOffset,
+                    moduleSize: prepared.module.size,
+                    functionNames: prepared.module.functionNames,
+                    functionTypes: prepared.module.functionTypes,
+                    generatedFunctionNames: prepared.conversion.functions.map(\.name),
+                    generatedFunctionTypes: prepared.conversion.functions.map { $0.shaderType.rawValue },
+                    timestamp: timestamp,
+                    llvmDisStatus: "success",
+                    converterStatus: "success",
+                    compileStatus: "success",
+                    bitcodeBytes: prepared.module.data.count,
+                    llvmIRBytes: prepared.irResult.outputSize,
+                    generatedMSLBytes: prepared.conversion.mslSource.utf8.count,
+                    moduleSummary: prepared.module.summary,
+                    irSummary: prepared.irResult.summary,
+                    conversionSummary: prepared.conversion.summary
+                )
+                let metadataData = try encoder.encode(manifest)
+                try metadataData.write(to: metadataURL, options: .atomic)
+
+                dumpedDirectories.append(moduleDirectoryURL.path)
+            } catch {
+                NSLog("[PlayTools] LibrarySourceInjection: failed to dump shader corpus module %@ — %@",
+                      prepared.module.summary,
+                      error.localizedDescription)
+            }
+        }
+
+        return dumpedDirectories
+    }
+
+    private func shaderCorpusDirectoryURL(
+        selector: String,
+        cacheKey: String,
+        module: MetallibParser.BitcodeModule
+    ) -> URL {
+        shaderCorpusDirectoryURL
+            .appendingPathComponent(cacheKey, isDirectory: true)
+            .appendingPathComponent(
+                "\(sanitizeDiagnosticFilenameComponent(selector))__module_\(module.relativeOffset)_\(module.size)",
+                isDirectory: true
+            )
+    }
+
     private func sanitizeDiagnosticFilenameComponent(_ value: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
         let sanitized = value.unicodeScalars.map { allowed.contains($0) ? String($0) : "_" }.joined()
@@ -684,6 +815,10 @@ class LibrarySourceInjectionService {
             return names.count
         }
         return -1
+    }
+
+    func cacheKey(for data: Data) -> String {
+        computeCacheKey(data)
     }
 
     private func computeCacheKey(_ data: Data) -> String {

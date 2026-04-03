@@ -37,8 +37,8 @@
 
 ## 当前主线
 
-- **E-006（当前最高优先级：`E-006a2e2`）**：runtime→host `llvm-dis` bridge、聚合 MSL preflight guard、`Toucher.touchcam` 空值防护、`keymapping` 隔离复测，以及 `E-006a2d1/d2/d3/d4` 的 packed-return / 参数映射 / vector / pointer 发射修复均已落地。`E-006a2e1` 的 live 复测已确认：旧的 vertex `stage_in` 映射缺失、`device T*` 坏访问与 `*(&...)` 模式已从 diagnostics 中消失；当前 blocker 已前移到 **`undef` 残留** 与 **half 十六进制字面量 lowering**，下一步直接执行 `E-006a2e2` 修复后再做 live 重装 / 重注入复测。
-- **E-005b**：多 bitcode module 的源码聚合 / 替换策略已稳定，仍坚持“**全成全退**”：全部有效 LLVM module 都能完成 `llvm-dis + IRToMSLConverter` 且聚合后无重名时才单次 `makeLibrary(source:)` 重编译，否则整体 fallback。该策略已通过 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 编译验证。
+- **E-006（下一步：`E-006a2e3` live 重装 / 重注入复测）**：`E-006a2e2` 已完成 — `undef` lowering 与 `0xH` half hex 立即数修复均已落地并通过 PlayTools 编译验证。当前最高优先级是按标准流程重装 GUI + 重新注入 app，做 live 复测确认 blocker 是否进一步前移。
+- **E-005b**：多 bitcode module 的源码聚合 / 替换策略已稳定，仍坚持"**全成全退**"。：全部有效 LLVM module 都能完成 `llvm-dis + IRToMSLConverter` 且聚合后无重名时才单次 `makeLibrary(source:)` 重编译，否则整体 fallback。该策略已通过 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 编译验证。
 - **E-005e**：当前已知 `headerSize=15` 样本的 wrapper / header-compat / function list / `OFFT` slicing 已离线打通；raw `MTLB` / `xar` / `bplist_keyed_archive` recovered payload 均已推进到 `OK modules=3 functions=3` 且 `valid_llvm=3`。对这些已知样本，payload 恢复链路**不再是当前主线**；后续仅在出现新的未知 wrapper 样本时再回到 `E-005e`。
 
 ## 验证方式
@@ -80,7 +80,7 @@ PlayCover 主应用 (macOS)
 
 ## TODO
 
-> 当前最高优先级：`E-006a2e2`。更早 live 样本、已完成子任务的详细归因，以及旧 blocker 的完整历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
+> 当前最高优先级：`E-006a2e3`（live 重装 / 重注入复测）。更早 live 样本、已完成子任务的详细归因，以及旧 blocker 的完整历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -104,11 +104,11 @@ PlayCover 主应用 (macOS)
 | E-006a2 | ↳ host bridge 版本的 live 重装 / 重注入 / 截帧复测 | 🔄 IN PROGRESS | |
 |  | `E-006a2a`–`E-006a2d` 已完成并把 blocker 从 preflight / toucher / keymapping / vertex `stage_in` / pointer 发射一路前移到新的 IR→MSL lowering 问题；详细过程见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | | |
 | E-006a2e | ↳ 基于 `E-006a2d4` 的 live 重装 / 重注入 / diagnostics 复测 | 🔄 IN PROGRESS | |
-|  | 已拆成“`E-006a2e1` 先确认旧 blocker 是否被清掉并抓新 diagnostics”“`E-006a2e2` 再针对新 diagnostics 做最小修复”两步 | | |
+|  | `E-006a2e1` 已确认旧 blocker 已清掉；`E-006a2e2` 已修掉 `undef` 与 `0xH` half hex lowering；下一步 `E-006a2e3` 做 live 重装 / 重注入复测 | | |
 | E-006a2e1 | ↳ `E-006a2d4` 后首轮 live 归因复测 | ✅ DONE | |
 |  | 已确认 vertex `stage_in` / `device T*` / `*(&...)` 旧 blocker 不再出现；`session` 已能 `ready` 后再掉线，诊断已前移到 `undef` 与 `0xH8000` | | |
-| E-006a2e2 | ↳ `undef` / half 十六进制字面量 lowering 修复 | TODO | |
-|  | 基于 `2026-04-03T03_34_24Z` diagnostics，优先修 `float2(undef, 0.5)` 的占位值发射与 `0xH8000` 这类 half immediate 的合法 MSL 表达方式；修完后回到 live 复测 | | |
+| E-006a2e2 | ↳ `undef` / half 十六进制字面量 lowering 修复 | ✅ DONE | |
+|  | 在 `IRToMSLConverter` 中修了三处：①`resolveIROperand()` 新增 IR typed constant 分发（`float undef` → 递归解析 `undef` → `0`）；②`formatIRLiteral()` 新增 `undef`/`poison` 守卫 + `0xH` half hex → IEEE-754 转十进制 / `as_type<half>(ushort(...))`；③`SSAContext.resolve()` 新增 `undef`/`poison` → `0`。`test-data/test_undef_half.metal/.ll` 已补，确认 IR 含 `<4 x float> undef` 与 `0xH4000` 等目标模式。`FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 编译通过 | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
 |  | 添加 `injectShaderSources` 开关到 AppSettings / AppSettingsView；添加 LLVM 工具链下载 / 状态 UI | | |
 
@@ -118,12 +118,12 @@ PlayCover 主应用 (macOS)
 - **IR metadata 仍是精确类型信息的主要来源**：新版 LLVM 使用 opaque pointer，很多参数/返回类型只能从 `!air.vertex` / `!air.fragment` / `!air.kernel` metadata 恢复
 - **`newLibraryWithData:error:` 的真实参数类型是 `dispatch_data_t`**：不能按 `NSData` 直接假设处理
 - **live 验证前必须同时刷新 GUI 与 app 注入**：仅 `sync_playtools_xcframework.sh` 不够，还需要 `build_and_install.sh` 重装 GUI，并对目标 app 重新执行 `remove_playtools` / `inject_playtools`
-- **多 module 聚合要坚持“全成全退”**：所有 module 都能完成 `llvm-dis + IRToMSLConverter` 且聚合后无重名时才重编译；否则整体 fallback，避免部分替换把问题混淆
-- **已知坏 MSL 不要继续盲编译**：preflight 与 `ShaderSourceDiagnostics` 的价值不只是拦错，更是把 blocker 从“运行时崩溃”前移到“可离线定位的源码问题”
+- **多 module 聚合要坚持"全成全退"**：所有 module 都能完成 `llvm-dis + IRToMSLConverter` 且聚合后无重名时才重编译；否则整体 fallback，避免部分替换把问题混淆
+- **已知坏 MSL 不要继续盲编译**：preflight 与 `ShaderSourceDiagnostics` 的价值不只是拦错，更是把 blocker 从"运行时崩溃"前移到"可离线定位的源码问题"
 - **`session ready` 不是 live 成功判据**：必须同时看 session、进程、crash report 与 diagnostics；本轮真正的进展是 diagnostics 从 vertex `stage_in` / pointer 问题前移到 `undef` 与 `0xH8000`
-- **地址类 SSA 仍要显式区分“地址表达式”和“值表达式”**：`getelementptr` / `alloca` 统一产出地址表达式，再由 `load/store` 还原成合法 lvalue，才能稳定消除 `*(&...)` 并收敛 `device T*` 访问
-- **`undef` 不能泄漏到生成的 MSL**：像 `float2(undef, 0.5)` 这类产物会被 preflight 直接拦下；缺省值策略必须在 lowering 阶段统一处理
-- **half 十六进制立即数不能直接按 `0xHxxxx` 发射到 MSL**：`0xH8000` 这类 AIR/LLVM 表示法需要在 lowering 阶段转成合法的 MSL `half(...)` / `as_type<half>(ushort(...))` / 等价 float-cast
+- **地址类 SSA 仍要显式区分"地址表达式"和"值表达式"**：`getelementptr` / `alloca` 统一产出地址表达式，再由 `load/store` 还原成合法 lvalue，才能稳定消除 `*(&...)` 并收敛 `device T*` 访问
+- **`undef` 不能泄漏到生成的 MSL**：`E-006a2e2` 已统一修掉 — `resolveIROperand()` 新增 typed constant 分发、`formatIRLiteral()` 新增 `undef`/`poison` 守卫、`SSAContext.resolve()` 新增字面量处理；`float undef` / `half undef` 等带类型前缀的变体也会被递归解析为 `0`
+- **half 十六进制立即数需在 lowering 阶段转为合法 MSL**：`E-006a2e2` 已修 — `formatIRLiteral()` 新增 `0xH` half hex 识别，通过 `formatHalfIRLiteral()` 将 16-bit IEEE-754 转十进制（常用值）或 `as_type<half>(ushort(...))`（Inf/NaN 特殊值）
 - **更早的 wrapper 恢复、host bridge、live 基线与 IR→MSL 历史修复经验见 [00-Dashboard-Archive](00-Dashboard-Archive.md)**：dashboard 主体只保留当前仍会影响决策的经验
 
 ## 参考信息

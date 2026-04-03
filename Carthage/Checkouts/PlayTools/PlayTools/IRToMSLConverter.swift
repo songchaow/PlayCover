@@ -2901,6 +2901,10 @@ struct IRToMSLConverter {
             if name.hasPrefix("splat (") || name.hasPrefix("zeroinitializer") {
                 return name
             }
+            // undef / poison — 必须统一转为 0，不能泄漏到 MSL
+            if name == "undef" || name == "poison" {
+                return "0"
+            }
             return name
         }
 
@@ -4720,6 +4724,14 @@ struct IRToMSLConverter {
         if s == "undef" || s == "poison" { return "0" }
         if s == "null" { return "nullptr" }
 
+        // IR typed constant: "float undef", "half 0xH8000", "i32 42" 等
+        // 提取类型后面的实际值并递归处理
+        let irScalarTypes: Set<String> = ["void", "half", "float", "double", "i1", "i8", "i16", "i32", "i64", "ptr", "label"]
+        let litTokens = s.components(separatedBy: .whitespaces)
+        if litTokens.count >= 2 && irScalarTypes.contains(litTokens[0]) {
+            return resolveIROperand(litTokens.dropFirst().joined(separator: " "), ctx: ctx)
+        }
+
         // 向量 splat: splat (float 2.000000e+00)
         if s.hasPrefix("splat (") {
             let inner = String(s.dropFirst("splat (".count).dropLast())
@@ -4750,9 +4762,19 @@ struct IRToMSLConverter {
 
     /// 格式化 IR 浮点字面量为 MSL
     private static func formatIRLiteral(_ s: String) -> String {
+        // undef / poison — 不能泄漏到 MSL
+        if s == "undef" || s == "poison" { return "0" }
+
         if s.hasPrefix("0x") {
-            // 十六进制浮点 → Double → 十进制
             let hex = String(s.dropFirst(2))
+            // LLVM IR half-precision hex: 0xH8000 等
+            if hex.first?.uppercased() == "H" {
+                let hexDigits = String(hex.dropFirst())
+                if let bits = UInt16(hexDigits, radix: 16) {
+                    return formatHalfIRLiteral(bits)
+                }
+            }
+            // 标准 IEEE-754 十六进制浮点 → Double → 十进制
             if let bits = UInt64(hex, radix: 16) {
                 let d = Double(bitPattern: bits)
                 if d == 0.0 { return "0.0" }
@@ -4770,6 +4792,48 @@ struct IRToMSLConverter {
             return String(format: "%.6g", d)
         }
         return s
+    }
+
+    /// 将 LLVM IR half 精度十六进制立即数 (0xHxxxx) 转换为合法 MSL 表达式
+    private static func formatHalfIRLiteral(_ bits: UInt16) -> String {
+        // IEEE-754 half: sign(1) | exponent(5) | mantissa(10)
+        let sign = bits >> 15
+        let exponent = (bits >> 10) & 0x1F
+        let mantissa = bits & 0x3FF
+
+        // 特殊值: Inf / NaN — 只能用 bitcast 保留原始 bit pattern
+        if exponent == 0x1F {
+            return "as_type<half>(ushort(0x\(String(bits, radix: 16).uppercased())))"
+        }
+
+        if exponent == 0 && mantissa == 0 {
+            // ±zero — 返回 0.0（上下文类型决定 half/float）
+            return "0.0"
+        }
+
+        // 正常值 / subnormal: 转为 Float 再格式化
+        let floatValue: Float
+        if exponent == 0 {
+            // Subnormal: implicit leading bit = 0, exponent = -14
+            let m = Float(mantissa) / Float(1 << 10)
+            floatValue = (sign == 0 ? 1.0 : -1.0) * m * powf(2.0, -14.0)
+        } else {
+            // Normal: implicit leading bit = 1, exponent = biased - 15
+            let m = 1.0 + Float(mantissa) / Float(1 << 10)
+            floatValue = (sign == 0 ? 1.0 : -1.0) * m * powf(2.0, Float(Int(exponent) - 15))
+        }
+
+        // 尝试简洁的十进制表示
+        if floatValue == 0.0 { return "0.0" }
+        if floatValue == 1.0 { return "1.0" }
+        if floatValue == -1.0 { return "-1.0" }
+        if floatValue == 0.5 { return "0.5" }
+        if floatValue == -0.5 { return "-0.5" }
+        if floatValue == 2.0 { return "2.0" }
+        if floatValue == -2.0 { return "-2.0" }
+
+        // 一般值: 输出十进制浮点（MSL 上下文自动匹配 half 类型）
+        return String(format: "%.6g", Double(floatValue))
     }
 
     /// 解析 IR 向量字面量: <float 1.0, float 0.0, ...> → float4(1.0, 0.0, ...)

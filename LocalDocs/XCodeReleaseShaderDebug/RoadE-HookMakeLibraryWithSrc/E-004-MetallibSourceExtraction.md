@@ -86,12 +86,7 @@ E-004e 仍是 E-004 的核心，也是当前仍在演进的部分。
 
 ### 当前主 blocker
 
-结合 `00-Dashboard.md` 中最新 `E-006a2e1` live 复测，当前 E-004e 的主 blocker 已收敛为：
-
-1. **`undef` lowering**：不能再把 `undef` 直接泄漏到生成的 MSL（如 `float2(undef, 0.5)`）
-2. **half immediate lowering**：不能把 AIR/LLVM half 立即数直接原样发成 `0xH8000` 这类非法 MSL 文本
-
-这也是当前 dashboard 中 `E-006a2e2` 的真实工作内容。
+结合 `00-Dashboard.md` 中最新 `E-006a2e2` 修复，`undef` lowering 与 half immediate lowering 已完成。当前 E-004e 无已知离线 blocker，下一步等待 `E-006a2e3` live 复测后根据新 diagnostics 继续补洞。
 
 ### 当前交接方式
 

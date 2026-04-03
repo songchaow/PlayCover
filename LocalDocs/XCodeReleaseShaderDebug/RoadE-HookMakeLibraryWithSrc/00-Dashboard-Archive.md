@@ -37,7 +37,7 @@
 - **`E-006a2d2b`**：修 texture/sampler 形参发射、自定义 struct 字段命名/定义、`air.struct_type_info` 提取和 fragment `stage_in` 合成。
 - **`E-006a2d3`**：修 vertex aggregate return 与向量维度收敛；return metadata 现可驱动真正的 entry output struct 发射。
 - **`E-006a2d4`**：修 vertex `stage_in` 参数映射与 pointer-like SSA 发射；live 已确认 `param1/param2/param3`、`device T*` 坏访问与 `*(&...)` 不再出现。
-- **当前交接到 `E-006a2e2`**：最新 blocker 已从 vertex `stage_in` / pointer 发射前移到 `undef` 与 `0xH8000` half immediate 的 lowering。
+- **`E-006a2e2`**：修 `undef` / `0xH` half hex lowering；在 `IRToMSLConverter` 中统一处理了带类型前缀的 `undef`/`poison`（如 `float undef`）和 LLVM IR half 立即数（如 `0xH8000` → IEEE-754 转十进制或 `as_type<half>(ushort(...))`）。当前已交接 `E-006a2e3`（live 重装 / 重注入复测）。
 
 ## 经验归档
 

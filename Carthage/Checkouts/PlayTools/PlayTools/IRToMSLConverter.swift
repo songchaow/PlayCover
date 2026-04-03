@@ -4796,8 +4796,10 @@ struct IRToMSLConverter {
         return s
     }
 
-    /// 如果参数是纯 FP 字面量（如 "0.0", "1.0", "-1.0"），追加 h 后缀使其成为 half literal。
+    /// 如果参数是纯数字字面量，追加 h 后缀使其成为 half literal。
     /// SSA 引用（%N）、函数调用结果、常量表达式等不受影响。
+    /// 整数字面量（如 "3", "0"）会先转为浮点形式（"3.0h", "0.0h"），
+    /// 因为 Metal 的 h 后缀只能用于浮点字面量。
     private static func appendHalfSuffixIfFPLiteral(_ arg: String) -> String {
         let s = arg.trimmingCharacters(in: .whitespaces)
         // 跳过 SSA 引用、函数调用、注释、类型转换等
@@ -4805,11 +4807,20 @@ struct IRToMSLConverter {
            s.contains("/*") || s.contains("//") || s.contains("?") {
             return arg
         }
-        // 检查是否是纯浮点数字面量
-        // 支持: "0.0", "1.0", "2.0", "-1.0", "0.5", "3.14", 科学计数法等
-        if let _ = Double(s) {
-            // 已经有 h 后缀就跳过
-            if s.hasSuffix("h") { return arg }
+        // 已经有 h 后缀就跳过
+        if s.hasSuffix("h") { return arg }
+        // 检查是否是纯数字字面量（浮点或整数）
+        // 浮点: "0.0", "1.0", "-1.0", "0.5", "3.14", 科学计数法等
+        // 整数: "0", "1", "3", "-2" 等
+        if let d = Double(s) {
+            // 如果没有小数点且不是科学计数法，视为整数字面量，先转为浮点形式
+            if !s.contains(".") && !s.contains("e") && !s.contains("E") {
+                // 确保是纯整数形式（排除 hex 等）
+                let stripped = s.hasPrefix("-") ? String(s.dropFirst()) : s
+                if stripped.allSatisfy({ $0.isNumber }) {
+                    return "\(String(format: "%.1f", d))h"
+                }
+            }
             return "\(s)h"
         }
         return arg

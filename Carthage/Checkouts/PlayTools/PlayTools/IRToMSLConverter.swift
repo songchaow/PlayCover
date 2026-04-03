@@ -158,6 +158,8 @@ struct IRToMSLConverter {
         let irArgIndex: Int?
         /// 参数在 AIR metadata 中的语义种类（如 `air.buffer` / `air.fragment_input` / `air.texture`）
         let kind: String?
+        /// metadata 未覆盖时，从原始 IR 参数列表补齐的普通值参数需要显式发射到 entry signature。
+        let emitAsValueParameter: Bool
 
         /// 生成该参数的 MSL 声明字符串
         var mslDeclaration: String? {
@@ -2200,11 +2202,20 @@ struct IRToMSLConverter {
             let outputs: [MetadataReturnInfo]
             let isFullyParsed: Bool
             if let metaInfo = metadataMap[irFunc.name] {
-                params = buildParametersFromMetadata(metaInfo.args, irParamList: irFunc.parameterList)
+                params = buildParametersFromMetadata(
+                    metaInfo.args,
+                    irParamList: irFunc.parameterList,
+                    irBody: irFunc.body,
+                    shaderType: type
+                )
                 outputs = metaInfo.returns
                 isFullyParsed = true
             } else {
-                params = parseParameters(irFunc.parameterList, shaderType: type)
+                params = parseParameters(
+                    irFunc.parameterList,
+                    irBody: irFunc.body,
+                    shaderType: type
+                )
                 outputs = []
                 isFullyParsed = false
             }
@@ -2292,12 +2303,19 @@ struct IRToMSLConverter {
     ///
     /// metadata 提供了精确的 MSL 类型名、参数名、绑定索引和地址空间，
     /// 比从 opaque pointer 参数推断要准确得多。
+    ///
+    /// 但真实 live / corpus 中经常会遇到 metadata 只覆盖 resource 参数、漏掉普通值参数（如 UV / clamp 输入）的情况。
+    /// 这类漏参若不补齐，body lowering 会能解析 `%uv` / `%2`，但函数签名里没有对应声明，最终在 Metal 编译阶段报
+    /// `use of undeclared identifier`。因此这里需要在 metadata 参数之外，按 IR define 的原始参数列表把缺失项补回。
     private static func buildParametersFromMetadata(
         _ metaArgs: [MetadataArgInfo],
-        irParamList: String
+        irParamList: String,
+        irBody: String,
+        shaderType: ShaderType
     ) -> [ParsedParameter] {
-        _ = irParamList
+        let rawIRParams = splitIRParameters(irParamList)
         var params: [ParsedParameter] = []
+        var mappedArgIndices: Set<Int> = []
 
         for meta in metaArgs {
             let addrSpace: AddressSpace?
@@ -2378,11 +2396,245 @@ struct IRToMSLConverter {
                 attribute: attribute,
                 pointerInfo: ptrInfo,
                 irArgIndex: meta.argIndex,
-                kind: meta.kind
+                kind: meta.kind,
+                emitAsValueParameter: false
             ))
+            mappedArgIndices.insert(meta.argIndex)
         }
 
-        return params
+        params.append(contentsOf: buildSupplementalParametersFromIR(
+            rawIRParams,
+            irBody: irBody,
+            mappedArgIndices: mappedArgIndices,
+            shaderType: shaderType
+        ))
+
+        return params.sorted { ($0.irArgIndex ?? .max) < ($1.irArgIndex ?? .max) }
+    }
+
+    /// 当 metadata 没有完整覆盖 define 参数列表时，从原始 IR 参数里补齐缺失项。
+    ///
+    /// 目标：
+    /// - 保留 metadata 已知的 resource / builtin 精确信息
+    /// - 仅对缺失项做最小保守补齐，优先保证“body 中用到的 SSA 名在签名里确实有声明”
+    /// - 对缺失 builtin 的场景，优先按默认 entry builtin 规则推断，而不是把它误当成普通值参数
+    private static func buildSupplementalParametersFromIR(
+        _ rawIRParams: [String],
+        irBody: String,
+        mappedArgIndices: Set<Int>,
+        shaderType: ShaderType
+    ) -> [ParsedParameter] {
+        var supplemental: [ParsedParameter] = []
+        for (index, rawParam) in rawIRParams.enumerated() where !mappedArgIndices.contains(index) {
+            let trimmed = rawParam.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed == "..." {
+                continue
+            }
+
+            if let inferredBuiltin = inferImplicitEntryBuiltinParameter(
+                from: trimmed,
+                index: index,
+                totalIRParamCount: rawIRParams.count,
+                shaderType: shaderType
+            ) {
+                supplemental.append(inferredBuiltin)
+                continue
+            }
+
+            let addrSpace = extractAddressSpace(from: trimmed)
+            let ptrInfo = extractPointerInfo(from: trimmed, addressSpace: addrSpace)
+            let bindingIndex = fallbackBindingIndex(for: rawIRParams, targetIndex: index, addressSpace: addrSpace)
+            let cleanedValueType = extractIRValueParameterType(from: trimmed)
+            let fallbackName = fallbackIRParameterName(from: trimmed, index: index)
+
+            supplemental.append(ParsedParameter(
+                name: fallbackName,
+                irType: ptrInfo == nil ? cleanedValueType : trimmed,
+                addressSpace: addrSpace,
+                bufferIndex: bindingIndex,
+                attribute: nil,
+                pointerInfo: ptrInfo,
+                irArgIndex: index,
+                kind: nil,
+                emitAsValueParameter: ptrInfo == nil && !cleanedValueType.isEmpty && isIRParameterReferenced(trimmed, in: irBody)
+            ))
+        }
+        return supplemental
+    }
+
+    /// metadata 缺失时，按常见 entry 函数布局保守推断默认 builtin 参数。
+    private static func inferImplicitEntryBuiltinParameter(
+        from rawIRParam: String,
+        index: Int,
+        totalIRParamCount: Int,
+        shaderType: ShaderType
+    ) -> ParsedParameter? {
+        let cleanedValueType = extractIRValueParameterType(from: rawIRParam)
+        guard let builtinIRType = defaultBuiltinIRType(for: shaderType),
+              cleanedValueType == builtinIRType else {
+            return nil
+        }
+
+        let name: String
+        let attribute: String
+        let kind: String
+
+        switch shaderType {
+        case .fragment:
+            guard index == 0 else { return nil }
+            name = defaultBuiltinParamName(for: .fragment) ?? "position"
+            attribute = "[[position]]"
+            kind = "air.position"
+        case .vertex:
+            guard index == totalIRParamCount - 1 else { return nil }
+            name = defaultBuiltinParamName(for: .vertex) ?? "vid"
+            attribute = "[[vertex_id]]"
+            kind = "air.vertex_id"
+        case .kernel:
+            guard index == totalIRParamCount - 1 else { return nil }
+            name = defaultBuiltinParamName(for: .kernel) ?? "tid"
+            attribute = "[[thread_position_in_grid]]"
+            kind = "air.thread_position_in_grid"
+        }
+
+        return ParsedParameter(
+            name: name,
+            irType: cleanedValueType,
+            addressSpace: nil,
+            bufferIndex: nil,
+            attribute: attribute,
+            pointerInfo: nil,
+            irArgIndex: index,
+            kind: kind,
+            emitAsValueParameter: false
+        )
+    }
+
+    /// 为 metadata 未覆盖的 IR 参数生成稳定可读的参数名。
+    ///
+    /// - 若 IR 自身有语义化名字（如 `%uv` / `%threshold`），优先保留
+    /// - 若只剩数字 SSA（如 `%2`），退回为 `argN`
+    private static func fallbackIRParameterName(from rawIRParam: String, index: Int) -> String {
+        guard let irName = extractParamName(from: rawIRParam), !irName.isEmpty else {
+            return "arg\(index)"
+        }
+        if irName.allSatisfy({ $0.isNumber }) {
+            return "arg\(index)"
+        }
+        return irName
+    }
+
+    /// 从原始 IR 参数字符串里提取“值类型”部分，去掉限定词与参数名。
+    ///
+    /// 示例：
+    /// - `<2 x float> noundef %uv` → `<2 x float>`
+    /// - `i32 noundef %3` → `i32`
+    /// - `%struct.Foo %arg` → `%struct.Foo`
+    private static func extractIRValueParameterType(from rawIRParam: String) -> String {
+        let trimmed = rawIRParam.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        let candidate: String
+        if let percentIndex = trimmed.lastIndex(of: "%") {
+            candidate = String(trimmed[..<percentIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            candidate = trimmed
+        }
+        guard !candidate.isEmpty else { return "" }
+
+        return extractLeadingIRType(from: candidate)
+    }
+
+    /// 判断原始 IR 参数是否真的在函数体里被引用。
+    ///
+    /// 只对 `%name` / `%2` 这种参数 SSA 做精确匹配，避免 `%1` 误命中 `%10`。
+    private static func isIRParameterReferenced(_ rawIRParam: String, in irBody: String) -> Bool {
+        guard let irName = extractParamName(from: rawIRParam), !irName.isEmpty else {
+            return false
+        }
+
+        let token = "%\(irName)"
+        var searchStart = irBody.startIndex
+        while searchStart < irBody.endIndex,
+              let range = irBody.range(of: token, range: searchStart..<irBody.endIndex) {
+            let after = range.upperBound < irBody.endIndex ? irBody[range.upperBound] : nil
+            if after == nil || !(after!.isLetter || after!.isNumber || after! == "_" || after! == ".") {
+                return true
+            }
+            searchStart = range.upperBound
+        }
+        return false
+    }
+
+    /// 从一段参数前缀中抽取最前面的 IR 类型 token，支持向量 / 聚合 / 括号嵌套。
+    private static func extractLeadingIRType(from text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        let first = trimmed.first ?? " "
+        if first == "<" || first == "{" || first == "(" {
+            var angleDepth = 0
+            var braceDepth = 0
+            var parenDepth = 0
+            var inQuotes = false
+
+            for index in trimmed.indices {
+                let char = trimmed[index]
+                if char == "\"" {
+                    inQuotes.toggle()
+                } else if !inQuotes {
+                    switch char {
+                    case "<": angleDepth += 1
+                    case ">": angleDepth -= 1
+                    case "{": braceDepth += 1
+                    case "}": braceDepth -= 1
+                    case "(": parenDepth += 1
+                    case ")": parenDepth -= 1
+                    default: break
+                    }
+                    if angleDepth == 0 && braceDepth == 0 && parenDepth == 0 {
+                        return String(trimmed[...index]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                }
+            }
+            return trimmed
+        }
+
+        let firstToken = trimmed.components(separatedBy: .whitespaces).first ?? trimmed
+        return firstToken.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 对缺失 pointer 参数沿用 parseParameters 的顺序绑定规则，避免 buffer/threadgroup 索引错位。
+    private static func fallbackBindingIndex(
+        for rawIRParams: [String],
+        targetIndex: Int,
+        addressSpace: AddressSpace?
+    ) -> Int? {
+        guard let addressSpace else { return nil }
+
+        if addressSpace.isBufferAddressSpace {
+            var count = 0
+            for i in 0..<rawIRParams.count {
+                guard i <= targetIndex else { break }
+                if let space = extractAddressSpace(from: rawIRParams[i]), space.isBufferAddressSpace {
+                    if i == targetIndex { return count }
+                    count += 1
+                }
+            }
+        }
+
+        if addressSpace.isThreadgroupAddressSpace {
+            var count = 0
+            for i in 0..<rawIRParams.count {
+                guard i <= targetIndex else { break }
+                if let space = extractAddressSpace(from: rawIRParams[i]), space.isThreadgroupAddressSpace {
+                    if i == targetIndex { return count }
+                    count += 1
+                }
+            }
+        }
+
+        return targetIndex
     }
 
     /// 从 IR 函数特征启发式推断 shader 类型
@@ -2418,6 +2670,7 @@ struct IRToMSLConverter {
     /// 解析 IR 函数的参数列表
     private static func parseParameters(
         _ paramList: String,
+        irBody: String,
         shaderType: ShaderType
     ) -> [ParsedParameter] {
         guard !paramList.trimmingCharacters(in: .whitespaces).isEmpty else { return [] }
@@ -2431,14 +2684,23 @@ struct IRToMSLConverter {
             let trimmed = rawParam.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty || trimmed == "..." { continue }
 
+            if let inferredBuiltin = inferImplicitEntryBuiltinParameter(
+                from: trimmed,
+                index: index,
+                totalIRParamCount: rawParams.count,
+                shaderType: shaderType
+            ) {
+                params.append(inferredBuiltin)
+                continue
+            }
+
             // 提取地址空间
             let addrSpace = extractAddressSpace(from: trimmed)
 
-            // 提取参数名（%name 或 %N）
-            let paramName = extractParamName(from: trimmed) ?? "param\(index)"
-
             // 提取指针信息
             let ptrInfo = extractPointerInfo(from: trimmed, addressSpace: addrSpace)
+            let cleanedValueType = extractIRValueParameterType(from: trimmed)
+            let paramName = fallbackIRParameterName(from: trimmed, index: index)
 
             // 确定 buffer/threadgroup 绑定索引
             let bindingIndex: Int?
@@ -2458,13 +2720,14 @@ struct IRToMSLConverter {
 
             params.append(ParsedParameter(
                 name: paramName,
-                irType: trimmed,
+                irType: ptrInfo == nil ? cleanedValueType : trimmed,
                 addressSpace: addrSpace,
                 bufferIndex: bindingIndex,
                 attribute: nil,
                 pointerInfo: ptrInfo,
                 irArgIndex: index,
-                kind: nil
+                kind: nil,
+                emitAsValueParameter: ptrInfo == nil && !cleanedValueType.isEmpty && isIRParameterReferenced(trimmed, in: irBody)
             ))
         }
 
@@ -5735,6 +5998,13 @@ struct IRToMSLConverter {
                     let emittedType = irScalarTypeToMSL(rawTypeName)
                     mslParams.append("\(emittedType) \(emittedName) \(attr)")
                 }
+                continue
+            }
+
+            if param.emitAsValueParameter {
+                let rawTypeName = param.irType.isEmpty ? "float" : param.irType.replacingOccurrences(of: "\"", with: "")
+                let emittedType = irScalarTypeToMSL(rawTypeName)
+                mslParams.append("\(emittedType) \(emittedName)")
                 continue
             }
 

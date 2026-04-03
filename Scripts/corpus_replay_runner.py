@@ -23,10 +23,13 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -254,6 +257,34 @@ class DiscoveryWarning:
     message: str
 
 
+REPLACEMENT_SOURCE_VALIDATION_RULES: list[tuple[str, re.Pattern[str]]] = [
+    ("LLVM vector syntax leaked into generated MSL", re.compile(r"<\s*\d+\s+x\s+")),
+    ("LLVM opaque pointer token leaked into generated MSL", re.compile(r"(^|[^A-Za-z0-9_])ptr([^A-Za-z0-9_]|$)")),
+    ("LLVM addrspace token leaked into generated MSL", re.compile(r"addrspace\s*\(")),
+    ("LLVM SSA or struct token leaked into generated MSL", re.compile(r"%[A-Za-z0-9_\.\"]+")),
+    ("LLVM raw integer type leaked into generated MSL", re.compile(r"(^|[^A-Za-z0-9_])(i1|i8|i16|i32|i64)([^A-Za-z0-9_]|$)")),
+    ("LLVM symbol token leaked into generated MSL", re.compile(r"@[A-Za-z0-9_\.\"]+")),
+    ("LLVM placeholder token leaked into generated MSL", re.compile(r"\b(?:undef|poison|zeroinitializer)\b")),
+]
+
+COMPILER_DIAGNOSTIC_REGEX = re.compile(
+    r"^(?P<file>.+?):(?P<line>\d+):(?P<column>\d+): (?P<severity>warning|error|note): (?P<message>.+)$",
+    re.MULTILINE,
+)
+
+COMPILE_FAILURE_CATEGORY_RULES: list[tuple[str, re.Pattern[str]]] = [
+    ("undeclared_identifier", re.compile(r"undeclared identifier", re.IGNORECASE)),
+    ("unknown_type", re.compile(r"unknown type name|use of undeclared type", re.IGNORECASE)),
+    ("missing_member", re.compile(r"no member named", re.IGNORECASE)),
+    ("address_space", re.compile(r"address space", re.IGNORECASE)),
+    ("overload_resolution", re.compile(r"no matching (member )?function|candidate function not viable|candidate template ignored|ambiguous", re.IGNORECASE)),
+    ("invalid_conversion", re.compile(r"cannot initialize|cannot convert|assigning to|cannot assign|cannot bind", re.IGNORECASE)),
+    ("syntax", re.compile(r"^expected | expected |extraneous |expected ';'|expected '\)'|expected expression", re.IGNORECASE)),
+    ("redefinition", re.compile(r"redefinition of", re.IGNORECASE)),
+    ("unsupported_builtin", re.compile(r"\bair\.|builtin|intrinsic", re.IGNORECASE)),
+]
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -302,7 +333,33 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allow-failures",
         action="store_true",
-        help="即使存在 replay 失败也返回 0，便于先收集报告",
+        help="即使存在 replay / compile 失败也返回 0，便于先收集报告",
+    )
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="对成功 replay 的 `.metal` 继续批量执行 `xcrun metal -c`，并生成 compile-summary.json",
+    )
+    parser.add_argument(
+        "--compile-report-file",
+        help="编译报告输出路径；默认写到 output-root 下，或单文件输出旁边",
+    )
+    parser.add_argument(
+        "--metal-sdk",
+        default="macosx",
+        help="`xcrun --sdk` 使用的 SDK 名称，默认 macosx",
+    )
+    parser.add_argument(
+        "--metal-arg",
+        action="append",
+        dest="metal_args",
+        default=[],
+        help="额外透传给 `xcrun metal` 的参数（可重复指定）",
+    )
+    parser.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="即使检测到明显的 LLVM token 泄漏，也继续尝试执行 Metal 编译",
     )
     parser.add_argument(
         "--quiet",
@@ -404,6 +461,26 @@ def make_report_path(args: argparse.Namespace, computed_output_root: Path | None
     if computed_output_root is None:
         raise ValueError("computed_output_root must not be None when report file is not explicitly set")
     return (computed_output_root / "replay-summary.json").resolve()
+
+
+def make_compile_report_path(
+    args: argparse.Namespace,
+    report_path: Path,
+    computed_output_root: Path | None,
+) -> Path:
+    if args.compile_report_file:
+        return Path(args.compile_report_file).expanduser().resolve()
+
+    if computed_output_root is not None:
+        return (computed_output_root / "compile-summary.json").resolve()
+
+    if args.output_file and len(args.ll_inputs) == 1:
+        output_file = Path(args.output_file).expanduser().resolve()
+        if output_file.suffix:
+            return output_file.with_name(f"{output_file.stem}.compile.json")
+        return output_file.parent / f"{output_file.name}.compile.json"
+
+    return report_path.with_name(f"{report_path.stem}.compile.json").resolve()
 
 
 def same_file_contents(left: Path, right: Path) -> bool | None:
@@ -644,6 +721,342 @@ def run_replay_jobs(
         return json.loads(raw_report_path.read_text(encoding="utf-8"))
 
 
+def truncate_text(text: str | None, limit: int = 12000) -> str | None:
+    if text is None:
+        return None
+    stripped = text.strip()
+    if len(stripped) <= limit:
+        return stripped
+    remaining = len(stripped) - limit
+    return f"{stripped[:limit]}\n... <truncated {remaining} chars>"
+
+
+def shell_join(command: list[str]) -> str:
+    return shlex.join(command)
+
+
+def validate_generated_msl_source(source: str) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    for index, raw_line in enumerate(source.splitlines(), start=1):
+        trimmed = raw_line.strip()
+        if not trimmed or trimmed.startswith("//"):
+            continue
+        for reason, regex in REPLACEMENT_SOURCE_VALIDATION_RULES:
+            if regex.search(trimmed):
+                preview = trimmed if len(trimmed) <= 160 else f"{trimmed[:160]}…"
+                issues.append(
+                    {
+                        "lineNumber": index,
+                        "reason": reason,
+                        "line": raw_line,
+                        "summary": f"L{index}: {reason} — {preview}",
+                    }
+                )
+                break
+        if len(issues) >= 12:
+            break
+    return issues
+
+
+def extract_compiler_diagnostics(output: str) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    seen: set[tuple[str, int, int, str, str]] = set()
+    for match in COMPILER_DIAGNOSTIC_REGEX.finditer(output):
+        record = (
+            match.group("file"),
+            int(match.group("line")),
+            int(match.group("column")),
+            match.group("severity"),
+            match.group("message"),
+        )
+        if record in seen:
+            continue
+        seen.add(record)
+        diagnostics.append(
+            {
+                "file": record[0],
+                "line": record[1],
+                "column": record[2],
+                "severity": record[3],
+                "message": record[4],
+                "summary": f"{record[0]}:{record[1]}:{record[2]}: {record[3]}: {record[4]}",
+            }
+        )
+    return diagnostics
+
+
+def select_primary_diagnostic(diagnostics: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for item in diagnostics:
+        if item.get("severity") == "error":
+            return item
+    return diagnostics[0] if diagnostics else None
+
+
+def read_source_context(source_path: Path, line_number: int, radius: int = 2) -> list[dict[str, Any]]:
+    if line_number <= 0 or not source_path.is_file():
+        return []
+    try:
+        lines = source_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+
+    if line_number > len(lines):
+        return []
+
+    lower_bound = max(1, line_number - radius)
+    upper_bound = min(len(lines), line_number + radius)
+    return [
+        {
+            "lineNumber": current,
+            "text": lines[current - 1],
+            "isPrimary": current == line_number,
+        }
+        for current in range(lower_bound, upper_bound + 1)
+    ]
+
+
+def normalize_compile_message(message: str) -> str:
+    normalized = message.lower().strip()
+    normalized = re.sub(r"0x[0-9a-f]+", "<hex>", normalized)
+    normalized = re.sub(r"'[^']+'", "'<symbol>'", normalized)
+    normalized = re.sub(r'"[^"]+"', '"<symbol>"', normalized)
+    normalized = re.sub(r"\b\d+\b", "<n>", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized
+
+
+def categorize_compile_message(message: str) -> str:
+    for category, regex in COMPILE_FAILURE_CATEGORY_RULES:
+        if regex.search(message):
+            return category
+    return "other"
+
+
+def derive_failure_cluster(
+    status: str,
+    diagnostics: list[dict[str, Any]],
+    preflight_issues: list[dict[str, Any]],
+    fallback_message: str | None,
+) -> tuple[str, str, str]:
+    if status == "preflight_rejected":
+        title = (preflight_issues[0]["reason"] if preflight_issues else (fallback_message or "preflight rejected")).strip()
+        return (
+            f"preflight_rejected:{normalize_compile_message(title)}",
+            "preflight_rejected",
+            title,
+        )
+
+    primary = select_primary_diagnostic(diagnostics)
+    if primary is not None:
+        title = primary["message"].strip()
+        category = categorize_compile_message(title)
+        return (f"{category}:{normalize_compile_message(title)}", category, title)
+
+    title = (fallback_message or "metal compiler failed without diagnostics").strip()
+    return (f"compiler_failed:{normalize_compile_message(title)}", "compiler_failed", title)
+
+
+def compiled_air_output_path(metal_path: Path) -> Path:
+    if metal_path.suffix:
+        return metal_path.with_suffix(".air")
+    return metal_path.with_name(f"{metal_path.name}.air")
+
+
+def compile_replay_result(result: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    source_path = Path(result["outputPath"])
+    base_result = {
+        "jobID": result["jobID"],
+        "bundleId": result.get("bundleId"),
+        "moduleKey": result.get("moduleKey"),
+        "inputPath": result.get("inputPath"),
+        "sourcePath": str(source_path),
+        "airPath": None,
+        "success": False,
+        "status": "skipped_replay_failed",
+        "command": None,
+        "returnCode": None,
+        "elapsedSeconds": None,
+        "stdout": None,
+        "stderr": None,
+        "compilerOutput": None,
+        "preflightIssueCount": 0,
+        "preflightIssues": [],
+        "diagnostics": [],
+        "primaryDiagnostic": None,
+        "sourceContext": [],
+        "clusterKey": None,
+        "clusterCategory": None,
+        "clusterTitle": None,
+        "error": None,
+    }
+
+    if not result.get("success"):
+        base_result["error"] = "replay_failed"
+        return base_result
+
+    if not source_path.is_file():
+        base_result["status"] = "compile_input_missing"
+        base_result["error"] = f"generated MSL file is missing: {source_path}"
+        cluster_key, cluster_category, cluster_title = derive_failure_cluster(
+            base_result["status"], [], [], base_result["error"]
+        )
+        base_result["clusterKey"] = cluster_key
+        base_result["clusterCategory"] = cluster_category
+        base_result["clusterTitle"] = cluster_title
+        return base_result
+
+    source_text = source_path.read_text(encoding="utf-8", errors="replace")
+    preflight_issues = validate_generated_msl_source(source_text)
+    base_result["preflightIssueCount"] = len(preflight_issues)
+    base_result["preflightIssues"] = preflight_issues
+
+    air_path = compiled_air_output_path(source_path).resolve()
+    air_path.parent.mkdir(parents=True, exist_ok=True)
+    if air_path.exists():
+        air_path.unlink()
+    base_result["airPath"] = str(air_path)
+
+    command = ["xcrun", "--sdk", args.metal_sdk, "metal", "-c", *args.metal_args, str(source_path), "-o", str(air_path)]
+    base_result["command"] = shell_join(command)
+
+    if preflight_issues and not args.skip_preflight:
+        base_result["status"] = "preflight_rejected"
+        base_result["error"] = preflight_issues[0]["summary"]
+        cluster_key, cluster_category, cluster_title = derive_failure_cluster(
+            base_result["status"], [], preflight_issues, base_result["error"]
+        )
+        base_result["clusterKey"] = cluster_key
+        base_result["clusterCategory"] = cluster_category
+        base_result["clusterTitle"] = cluster_title
+        return base_result
+
+    start_time = time.perf_counter()
+    completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    elapsed = time.perf_counter() - start_time
+    combined_output = "\n".join(
+        part for part in [completed.stdout.strip(), completed.stderr.strip()] if part
+    )
+    diagnostics = extract_compiler_diagnostics(combined_output)
+    primary_diagnostic = select_primary_diagnostic(diagnostics)
+
+    base_result["returnCode"] = completed.returncode
+    base_result["elapsedSeconds"] = round(elapsed, 6)
+    base_result["stdout"] = truncate_text(completed.stdout)
+    base_result["stderr"] = truncate_text(completed.stderr)
+    base_result["compilerOutput"] = truncate_text(combined_output, limit=16000)
+    base_result["diagnostics"] = diagnostics
+    base_result["primaryDiagnostic"] = primary_diagnostic
+    if primary_diagnostic is not None:
+        base_result["sourceContext"] = read_source_context(source_path, int(primary_diagnostic["line"]))
+
+    if completed.returncode == 0:
+        base_result["status"] = "success"
+        base_result["success"] = True
+        return base_result
+
+    base_result["status"] = "compile_failed"
+    base_result["error"] = combined_output or f"metal exited with status {completed.returncode}"
+    cluster_key, cluster_category, cluster_title = derive_failure_cluster(
+        base_result["status"], diagnostics, preflight_issues, base_result["error"]
+    )
+    base_result["clusterKey"] = cluster_key
+    base_result["clusterCategory"] = cluster_category
+    base_result["clusterTitle"] = cluster_title
+    return base_result
+
+
+def build_failure_clusters(compile_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    clusters: dict[str, dict[str, Any]] = {}
+    for item in compile_results:
+        cluster_key = item.get("clusterKey")
+        if not cluster_key:
+            continue
+        cluster = clusters.get(cluster_key)
+        if cluster is None:
+            cluster = {
+                "clusterKey": cluster_key,
+                "category": item.get("clusterCategory"),
+                "title": item.get("clusterTitle"),
+                "count": 0,
+                "sampleJobs": [],
+            }
+            clusters[cluster_key] = cluster
+
+        cluster["count"] += 1
+        if len(cluster["sampleJobs"]) < 5:
+            cluster["sampleJobs"].append(
+                {
+                    "jobID": item.get("jobID"),
+                    "bundleId": item.get("bundleId"),
+                    "moduleKey": item.get("moduleKey"),
+                    "inputPath": item.get("inputPath"),
+                    "sourcePath": item.get("sourcePath"),
+                    "status": item.get("status"),
+                    "primaryDiagnostic": item.get("primaryDiagnostic"),
+                    "preflightIssues": item.get("preflightIssues"),
+                    "sourceContext": item.get("sourceContext"),
+                }
+            )
+
+    return sorted(clusters.values(), key=lambda item: (-item["count"], item["clusterKey"]))
+
+
+def run_compile_jobs(
+    report: dict[str, Any],
+    args: argparse.Namespace,
+    compile_report_path: Path,
+) -> dict[str, Any]:
+    compile_results = [compile_replay_result(item, args) for item in report.get("results", [])]
+    clusters = build_failure_clusters(compile_results)
+
+    replay_failed_jobs = sum(1 for item in compile_results if item["status"] == "skipped_replay_failed")
+    preflight_rejected_jobs = sum(1 for item in compile_results if item["status"] == "preflight_rejected")
+    compile_failed_jobs = sum(1 for item in compile_results if item["status"] in {"compile_failed", "compile_input_missing"})
+    compile_succeeded_jobs = sum(1 for item in compile_results if item["status"] == "success")
+    compiled_jobs = sum(1 for item in compile_results if item["status"] in {"success", "compile_failed"})
+
+    compile_report = {
+        "schemaVersion": 1,
+        "generatedAt": utc_now_iso(),
+        "tool": "Scripts/corpus_replay_runner.py",
+        "reportPath": str(compile_report_path),
+        "compiler": {
+            "sdk": args.metal_sdk,
+            "extraArgs": list(args.metal_args),
+            "skipPreflight": bool(args.skip_preflight),
+        },
+        "totalJobs": len(compile_results),
+        "replayFailedJobs": replay_failed_jobs,
+        "compileEligibleJobs": len(compile_results) - replay_failed_jobs,
+        "compiledJobs": compiled_jobs,
+        "compileSucceededJobs": compile_succeeded_jobs,
+        "compileFailedJobs": compile_failed_jobs,
+        "preflightRejectedJobs": preflight_rejected_jobs,
+        "failedJobs": compile_failed_jobs + preflight_rejected_jobs,
+        "skippedJobs": replay_failed_jobs,
+        "failureClusterCount": len(clusters),
+        "failureClusters": clusters,
+        "results": compile_results,
+    }
+
+    compile_report_path.parent.mkdir(parents=True, exist_ok=True)
+    compile_report_path.write_text(json.dumps(compile_report, indent=2, ensure_ascii=False), encoding="utf-8")
+    return compile_report
+
+
+def attach_compile_report(report: dict[str, Any], compile_report: dict[str, Any]) -> dict[str, Any]:
+    compile_by_job = {item["jobID"]: item for item in compile_report.get("results", [])}
+    for item in report.get("results", []):
+        item["compile"] = compile_by_job.get(item["jobID"])
+
+    report["compile"] = {
+        key: value
+        for key, value in compile_report.items()
+        if key != "results"
+    }
+    return report
+
+
 def enrich_report(
     raw_report: dict[str, Any],
     jobs: list[ReplayJob],
@@ -732,6 +1145,25 @@ def print_summary(report: dict[str, Any], report_path: Path, args: argparse.Name
             key = item.get("moduleKey") or Path(item["inputPath"]).stem
             print(f"  - {key}: {item.get('error')}")
 
+    compile_summary = report.get("compile")
+    if compile_summary:
+        print("=== compile summary ===")
+        print(
+            "compile: "
+            f"{compile_summary['compileSucceededJobs']} success / "
+            f"{compile_summary['compileFailedJobs']} failed / "
+            f"{compile_summary['preflightRejectedJobs']} preflight rejected / "
+            f"{compile_summary['skippedJobs']} skipped"
+        )
+        if compile_summary.get("reportPath"):
+            print(f"compile report: {compile_summary['reportPath']}")
+
+        clusters = compile_summary.get("failureClusters") or []
+        if clusters:
+            print("top compile failure clusters:")
+            for cluster in clusters[:5]:
+                print(f"  - [{cluster['category']}] x{cluster['count']}: {cluster['title']}")
+
 
 def main() -> int:
     parser = build_parser()
@@ -739,6 +1171,9 @@ def main() -> int:
 
     if shutil.which("swiftc") is None:
         print("error: cannot find swiftc in PATH", file=sys.stderr)
+        return 2
+    if args.compile and shutil.which("xcrun") is None:
+        print("error: cannot find xcrun in PATH", file=sys.stderr)
         return 2
 
     root = repo_root()
@@ -752,6 +1187,7 @@ def main() -> int:
         computed_output_root = Path(args.output_root).expanduser().resolve() if args.output_root else default_output_root(root).resolve()
 
     report_path = make_report_path(args, computed_output_root)
+    compile_report_path = make_compile_report_path(args, report_path, computed_output_root) if args.compile else None
     warnings: list[DiscoveryWarning] = []
 
     jobs = discover_jobs(args, computed_output_root, warnings)
@@ -761,10 +1197,16 @@ def main() -> int:
 
     raw_report = run_replay_jobs(jobs, converter_swift, report_path)
     enriched_report = enrich_report(raw_report, jobs, warnings, computed_output_root)
+    if args.compile and compile_report_path is not None:
+        compile_report = run_compile_jobs(enriched_report, args, compile_report_path)
+        enriched_report = attach_compile_report(enriched_report, compile_report)
+
     report_path.write_text(json.dumps(enriched_report, indent=2, ensure_ascii=False), encoding="utf-8")
     print_summary(enriched_report, report_path, args)
 
-    if enriched_report["failedJobs"] and not args.allow_failures:
+    replay_failed = int(enriched_report["failedJobs"])
+    compile_failed = int((enriched_report.get("compile") or {}).get("failedJobs", 0))
+    if (replay_failed or compile_failed) and not args.allow_failures:
         return 1
     return 0
 

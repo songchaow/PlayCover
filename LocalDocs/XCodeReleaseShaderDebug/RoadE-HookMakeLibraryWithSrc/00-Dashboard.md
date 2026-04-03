@@ -131,9 +131,9 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 ## 当前主线
 
-- **E-005（下一步：`E-005b` 批量 Metal 编译与失败报告）**：`E-005a` 已落地 `Scripts/corpus_replay_runner.py`，`ShaderCorpus/` 与显式 `.ll` 都已有稳定的 `IR -> MSL` 离线回放入口；当前最高优先级转为把 replay 输出批量送进 Metal 编译，并产出可归因的失败报告。
+- **E-005（下一步：`E-005c` 新旧转换结果 diff / 回归基线）**：`Scripts/corpus_replay_runner.py` 已同时具备稳定的 `IR -> MSL` replay、batch Metal compile、preflight 与 failure cluster 输出；当前最高优先级转为在同一 corpus 上沉淀“改前 / 改后”对比基线，防止修一个坏两个。
 - **E-004（下一步：`E-004f3` 扩展 `makeLibrary(URL/default/file)` 路径的采集覆盖）**：`newLibraryWithData:error:` 成功路径已经具备长期稳定的 corpus 落盘规范；接下来应补齐其他 library 入口的真实样本覆盖。
-- **E-006（下一步：`E-006b` 离线批量 green 后再做最小 live）**：live 保留为**扩覆盖**与**最终真实验证**环节，只在离线结果已经收敛后再投入。
+- **E-006（下一步：`E-006b` 先挑离线 batch compile 已绿的一组样本做最小 live）**：live 保留为**扩覆盖**与**最终真实验证**环节，只在离线 replay / compile 已经收敛后再投入。
 
 ## 最新基线
 
@@ -142,7 +142,9 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 流程基线（2026-04-03，offline-first 切换完成） | Road E 的日常迭代主回路已经明确为 **采集 corpus → 离线 replay → 批量编译 → 最小 live 复测 → `.gputrace` 最终确认** |
 | 原神 6.4.0（最近一轮 live 基线） | 已确认 `ShaderSourceDiagnostics`、host bridge 与 runtime 注入主路径可用；真实 app 仍是 corpus 的生产来源与最终验证环境 |
 | 当前落盘能力 | 失败的 MSL 会进入 `ShaderSourceDiagnostics/`；异常 payload 会进入 `ShaderPayloadSamples/`；`attemptLibraryReplacement(...)` 成功路径现已按 `ShaderCorpus/<bundleId>/modules/<moduleKey>/` 落盘 canonical `module.bc`、`module.ll`、`module.generated.metal` 与 `module.meta.json`，并在根目录追加 `manifest.jsonl` 事件索引；`moduleKey` 由 `sha256(module.bc)` 生成，重复样本默认复用基线，不再静默覆盖 |
-| 当前离线回放能力（2026-04-03，`E-005a` 完成） | 新增 `Scripts/corpus_replay_runner.py`，已能批量扫描 `ShaderCorpus/` 或显式 `.ll`，读取 `module.meta.json` 中的 `functionNames/functionTypes` 调用 `IRToMSLConverter.convert(...)`，稳定产出 replay `.metal` 与 `replay-summary.json`；`Scripts/ir_to_msl_smoketest.sh` 已收口为该 runner 的兼容 wrapper |
+| 当前离线 replay / batch compile 能力（2026-04-03，`E-005a`/`E-005b` 完成） | `Scripts/corpus_replay_runner.py` 现已支持扫描 `ShaderCorpus/` 或显式 `.ll`，读取 `module.meta.json` 中的 `functionNames/functionTypes` 做 `IRToMSLConverter.convert(...)`，并在 `--compile` 模式下继续输出 `.air`、`compile-summary.json`、逐样本 `primaryDiagnostic/sourceContext` 与 failure clusters；`Scripts/ir_to_msl_smoketest.sh` 继续作为单样本兼容 wrapper |
+| 当前最小离线验证基线（2026-04-03） | 已对 `test-data/*.ll` 执行一轮 batch replay + compile：replay `17/17` 成功，Metal compile `10/17` 成功，当前主要失败簇集中在 `undeclared_identifier`、`invalid_conversion`、`missing_member` 与 `overload_resolution` |
+| 当前构建验证基线（2026-04-03） | 已运行 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`，PlayTools 标准构建链路通过 |
 | 历史 live blocker 时间线 | 见 [00-Dashboard-Archive](00-Dashboard-Archive.md)；dashboard 主体不再重复堆叠逐轮 live 细节 |
 
 ## 整体架构
@@ -174,7 +176,7 @@ PlayTools.framework (注入到 iOS app)
 
 ## TODO
 
-> 当前最高优先级：`E-005b`（批量 Metal 编译与失败报告）。`E-005a` 已完成，当前 `ShaderCorpus/` 与显式 `.ll` 都已有稳定 replay 入口；下一步应把 replay 输出系统性送进 Metal 编译并形成可归因报告。历史 live blocker 归因链路见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
+> 当前最高优先级：`E-005c`（新旧转换结果 diff / 回归基线）。`E-005a` / `E-005b` 已完成，当前 `ShaderCorpus/` 与显式 `.ll` 都已有稳定的 replay + batch compile 入口；下一步应把这套输出沉淀为“改前 / 改后”结构化对比基线。历史 live blocker 归因链路见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -193,8 +195,8 @@ PlayTools.framework (注入到 iOS app)
 | E-005 | **离线 replay / batch compile / diff 工具链** | 🔄 IN PROGRESS | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
 | E-005a | ↳ `IR -> MSL` 离线回放 runner | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
 |  | 已落地 `Scripts/corpus_replay_runner.py`；支持扫描 `ShaderCorpus/`、读取 `manifest.jsonl` / `module.meta.json`、把 `functionNames/functionTypes` 传给 `IRToMSLConverter.convert(...)`，并稳定输出 replay `.metal` 与 `replay-summary.json`；`Scripts/ir_to_msl_smoketest.sh` 已改为兼容 wrapper | | |
-| E-005b | ↳ 批量 Metal 编译与失败报告 | TODO | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
-|  | 对 replay 输出批量执行编译，输出按错误模式聚类的报告，替代手工翻 diagnostics | | |
+| E-005b | ↳ 批量 Metal 编译与失败报告 | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
+|  | `corpus_replay_runner.py` 已支持 `--compile`、`compile-summary.json`、`primaryDiagnostic/sourceContext`、failure clusters 与可选 preflight；`test-data/*.ll` 最小验证结果为 replay `17/17` 成功、Metal compile `10/17` 成功 | | |
 | E-005c | ↳ 新旧转换结果 diff / 回归基线 | TODO | |
 |  | 对比不同版本 `IRToMSLConverter` 在同一 corpus 上的输出变化，防止修一个坏两个 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
@@ -219,6 +221,7 @@ PlayTools.framework (注入到 iOS app)
 - **离线 replay 可以替代大部分回归，但不能替代最终真实渲染验证**：`IR -> MSL -> Metal 编译` 只能证明“更接近正确”，不能替代真实 GPU 渲染、时序与 `.gputrace` 可见性的最终确认
 - **IR metadata 仍是精确类型信息的主要来源**：opaque pointer 模式下，很多参数/返回类型只能从 `!air.vertex` / `!air.fragment` / `!air.kernel` metadata 恢复
 - **已知坏 MSL 不要继续盲编译**：preflight、batch compile 和 diagnostics 的价值，是把问题从“运行时崩溃”前移到“可离线定位的源码问题”
+- **failure cluster 报告比手翻 diagnostics 更适合作为日常 blocker 看板**：`compile-summary.json` 现在会同时保留 `clusterKey`、`primaryDiagnostic` 与局部 `sourceContext`，优先按簇归因，再回到单样本源码查看细节
 - **更细的 lowering 经验、历史 live blocker 链路与已完成轮次见 archive**：主文档只保留当前仍影响决策的流程性经验
 
 ## 参考信息

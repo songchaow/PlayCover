@@ -4,9 +4,9 @@
 
 当前进度：
 
-- `E-005a` **已完成**：`Scripts/corpus_replay_runner.py`
-- `E-005b` **下一步**：批量 Metal 编译与失败归因
-- `E-005c` **后续**：新旧转换结果 diff / 回归基线
+- `E-005a` **已完成**：`Scripts/corpus_replay_runner.py` 的稳定 replay 入口
+- `E-005b` **已完成**：batch compile / preflight / 失败聚类报告
+- `E-005c` **下一步**：新旧转换结果 diff / 回归基线
 
 ## 目标
 
@@ -19,9 +19,9 @@ IRToMSLConverter.convert(...)
   ↓
 新的 .metal
   ↓
-（下一步）Metal 编译 / 失败聚类
+（已完成）Metal 编译 / 失败聚类 / preflight
   ↓
-（后续）新旧输出 diff / 回归基线
+（下一步）新旧输出 diff / 回归基线
 ```
 
 也就是说，E-004 负责**沉淀真实输入**，E-005 负责**稳定消费这些输入**。
@@ -118,46 +118,156 @@ Scripts/ir_to_msl_smoketest.sh \
   build/test_addrspace.generated.metal
 ```
 
-## 与 E-005b / E-005c 的边界
+## E-005b：batch compile / preflight / failure report
+
+### 已落地能力
+
+`Scripts/corpus_replay_runner.py` 现已直接支持在 replay 后继续执行 batch compile：
+
+- 新增 `--compile`：对每个 replay 成功样本执行 `xcrun --sdk <sdk> metal -c`
+- 新增 `--compile-report-file`：允许自定义 `compile-summary.json` 输出路径
+- 新增 `--metal-sdk` / `--metal-arg`：允许透传宿主 Metal 编译参数
+- 新增 `--skip-preflight`：必要时可绕过 LLVM token 泄漏预检，强制继续编译
+
+### 预检与失败归因
+
+batch compile 不只是“跑一遍 metal”：
+
+1. **preflight**
+   - 复用 runtime 侧 `validateAggregateReplacementSource(...)` 的思路
+   - 在真正调用 `xcrun metal` 之前扫描明显的 LLVM token 泄漏：
+     - `ptr`
+     - `addrspace(...)`
+     - `%foo`
+     - `i32 / i64`
+     - `undef / poison / zeroinitializer`
+     - `@symbol`
+
+2. **结构化诊断**
+   - 解析 Metal 编译器输出中的 `file:line:column: error:` 记录
+   - 为每个失败样本保存：
+     - `primaryDiagnostic`
+     - 出错行附近的 `sourceContext`
+     - 原始 `stdout/stderr`
+     - `clusterKey / clusterCategory / clusterTitle`
+
+3. **失败聚类**
+   - 按归一化后的主错误消息聚类
+   - 当前内建分类包括：
+     - `undeclared_identifier`
+     - `unknown_type`
+     - `missing_member`
+     - `address_space`
+     - `overload_resolution`
+     - `invalid_conversion`
+     - `syntax`
+     - `redefinition`
+     - `unsupported_builtin`
+
+### 当前输出
+
+默认批量输出目录现已变为：
+
+```text
+build/shader-corpus-replay/<timestamp>/
+  replay-summary.json
+  compile-summary.json
+  manual/ 或 <bundleId>/modules/<moduleKey>/
+    replayed.generated.metal / <name>.generated.metal
+    replayed.generated.air   / <name>.generated.air
+```
+
+其中：
+
+- `replay-summary.json`
+  - 保留 `E-005a` 的 replay 信息
+  - 在启用 `--compile` 时，为每个结果追加 `compile` 字段
+  - 顶层追加 `compile` 摘要（成功数 / 失败数 / failure clusters / 报告路径）
+
+- `compile-summary.json`
+  - 汇总 batch compile 的结构化结果
+  - 记录：
+    - `compileSucceededJobs`
+    - `compileFailedJobs`
+    - `preflightRejectedJobs`
+    - `failureClusters`
+    - 每个 job 的 `primaryDiagnostic / sourceContext / compilerOutput`
+
+### 用法
+
+#### 1. replay + batch compile 整个 corpus
+
+```bash
+python3 Scripts/corpus_replay_runner.py \
+  --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus \
+  --compile
+```
+
+#### 2. replay + batch compile 一批显式 `.ll`
+
+```bash
+python3 Scripts/corpus_replay_runner.py \
+  --compile \
+  --allow-failures \
+  --ll LocalDocs/XCodeReleaseShaderDebug/RoadE-HookMakeLibraryWithSrc/test-data/test_addrspace.ll \
+  --ll LocalDocs/XCodeReleaseShaderDebug/RoadE-HookMakeLibraryWithSrc/test-data/test_casts.ll \
+  --output-root build/road-e-batch-compile
+```
+
+#### 3. 需要额外 Metal 参数时
+
+```bash
+python3 Scripts/corpus_replay_runner.py \
+  --compile \
+  --metal-sdk macosx \
+  --metal-arg -std=macos-metal3.1 \
+  --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus
+```
+
+### 本轮最小验证
+
+本轮已执行：
+
+1. `test-data/*.ll` 的批量 replay + batch compile
+2. `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`
+
+验证结果：
+
+- replay：`17 / 17` 成功
+- Metal compile：`10 / 17` 成功，`7 / 17` 失败
+- failure clusters：共 `6` 类，当前最显著为：
+  - `undeclared_identifier`：`2` 个样本（如 `uv` / `param2` 未定义）
+  - `invalid_conversion`
+  - `missing_member`
+  - `overload_resolution`
+
+这说明 **`E-005b` 已经把“手工抽样编译”收口成“可批量运行、可落盘、可聚类归因”的稳定工具**，离线主回路已经真正闭环到“可编译性”层面。
+
+## 与 E-005c 的边界
 
 ### 本轮刻意**不**做的事
 
 以下能力仍然归后续子任务：
 
-- `E-005b`：对 replay 输出批量执行 `xcrun metal -c`
-- `E-005b`：按编译错误模式聚类、归因、汇总
 - `E-005c`：保存多版本 replay 基线
 - `E-005c`：输出新旧 `.metal` 的结构化 diff
+- `E-005c`：把 compile 结果与历史基线做回归对比
 
-### 本轮已经为后续预留的接口
+### `E-005c` 的直接输入
 
-当前 runner 已经把后续需要的关键输入稳定化：
+当前 runner 已经把下一步 diff / baseline 所需的输入稳定化：
 
 - replay 输出路径稳定
-- 结构化 JSON summary 稳定
-- baseline `module.generated.metal` 可直接比较
-- `module.meta.json` 中的函数信息已经被 replay 消费
+- `compile-summary.json` 稳定
+- 每个失败样本的 `primaryDiagnostic / sourceContext / clusterKey` 已稳定化
+- baseline `module.generated.metal` 仍可直接比较
 
-因此 E-005b / E-005c 可以直接建立在这份 summary 和输出目录之上，无需再反过来修改 E-005a 的输入规范。
-
-## 验证建议
-
-本阶段的最小验证方式：
-
-1. 用 `test-data/` 跑单样本 replay
-2. 用小型 corpus fixture 或真实 `ShaderCorpus/` 跑批量 replay
-3. 抽样执行：
-
-```bash
-xcrun --sdk macosx metal -c <generated.metal> -o <generated.air>
-```
-
-注意：第 3 步只是当前阶段的**验证手段**，不等于 `E-005b` 已完成；`E-005b` 的定义是“把这一步做成批量工具和报告”。
+因此 `E-005c` 可以直接建立在 replay + compile 两份 summary 之上，无需回头调整 `E-005a / E-005b` 的输入协议。
 
 ## 下一步
 
-当前 E-005 主线已经从“先有 replay 入口”切到：
+当前 E-005 主线已经从“先有 replay 入口”推进到：
 
-- `E-005b`：批量 Metal 编译 + 失败报告
+- `E-005c`：新旧转换结果 diff / 回归基线
 
-只有把 replay 输出系统性编译一遍，离线主回路才算真正闭环。
+只有在同一 corpus 上稳定比较“改前 vs 改后”的 replay / compile 结果，离线主回路才真正具备回归防退化能力。

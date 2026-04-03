@@ -1,0 +1,84 @@
+# Road E Dashboard 归档参考
+
+## 作用
+
+本文档用于承接从 `00-Dashboard.md` 主体下沉的历史信息：旧 live 样本、已完成子任务的详细脉络，以及当前不再需要长期占据 dashboard 主体的经验。`00-Dashboard.md` 只保留当前主线、最新验证、正在推进的 TODO 和仍会影响决策的经验。
+
+## 历史 live 样本归档
+
+> 当前最新 live 结果以 `00-Dashboard.md` 为准；这里仅保留更早样本的简要脉络，方便回看 blocker 是如何逐步前移的。
+
+| 时间 / 阶段 | 关键现象 | 结论 |
+|---|---|---|
+| 2026-04-02，host bridge 修复前 | 重启 PlayCover、重新注入后，`session` 与 `capture_metal_frame` 都能稳定执行；但 `.gputrace` 中 `valid_msl=0`，注入 runtime 内 `posix_spawn(llvm-dis)` 统一报 `Operation not permitted` | 当时主 blocker 仍是 injected runtime 直接拉起 `llvm-dis` 的权限问题 |
+| 2026-04-02，host bridge 修复后受控 5 轮复测 | `session` 能 `ready`，但很快 `disconnected`，每轮都新增 `Yuanshen-*.ips`；统一日志已进入 `LibrarySourceInjection` 主路径，并稳定出现 `source recompile failed: expected unqualified-id` | blocker 从“无法执行 `llvm-dis`”前移到 “IR→MSL 产物本身无效” |
+| 2026-04-03，preflight guard 后单轮对照复测 | `session` 一度可维持约 73 秒，`get_capture_status` 返回 `available=true`，但最终 crash 栈顶落在 `playcover.toucher` 的 `Toucher.touchcam(...)` Optional unwrap | preflight guard 已显著改变 live 表现，说明应先隔离 toucher / keymapping 干扰 |
+| 2026-04-03，关闭 `keymapping` 后 2 轮受控复测 | crash 从 `playcover.toucher` 转回 `UnityGfxDeviceWorker`；同时 `ShaderSourceDiagnostics` 再次出现 `preflight_rejected` / `compile_failed`，坏行示例为 `fragment float4{ <4 xlatMtlMain(...)` | toucher / keymapping 干扰已基本剥离，主 blocker 回到 IR→MSL lowering |
+| 2026-04-03，`E-006a2d3` 后单轮 live 复测 | `create_session(timeout=30)` 在 30 秒内未等到 runtime 注册；新的 diagnostics 已从 `<N x T>` / `%...` 残留前移到 vertex `xlatMtlMain` 的参数映射 / pointer 访问坏行 | 说明 `E-006a2d3` 已清掉一批 SSA/vector 问题，但仍被 vertex `stage_in` / pointer 发射拦住 |
+
+## 已完成子任务归档
+
+### E-005：payload 恢复与 runtime library 替换
+
+- **`E-005a` / `E-005b`**：`pc_newLibraryWithData` 主路径已接入 `bitcode 提取 → llvm-dis → IRToMSLConverter → makeLibrary(source:)`；多 module 聚合也已落地，并明确采用“全成全退”策略。
+- **`E-005e` 当前结论**：对已知真实样本，wrapper / header-compat / function list / `OFFT` slicing 已打通；raw `MTLB` / `xar` / `bplist_keyed_archive` recovered payload 都已推进到 `OK modules=3 functions=3` 且 `valid_llvm=3`。这条链路对当前已知样本不再是主 blocker。
+- **`E-005e1 / E-005e1b`**：已补 `payload` 指纹、前导字节、`dispatch_data` 运行时类名，以及非 `MTLB` payload 的调用栈诊断，便于下一轮 live 样本反推上游来源。
+- **`E-005e2a` 系列**：已落地通用 wrapper 剥离、`mtlb_suspicious` 二次剥离、非标准 raw `MTLB` header 兼容解析，并把未识别或已 recovered 的 payload 落盘到 `ShaderPayloadSamples`。
+- **`E-005e2b` 系列**：已打通 `gzip`、`zip`、`xar`、`NSKeyedArchiver bplist` 的定向恢复路径；剩余“其他自定义 archive / keyed archive”仅在出现新的真实样本时再继续。
+
+### E-006：live blocker 前移路径
+
+- **`E-006a1`**：runtime→host `llvm-dis` bridge 已落地；`RegistrationListener` / `MCPManager` / `LLVMToolManager` 可承接 `host_disassemble_bitcode`，runtime 侧改为优先走 bridge。
+- **`E-006a2a`**：`LibrarySourceInjectionService` 已在 `makeLibrary(source:)` 前加入 preflight，并把 `preflight_rejected` / `compile_failed` 的聚合源码和上下文落到 `ShaderSourceDiagnostics/<bundleId>/`。
+- **`E-006a2b`**：preflight guard 改变了 live 基线，说明问题已不再只是“刚 ready 就掉线”，而是开始进入更可定位的 runtime / shader 主线分流。
+- **`E-006a2c1 / E-006a2c2`**：先修 `Toucher.touchcam` 的 `keyWindow` 空值崩溃，再通过禁用 `keymapping` 的受控复测把 toucher 干扰从 shader 主线里剥离。
+- **`E-006a2d1`**：修 fragment packed-return 误判为向量的问题；最小样本验证 `<{ <4 x float> }>` 必须先走 aggregate 分支。
+- **`E-006a2d2a`**：修 metadata→参数映射、suffixed SSA 回接，以及 `fadd/fmul/fdiv fast` 共享类型二元算术解析。
+- **`E-006a2d2b`**：修 texture/sampler 形参发射、自定义 struct 字段命名/定义、`air.struct_type_info` 提取和 fragment `stage_in` 合成。
+- **`E-006a2d3`**：修 vertex aggregate return 与向量维度收敛；return metadata 现可驱动真正的 entry output struct 发射。
+- **`E-006a2d4`**：修 vertex `stage_in` 参数映射与 pointer-like SSA 发射；live 已确认 `param1/param2/param3`、`device T*` 坏访问与 `*(&...)` 不再出现。
+- **当前交接到 `E-006a2e2`**：最新 blocker 已从 vertex `stage_in` / pointer 发射前移到 `undef` 与 `0xH8000` half immediate 的 lowering。
+
+## 经验归档
+
+### Payload / wrapper 恢复
+
+- **真实 `headerSize=15` 样本里的 `OFFT` payload 是 3×`UInt64` 三元组**：前两项分别是 public/private metadata 偏移，第 3 项才是 bitcode section 内相对偏移；此前误读首个 `UInt64` 才会把 3 个 module 错切成 `0/8/16`。
+- **`functionList` section 不能从 offset 0 直接按 tag 流读取**：真实 `headerSize=15` 样本在 section 开头先放 `4-byte entryCount`，每个函数 entry 再以 `4-byte tagGroupSize` 开头；`functionListSize` 看起来只覆盖各 entry 的 size 总和，不包含最前面的 `entryCount`。
+- **`OFFT` / `MDSZ` 这类 payload 的定长字段不要直接 `withUnsafeBytes.load(as:)`**：在 macOS/iOS 运行时可能触发未对齐访问崩溃，统一走按字节拼装的 `UInt16/32/64` helper 更稳。
+- **`headerSize=0` 失败场景现在应先看 payload 指纹日志**：确认 `dispatch_data` 类名、hex / ASCII 前导字节，以及 `MTLB/bplist/zip/gzip/llvm bitcode` 等格式指纹，再决定是否继续解包。
+- **对可疑 `MTLB` 应先尝试 direct compat parse**：`MTLB` magic 不是 raw metallib 的充分条件，但 `headerSize` 异常也不等于假头；`xar` / `NSKeyedArchiver` 解包后的 payload 可能就是 offset 0 的异常 raw `MTLB`。
+- **`NSKeyedArchiver` 本质仍是 `bplist`，但应单独标成 `bplist_keyed_archive`**：优先把 `$objects[...]` 当作专用候选空间，再配合 `$top` / `CF$UID` 追踪，诊断语义更完整。
+- **`gzip` / `zip` / `xar` 的恢复策略已经定型**：`gzip` 优先走 `inflateInit2(15 + 32)`，`zip` 先读 central directory 再 fallback 扫 local header，`xar` 则先抓 big-endian header + zlib TOC + heap entry。
+
+### Host bridge / runtime 约束
+
+- **`NSHomeDirectory()` 在 injected runtime 中返回的是目标 app 容器，不是宿主用户 Home**：宿主 LLVM 工具链路径不能直接基于它拼接。
+- **PlayTools 是 iOS target**：不能依赖 `Foundation.Process`；若必须在 injected runtime 内起子进程，只能自己走 `posix_spawn`。
+- **真正拦住 `llvm-dis` 的不是“找不到工具”，而是目标 app 的 macOS sandbox**：`composeEntitlements()` 会带 `com.apple.security.app-sandbox = true`，SBPL 中明确有 `(deny process-fork)`。
+- **现有 `RegistrationListener` 足够承接一次性 runtime→host 工具请求**：不必额外新开 IPC；新增短连接 `command` / `commandResponse` 即可。
+
+### IR→MSL 历史修复
+
+- **`<{ ... }>` packed return 必须先于 `<N x T>` 向量分支处理**：否则会把 packed aggregate 错拆成 `float4{ <4` 这类坏函数签名。
+- **参数映射必须按 metadata `argIndex` 精确回接，且不能继续跳过 `air.vertex_input`**：否则 vertex `%0/%1/%2` 容易退化成 `param0/param1/param2`。
+- **`parseMetadataFuncNode` 里拿参数列表引用时，不能把开头的 `ptr @func` 也算进 `refs` 下标**：`parseMetadataRefList(...)` 实际只返回 `!N` 引用。
+- **`setupParameterMappings` 必须吃“纯 IR 参数列表”，不能喂整条 `define ...` 签名**：否则会出现把 `long(tid)` 错翻成 `long(vectorOut)` 这类回接错误。
+- **LLVM 二元算术要按 `<type> lhs, rhs` 的共享类型文法解析**：尤其是 `fadd/fmul/fdiv fast` 的第二个操作数不会重复写类型。
+- **metadata token 拆分必须识别引号上下文**：`!"texture2d<float, sample>"` 这类字符串内部自带逗号，不能按普通 token 切。
+- **`parseStructFieldInfoFromMetadata` 必须先取 `=` 右侧的 node content**：否则 `Uniforms` / `Particle` 这类字段表会一直为空。
+- **vertex/fragment 的 return metadata 不只是用来判断 stage type**：它还必须驱动真正的 entry output struct 发射。
+- **`shufflevector ... <N x i32> zeroinitializer` 的结果维度必须跟着 mask type 走**：不能把 `zeroinitializer` 一律当成 4 维。
+
+### Live 复测方法论
+
+- **host bridge 版本 live 复测要同时看 session、进程、crash report 与 diagnostics**：`create_session` 返回 `ready` 只能说明 runtime 曾注册过，不能说明应用已经稳定。
+- **“`llvm-dis` 权限问题已解”不等于 live 主线已通**：统一日志里看到 `LibrarySourceInjection` 主路径稳定执行，往往意味着问题已经前移到 IR→MSL 产物 / fallback / 运行时稳定性层。
+- **先堵 toucher 自身硬崩溃，再做 keymapping 隔离复测**：这样才能把 shader 主线问题和输入路径问题拆开看。
+- **关闭 `keymapping` 后若 crash 从 `playcover.toucher` 转回 `UnityGfxDeviceWorker`，说明 toucher 干扰已基本剥离**。
+- **即使 `session` 从未 `ready`，live 复测也要同时对齐 diagnostics 与 crash 时间线**：diagnostics 往往比 MCP 的 session 状态更早给出有效信号。
+
+## 参考跳转
+
+- 当前主线、最新验证与最新 TODO：`00-Dashboard.md`
+- metallib / bitcode / llvm-dis / IR→MSL 主实现记录：`E-004-MetallibSourceExtraction.md`

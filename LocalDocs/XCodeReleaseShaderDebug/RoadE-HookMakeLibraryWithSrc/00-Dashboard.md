@@ -20,7 +20,7 @@
 1. 读取本文档，先理解**当前主线**与 **TODO** 的最新状态
 2. 从 **TODO** 中选取当前最高优先级的 **一个** 未完成任务执行
 3. 若任务过大，先拆分到 TODO，再只完成其中一个
-4. 若这次实现了新功能，尽可能做**实际测试**；若受环境限制，至少做**模拟性质、离线或最小样本测试**
+4. 若这次实现了新功能，尽可能做**实际测试**(使用skill或mcp)；若受环境限制，至少做**模拟性质、离线或最小样本测试**
 5. 执行完毕后整理文档：结合已有内容，**深度整理并同步全局信息**，更新优先级、当前主线、TODO、验证与经验；较旧信息可下沉到独立参考文档，主体保持简洁，**不要只做追加**
 6. 整理代码与改动内容；若本轮新增的测试脚本或辅助脚本对后续仍有价值，也应一并整理并提交
 7. 收尾完成后执行 `git commit`
@@ -37,7 +37,7 @@
 
 ## 当前主线
 
-- **E-006（下一步：`E-006a2e6` live 重装 / 重注入复测）**：`E-006a2e5` live 复测已完成 — `E-006a2e4` 三类 blocker（`clamp`/`fma` ambiguous、`bool2→bool`、`uint8_t2`）全部消除。新 blocker 收敛到 1 类：integer literal 带非法 `h` 后缀（`3h`/`0h`，Metal 只允许浮点字面量使用 `h`）。`E-006a2e5` 已修复 `appendHalfSuffixIfFPLiteral` 使整数字面量转为 `3.0h`/`0.0h`，编译通过。下一步需 live 复测确认该 blocker 是否消除。
+- **E-006（下一步：`E-006a2e7` live 重装 / 重注入复测）**：`E-006a2e6` live 复测已完成 — `E-006a2e5` integer literal `h` 后缀 blocker 已消除 ✅。新 blocker 收敛到 1 类：struct 返回类型的 `ret undef`/`ret zeroinitializer` 产出 `return 0;`（应为 `return StructType();`）。仅影响 fragment `xlatMtlMain` 天空 shader（`XlatMtlMain_Out` 结构体）。`E-006a2e6` 已修复 `translateRet` 增加结构体类型零初始化分支，编译通过，待 `E-006a2e7` 复测。
 - **E-005b**：多 bitcode module 的源码聚合 / 替换策略已稳定，仍坚持"**全成全退**"。全部有效 LLVM module 都能完成 `llvm-dis + IRToMSLConverter` 且聚合后无重名时才单次 `makeLibrary(source:)` 重编译，否则整体 fallback。
 - **E-005e**：payload 恢复链路对已知样本已打通，**不再是当前主线**。
 
@@ -57,9 +57,10 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 | 样本 | 结果 |
 |---|---|
-| 原神 6.4.0 外网包（2026-04-03，`E-006a2e5` live 复测） | 按 `PLAYCOVER_INSTALL_MODE=user ./BuildScripts/build_and_install.sh` 重装 GUI + `remove_playtools` / `inject_playtools` / `launch_app` / `create_session(timeout=30)`。`session` 在 10 秒内 `ready` 后 ~15 秒 `disconnected`（无新 crash report，与 `E-006a2e3` 一致）。`ShaderSourceDiagnostics` 仅 1 个 `compile_failed`（vertex `xlatMtlMain` 天空 shader），`E-006a2e4` 三类旧 blocker（`clamp`/`fma` ambiguous ×5、`bool2→bool`、`uint8_t2`）全部消除。新 blocker 收敛到 1 类：`3h`/`0h` 非法（integer literal 不能用 `h` 后缀，应为 `3.0h`/`0.0h`）。已修复并编译通过，待 `E-006a2e6` 复测 |
+| 原神 6.4.0 外网包（2026-04-03，`E-006a2e6` live 复测） | 按 `PLAYCOVER_INSTALL_MODE=user ./BuildScripts/build_and_install.sh` 重装 GUI + `remove_playtools` / `inject_playtools` / `launch_app` / `create_session(timeout=30)`。`session` 在 10 秒内 `ready` 后 ~10 秒 `disconnected`（无新 crash report，与历史一致）。`ShaderSourceDiagnostics` 仅 1 个 `compile_failed`（fragment `xlatMtlMain` 天空 shader）。`E-006a2e5` integer literal `h` 后缀 blocker 已消除 ✅。新 blocker：struct 返回类型的 `ret undef`/`zeroinitializer` 产出 `return 0;`（`XlatMtlMain_Out` 结构体不能从 `int` 隐式构造）。已修复 `translateRet` 增加结构体零初始化分支，编译通过，待 `E-006a2e7` 复测 |
+| 原神 6.4.0 外网包（2026-04-03，`E-006a2e5` live 复测） | `E-006a2e4` 三类旧 blocker（`clamp`/`fma` ambiguous ×5、`bool2→bool`、`uint8_t2`）全部消除。新 blocker 收敛到 1 类：`3h`/`0h` 非法（integer literal 不能用 `h` 后缀，应为 `3.0h`/`0.0h`）。`E-006a2e5` 已修复并编译通过 |
 | 原神 6.4.0 外网包（2026-04-03，`E-006a2e3` live 复测） | blocker 收敛到三类：①`clamp`/`fma` ambiguous（half + double literal）；②`bool2` 赋给 `bool`；③`uint8_t2` 不存在。`E-006a2e4` 已全部修复 |
-| 历史 live 样本摘要（2026-04-02 ～ 2026-04-03） | 主线演进：`host bridge` 权限 → `source recompile failed` → preflight guard → toucher/keymapping 隔离 → vertex `stage_in`/pointer → `undef`/`0xH8000` → intrinsic 类型歧义 → integer literal `h` 后缀。更早细节见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
+| 历史 live 样本摘要（2026-04-02 ～ 2026-04-03） | 主线演进：`host bridge` 权限 → `source recompile failed` → preflight guard → toucher/keymapping 隔离 → vertex `stage_in`/pointer → `undef`/`0xH8000` → intrinsic 类型歧义 → integer literal `h` 后缀 → struct return `0`。更早细节见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
 
 **人工确认（最终）**：Xcode 打开 `.gputrace` → 选 Draw Call → 查看 Shader 面板是否显示源码而非 `Shader source not found`。
 
@@ -81,7 +82,7 @@ PlayCover 主应用 (macOS)
 
 ## TODO
 
-> 当前最高优先级：`E-006a2e6`（`E-006a2e5` integer literal `h` 后缀修复后的 live 重装 / 重注入复测）。更早 live 样本、已完成子任务的详细归因，以及旧 blocker 的完整历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
+> 当前最高优先级：`E-006a2e7`（`E-006a2e6` struct return `0` 修复后的 live 重装 / 重注入复测）。更早 live 样本、已完成子任务的详细归因，以及旧 blocker 的完整历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -97,7 +98,7 @@ PlayCover 主应用 (macOS)
 | E-005d | ↳ 缓存与观测性 | TODO | |
 |  | 以 metallib 内容或 bitcode 模块 `(offset,size)` / hash 为键缓存处理结果，并补充 success / fallback reason 日志 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
-|  | 当前主线：`E-006a2e5` live 复测已确认 `E-006a2e4` 三类 blocker 全清，新 blocker 收敛到 integer literal 非法 `h` 后缀（`3h`/`0h` → 应为 `3.0h`/`0.0h`）。`E-006a2e5` 已修复并编译通过，下一步 `E-006a2e6` live 复测 | | |
+|  | 当前主线：`E-006a2e6` live 复测已确认 `E-006a2e5` integer literal `h` 后缀 blocker 消除 ✅，新 blocker 收敛到 struct 返回类型 `ret undef`/`zeroinitializer` 产出 `return 0;`。`E-006a2e6` 已修复 `translateRet` 增加结构体零初始化分支，编译通过，下一步 `E-006a2e7` live 复测 | | |
 | E-006a | ↳ 解决 injected runtime 调 `llvm-dis` 的执行权限 blocker | ✅ DONE | |
 |  | 核心权限 blocker 已在 `E-006a1` 解决；host bridge 已通过 live 复测稳定运行 | | |
 | E-006a1 | ↳ runtime→host `llvm-dis` bridge 落地 | ✅ DONE | |
@@ -105,7 +106,7 @@ PlayCover 主应用 (macOS)
 | E-006a2 | ↳ host bridge 版本的 live 重装 / 重注入 / 截帧复测 | 🔄 IN PROGRESS | |
 |  | `E-006a2a`–`E-006a2e` 已把 blocker 从 preflight / toucher / keymapping / vertex `stage_in` / pointer / `undef` / `0xH8000` 一路前移到 intrinsic 类型歧义与 vector icmp/zext lowering；详细过程见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | | |
 | E-006a2e | ↳ `E-006a2d4` 后的 IR→MSL lowering 补洞与 live 复测轮次 | 🔄 IN PROGRESS | |
-|  | `E-006a2e1`–`E-006a2e5` 已完成；`E-006a2e5` 确认 `E-006a2e4` 三类 blocker 全清，新 blocker 收敛到 integer literal `h` 后缀；已修复，下一步 `E-006a2e6` live 复测 | | |
+|  | `E-006a2e1`–`E-006a2e6` 已完成；`E-006a2e6` 确认 `E-006a2e5` integer literal `h` 后缀 blocker 消除 ✅，新 blocker 收敛到 struct 返回 `return 0;`；已修复，下一步 `E-006a2e7` live 复测 | | |
 | E-006a2e1 | ↳ `E-006a2d4` 后首轮 live 归因复测 | ✅ DONE | |
 |  | 已确认 vertex `stage_in` / `device T*` / `*(&...)` 旧 blocker 不再出现；`session` 已能 `ready` 后再掉线，诊断已前移到 `undef` 与 `0xH8000` | | |
 | E-006a2e2 | ↳ `undef` / half 十六进制字面量 lowering 修复 | ✅ DONE | |
@@ -116,6 +117,8 @@ PlayCover 主应用 (macOS)
 |  | 三类修复：①intrinsic（`clamp`/`fma` 等）调用时 literal 参数类型应匹配首个操作数类型（`half` → `0.0h`）；②vector `fcmp`/`icmp` 结果应为 `boolN` 而非 `bool`；③`zext <N x i1> to <N x i8>` 应映射为 `ucharN` 而非 `uint8_tN`。额外修复：`translateIntCast` 中 `zext`/`sext` 应走 `irIntegerTypeToMSL` 而非 `irScalarTypeToMSL`。`test-data/test_intrinsic_vector_icmp_zext.ll/.metal` 已补，smoketest + Metal 编译通过 | | |
 | E-006a2e5 | ↳ `E-006a2e4` 后 live 复测 + integer literal `h` 后缀修复 | ✅ DONE | |
 |  | Live 复测确认 `E-006a2e4` 三类 blocker（`clamp`/`fma` ambiguous ×5、`bool2→bool`、`uint8_t2`）全部消除，新 blocker 收敛到 1 类：integer literal 被非法追加 `h` 后缀（`3h`/`0h`，Metal 只允许浮点字面量使用 `h`）。修复 `appendHalfSuffixIfFPLiteral`：整数字面量（不含 `.` 或 `e`）先转为浮点形式再追加 `h`（`3` → `3.0h`）。`test-data/test_int_literal_half_suffix.ll` 已补，编译通过 | | |
+| E-006a2e6 | ↳ `E-006a2e5` 后 live 复测 + struct return `0` 修复 | ✅ DONE | |
+|  | Live 复测确认 `E-006a2e5` integer literal `h` 后缀 blocker 已消除 ✅。新 blocker 收敛到 1 类：struct 返回类型的 `ret undef`/`ret zeroinitializer` 产出 `return 0;`（应为 `return StructType();`），仅影响 fragment `xlatMtlMain`（`XlatMtlMain_Out` 结构体）。修复 `translateRet`：当 `resolveIROperand` 返回 `"0"` 且 `functionReturnType` 是结构体类型（`isStructTypeName`）时，改用 `return StructType();` 零初始化。`test-data/test_ret_struct_undef.metal` 已补，`FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 编译通过 | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
 |  | 添加 `injectShaderSources` 开关到 AppSettings / AppSettingsView；添加 LLVM 工具链下载 / 状态 UI | | |
 
@@ -136,6 +139,7 @@ PlayCover 主应用 (macOS)
 - **vector `icmp` 结果是 `boolN`，不能赋给 `bool`**：`<2 x half>` 的 `icmp eq` 产出 `<2 x i1>`，应翻译为 `bool2` 而非 `bool`
 - **`zext <N x i1> to <N x i8>` 不能映射为 `uint8_tN`**：MSL 没有 `uint8_t2` 类型，应使用 `uchar2`（即 `vector<uint8_t, 2>`）。`E-006a2e4` 已修 — `translateIntCast` 中 `zext`/`sext` 改为走 `irIntegerTypeToMSL`（而非 `irScalarTypeToMSL`），且 `irIntegerTypeToMSL` 内对 `i8` 向量元素特殊处理为 `ucharN`
 - **vector `fcmp`/`icmp` 结果是 `boolN`，不能赋给 `bool`**：`E-006a2e4` 已修 — `translateFCmp`/`translateICmp` 都从操作数 IR 类型提取向量维度，`dim > 1` 时 `knownType` 设为 `bool\(dim)`
+- **struct 返回类型的 `ret undef`/`zeroinitializer` 不能用 `return 0;`**：`E-006a2e6` 已修 — `translateRet` 中当 `resolveIROperand` 返回 `"0"` 且 `functionReturnType` 是结构体类型（通过 `isStructTypeName` 判断）时，改用 `return StructType();` 零初始化。根因：`resolveIROperand` 将 `undef`/`poison`/`zeroinitializer` 统一转为 `"0"` 不考虑上下文类型
 - **更早的 wrapper 恢复、host bridge、live 基线与 IR→MSL 历史修复经验见 [00-Dashboard-Archive](00-Dashboard-Archive.md)**：dashboard 主体只保留当前仍会影响决策的经验
 
 ## 参考信息

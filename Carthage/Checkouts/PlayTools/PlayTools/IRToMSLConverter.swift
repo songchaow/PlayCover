@@ -4365,6 +4365,12 @@ struct IRToMSLConverter {
                !ctx.functionReturnType.isEmpty,
                ctx.functionReturnType != "void" {
                 ctx.emit("return \(ctx.functionReturnType)\(val);")
+            } else if val == "0" && !ctx.functionReturnType.isEmpty
+                        && ctx.functionReturnType != "void"
+                        && isStructTypeName(ctx.functionReturnType) {
+                // E-006a2e6: undef/poison/zeroinitializer 返回结构体时，
+                // "0" 不能隐式转换为结构体类型，使用零初始化构造
+                ctx.emit("return \(ctx.functionReturnType)();")
             } else {
                 ctx.emit("return \(val);")
             }

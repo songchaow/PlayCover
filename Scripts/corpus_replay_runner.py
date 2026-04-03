@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import difflib
+import hashlib
 import json
 import re
 import shlex
@@ -362,6 +364,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="即使检测到明显的 LLVM token 泄漏，也继续尝试执行 Metal 编译",
     )
     parser.add_argument(
+        "--baseline-report",
+        help="历史 replay-summary.json 或 save-baseline 生成的 baseline.json；用于对当前结果做 diff / 回归比较",
+    )
+    parser.add_argument(
+        "--save-baseline",
+        help="把当前结果保存为可复用基线快照（JSON + generated sources）",
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="仅写文件，不打印人类可读摘要",
@@ -483,6 +493,19 @@ def make_compile_report_path(
     return report_path.with_name(f"{report_path.stem}.compile.json").resolve()
 
 
+def normalize_generated_msl(text: str) -> str:
+    lines = []
+    for line in text.splitlines():
+        if line.startswith("// Generated at:"):
+            continue
+        lines.append(line.rstrip())
+    return "\n".join(lines).strip()
+
+
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def same_file_contents(left: Path, right: Path) -> bool | None:
     if not left.is_file() or not right.is_file():
         return None
@@ -498,15 +521,39 @@ def same_file_contents(left: Path, right: Path) -> bool | None:
     except UnicodeDecodeError:
         return False
 
-    def normalize_generated_msl(text: str) -> str:
-        lines = []
-        for line in text.splitlines():
-            if line.startswith("// Generated at:"):
-                continue
-            lines.append(line.rstrip())
-        return "\n".join(lines).strip()
-
     return normalize_generated_msl(left_text) == normalize_generated_msl(right_text)
+
+
+def make_comparison_key(source_kind: str | None, bundle_id: str | None, module_key: str | None, input_path: str | None) -> str:
+    if bundle_id and module_key:
+        return f"bundle:{bundle_id}::module:{module_key}"
+    if module_key:
+        return f"module:{module_key}"
+    if input_path:
+        return f"{source_kind or 'input'}:{input_path}"
+    return f"{source_kind or 'unknown'}:job"
+
+
+def sanitize_path_component(value: str | None) -> str:
+    candidate = (value or "unknown").strip()
+    candidate = re.sub(r"[^A-Za-z0-9._-]+", "_", candidate)
+    return candidate or "unknown"
+
+
+def resolve_baseline_snapshot_paths(target: str) -> tuple[Path, Path]:
+    raw_target = Path(target).expanduser().resolve()
+    if raw_target.suffix.lower() == ".json":
+        return raw_target, raw_target.with_name(f"{raw_target.stem}.baseline-assets")
+    return (raw_target / "baseline.json").resolve(), (raw_target / "generated-sources").resolve()
+
+
+def load_text_if_exists(path: Path | None) -> str | None:
+    if path is None or not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
 
 
 def build_runner_binary(temp_dir: Path, converter_swift: Path) -> Path:
@@ -1057,13 +1104,420 @@ def attach_compile_report(report: dict[str, Any], compile_report: dict[str, Any]
     return report
 
 
+def normalize_comparison_message(message: str | None) -> str | None:
+    if message is None:
+        return None
+    normalized = re.sub(r"\s+", " ", message).strip()
+    return normalized or None
+
+
+def extract_entry_comparison_key(entry: dict[str, Any]) -> str:
+    existing = entry.get("comparisonKey")
+    if existing:
+        return str(existing)
+    return make_comparison_key(
+        entry.get("sourceKind"),
+        entry.get("bundleId"),
+        entry.get("moduleKey"),
+        entry.get("inputPath"),
+    )
+
+
+def extract_entry_replay(entry: dict[str, Any]) -> dict[str, Any]:
+    nested = entry.get("replay")
+    if isinstance(nested, dict):
+        return nested
+    return {
+        "success": bool(entry.get("success")),
+        "error": entry.get("error"),
+        "conversionSummary": entry.get("conversionSummary"),
+        "mslBytes": entry.get("mslBytes"),
+        "generatedFunctionNames": entry.get("generatedFunctionNames"),
+        "generatedFunctionTypes": entry.get("generatedFunctionTypes"),
+        "stats": entry.get("stats"),
+    }
+
+
+def extract_entry_compile(entry: dict[str, Any]) -> dict[str, Any] | None:
+    nested = entry.get("compile")
+    if isinstance(nested, dict) and "status" in nested:
+        return nested
+    return None
+
+
+def resolve_entry_generated_source_path(entry: dict[str, Any], baseline_json_path: Path | None = None) -> Path | None:
+    stored = entry.get("baselineSourcePath")
+    if stored and baseline_json_path is not None:
+        return (baseline_json_path.parent / stored).resolve()
+
+    output_path = entry.get("outputPath")
+    if output_path:
+        return Path(output_path).expanduser().resolve()
+    return None
+
+
+def compute_line_change_stats(baseline_lines: list[str], current_lines: list[str]) -> dict[str, int]:
+    added = 0
+    removed = 0
+    changed_hunks = 0
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(a=baseline_lines, b=current_lines).get_opcodes():
+        if tag == "equal":
+            continue
+        changed_hunks += 1
+        if tag in {"delete", "replace"}:
+            removed += i2 - i1
+        if tag in {"insert", "replace"}:
+            added += j2 - j1
+    return {
+        "addedLines": added,
+        "removedLines": removed,
+        "changedHunks": changed_hunks,
+    }
+
+
+def make_diff_artifact_relative_path(result: dict[str, Any]) -> Path:
+    bundle_component = sanitize_path_component(result.get("bundleId") or "manual")
+    if result.get("bundleId") and result.get("moduleKey"):
+        return Path(bundle_component) / "modules" / sanitize_path_component(result.get("moduleKey")) / "replayed-vs-baseline.diff"
+
+    stem = Path(result.get("inputPath") or f"job-{result.get('jobID', 0)}").stem
+    return Path("manual") / f"{int(result.get('jobID', 0)):03d}-{sanitize_path_component(stem)}.diff"
+
+
+def compare_generated_sources(
+    current_result: dict[str, Any],
+    baseline_entry: dict[str, Any],
+    baseline_json_path: Path,
+    diff_dir: Path | None,
+) -> dict[str, Any]:
+    current_path = resolve_entry_generated_source_path(current_result)
+    baseline_path = resolve_entry_generated_source_path(baseline_entry, baseline_json_path)
+    current_text = load_text_if_exists(current_path)
+    baseline_text = load_text_if_exists(baseline_path)
+
+    current_replay = extract_entry_replay(current_result)
+    baseline_replay = extract_entry_replay(baseline_entry)
+    current_available = bool(current_replay.get("success")) and current_text is not None
+    baseline_available = bool(baseline_replay.get("success")) and baseline_text is not None
+    compared = current_available and baseline_available
+
+    comparison = {
+        "currentPath": str(current_path) if current_path else None,
+        "baselinePath": str(baseline_path) if baseline_path else None,
+        "currentAvailable": current_available,
+        "baselineAvailable": baseline_available,
+        "compared": compared,
+        "changed": None,
+        "baselineNormalizedSHA256": None,
+        "currentNormalizedSHA256": None,
+        "lineChanges": None,
+        "diffPreview": [],
+        "diffArtifactPath": None,
+    }
+    if not compared:
+        return comparison
+
+    normalized_current = normalize_generated_msl(current_text)
+    normalized_baseline = normalize_generated_msl(baseline_text)
+    comparison["currentNormalizedSHA256"] = sha256_text(normalized_current)
+    comparison["baselineNormalizedSHA256"] = sha256_text(normalized_baseline)
+    comparison["changed"] = normalized_current != normalized_baseline
+    if not comparison["changed"]:
+        comparison["lineChanges"] = {
+            "addedLines": 0,
+            "removedLines": 0,
+            "changedHunks": 0,
+        }
+        return comparison
+
+    baseline_lines = normalized_baseline.splitlines()
+    current_lines = normalized_current.splitlines()
+    diff_lines = list(
+        difflib.unified_diff(
+            baseline_lines,
+            current_lines,
+            fromfile=str(baseline_path or "baseline"),
+            tofile=str(current_path or "current"),
+            lineterm="",
+        )
+    )
+    comparison["lineChanges"] = compute_line_change_stats(baseline_lines, current_lines)
+    comparison["diffPreview"] = diff_lines[:40]
+    if diff_dir is not None:
+        relative_path = make_diff_artifact_relative_path(current_result)
+        absolute_path = (diff_dir / relative_path).resolve()
+        absolute_path.parent.mkdir(parents=True, exist_ok=True)
+        absolute_path.write_text("\n".join(diff_lines) + "\n", encoding="utf-8")
+        comparison["diffArtifactPath"] = str((Path(diff_dir.name) / relative_path).as_posix())
+    return comparison
+
+
+def summarize_replay_change(current_result: dict[str, Any], baseline_entry: dict[str, Any]) -> dict[str, Any]:
+    current_replay = extract_entry_replay(current_result)
+    baseline_replay = extract_entry_replay(baseline_entry)
+    current_success = bool(current_replay.get("success"))
+    baseline_success = bool(baseline_replay.get("success"))
+    current_error = normalize_comparison_message(current_replay.get("error"))
+    baseline_error = normalize_comparison_message(baseline_replay.get("error"))
+    changed = current_success != baseline_success or (not current_success and current_error != baseline_error)
+    return {
+        "baselineSuccess": baseline_success,
+        "currentSuccess": current_success,
+        "baselineError": baseline_error,
+        "currentError": current_error,
+        "changed": changed,
+        "regression": baseline_success and not current_success,
+        "improvement": (not baseline_success) and current_success,
+    }
+
+
+def summarize_compile_change(current_result: dict[str, Any], baseline_entry: dict[str, Any]) -> dict[str, Any] | None:
+    current_compile = extract_entry_compile(current_result)
+    baseline_compile = extract_entry_compile(baseline_entry)
+    if current_compile is None and baseline_compile is None:
+        return None
+
+    current_status = current_compile.get("status") if current_compile else None
+    baseline_status = baseline_compile.get("status") if baseline_compile else None
+    current_cluster = current_compile.get("clusterKey") if current_compile else None
+    baseline_cluster = baseline_compile.get("clusterKey") if baseline_compile else None
+    available_on_both_sides = current_compile is not None and baseline_compile is not None
+    changed = current_status != baseline_status or current_cluster != baseline_cluster
+    return {
+        "availableOnBothSides": available_on_both_sides,
+        "baselineStatus": baseline_status,
+        "currentStatus": current_status,
+        "baselineClusterKey": baseline_cluster,
+        "currentClusterKey": current_cluster,
+        "changed": changed,
+        "regression": baseline_status == "success" and current_status != "success",
+        "improvement": baseline_status != "success" and current_status == "success",
+    }
+
+
+def compare_report_to_baseline(report: dict[str, Any], baseline_payload: dict[str, Any], baseline_path: Path) -> dict[str, Any]:
+    baseline_results = baseline_payload.get("results") or []
+    baseline_by_key = {extract_entry_comparison_key(item): item for item in baseline_results}
+    current_keys: set[str] = set()
+    report_dir = Path(report.get("outputRoot") or Path(report.get("results", [{}])[0].get("outputPath", baseline_path.parent)).parent).resolve() if report.get("results") else baseline_path.parent
+    diff_dir = (report_dir / "baseline-diffs").resolve()
+
+    matched_jobs = 0
+    new_jobs = 0
+    replay_changed_jobs = 0
+    replay_regressions = 0
+    replay_improvements = 0
+    compile_compared_jobs = 0
+    compile_changed_jobs = 0
+    compile_regressions = 0
+    compile_improvements = 0
+    generated_compared_jobs = 0
+    generated_changed_jobs = 0
+    identical_generated_jobs = 0
+    changed_samples: list[dict[str, Any]] = []
+
+    for result in report.get("results", []):
+        comparison_key = extract_entry_comparison_key(result)
+        current_keys.add(comparison_key)
+        baseline_entry = baseline_by_key.get(comparison_key)
+        if baseline_entry is None:
+            new_jobs += 1
+            result["baselineComparison"] = {
+                "comparisonKey": comparison_key,
+                "baselineFound": False,
+                "status": "new_job",
+            }
+            continue
+
+        matched_jobs += 1
+        replay_change = summarize_replay_change(result, baseline_entry)
+        compile_change = summarize_compile_change(result, baseline_entry)
+        generated_change = compare_generated_sources(result, baseline_entry, baseline_path, diff_dir)
+
+        if replay_change["changed"]:
+            replay_changed_jobs += 1
+        if replay_change["regression"]:
+            replay_regressions += 1
+        if replay_change["improvement"]:
+            replay_improvements += 1
+
+        if compile_change is not None:
+            if compile_change["availableOnBothSides"]:
+                compile_compared_jobs += 1
+            if compile_change["changed"]:
+                compile_changed_jobs += 1
+            if compile_change["regression"]:
+                compile_regressions += 1
+            if compile_change["improvement"]:
+                compile_improvements += 1
+
+        if generated_change["compared"]:
+            generated_compared_jobs += 1
+            if generated_change["changed"]:
+                generated_changed_jobs += 1
+            else:
+                identical_generated_jobs += 1
+
+        changed = replay_change["changed"] or bool(compile_change and compile_change["changed"]) or bool(generated_change["changed"])
+        if changed and len(changed_samples) < 20:
+            changed_samples.append(
+                {
+                    "comparisonKey": comparison_key,
+                    "bundleId": result.get("bundleId"),
+                    "moduleKey": result.get("moduleKey"),
+                    "inputPath": result.get("inputPath"),
+                    "replayChanged": replay_change["changed"],
+                    "compileChanged": bool(compile_change and compile_change["changed"]),
+                    "generatedMSLChanged": bool(generated_change["changed"]),
+                    "regression": replay_change["regression"] or bool(compile_change and compile_change["regression"]),
+                }
+            )
+
+        result["baselineComparison"] = {
+            "comparisonKey": comparison_key,
+            "baselineFound": True,
+            "status": "changed" if changed else "unchanged",
+            "replay": replay_change,
+            "compile": compile_change,
+            "generatedMSL": generated_change,
+        }
+
+    removed_entries = []
+    for comparison_key, entry in baseline_by_key.items():
+        if comparison_key in current_keys:
+            continue
+        if len(removed_entries) >= 20:
+            break
+        removed_entries.append(
+            {
+                "comparisonKey": comparison_key,
+                "bundleId": entry.get("bundleId"),
+                "moduleKey": entry.get("moduleKey"),
+                "inputPath": entry.get("inputPath"),
+            }
+        )
+
+    report["baselineComparison"] = {
+        "baselinePath": str(baseline_path),
+        "baselineGeneratedAt": baseline_payload.get("generatedAt"),
+        "matchedJobs": matched_jobs,
+        "newJobs": new_jobs,
+        "removedJobs": max(0, len(baseline_by_key) - len(current_keys & set(baseline_by_key.keys()))),
+        "replayChangedJobs": replay_changed_jobs,
+        "replayRegressions": replay_regressions,
+        "replayImprovements": replay_improvements,
+        "compileComparedJobs": compile_compared_jobs,
+        "compileChangedJobs": compile_changed_jobs,
+        "compileRegressions": compile_regressions,
+        "compileImprovements": compile_improvements,
+        "generatedMSLComparedJobs": generated_compared_jobs,
+        "generatedMSLChangedJobs": generated_changed_jobs,
+        "identicalGeneratedMSLJobs": identical_generated_jobs,
+        "changedSamples": changed_samples,
+        "removedEntries": removed_entries,
+        "diffArtifactRoot": str(diff_dir),
+    }
+    return report
+
+
+def make_snapshot_source_relative_path(entry: dict[str, Any], asset_root_name: str) -> Path:
+    if entry.get("bundleId") and entry.get("moduleKey"):
+        return Path(asset_root_name) / sanitize_path_component(entry.get("bundleId")) / "modules" / sanitize_path_component(entry.get("moduleKey")) / "baseline.generated.metal"
+
+    stem = Path(entry.get("inputPath") or f"job-{entry.get('jobID', 0)}").stem
+    return Path(asset_root_name) / "manual" / f"{int(entry.get('jobID', 0)):03d}-{sanitize_path_component(stem)}.generated.metal"
+
+
+def save_baseline_snapshot(
+    report: dict[str, Any],
+    target: str,
+    report_path: Path,
+    compile_report_path: Path | None,
+) -> dict[str, Any]:
+    baseline_json_path, asset_root = resolve_baseline_snapshot_paths(target)
+    baseline_json_path.parent.mkdir(parents=True, exist_ok=True)
+    if asset_root.exists():
+        shutil.rmtree(asset_root)
+    asset_root.mkdir(parents=True, exist_ok=True)
+
+    baseline_results: list[dict[str, Any]] = []
+    for result in report.get("results", []):
+        replay = extract_entry_replay(result)
+        compile_record = extract_entry_compile(result)
+        source_path = resolve_entry_generated_source_path(result)
+        source_text = load_text_if_exists(source_path)
+        relative_source_path: str | None = None
+        normalized_hash: str | None = None
+        normalized_line_count: int | None = None
+        if replay.get("success") and source_path is not None and source_text is not None:
+            relative_path = make_snapshot_source_relative_path(result, asset_root.name)
+            destination = (baseline_json_path.parent / relative_path).resolve()
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, destination)
+            relative_source_path = relative_path.as_posix()
+            normalized_source = normalize_generated_msl(source_text)
+            normalized_hash = sha256_text(normalized_source)
+            normalized_line_count = len(normalized_source.splitlines())
+
+        baseline_results.append(
+            {
+                "comparisonKey": extract_entry_comparison_key(result),
+                "sourceKind": result.get("sourceKind"),
+                "bundleId": result.get("bundleId"),
+                "moduleKey": result.get("moduleKey"),
+                "inputPath": result.get("inputPath"),
+                "metadataPath": result.get("metadataPath"),
+                "baselineSourcePath": relative_source_path,
+                "replay": {
+                    "success": bool(replay.get("success")),
+                    "error": replay.get("error"),
+                    "conversionSummary": replay.get("conversionSummary"),
+                    "mslBytes": replay.get("mslBytes"),
+                    "generatedFunctionNames": replay.get("generatedFunctionNames"),
+                    "generatedFunctionTypes": replay.get("generatedFunctionTypes"),
+                    "stats": replay.get("stats"),
+                    "normalizedMSLSHA256": normalized_hash,
+                    "normalizedMSLLineCount": normalized_line_count,
+                },
+                "compile": {
+                    "status": compile_record.get("status"),
+                    "success": compile_record.get("success"),
+                    "error": compile_record.get("error"),
+                    "clusterKey": compile_record.get("clusterKey"),
+                    "clusterCategory": compile_record.get("clusterCategory"),
+                    "clusterTitle": compile_record.get("clusterTitle"),
+                    "primaryDiagnostic": compile_record.get("primaryDiagnostic"),
+                    "preflightIssueCount": compile_record.get("preflightIssueCount"),
+                } if compile_record else None,
+            }
+        )
+
+    baseline_payload = {
+        "schemaVersion": 1,
+        "generatedAt": utc_now_iso(),
+        "tool": "Scripts/corpus_replay_runner.py",
+        "sourceReportPath": str(report_path),
+        "sourceCompileReportPath": str(compile_report_path) if compile_report_path else None,
+        "baselineAssetRoot": asset_root.name,
+        "totalJobs": report.get("totalJobs"),
+        "successfulJobs": report.get("successfulJobs"),
+        "failedJobs": report.get("failedJobs"),
+        "compile": report.get("compile"),
+        "results": baseline_results,
+    }
+    baseline_json_path.write_text(json.dumps(baseline_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {
+        "baselinePath": str(baseline_json_path),
+        "baselineAssetRoot": asset_root.name,
+    }
+
+
 def enrich_report(
     raw_report: dict[str, Any],
     jobs: list[ReplayJob],
     warnings: list[DiscoveryWarning],
     output_root: Path | None,
 ) -> dict[str, Any]:
-    by_job_id = {job.job_id: job for job in jobs}
     raw_results = {result["jobID"]: result for result in raw_report.get("results", [])}
 
     enriched_results: list[dict[str, Any]] = []
@@ -1081,9 +1535,11 @@ def enrich_report(
         if success and job.baseline_generated_msl_path:
             baseline_match = same_file_contents(job.output_path, job.baseline_generated_msl_path)
 
+        comparison_key = make_comparison_key(job.source_kind, job.bundle_id, job.module_key, str(job.input_path))
         enriched_results.append(
             {
                 "jobID": job.job_id,
+                "comparisonKey": comparison_key,
                 "sourceKind": job.source_kind,
                 "bundleId": job.bundle_id,
                 "moduleKey": job.module_key,
@@ -1164,6 +1620,50 @@ def print_summary(report: dict[str, Any], report_path: Path, args: argparse.Name
             for cluster in clusters[:5]:
                 print(f"  - [{cluster['category']}] x{cluster['count']}: {cluster['title']}")
 
+    baseline_summary = report.get("baselineComparison")
+    if baseline_summary:
+        print("=== baseline comparison ===")
+        print(f"baseline: {baseline_summary['baselinePath']}")
+        print(
+            "matched/new/removed: "
+            f"{baseline_summary['matchedJobs']} / "
+            f"{baseline_summary['newJobs']} / "
+            f"{baseline_summary['removedJobs']}"
+        )
+        print(
+            "replay changed: "
+            f"{baseline_summary['replayChangedJobs']} "
+            f"(regressions {baseline_summary['replayRegressions']}, improvements {baseline_summary['replayImprovements']})"
+        )
+        print(
+            "generated MSL: "
+            f"{baseline_summary['identicalGeneratedMSLJobs']} identical / "
+            f"{baseline_summary['generatedMSLChangedJobs']} changed"
+        )
+        if baseline_summary.get("compileComparedJobs"):
+            print(
+                "compile changed: "
+                f"{baseline_summary['compileChangedJobs']} over {baseline_summary['compileComparedJobs']} compared "
+                f"(regressions {baseline_summary['compileRegressions']}, improvements {baseline_summary['compileImprovements']})"
+            )
+        if baseline_summary.get("changedSamples"):
+            print("changed samples:")
+            for item in baseline_summary["changedSamples"][:5]:
+                key = item.get("moduleKey") or Path(item.get("inputPath") or item["comparisonKey"]).stem
+                flags = []
+                if item.get("replayChanged"):
+                    flags.append("replay")
+                if item.get("compileChanged"):
+                    flags.append("compile")
+                if item.get("generatedMSLChanged"):
+                    flags.append("msl")
+                print(f"  - {key}: {', '.join(flags) if flags else 'changed'}")
+
+    saved_baseline = report.get("savedBaseline")
+    if saved_baseline:
+        print("=== baseline snapshot saved ===")
+        print(f"baseline: {saved_baseline['baselinePath']}")
+
 
 def main() -> int:
     parser = build_parser()
@@ -1201,12 +1701,30 @@ def main() -> int:
         compile_report = run_compile_jobs(enriched_report, args, compile_report_path)
         enriched_report = attach_compile_report(enriched_report, compile_report)
 
+    if args.baseline_report:
+        baseline_path = Path(args.baseline_report).expanduser().resolve()
+        baseline_payload = load_json(baseline_path, warnings)
+        if baseline_payload is None:
+            print(f"error: failed to load baseline report: {baseline_path}", file=sys.stderr)
+            return 1
+        enriched_report = compare_report_to_baseline(enriched_report, baseline_payload, baseline_path)
+
+    if args.save_baseline:
+        enriched_report["savedBaseline"] = save_baseline_snapshot(
+            enriched_report,
+            args.save_baseline,
+            report_path,
+            compile_report_path,
+        )
+
     report_path.write_text(json.dumps(enriched_report, indent=2, ensure_ascii=False), encoding="utf-8")
     print_summary(enriched_report, report_path, args)
 
     replay_failed = int(enriched_report["failedJobs"])
     compile_failed = int((enriched_report.get("compile") or {}).get("failedJobs", 0))
-    if (replay_failed or compile_failed) and not args.allow_failures:
+    replay_regressions = int((enriched_report.get("baselineComparison") or {}).get("replayRegressions", 0))
+    compile_regressions = int((enriched_report.get("baselineComparison") or {}).get("compileRegressions", 0))
+    if (replay_failed or compile_failed or replay_regressions or compile_regressions) and not args.allow_failures:
         return 1
     return 0
 

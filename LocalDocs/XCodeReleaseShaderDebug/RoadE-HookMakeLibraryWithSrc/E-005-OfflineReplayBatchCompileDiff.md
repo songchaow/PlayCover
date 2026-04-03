@@ -1,12 +1,12 @@
 ## E-005：离线 replay / batch compile / diff 工具链
 
-## 状态：🔄 IN PROGRESS
+## 状态：✅ DONE
 
 当前进度：
 
 - `E-005a` **已完成**：`Scripts/corpus_replay_runner.py` 的稳定 replay 入口
 - `E-005b` **已完成**：batch compile / preflight / 失败聚类报告
-- `E-005c` **下一步**：新旧转换结果 diff / 回归基线
+- `E-005c` **已完成**：新旧转换结果 diff / 回归基线
 
 ## 目标
 
@@ -21,7 +21,7 @@ IRToMSLConverter.convert(...)
   ↓
 （已完成）Metal 编译 / 失败聚类 / preflight
   ↓
-（下一步）新旧输出 diff / 回归基线
+（已完成）baseline snapshot / 新旧输出 diff / 回归判定
 ```
 
 也就是说，E-004 负责**沉淀真实输入**，E-005 负责**稳定消费这些输入**。
@@ -233,8 +233,8 @@ python3 Scripts/corpus_replay_runner.py \
 
 验证结果：
 
-- replay：`17 / 17` 成功
-- Metal compile：`10 / 17` 成功，`7 / 17` 失败
+- replay：`18 / 18` 成功
+- Metal compile：`10 / 18` 成功，`8 / 18` 失败
 - failure clusters：共 `6` 类，当前最显著为：
   - `undeclared_identifier`：`2` 个样本（如 `uv` / `param2` 未定义）
   - `invalid_conversion`
@@ -243,31 +243,134 @@ python3 Scripts/corpus_replay_runner.py \
 
 这说明 **`E-005b` 已经把“手工抽样编译”收口成“可批量运行、可落盘、可聚类归因”的稳定工具**，离线主回路已经真正闭环到“可编译性”层面。
 
-## 与 E-005c 的边界
+## E-005c：新旧转换结果 diff / 回归基线
 
-### 本轮刻意**不**做的事
+### 已落地能力
 
-以下能力仍然归后续子任务：
+`Scripts/corpus_replay_runner.py` 现已补齐 `E-005c` 所需的三块能力：
 
-- `E-005c`：保存多版本 replay 基线
-- `E-005c`：输出新旧 `.metal` 的结构化 diff
-- `E-005c`：把 compile 结果与历史基线做回归对比
+1. **保存可复用 baseline snapshot**
+   - 新增 `--save-baseline <path>`
+   - 输出 `baseline.json` 与相邻 `generated-sources/`
+   - `baseline.json` 会记录：
+     - 稳定 `comparisonKey`
+     - replay 成败 / `conversionSummary` / stats
+     - compile 状态 / `clusterKey` / `primaryDiagnostic`
+     - 归一化后的 generated MSL hash / 行数
+   - `generated-sources/` 保留基线时刻的 `.metal`，供后续真实 diff 使用
 
-### `E-005c` 的直接输入
+2. **对当前结果做结构化 baseline diff**
+   - 新增 `--baseline-report <baseline.json>`
+   - 会为每个 job 追加 `baselineComparison`
+   - 比较维度包括：
+     - replay 是否成功 / 是否退化
+     - compile `status` / `clusterKey` 是否变化
+     - generated MSL 归一化后是否变化
+   - 若 generated MSL 发生变化，会在当前输出目录下生成 `baseline-diffs/`
 
-当前 runner 已经把下一步 diff / baseline 所需的输入稳定化：
+3. **把 regression 变成可自动守门的退出码**
+   - 若本轮 replay / compile 失败，维持原有非 0 返回
+   - 若和 baseline 比较后出现 replay regression 或 compile regression，也返回非 0
+   - `--allow-failures` 仍可用于“先落盘、后分析”的场景
 
-- replay 输出路径稳定
-- `compile-summary.json` 稳定
-- 每个失败样本的 `primaryDiagnostic / sourceContext / clusterKey` 已稳定化
-- baseline `module.generated.metal` 仍可直接比较
+### 当前输出
 
-因此 `E-005c` 可以直接建立在 replay + compile 两份 summary 之上，无需回头调整 `E-005a / E-005b` 的输入协议。
+在 `--save-baseline` 模式下，典型输出为：
+
+```text
+build/road-e-baseline/
+  baseline.json
+  generated-sources/
+    manual/ 或 <bundleId>/modules/<moduleKey>/
+      *.generated.metal
+```
+
+在 `--baseline-report` 模式下，典型输出为：
+
+```text
+build/shader-corpus-replay/<timestamp>/
+  replay-summary.json
+  compile-summary.json
+  baseline-diffs/
+    manual/ 或 <bundleId>/modules/<moduleKey>/
+      replayed-vs-baseline.diff
+```
+
+其中：
+
+- `replay-summary.json`
+  - 顶层新增 `baselineComparison` 摘要
+  - 每个 job 新增 `baselineComparison.replay / compile / generatedMSL`
+- `baseline.json`
+  - 作为后续任意一次 compare 的稳定输入
+  - 不依赖运行时 corpus 目录是否仍保留旧输出
+- `baseline-diffs/`
+  - 仅在 generated MSL 真的变化时写入 unified diff
+  - 无变化样本不会生成空 diff 文件
+
+### 用法
+
+#### 1. 为当前一轮 replay + compile 结果保存 baseline
+
+```bash
+python3 Scripts/corpus_replay_runner.py \
+  --compile \
+  --allow-failures \
+  --ll LocalDocs/XCodeReleaseShaderDebug/RoadE-HookMakeLibraryWithSrc/test-data/test_addrspace.ll \
+  --ll LocalDocs/XCodeReleaseShaderDebug/RoadE-HookMakeLibraryWithSrc/test-data/test_casts.ll \
+  --output-root build/road-e-baseline-run \
+  --save-baseline build/road-e-baseline
+```
+
+#### 2. 与既有 baseline 做 compare
+
+```bash
+python3 Scripts/corpus_replay_runner.py \
+  --compile \
+  --allow-failures \
+  --output-root build/road-e-compare-run \
+  --baseline-report build/road-e-baseline/baseline.json \
+  --ll LocalDocs/XCodeReleaseShaderDebug/RoadE-HookMakeLibraryWithSrc/test-data/test_addrspace.ll \
+  --ll LocalDocs/XCodeReleaseShaderDebug/RoadE-HookMakeLibraryWithSrc/test-data/test_casts.ll
+```
+
+#### 3. CI / 自动守门模式
+
+```bash
+python3 Scripts/corpus_replay_runner.py \
+  --compile \
+  --baseline-report build/road-e-baseline/baseline.json \
+  --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus
+```
+
+当 compare 发现 replay regression 或 compile regression 时，命令会直接返回非 0。
+
+### 本轮最小验证
+
+本轮已执行：
+
+1. 对 `test-data/*.ll` 执行一轮 replay + batch compile，并用 `--save-baseline` 生成基线快照
+2. 对同一批 `test-data/*.ll` 再执行一轮 replay + batch compile，并用 `--baseline-report` 与上一步 baseline 对比
+3. `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`
+
+验证结果：
+
+- replay：`18 / 18` 成功
+- Metal compile：`10 / 18` 成功，`8 / 18` 失败
+- failure clusters：仍为 `6` 类，主要集中在 `invalid_conversion`、`undeclared_identifier`、`missing_member` 与 `overload_resolution`
+- baseline compare：matched/new/removed `18 / 0 / 0`
+- replay changed：`0`（regression `0`，improvement `0`）
+- generated MSL changed：`0`
+- compile changed：`0 / 18` compared（regression `0`，improvement `0`）
+- BuildScripts 标准构建链路通过
+
+这说明 **E-005 已经不只具备“离线 replay + 编译验证”能力，还具备了稳定的 baseline snapshot 与新旧回归比较能力**。
 
 ## 下一步
 
-当前 E-005 主线已经从“先有 replay 入口”推进到：
+`E-005` 主线已完成；后续优先级回到：
 
-- `E-005c`：新旧转换结果 diff / 回归基线
+- `E-004f3`：扩展 `makeLibrary(URL/default/file)` 路径的 corpus 采集覆盖
+- `E-006b`：在离线 batch compile 已绿的一组样本上做最小 live 复测
 
-只有在同一 corpus 上稳定比较“改前 vs 改后”的 replay / compile 结果，离线主回路才真正具备回归防退化能力。
+也就是说，接下来离线回归能力本身不再是 blocker，重点转为**把更多真实样本接入同一套回归链路**。

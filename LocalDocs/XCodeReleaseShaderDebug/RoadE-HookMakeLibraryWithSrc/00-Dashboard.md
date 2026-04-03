@@ -131,7 +131,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 ## 当前主线
 
-- **E-005（下一步：`E-005a` corpus replay runner）**：`ShaderCorpus/` 的目录结构、去重键与 `manifest.jsonl` 规范已收敛，当前最高优先级转为建立面向 corpus 的离线回放入口，让日常回归稳定落在“离线 replay + batch compile”。
+- **E-005（下一步：`E-005b` 批量 Metal 编译与失败报告）**：`E-005a` 已落地 `Scripts/corpus_replay_runner.py`，`ShaderCorpus/` 与显式 `.ll` 都已有稳定的 `IR -> MSL` 离线回放入口；当前最高优先级转为把 replay 输出批量送进 Metal 编译，并产出可归因的失败报告。
 - **E-004（下一步：`E-004f3` 扩展 `makeLibrary(URL/default/file)` 路径的采集覆盖）**：`newLibraryWithData:error:` 成功路径已经具备长期稳定的 corpus 落盘规范；接下来应补齐其他 library 入口的真实样本覆盖。
 - **E-006（下一步：`E-006b` 离线批量 green 后再做最小 live）**：live 保留为**扩覆盖**与**最终真实验证**环节，只在离线结果已经收敛后再投入。
 
@@ -142,6 +142,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 流程基线（2026-04-03，offline-first 切换完成） | Road E 的日常迭代主回路已经明确为 **采集 corpus → 离线 replay → 批量编译 → 最小 live 复测 → `.gputrace` 最终确认** |
 | 原神 6.4.0（最近一轮 live 基线） | 已确认 `ShaderSourceDiagnostics`、host bridge 与 runtime 注入主路径可用；真实 app 仍是 corpus 的生产来源与最终验证环境 |
 | 当前落盘能力 | 失败的 MSL 会进入 `ShaderSourceDiagnostics/`；异常 payload 会进入 `ShaderPayloadSamples/`；`attemptLibraryReplacement(...)` 成功路径现已按 `ShaderCorpus/<bundleId>/modules/<moduleKey>/` 落盘 canonical `module.bc`、`module.ll`、`module.generated.metal` 与 `module.meta.json`，并在根目录追加 `manifest.jsonl` 事件索引；`moduleKey` 由 `sha256(module.bc)` 生成，重复样本默认复用基线，不再静默覆盖 |
+| 当前离线回放能力（2026-04-03，`E-005a` 完成） | 新增 `Scripts/corpus_replay_runner.py`，已能批量扫描 `ShaderCorpus/` 或显式 `.ll`，读取 `module.meta.json` 中的 `functionNames/functionTypes` 调用 `IRToMSLConverter.convert(...)`，稳定产出 replay `.metal` 与 `replay-summary.json`；`Scripts/ir_to_msl_smoketest.sh` 已收口为该 runner 的兼容 wrapper |
 | 历史 live blocker 时间线 | 见 [00-Dashboard-Archive](00-Dashboard-Archive.md)；dashboard 主体不再重复堆叠逐轮 live 细节 |
 
 ## 整体架构
@@ -173,7 +174,7 @@ PlayTools.framework (注入到 iOS app)
 
 ## TODO
 
-> 当前最高优先级：`E-005a`（corpus replay runner）。`E-004f2` 已完成，当前 `ShaderCorpus/` 已具备稳定目录、去重键与 `manifest.jsonl` 规范。历史 live blocker 归因链路见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
+> 当前最高优先级：`E-005b`（批量 Metal 编译与失败报告）。`E-005a` 已完成，当前 `ShaderCorpus/` 与显式 `.ll` 都已有稳定 replay 入口；下一步应把 replay 输出系统性送进 Metal 编译并形成可归因报告。历史 live blocker 归因链路见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -189,11 +190,11 @@ PlayTools.framework (注入到 iOS app)
 |  | 已落地 `ShaderCorpus/<bundleId>/modules/<moduleKey>/`、`manifest.jsonl`、`moduleKey = sha256(module.bc)` 与“冲突不覆盖基线”的持久化策略；`cacheKey` 退回为 metallib 上下文信息 | | |
 | E-004f3 | ↳ 扩展 `makeLibrary(URL/default/file)` 路径的采集覆盖 | TODO | |
 |  | 当前只有 `newLibraryWithData:error:` 真正进入 bitcode 提取主路径；需评估是否把 URL / default / file 路径也接入统一 corpus 导出 | | |
-| E-005 | **离线 replay / batch compile / diff 工具链** | 🔄 IN PROGRESS | |
-| E-005a | ↳ `IR -> MSL` 离线回放 runner | TODO | |
-|  | 输入 corpus 中的 `.ll`，稳定输出 `.metal`，用于脱离原神的日常回归 | | |
-| E-005b | ↳ 批量 Metal 编译与失败报告 | TODO | |
-|  | 对 corpus 批量执行编译，输出按错误模式聚类的报告，替代手工翻 diagnostics | | |
+| E-005 | **离线 replay / batch compile / diff 工具链** | 🔄 IN PROGRESS | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
+| E-005a | ↳ `IR -> MSL` 离线回放 runner | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
+|  | 已落地 `Scripts/corpus_replay_runner.py`；支持扫描 `ShaderCorpus/`、读取 `manifest.jsonl` / `module.meta.json`、把 `functionNames/functionTypes` 传给 `IRToMSLConverter.convert(...)`，并稳定输出 replay `.metal` 与 `replay-summary.json`；`Scripts/ir_to_msl_smoketest.sh` 已改为兼容 wrapper | | |
+| E-005b | ↳ 批量 Metal 编译与失败报告 | TODO | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
+|  | 对 replay 输出批量执行编译，输出按错误模式聚类的报告，替代手工翻 diagnostics | | |
 | E-005c | ↳ 新旧转换结果 diff / 回归基线 | TODO | |
 |  | 对比不同版本 `IRToMSLConverter` 在同一 corpus 上的输出变化，防止修一个坏两个 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
@@ -227,6 +228,7 @@ PlayTools.framework (注入到 iOS app)
 | dashboard 历史归档：live blocker 时间线 / 已完成轮次 | `00-Dashboard-Archive.md` |
 | `-frecord-sources` PoC 与关键否定结论 | `E-001-PoC-frecord-sources.md` |
 | metallib / bitcode / llvm-dis / IR→MSL / corpus 主实现记录 | `E-004-MetallibSourceExtraction.md` |
+| 离线 replay / batch compile / diff 工具链 | `E-005-OfflineReplayBatchCompileDiff.md` |
 | Library API 入口与覆盖优先级 | `E-002-MTLDevice-Library-API.md` |
 | swizzle 骨架与 hook 覆盖面 | `E-003-LibrarySwizzleSkeleton.md` |
 | Metal 编译流水线 | `../Research/03-Metal-Shader编译流水线.md` |

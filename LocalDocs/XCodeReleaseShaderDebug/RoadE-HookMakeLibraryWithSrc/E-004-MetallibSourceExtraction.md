@@ -327,9 +327,9 @@ build_and_install.sh
 
 E-004 的价值不是“把文件存下来”，而是为 E-005 提供真实输入：
 
-- `module.ll` 成为 replay runner 的输入
-- `module.generated.metal` 成为新旧输出 diff 的基线
-- `module.meta.json` 成为错误聚类和回归报告的数据源
+- `module.ll` 已成为 `Scripts/corpus_replay_runner.py` 的稳定输入
+- `module.generated.metal` 成为后续新旧输出 diff 的基线
+- `module.meta.json` 已被 replay runner 消费，并继续作为错误聚类和回归报告的数据源
 
 ### E-006：live 只做必要工作
 
@@ -346,12 +346,13 @@ E-004 这一阶段完成，不等于最终 `.gputrace` 目标完成；它的完�
 
 1. **真实运行中加载到的 shader 能稳定导出为 corpus**
 2. corpus 中每个 module 至少具备 `.bc/.ll/.metal/.json`
-3. 后续 `IRToMSLConverter` 修复能对 corpus 做离线 replay
+3. 后续 `IRToMSLConverter` 修复能对 corpus 做离线 replay（当前已由 `Scripts/corpus_replay_runner.py` 落地）
 4. 新 blocker 的首轮归因，默认优先在 corpus 上完成，而不是回到原神里反复试错
 
 ## 参考
 
 - 当前主线与跨任务 TODO：`00-Dashboard.md`
+- E-005 离线 replay / batch compile / diff：`E-005-OfflineReplayBatchCompileDiff.md`
 - live blocker 历史归档：`00-Dashboard-Archive.md`
 - 早期 E-004 历史细节：`E-004-MetallibSourceExtraction-Archive.md`
 - Library API 入口优先级：`E-002-MTLDevice-Library-API.md`

@@ -2316,8 +2316,9 @@ struct IRToMSLConverter {
                     isOpaquePointer: true
                 )
             case "air.vertex_input":
-                // 当前主线尚未恢复 vertex `stage_in` struct；先跳过，避免发射无效形参。
-                continue
+                // vertex attribute 需要后续在函数签名里聚合成合成的 `stage_in` struct。
+                attribute = nil
+                ptrInfo = nil
             case "air.fragment_input":
                 // fragment varying 需要后续在函数签名里聚合成合成的 `stage_in` struct。
                 attribute = nil
@@ -2806,6 +2807,8 @@ struct IRToMSLConverter {
         var paramTypes: [String: String] = [:]
         /// 当前函数的 MSL 返回类型
         var functionReturnType: String = ""
+        /// 指针值集合（IR 参数/GEP/alloca 等会产出“地址”语义的 SSA）
+        var pointerValues: Set<String> = []
 
         // ── E-004e4b: CFG + phi 支持 ──
 
@@ -2899,6 +2902,21 @@ struct IRToMSLConverter {
                 return name
             }
             return name
+        }
+
+        func markPointer(_ ssaName: String) {
+            pointerValues.insert(ssaName.trimmingCharacters(in: .whitespaces))
+        }
+
+        func isPointerLike(_ operand: String) -> Bool {
+            let name = operand.trimmingCharacters(in: .whitespaces)
+            if pointerValues.contains(name) {
+                return true
+            }
+            if let expr = values[name], IRToMSLConverter.stripAddressOfExpression(expr) != nil {
+                return true
+            }
+            return false
         }
 
         /// 记录一个 SSA 值的 MSL 表达式和类型
@@ -3202,7 +3220,7 @@ struct IRToMSLConverter {
         shaderType: ShaderType
     ) {
         let irParams = splitIRParameters(irParamList)
-        let usesFragmentStageIn = shouldUseFragmentStageInStruct(params, shaderType: shaderType)
+        let usesStageIn = shouldUseStageInStruct(params, shaderType: shaderType)
 
         // 极小 fragment/kernel/vertex builtin 场景：metadata 可能把唯一 builtin 参数过滤掉，
         // 但 generateAllParams 仍会补默认 builtin 参数；此时把唯一 IR 参数接回默认 builtin 名。
@@ -3230,16 +3248,23 @@ struct IRToMSLConverter {
             }
 
             let fallbackName = "arg\(irArgIndex)"
+            let resolvedBaseName = sanitizeIdentifier(param.name, fallback: fallbackName, uppercaseFirst: false)
             let resolvedName: String
-            if usesFragmentStageIn && isFragmentStageInParameter(param) {
-                resolvedName = "\(fragmentStageInParamName).\(sanitizeIdentifier(param.name, fallback: fallbackName, uppercaseFirst: false))"
+            if usesStageIn && isStageInParameter(param, shaderType: shaderType) {
+                resolvedName = "\(stageInParamName).\(resolvedBaseName)"
             } else {
-                resolvedName = sanitizeIdentifier(param.name, fallback: fallbackName, uppercaseFirst: false)
+                resolvedName = resolvedBaseName
             }
 
             ctx.paramNames[ssaName] = resolvedName
             if !param.irType.isEmpty {
                 ctx.paramTypes[ssaName] = param.irType
+            }
+            if let ptr = param.pointerInfo {
+                let emitsReference = ptr.addressSpace == .constant && ptr.addressSpace.isBufferAddressSpace && isStructTypeName(ptr.pointedMSLType)
+                if !emitsReference {
+                    ctx.markPointer(ssaName)
+                }
             }
             mappedArgIndices.insert(irArgIndex)
         }
@@ -3273,21 +3298,37 @@ struct IRToMSLConverter {
         }
     }
 
-    private static let fragmentStageInParamName = "stageIn"
+    private static let stageInParamName = "stageIn"
 
-    private static func shouldUseFragmentStageInStruct(
+    private static func shouldUseStageInStruct(
         _ params: [ParsedParameter],
         shaderType: ShaderType
     ) -> Bool {
-        guard shaderType == .fragment else { return false }
-        return params.contains { $0.kind == "air.fragment_input" }
+        switch shaderType {
+        case .vertex:
+            return params.contains { $0.kind == "air.vertex_input" }
+        case .fragment:
+            return params.contains { $0.kind == "air.fragment_input" }
+        case .kernel:
+            return false
+        }
     }
 
-    private static func isFragmentStageInParameter(_ param: ParsedParameter) -> Bool {
-        switch param.kind {
-        case "air.fragment_input", "air.position":
-            return true
-        default:
+    private static func isStageInParameter(
+        _ param: ParsedParameter,
+        shaderType: ShaderType
+    ) -> Bool {
+        switch shaderType {
+        case .vertex:
+            return param.kind == "air.vertex_input"
+        case .fragment:
+            switch param.kind {
+            case "air.fragment_input", "air.position":
+                return true
+            default:
+                return false
+            }
+        case .kernel:
             return false
         }
     }
@@ -3814,6 +3855,30 @@ struct IRToMSLConverter {
         }.count
     }
 
+    private static func stripAddressOfExpression(_ expr: String) -> String? {
+        let trimmed = expr.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("&") else { return nil }
+
+        var inner = String(trimmed.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+        if inner.hasPrefix("(") && inner.hasSuffix(")") {
+            inner = String(inner.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return inner.isEmpty ? nil : inner
+    }
+
+    private static func addressExpression(for expr: String) -> String {
+        let trimmed = expr.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "&(/* empty */)" }
+        if stripAddressOfExpression(trimmed) != nil {
+            return trimmed
+        }
+        return "&(\(trimmed))"
+    }
+
+    private static func lvalueExpression(from pointerExpr: String) -> String? {
+        stripAddressOfExpression(pointerExpr)
+    }
+
     /// 翻译 load
     private static func translateLoad(lhs: String, rhs: String, ctx: SSAContext) {
         // load <type>, <ptr_type> <ptr>[, align N][, !tbaa ...]
@@ -3827,8 +3892,8 @@ struct IRToMSLConverter {
         let loadType = parts[0].type
         let ptr = resolveIROperand(parts[1].value, ctx: ctx)
         let mslType = irScalarTypeToMSL(loadType)
-        // 指针解引用
-        ctx.emitAutoAssign(lhs, expr: "*(\(ptr))", knownType: mslType)
+        let loadExpr = lvalueExpression(from: ptr) ?? "*(\(ptr))"
+        ctx.emitAutoAssign(lhs, expr: loadExpr, knownType: mslType)
     }
 
     /// 翻译 store
@@ -3843,7 +3908,8 @@ struct IRToMSLConverter {
         }
         let val = resolveIROperand(parts[0].value, ctx: ctx)
         let ptr = resolveIROperand(parts[1].value, ctx: ctx)
-        ctx.emit("*(\(ptr)) = \(val);")
+        let targetExpr = lvalueExpression(from: ptr) ?? "*(\(ptr))"
+        ctx.emit("\(targetExpr) = \(val);")
     }
 
     /// 翻译 getelementptr (E-004e4c)
@@ -3874,12 +3940,18 @@ struct IRToMSLConverter {
             return
         }
 
-        let pointeeType = parts[0].type  // 基础指向类型，如 "%struct.Particle" 或 "<4 x float>"
-        let basePtr = resolveIROperand(parts[1].value, ctx: ctx)
+        let pointeeType = parts[0].type.trimmingCharacters(in: .whitespaces)
+        let baseOperand = parts[1].value.trimmingCharacters(in: .whitespaces)
+        let basePtr = resolveIROperand(baseOperand, ctx: ctx)
+        let baseTarget = stripAddressOfExpression(basePtr) ?? basePtr
+        let baseIsPointerLike = ctx.isPointerLike(baseOperand) || stripAddressOfExpression(basePtr) != nil
 
         if parts.count == 2 {
             // 无索引，直接透传
             ctx.define(lhs, expr: basePtr)
+            if baseIsPointerLike {
+                ctx.markPointer(lhs)
+            }
             return
         }
 
@@ -3889,26 +3961,36 @@ struct IRToMSLConverter {
             if idx == "0" {
                 ctx.define(lhs, expr: basePtr)
             } else {
-                ctx.define(lhs, expr: "&\(basePtr)[\(idx)]")
+                ctx.define(lhs, expr: addressExpression(for: "\(baseTarget)[\(idx)]"))
             }
+            ctx.markPointer(lhs)
             return
         }
 
         // 多级索引：parts[2] 是基指针偏移（数组索引），parts[3..] 是类型层级索引
         let firstIdx = resolveIROperand(parts[2].value, ctx: ctx)
 
-        // 构建表达式
+        // 构建表达式。对真正的指针参数先落到合法的下标/解引用语义；
+        // 对 constant struct 引用等“值语义入口”则保留原表达式，避免误发射 `ptr.field`。
         var expr: String
-        if firstIdx == "0" {
-            // 无数组偏移，直接从 base 开始
-            expr = basePtr
+        if baseIsPointerLike {
+            if stripAddressOfExpression(basePtr) != nil {
+                expr = baseTarget
+                if firstIdx != "0" {
+                    expr = "\(expr)[\(firstIdx)]"
+                }
+            } else {
+                expr = "\(baseTarget)[\(firstIdx)]"
+            }
         } else {
-            // 有数组偏移
-            expr = "\(basePtr)[\(firstIdx)]"
+            expr = baseTarget
+            if firstIdx != "0" {
+                expr = "\(expr)[\(firstIdx)]"
+            }
         }
 
         // 从第二个索引开始，遍历类型层级
-        var currentType = pointeeType.trimmingCharacters(in: .whitespaces)
+        var currentType = pointeeType
 
         for i in 3..<parts.count {
             let idxStr = parts[i].value.trimmingCharacters(in: .whitespaces)
@@ -3970,7 +4052,8 @@ struct IRToMSLConverter {
             }
         }
 
-        ctx.define(lhs, expr: "&\(expr)")
+        ctx.define(lhs, expr: addressExpression(for: expr))
+        ctx.markPointer(lhs)
     }
 
     /// 翻译类型转换: zext/sext/trunc/fpext/fptrunc/uitofp/sitofp/fptoui/fptosi
@@ -4223,7 +4306,8 @@ struct IRToMSLConverter {
         let mslType = irScalarTypeToMSL(typePart.trimmingCharacters(in: .whitespaces))
         let temp = ctx.freshTemp()
         ctx.emit("\(mslType) \(temp);")
-        ctx.define(lhs, expr: "&\(temp)", type: mslType + "*")
+        ctx.define(lhs, expr: addressExpression(for: temp), type: mslType + "*")
+        ctx.markPointer(lhs)
     }
 
     /// 翻译 ret 指令
@@ -4887,7 +4971,7 @@ struct IRToMSLConverter {
                 lines.append("")
             }
 
-            if let stageInStruct = generateFragmentStageInStructDefinition(for: func_, safeName: safeName),
+            if let stageInStruct = generateStageInStructDefinition(for: func_, safeName: safeName),
                emittedAuxiliaryStructs.insert(stageInStruct.name).inserted {
                 lines.append(stageInStruct.definition)
                 lines.append("")
@@ -5013,33 +5097,44 @@ struct IRToMSLConverter {
         return (structName, lines.joined(separator: "\n"))
     }
 
-    private static func fragmentStageInStructName(for safeName: String) -> String {
+    private static func stageInStructName(for safeName: String) -> String {
         sanitizeTypeName(safeName) + "_StageIn"
     }
 
-    private static func generateFragmentStageInStructDefinition(
+    private static func generateStageInStructDefinition(
         for func_: ParsedShaderFunction,
         safeName: String
     ) -> (name: String, definition: String)? {
-        guard shouldUseFragmentStageInStruct(func_.parameters, shaderType: func_.shaderType) else {
+        guard shouldUseStageInStruct(func_.parameters, shaderType: func_.shaderType) else {
             return nil
         }
 
         let stageParams = func_.parameters
-            .filter { isFragmentStageInParameter($0) }
+            .filter { isStageInParameter($0, shaderType: func_.shaderType) }
             .sorted { ($0.irArgIndex ?? .min) < ($1.irArgIndex ?? .min) }
         guard !stageParams.isEmpty else { return nil }
 
-        let structName = fragmentStageInStructName(for: safeName)
+        let structName = stageInStructName(for: safeName)
         var lines: [String] = ["struct \(structName) {"]
         for param in stageParams {
             let fieldType = irScalarTypeToMSL(param.irType.isEmpty ? "float" : param.irType)
             let fieldName = sanitizeIdentifier(param.name, fallback: "arg\(param.irArgIndex ?? 0)", uppercaseFirst: false)
-            if param.kind == "air.position" {
-                lines.append("    \(fieldType) \(fieldName) [[position]];")
-            } else {
-                lines.append("    \(fieldType) \(fieldName);")
+
+            let attribute: String
+            switch param.kind {
+            case "air.position":
+                attribute = " [[position]]"
+            case "air.vertex_input":
+                if let location = param.bufferIndex {
+                    attribute = " [[attribute(\(location))]]"
+                } else {
+                    attribute = ""
+                }
+            default:
+                attribute = ""
             }
+
+            lines.append("    \(fieldType) \(fieldName)\(attribute);")
         }
         lines.append("};")
         return (structName, lines.joined(separator: "\n"))
@@ -5191,16 +5286,16 @@ struct IRToMSLConverter {
         defaultBuiltin: String
     ) -> String {
         var mslParams: [String] = []
-        let usesFragmentStageIn = shouldUseFragmentStageInStruct(params, shaderType: shaderType)
-        var hasEntryInput = usesFragmentStageIn
+        let usesStageIn = shouldUseStageInStruct(params, shaderType: shaderType)
+        var hasEntryInput = usesStageIn
 
-        if usesFragmentStageIn {
-            let stageInType = fragmentStageInStructName(for: safeName)
-            mslParams.append("\(stageInType) \(fragmentStageInParamName) [[stage_in]]")
+        if usesStageIn {
+            let stageInType = stageInStructName(for: safeName)
+            mslParams.append("\(stageInType) \(stageInParamName) [[stage_in]]")
         }
 
         for param in params {
-            if usesFragmentStageIn && isFragmentStageInParameter(param) {
+            if usesStageIn && isStageInParameter(param, shaderType: shaderType) {
                 continue
             }
 

@@ -201,6 +201,8 @@ struct IRToMSLConverter {
         let name: String
         let shaderType: ShaderType
         let returnType: String
+        /// 返回值字段（来自 metadata return node；多字段时需要生成 entry output struct）
+        let outputs: [MetadataReturnInfo]
         let parameters: [ParsedParameter]
         /// 从 IR metadata 中提取的原始函数签名
         let irSignature: String
@@ -1300,12 +1302,26 @@ struct IRToMSLConverter {
         let structFieldInfo: [StructFieldInfo]
     }
 
+    /// 从 IR metadata 中解析出的返回值字段信息。
+    struct MetadataReturnInfo {
+        /// 返回字段种类，如 `air.position` / `air.vertex_output` / `air.render_target`
+        let kind: String
+        /// MSL 类型名（来自 `air.arg_type_name`）
+        let typeName: String
+        /// 字段名（来自 `air.arg_name`，若缺失则使用推导名）
+        let argName: String
+        /// 颜色附件等输出槽位（若 metadata 提供）
+        let locationIndex: Int?
+    }
+
     /// 从 IR metadata 中解析出的函数信息
     struct MetadataFuncInfo {
         /// 函数名
         let name: String
         /// shader 类型
         let shaderType: ShaderType
+        /// 返回值字段描述（按 metadata 顺序）
+        let returns: [MetadataReturnInfo]
         /// 参数列表（按 argIndex 排序）
         let args: [MetadataArgInfo]
     }
@@ -1424,6 +1440,7 @@ struct IRToMSLConverter {
         nodes: [String: String],
         irText: String
     ) -> MetadataFuncInfo? {
+        _ = irText
         guard content.hasPrefix("!{") && content.hasSuffix("}") else { return nil }
         let inner = String(content.dropFirst(2).dropLast())
 
@@ -1446,18 +1463,24 @@ struct IRToMSLConverter {
             return nil
         }
 
-        // 找到参数列表引用。
+        // 找到返回/参数列表引用。
         // `parseMetadataRefList(...)` 只会返回 `!N` 引用，不会把开头的 `ptr @func` 算进去；
-        // 因此这里的 refs 实际是 `[返回描述引用, 参数列表引用]`，参数列表应取第 2 个引用而不是第 3 个。
+        // 因此这里的 refs 实际是 `[返回描述引用, 参数列表引用]`。
         let refs = parseMetadataRefList(content)
         guard refs.count >= 2 else {
-            // 至少需要 返回描述 + 参数列表
-            return MetadataFuncInfo(name: funcName, shaderType: shaderType, args: [])
+            return MetadataFuncInfo(name: funcName, shaderType: shaderType, returns: [], args: [])
+        }
+
+        let returns: [MetadataReturnInfo]
+        if let returnsContent = nodes[refs[0]] {
+            returns = parseMetadataReturnListNode(returnsContent, nodes: nodes)
+        } else {
+            returns = []
         }
 
         let argsNodeId = refs[1]
         guard let argsContent = nodes[argsNodeId] else {
-            return MetadataFuncInfo(name: funcName, shaderType: shaderType, args: [])
+            return MetadataFuncInfo(name: funcName, shaderType: shaderType, returns: returns, args: [])
         }
 
         // 解析参数列表: !{!15, !16, !17, !18, !20, !21}
@@ -1471,7 +1494,89 @@ struct IRToMSLConverter {
             }
         }
 
-        return MetadataFuncInfo(name: funcName, shaderType: shaderType, args: args)
+        return MetadataFuncInfo(name: funcName, shaderType: shaderType, returns: returns, args: args)
+    }
+
+    private static func parseMetadataReturnListNode(
+        _ content: String,
+        nodes: [String: String]
+    ) -> [MetadataReturnInfo] {
+        let returnNodeIds = parseMetadataRefList(content)
+        var returns: [MetadataReturnInfo] = []
+        for returnNodeId in returnNodeIds {
+            guard let returnContent = nodes[returnNodeId] else { continue }
+            if let returnInfo = parseMetadataReturnNode(returnContent) {
+                returns.append(returnInfo)
+            }
+        }
+        return returns
+    }
+
+    private static func parseMetadataReturnNode(_ content: String) -> MetadataReturnInfo? {
+        guard content.hasPrefix("!{") && content.hasSuffix("}") else { return nil }
+        let inner = String(content.dropFirst(2).dropLast())
+        let tokens = splitMetadataTokens(inner)
+        guard !tokens.isEmpty else { return nil }
+
+        let kind = unquoteMetadataString(tokens[0])
+        var typeName = ""
+        var argName = ""
+        var locationIndex: Int?
+        var i = 1
+
+        while i < tokens.count {
+            let token = unquoteMetadataString(tokens[i])
+
+            switch token {
+            case "air.arg_type_name":
+                if i + 1 < tokens.count {
+                    typeName = unquoteMetadataString(tokens[i + 1])
+                    i += 2
+                } else {
+                    i += 1
+                }
+            case "air.arg_name":
+                if i + 1 < tokens.count {
+                    argName = unquoteMetadataString(tokens[i + 1])
+                    i += 2
+                } else {
+                    i += 1
+                }
+            case "air.location_index":
+                if i + 1 < tokens.count {
+                    locationIndex = parseMetadataInt(tokens[i + 1])
+                    i += 2
+                } else {
+                    i += 1
+                }
+            default:
+                if locationIndex == nil,
+                   token.hasPrefix("i32 "),
+                   (kind == "air.render_target" || kind == "air.vertex_output") {
+                    locationIndex = parseMetadataInt(tokens[i])
+                }
+                i += 1
+            }
+        }
+
+        let fallbackName: String
+        switch kind {
+        case "air.position":
+            fallbackName = "position"
+        case "air.render_target":
+            fallbackName = "color\(locationIndex ?? 0)"
+        case "air.vertex_output":
+            fallbackName = "varying\(locationIndex ?? 0)"
+        default:
+            fallbackName = "out\(locationIndex ?? 0)"
+        }
+
+        return MetadataReturnInfo(
+            kind: kind,
+            typeName: typeName,
+            argName: argName.isEmpty ? fallbackName : argName,
+            locationIndex: locationIndex
+        )
     }
 
     /// 解析单个参数 metadata 节点。
@@ -2087,22 +2192,31 @@ struct IRToMSLConverter {
 
             // 解析参数：优先使用 metadata 信息
             let params: [ParsedParameter]
+            let outputs: [MetadataReturnInfo]
             let isFullyParsed: Bool
             if let metaInfo = metadataMap[irFunc.name] {
                 params = buildParametersFromMetadata(metaInfo.args, irParamList: irFunc.parameterList)
+                outputs = metaInfo.returns
                 isFullyParsed = true
             } else {
                 params = parseParameters(irFunc.parameterList, shaderType: type)
+                outputs = []
                 isFullyParsed = false
             }
 
             // 推断 MSL 返回类型
-            let mslReturnType = irTypeToMSL(irFunc.returnType, forShaderType: type)
+            let mslReturnType = deriveEntryReturnType(
+                irReturnType: irFunc.returnType,
+                shaderType: type,
+                outputs: outputs,
+                functionName: irFunc.name
+            )
 
             shaderFunctions.append(ParsedShaderFunction(
                 name: irFunc.name,
                 shaderType: type,
                 returnType: mslReturnType,
+                outputs: outputs,
                 parameters: params,
                 irSignature: "define \(irFunc.returnType) @\"\(irFunc.name)\"(\(irFunc.parameterList))",
                 isFullyParsed: isFullyParsed,
@@ -2128,6 +2242,7 @@ struct IRToMSLConverter {
                     name: name,
                     shaderType: type,
                     returnType: defaultReturnType(for: type),
+                    outputs: [],
                     parameters: [],
                     irSignature: "(metallib-only, no IR match)",
                     isFullyParsed: false,
@@ -2138,6 +2253,34 @@ struct IRToMSLConverter {
         }
 
         return shaderFunctions
+    }
+
+    private static func deriveEntryReturnType(
+        irReturnType: String,
+        shaderType: ShaderType,
+        outputs: [MetadataReturnInfo],
+        functionName: String
+    ) -> String {
+        guard shaderType != .kernel else { return "void" }
+
+        if outputs.count > 1 {
+            return entryOutputStructName(for: functionName)
+        }
+
+        if let onlyOutput = outputs.first {
+            let normalizedType = onlyOutput.typeName
+                .replacingOccurrences(of: "\"", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !normalizedType.isEmpty {
+                return irScalarTypeToMSL(normalizedType)
+            }
+        }
+
+        return irTypeToMSL(irReturnType, forShaderType: shaderType)
+    }
+
+    private static func entryOutputStructName(for functionName: String) -> String {
+        sanitizeTypeName(functionName) + "_Out"
     }
 
     /// 从 IR metadata 参数信息构建 ParsedParameter 列表。
@@ -2661,6 +2804,8 @@ struct IRToMSLConverter {
         var paramNames: [String: String] = [:]
         /// 函数参数类型映射
         var paramTypes: [String: String] = [:]
+        /// 当前函数的 MSL 返回类型
+        var functionReturnType: String = ""
 
         // ── E-004e4b: CFG + phi 支持 ──
 
@@ -2814,6 +2959,7 @@ struct IRToMSLConverter {
         structFieldInfo: [String: [StructFieldInfo]] = [:]
     ) -> [String] {
         let ctx = SSAContext()
+        ctx.functionReturnType = func_.returnType
         // E-004e4c: 传入结构体信息供 extractvalue/insertvalue/GEP 使用
         ctx.structTypeDefs = structTypeDefs
         ctx.structFieldInfo = structFieldInfo
@@ -3397,10 +3543,11 @@ struct IRToMSLConverter {
 
         let v1 = resolveIROperand(shuffleParts[0].value, ctx: ctx)
         let mask = shuffleParts[2].value
+        let maskDim = extractVectorDim(shuffleParts[2].type)
 
         // 解析 mask 以确定 swizzle 模式
-        let maskIndices = parseVectorConstant(mask)
-        let resultDim = maskIndices.count
+        let maskIndices = parseVectorConstant(mask, fallbackDim: maskDim)
+        let resultDim = maskIndices.isEmpty ? maskDim : maskIndices.count
 
         // 如果 mask 全相同（broadcast/splat），生成 MSL vector splat
         if !maskIndices.isEmpty && maskIndices.allSatisfy({ $0 == maskIndices[0] }) {
@@ -4090,7 +4237,13 @@ struct IRToMSLConverter {
         let parts = splitTypedOperands(cleaned, count: 1)
         if let first = parts.first {
             let val = resolveIROperand(first.value, ctx: ctx)
-            ctx.emit("return \(val);")
+            if val.trimmingCharacters(in: .whitespaces).hasPrefix("{"),
+               !ctx.functionReturnType.isEmpty,
+               ctx.functionReturnType != "void" {
+                ctx.emit("return \(ctx.functionReturnType)\(val);")
+            } else {
+                ctx.emit("return \(val);")
+            }
         } else {
             ctx.emit("return;")
         }
@@ -4555,7 +4708,7 @@ struct IRToMSLConverter {
     }
 
     /// 解析向量常量 mask: <i32 0, i32 1, i32 2, i32 poison>
-    private static func parseVectorConstant(_ mask: String) -> [Int] {
+    private static func parseVectorConstant(_ mask: String, fallbackDim: Int? = nil) -> [Int] {
         let inner: String
         if mask.hasPrefix("<") && mask.hasSuffix(">") {
             inner = String(mask.dropFirst().dropLast())
@@ -4564,7 +4717,8 @@ struct IRToMSLConverter {
         }
 
         if inner.contains("zeroinitializer") {
-            return [0, 0, 0, 0]
+            let dim = max(fallbackDim ?? 4, 1)
+            return Array(repeating: 0, count: dim)
         }
 
         return inner.components(separatedBy: ",").map { part in
@@ -4727,6 +4881,12 @@ struct IRToMSLConverter {
             if emittedNames.contains(safeName) { continue }
             emittedNames.insert(safeName)
 
+            if let outputStruct = generateEntryOutputStructDefinition(for: func_),
+               emittedAuxiliaryStructs.insert(outputStruct.name).inserted {
+                lines.append(outputStruct.definition)
+                lines.append("")
+            }
+
             if let stageInStruct = generateFragmentStageInStructDefinition(for: func_, safeName: safeName),
                emittedAuxiliaryStructs.insert(stageInStruct.name).inserted {
                 lines.append(stageInStruct.definition)
@@ -4806,6 +4966,51 @@ struct IRToMSLConverter {
             lines.removeLast()
         }
         return lines
+    }
+
+    private static func generateEntryOutputStructDefinition(
+        for func_: ParsedShaderFunction
+    ) -> (name: String, definition: String)? {
+        guard func_.outputs.count > 1 else { return nil }
+
+        let structName = func_.returnType
+        var lines: [String] = ["struct \(structName) {"]
+        for (index, output) in func_.outputs.enumerated() {
+            let rawTypeName = output.typeName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let fieldType: String
+            if rawTypeName.isEmpty {
+                fieldType = output.kind == "air.position" ? "float4" : "float"
+            } else {
+                fieldType = irScalarTypeToMSL(rawTypeName)
+            }
+
+            let fallbackName: String
+            switch output.kind {
+            case "air.position":
+                fallbackName = "position"
+            case "air.render_target":
+                fallbackName = "color\(output.locationIndex ?? index)"
+            case "air.vertex_output":
+                fallbackName = "varying\(index)"
+            default:
+                fallbackName = "field\(index)"
+            }
+            let fieldName = sanitizeIdentifier(output.argName, fallback: fallbackName, uppercaseFirst: false)
+
+            let attribute: String
+            switch output.kind {
+            case "air.position":
+                attribute = " [[position]]"
+            case "air.render_target":
+                attribute = " [[color(\(output.locationIndex ?? 0))]]"
+            default:
+                attribute = ""
+            }
+
+            lines.append("    \(fieldType) \(fieldName)\(attribute);")
+        }
+        lines.append("};")
+        return (structName, lines.joined(separator: "\n"))
     }
 
     private static func fragmentStageInStructName(for safeName: String) -> String {

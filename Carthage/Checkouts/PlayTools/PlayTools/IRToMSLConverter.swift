@@ -3529,7 +3529,7 @@ struct IRToMSLConverter {
         let cond = tokens[0]
         // 剩余部分：<type> <op1>, <op2>
         let rest = tokens.dropFirst().joined(separator: " ")
-        let (_, operands) = parseBinaryOperands(rest, skipKeywords: [])
+        let (operandType, operands) = parseBinaryOperands(rest, skipKeywords: [])
         guard operands.count >= 2 else {
             ctx.define(lhs, expr: "/* fcmp operand error */")
             return
@@ -3537,7 +3537,10 @@ struct IRToMSLConverter {
         let a = resolveIROperand(operands[0], ctx: ctx)
         let b = resolveIROperand(operands[1], ctx: ctx)
         let mslOp = fcmpCondToMSL(cond)
-        ctx.emitAutoAssign(lhs, expr: "\(a) \(mslOp) \(b)", knownType: "bool")
+        // 向量 fcmp 产出 <N x i1> → boolN，标量 fcmp 产出 i1 → bool
+        let dim = extractVectorDim(operandType)
+        let resultType = dim > 1 ? "bool\(dim)" : "bool"
+        ctx.emitAutoAssign(lhs, expr: "\(a) \(mslOp) \(b)", knownType: resultType)
     }
 
     /// 翻译 icmp
@@ -3550,7 +3553,7 @@ struct IRToMSLConverter {
         }
         let cond = tokens[0]
         let rest = tokens.dropFirst().joined(separator: " ")
-        let (_, operands) = parseBinaryOperands(rest, skipKeywords: [])
+        let (operandType, operands) = parseBinaryOperands(rest, skipKeywords: [])
         guard operands.count >= 2 else {
             ctx.define(lhs, expr: "/* icmp operand error */")
             return
@@ -3558,7 +3561,15 @@ struct IRToMSLConverter {
         let a = resolveIROperand(operands[0], ctx: ctx)
         let b = resolveIROperand(operands[1], ctx: ctx)
         let mslOp = icmpCondToMSL(cond)
-        ctx.emitAutoAssign(lhs, expr: "\(a) \(mslOp) \(b)", knownType: "bool")
+        // 向量 icmp 产出 <N x i1> → boolN，标量 icmp 产出 i1 → bool
+        let resultType: String
+        let dim = extractVectorDim(operandType)
+        if dim > 1 {
+            resultType = "bool\(dim)"
+        } else {
+            resultType = "bool"
+        }
+        ctx.emitAutoAssign(lhs, expr: "\(a) \(mslOp) \(b)", knownType: resultType)
     }
 
     /// 翻译 select
@@ -4080,6 +4091,10 @@ struct IRToMSLConverter {
             mslDstType = irIntegerTypeToMSL(dstType, signed: false)
         case "fptosi":
             mslDstType = irIntegerTypeToMSL(dstType, signed: true)
+        case "zext":
+            mslDstType = irIntegerTypeToMSL(dstType, signed: false)
+        case "sext":
+            mslDstType = irIntegerTypeToMSL(dstType, signed: true)
         default:
             mslDstType = irScalarTypeToMSL(dstType)
         }
@@ -4088,6 +4103,9 @@ struct IRToMSLConverter {
     }
 
     /// 将 IR 整数类型映射到带符号性语义的 MSL 类型。
+    ///
+    /// 注意：MSL 不支持 `uint8_tN` 等向量类型别名（如 `uint8_t2`），
+    /// 无符号 8-bit 整数向量必须使用 `ucharN`（即 `vector<uint8_t, N>`）。
     private static func irIntegerTypeToMSL(_ irType: String, signed: Bool) -> String {
         let cleaned = irType.trimmingCharacters(in: .whitespaces)
 
@@ -4108,11 +4126,13 @@ struct IRToMSLConverter {
                 let parts = inner.components(separatedBy: " x ")
                 if parts.count >= 2 {
                     let count = parts[0].trimmingCharacters(in: .whitespaces)
-                    let elemType = irIntegerTypeToMSL(
-                        parts.dropFirst().joined(separator: " x ").trimmingCharacters(in: .whitespaces),
-                        signed: signed
-                    )
-                    return "\(elemType)\(count)"
+                    let elemType = parts.dropFirst().joined(separator: " x ").trimmingCharacters(in: .whitespaces)
+                    // i8 向量：MSL 不支持 uint8_tN，必须用 ucharN
+                    if elemType == "i8" {
+                        return "uchar\(count)"
+                    }
+                    let elemMSLType = irIntegerTypeToMSL(elemType, signed: signed)
+                    return "\(elemMSLType)\(count)"
                 }
             }
             return irScalarTypeToMSL(cleaned)
@@ -4273,7 +4293,23 @@ struct IRToMSLConverter {
 
         // 普通函数调用
         let paramCount = mapping.paramCount > 0 ? mapping.paramCount : args.count
-        let callArgs = Array(args.prefix(paramCount))
+        var callArgs = Array(args.prefix(paramCount))
+        let callArgTypes = Array(argTypes.prefix(paramCount))
+
+        // E-006a2e4: intrinsic 类型歧义修复
+        // 当首个参数是 half 类型（标量或向量）时，FP literal 参数应加 h 后缀
+        // 以避免 Metal 的 half/float 重载歧义（如 clamp(half_var, 0.0, 1.0) → ambiguous）
+        if (mapping.category == .math) && callArgs.count > 1 && !callArgTypes.isEmpty {
+            let firstType = callArgTypes[0]
+            let isHalfScalar = firstType == "half"
+            let isHalfVector = firstType.contains(" x half")
+            if isHalfScalar || isHalfVector {
+                for i in 1..<callArgs.count {
+                    callArgs[i] = appendHalfSuffixIfFPLiteral(callArgs[i])
+                }
+            }
+        }
+
         return "\(mapping.mslFunction)(\(callArgs.joined(separator: ", ")))"
     }
 
@@ -4758,6 +4794,25 @@ struct IRToMSLConverter {
         }
 
         return s
+    }
+
+    /// 如果参数是纯 FP 字面量（如 "0.0", "1.0", "-1.0"），追加 h 后缀使其成为 half literal。
+    /// SSA 引用（%N）、函数调用结果、常量表达式等不受影响。
+    private static func appendHalfSuffixIfFPLiteral(_ arg: String) -> String {
+        let s = arg.trimmingCharacters(in: .whitespaces)
+        // 跳过 SSA 引用、函数调用、注释、类型转换等
+        if s.hasPrefix("%") || s.hasPrefix("(") || s.contains("(") ||
+           s.contains("/*") || s.contains("//") || s.contains("?") {
+            return arg
+        }
+        // 检查是否是纯浮点数字面量
+        // 支持: "0.0", "1.0", "2.0", "-1.0", "0.5", "3.14", 科学计数法等
+        if let _ = Double(s) {
+            // 已经有 h 后缀就跳过
+            if s.hasSuffix("h") { return arg }
+            return "\(s)h"
+        }
+        return arg
     }
 
     /// 格式化 IR 浮点字面量为 MSL

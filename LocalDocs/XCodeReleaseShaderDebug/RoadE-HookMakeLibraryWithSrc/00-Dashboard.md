@@ -37,7 +37,7 @@
 
 ## 当前主线
 
-- **E-006（下一步：`E-006a2e4` intrinsic 类型歧义 lowering 修复）**：`E-006a2e3` live 复测已完成 — `undef` / `0xH8000` / `stage_in` / `device T*` / `*(&...)` 旧 blocker 全部消失。新 blocker 收敛到三类 IR→MSL lowering 问题：①`clamp`/`fma` intrinsic 的 `half`/`float` 重载歧义（`half` 操作数 + `double` literal → Metal 无法选择重载）；②`icmp` 对 `<N x half>` 产出 `boolN` 却赋给 `bool`；③`zext <N x i1> to <N x i8>` 翻译为不存在的 `uint8_t2`（应为 `uchar2`）。下一步修复这三类 lowering。
+- **E-006（下一步：`E-006a2e5` live 重装 / 重注入复测）**：`E-006a2e4` 已完成 — intrinsic 类型歧义、vector fcmp/icmp 结果类型、zext i8 向量映射三类 lowering 问题全部修复。`test_intrinsic_vector_icmp_zext.ll/.metal` 已补，`FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 编译通过 + smoketest MSL 可编译。下一步需 live 复测确认原神 shader 的 `compile_failed` 是否减少。
 - **E-005b**：多 bitcode module 的源码聚合 / 替换策略已稳定，仍坚持"**全成全退**"。全部有效 LLVM module 都能完成 `llvm-dis + IRToMSLConverter` 且聚合后无重名时才单次 `makeLibrary(source:)` 重编译，否则整体 fallback。
 - **E-005e**：payload 恢复链路对已知样本已打通，**不再是当前主线**。
 
@@ -80,7 +80,7 @@ PlayCover 主应用 (macOS)
 
 ## TODO
 
-> 当前最高优先级：`E-006a2e4`（intrinsic 类型歧义 + vector icmp/zext lowering 修复）。更早 live 样本、已完成子任务的详细归因，以及旧 blocker 的完整历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
+> 当前最高优先级：`E-006a2e5`（`E-006a2e4` 后的 live 重装 / 重注入复测）。更早 live 样本、已完成子任务的详细归因，以及旧 blocker 的完整历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -104,15 +104,15 @@ PlayCover 主应用 (macOS)
 | E-006a2 | ↳ host bridge 版本的 live 重装 / 重注入 / 截帧复测 | 🔄 IN PROGRESS | |
 |  | `E-006a2a`–`E-006a2e` 已把 blocker 从 preflight / toucher / keymapping / vertex `stage_in` / pointer / `undef` / `0xH8000` 一路前移到 intrinsic 类型歧义与 vector icmp/zext lowering；详细过程见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | | |
 | E-006a2e | ↳ `E-006a2d4` 后的 IR→MSL lowering 补洞与 live 复测轮次 | 🔄 IN PROGRESS | |
-|  | `E-006a2e1`–`E-006a2e3` 已完成；`E-006a2e3` 确认旧 blocker 全清，新 blocker 为 intrinsic 类型歧义 + vector icmp/zext | | |
+|  | `E-006a2e1`–`E-006a2e4` 已完成；`E-006a2e4` 修复 intrinsic 类型歧义 + vector fcmp/icmp + zext uchar；下一步 `E-006a2e5` live 复测 | | |
 | E-006a2e1 | ↳ `E-006a2d4` 后首轮 live 归因复测 | ✅ DONE | |
 |  | 已确认 vertex `stage_in` / `device T*` / `*(&...)` 旧 blocker 不再出现；`session` 已能 `ready` 后再掉线，诊断已前移到 `undef` 与 `0xH8000` | | |
 | E-006a2e2 | ↳ `undef` / half 十六进制字面量 lowering 修复 | ✅ DONE | |
 |  | 在 `IRToMSLConverter` 中修了三处：①`resolveIROperand()` 新增 IR typed constant 分发（`float undef` → 递归解析 `undef` → `0`）；②`formatIRLiteral()` 新增 `undef`/`poison` 守卫 + `0xH` half hex → IEEE-754 转十进制 / `as_type<half>(ushort(...))`；③`SSAContext.resolve()` 新增 `undef`/`poison` → `0`。`test-data/test_undef_half.metal/.ll` 已补，确认 IR 含 `<4 x float> undef` 与 `0xH4000` 等目标模式。`FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 编译通过 | | |
 | E-006a2e3 | ↳ `E-006a2e2` 后 live 重装 / 重注入复测 | ✅ DONE | |
 |  | 按 `build_and_install.sh` + `remove_playtools` / `inject_playtools` / `launch_app` / `create_session(timeout=30)` 完成。`session` 10 秒内 `ready` 后 ~10 秒 `disconnected`（无新 crash report）。`ShaderSourceDiagnostics` 仅 `compile_failed`，`undef`/`0xH8000`/`stage_in`/`device T*`/`*(&...)` 旧 blocker 全部消失。新 blocker：①`clamp`/`fma` 的 `half`/`float` 重载歧义（`half` 操作数 + `double` literal）；②vector `icmp` 产出 `boolN` 赋给 `bool`；③`uint8_t2` 不存在（应为 `uchar2`） | | |
-| E-006a2e4 | ↳ intrinsic 类型歧义 + vector icmp/zext lowering 修复 | TODO | |
-|  | 三类修复：①intrinsic（`clamp`/`fma` 等）调用时 literal 参数类型应匹配首个操作数类型（`half` → `0.0h`）；②vector `icmp` 结果应为 `boolN` 而非 `bool`；③`zext <N x i1> to <N x i8>` 应映射为 `ucharN` 而非 `uint8_tN` | | |
+| E-006a2e4 | ↳ intrinsic 类型歧义 + vector icmp/zext lowering 修复 | ✅ DONE | |
+|  | 三类修复：①intrinsic（`clamp`/`fma` 等）调用时 literal 参数类型应匹配首个操作数类型（`half` → `0.0h`）；②vector `fcmp`/`icmp` 结果应为 `boolN` 而非 `bool`；③`zext <N x i1> to <N x i8>` 应映射为 `ucharN` 而非 `uint8_tN`。额外修复：`translateIntCast` 中 `zext`/`sext` 应走 `irIntegerTypeToMSL` 而非 `irScalarTypeToMSL`。`test-data/test_intrinsic_vector_icmp_zext.ll/.metal` 已补，smoketest + Metal 编译通过 | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
 |  | 添加 `injectShaderSources` 开关到 AppSettings / AppSettingsView；添加 LLVM 工具链下载 / 状态 UI | | |
 
@@ -130,7 +130,8 @@ PlayCover 主应用 (macOS)
 - **half 十六进制立即数需在 lowering 阶段转为合法 MSL**：`E-006a2e2` 已修 — `formatIRLiteral()` 新增 `0xH` half hex 识别，通过 `formatHalfIRLiteral()` 将 16-bit IEEE-754 转十进制（常用值）或 `as_type<half>(ushort(...))`（Inf/NaN 特殊值）
 - **`auto` + intrinsic 调用会暴露操作数类型歧义**：`clamp(half_var, 0.0, 1.0)` 中 `0.0`/`1.0` 是 `double` literal，Metal 的 `clamp(half,half,half)` 和 `clamp(float,float,float)` 都不精确匹配，编译器报 ambiguous。fix：intrinsic 发射时 literal 参数类型应跟随首个操作数
 - **vector `icmp` 结果是 `boolN`，不能赋给 `bool`**：`<2 x half>` 的 `icmp eq` 产出 `<2 x i1>`，应翻译为 `bool2` 而非 `bool`
-- **`zext <N x i1> to <N x i8>` 不能映射为 `uint8_tN`**：MSL 没有 `uint8_t2` 类型，应使用 `uchar2`（即 `vector<uint8_t, 2>`）
+- **`zext <N x i1> to <N x i8>` 不能映射为 `uint8_tN`**：MSL 没有 `uint8_t2` 类型，应使用 `uchar2`（即 `vector<uint8_t, 2>`）。`E-006a2e4` 已修 — `translateIntCast` 中 `zext`/`sext` 改为走 `irIntegerTypeToMSL`（而非 `irScalarTypeToMSL`），且 `irIntegerTypeToMSL` 内对 `i8` 向量元素特殊处理为 `ucharN`
+- **vector `fcmp`/`icmp` 结果是 `boolN`，不能赋给 `bool`**：`E-006a2e4` 已修 — `translateFCmp`/`translateICmp` 都从操作数 IR 类型提取向量维度，`dim > 1` 时 `knownType` 设为 `bool\(dim)`
 - **更早的 wrapper 恢复、host bridge、live 基线与 IR→MSL 历史修复经验见 [00-Dashboard-Archive](00-Dashboard-Archive.md)**：dashboard 主体只保留当前仍会影响决策的经验
 
 ## 参考信息

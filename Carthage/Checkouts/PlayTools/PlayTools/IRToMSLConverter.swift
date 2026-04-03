@@ -1239,6 +1239,7 @@ struct IRToMSLConverter {
     /// - `v4f32` → `float4`, `v3f32` → `float3`, `v2f32` → `float2`
     /// - `v4f16` → `half4`, `v4i32` → `int4`, `v2i32` → `int2`
     /// - `f32` → `float`, `f16` → `half`, `i32` → `int`, `i16` → `short`
+    /// - `vNi8` → `ucharN` (E-006a2e12: MSL 不支持 uint8_tN)
     static func airTypeSuffixToMSL(_ suffix: String) -> String {
         // 向量类型：vNtBB → typeN (如 v4f32 → float4)
         if suffix.hasPrefix("v") {
@@ -1248,6 +1249,10 @@ struct IRToMSLConverter {
             while i < chars.count && chars[i].isNumber { i += 1 }
             let dim = String(chars[0..<i])
             let scalarSuffix = String(chars[i...])
+            // E-006a2e12: i8/u8 向量特殊处理 — MSL 不支持 uint8_tN，必须用 ucharN
+            if scalarSuffix == "i8" || scalarSuffix == "u8" {
+                return "uchar\(dim)"
+            }
             let scalarMSL = airScalarSuffixToMSL(scalarSuffix)
             return "\(scalarMSL)\(dim)"
         }
@@ -4408,11 +4413,10 @@ struct IRToMSLConverter {
                 let filtered = filterTextureArgs(methodArgs, argTypes: methodArgTypes)
                 var finalArgs = filtered.args
 
-                // E-006a2e8: sample 的 bias/level float 需包装为选项结构
-                // Metal 的 sample 有 bias/level/min_lod_clamp 三个重载都接受 float 参数，
-                // 裸传 float 会导致 ambiguous。只对 "sample" 方法（不含 sample_compare）处理。
-                // Air IR 中通过 i1 标志区分：i1 false → bias, i1 true → level(显式LOD)
-                if mapping.mslFunction == "sample" && !finalArgs.isEmpty {
+                // E-006a2e8 → E-006a2e12: sample / sample_compare 的 bias/level float 需包装为选项结构
+                // Metal 的 sample/sample_compare 都有 bias/level/min_lod_clamp 重载接受 float 参数，
+                // 裸传 float 会导致 ambiguous。Air IR 中通过 i1 标志区分：i1 false → bias, i1 true → level(显式LOD)
+                if (mapping.mslFunction == "sample" || mapping.mslFunction == "sample_compare") && !finalArgs.isEmpty {
                     let lastType = filtered.types.last ?? ""
                     if lastType == "float" || lastType == "half" {
                         // 查找 LOD/bias 标志：原始参数中 i1 紧接 float/half 的位置
@@ -5099,6 +5103,10 @@ struct IRToMSLConverter {
         }
         let dim = values.count
         let elemType = elems.first?.components(separatedBy: " ").first ?? "float"
+        // E-006a2e12: i8 向量特殊处理 — MSL 不支持 uint8_tN，必须用 ucharN
+        if elemType == "i8" {
+            return "uchar\(dim)(\(values.joined(separator: ", ")))"
+        }
         let mslType = irScalarTypeToMSL(elemType)
         return "\(mslType)\(dim)(\(values.joined(separator: ", ")))"
     }

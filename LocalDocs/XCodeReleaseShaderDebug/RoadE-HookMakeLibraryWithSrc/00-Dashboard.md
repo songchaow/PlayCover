@@ -37,7 +37,7 @@
 
 ## 当前主线
 
-- **E-006（下一步：`E-006a2e9` live 复测）**：`E-006a2e8` texture sample bias/level ambiguous 修复已完成 ✅。`filterTextureArgs` 改为返回 `(args, types)` 元组；`generateMSLForAirCall` 在 `sample` 方法调用中，根据原始 `i1` 标志将尾部 float/half 包装为 `bias(value)` 或 `level(value)` 选项结构。同时修复 `hasPrefix("0.0")` 过度过滤 bug。`test-data/test_sample_bias.ll` 已补。下一步：live 重装 / 重注入复测确认 blocker 消除。
+- **E-006（下一步：`E-006a2e10` 修复 `___metal_fract` / `@__air_sampler_state` / `uint8_t2` 新 blocker）**：`E-006a2e9` live 复测确认 `E-006a2e8` texture sample bias/level ambiguous blocker 已消除 ✅，session 从 ~10-15 秒 `disconnected` 提升到 30 秒+ 持续 `ready`。天空 shader `XlatMtlMain` `[[color]]` 问题仍存在（已知旧 blocker）。**新 blocker**：①`@___metal_fract_v2float` 未翻译（LLVM 内联 intrinsic 未被 `@air.` 前缀匹配覆盖，需增加 `@___metal_` 识别）②`@__air_sampler_state` 全局 symbol 泄露到 `.sample()` / `.sample_compare()` 调用 ③`uint8_t2` 类型回退（`E-006a2e4` 修过的 i8 向量问题有新路径绕过）
 - **E-005b**：多 bitcode module 的源码聚合 / 替换策略已稳定，仍坚持"**全成全退**"。全部有效 LLVM module 都能完成 `llvm-dis + IRToMSLConverter` 且聚合后无重名时才单次 `makeLibrary(source:)` 重编译，否则整体 fallback。
 - **E-005e**：payload 恢复链路对已知样本已打通，**不再是当前主线**。
 
@@ -57,8 +57,9 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 | 样本 | 结果 |
 |---|---|
-| 原神 6.4.0 外网包（2026-04-03，`E-006a2e7` live 复测） | `build_and_install.sh` + `remove_playtools` / `inject_playtools` / `launch_app` / `create_session(timeout=30)`。`session` 10 秒内 `ready` 后 ~15 秒 `disconnected`（无新 crash report，与历史一致）。`ShaderSourceDiagnostics` 仅 1 个 `compile_failed`（fragment `xlatMtlMain` 天空 shader）。`E-006a2e6` struct return `0` blocker 已消除 ✅。新 blocker：`_ReflectionCube.sample(sampler, coord, bias_val)` ambiguous — Metal 的 `texturecube::sample` 有 `bias`/`level`/`min_lod_clamp` 三个重载都接受 `(sampler, float3, float)`，需要将 bias 包装为 `bias(value)` 选项结构 |
-| 历史更多 live 样本摘要（2026-04-02 ～ 2026-04-03） | 主线演进：`host bridge` 权限 → `source recompile failed` → preflight guard → toucher/keymapping 隔离 → vertex `stage_in`/pointer → `undef`/`0xH8000` → intrinsic 类型歧义 → integer literal `h` 后缀 → struct return `0` → texture sample bias ambiguous。更早细节见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
+| 原神 6.4.0 外网包（2026-04-03，`E-006a2e9` live 复测） | `build_and_install.sh` + `remove_playtools` / `inject_playtools` / `launch_app` / `create_session(timeout=30)`。`session` 10 秒内 `ready` 且 30 秒+ 仍保持 `ready`（比之前 ~10-15 秒 `disconnected` 显著改善）。`E-006a2e8` texture sample bias/level ambiguous blocker 已消除 ✅。天空 shader `xlatMtlMain` `[[color]]` 问题仍存在（已知旧 blocker）。**新 blocker**：①`@___metal_fract_v2float` 内联 intrinsic 未翻译为 `fract()`（`translateCall` 仅识别 `@air.` 前缀，`@___metal_` 被当做普通函数生成注释）②`@__air_sampler_state` 全局 symbol 泄露到 `.sample()` / `.sample_compare()` 调用 ③`uint8_t2` 类型回退（`E-006a2e4` 修过的 `irIntegerTypeToMSL` 有新路径绕过，需排查 `emitAutoAssign` 中 `knownType` 传播） |
+| 原神 6.4.0 外网包（2026-04-03，`E-006a2e7` live 复测） | ...（同上，`E-006a2e6` struct return `0` blocker 已消除，新 blocker 为 texture sample bias ambiguous） |
+| 历史更多 live 样本摘要（2026-04-02 ～ 2026-04-03） | 主线演进：`host bridge` 权限 → `source recompile failed` → preflight guard → toucher/keymapping 隔离 → vertex `stage_in`/pointer → `undef`/`0xH8000` → intrinsic 类型歧义 → integer literal `h` 后缀 → struct return `0` → texture sample bias ambiguous → `___metal_fract` / `@__air_sampler_state` / `uint8_t2`。更早细节见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
 
 **人工确认（最终）**：Xcode 打开 `.gputrace` → 选 Draw Call → 查看 Shader 面板是否显示源码而非 `Shader source not found`。
 
@@ -80,7 +81,7 @@ PlayCover 主应用 (macOS)
 
 ## TODO
 
-> 当前最高优先级：`E-006a2e9`（`E-006a2e8` 后 live 重装 / 重注入复测）。更早 live 样本、已完成子任务的详细归因，以及旧 blocker 的完整历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
+> 当前最高优先级：`E-006a2e10`（修复 `___metal_fract` / `@__air_sampler_state` / `uint8_t2` 新 blocker）。更早 live 样本、已完成子任务的详细归因，以及旧 blocker 的完整历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -104,7 +105,7 @@ PlayCover 主应用 (macOS)
 | E-006a2 | ↳ host bridge 版本的 live 重装 / 重注入 / 截帧复测 | 🔄 IN PROGRESS | |
 |  | `E-006a2a`–`E-006a2e` 已把 blocker 从 preflight / toucher / keymapping / vertex `stage_in` / pointer / `undef` / `0xH8000` 一路前移到 intrinsic 类型歧义与 vector icmp/zext lowering；详细过程见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | | |
 | E-006a2e | ↳ `E-006a2d4` 后的 IR→MSL lowering 补洞与 live 复测轮次 | 🔄 IN PROGRESS | |
-|  | `E-006a2e1`–`E-006a2e8` 已完成；`E-006a2e8` 修复 texture `sample` bias/level ambiguous lowering ✅，下一步 `E-006a2e9` live 复测 | | |
+|  | `E-006a2e1`–`E-006a2e9` 已完成；`E-006a2e9` live 复测确认 texture sample bias/level blocker 已消除 ✅，新 blocker：`___metal_fract` / `@__air_sampler_state` / `uint8_t2`，下一步 `E-006a2e10` | | |
 | E-006a2e1 | ↳ `E-006a2d4` 后首轮 live 归因复测 | ✅ DONE | |
 |  | 已确认 vertex `stage_in` / `device T*` / `*(&...)` 旧 blocker 不再出现；`session` 已能 `ready` 后再掉线，诊断已前移到 `undef` 与 `0xH8000` | | |
 | E-006a2e2 | ↳ `undef` / half 十六进制字面量 lowering 修复 | ✅ DONE | |
@@ -121,8 +122,10 @@ PlayCover 主应用 (macOS)
 |  | `build_and_install.sh` + `remove_playtools` / `inject_playtools` / `launch_app` / `create_session(timeout=30)`。`session` 10 秒内 `ready` 后 ~15 秒 `disconnected`（无新 crash report）。`ShaderSourceDiagnostics` 仅 1 个 `compile_failed`（fragment `xlatMtlMain` 天空 shader）。`E-006a2e6` struct return `0` blocker 已消除 ✅。新 blocker：`_ReflectionCube.sample(sampler, coord, bias_val)` ambiguous — `air.sample_texture_cube` 带 bias 时，`filterTextureArgs` 直接传递裸 float，但 Metal 要求 `bias(value)` 选项结构 | | |
 | E-006a2e8 | ↳ 修复 texture `sample` bias/level 参数 ambiguous lowering | ✅ DONE | |
 |  | Air IR 中 `air.sample_texture_*` 的 bias/level 由 `i1` 标志区分（`false`=bias, `true`=level）。修复：①`filterTextureArgs` 改为返回 `(args, types)` 元组保留类型信息；②`generateMSLForAirCall` 对 `sample` 方法调用，扫描原始参数中 `i1` 后接 `float` 的标志位，将尾部 float/half 包装为 `bias(value)` 或 `level(value)` 选项结构；③同时修复 `hasPrefix("0.0")` 过度过滤 bug（会误过滤 0.01 等非零小值）。`test-data/test_sample_bias.ll` 已补（覆盖 bias/level/bias(0) 三种情况）。`FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 编译通过，`test_mcp.sh` 全部通过（1 个 pre-existing failure 无关） |
-| E-006a2e9 | ↳ `E-006a2e8` 后 live 重装 / 重注入复测 | TODO | |
-|  | 验证 `_ReflectionCube.sample` ambiguous blocker 已消除，确认是否还有新 blocker | | |
+| E-006a2e9 | ↳ `E-006a2e8` 后 live 重装 / 重注入复测 | ✅ DONE | |
+|  | texture sample bias/level ambiguous blocker 已消除 ✅。session 从 ~10-15 秒 `disconnected` 提升到 30 秒+ 持续 `ready`。天空 shader `[[color]]` 仍存在（旧 blocker）。新 blocker：①`@___metal_fract_v2float` 内联 intrinsic 未翻译 ②`@__air_sampler_state` 全局 symbol 泄露到 `.sample()` / `.sample_compare()` ③`uint8_t2` 类型回退 | | |
+| E-006a2e10 | ↳ 修复 `___metal_fract` / `@__air_sampler_state` / `uint8_t2` 新 blocker | TODO | |
+|  | ①`translateCall` 增加 `@___metal_` 前缀识别，映射 `___metal_fract_vNtype` → `fract()` ②`filterTextureArgs` 或 `resolveIROperand` 过滤 `@__air_sampler_state` 全局 symbol ③排查 `uint8_t2` 类型回退路径（`irIntegerTypeToMSL` 的 i8 向量特殊处理可能有新路径绕过） | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
 |  | 添加 `injectShaderSources` 开关到 AppSettings / AppSettingsView；添加 LLVM 工具链下载 / 状态 UI | | |
 
@@ -146,6 +149,8 @@ PlayCover 主应用 (macOS)
 - **struct 返回类型的 `ret undef`/`zeroinitializer` 不能用 `return 0;`**：`E-006a2e6` 已修 — `translateRet` 中当 `resolveIROperand` 返回 `"0"` 且 `functionReturnType` 是结构体类型（通过 `isStructTypeName` 判断）时，改用 `return StructType();` 零初始化。根因：`resolveIROperand` 将 `undef`/`poison`/`zeroinitializer` 统一转为 `"0"` 不考虑上下文类型
 - **Metal `texture::sample` 的 bias/level/min_lod_clamp 重载需要选项结构参数**：`sample(sampler, coord, float_val)` 中 `float_val` 会同时匹配 `bias`、`level`、`min_lod_clamp` 三个重载导致 ambiguous。必须写成 `sample(sampler, coord, bias(val))` 或 `sample(sampler, coord, level(val))` 等显式选项形式。`E-006a2e8` 已修 — `generateMSLForAirCall` 根据原始 `i1` 标志自动区分 bias(false) 和 level(true)
 - **Air IR `sample_texture_*` 的 `i1` 标志区分 bias 与 level**：`air.sample_texture_2d(tex, sampler, coord, i1_offset, offset, i1_lod, float_val, ...)` 中 `i1_lod=false` → bias, `i1_lod=true` → level(explicit LOD)。cube/3d 变体省略 offset 参数但 LOD 标志位置类似。`filterTextureArgs` 跳过了 `i1`，因此 bias/level 包装需回查原始参数
+- **`translateCall` 仅识别 `@air.` 前缀，`@___metal_*` 和 `@llvm.*` 被当做普通函数**：LLVM Metal 编译器会将部分标准库函数内联为 `@___metal_fract_v2float` 等形式，这些不是 `@air.*` 前缀，不会被 `translateAirCall` 处理。需要增加对 `@___metal_` 前缀的识别和映射。`E-006a2e10` 待修
+- **`@__air_sampler_state` 全局 symbol 不应出现在生成的 MSL 中**：air 调用中的 sampler 参数通常通过 `sampler` 类型的 SSA 变量传递，但某些路径中解析为全局 `@__air_sampler_state` 并泄漏到 `.sample()` / `.sample_compare()` 调用中。`E-006a2e10` 待修
 - **更早的 wrapper 恢复、host bridge、live 基线与 IR→MSL 历史修复经验见 [00-Dashboard-Archive](00-Dashboard-Archive.md)**：dashboard 主体只保留当前仍会影响决策的经验
 
 ## 参考信息

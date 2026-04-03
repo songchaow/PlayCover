@@ -37,7 +37,7 @@
 
 ## 当前主线
 
-- **E-006（下一步：`E-006a2e11` live 复测 `E-006a2e10` 三 blocker 修复 + 天空 shader `[[color]]` 问题）**：`E-006a2e10` 已修复三个新 blocker ✅：①`translateCall` 增加 `@___metal_` 前缀识别 + `metalIntrinsicMappings` 映射表（覆盖 sin/cos/tan/fract/sqrt/exp/log/floor/ceil/clamp/mix/fma/fabs/abs/dot/cross/length/normalize 等数十个 intrinsic 及其 `fast_` 变体）②`resolveIROperand` 增加 `@` 全局 symbol 处理：开头 `@` 直接匹配 sampler 参数（addrspace(2)），嵌入限定词中的 `@` 通过尾部 `@` token 提取递归解析 ③`irScalarTypeToMSL` 向量分支增加 `i8` 特殊处理，`<N x i8>` → `ucharN`（与 `irIntegerTypeToMSL` 一致）。smoketest 验证全部通过。session 30 秒+ `ready` 基线不变（`E-006a2e9`）。已知遗留：天空 shader `xlatMtlMain` `[[color]]` 结构体输出问题。
+- **E-006（下一步：`E-006a2e12` 修复 `uint8_t2` 第二实例 + `sample_compare` 参数不匹配）**：`E-006a2e11` live 复测确认 `E-006a2e10` 三 blocker 已消除 ✅，同时修复了两个新 blocker：①天空 shader `xlatMtlMain` `[[color]]` 结构体 depth 属性缺失（`generateEntryOutputStructDefinition` 增加 `air.depth` kind + 字段名 heuristic 检测，分配 `[[depth(any)]]`）②`translateMetalIntrinsic` 参数溢出（`fract(x, 0)` 多传元数据标志，增加 `mslArgCount` 字段按类别过滤参数）。新发现的 blocker：①大 shader（28KB+）中 `uint8_t2` 再现（不同 code path）②`sample_compare` 参数不匹配。原神间歇性 `EXC_BAD_ACCESS` 崩溃（`objc_release` in Thread 48/49，与 PlayTools 无关）增加了 live 验证难度。
 - **E-005b**：多 bitcode module 的源码聚合 / 替换策略已稳定，仍坚持"**全成全退**"。全部有效 LLVM module 都能完成 `llvm-dis + IRToMSLConverter` 且聚合后无重名时才单次 `makeLibrary(source:)` 重编译，否则整体 fallback。
 - **E-005e**：payload 恢复链路对已知样本已打通，**不再是当前主线**。
 
@@ -57,9 +57,10 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 | 样本 | 结果 |
 |---|---|
-| 原神 6.4.0 外网包（2026-04-03，`E-006a2e10` smoketest） | `FORCE_PLAYTOOLS_REBUILD=1` + `sync_playtools_xcframework.sh` 编译通过 ✅，`test_mcp.sh` 687 tests (1 pre-existing failure 无关)。新增 `test_metal_intrinsic_sampler_state.ll` smoketest：`@___metal_fract_v2float` → `fract()` ✅、`@___metal_sin_f32` → `sin()` ✅、`@___metal_clamp_v2float` → `clamp()` ✅、`@__air_sampler_state` → 映射到 sampler 参数 ✅、`zext <2 x i1> to <2 x i8>` → `uchar2` ✅、`@___metal_fabs/fast_sin/fma` 均正确翻译 ✅。待 live 重装复测验证真实 shader 中新 blocker 是否消除 |
-| 原神 6.4.0 外网包（2026-04-03，`E-006a2e9` live 复测） | `build_and_install.sh` + `remove_playtools` / `inject_playtools` / `launch_app` / `create_session(timeout=30)`。`session` 10 秒内 `ready` 且 30 秒+ 仍保持 `ready`。`E-006a2e8` texture sample bias/level ambiguous blocker 已消除 ✅。天空 shader `xlatMtlMain` `[[color]]` 问题仍存在（已知旧 blocker）。`___metal_fract` / `@__air_sampler_state` / `uint8_t2` 已由 `E-006a2e10` 修复 |
-| 历史更多 live 样本摘要（2026-04-02 ～ 2026-04-03） | 主线演进：`host bridge` 权限 → `source recompile failed` → preflight guard → toucher/keymapping 隔离 → vertex `stage_in`/pointer → `undef`/`0xH8000` → intrinsic 类型歧义 → integer literal `h` 后缀 → struct return `0` → texture sample bias ambiguous → `___metal_fract` / `@__air_sampler_state` / `uint8_t2`。更早细节见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
+| 原神 6.4.0 外网包（2026-04-03，`E-006a2e11` live 复测） | `build_and_install.sh` + `remove_playtools` / `inject_playtools` / `launch_app` / `create_session(timeout=30)`。原神间歇性 `EXC_BAD_ACCESS` 崩溃（`objc_release` Thread 48/49，与 PlayTools 无关，同偏移 0xd44b804），需多次重试。成功 session 中 `ShaderSourceDiagnostics` 确认：天空 shader `[[color]]` depth blocker ✅ 已消除、`fract(x, 0)` 参数溢出 ✅ 已消除、`E-006a2e10` 三 blocker ✅ 均未再现。新 blocker：①大 shader（28KB+）`uint8_t2` 再现（不同 code path）②`sample_compare` 参数不匹配 |
+| 原神 6.4.0 外网包（2026-04-03，`E-006a2e10` smoketest） | `FORCE_PLAYTOOLS_REBUILD=1` + `sync_playtools_xcframework.sh` 编译通过 ✅，`test_mcp.sh` 687 tests (1 pre-existing failure 无关)。新增 `test_metal_intrinsic_sampler_state.ll` smoketest通过 |
+| 原神 6.4.0 外网包（2026-04-03，`E-006a2e9` live 复测） | session 30 秒+ 持续 `ready`。`E-006a2e8` texture sample bias/level ambiguous blocker 已消除 ✅ |
+| 历史更多 live 样本摘要（2026-04-02 ～ 2026-04-03） | 主线演进见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
 
 **人工确认（最终）**：Xcode 打开 `.gputrace` → 选 Draw Call → 查看 Shader 面板是否显示源码而非 `Shader source not found`。
 
@@ -81,7 +82,7 @@ PlayCover 主应用 (macOS)
 
 ## TODO
 
-> 当前最高优先级：`E-006a2e11`（live 复测 `E-006a2e10` 三 blocker 修复 + 天空 shader `[[color]]` 问题排查）。更早 live 样本、已完成子任务的详细归因，以及旧 blocker 的完整历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
+> 当前最高优先级：`E-006a2e12`（修复 `uint8_t2` 第二实例 + `sample_compare` 参数不匹配）。更早 live 样本、已完成子任务的详细归因，以及旧 blocker 的完整历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -97,7 +98,7 @@ PlayCover 主应用 (macOS)
 | E-005d | ↳ 缓存与观测性 | TODO | |
 |  | 以 metallib 内容或 bitcode 模块 `(offset,size)` / hash 为键缓存处理结果，并补充 success / fallback reason 日志 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
-|  | 当前主线：`E-006a2e10` 已修复 `___metal_fract` / `@__air_sampler_state` / `uint8_t2` 三个 blocker ✅，下一步 `E-006a2e11` live 复测 | | |
+|  | 当前主线：`E-006a2e11` live 复测确认 `E-006a2e10` 三 blocker 已消除 ✅，同时修复 depth 属性 + intrinsic 参数溢出，新 blocker 前移到 `uint8_t2` 第二实例 + `sample_compare` | | |
 | E-006a | ↳ 解决 injected runtime 调 `llvm-dis` 的执行权限 blocker | ✅ DONE | |
 |  | 核心权限 blocker 已在 `E-006a1` 解决；host bridge 已通过 live 复测稳定运行 | | |
 | E-006a1 | ↳ runtime→host `llvm-dis` bridge 落地 | ✅ DONE | |
@@ -105,7 +106,7 @@ PlayCover 主应用 (macOS)
 | E-006a2 | ↳ host bridge 版本的 live 重装 / 重注入 / 截帧复测 | 🔄 IN PROGRESS | |
 |  | `E-006a2a`–`E-006a2e` 已把 blocker 从 preflight / toucher / keymapping / vertex `stage_in` / pointer / `undef` / `0xH8000` 一路前移到 intrinsic 类型歧义与 vector icmp/zext lowering；详细过程见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | | |
 | E-006a2e | ↳ `E-006a2d4` 后的 IR→MSL lowering 补洞与 live 复测轮次 | 🔄 IN PROGRESS | |
-|  | `E-006a2e1`–`E-006a2e10` 已完成；`E-006a2e10` 修复 `___metal_fract` / `@__air_sampler_state` / `uint8_t2` 三 blocker ✅，smoketest 通过，待 `E-006a2e11` live 复测 | | |
+|  | `E-006a2e1`–`E-006a2e11` 已完成；`E-006a2e11` 确认 `E-006a2e10` 三 blocker 消除 ✅，同时修复 depth 属性 + intrinsic 参数溢出 ✅，新 blocker 前移到 `uint8_t2` 第二实例 + `sample_compare` | | |
 | E-006a2e1 | ↳ `E-006a2d4` 后首轮 live 归因复测 | ✅ DONE | |
 |  | 已确认 vertex `stage_in` / `device T*` / `*(&...)` 旧 blocker 不再出现；`session` 已能 `ready` 后再掉线，诊断已前移到 `undef` 与 `0xH8000` | | |
 | E-006a2e2 | ↳ `undef` / half 十六进制字面量 lowering 修复 | ✅ DONE | |
@@ -126,7 +127,9 @@ PlayCover 主应用 (macOS)
 |  | texture sample bias/level ambiguous blocker 已消除 ✅。session 从 ~10-15 秒 `disconnected` 提升到 30 秒+ 持续 `ready`。天空 shader `[[color]]` 仍存在（旧 blocker）。新 blocker：①`@___metal_fract_v2float` 内联 intrinsic 未翻译 ②`@__air_sampler_state` 全局 symbol 泄露到 `.sample()` / `.sample_compare()` ③`uint8_t2` 类型回退 | | |
 | E-006a2e10 | ↳ 修复 `___metal_fract` / `@__air_sampler_state` / `uint8_t2` 新 blocker | ✅ DONE | |
 |  | 三类修复：①`translateCall` 增加 `@___metal_` 前缀识别，新增 `translateMetalIntrinsic` + `metalIntrinsicMappings` 映射表（覆盖 sin/cos/tan/fract/sqrt/exp/log/floor/ceil/clamp/mix/fma/fabs/abs/dot/cross/length/normalize/distance 及 `fast_` 变体）②`resolveIROperand` 增加 `@` 全局 symbol 处理：开头 `@` 匹配 sampler 参数（addrspace(2)）；同时增加 `@` token 尾部提取递归（处理 `readonly captures(none) @__air_sampler_state` 等限定词包裹场景）；`filterTextureArgs` 增加 `arg.isEmpty` 过滤兜底 ③`irScalarTypeToMSL` 向量分支增加 `i8` 特殊处理：`<N x i8>` → `ucharN`（与 `irIntegerTypeToMSL` 一致）。`test-data/test_metal_intrinsic_sampler_state.ll` 已补。`FORCE_PLAYTOOLS_REBUILD=1` + `test_mcp.sh` 通过 | | |
-| E-006a2e11 | ↳ `E-006a2e10` 后 live 重装 / 重注入复测 | TODO | | |
+| E-006a2e11 | ↳ `E-006a2e10` 后 live 重装 / 重注入复测 | ✅ DONE | |
+|  | Live 复测确认 `E-006a2e10` 三 blocker（`___metal_fract`/`@__air_sampler_state`/`uint8_t2`）全部消除 ✅。同时修复两个新 blocker：①天空 shader `[[color]]` depth 属性缺失 — `generateEntryOutputStructDefinition` 增加 `air.depth` kind 映射 + 字段名 heuristic（含 "depth" → `[[depth(any)]]`）②`translateMetalIntrinsic` 参数溢出 — `metalIntrinsicMappings` 增加 `mslArgCount` 字段，unary/binary/ternary/vector 分类定义期望参数数，`translateMetalIntrinsic` 按 `mslArgCount` 过滤多余元数据参数。`test-data/test_fragment_depth_output.ll` 已补，Metal 编译通过。原神间歇性 `EXC_BAD_ACCESS` 崩溃（Thread 48/49 `objc_release`，与 PlayTools 无关）。新 blocker：①大 shader（28KB+）`uint8_t2` 再现 ②`sample_compare` 参数不匹配 | | |
+| E-006a2e12 | ↳ 修复 `uint8_t2` 第二实例 + `sample_compare` 参数不匹配 | TODO | | |
 | E-007 | **PlayCover settings UI 集成** | TODO | |
 |  | 添加 `injectShaderSources` 开关到 AppSettings / AppSettingsView；添加 LLVM 工具链下载 / 状态 UI | | |
 
@@ -152,6 +155,8 @@ PlayCover 主应用 (macOS)
 - **Air IR `sample_texture_*` 的 `i1` 标志区分 bias 与 level**：`air.sample_texture_2d(tex, sampler, coord, i1_offset, offset, i1_lod, float_val, ...)` 中 `i1_lod=false` → bias, `i1_lod=true` → level(explicit LOD)。cube/3d 变体省略 offset 参数但 LOD 标志位置类似。`filterTextureArgs` 跳过了 `i1`，因此 bias/level 包装需回查原始参数
 - **`translateCall` 需识别 `@___metal_` 前缀的 LLVM Metal intrinsic**：LLVM Metal 编译器会将部分标准库函数内联为 `@___metal_fract_v2float` 等形式，不是 `@air.*` 前缀。`E-006a2e10` 已修 — 新增 `translateMetalIntrinsic` + `metalIntrinsicMappings`，通过前缀匹配（最长优先）将 `___metal_<name>_<typesuffix>` 映射为 MSL 函数名 `<name>`
 - **`@__air_sampler_state` 全局 symbol 不应出现在生成的 MSL 中**：air 调用中的 sampler 参数有时被 IR 编译器解析为全局 `@__air_sampler_state` 并嵌入 IR 限定词（如 `readonly captures(none) @__air_sampler_state`）。`E-006a2e10` 已修 — `resolveIROperand` 开头 `@` 直接匹配 sampler 参数，同时增加 `@` token 尾部提取递归处理限定词包裹场景；`filterTextureArgs` 增加 `arg.isEmpty` 过滤兜底
+- **Metal fragment 返回结构体的每个成员必须有显式属性**：`[[color(N)]]`、`[[depth(any)]]`、`[[position]]` 等。`E-006a2e11` 已修 — `generateEntryOutputStructDefinition` 增加 `air.depth` kind 映射 + 字段名 heuristic（含 "depth" → `[[depth(any)]]`）。Metal AIR 规范中 fragment depth 输出可能不以 `air.render_target` 作为 metadata kind，需通过字段名检测兜底
+- **`___metal_*` intrinsic 的 IR 参数可能包含元数据标志**：`@___metal_fract_v2float(<2 x float>, i32 0)` 的第二个参数 `i32 0` 是 Metal 编译器内部标志，MSL 的 `fract()` 不接受。`E-006a2e11` 已修 — `metalIntrinsicMappings` 增加 `mslArgCount` 字段，`translateMetalIntrinsic` 按 `mslArgCount` 过滤多余参数
 - **更早的 wrapper 恢复、host bridge、live 基线与 IR→MSL 历史修复经验见 [00-Dashboard-Archive](00-Dashboard-Archive.md)**：dashboard 主体只保留当前仍会影响决策的经验
 
 ## 参考信息

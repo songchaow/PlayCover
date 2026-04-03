@@ -4190,8 +4190,9 @@ struct IRToMSLConverter {
     /// 已知的 ___metal_* intrinsic 映射到 MSL 函数名
     /// 命名规则：___metal_<msl_name>[_<type_suffix>]
     /// 例如：___metal_fract_v2float → fract(), ___metal_fast_sin_v4f32 → fast_sin()
-    private static let metalIntrinsicMappings: [(pattern: String, mslFunc: String)] = {
-        var list: [(String, String)] = []
+    /// mslArgCount: MSL 函数期望的参数数量（IR intrinsic 可能有额外元数据参数）
+    private static let metalIntrinsicMappings: [(pattern: String, mslFunc: String, mslArgCount: Int)] = {
+        var list: [(String, String, Int)] = []
         let unaryMath = [
             "fract", "sin", "cos", "tan", "sqrt", "rsqrt",
             "exp", "exp2", "log", "log2", "floor", "ceil", "round", "trunc",
@@ -4199,32 +4200,39 @@ struct IRToMSLConverter {
             "sinh", "cosh", "tanh",
         ]
         for name in unaryMath {
-            list.append(("___metal_\(name)", name))
-            list.append(("___metal_fast_\(name)", "fast_\(name)"))
+            list.append(("___metal_\(name)", name, 1))
+            list.append(("___metal_fast_\(name)", "fast_\(name)", 1))
         }
         let binaryMath = [
             "fmin", "fmax", "pow", "fmod", "atan2", "copysign", "fdim", "step",
             "min", "max",
         ]
         for name in binaryMath {
-            list.append(("___metal_\(name)", name))
-            list.append(("___metal_fast_\(name)", "fast_\(name)"))
+            list.append(("___metal_\(name)", name, 2))
+            list.append(("___metal_fast_\(name)", "fast_\(name)", 2))
         }
         let ternaryMath = ["clamp", "mix", "smoothstep", "fma"]
         for name in ternaryMath {
-            list.append(("___metal_\(name)", name))
-            list.append(("___metal_fast_\(name)", "fast_\(name)"))
+            list.append(("___metal_\(name)", name, 3))
+            list.append(("___metal_fast_\(name)", "fast_\(name)", 3))
         }
-        let vectorMath = [
-            "dot", "cross", "length", "normalize", "distance",
-            "reflect", "refract", "faceforward",
-        ]
-        for name in vectorMath {
-            list.append(("___metal_\(name)", name))
-            list.append(("___metal_fast_\(name)", "fast_\(name)"))
+        let unaryVec = ["length", "normalize"]
+        for name in unaryVec {
+            list.append(("___metal_\(name)", name, 1))
+            list.append(("___metal_fast_\(name)", "fast_\(name)", 1))
         }
-        list.append(("___metal_abs", "abs"))
-        list.append(("___metal_fabs", "abs"))
+        let binaryVec = ["dot", "cross", "distance", "reflect"]
+        for name in binaryVec {
+            list.append(("___metal_\(name)", name, 2))
+            list.append(("___metal_fast_\(name)", "fast_\(name)", 2))
+        }
+        let ternaryVec = ["refract", "faceforward"]
+        for name in ternaryVec {
+            list.append(("___metal_\(name)", name, 3))
+            list.append(("___metal_fast_\(name)", "fast_\(name)", 3))
+        }
+        list.append(("___metal_abs", "abs", 1))
+        list.append(("___metal_fabs", "abs", 1))
         return list
     }()
 
@@ -4243,9 +4251,18 @@ struct IRToMSLConverter {
         }
         let fullName = String(afterAt[afterAt.startIndex..<parenIdx])
 
-        // 从完整名称（含类型后缀）查找 MSL 函数名
-        // 例如：fract_v2float → fract, fast_sin_v4f32 → fast_sin
-        let mslFunc = lookupMetalIntrinsic(fullName) ?? fullName
+        // 从完整名称（含类型后缀）查找 MSL 函数名和期望参数数
+        // 例如：fract_v2float → fract(1), fast_sin_v4f32 → fast_sin(1)
+        let mapping = lookupMetalIntrinsic(fullName)
+        let mslFunc: String
+        let mslArgCount: Int
+        if let m = mapping {
+            mslFunc = m.mslFunc
+            mslArgCount = m.mslArgCount
+        } else {
+            mslFunc = fullName
+            mslArgCount = -1
+        }
 
         // 提取参数列表
         let argsStart = afterAt.index(after: parenIdx)
@@ -4260,20 +4277,29 @@ struct IRToMSLConverter {
         let argParts = splitTypedOperands(argsStr, count: 20)
         let resolvedArgs = argParts.map { resolveIROperand($0.value, ctx: ctx) }
 
-        ctx.emitAutoAssign(lhs, expr: "\(mslFunc)(\(resolvedArgs.joined(separator: ", ")))")
+        // E-006a2e11: 仅传递 MSL 函数期望的参数数量
+        // IR intrinsic 可能有额外元数据/标志参数（如 fract(x, 0) 的 i32 0）
+        let filteredArgs: [String]
+        if mslArgCount > 0 && resolvedArgs.count > mslArgCount {
+            filteredArgs = Array(resolvedArgs.prefix(mslArgCount))
+        } else {
+            filteredArgs = resolvedArgs
+        }
+
+        ctx.emitAutoAssign(lhs, expr: "\(mslFunc)(\(filteredArgs.joined(separator: ", ")))")
     }
 
-    /// 查找 ___metal_* intrinsic 对应的 MSL 函数名
-    /// 支持：___metal_fract_v2float → fract, ___metal_fast_sin_v4f32 → fast_sin
-    private static func lookupMetalIntrinsic(_ fullName: String) -> String? {
+    /// 查找 ___metal_* intrinsic 对应的 MSL 函数名和期望参数数
+    /// 支持：___metal_fract_v2float → (fract, 1), ___metal_fast_sin_v4f32 → (fast_sin, 1)
+    private static func lookupMetalIntrinsic(_ fullName: String) -> (mslFunc: String, mslArgCount: Int)? {
         // 按模式长度降序匹配，避免 "fast_sin" 被 "sin" 先匹配
         let sorted = metalIntrinsicMappings.sorted { $0.pattern.count > $1.pattern.count }
         for mapping in sorted {
             if fullName == mapping.pattern {
-                return mapping.mslFunc
+                return (mapping.mslFunc, mapping.mslArgCount)
             }
             if fullName.hasPrefix(mapping.pattern + "_") {
-                return mapping.mslFunc
+                return (mapping.mslFunc, mapping.mslArgCount)
             }
         }
         return nil
@@ -5366,8 +5392,12 @@ struct IRToMSLConverter {
                 fallbackName = "color\(output.locationIndex ?? index)"
             case "air.vertex_output":
                 fallbackName = "varying\(index)"
+            case "air.depth":
+                fallbackName = "depth"
             default:
-                fallbackName = "field\(index)"
+                // E-006a2e11: heuristic — detect depth output by arg name
+                let nameLC = output.argName.lowercased()
+                fallbackName = nameLC.contains("depth") ? "depth" : "field\(index)"
             }
             let fieldName = sanitizeIdentifier(output.argName, fallback: fallbackName, uppercaseFirst: false)
 
@@ -5377,8 +5407,15 @@ struct IRToMSLConverter {
                 attribute = " [[position]]"
             case "air.render_target":
                 attribute = " [[color(\(output.locationIndex ?? 0))]]"
+            case "air.depth":
+                attribute = " [[depth(any)]]"
             default:
-                attribute = ""
+                // E-006a2e11: heuristic — detect depth output by field name
+                if fieldName.lowercased().contains("depth") {
+                    attribute = " [[depth(any)]]"
+                } else {
+                    attribute = ""
+                }
             }
 
             lines.append("    \(fieldType) \(fieldName)\(attribute);")

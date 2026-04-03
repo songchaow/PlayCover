@@ -4277,9 +4277,32 @@ struct IRToMSLConverter {
             if args.count >= 2 {
                 let obj = args[0]
                 let methodArgs = Array(args.dropFirst())
-                // 过滤内部参数（i1, i32 常量等控制标志）
-                let userArgs = filterTextureArgs(methodArgs, argTypes: Array(argTypes.dropFirst()))
-                return "\(obj).\(mapping.mslFunction)(\(userArgs.joined(separator: ", ")))"
+                let methodArgTypes = Array(argTypes.dropFirst())
+                let filtered = filterTextureArgs(methodArgs, argTypes: methodArgTypes)
+                var finalArgs = filtered.args
+
+                // E-006a2e8: sample 的 bias/level float 需包装为选项结构
+                // Metal 的 sample 有 bias/level/min_lod_clamp 三个重载都接受 float 参数，
+                // 裸传 float 会导致 ambiguous。只对 "sample" 方法（不含 sample_compare）处理。
+                // Air IR 中通过 i1 标志区分：i1 false → bias, i1 true → level(显式LOD)
+                if mapping.mslFunction == "sample" && !finalArgs.isEmpty {
+                    let lastType = filtered.types.last ?? ""
+                    if lastType == "float" || lastType == "half" {
+                        // 查找 LOD/bias 标志：原始参数中 i1 紧接 float/half 的位置
+                        var useLevel = false
+                        for i in 0..<(methodArgTypes.count - 1) {
+                            if methodArgTypes[i] == "i1" &&
+                               (methodArgTypes[i + 1] == "float" || methodArgTypes[i + 1] == "half") {
+                                if methodArgs[i] == "true" { useLevel = true }
+                                break
+                            }
+                        }
+                        let val = finalArgs.removeLast()
+                        finalArgs.append(useLevel ? "level(\(val))" : "bias(\(val))")
+                    }
+                }
+
+                return "\(obj).\(mapping.mslFunction)(\(finalArgs.joined(separator: ", ")))"
             }
             return "\(mapping.mslFunction)(/* args */)"
         }
@@ -5038,8 +5061,10 @@ struct IRToMSLConverter {
     }
 
     /// 过滤纹理 air 调用的内部控制参数，只保留用户可见参数
-    private static func filterTextureArgs(_ args: [String], argTypes: [String]) -> [String] {
-        var result: [String] = []
+    /// 返回 (filtered_args, filtered_types) 元组，保留类型信息供 bias/level 包装使用
+    private static func filterTextureArgs(_ args: [String], argTypes: [String]) -> (args: [String], types: [String]) {
+        var resultArgs: [String] = []
+        var resultTypes: [String] = []
         for (i, arg) in args.enumerated() {
             let type = i < argTypes.count ? argTypes[i] : ""
             // 跳过 i1 (bool 控制标志) 和 i32 控制参数（但保留坐标/颜色）
@@ -5050,14 +5075,14 @@ struct IRToMSLConverter {
             }
             // 跳过 <N x i32> zeroinitializer（offset 参数）
             if arg == "0" && type.contains("x i32") { continue }
-            // 跳过 "0.0" float 控制参数（如 LOD bias）
-            if type == "float" && (arg == "0.0" || arg == "0.000000e+00" ||
-                                    arg.hasPrefix("0.0")) {
+            // 跳过 "0.0" float 控制参数（如 bias=0 或 min_lod_clamp=0 是无操作）
+            if type == "float" && (arg == "0.0" || arg == "0.000000e+00") {
                 continue
             }
-            result.append(arg)
+            resultArgs.append(arg)
+            resultTypes.append(type)
         }
-        return result
+        return (resultArgs, resultTypes)
     }
 
     /// 生成完整的 MSL 源码

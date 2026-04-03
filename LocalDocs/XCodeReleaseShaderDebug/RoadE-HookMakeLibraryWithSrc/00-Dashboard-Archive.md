@@ -18,6 +18,7 @@
 | 2026-04-03，关闭 `keymapping` 后 2 轮受控复测 | crash 从 `playcover.toucher` 转回 `UnityGfxDeviceWorker`；同时 `ShaderSourceDiagnostics` 再次出现 `preflight_rejected` / `compile_failed`，坏行示例为 `fragment float4{ <4 xlatMtlMain(...)` | toucher / keymapping 干扰已基本剥离，主 blocker 回到 IR→MSL lowering |
 | 2026-04-03，`E-006a2d3` 后单轮 live 复测 | `create_session(timeout=30)` 在 30 秒内未等到 runtime 注册；新的 diagnostics 已从 `<N x T>` / `%...` 残留前移到 vertex `xlatMtlMain` 的参数映射 / pointer 访问坏行 | 说明 `E-006a2d3` 已清掉一批 SSA/vector 问题，但仍被 vertex `stage_in` / pointer 发射拦住 |
 | 2026-04-03，`E-006a2e3` 后单轮 live 复测 | `session` 10 秒内 `ready` 后 ~10 秒 `disconnected`，无新 crash report。diagnostics 仅 `compile_failed`（无 `preflight_rejected`）；旧 blocker 全清。新 blocker 为 `clamp`/`fma` 歧义、`bool2` → `bool` 赋值、`uint8_t2` 不存在 | `undef` / `0xH8000` 修复有效，blocker 进一步前移到 intrinsic 类型系统与 vector 整型映射 |
+| 2026-04-04，`E-006c` 真实 `.gputrace` 可见性确认 | 原神现存 6 份 `.gputrace` 批量检查 `valid_msl_files` 全为 `0`；Xcode 可打开 `capture_20260402_roadE_e006_diag.gputrace` 并进入 draw call 分析，但 fresh `launch_app -> create_session` 后 session 很快 `disconnected`，新增 `Yuanshen-2026-04-04-015803.ips`（`EXC_BAD_ACCESS / SIGSEGV`） | 说明当前 trace 仍只具备“可开/可步进”而非“源码可见”；主 blocker 仍在 IR→MSL 有效性与 live 稳定性，`E-006c` 暂不能关单 |
 
 ## 已完成子任务归档
 

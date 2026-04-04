@@ -5047,7 +5047,7 @@ struct IRToMSLConverter {
                 let obj = args[0]
                 let methodArgs = Array(args.dropFirst())
                 let methodArgTypes = Array(argTypes.dropFirst())
-                let filtered = filterTextureArgs(methodArgs, argTypes: methodArgTypes)
+                let filtered = filterTextureArgs(methodArgs, argTypes: methodArgTypes, airName: airName)
                 var finalArgs = filtered.args
 
                 // E-006a2e8 → E-006a2e13: sample / sample_compare 的 bias/level float 需包装为选项结构
@@ -5118,6 +5118,14 @@ struct IRToMSLConverter {
                     let b = finalArgs[1]
                     finalArgs[0] = b
                     finalArgs[1] = a
+                    // E-006b8: 坐标参数来自 zeroinitializer 时被 resolveIROperand 解析为裸 "0"，
+                    // Metal 的 write(color, coord) 需要 uint2 类型坐标，裸 0 会导致 ambiguous。
+                    // 根据类型信息包装为正确的向量类型。
+                    if let coordType = filtered.types.first {
+                        if finalArgs[1] == "0" && coordType.contains("x i32") {
+                            finalArgs[1] = "uint2(0)"
+                        }
+                    }
                 }
 
                 return "\(obj).\(mapping.mslFunction)(\(finalArgs.joined(separator: ", ")))"
@@ -5972,9 +5980,13 @@ struct IRToMSLConverter {
 
     /// 过滤纹理 air 调用的内部控制参数，只保留用户可见参数
     /// 返回 (filtered_args, filtered_types) 元组，保留类型信息供 bias/level 包装使用
-    private static func filterTextureArgs(_ args: [String], argTypes: [String]) -> (args: [String], types: [String]) {
+    /// - airName: AIR 内建函数名，用于识别需要保留 i32 参数的变体（如 _2d_array 的 array_index）
+    private static func filterTextureArgs(_ args: [String], argTypes: [String], airName: String = "") -> (args: [String], types: [String]) {
         var resultArgs: [String] = []
         var resultTypes: [String] = []
+        // E-006b8: 对 _2d_array 变体，coord 后的第一个 i32 是 array_index（语义参数），不能过滤
+        let isArrayVariant = airName.contains("_2d_array")
+        var firstI32Kept = false
         for (i, arg) in args.enumerated() {
             let type = i < argTypes.count ? argTypes[i] : ""
             // E-006a2e10: 跳过未解析的全局 symbol（resolveIROperand 对 @ 符号返回空）
@@ -5983,10 +5995,16 @@ struct IRToMSLConverter {
             if type == "i1" { continue }
             // 跳过零值 i32 控制标志（如 mip level=0, slice=0）
             if type == "i32" && (arg == "0" || arg == "1" || arg == "2") {
-                continue
+                // E-006b8: _2d_array 的第一个 i32 是 array_index，即使值为 0 也要保留
+                if isArrayVariant && !firstI32Kept {
+                    firstI32Kept = true
+                } else {
+                    continue
+                }
             }
             // 跳过 <N x i32> zeroinitializer（offset 参数）
-            if arg == "0" && type.contains("x i32") { continue }
+            // E-006b8: 但 write_texture 的 <2 x i32> 是坐标参数，不能过滤
+            if arg == "0" && type.contains("x i32") && !airName.contains("write_texture") { continue }
             // 跳过 "0.0" float 控制参数（如 bias=0 或 min_lod_clamp=0 是无操作）
             if type == "float" && (arg == "0.0" || arg == "0.000000e+00") {
                 continue

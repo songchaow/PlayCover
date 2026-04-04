@@ -131,7 +131,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 ## 当前主线
 
-- **E-006（本轮执行：`E-006b5` load/store signedness mismatch bitcast）**：`IRToMSLConverter` 新增指针元素类型追踪（`pointerElementTypes`）并在 `translateLoad`/`translateStore` 中自动检测 signedness mismatch（如 `int4` vs `uint4`），插入 `as_type<>()` bitcast。LLVM IR 的 `i32` 无 signedness，MSL 的 `int4`/`uint4` 是不同类型；从 `device uint4*` 加载到 `<4 x i32>` 变量、或将 `<4 x i32>` 值存储到 `device uint4*` 时需要显式 bitcast。`test-data/*.ll` 回归：replay `18/18` 成功、Metal compile `14/18` 成功（上一轮 `13/18`，improvement `+1`，regression `0`）：`test_casts.ll` 从 `cannot initialize a variable of type 'int4' with an lvalue of type 'device uint4'` 提升为 compile success。
+- **E-006（本轮执行：`E-006b6` builtin 参数 IR 类型 vs MSL 声明类型不匹配修复）**：`IRToMSLConverter` 在 `translateFunctionBody` 中 `setupParameterMappings` 之后新增检测：当 IR 函数签名中参数的实际类型是 float 向量（如 `<3 x float>`），但 metadata 的 `air.arg_type_name` 声明为 uint 向量（如 `"uint3"`），自动在函数体开头插入 `floatN(mslParam)` 转换并更新 SSA 映射。`test-data/*.ll` 回归：replay `18/18` 成功、Metal compile `15/18` 成功（上轮 `14/18`，improvement `+1`，regression `0`）：`test_sample_bias.ll` 从 `no matching member function for call to 'sample'`（`uint3` 坐标传给 `texturecube::sample`）提升为 compile success。剩余 3 个 compile blocker 为 body lowering 问题（GEP/load 类型缩窄、sample gradient 歧义）。
 - **E-004（已完成：`E-004f3` 扩展 `makeLibrary(URL/default/file)` 路径的采集覆盖）**：`newLibraryWithURL:error:`、`newDefaultLibrary`、`newDefaultLibraryWithBundle:error:`、`newLibraryWithFile:error:` 现已读取 `.metallib` 并复用统一的 `bitcode -> IR -> MSL -> makeLibrary(source:) -> ShaderCorpus` 主链路；default 路径额外加入了 bundle 内 `.metallib` 的保守定位策略。
 - **E-005（已完成：`E-005c` 新旧转换结果 diff / 回归基线）**：`Scripts/corpus_replay_runner.py` 现已支持保存 baseline snapshot、比较新旧 replay / compile 结果、输出 `baseline-diffs/` 与结构化回归统计；日常离线回归已经具备"改前 vs 改后"防退化能力。
 
@@ -143,7 +143,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 原神 6.4.0（最近一轮 live 基线） | 已确认 `ShaderSourceDiagnostics`、host bridge 与 runtime 注入主路径可用；真实 app 仍是 corpus 的生产来源与最终验证环境 |
 | 当前落盘能力（2026-04-04） | 失败的 MSL 会进入 `ShaderSourceDiagnostics/`；异常 payload 会进入 `ShaderPayloadSamples/`；`attemptLibraryReplacement(...)` 成功路径现已按 `ShaderCorpus/<bundleId>/modules/<moduleKey>/` 落盘 canonical `module.bc`、`module.ll`、`module.generated.metal` 与 `module.meta.json`，并在根目录追加 `manifest.jsonl` 事件索引；`moduleKey` 由 `sha256(module.bc)` 生成，重复样本默认复用基线，不再静默覆盖；`newLibraryWithURL:error:`、`newDefaultLibrary`、`newDefaultLibraryWithBundle:error:`、`newLibraryWithFile:error:` 代码路径也已接入同一套导出与替换逻辑 |
 | 当前离线 replay / batch compile / diff 能力（2026-04-03，`E-005a`/`E-005b`/`E-005c` 完成） | `Scripts/corpus_replay_runner.py` 现已支持扫描 `ShaderCorpus/` 或显式 `.ll`，读取 `module.meta.json` 中的 `functionNames/functionTypes` 做 `IRToMSLConverter.convert(...)`，并在 `--compile` 模式下继续输出 `.air`、`compile-summary.json`、逐样本 `primaryDiagnostic/sourceContext` 与 failure clusters；同时支持 `--save-baseline` 生成 `baseline.json + generated-sources/` 快照、`--baseline-report` 产出结构化 replay / compile / generated MSL 对比与 `baseline-diffs/`；`Scripts/ir_to_msl_smoketest.sh` 继续作为单样本兼容 wrapper |
-| 当前最小离线验证基线（2026-04-04，`E-006b5` 完成） | 已对 `test-data/*.ll` 执行一轮 batch replay + compile：replay `18/18` 成功，Metal compile `14/18` 成功（上轮 `13/18`，improvement `+1`，regression `0`）。`test_casts.ll` 修复为 compile success（load/store signedness mismatch 自动插入 `as_type<>` bitcast）。剩余 4 个 compile blocker 为 body lowering 问题（GEP/load 类型缩窄、sample overload resolution），不属于 metadata / shader type / resource kind 识别范畴 |
+| 当前最小离线验证基线（2026-04-04，`E-006b6` 完成） | 已对 `test-data/*.ll` 执行一轮 batch replay + compile：replay `18/18` 成功，Metal compile `15/18` 成功（上轮 `14/18`，improvement `+1`，regression `0`）。`test_sample_bias.ll` 修复为 compile success（builtin 参数 `uint3` vs IR 实际类型 `float3` 自动插入 `float3()` 转换）。剩余 3 个 compile blocker 为 body lowering 问题（GEP/load 类型缩窄、sample gradient 歧义），不属于 metadata / shader type / resource kind 识别范畴 |
 | 当前构建验证基线（2026-04-04） | 已运行 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 与 `PLAYCOVER_INSTALL_MODE=user ./BuildScripts/build_and_install.sh`（均 **BUILD SUCCEEDED**），PlayTools 标准构建链路、PlayCover Release 构建、安装与 ad-hoc 重签名均通过 |
 | 当前最小 live 验证状态（2026-04-04） | PlayCover MCP 应用列表通道已恢复可用；已对原神 6.4.0 完成一次最小 live 复测：`remove_playtools`、`inject_playtools`、`launch_app` 成功，`create_session` 返回 `ready`（PID 98756，runtimePort 61205）；同时 `ShaderCorpus/com.miHoYo.Yuanshen/manifest.jsonl` 在 `2026-04-03T16:25:54Z`–`16:26:06Z` 追加了多条 `captureAction=conflict_preserved` / `selector=newLibraryWithData:error:` 事件，证明启动期已重新命中 hook 与 corpus 去重落盘链路。`2026-04-04 01:57` 再次 fresh `launch_app -> create_session(timeout=30)` 也曾返回 `ready`（PID 43383，runtimePort 61206），但很快转为 `disconnected`，且新增 `Yuanshen-2026-04-04-015803.ips`，说明 live 稳定性仍未收敛 |
 | 当前 `.gputrace` 源码可见性检查（2026-04-04，`E-006c` 本轮执行） | 已对原神现存 6 份真实 trace 批量执行 `Scripts/check_gputrace_sources.py`：`valid_msl_files` 全部为 `0`；Xcode 可打开 `capture_20260402_roadE_e006_diag.gputrace` 并进入具体 draw call（`Command Buffer 1` / `Render Encoder 12` / draw call `7688`，`editor_mode=Bound Resources`，Step 菜单启用），因此当前结论是"trace 可开/可步进，但源码仍不可见" |
@@ -178,7 +178,7 @@ PlayTools.framework (注入到 iOS app)
 
 ## TODO
 
-> 当前最高优先级：`E-006c`（真实 `.gputrace` 源码可见确认）。`E-006b4` 已修复 `___metal_fast_*` intrinsic 映射（compile `13/18`）；剩余 compile blocker 均为 body lowering 问题。历史 live blocker 归因链路见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
+> 当前最高优先级：`E-006c`（真实 `.gputrace` 源码可见确认）。`E-006b6` 已修复 builtin 参数 IR/MSL 类型不匹配（compile `15/18`）；剩余 3 个 compile blocker 均为 body lowering 问题（GEP/load 类型缩窄、sample gradient 歧义）。历史 live blocker 归因链路见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -198,7 +198,7 @@ PlayTools.framework (注入到 iOS app)
 | E-005a | ↳ `IR -> MSL` 离线回放 runner | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
 |  | 已落地 `Scripts/corpus_replay_runner.py`；支持扫描 `ShaderCorpus/`、读取 `manifest.jsonl` / `module.meta.json`、把 `functionNames/functionTypes` 传给 `IRToMSLConverter.convert(...)`，并稳定输出 replay `.metal` 与 `replay-summary.json`；`Scripts/ir_to_msl_smoketest.sh` 已改为兼容 wrapper | | |
 | E-005b | ↳ 批量 Metal 编译与失败报告 | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
-|  | `corpus_replay_runner.py` 已支持 `--compile`、`compile-summary.json`、`primaryDiagnostic/sourceContext`、failure clusters 与可选 preflight；`test-data/*.ll` 最小验证结果已更新为 replay `18/18` 成功、Metal compile `10/18` 成功 | | |
+|  | `corpus_replay_runner.py` 已支持 `--compile`、`compile-summary.json`、`primaryDiagnostic/sourceContext`、failure clusters 与可选 preflight；`test-data/*.ll` 最小验证结果已更新为 replay `18/18` 成功、Metal compile `15/18` 成功 | | |
 | E-005c | ↳ 新旧转换结果 diff / 回归基线 | ✅ DONE | |
 |  | `corpus_replay_runner.py` 已支持 `--save-baseline` 保存 `baseline.json + generated-sources/` 快照、`--baseline-report` 进行 replay / compile / generated MSL 的结构化对比，并在发现回归时返回失败；同一批 `test-data/*.ll` 二次回放当前结果为 matched/new/removed `18/0/0`、replay changed `0`、generated MSL changed `0`、compile changed `0` | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
@@ -215,9 +215,11 @@ PlayTools.framework (注入到 iOS app)
 | E-006b4 | ↳ 收敛 `___metal_fast_*` intrinsic fast 前缀 compile blocker | ✅ DONE | |
 |  | `IRToMSLConverter.metalIntrinsicMappings` 中 `___metal_fast_*` 的 MSL 映射从 `fast_sin` 等改为同名标准函数 `sin` 等，与 `air.fast_*` 映射行为一致（Metal 标准库不提供 `fast_sin` 无前缀顶级函数）。`test_metal_intrinsic_sampler_state.ll` 从 `use of undeclared identifier 'fast_sin'` 提升为 compile success；compile improvement `+1`，regression `0` | | |
 | E-006b5 | ↳ 收敛 load/store signedness mismatch compile blocker | ✅ DONE | |
-|  | `IRToMSLConverter` 新增 `pointerElementTypes` 字典追踪指针元素类型（从参数 metadata 传播到 GEP），在 `translateLoad`/`translateStore` 中检测 signedness mismatch（如 `int4` vs `uint4`）并自动插入 `as_type<>()` bitcast。`test_casts.ll` 从 `cannot initialize a variable of type 'int4' with an lvalue of type 'device uint4'` 提升为 compile success；compile improvement `+1`，regression `0` | | |
+|  | `IRToMSLConverter` 新增 `pointerElementTypes` 字典追踪指针元素类型（从参数 metadata 传播到 GEP），在 `translateLoad`/`translateStore` 中检测 signedness mismatch（如 `int4` vs `uint4`）并自动插入 `as_type<>()` bitcast。`test_casts.ll` 从 `cannot initialize a variable of type 'int4' with an lvalue of type 'device uint4'` 提升为 compile success；compile improvement `+1`，regression `0` | |
+| E-006b6 | ↳ 收敛 builtin 参数 IR/MSL 类型不匹配 compile blocker | ✅ DONE | |
+|  | `IRToMSLConverter` 在 `translateFunctionBody` 的 `setupParameterMappings` 之后新增检测：当 IR 函数签名参数实际类型是 float 向量但 metadata 声明为 uint 向量时，自动在函数体开头插入 `floatN(mslParam)` 转换并更新 SSA 映射。`test_sample_bias.ll` 从 `no matching member function for call to 'sample'`（`uint3` 坐标传给 `texturecube::sample`）提升为 compile success；compile improvement `+1`，regression `0` | | |
 | E-006c | ↳ 最终 `.gputrace` 源码可见确认 | TODO | |
-|  | 本轮已完成一次真实检查：原神现存 6 份 `.gputrace` 的 `valid_msl_files` 均为 `0`；Xcode 可打开并步进，但尚未看到源码。待 live 稳定并解决当前 IR→MSL compile blocker 后，再做 fresh capture + Xcode 最终确认 | | |
+|  | 本轮已完成一次真实检查：原神现存 6 份 `.gputrace` 的 `valid_msl_files` 均为 `0`；Xcode 可打开并步进，但尚未看到源码。当前离线 compile 已收敛至 `15/18`，剩余 3 个 blocker 为 body lowering 问题（GEP/load 类型缩窄、sample gradient 歧义）。待 live 稳定并进一步收敛 compile blocker 后，再做 fresh capture + Xcode 最终确认 | | |
 | E-007 | **PlayCover settings / MCP / 工具暴露** | TODO | |
 |  | 为 corpus 导出 / replay 增加 UI 或 MCP 能力，使后续采集与回放不依赖手工路径操作 | | |
 
@@ -248,6 +250,7 @@ PlayTools.framework (注入到 iOS app)
 - **AIR 的 `write_texture_*` 参数顺序与 Metal 不同**：AIR 格式为 `(texture_ptr, coord, color, mip_level, ...)`，Metal 的 `texture.write()` 签名为 `write(color, coord)`，需要交换 coord 和 color 的顺序
 - **`___metal_fast_*` 和 `air.fast_*` 的 MSL 映射必须统一去掉 `fast_` 前缀**：Metal 标准库不提供 `fast_sin` 等无前缀顶级函数；fast-math 语义由编译器选项（`-ffast-math`）控制，不应体现在生成的 MSL 函数名中。`air.*` 系统从设计上就做了 `air.fast_sin` → `sin` 的映射，`___metal_*` 系统也应保持一致
 - **LLVM IR 的 `i32` 无 signedness，但 MSL 的 `int4`/`uint4` 是不同类型**：opaque pointer 模式下，`load <4 x i32>` 从 `device uint4*` 加载时，IR 的 `i32` 被 `irScalarTypeToMSL` 默认映射为 `int`（有符号），但指针的实际元素类型可能是 `uint`（无符号）。标量 signed/unsigned 可隐式转换，但向量类型不行。解决方案：在 `SSAContext` 中追踪 `pointerElementTypes`（从参数 metadata `air.arg_type_name` 获取，通过 GEP 传播），在 `translateLoad`/`translateStore` 中检测 signedness mismatch 并插入 `as_type<>()` bitcast
+- **AIR IR 中 builtin 参数的 IR 实际类型可能与 metadata 声明不一致**：某些编译器输出的 IR 中，`thread_position_in_grid` 参数的 IR 函数签名类型是 `<3 x float>`（float3），但 metadata 的 `air.arg_type_name` 声明为 `"uint3"`。Metal 的 `thread_position_in_grid` builtin 类型固定为 `uint`/`uint2`/`uint3`，但如果函数体内把该参数当作 float 向量传给 `sample()` 等需要 float 坐标的 API，就会产生类型错误。解决方案：在 `translateFunctionBody` 中，`setupParameterMappings` 之后检测 IR 实际类型是 float 向量但 metadata 声明为 uint 向量的参数，在函数体开头自动插入 `floatN(mslParam)` 转换并更新 SSA 映射
 
 ## 参考信息
 

@@ -3403,6 +3403,35 @@ struct IRToMSLConverter {
         // 建立参数名映射：IR 的 %0, %1, ... → MSL 参数名
         setupParameterMappings(ctx, params: func_.parameters, irParamList: irParamList, shaderType: func_.shaderType)
 
+        // E-006b6: IR 参数实际类型与 MSL 参数声明的类型不匹配修复
+        // 某些 AIR IR 中，builtin 参数（如 thread_position_in_grid）的 IR 实际类型是 float 向量
+        // （<3 x float>），但 metadata 的 air.arg_type_name 说是 uint 向量（"uint3"）。
+        // 这导致 MSL 中参数声明为 uint3 但函数体内被当作 float3 使用，
+        // 传给 sample() 等需要 float 坐标的 API 时会产生类型错误。
+        // 修复：检测 IR 实际类型是 float 向量但 MSL 声明是 uint 向量的情况，
+        // 在函数体开头插入 floatN(mslParam) 转换，并更新 SSA 映射。
+        let rawIRParams = splitIRParameters(irParamList)
+        for (i, rawParam) in rawIRParams.enumerated() {
+            let typed = splitTypedOperands(rawParam, count: 1)
+            guard let first = typed.first, !first.type.isEmpty else { continue }
+            let irActualType = first.type
+            // 仅处理 IR 实际类型是 float 向量的情况
+            guard irActualType.contains("float") || irActualType.contains("half") else { continue }
+            let irParamName = extractParamName(from: rawParam)
+            guard let name = irParamName else { continue }
+            let ssaName = "%\(name)"
+            // 检查 MSL 参数类型是否是 uint 向量（来自 metadata 的 air.arg_type_name）
+            if let mslParamType = ctx.paramTypes[ssaName],
+               (mslParamType.contains("uint") || mslParamType.contains("int")),
+               !mslParamType.contains("float") {
+                let mslName = ctx.paramNames[ssaName] ?? "param\(i)"
+                let floatMSLType = irScalarTypeToMSL(irActualType)
+                let convertedName = ctx.freshTemp()
+                ctx.emit("\(floatMSLType) \(convertedName) = \(floatMSLType)(\(mslName));")
+                ctx.define(ssaName, expr: convertedName, type: irActualType)
+            }
+        }
+
         let bodyLines = func_.irBody.components(separatedBy: "\n")
 
         // ── 第一遍：预扫描 phi 节点和 CFG 结构 (E-004e4b) ──

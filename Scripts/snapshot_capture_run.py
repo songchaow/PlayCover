@@ -10,6 +10,7 @@ snapshot_capture_run.py — 固化当前 ShaderCorpus/diagnostics/app settings �
     python3 Scripts/snapshot_capture_run.py \
         --bundle-id com.miHoYo.Yuanshen \
         --label replacement-on-run1 \
+        --gputrace ~/captures/replacement-on-run1.gputrace \
         --output-root build/e006d-run-snapshots \
         --print-compare-path
 """
@@ -19,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import plistlib
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +30,7 @@ from typing import Any
 DEFAULT_CONTAINER = Path.home() / "Library/Containers/io.playcover.PlayCover"
 DEFAULT_OUTPUT_ROOT = Path("build/e006d-run-snapshots")
 SETTINGS_KEY = "shaderSourceReplacementEnabled"
+HEX_SOURCE_NAME = re.compile(r"^[0-9A-F]{16}$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,6 +62,10 @@ def parse_args() -> argparse.Namespace:
         "--print-compare-path",
         action="store_true",
         help="print the bundle snapshot path suitable for compare_capture_runs.py",
+    )
+    parser.add_argument(
+        "--gputrace",
+        help="optional .gputrace directory to preserve alongside the run snapshot",
     )
     return parser.parse_args()
 
@@ -108,6 +115,65 @@ def copy_optional_directory(source: Path, destination: Path) -> bool:
     return True
 
 
+def inspect_gputrace_file(path: Path) -> dict[str, Any]:
+    size = path.stat().st_size
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            first_line = handle.readline().strip()
+            line_count = 1 + sum(1 for _ in handle)
+    except OSError:
+        first_line = "<binary>"
+        line_count = 0
+
+    if first_line.startswith("#include") or first_line.startswith("using "):
+        is_msl = True
+    elif first_line.startswith("//"):
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                content_sample = handle.read(2048)
+            is_msl = "metal_stdlib" in content_sample or "PlayTools" in content_sample
+        except OSError:
+            is_msl = False
+    else:
+        is_msl = False
+
+    return {
+        "size": size,
+        "lines": line_count,
+        "firstLine": first_line[:80],
+        "isMSL": is_msl,
+    }
+
+
+def inspect_gputrace_dir(gputrace_dir: Path) -> dict[str, Any]:
+    if not gputrace_dir.is_dir():
+        raise SystemExit(f"gputrace directory not found: {gputrace_dir}")
+
+    files: dict[str, dict[str, Any]] = {}
+    for child in sorted(gputrace_dir.iterdir()):
+        if not child.is_file() or not HEX_SOURCE_NAME.match(child.name):
+            continue
+        files[child.name] = inspect_gputrace_file(child)
+
+    index_path = gputrace_dir / "index"
+    if index_path.is_file():
+        index_data = index_path.read_bytes()
+        index_hash_references = len(set(re.findall(rb"[0-9A-F]{16}", index_data)))
+    else:
+        index_hash_references = -1
+
+    valid_msl_files = sum(1 for file_info in files.values() if file_info["isMSL"])
+    coverage_pct = round(len(files) / index_hash_references * 100, 2) if index_hash_references > 0 else 0.0
+    return {
+        "gputraceName": gputrace_dir.name,
+        "sourceFiles": len(files),
+        "validMSLFiles": valid_msl_files,
+        "indexHashReferences": index_hash_references,
+        "coveragePct": coverage_pct,
+        "files": files,
+    }
+
+
 def main() -> int:
     args = parse_args()
     container = Path(args.container).expanduser().resolve()
@@ -133,6 +199,8 @@ def main() -> int:
         raise SystemExit(f"snapshot destination already exists: {snapshot_bundle_dir}")
 
     settings_payload = load_settings_payload(settings_path)
+    gputrace_path = Path(args.gputrace).expanduser().resolve() if args.gputrace else None
+    gputrace_summary = inspect_gputrace_dir(gputrace_path) if gputrace_path is not None else None
 
     copy_required_file(manifest_path, snapshot_bundle_dir / "manifest.jsonl")
     shutil.copytree(modules_dir, snapshot_bundle_dir / "modules")
@@ -142,6 +210,15 @@ def main() -> int:
         diagnostics_copied = copy_optional_directory(diagnostics_bundle_dir, snapshot_bundle_dir / "diagnostics")
     if settings_payload is not None:
         copy_required_file(settings_path, snapshot_bundle_dir / "app-settings" / settings_path.name)
+    gputrace_relative_path = None
+    if gputrace_path is not None:
+        gputrace_relative_path = f"gputrace/{gputrace_path.name}"
+        shutil.copytree(gputrace_path, snapshot_bundle_dir / gputrace_relative_path)
+        gputrace_summary_path = snapshot_bundle_dir / "gputrace-source-summary.json"
+        gputrace_summary_path.write_text(
+            json.dumps(gputrace_summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
     snapshot_meta = {
         "schemaVersion": 1,
@@ -162,6 +239,8 @@ def main() -> int:
             "replacementsPath": "replacements" if replacements_copied else None,
             "diagnosticsPath": "diagnostics" if diagnostics_copied else None,
             "settingsPath": f"app-settings/{settings_path.name}" if settings_payload is not None else None,
+            "gputracePath": gputrace_relative_path,
+            "gputraceSourceSummaryPath": "gputrace-source-summary.json" if gputrace_summary is not None else None,
         },
         "sourceSummary": {
             "manifestLineCount": count_nonempty_lines(manifest_path),
@@ -169,6 +248,7 @@ def main() -> int:
             "replacementDirectoryCount": count_child_directories(replacements_dir),
             "diagnosticEntryCount": count_child_entries(diagnostics_bundle_dir),
         },
+        "gputraceSummary": gputrace_summary,
     }
     meta_path = snapshot_bundle_dir / "snapshot.meta.json"
     meta_path.write_text(json.dumps(snapshot_meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -180,7 +260,8 @@ def main() -> int:
         f"modules={snapshot_meta['sourceSummary']['moduleDirectoryCount']} "
         f"replacements={snapshot_meta['sourceSummary']['replacementDirectoryCount']} "
         f"diagnostics={snapshot_meta['sourceSummary']['diagnosticEntryCount']} "
-        f"replacementEnabled={snapshot_meta['replacementMode']['enabled']}"
+        f"replacementEnabled={snapshot_meta['replacementMode']['enabled']} "
+        f"gputraceMSL={snapshot_meta['gputraceSummary']['validMSLFiles'] if snapshot_meta['gputraceSummary'] else 'n/a'}"
     )
     if args.print_compare_path:
         print(snapshot_bundle_dir)

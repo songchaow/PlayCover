@@ -15,6 +15,8 @@
 - 这一步补齐了第 1 个核心问题里此前缺失的可执行控制面：**现在可以在不改代码、不手工改 plist 的前提下，稳定切换“做替换 / 不做替换”两种运行模式**。
 - **E-006d4（✅ DONE）**：新增 `Scripts/snapshot_capture_run.py`，可把当前 `ShaderCorpus/<bundleId>/manifest.jsonl + modules/ (+ replacements/)`、`ShaderSourceDiagnostics/<bundleId>/` 与 `App Settings/<bundleId>.plist` 一次性固化到 `build/e006d-run-snapshots/<label>/<bundleId>/`，并额外写出 `snapshot.meta.json` 记录本轮 replacement 开关、模块数、diagnostics 条目数。
 - 这一步把第 1~3 个核心问题之间缺失的“**单次 run 快照固化**”补齐：后续做 `replacement=off/on` 对照时，不再需要手工拷贝多个目录或临时记忆当前开关状态，直接按 run label 落盘即可接给 `Scripts/compare_capture_runs.py`。
+- **E-006d5（✅ DONE）**：扩展 `Scripts/snapshot_capture_run.py` 支持可选 `--gputrace`，把对应 `.gputrace` 一并固化到 run 快照，并自动写出 `gputrace-source-summary.json` / `snapshot.meta.json.gputraceSummary`；`Scripts/compare_capture_runs.py` 同步新增 `snapshotComparison`，可直接比较两轮 run 的 replacement 开关和 `.gputrace` 源码覆盖摘要。
+- 这一步补齐了第 1、5 个核心问题之间原本断开的证据：run 快照现在不只保留 corpus / replacements / diagnostics / settings，也能保留“**这轮最终截帧看到了什么源码**”，从而把 live 侧 `.gputrace` 结果纳入同一份离线 diff 报告。
 
 ## 现象
 
@@ -53,6 +55,7 @@ python3 Scripts/set_shader_replacement_mode.py \
 python3 Scripts/snapshot_capture_run.py \
   --bundle-id com.miHoYo.Yuanshen \
   --label replacement-off-run1 \
+  --gputrace /path/to/replacement-off-run1.gputrace \
   --print-compare-path
 ```
 
@@ -70,6 +73,7 @@ python3 Scripts/set_shader_replacement_mode.py \
 python3 Scripts/snapshot_capture_run.py \
   --bundle-id com.miHoYo.Yuanshen \
   --label replacement-on-run1 \
+  --gputrace /path/to/replacement-on-run1.gputrace \
   --print-compare-path
 ```
 
@@ -119,6 +123,7 @@ python3 Scripts/compare_capture_runs.py \
   - 日志 / diagnostics / baseline 是否把同一模块的不同版本混在一起
 - `Scripts/compare_capture_runs.py` 会对共享 `moduleKey` 直接比较 `.bc/.ll/.metal/.meta` 的 sha256；如果 `module.ll` 一致而 `module.generated.metal` 不一致，可优先怀疑 converter / 聚合稳定性，而不是先回到 live 侧猜测
 - `E-006d2` 后，成功替换的 aggregate source 也会落盘到 `ShaderCorpus/.../replacements/`；如果共享 `moduleKey` 与单模块 `.metal` 都一致，但 `aggregate.generated.metal` 的 sha256 仍不同，应优先怀疑聚合顺序、重名去重结果，或 runtime 成功路径拿到的 module 组合不同
+- 若两轮都含 `snapshot.meta.json` 且通过 `--gputrace` 固化了最终截帧，`Scripts/compare_capture_runs.py` 还会补充 `snapshotComparison`，直接比较 replacement 开关状态、`validMSLFiles`、可见 MSL hash 集合与 `indexHashReferences`，先回答“最终 trace 层证据是否一致”。
 
 ### 5. 最后比较“替换与实际使用是否相同”
 
@@ -179,6 +184,7 @@ python3 Scripts/compare_capture_runs.py \
 - **“替换 vs 不替换”是当前最低风险的稳定比较基线**：在根因层级未明确前，先确认开启替换后是否稳定引入了最终效果差异，再继续往具体 stage / pass 下钻
 - **“替换 vs 不替换”必须有明确控制面**：`E-006d3` 后不要再通过改代码或手改 plist 临时构造“无替换”样本，统一使用 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py`，避免把控制变量本身做脏
 - **run 快照要在 live 结束后立即固化**：`E-006d4` 后统一使用 `Scripts/snapshot_capture_run.py` 保留 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings；不要再手工从容器里零散拷目录，否则很容易把 replacement 开关状态与对应 run 搞混
+- **若本轮已产出 `.gputrace`，也要与 run 快照一起固化**：`E-006d5` 后优先通过 `Scripts/snapshot_capture_run.py --gputrace /path/to/xxx.gputrace` 一次性保留 trace 与源码覆盖摘要，不要再把 `.gputrace` 单独散落在其它目录，避免后续 run-vs-run diff 时丢失最终可见性证据
 - **成功路径也要落盘聚合产物，才能回答“最终替换源码是否稳定”**：只保留单模块 `.bc/.ll/.metal` 不足以覆盖聚合顺序、重名去重与最终 `makeLibrary(source:)` 输入；`E-006d2` 后应优先比较 `manifest.jsonl` 中最新 `event=replacement` 对应的 aggregate source hash
 - **`air.struct_type_info` 第三个 `i32` 是 `elementCount`，不是 alignment**：数组字段若被错当标量，会直接造成 subscript 类 compile blocker
 - **结构体类型名要在参数声明和结构体定义两处保持一致**：尤其是首字母小写的用户类型名，需要与 `sanitizeTypeName` 策略统一

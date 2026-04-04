@@ -2,6 +2,9 @@
 """
 compare_capture_runs.py — 对比两轮 ShaderCorpus 采集结果，辅助 E-006d 排查输入/输出是否稳定。
 
+若 run 目录中还包含 `snapshot.meta.json`（例如由 `snapshot_capture_run.py` 生成），
+脚本也会额外比较 replacement 开关与 `.gputrace` 源码覆盖摘要。
+
 输入可为包含 `manifest.jsonl` 与 `modules/` 的 bundle 目录，或显式 `manifest.jsonl` 文件。
 
 示例：
@@ -75,6 +78,14 @@ class RunInput:
     label: str
     manifest_path: Path
     modules_dir: Path
+
+
+def load_snapshot_meta(run_input: RunInput) -> dict[str, Any] | None:
+    meta_path = run_input.manifest_path.parent / "snapshot.meta.json"
+    if not meta_path.is_file():
+        return None
+    payload = load_json(meta_path)
+    return payload if isinstance(payload, dict) else None
 
 
 def resolve_run_input(raw_path: str, modules_override: str | None, label: str) -> RunInput:
@@ -338,6 +349,83 @@ def compare_replacement_runs(
     }
 
 
+def build_snapshot_context(meta: dict[str, Any] | None) -> dict[str, Any]:
+    if meta is None:
+        return {
+            "hasSnapshotMeta": False,
+            "label": None,
+            "replacementMode": None,
+            "gputraceSummary": None,
+            "visibleMSLHashes": [],
+        }
+
+    gputrace_summary = meta.get("gputraceSummary")
+    visible_msl_hashes: list[str] = []
+    if isinstance(gputrace_summary, dict):
+        files = gputrace_summary.get("files")
+        if isinstance(files, dict):
+            visible_msl_hashes = sorted(
+                file_name
+                for file_name, file_info in files.items()
+                if isinstance(file_info, dict) and file_info.get("isMSL") is True
+            )
+
+    return {
+        "hasSnapshotMeta": True,
+        "label": meta.get("label"),
+        "replacementMode": meta.get("replacementMode"),
+        "gputraceSummary": gputrace_summary,
+        "visibleMSLHashes": visible_msl_hashes,
+    }
+
+
+def compare_snapshot_context(meta_a: dict[str, Any] | None, meta_b: dict[str, Any] | None) -> dict[str, Any]:
+    if meta_a is None or meta_b is None:
+        return {
+            "hasComparableSnapshots": False,
+            "missingRunA": meta_a is None,
+            "missingRunB": meta_b is None,
+            "differences": [],
+        }
+
+    context_a = build_snapshot_context(meta_a)
+    context_b = build_snapshot_context(meta_b)
+    differences: list[dict[str, Any]] = []
+    compare_values(
+        "replacementMode.enabled",
+        (context_a.get("replacementMode") or {}).get("enabled"),
+        (context_b.get("replacementMode") or {}).get("enabled"),
+        differences,
+    )
+    compare_values(
+        "gputraceSummary.validMSLFiles",
+        (context_a.get("gputraceSummary") or {}).get("validMSLFiles"),
+        (context_b.get("gputraceSummary") or {}).get("validMSLFiles"),
+        differences,
+    )
+    compare_values(
+        "gputraceSummary.visibleMSLHashes",
+        context_a.get("visibleMSLHashes"),
+        context_b.get("visibleMSLHashes"),
+        differences,
+    )
+    compare_values(
+        "gputraceSummary.indexHashReferences",
+        (context_a.get("gputraceSummary") or {}).get("indexHashReferences"),
+        (context_b.get("gputraceSummary") or {}).get("indexHashReferences"),
+        differences,
+    )
+
+    return {
+        "hasComparableSnapshots": True,
+        "missingRunA": False,
+        "missingRunB": False,
+        "runA": context_a,
+        "runB": context_b,
+        "differences": differences,
+    }
+
+
 def build_report(run_a: RunInput, run_b: RunInput) -> dict[str, Any]:
     events_a = load_jsonl(run_a.manifest_path)
     events_b = load_jsonl(run_b.manifest_path)
@@ -345,6 +433,8 @@ def build_report(run_a: RunInput, run_b: RunInput) -> dict[str, Any]:
     modules_b = build_module_index(run_b)
     replacements_a = build_replacement_index(run_a)
     replacements_b = build_replacement_index(run_b)
+    snapshot_meta_a = load_snapshot_meta(run_a)
+    snapshot_meta_b = load_snapshot_meta(run_b)
 
     keys_a = set(modules_a)
     keys_b = set(modules_b)
@@ -360,6 +450,7 @@ def build_report(run_a: RunInput, run_b: RunInput) -> dict[str, Any]:
             "modulesDir": str(run_a.modules_dir),
             "summary": summarize_events(events_a),
             "replacementSummary": replacements_a["summary"],
+            "snapshotContext": build_snapshot_context(snapshot_meta_a),
         },
         "runB": {
             "label": run_b.label,
@@ -367,6 +458,7 @@ def build_report(run_a: RunInput, run_b: RunInput) -> dict[str, Any]:
             "modulesDir": str(run_b.modules_dir),
             "summary": summarize_events(events_b),
             "replacementSummary": replacements_b["summary"],
+            "snapshotContext": build_snapshot_context(snapshot_meta_b),
         },
         "comparison": {
             "onlyInRunA": only_a,
@@ -374,11 +466,13 @@ def build_report(run_a: RunInput, run_b: RunInput) -> dict[str, Any]:
             "sharedModuleCount": len(keys_a & keys_b),
             "sharedModulesWithDifferences": shared_differences,
             "latestReplacementComparison": compare_replacement_runs(replacements_a, replacements_b),
+            "snapshotComparison": compare_snapshot_context(snapshot_meta_a, snapshot_meta_b),
             "differenceSummary": {
                 "onlyInRunACount": len(only_a),
                 "onlyInRunBCount": len(only_b),
                 "sharedModulesWithDifferencesCount": len(shared_differences),
                 "replacementDifferenceCount": len(compare_replacement_runs(replacements_a, replacements_b)["differences"]),
+                "snapshotDifferenceCount": len(compare_snapshot_context(snapshot_meta_a, snapshot_meta_b)["differences"]),
             },
         },
     }
@@ -418,6 +512,19 @@ def print_summary(report: dict[str, Any]) -> None:
     elif replacement_comparison["differences"]:
         preview = ", ".join(item["field"] for item in replacement_comparison["differences"][:5])
         print(f"latest replacement aggregate differs ({len(replacement_comparison['differences'])} fields): {preview}")
+
+    snapshot_comparison = comparison["snapshotComparison"]
+    if not snapshot_comparison["hasComparableSnapshots"]:
+        missing = []
+        if snapshot_comparison["missingRunA"]:
+            missing.append("runA")
+        if snapshot_comparison["missingRunB"]:
+            missing.append("runB")
+        if missing:
+            print(f"snapshot meta unavailable for: {', '.join(missing)}")
+    elif snapshot_comparison["differences"]:
+        preview = ", ".join(item["field"] for item in snapshot_comparison["differences"][:5])
+        print(f"snapshot context differs ({len(snapshot_comparison['differences'])} fields): {preview}")
 
 
 def parse_args() -> argparse.Namespace:

@@ -152,6 +152,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 当前 `.gputrace` 源码可见性检查（2026-04-04，`E-006c` 已关闭） | `capture_20260404_roadE_e006c3_final.gputrace`（765 文件，968 index 引用）：`valid_msl_files: 2`（两个 PlayTools 注入的 MSL 文件，首行 `// Auto-generated aggregated MSL source by PlayTools LibrarySourceInjection`，包含完整 `#include <metal_stdlib>` 与结构体/函数定义）。**Xcode 人工确认：Draw Call shader 面板可见 MSL 源码**。覆盖率 2/11（18%）source 文件为 MSL，其余为 bplist（原始 metallib）。
 | 当前异常基线（2026-04-05，`E-006d` 新开） | 用 PlayCover 打开原神并停留在**同一界面**时，重复启动后画面表现会出现差异；**mesh 布局没有变化**，但局部渲染结果异常。当前仍**不能实锤是 shader 本身改坏**：由于原神是延迟管线，base pass 对比看起来也可能类似，问题也可能位于后处理、着色阶段，或 render pipeline 顺序 / 配置。当前最稳定的复现对照，是**做替换**与**不做替换**时最终效果稳定不同；该现象尚未完成更细的层级归因。 |
 | 当前控制面基线（2026-04-05，`E-006d3` 后） | 已新增 `shaderSourceReplacementEnabled` runtime 开关：关闭后 `PlayTools` 在 `LibrarySourceInjectionSwizzles` 入口直接返回原始 `MTLLibrary`，不再进入 `IR -> MSL -> makeLibrary(source:)` 替换链路；可用 `python3 Scripts/set_shader_replacement_mode.py --bundle-id <bundleId> --mode on/off` 直接切换单 app 的“替换 / 不替换” live 对照模式。 |
+| 当前 run 固化基线（2026-04-05，`E-006d4` 后） | 已新增 `Scripts/snapshot_capture_run.py`：可把当前 `ShaderCorpus/<bundleId>/manifest.jsonl + modules/ (+ replacements/)`、`ShaderSourceDiagnostics/<bundleId>/` 与 `App Settings/<bundleId>.plist` 一次性固化到 `build/e006d-run-snapshots/<label>/<bundleId>/`，并写出 `snapshot.meta.json` 记录 replacement 开关与本轮源目录计数，供后续 `compare_capture_runs.py` 直接消费。 |
 | 历史 live blocker 时间线 | 见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
 
 ## 整体架构
@@ -213,6 +214,8 @@ PlayTools.framework (注入到 iOS app)
 | E-006d3 | ↳ “替换 vs 不替换” runtime 开关与 plist 切换脚本 | ✅ DONE | |
 |  | 新增 `shaderSourceReplacementEnabled` 设置；关闭后 hook 直接返回原始 library，不再进入替换链路；新增 `Scripts/set_shader_replacement_mode.py` 直接切换 `App Settings/<bundleId>.plist`，用于建立稳定的 live A/B 对照 | | |
 |  | 目标不是继续证明“源码可见”或“compile green”，而是先用**替换 vs 不替换**建立稳定对照，再确认异常究竟来自 `llvm-dis` / `IRToMSLConverter` / 聚合 MSL / `makeLibrary(source:)` 替换，还是更后面的着色、后处理、render pipeline 顺序 / 配置阶段 | |
+| E-006d4 | ↳ 单次 run 快照固化脚本 | ✅ DONE | |
+|  | 新增 `Scripts/snapshot_capture_run.py`，统一固化 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings 到 `build/e006d-run-snapshots/<label>/<bundleId>/`，并写出 `snapshot.meta.json`；后续可直接把输出目录喂给 `Scripts/compare_capture_runs.py` | | |
 | E-006a | ↳ 扩展真实 corpus 覆盖面 | TODO | |
 |  | 在进入新地图 / 新场景 / 新画质设置时追加采集，逐步逼近"尽量全"的真实 shader 集合 | | |
 | E-006b | ↳ 离线批量 green 后做最小 live 复测 | ✅ DONE | |
@@ -259,6 +262,7 @@ PlayTools.framework (注入到 iOS app)
 - **源码可见不等于渲染语义正确**：`E-006c` 已证明 `.gputrace` 中能看到 MSL，但 `E-006d` 关注的是“同一输入是否在重复启动下保持同一视觉结果”；两者必须分开验收
 - **当前最保守的稳定对照是“替换 vs 不替换”**：在还不能实锤具体根因位于哪个 pass / stage 之前，先确认“做替换”和“完全不做替换”时的最终效果是否稳定不同，这是 `E-006d` 最低风险的比较基线
 - **“不做替换”对照必须复用统一开关**：`E-006d3` 后统一通过 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py` 控制，避免因手工改代码、临时删逻辑或脏 plist 导致对照本身不可靠
+- **run 快照也必须统一固化方式**：`E-006d4` 后统一通过 `Scripts/snapshot_capture_run.py` 保留单次 run 的 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings，避免手工拷贝时把 replacement 开关状态、聚合产物与对应 run 混淆
 - **同一界面重复启动出现差异时，不要过早收敛为 shader root cause**：当前已知现象是 mesh 不变，但原神为延迟管线；base pass 看起来类似并不能排除后处理、着色阶段，或 render pipeline 顺序 / 配置差异
 - **`E-006d` 的归因顺序必须固定**：先做“替换 vs 不替换”稳定对照，再对齐“输入是否相同”（metallib / moduleKey / functionTypes），再比较“输出是否相同”（单模块 `.metal` / 聚合 MSL / compile 结果），最后才看“运行时是否真的使用了替换后的 library”以及更后续的 pass / pipeline 行为
 - **`Scripts/compare_capture_runs.py` 是 `E-006d` 的第一层离线守门**：当两轮都已保留 `manifest.jsonl` 与 `modules/` 快照时，优先先跑该脚本，快速回答“哪些 `moduleKey` 只出现在单边”“相同 `moduleKey` 的 `.bc/.ll/.metal/.meta` 是否一致”，避免一上来就手翻 corpus 或直接回到 live 猜测

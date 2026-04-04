@@ -4352,13 +4352,61 @@ struct IRToMSLConverter {
         let ptr = resolveIROperand(ptrOperand, ctx: ctx)
         let mslType = irScalarTypeToMSL(loadType)
         let loadExpr = lvalueExpression(from: ptr) ?? "*(\(ptr))"
+        // 从 ptrOperand 中提取纯 SSA 名（去掉 ptr addrspace(N) 等前缀）
+        let ptrSSAName = extractSSAName(from: ptrOperand)
         // E-006b5: 检测指针元素类型与 load 类型之间的 signedness mismatch。
         // LLVM IR 的 i32 没有 signedness，但 MSL 的 int4/uint4 是不同类型。
         // 当 load 从 device uint4* 加载但 IR 类型为 <4 x i32>（→int4）时，
         // 需要用 as_type<int4>(uintIn[t0]) 做无符号 bitcast。
-        let ptrElemType = ctx.pointerElementTypes[ptrOperand]
-        if let elemType = ptrElemType, needsSignednessBitcast(mslType, ptrElemType: elemType) {
-            ctx.emitAutoAssign(lhs, expr: "as_type<\(mslType)>(\(loadExpr))", knownType: mslType)
+        // E-006b7: 扩展检测到 load 类型与指针元素类型大小不同时也需要重解释。
+        let ptrElemType = ctx.pointerElementTypes[ptrSSAName] ?? ctx.pointerElementTypes[ptrOperand]
+        if let elemType = ptrElemType {
+            if needsSignednessBitcast(mslType, ptrElemType: elemType) {
+                ctx.emitAutoAssign(lhs, expr: "as_type<\(mslType)>(\(loadExpr))", knownType: mslType)
+            } else if needsSizeBitcast(mslType, ptrElemType: elemType) {
+                let loadBits = mslTypeBitWidth(mslType)
+                let ptrBits = mslTypeBitWidth(elemType)
+                if loadBits <= 32 && ptrBits > loadBits {
+                    // 标量或小向量从更大向量加载：as_type 取前 32bit 再截取
+                    if mslType == "float" || mslType == "int" || mslType == "uint" {
+                        // 标量：取 .x 分量（float4[0] → .x）
+                        ctx.emitAutoAssign(lhs, expr: "\(loadExpr).x", knownType: mslType)
+                    } else if mslType == "half" {
+                        ctx.emitAutoAssign(lhs, expr: "as_type<half>(as_type<uint>(\(loadExpr).x) & 0xFFFF)", knownType: mslType)
+                    } else {
+                        // 小向量（uchar2 等）：通过 uint 中间 bitcast 截取
+                        // float → uint (as_type, same 32-bit size) → mask → downcast → as_type
+                        // Metal 的 as_type 要求源和目标大小相同，所以中间步骤必须用 uint (32-bit)
+                        let intBits = loadBits <= 16 ? 16 : 32
+                        let mask: String
+                        if intBits == 16 {
+                            mask = "0xFFFF"
+                        } else {
+                            mask = "0xFFFFFFFF"
+                        }
+                        // 始终用 uint 做中间 bitcast（float → uint 是合法的 same-size as_type）
+                        let tempUInt = ctx.freshTemp()
+                        ctx.emit("uint \(tempUInt) = as_type<uint>(\(loadExpr).x) & \(mask);")
+                        if intBits == 16 {
+                            // 16-bit 目标：uint → ushort (显式截断) → as_type<uchar2>
+                            let tempShort = ctx.freshTemp()
+                            ctx.emit("ushort \(tempShort) = ushort(\(tempUInt));")
+                            ctx.emitAutoAssign(lhs, expr: "as_type<\(mslType)>(\(tempShort))", knownType: mslType)
+                        } else {
+                            // 32-bit 目标：直接 as_type<uint> → as_type<目标类型>
+                            ctx.emitAutoAssign(lhs, expr: "as_type<\(mslType)>(\(tempUInt))", knownType: mslType)
+                        }
+                    }
+                } else {
+                    // 其他大小不匹配的情况：用 reinterpret_cast 指针类型
+                    let ptrTemp = ctx.freshTemp()
+                    let addrSpace = inferAddressSpace(ptrOperand, ctx: ctx)
+                    ctx.emit("auto \(ptrTemp) = reinterpret_cast<const \(addrSpace)\(mslType)*>(&(\(loadExpr)));")
+                    ctx.emitAutoAssign(lhs, expr: "*\(ptrTemp)", knownType: mslType)
+                }
+            } else {
+                ctx.emitAutoAssign(lhs, expr: loadExpr, knownType: mslType)
+            }
         } else {
             ctx.emitAutoAssign(lhs, expr: loadExpr, knownType: mslType)
         }
@@ -4387,6 +4435,66 @@ struct IRToMSLConverter {
         return false
     }
 
+    /// 检测两个 MSL 类型是否在大小（bit width）上不匹配，
+    /// 需要 as_type<> 重解释而非直接赋值。
+    /// 例如：uchar2 (2 bytes) vs float4 (16 bytes)、float (4 bytes) vs float4 (16 bytes)
+    /// 当 load 的 IR 类型比指针元素类型更小时（如从 float4* 加载 uchar2），
+    /// MSL 的 subscript 返回指针元素类型（float4），不能直接赋给 load 类型（uchar2）。
+    private static func needsSizeBitcast(_ loadMSLType: String, ptrElemType: String) -> Bool {
+        let loadBits = mslTypeBitWidth(loadMSLType)
+        let ptrBits = mslTypeBitWidth(ptrElemType)
+        guard loadBits > 0 && ptrBits > 0 else { return false }
+        // 相同大小 → 不需要（signedness 由 needsSignednessBitcast 处理）
+        if loadBits == ptrBits { return false }
+        // 不同大小 → 需要 as_type 重解释
+        // 但只处理 load 比 ptr 小的情况（截断式 bitcast），忽略 load 更大的情况（不太常见）
+        return loadBits < ptrBits
+    }
+
+    /// 估算 MSL 类型的 bit width
+    private static func mslTypeBitWidth(_ mslType: String) -> Int {
+        let s = mslType.trimmingCharacters(in: .whitespaces)
+        // 标量类型
+        let scalarWidths: [String: Int] = [
+            "char": 8, "uchar": 8, "uint8_t": 8,
+            "short": 16, "ushort": 16,
+            "int": 32, "uint": 32, "float": 32, "half": 16,
+            "long": 64, "ulong": 64, "double": 64,
+            "bool": 1,
+        ]
+        if let w = scalarWidths[s] { return w }
+        // 向量类型：typeN（如 float4, uchar2, int3）
+        // 提取末尾的维度数字
+        var i = s.count
+        while i > 0 && s[s.index(s.startIndex, offsetBy: i - 1)].isNumber { i -= 1 }
+        if i < s.count && i > 0 {
+            let base = String(s[s.startIndex..<s.index(s.startIndex, offsetBy: i)])
+            if let dim = Int(s[s.index(s.startIndex, offsetBy: i)...]),
+               let baseW = scalarWidths[base] {
+                return baseW * dim
+            }
+        }
+        return 0
+    }
+
+    /// 从 IR 操作数的地址空间推断 MSL 地址空间限定符。
+    /// IR addrspace(1) → device, addrspace(2) → constant, addrspace(3) → threadgroup, 其他 → device
+    private static func inferAddressSpace(_ irOperand: String, ctx: SSAContext) -> String {
+        let trimmed = irOperand.trimmingCharacters(in: .whitespaces)
+        // 检查 SSA 变量的参数类型（可能包含 addrspace 信息）
+        if trimmed.hasPrefix("%") {
+            if let paramType = ctx.paramTypes[trimmed] {
+                if paramType.contains("addrspace(2)") { return "constant" }
+                if paramType.contains("addrspace(3)") { return "threadgroup" }
+            }
+            // 回退：检查 SSA 表达式是否包含 constant 关键字
+            let resolved = ctx.resolve(trimmed)
+            if resolved.contains("constant") { return "constant" }
+            if resolved.contains("threadgroup") { return "threadgroup" }
+        }
+        return "device"
+    }
+
     /// 翻译 store
     private static func translateStore(_ line: String, ctx: SSAContext) {
         // store <type> <value>, <ptr_type> <ptr>[, align N]
@@ -4405,7 +4513,8 @@ struct IRToMSLConverter {
         // E-006b5: 检测值类型与指针元素类型之间的 signedness mismatch。
         // LLVM IR 的 i32 无 signedness，MSL 的 int4/uint4 是不同类型。
         // 当 store int4 值到 device uint4* 时，需要 as_type<uint4>(val)。
-        let ptrElemType = ctx.pointerElementTypes[ptrOperand]
+        let ptrSSAName = extractSSAName(from: ptrOperand)
+        let ptrElemType = ctx.pointerElementTypes[ptrSSAName] ?? ctx.pointerElementTypes[ptrOperand]
         if let elemType = ptrElemType,
            let valMSLType = ctx.types[valOperand],
            needsSignednessBitcast(valMSLType, ptrElemType: elemType) {
@@ -4549,17 +4658,13 @@ struct IRToMSLConverter {
                 if resolvedIdx == "0" && i == parts.count - 1 {
                     // 最后一个索引为 0，通常是无效访问，透传
                 } else if currentType.hasPrefix("<") {
-                    // 向量类型 → 直接 subscript（MSL 支持向量下标）
-                    expr = "\(expr)[\(resolvedIdx)]"
-                } else if !currentType.isEmpty && !currentType.hasPrefix("ptr") {
-                    // E-006a2e14: 标量类型 subscript（float, half, i32 等）
-                    // IR GEP with opaque pointer 允许对 scalar field 做 array-like index
-                    // （将 scalar 地址视为数组首元素地址），但 MSL 不允许 scalar subscript
-                    // Fix: 取字段地址放入 temp 变量，然后通过 pointer subscript
+                    // E-006b7: IR 向量类型 <N x T> 的 GEP subscript。
+                    // GEP 语义是把向量内存视为元素数组做指针 subscript，
+                    // 但 expr[field] 对向量值是 component access（返回标量），语义不等价。
+                    // 必须先取地址再用指针 subscript：auto tmp = &(expr); tmp[idx]
+                    // 保留 currentType（向量元素类型）用于 gepElementType 追踪。
                     let ptrTemp = ctx.freshTemp()
                     ctx.emit("auto \(ptrTemp) = &(\(expr));")
-                    // 后续剩余索引也做 pointer offset 累加
-                    // （after scalar type, remaining indices are all scalar arithmetic）
                     var offsetExpr = resolvedIdx
                     var j = i + 1
                     while j < parts.count {
@@ -4571,7 +4676,24 @@ struct IRToMSLConverter {
                         j += 1
                     }
                     expr = "\(ptrTemp)[\(offsetExpr)]"
-                    currentType = ""
+                    // currentType 保持为向量类型（<N x T>），不置空
+                    break
+                } else if !currentType.isEmpty && !currentType.hasPrefix("ptr") {
+                    // E-006a2e14: 标量类型 subscript（float, half, i32 等）
+                    // 也处理 MSL 向量类型（float4, uchar2 等）
+                    let ptrTemp = ctx.freshTemp()
+                    ctx.emit("auto \(ptrTemp) = &(\(expr));")
+                    var offsetExpr = resolvedIdx
+                    var j = i + 1
+                    while j < parts.count {
+                        let nextIdxStr = parts[j].value.trimmingCharacters(in: .whitespaces)
+                        let nextIdx = resolveIROperand(nextIdxStr, ctx: ctx)
+                        if !nextIdx.isEmpty && nextIdx != "0" {
+                            offsetExpr += " + \(nextIdx)"
+                        }
+                        j += 1
+                    }
+                    expr = "\(ptrTemp)[\(offsetExpr)]"
                     break
                 } else {
                     expr = "\(expr)[\(resolvedIdx)]"
@@ -4971,6 +5093,24 @@ struct IRToMSLConverter {
                     }
                 }
 
+                // E-006b7: sample_texture_*_grad 的 gradient 参数需要包裹为 gradient2d(dx, dy)
+                // Metal 的 sample(gradient2d(float2, float2)) 需要显式包装，
+                // 否则裸传两个 float2 会被误解析为 bias/level 等重载导致 ambiguous。
+                // 注意：gradient 参数可能是 SSA 变量（float2）或 splat 展开的裸 float 字面量，
+                // 后者需要包装为 float2。
+                if airName.contains("_grad") && mapping.mslFunction == "sample" {
+                    // gradient 参数位于 coord 之后：最终参数中 [sampler, coord, gradX, gradY, ...]
+                    // sampler 是 finalArgs[0], coord 是 finalArgs[1], gradX 是 finalArgs[2], gradY 是 finalArgs[3]
+                    if finalArgs.count >= 4 {
+                        var gradX = finalArgs.remove(at: 2)
+                        var gradY = finalArgs.remove(at: 2)  // removeAt(2) again after first removal
+                        // 如果 gradient 值是裸 float 字面量（来自 splat 展开），包装为 float2
+                        if isFloatLiteral(gradX) { gradX = "float2(\(gradX))" }
+                        if isFloatLiteral(gradY) { gradY = "float2(\(gradY))" }
+                        finalArgs.insert("gradient2d(\(gradX), \(gradY))", at: 2)
+                    }
+                }
+
                 // write: AIR 参数顺序是 (texture, coord, color, ...)，
                 // Metal 的 write 方法签名是 write(color, coord)，需要交换前两个参数
                 if mapping.mslFunction == "write" && finalArgs.count >= 2 {
@@ -5055,7 +5195,13 @@ struct IRToMSLConverter {
     private static func translateRet(_ line: String, ctx: SSAContext) {
         let cleaned = line.replacingOccurrences(of: "ret ", with: "").trimmingCharacters(in: .whitespaces)
         if cleaned == "void" {
-            ctx.emit("return;")
+            // ret void — 但函数可能是非 void 返回类型（测试 stub 常见）
+            // 检查函数声明的返回类型，避免在非 void 函数中生成 return;
+            if ctx.functionReturnType.isEmpty || ctx.functionReturnType == "void" {
+                ctx.emit("return;")
+            } else {
+                ctx.emit("return \(ctx.functionReturnType)();")
+            }
             return
         }
         // ret <type> <value>
@@ -5535,6 +5681,54 @@ struct IRToMSLConverter {
         }
 
         return s
+    }
+
+    /// 检测字符串是否是浮点数字面量（如 "0.1", "1.0", "2.000000e+00" 等）
+    private static func isFloatLiteral(_ s: String) -> Bool {
+        let trimmed = s.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { return false }
+        // 排除 SSA 引用、函数调用等非字面量
+        if trimmed.hasPrefix("%") || trimmed.contains("(") || trimmed.contains(")") ||
+           trimmed.contains("/*") || trimmed.contains("//") || trimmed.contains("[") {
+            return false
+        }
+        return Double(trimmed) != nil
+    }
+
+    /// 检测类型名是否是 MSL 格式的向量类型（float4, half2, int3, uint2, uchar2, bool4 等）。
+    /// IR 格式的向量类型（<4 x float>）由 hasPrefix("<") 处理，此函数处理 MSL 格式。
+    private static func isMSLVectorType(_ type: String) -> Bool {
+        let s = type.trimmingCharacters(in: .whitespaces)
+        guard s.count >= 2, !s.isEmpty else { return false }
+        // 向量类型以数字结尾（维度），基础类型是标量类型名
+        let lastChar = s.last!
+        guard lastChar.isNumber, lastChar != "0" else { return false }
+        let base = String(s.dropLast())
+        // 已知 MSL 标量类型
+        let scalarTypes: Set<String> = [
+            "float", "half", "double",
+            "int", "uint",
+            "short", "ushort",
+            "char", "uchar",
+            "long", "ulong",
+            "bool",
+        ]
+        return scalarTypes.contains(base)
+    }
+
+    /// 从 IR 操作数字符串中提取纯 SSA 名（%N）。
+    /// 例如："ptr addrspace(2) %8" → "%8"，"%8" → "%8"，"fg.color" → "fg.color"
+    private static func extractSSAName(from operand: String) -> String {
+        let trimmed = operand.trimmingCharacters(in: .whitespaces)
+        if trimmed.contains("%") {
+            if let lastPercent = trimmed.range(of: "%", options: .backwards) {
+                let fromPercent = trimmed[lastPercent.lowerBound...]
+                // 提取 %N 部分（到空格或结尾）
+                let endIdx = fromPercent.firstIndex(where: { $0 == " " || $0 == "," }) ?? fromPercent.endIndex
+                return String(fromPercent[..<endIdx])
+            }
+        }
+        return trimmed
     }
 
     /// 如果参数是纯数字字面量，追加 h 后缀使其成为 half literal。

@@ -2,6 +2,14 @@
 
 ## 状态：TODO
 
+## 当前已完成子项
+
+- **E-006d1（✅ DONE）**：新增 `Scripts/compare_capture_runs.py`，用于对比两轮采集的 `manifest.jsonl` 与 `modules/` 快照，直接输出：
+  - 哪些 `moduleKey` 仅出现在单边
+  - 共享 `moduleKey` 在 `module.bc` / `module.ll` / `module.generated.metal` / `module.meta.json` 上是否有 hash 或尺寸差异
+  - `functionNames` / `functionTypes` / `generatedFunctionNames` / `generatedFunctionTypes` / `selector` / `captureAction` / compile 状态摘要是否一致
+- 这一步优先服务于第 2、3、4 个核心问题：**输入是否相同 / 输出是否相同 / 同 key 模块的离线产物是否稳定**
+
 ## 现象
 
 - 当前现象：用 PlayCover 打开原神，按既有 Road E 流程会执行 `metal IR 提取 -> 反编译为 MSL -> makeLibrary(source:) 重编译替换`；即使停留在**同一个界面**，多次启动后画面表现也会不完全一样
@@ -47,6 +55,16 @@
 - 比较 `functionNames` / `functionTypes`
 - 比较 `module.bc` / `module.ll` 哈希
 - 若这里已经不同，先不要直接归咎于 converter；应继续追踪是 app 本身输入变了，还是拦截 / 导出路径在不同轮次拿到了不同 metallib/module
+- 推荐先保存每轮 `manifest.jsonl` 与 `modules/` 快照后，运行：
+
+```bash
+python3 Scripts/compare_capture_runs.py \
+  --run-a /path/to/run-a/com.miHoYo.Yuanshen \
+  --run-b /path/to/run-b/com.miHoYo.Yuanshen \
+  --output build/e006d-run-diff.json
+```
+
+- 若报告中的 `onlyInRunA` / `onlyInRunB` 非空，说明同一界面重复启动时，至少进入 corpus 的 `moduleKey` 集合还不稳定
 
 ### 4. 再比较“输出是否相同”
 
@@ -58,6 +76,7 @@
   - `IRToMSLConverter` 是否存在依赖遍历顺序的发射逻辑
   - 聚合阶段是否存在函数顺序 / 去重 / struct emission 顺序不稳定
   - 日志 / diagnostics / baseline 是否把同一模块的不同版本混在一起
+- `Scripts/compare_capture_runs.py` 会对共享 `moduleKey` 直接比较 `.bc/.ll/.metal/.meta` 的 sha256；如果 `module.ll` 一致而 `module.generated.metal` 不一致，可优先怀疑 converter / 聚合稳定性，而不是先回到 live 侧猜测
 
 ### 5. 最后比较“替换与实际使用是否相同”
 
@@ -91,6 +110,12 @@
   - runtime 实际使用阶段问题
   - 更后续的着色 / 后处理 / render pipeline 顺序或配置问题
 - 若定位到具体 blocker，需要把它转化为可离线 replay / compile / diff 的样本或规则，而不是继续只停留在 live 观察层面
+
+## 当前建议执行顺序
+
+1. 固定 live 条件，分别保留两轮 `manifest.jsonl` 与 `modules/` 快照
+2. 先用 `Scripts/compare_capture_runs.py` 对比 run-vs-run，确认输入/输出是否已经漂移
+3. 只有在离线差异已经收敛到具体 `moduleKey` 或具体产物差异后，才继续下钻到 `.gputrace`、实际替换命中情况、以及更后续的 pass / pipeline 行为
 
 ## 从 dashboard 下沉的细粒度技术备注
 

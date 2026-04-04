@@ -205,6 +205,8 @@ PlayTools.framework (注入到 iOS app)
 | E-005c | ↳ 新旧转换结果 diff / 回归基线 | ✅ DONE | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | ✅ DONE | |
 | E-006d | ↳ 调查原神同一界面重复启动时的随机渲染异常 / shader 语义漂移 | TODO | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
+| E-006d1 | ↳ 两轮采集输入/输出一致性离线对比工具 | ✅ DONE | |
+|  | 新增 `Scripts/compare_capture_runs.py`：对比两轮 `manifest.jsonl` 与 `modules/`，直接给出 `moduleKey` 集合差异，以及共享 `moduleKey` 在 `.bc/.ll/.metal/.meta`、函数签名、selector、状态摘要上的差异，用于先回答“输入是否相同 / 输出是否相同” | | |
 |  | 目标不是继续证明“源码可见”或“compile green”，而是先用**替换 vs 不替换**建立稳定对照，再确认异常究竟来自 `llvm-dis` / `IRToMSLConverter` / 聚合 MSL / `makeLibrary(source:)` 替换，还是更后面的着色、后处理、render pipeline 顺序 / 配置阶段 | |
 | E-006a | ↳ 扩展真实 corpus 覆盖面 | TODO | |
 |  | 在进入新地图 / 新场景 / 新画质设置时追加采集，逐步逼近"尽量全"的真实 shader 集合 | | |
@@ -253,6 +255,7 @@ PlayTools.framework (注入到 iOS app)
 - **当前最保守的稳定对照是“替换 vs 不替换”**：在还不能实锤具体根因位于哪个 pass / stage 之前，先确认“做替换”和“完全不做替换”时的最终效果是否稳定不同，这是 `E-006d` 最低风险的比较基线
 - **同一界面重复启动出现差异时，不要过早收敛为 shader root cause**：当前已知现象是 mesh 不变，但原神为延迟管线；base pass 看起来类似并不能排除后处理、着色阶段，或 render pipeline 顺序 / 配置差异
 - **`E-006d` 的归因顺序必须固定**：先做“替换 vs 不替换”稳定对照，再对齐“输入是否相同”（metallib / moduleKey / functionTypes），再比较“输出是否相同”（单模块 `.metal` / 聚合 MSL / compile 结果），最后才看“运行时是否真的使用了替换后的 library”以及更后续的 pass / pipeline 行为
+- **`Scripts/compare_capture_runs.py` 是 `E-006d` 的第一层离线守门**：当两轮都已保留 `manifest.jsonl` 与 `modules/` 快照时，优先先跑该脚本，快速回答“哪些 `moduleKey` 只出现在单边”“相同 `moduleKey` 的 `.bc/.ll/.metal/.meta` 是否一致”，避免一上来就手翻 corpus 或直接回到 live 猜测
 - **细粒度 lowering 备注、近期 compile blocker 细节与 `E-006d` 的调查框架已下沉到独立参考文档**：见 [E-006d-GenshinRenderingNondeterminism](E-006d-GenshinRenderingNondeterminism.md)
 
 ## 参考信息

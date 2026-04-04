@@ -175,6 +175,16 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
     private func ensureGPUToolsCaptureLoaded() -> Bool {
         guard !gpuToolsCaptureLoaded else { return true }
 
+        // Check if GPUToolsCapture was already loaded via DYLD_INSERT_LIBRARIES
+        // at dyld time. If CaptureMTLDevice exists, the library is already active
+        // and all Metal objects are already wrapped — no need for delayed dlopen.
+        if NSClassFromString("CaptureMTLDevice") != nil {
+            gpuToolsCaptureLoaded = true
+            captureManager = MTLCaptureManager.shared()
+            logStatusProbe("ensureGPUToolsCaptureLoaded: already loaded via DYLD_INSERT (CaptureMTLDevice exists)")
+            return true
+        }
+
         let libPath = "/usr/lib/libmtlcapture.dylib"
         guard FileManager.default.fileExists(atPath: libPath) else {
             logStatusProbe("ensureGPUToolsCaptureLoaded: library not found at \(libPath)")

@@ -248,19 +248,25 @@ public final class LaunchService: Sendable {
     private func effectiveLaunchEnvironment(bundleId: String) -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
 
-        for key in Array(environment.keys) where key.hasPrefix("DYLD_") {
-            environment.removeValue(forKey: key)
+        let injectCapture = shouldInjectMetalCaptureEnvironment(bundleId: bundleId)
+
+        // When metal capture env injection is enabled, do NOT clear DYLD_* keys
+        // because we need DYLD_INSERT_LIBRARIES to load libmtlcapture.dylib at
+        // dyld time so GPUToolsCapture wraps Metal objects from the very start.
+        // RC-014's __attribute__((constructor)) in GuardedCapture.m installs
+        // early compat stubs on NSObject before GPUToolsCapture's hooks fire,
+        // preventing SIGABRT on apps like Genshin Impact.
+        if !injectCapture {
+            for key in Array(environment.keys) where key.hasPrefix("DYLD_") {
+                environment.removeValue(forKey: key)
+            }
         }
+
         for key in Self.metalEnvKeys {
             environment.removeValue(forKey: key)
         }
 
-        // NOTE: DYLD_INSERT_LIBRARIES injection of libmtlcapture.dylib has been removed
-        // to fix compatibility crashes (e.g. Genshin Impact SIGABRT on startup).
-        // Metal capture is now enabled via runtime dlopen() inside PlayTools'
-        // MetalCaptureService — see RC-009 delayed injection.
-
-        if shouldInjectMetalCaptureEnvironment(bundleId: bundleId) {
+        if injectCapture {
             for (key, value) in Self.injectedMetalCaptureEnvironment {
                 environment[key] = value
             }

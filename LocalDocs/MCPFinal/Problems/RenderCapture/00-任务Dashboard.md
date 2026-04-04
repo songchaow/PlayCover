@@ -41,9 +41,9 @@
 | App | 延迟注入启动 | 延迟注入截帧 | 启动期注入启动 | 启动期注入截帧 |
 |---|---|---|---|---|
 | QQ飞车 | ✅ | ✅ 413MB | ✅ | ✅ 124MB |
-| 原神 | ✅ | 空 trace（预期） | ✅ (需关闭MetalFX) | **✅ 357MB** |
+| 原神 | ✅ | 空 trace（预期） | ✅ (需清理Saved State + 关闭MetalFX) | **✅ 357MB** |
 
-说明：原神延迟注入截帧为空 trace 是预期行为 — Metal 对象在 `GPUToolsCapture` 加载前已创建，不会被代理。
+说明：原神延迟注入截帧为空 trace 是预期行为 — Metal 对象在 `GPUToolsCapture` 加载前已创建，不会被代理。启动期注入时若遇到 SIGABRT 崩溃，需清理 `~/Library/Saved Application State/com.miHoYo.Yuanshen.savedState`（UIKit scene restoration 问题，非 GPUToolsCapture 导致）。
 
 ---
 
@@ -51,9 +51,10 @@
 
 1. 设置 `metalCaptureEnabled=true` + `injectMetalCaptureEnvironment=true`
 2. 在游戏中关闭 MetalFX（避免 `CaptureMTLFXSpatialScaler` 崩溃）
-3. 启动原神
-4. `create_session` → `capture_metal_frame`
-5. 产物在 `~/Library/Containers/com.miHoYo.Yuanshen/Data/Documents/Captures/`
+3. （首次或崩溃后）清理 Saved Application State：`rm -rf ~/Library/Saved\ Application\ State/com.miHoYo.Yuanshen.savedState`
+4. 启动原神
+5. `create_session` → `capture_metal_frame`
+6. 产物在 `~/Library/Containers/com.miHoYo.Yuanshen/Data/Documents/Captures/`
 
 ---
 
@@ -87,6 +88,7 @@
 | RC-013 | DONE | 新增 `GuardedCapture.m`，SIGSEGV guard 保护 `stopCapture` |
 | RC-014 | DONE | constructor 早期安装 compat stubs，修复启动期注入 SIGABRT；发现 MetalFX 不兼容 |
 | **RC-015** | **DONE** | **原神截帧成功！** 调查发现之前 trace 为空是 PlayTools 未正确更新导致，修正后 357MB trace |
+| RC-016 | DONE | 恢复 `LaunchService` 的 `DYLD_INSERT_LIBRARIES` 注入 + `MetalCaptureService` 增加 DYLD_INSERT 早期加载检测 |
 
 待做（非阻塞）：
 
@@ -100,7 +102,7 @@
 
 | 文件 | 作用 |
 |---|---|
-| `Carthage/Checkouts/PlayTools/PlayTools/MetalCaptureService.swift` | runtime 截帧核心 + RC-015 诊断 |
+| `Carthage/Checkouts/PlayTools/PlayTools/MetalCaptureService.swift` | runtime 截帧核心 + RC-015 诊断 + RC-016 DYLD_INSERT 早期加载检测 |
 | `Carthage/Checkouts/PlayTools/PlayTools/GuardedCapture.m` | SIGSEGV guard + RC-014 early compat stubs + RC-015 C 层类枚举 |
 | `PlayCover/Model/PlayApp.swift` | `effectiveLaunchEnvironment()` — 启动期注入环境变量 |
 | `PlayCoverMCP/HostServices/Launch/LaunchService.swift` | MCP 侧启动环境变量（镜像逻辑） |

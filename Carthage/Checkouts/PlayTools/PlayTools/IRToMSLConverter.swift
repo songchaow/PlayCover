@@ -6177,7 +6177,7 @@ struct IRToMSLConverter {
             return lines.joined(separator: "\n")
         }
 
-        let userStructDefinitions = generateUserStructDefinitions(structFieldInfo)
+        let userStructDefinitions = generateUserStructDefinitions(structFieldInfo, structTypeDefs: structTypeDefs)
         if !userStructDefinitions.isEmpty {
             lines.append(contentsOf: userStructDefinitions)
             lines.append("")
@@ -6239,13 +6239,31 @@ struct IRToMSLConverter {
     }
 
     private static func generateUserStructDefinitions(
-        _ structFieldInfo: [String: [StructFieldInfo]]
+        _ structFieldInfo: [String: [StructFieldInfo]],
+        structTypeDefs: [String: IRStructTypeDef] = [:]
     ) -> [String] {
         guard !structFieldInfo.isEmpty else { return [] }
 
         let knownTypes = Set(structFieldInfo.keys)
         var emitted: Set<String> = []
         var lines: [String] = []
+
+        /// 将 IR 数组类型 [N x T] 转为 MSL 数组声明 "elementType fieldName[N]"
+        /// 返回 nil 表示不是数组类型
+        func irArrayTypeToMSLField(_ irType: String, fieldName: String) -> String? {
+            let trimmed = irType.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("[") && trimmed.hasSuffix("]") else { return nil }
+            // 解析 "[N x T]" → (count, elementType)
+            guard let xRange = trimmed.range(of: " x ") else { return nil }
+            let countStr = String(trimmed[trimmed.index(after: trimmed.startIndex)..<xRange.lowerBound])
+            guard let count = Int(countStr.trimmingCharacters(in: .whitespaces)) else { return nil }
+            let afterX = trimmed[xRange.upperBound...]
+            // 去掉末尾的 ]
+            let elementTypeIR = String(afterX[afterX.startIndex..<afterX.index(before: afterX.endIndex)])
+                .trimmingCharacters(in: .whitespaces)
+            let elementTypeMSL = irScalarTypeToMSL(elementTypeIR)
+            return "\(elementTypeMSL) \(fieldName)[\(count)]"
+        }
 
         func emitStruct(named rawTypeName: String) {
             let sanitizedTypeName = sanitizeTypeName(rawTypeName)
@@ -6258,12 +6276,29 @@ struct IRToMSLConverter {
                 }
             }
 
+            // 尝试找到对应的 IR 结构体定义，用于交叉验证字段类型
+            let irTypeDef = structTypeDefs.first { key, _ in
+                sanitizeTypeName(String(key.dropFirst(key.hasPrefix("%") ? 1 : 0)).replacingOccurrences(of: "\"", with: "")) == sanitizedTypeName
+            }
+
             lines.append("struct \(sanitizedTypeName) {")
             for field in fields.sorted(by: { $0.index < $1.index }) {
+                let fieldName = sanitizeIdentifier(field.fieldName, fallback: "field\(field.index)", uppercaseFirst: false)
+
+                // E-006c2: 交叉检查 IR 结构体字段类型与 metadata 类型
+                // 当 metadata 声明为标量（如 "float"）但 IR 实际为 [N x T] 数组时，
+                // 使用 IR 类型生成正确的 MSL 数组声明
+                if let irDef = irTypeDef?.value, field.index < irDef.fieldIRTypes.count {
+                    let irFieldType = irDef.fieldIRTypes[field.index].trimmingCharacters(in: .whitespaces)
+                    if let arrayField = irArrayTypeToMSLField(irFieldType, fieldName: fieldName) {
+                        lines.append("    \(arrayField);")
+                        continue
+                    }
+                }
+
                 let fieldType = knownTypes.contains(field.typeName)
                     ? sanitizeTypeName(field.typeName)
                     : field.typeName
-                let fieldName = sanitizeIdentifier(field.fieldName, fallback: "field\(field.index)", uppercaseFirst: false)
                 lines.append("    \(fieldType) \(fieldName);")
             }
             lines.append("};")

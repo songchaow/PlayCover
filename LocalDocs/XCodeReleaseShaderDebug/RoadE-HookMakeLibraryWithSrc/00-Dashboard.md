@@ -131,7 +131,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 ## 当前主线
 
-- **E-006（本轮执行：`E-006c` 真实 `.gputrace` 源码可见确认）**：`E-006c1` 已修复 `buildAggregateReplacementSource` 对多模块 metallib 重复函数名的致命 blocker——Unity 编译的 metallib 每个 contain 2-5 个同名函数（如 `xlatMtlMain`）的 shader variant，原代码检测到重复后直接 `throw` 导致 `attemptLibraryReplacement` 对所有原神 metallib 静默回退。**这是 `.gputrace` 源码不可见的根因**。修复后改为去重策略：保留每个唯一函数名的首个模块，跳过后续重复。PlayTools 编译通过，离线 replay `18/18`（test-data）和 `43/43`（corpus）均 compile 成功。下一步需做 fresh capture + Xcode 最终确认（需人工操作 Xcode 截帧）。
+- **E-006（本轮执行：`E-006c` 真实 `.gputrace` 源码可见确认）**：`E-006c1` 已修复多模块 metallib 重复函数名致命 blocker；`E-006c2` 已修复 metadata 字段类型与 IR 结构体类型不一致的数组字段 compile blocker（`_MainLightClipPlaneAlphas` 在 metadata 中为 `float`，IR 中为 `[4 x float]`）。PlayTools 编译通过，离线 replay `18/18`（test-data）和 `43/43`（corpus）均 compile 成功。**fresh capture 已完成**（2026-04-04 14:34 UTC+8）：`build_and_install` → `remove_playtools` → `inject_playtools` → `launch_app` → `create_session` 返回 `ready`（PID 84835），`manifest.jsonl` 追加 43 条 `conflict_preserved` 事件，证明 hook 与 corpus 去重落盘链路正常工作。进程在采集后约 12 秒崩溃（`EXC_BAD_ACCESS`），属已知 live 稳定性问题。**下一步需人工操作 Xcode 截帧做最终确认**。
 - **E-004（已完成：`E-004f3` 扩展 `makeLibrary(URL/default/file)` 路径的采集覆盖）**：`newLibraryWithURL:error:`、`newDefaultLibrary`、`newDefaultLibraryWithBundle:error:`、`newLibraryWithFile:error:` 现已读取 `.metallib` 并复用统一的 `bitcode -> IR -> MSL -> makeLibrary(source:) -> ShaderCorpus` 主链路；default 路径额外加入了 bundle 内 `.metallib` 的保守定位策略。
 - **E-005（已完成：`E-005c` 新旧转换结果 diff / 回归基线）**：`Scripts/corpus_replay_runner.py` 现已支持保存 baseline snapshot、比较新旧 replay / compile 结果、输出 `baseline-diffs/` 与结构化回归统计；日常离线回归已经具备"改前 vs 改后"防退化能力。
 
@@ -146,8 +146,8 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 当前最小离线验证基线（2026-04-04，`E-006b9` 完成） | 已对 `test-data/*.ll` 执行 batch replay + compile：replay `18/18` 成功，Metal compile **`18/18` 成功**（improvement `+1`，regression `0`）。`test_builtins.ll` 的 `metal::_atomic` 模板参数 blocker 已修复——`IRToMSLConverter` 现在将 `metal::_atomic` 正确映射为 `atomic_int`/`atomic_uint` 引用类型，过滤原子操作的内部控制参数并映射 `memory_order` 枚举，GEP 对 atomic 的 field0 直接透传。**所有 `test-data/*.ll` compile blocker 已收敛** |
 | 当前真实 corpus 离线验证基线（2026-04-04，`E-006c` 前置验证） | 已对 `ShaderCorpus/com.miHoYo.Yuanshen/modules/` 全部 43 个真实 module 执行 batch replay + compile：**replay `43/43` 成功，Metal compile `43/43` 成功，preflight rejected `0`**。`IRToMSLConverter` 对所有真实运行时采集的原神 shader 均可生成可编译的 MSL。**IR→MSL 转换质量已不再是 blocker** |
 | 多模块 metallib 重复函数名修复（2026-04-04，`E-006c1` 完成） | **根因确认**：Unity 编译的 metallib 每个 contain 2-5 个同名函数（如 `xlatMtlMain`）的 shader variant（42 个 vertex-only + 21 个 fragment-only，共 185 个 module / 43 个 metallib）。原 `buildAggregateReplacementSource` 检测到重复函数名后直接 `throw ReplacementAggregationError.duplicateFunctionNames`，导致 `attemptLibraryReplacement` 的 catch 块将异常吞掉并 `return nil`，调用方 `?? originalLibrary` 回退到原始 library。**所有原神 metallib 的替换均因此前置失败，即使 IR→MSL 转换和编译都通过了**。修复：改为去重策略，对每个唯一函数名保留首个模块，记录 NSLog 警告并继续聚合编译 |
-| 当前构建验证基线（2026-04-04，`E-006c1` 后） | 已运行 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`（**BUILD SUCCEEDED**），离线 replay test-data `18/18` compile 成功、corpus `43/43` compile 成功。`E-006c1` 修复后回归 `0` |
-| 当前最小 live 验证状态（2026-04-04） | PlayCover MCP 应用列表通道已恢复可用；已对原神 6.4.0 完成一次最小 live 复测：`remove_playtools`、`inject_playtools`、`launch_app` 成功，`create_session` 返回 `ready`（PID 98756，runtimePort 61205）；同时 `ShaderCorpus/com.miHoYo.Yuanshen/manifest.jsonl` 在 `2026-04-03T16:25:54Z`–`16:26:06Z` 追加了多条 `captureAction=conflict_preserved` / `selector=newLibraryWithData:error:` 事件，证明启动期已重新命中 hook 与 corpus 去重落盘链路。`2026-04-04 01:57` 再次 fresh `launch_app -> create_session(timeout=30)` 也曾返回 `ready`（PID 43383，runtimePort 61206），但很快转为 `disconnected`，且新增 `Yuanshen-2026-04-04-015803.ips`，说明 live 稳定性仍未收敛 |
+| 当前构建验证基线（2026-04-04，`E-006c2` 后） | 已运行 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`（**BUILD SUCCEEDED**），离线 replay test-data `18/18` compile 成功、corpus `43/43` compile 成功。`E-006c2` 修复后回归 `0` |
+| 当前最小 live 验证状态（2026-04-04，`E-006c2` fresh capture） | `build_and_install` → `remove_playtools` → `inject_playtools` → `launch_app` → `create_session` 返回 `ready`（PID 84835，runtimePort 61209）；`manifest.jsonl` 追加 43 条 `conflict_preserved` / `selector=newLibraryWithData:error:` 事件（`2026-04-04T06:34:15Z`–`06:34:27Z`），全部为去重复用（`module.bc: reused`），无新 module。进程在采集完成后约 12 秒崩溃（`Yuanshen-2026-04-04-143429.ips`，PID 84835），属已知 `EXC_BAD_ACCESS` live 稳定性问题 |
 | 当前 `.gputrace` 源码可见性检查（2026-04-04，`E-006c` 早期） | 已对原神现存 6 份真实 trace 批量执行 `Scripts/check_gputrace_sources.py`：`valid_msl_files` 全部为 `0`；Xcode 可打开 `capture_20260402_roadE_e006_diag.gputrace` 并进入具体 draw call（`Command Buffer 1` / `Render Encoder 12` / draw call `7688`，`editor_mode=Bound Resources`，Step 菜单启用），因此当前结论是"trace 可开/可步进，但源码仍不可见"。**注意：这些 trace 是在 `E-006c1` 修复前捕获的，不能反映修复后的效果** |
 | 历史 live blocker 时间线 | 见 [00-Dashboard-Archive](00-Dashboard-Archive.md)；dashboard 主体不再重复堆叠逐轮 live 细节 |
 
@@ -180,7 +180,7 @@ PlayTools.framework (注入到 iOS app)
 
 ## TODO
 
-> 当前最高优先级：`E-006c`（真实 `.gputrace` 源码可见确认）。`E-006c1` 已修复多模块 metallib 重复函数名的致命 blocker（原代码 `throw` 导致所有原神 shader 替换静默失败）。PlayTools 编译通过，离线 replay `18/18` + `43/43` compile 成功。下一步需做 fresh capture + Xcode 最终确认（需人工操作 Xcode 截帧）。
+> 当前最高优先级：`E-006c`（真实 `.gputrace` 源码可见确认）。`E-006c1` 已修复多模块 metallib 重复函数名的致命 blocker，`E-006c2` 已修复 metadata 与 IR 结构体类型不一致的数组字段 blocker。PlayTools 编译通过，离线 replay `18/18` + `43/43` compile 成功。fresh capture 已完成（43 条 `conflict_preserved`，hook 链路正常）。**下一步需人工操作 Xcode 截帧做最终确认**。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -227,8 +227,10 @@ PlayTools.framework (注入到 iOS app)
 | E-006b9 | ↳ 收敛 `metal::_atomic` 类型支持 compile blocker | ✅ DONE | |
 |  | `IRToMSLConverter` 新增对 `metal::_atomic` 的完整支持：① `buildParametersFromMetadata` 根据 `struct_type_info` 字段类型将 `metal::_atomic` 映射为 `atomic_uint`/`atomic_int`；② `generateAllParams` 对 atomic 类型使用引用（`&`）而非指针（`*`）；③ `generateUserStructDefinitions` 跳过 `metal::_atomic`；④ 新增 `generateAtomicMSL` 过滤 AIR 原子函数内部控制参数（scope、volatile）并映射 `memory_order` i32 枚举；⑤ `translateGEP` 对 `metal::_atomic` field0 直接透传；⑥ `translateBitcast` 对 `ptr to ptr` 做 no-op。compile improvement `+1`，regression `0` | | |
 | E-006c | ↳ 最终 `.gputrace` 源码可见确认 | 🔄 IN PROGRESS | |
-|  | **`E-006c1` 已修复多模块 metallib 重复函数名致命 blocker**：Unity 编译的 metallib 每个 contain 2-5 个同名函数的 shader variant，原 `buildAggregateReplacementSource` 检测到重复后 `throw`，导致所有原神 shader 替换静默失败。改为去重策略（保留首个模块），PlayTools 编译通过，离线 replay compile `18/18`（test-data）+ `43/43`（corpus）。待做 fresh capture + Xcode 最终确认 | |
-| E-006c1 | ↳ 修复多模块 metallib 重复函数名导致替换静默失败 | ✅ DONE | | |
+|  | **`E-006c1` 已修复多模块 metallib 重复函数名致命 blocker**；**`E-006c2` 已修复 metadata 与 IR 结构体字段类型不一致的数组字段 blocker**。PlayTools 编译通过，离线 replay compile `18/18`（test-data）+ `43/43`（corpus）。fresh capture 已完成（43 条 `conflict_preserved`，hook 与 corpus 链路正常）。**待人工 Xcode 截帧最终确认** | |
+| E-006c1 | ↳ 修复多模块 metallib 重复函数名导致替换静默失败 | ✅ DONE | |
+| E-006c2 | ↳ 修复 metadata 字段类型与 IR 结构体类型不一致的数组字段 | ✅ DONE | |
+|  | `generateUserStructDefinitions` 现在交叉检查 `structTypeDefs` 中的 IR 字段类型：当 metadata 的 `air.struct_type_info` 声明字段为标量（如 `"float"`）但 IR 结构体定义实际为 `[N x T]` 数组时，使用 IR 类型生成正确的 MSL 数组声明（如 `float fieldName[4]`）。根因：Unity 编译的 FGlobals 结构体中 `_MainLightClipPlaneAlphas` 等字段在 metadata 中记录为 `float`，但 IR 类型定义为 `[4 x float]`，`translateGEP` 的 `currentType` 追踪正确生成了 subscript 但 struct 声明却是标量，导致 `subscripted value is not an array` 编译错误。compile improvement `+1`（新修复），regression `0` | | |
 | E-007 | **PlayCover settings / MCP / 工具暴露** | TODO | |
 |  | 为 corpus 导出 / replay 增加 UI 或 MCP 能力，使后续采集与回放不依赖手工路径操作 | | |
 
@@ -268,6 +270,7 @@ PlayTools.framework (注入到 iOS app)
 - **真实 corpus compile 通过不等于 `.gputrace` 源码可见**：`corpus_replay_runner.py --compile` 验证的是"生成的 MSL 能通过 `makeLibrary(source:)` 编译"，但 `.gputrace` 中源码是否可见还取决于：①runtime `attemptLibraryReplacement` 是否成功替换了原始 library；②新 library 是否被 GPU pipeline 真正使用；③截帧时是否捕获到了替换后的 library 而非原始的
 - **多模块 metallib 的重复函数名是 Unity shader 的典型特征**：Unity 编译的 `.shader` 文件经 Metal 编译器输出为 metallib 后，每个 shader variant（不同 feature combination / shader type）对应一个独立 bitcode module，但共享同一函数名（如 `xlatMtlMain`）。一个 metallib 通常包含 2-5 个同名 module（vertex-only 或 fragment-only）。MSL 不允许同一源文件中出现同名函数，聚合编译时必须去重
 - **`throw` + 静默 `catch` 回退是 runtime hook 的危险反模式**：`attemptLibraryReplacement` 的 catch 块将 `ReplacementAggregationError.duplicateFunctionNames` 吞掉并 `return nil`，调用方 `?? originalLibrary` 回退到原始 library。这种"静默失败"模式让 blocker 隐藏在日志中，无法被离线工具链或 corpus replay 发现。后续应在关键路径上用更醒目的日志（至少 `NSLog` 包含 `[BLOCKER]` 标记）或累积失败计数器供 MCP 查询
+- **`air.struct_type_info` metadata 的字段类型可能与 IR 结构体定义不一致**：Unity 编译的 shader 中，FGlobals 结构体的 `_MainLightClipPlaneAlphas` 在 metadata 中记录为 `"float"`（标量），但 IR 的 `%struct.FGlobals` 定义中实际是 `[4 x float]`（数组）。`translateGEP` 的 `currentType` 追踪使用 `IRStructTypeDef.fieldIRTypes`（正确识别数组），但 `generateUserStructDefinitions` 使用 metadata 的 `StructFieldInfo.typeName`（错误生成为标量），导致生成的 MSL 对标量做 subscript 编译失败。解决方案：`generateUserStructDefinitions` 交叉检查 `structTypeDefs`，当 IR 类型为 `[N x T]` 数组时使用 `irScalarTypeToMSL(T) fieldName[N]` 格式
 
 ## 参考信息
 

@@ -2519,7 +2519,7 @@ struct IRToMSLConverter {
     ///
     /// 目标：
     /// - 保留 metadata 已知的 resource / builtin 精确信息
-    /// - 仅对缺失项做最小保守补齐，优先保证“body 中用到的 SSA 名在签名里确实有声明”
+    /// - 仅对缺失项做最小保守补齐，优先保证"body 中用到的 SSA 名在签名里确实有声明"
     /// - 对缺失 builtin 的场景，优先按默认 entry builtin 规则推断，而不是把它误当成普通值参数
     private static func buildSupplementalParametersFromIR(
         _ rawIRParams: [String],
@@ -2627,7 +2627,7 @@ struct IRToMSLConverter {
         return irName
     }
 
-    /// 从原始 IR 参数字符串里提取“值类型”部分，去掉限定词与参数名。
+    /// 从原始 IR 参数字符串里提取"值类型"部分，去掉限定词与参数名。
     ///
     /// 示例：
     /// - `<2 x float> noundef %uv` → `<2 x float>`
@@ -3215,8 +3215,11 @@ struct IRToMSLConverter {
         var paramTypes: [String: String] = [:]
         /// 当前函数的 MSL 返回类型
         var functionReturnType: String = ""
-        /// 指针值集合（IR 参数/GEP/alloca 等会产出“地址”语义的 SSA）
+        /// 指针值集合（IR 参数/GEP/alloca 等会产出"地址"语义的 SSA）
         var pointerValues: Set<String> = []
+        /// 指针 SSA → 指向的元素 MSL 类型（如 "uint4"、"int"、"float2"）
+        /// 用于 load/store 时检测 signedness mismatch 并插入 as_type<> bitcast
+        var pointerElementTypes: [String: String] = [:]
 
         // ── E-004e4b: CFG + phi 支持 ──
 
@@ -3316,8 +3319,11 @@ struct IRToMSLConverter {
             return name
         }
 
-        func markPointer(_ ssaName: String) {
+        func markPointer(_ ssaName: String, elementType: String = "") {
             pointerValues.insert(ssaName.trimmingCharacters(in: .whitespaces))
+            if !elementType.isEmpty {
+                pointerElementTypes[ssaName.trimmingCharacters(in: .whitespaces)] = elementType
+            }
         }
 
         func isPointerLike(_ operand: String) -> Bool {
@@ -3675,7 +3681,7 @@ struct IRToMSLConverter {
             if let ptr = param.pointerInfo {
                 let emitsReference = ptr.addressSpace == .constant && ptr.addressSpace.isBufferAddressSpace && isStructTypeName(ptr.pointedMSLType)
                 if !emitsReference {
-                    ctx.markPointer(ssaName)
+                    ctx.markPointer(ssaName, elementType: ptr.pointedMSLType)
                 }
             }
             mappedArgIndices.insert(irArgIndex)
@@ -4313,10 +4319,43 @@ struct IRToMSLConverter {
             return
         }
         let loadType = parts[0].type
-        let ptr = resolveIROperand(parts[1].value, ctx: ctx)
+        let ptrOperand = parts[1].value.trimmingCharacters(in: .whitespaces)
+        let ptr = resolveIROperand(ptrOperand, ctx: ctx)
         let mslType = irScalarTypeToMSL(loadType)
         let loadExpr = lvalueExpression(from: ptr) ?? "*(\(ptr))"
-        ctx.emitAutoAssign(lhs, expr: loadExpr, knownType: mslType)
+        // E-006b5: 检测指针元素类型与 load 类型之间的 signedness mismatch。
+        // LLVM IR 的 i32 没有 signedness，但 MSL 的 int4/uint4 是不同类型。
+        // 当 load 从 device uint4* 加载但 IR 类型为 <4 x i32>（→int4）时，
+        // 需要用 as_type<int4>(uintIn[t0]) 做无符号 bitcast。
+        let ptrElemType = ctx.pointerElementTypes[ptrOperand]
+        if let elemType = ptrElemType, needsSignednessBitcast(mslType, ptrElemType: elemType) {
+            ctx.emitAutoAssign(lhs, expr: "as_type<\(mslType)>(\(loadExpr))", knownType: mslType)
+        } else {
+            ctx.emitAutoAssign(lhs, expr: loadExpr, knownType: mslType)
+        }
+    }
+
+    /// 检测两个 MSL 类型是否在 signedness 上有差异（相同大小不同符号），
+    /// 需要用 as_type<> bitcast 而非普通类型转换。
+    /// 例如：int4 vs uint4, int2 vs uint2, short vs ushort, int vs uint
+    private static func needsSignednessBitcast(_ loadMSLType: String, ptrElemType: String) -> Bool {
+        // 提取基础类型名和维度
+        let signedToUnsigned: [String: String] = [
+            "int": "uint", "int2": "uint2", "int3": "uint3", "int4": "uint4",
+            "short": "ushort", "short2": "ushort2", "short3": "ushort3", "short4": "ushort4",
+            "long": "ulong", "long2": "ulong2", "long3": "ulong3", "long4": "ulong4",
+            "char": "uint8_t",
+        ]
+        let unsignedToSigned: [String: String] = [
+            "uint": "int", "uint2": "int2", "uint3": "int3", "uint4": "int4",
+            "ushort": "short", "ushort2": "short2", "ushort3": "ushort3", "ushort4": "short4",
+            "ulong": "long", "ulong2": "long2", "ulong3": "long3", "ulong4": "long4",
+            "uint8_t": "char",
+        ]
+        if let equiv = signedToUnsigned[loadMSLType], equiv == ptrElemType { return true }
+        if let equiv = unsignedToSigned[loadMSLType], equiv == ptrElemType { return true }
+        // 向量维度不匹配的 signedness 差异（如 int4 vs uint2）不需要处理，类型完全不同
+        return false
     }
 
     /// 翻译 store
@@ -4329,10 +4368,22 @@ struct IRToMSLConverter {
             ctx.emit("// [store parse error] \(line.prefix(80))")
             return
         }
-        let val = resolveIROperand(parts[0].value, ctx: ctx)
-        let ptr = resolveIROperand(parts[1].value, ctx: ctx)
+        let valOperand = parts[0].value.trimmingCharacters(in: .whitespaces)
+        let ptrOperand = parts[1].value.trimmingCharacters(in: .whitespaces)
+        let val = resolveIROperand(valOperand, ctx: ctx)
+        let ptr = resolveIROperand(ptrOperand, ctx: ctx)
         let targetExpr = lvalueExpression(from: ptr) ?? "*(\(ptr))"
-        ctx.emit("\(targetExpr) = \(val);")
+        // E-006b5: 检测值类型与指针元素类型之间的 signedness mismatch。
+        // LLVM IR 的 i32 无 signedness，MSL 的 int4/uint4 是不同类型。
+        // 当 store int4 值到 device uint4* 时，需要 as_type<uint4>(val)。
+        let ptrElemType = ctx.pointerElementTypes[ptrOperand]
+        if let elemType = ptrElemType,
+           let valMSLType = ctx.types[valOperand],
+           needsSignednessBitcast(valMSLType, ptrElemType: elemType) {
+            ctx.emit("\(targetExpr) = as_type<\(elemType)>(\(val));")
+        } else {
+            ctx.emit("\(targetExpr) = \(val);")
+        }
     }
 
     /// 翻译 getelementptr (E-004e4c)
@@ -4373,7 +4424,7 @@ struct IRToMSLConverter {
             // 无索引，直接透传
             ctx.define(lhs, expr: basePtr)
             if baseIsPointerLike {
-                ctx.markPointer(lhs)
+                ctx.markPointer(lhs, elementType: ctx.pointerElementTypes[baseOperand.trimmingCharacters(in: .whitespaces)] ?? "")
             }
             return
         }
@@ -4386,7 +4437,7 @@ struct IRToMSLConverter {
             } else {
                 ctx.define(lhs, expr: addressExpression(for: "\(baseTarget)[\(idx)]"))
             }
-            ctx.markPointer(lhs)
+            ctx.markPointer(lhs, elementType: ctx.pointerElementTypes[baseOperand.trimmingCharacters(in: .whitespaces)] ?? "")
             return
         }
 
@@ -4394,7 +4445,7 @@ struct IRToMSLConverter {
         let firstIdx = resolveIROperand(parts[2].value, ctx: ctx)
 
         // 构建表达式。对真正的指针参数先落到合法的下标/解引用语义；
-        // 对 constant struct 引用等“值语义入口”则保留原表达式，避免误发射 `ptr.field`。
+        // 对 constant struct 引用等"值语义入口"则保留原表达式，避免误发射 `ptr.field`。
         var expr: String
         if baseIsPointerLike {
             if stripAddressOfExpression(basePtr) != nil {
@@ -4501,7 +4552,11 @@ struct IRToMSLConverter {
         }
 
         ctx.define(lhs, expr: addressExpression(for: expr))
-        ctx.markPointer(lhs)
+        // 多级 GEP 的元素类型由 currentType 决定；若 currentType 为空则回退到 base 的类型
+        let gepElementType = currentType.isEmpty
+            ? (ctx.pointerElementTypes[baseOperand.trimmingCharacters(in: .whitespaces)] ?? "")
+            : irScalarTypeToMSL(currentType)
+        ctx.markPointer(lhs, elementType: gepElementType)
     }
 
     /// 翻译类型转换: zext/sext/trunc/fpext/fptrunc/uitofp/sitofp/fptoui/fptosi

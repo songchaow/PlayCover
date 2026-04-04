@@ -37,7 +37,20 @@ def find_source_files(gputrace_dir: str) -> dict[str, dict]:
         except Exception:
             first_line = "<binary>"
             line_count = 0
-        is_msl = first_line.startswith('#include') or first_line.startswith('using ')
+        # 检查文件是否为合法 MSL：
+        # 1. 直接以 #include 或 using 开头
+        # 2. 以 // 注释开头但内容包含 metal_stdlib（PlayTools 生成格式）
+        if first_line.startswith('#include') or first_line.startswith('using '):
+            is_msl = True
+        elif first_line.startswith('//'):
+            try:
+                with open(path, 'r', errors='replace') as fcheck:
+                    content_sample = fcheck.read(2048)
+                is_msl = 'metal_stdlib' in content_sample or 'PlayTools' in content_sample
+            except Exception:
+                is_msl = False
+        else:
+            is_msl = False
         sources[name] = {
             "size": size,
             "lines": line_count,

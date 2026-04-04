@@ -132,24 +132,20 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 ## 当前主线
 
-- **E-006（本轮执行：`E-006c3` post-fix fresh capture 入 corpus 确认 + `.gputrace` 最终可见性确认）**：`E-006c1` / `E-006c2` 已清掉已知 compile blocker，`E-004f4` 已实现失败路径 `.bc/.ll/.metal/.meta.json` 导出闭环；现有 corpus 离线 replay `18/18`（test-data）+ `43/43`（corpus）均 compile 成功，regression `0`。**当前最高优先级**：部署最新 PlayTools（含 `E-004f4` + `E-006c2` 修复），执行原神 fresh capture，确认：①`_MainLightClipPlaneAlphas` 样本不再只停留在 diagnostics（进入 corpus 或仍失败但携带 `_modules` 产物可离线验证）；②新 `.gputrace` 中源码可见。
-- **E-004（已完成：`E-004f3` 扩展 `makeLibrary(URL/default/file)` 路径的采集覆盖）**：`newLibraryWithURL:error:`、`newDefaultLibrary`、`newDefaultLibraryWithBundle:error:`、`newLibraryWithFile:error:` 现已读取 `.metallib` 并复用统一的 `bitcode -> IR -> MSL -> makeLibrary(source:) -> ShaderCorpus` 主链路；default 路径额外加入了 bundle 内 `.metallib` 的保守定位策略。
-- **E-005（已完成：`E-005c` 新旧转换结果 diff / 回归基线）**：`Scripts/corpus_replay_runner.py` 现已支持保存 baseline snapshot、比较新旧 replay / compile 结果、输出 `baseline-diffs/` 与结构化回归统计；日常离线回归已经具备"改前 vs 改后"防退化能力。
+- **E-006c3（本轮已完成）**：完成了两个新 blocker 的发现与修复，并通过三次 fresh capture 验证闭环：①`E-006c3a` 修复了结构体类型名大小写不一致（`pointedMSLType` 未经 `sanitizeTypeName` 导致参数声明用 `unity_Builtins0Array_Type` 但 struct 定义用 `Unity_Builtins0Array_Type`）；②`E-006c3b` 修复了 `air.struct_type_info` 的第三个 i32 被误作 `alignment` 跳过（实际是 `elementCount`，`elementCount>1` 时字段应为数组，如 `_MainLightClipPlaneAlphas` 的 `float[4]`）。修复后：corpus 从 43 扩充至 **91 个模块**，均无失败样本；新截帧 `capture_20260404_roadE_e006c3_final.gputrace` 中 `valid_msl_files: 2`（PlayTools 注入 MSL 已嵌入 `.gputrace`）。**下一步**：Xcode 人工打开新 trace 确认 shader 面板源码可见。
+- **E-004（已完成）** / **E-005（已完成）**：参见下方 TODO 记录。
 
 ## 最新基线
 
 | 样本 / 基线 | 结论 |
 |---|---|
 | 流程基线（2026-04-03，offline-first 切换完成） | Road E 的日常迭代主回路已经明确为 **采集 corpus → 离线 replay → 批量编译 → 最小 live 复测 → `.gputrace` 最终确认** |
-| 原神 6.4.0（最近一轮 live 基线） | 已确认 `ShaderSourceDiagnostics`、host bridge 与 runtime 注入主路径可用；真实 app 仍是 corpus 的生产来源与最终验证环境，但**当前 `ShaderCorpus/` 只代表成功替换样本，不等于所有 live 样本** |
-| 当前落盘能力（2026-04-04，`E-004f4` 后） | 成功路径按 `ShaderCorpus/<bundleId>/modules/<moduleKey>/` 落盘 `module.bc`、`module.ll`、`module.generated.metal`、`module.meta.json`、`manifest.jsonl`；**失败路径（`E-004f4`）也在 `ShaderSourceDiagnostics/<bundleId>/<baseName>_modules/<moduleKey>/` 落盘 `module.bc`、`module.ll`、`module.generated.metal`、`module.meta.json`**；异常路径导出所有模块 `.bc` 及已成功模块的 `.ll`/`.metal`。失败样本现在可进入离线 replay 主路径 |
-| 当前离线 replay / batch compile / diff 能力（2026-04-03，`E-005a`/`E-005b`/`E-005c` 完成） | `Scripts/corpus_replay_runner.py` 现已支持扫描 `ShaderCorpus/` 或显式 `.ll`，读取 `module.meta.json` 中的 `functionNames/functionTypes` 做 `IRToMSLConverter.convert(...)`，并在 `--compile` 模式下继续输出 `.air`、`compile-summary.json`、逐样本 `primaryDiagnostic/sourceContext` 与 failure clusters；同时支持 `--save-baseline` 生成 `baseline.json + generated-sources/` 快照、`--baseline-report` 产出结构化 replay / compile / generated MSL 对比与 `baseline-diffs/`；但它的稳定输入前提仍是**样本已经进入 `ShaderCorpus/` 或手工补成 `.ll`** |
-| 当前最小离线验证基线（2026-04-04） | 已对 `test-data/*.ll` 执行 batch replay + compile：replay `18/18` 成功，Metal compile **`18/18` 成功**；对现有 `ShaderCorpus/com.miHoYo.Yuanshen/modules/` 全部 43 个真实 module 执行 batch replay + compile：**replay `43/43` 成功，Metal compile `43/43` 成功，preflight rejected `0`**。这说明**现有 corpus 已绿，但不等于 fresh live 中发现的新 `compile_failed` 样本已被覆盖** |
-| workflow gap（2026-04-04，`E-004f4` 前的遗留问题） | `E-006c2` fresh capture 中，`manifest.jsonl` 只追加了 43 条 `conflict_preserved` 复用事件；`ShaderSourceDiagnostics/` 新增 1 份 `compile_failed` 样本。**`E-004f4` 已通过失败路径 `.bc/.ll` 导出补齐了离线闭环能力**；但该历史样本是在 `E-004f4` 部署前捕获的，没有 `_modules` 子目录，后续 fresh capture 将自动携带 |
-| 当前构建验证基线（2026-04-04，`E-004f4` 后） | 已运行 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`（**BUILD SUCCEEDED**），离线 replay test-data `18/18` compile 成功、现有 corpus `43/43` compile 成功，当前回归 `0` |
-| 当前最小 live 验证状态（2026-04-04，`E-006c2` fresh capture） | `build_and_install` → `remove_playtools` → `inject_playtools` → `launch_app` → `create_session` 返回 `ready`（PID 84835，runtimePort 61209）；`manifest.jsonl` 追加 43 条 `conflict_preserved` / `selector=newLibraryWithData:error:` 事件，证明 hook 与 corpus 去重链路贯通；同时 `ShaderSourceDiagnostics/` 新增了 1 份 `compile_failed` 样本，说明仍存在"新 live 样本只进 diagnostics、不进 corpus"的闭环缺口。进程在采集完成后约 12 秒崩溃（`Yuanshen-2026-04-04-143429.ips`，PID 84835），属已知 `EXC_BAD_ACCESS` live 稳定性问题 |
-| 当前 `.gputrace` 源码可见性检查（2026-04-04，`E-006c` 早期） | 已对原神现存 6 份真实 trace 批量执行 `Scripts/check_gputrace_sources.py`：`valid_msl_files` 全部为 `0`；Xcode 可打开 `capture_20260402_roadE_e006_diag.gputrace` 并进入具体 draw call，但这些 trace 都是在 `E-006c1` 修复前捕获的，不能反映修复后的效果。**在失败样本闭环补齐前，不应直接把当前结论升级为最终可见确认** |
-| 历史 live blocker 时间线 | 见 [00-Dashboard-Archive](00-Dashboard-Archive.md)；dashboard 主体不再重复堆叠逐轮 live 细节 |
+| 当前落盘能力（2026-04-04，`E-004f4` 后） | 成功路径按 `ShaderCorpus/<bundleId>/modules/<moduleKey>/` 落盘；失败路径在 `ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/` 落盘 `.bc/.ll/.metal/.meta.json`；两条路径均可进入离线 replay 主路径 |
+| 当前最小离线验证基线（2026-04-04，`E-006c3` 后） | `test-data/*.ll`（19 个，含新增 `test_struct_array_field.ll`）replay + compile **全部成功**；`ShaderCorpus/com.miHoYo.Yuanshen/modules/` 全部 **91 个**真实 module replay + compile **91/91 成功**，preflight rejected `0`，regression `0` |
+| 当前构建验证基线（2026-04-04，`E-006c3` 后） | `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`（**BUILD SUCCEEDED**）；`./BuildScripts/build_and_install.sh`（**BUILD SUCCEEDED**，签名验证通过） |
+| 当前 live 验证状态（2026-04-04，第三次 fresh capture，PID 26460） | `remove_playtools → inject_playtools → launch_app → create_session`：session 返回 `ready` 并保持稳定；manifest 从 304 → 394 行（+90 条），corpus 从 43 → **91 模块**（+48 个全新成功样本），diagnostics 文件数不变（18），**本轮零失败样本** |
+| 当前 `.gputrace` 源码可见性检查（2026-04-04，`E-006c3` 完成后） | `capture_20260404_roadE_e006c3_final.gputrace`（765 文件，968 index 引用）：`valid_msl_files: 2`（两个 PlayTools 注入的 MSL 文件，首行 `// Auto-generated aggregated MSL source by PlayTools LibrarySourceInjection`，包含完整 `#include <metal_stdlib>` 与结构体/函数定义）。`Scripts/check_gputrace_sources.py` 已修复以识别 `//` 注释开头的 MSL。**覆盖率 2/11（18%）source 文件为 MSL**，其余为 bplist（原始 metallib）。**待人工确认**：Xcode 打开此 trace → 选 Draw Call → 确认 shader 面板可见 MSL 源码 |
+| 历史 live blocker 时间线 | 见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
 
 ## 整体架构
 
@@ -182,61 +178,42 @@ PlayTools.framework (注入到 iOS app)
 
 ## TODO
 
-> 当前最高优先级：`E-006c3`（post-fix fresh capture 入 corpus 确认 + `.gputrace` 最终可见性）。`E-004f4` 已实现失败路径 `.bc/.ll` 导出闭环，`E-006c1`/`E-006c2` 已修复已知 blocker，现有 corpus 离线 replay `18/18` + `43/43` compile 成功。下一步应部署最新 PlayTools 执行 fresh capture 确认修复效果与 `.gputrace` 源码可见性。
+> 当前最高优先级：Xcode 人工确认 `capture_20260404_roadE_e006c3_final.gputrace` 中 shader 源码可见（`E-006c` 最终关闭条件）。离线回归 test-data `19/19`（含新增 `test_struct_array_field.ll`）+ corpus `91/91` compile 成功，regression `0`。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
 | E-001 | **可行性 PoC：`-frecord-sources` 重编译验证** | ✅ DONE | [E-001-PoC](E-001-PoC-frecord-sources.md) |
 | E-002 | **调研 `MTLDevice` Library API 入口** | ✅ DONE | [E-002-API](E-002-MTLDevice-Library-API.md) |
 | E-003 | **makeLibrary swizzle 骨架** | ✅ DONE | [E-003-Swizzle](E-003-LibrarySwizzleSkeleton.md) |
-| E-004 | **metallib → bitcode / IR / MSL 采集与导出** | 🔄 IN PROGRESS | [E-004](E-004-MetallibSourceExtraction.md) |
-|  | `E-004a–e` 已完成基础链路；当前主线切换为 **成功样本稳定导出 + 失败样本闭环补齐** | | |
-| E-004f | ↳ corpus 导出与闭环策略 | 🔄 IN PROGRESS | |
+| E-004 | **metallib → bitcode / IR / MSL 采集与导出** | ✅ DONE | [E-004](E-004-MetallibSourceExtraction.md) |
+| E-004f | ↳ corpus 导出与闭环策略 | ✅ DONE | |
 | E-004f1 | ↳ 成功路径保存 `.bc/.ll/.metal/.json` | ✅ DONE | |
-|  | `attemptLibraryReplacement(...)` 成功时已为每个 module 落盘 `module.bc`、`module.ll`、`module.generated.metal` 与 `module.meta.json`，后续回放不再只依赖失败 diagnostics | | |
 | E-004f2 | ↳ corpus 目录结构、去重键与 manifest 规范 | ✅ DONE | |
-|  | 已落地 `ShaderCorpus/<bundleId>/modules/<moduleKey>/`、`manifest.jsonl`、`moduleKey = sha256(module.bc)` 与"冲突不覆盖基线"的持久化策略；`cacheKey` 退回为 metallib 上下文信息 | | |
 | E-004f3 | ↳ 扩展 `makeLibrary(URL/default/file)` 路径的采集覆盖 | ✅ DONE | |
-|  | `newLibraryWithURL:error:`、`newDefaultLibrary`、`newDefaultLibraryWithBundle:error:`、`newLibraryWithFile:error:` 已在代码路径上接入统一 `bitcode -> IR -> MSL -> makeLibrary(source:) -> ShaderCorpus` 导出链路；default 路径当前通过 bundle 显式名称 + `.metallib` 资源扫描做保守定位 | | |
 | E-004f4 | ↳ 失败样本闭环：`compile_failed` 样本的 re-capture / 导出策略 | ✅ DONE | [E-004f4-Closure](E-004-CorpusClosureAndRecapturePolicy.md) |
-|  | `compile_failed` / `preflight_rejected` 失败路径现在在 `ShaderSourceDiagnostics/<bundleId>/<baseName>_modules/<moduleKey>/` 下自动落盘 `module.bc`、`module.ll`、`module.generated.metal` 与 `module.meta.json`；异常路径（disassemble/convert throw）导出所有模块 `.bc` 及已成功模块的 `.ll`/`.metal`。失败样本现在可直接通过 `corpus_replay_runner.py --ll` 做离线 replay + compile 验证，实现了**路径 B 闭环** | | |
 | E-005 | **离线 replay / batch compile / diff 工具链** | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
 | E-005a | ↳ `IR -> MSL` 离线回放 runner | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
-|  | 已落地 `Scripts/corpus_replay_runner.py`；支持扫描 `ShaderCorpus/`、读取 `manifest.jsonl` / `module.meta.json`、把 `functionNames/functionTypes` 传给 `IRToMSLConverter.convert(...)`，并稳定输出 replay `.metal` 与 `replay-summary.json`；`Scripts/ir_to_msl_smoketest.sh` 已改为兼容 wrapper | | |
 | E-005b | ↳ 批量 Metal 编译与失败报告 | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
-|  | `corpus_replay_runner.py` 已支持 `--compile`、`compile-summary.json`、`primaryDiagnostic/sourceContext`、failure clusters 与可选 preflight；**该子任务完成时的首轮基线** 曾是 `test-data/*.ll` replay `18/18`、Metal compile `15/18`。当前最新 compile 基线以"最新基线"区为准 | | |
 | E-005c | ↳ 新旧转换结果 diff / 回归基线 | ✅ DONE | |
-|  | `corpus_replay_runner.py` 已支持 `--save-baseline` 保存 `baseline.json + generated-sources/` 快照、`--baseline-report` 进行 replay / compile / generated MSL 的结构化对比，并在发现回归时返回失败；**该子任务完成时**，同一批 `test-data/*.ll` 二次回放结果为 matched/new/removed `18/0/0`、replay changed `0`、generated MSL changed `0`、compile changed `0`。当前最新 compile 基线以"最新基线"区为准 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
 | E-006a | ↳ 扩展真实 corpus 覆盖面 | TODO | |
 |  | 在进入新地图 / 新场景 / 新画质设置时追加采集，逐步逼近"尽量全"的真实 shader 集合 | | |
 | E-006b | ↳ 离线批量 green 后做最小 live 复测 | ✅ DONE | |
-|  | 已对 `com.miHoYo.Yuanshen` 完成一次 `remove_playtools + inject_playtools + launch_app + create_session` 最小 live；session 成功进入 `ready`，同时 `manifest.jsonl` 追加了 `captureAction=conflict_preserved` / `selector=newLibraryWithData:error:` 事件，确认启动期已再次命中 hook 与 corpus 去重链路 | | |
 | E-006b1 | ↳ 收敛 metadata 缺失导致的"缺参未声明" compile blocker | ✅ DONE | |
-|  | `IRToMSLConverter` 已改为只对函数体真实引用到的缺失 IR 值参数做显式签名补齐，并保守保留默认 builtin；`test_sample_compare_depth_2d.ll` 已从 `undeclared_identifier:param2` 提升为 compile success，最新 baseline compare 为 regression `0` / improvement `1` | | |
 | E-006b2 | ↳ 收敛 metadata / shader type / resource kind 识别不足的 compile blocker | ✅ DONE | |
-|  | `IRToMSLConverter` 已新增 `parseAttributeGroupDeclarations` 从 `attributes #N = { "air.fragment" ... }` 声明回退检测 shader 类型；新增 `parseOrphanedMetadataArgLookup` 扫描所有孤立 metadata arg 节点，按 `air.arg_name` 匹配 `air.texture` / `air.sampler` 并正确恢复为 `[[texture(N)]]` / `[[sampler(N)]]`；`generateAllParams` 为 fragment shader 的无 attribute value 参数自动添加 `[[color(N)]]`（从 1 开始避免与隐式输出冲突）。`test_metal_intrinsic_sampler_state.ll` 从 kernel 误判修复为 fragment，texture/sampler 正确识别；compile regression `0` | | |
 | E-006b3 | ↳ 收敛 texture access qualifier / write 参数顺序 compile blocker | ✅ DONE | |
-|  | `cleanTextureTypeName` 不再一刀切删除 access 限定符，改为将 AIR 的 `write`/`read`/`read_write` 正确映射为 `access::write`/`access::read`/`access::read_write`（仅省略默认 `access::sample`）；`generateMSLForAirCall` 对 `write` 方法交换前两个参数（AIR `(texture, coord, color)` → Metal `texture.write(color, coord)`）。`test_sample_compare.ll` 从 `no member named 'write'` 提升为 compile success，`test_builtins.ll` write 错误消除；compile improvement `+2`，regression `0` | |
 | E-006b4 | ↳ 收敛 `___metal_fast_*` intrinsic fast 前缀 compile blocker | ✅ DONE | |
-|  | `IRToMSLConverter.metalIntrinsicMappings` 中 `___metal_fast_*` 的 MSL 映射从 `fast_sin` 等改为同名标准函数 `sin` 等，与 `air.fast_*` 映射行为一致（Metal 标准库不提供 `fast_sin` 无前缀顶级函数）。`test_metal_intrinsic_sampler_state.ll` 从 `use of undeclared identifier 'fast_sin'` 提升为 compile success；compile improvement `+1`，regression `0` | | |
 | E-006b5 | ↳ 收敛 load/store signedness mismatch compile blocker | ✅ DONE | |
-|  | `IRToMSLConverter` 新增 `pointerElementTypes` 字典追踪指针元素类型（从参数 metadata 传播到 GEP），在 `translateLoad`/`translateStore` 中检测 signedness mismatch（如 `int4` vs `uint4`）并自动插入 `as_type<>()` bitcast。`test_casts.ll` 从 `cannot initialize a variable of type 'int4' with an lvalue of type 'device uint4'` 提升为 compile success；compile improvement `+1`，regression `0` | |
 | E-006b6 | ↳ 收敛 builtin 参数 IR/MSL 类型不匹配 compile blocker | ✅ DONE | |
-|  | `IRToMSLConverter` 在 `translateFunctionBody` 的 `setupParameterMappings` 之后新增检测：当 IR 函数签名参数实际类型是 float 向量但 metadata 声明为 uint 向量时，自动在函数体开头插入 `floatN(mslParam)` 转换并更新 SSA 映射。`test_sample_bias.ll` 从 `no matching member function for call to 'sample'`（`uint3` 坐标传给 `texturecube::sample`）提升为 compile success；compile improvement `+1`，regression `0` | |
 | E-006b7 | ↳ 收敛 GEP/load 类型缩窄 compile blocker | ✅ DONE | |
-|  | `IRToMSLConverter` 新增 `needsSizeBitcast` / `mslTypeBitWidth` 检测 load 类型与指针元素类型大小不匹配，通过 `as_type<>()` + mask + 截断做类型安全的 reinterpret；`translateGEP` 对标量/向量类型 subscript 通过 `auto tmp = &(expr); tmp[idx]` 模式正确处理指针类型。`test_air_convert_i8_vector.ll`、`test_gep_scalar_subscript.ll` 均提升为 compile success；compile improvement `+2`，regression `0` | |
 | E-006b8 | ↳ 收敛 `filterTextureArgs` 误过滤 compile blocker | ✅ DONE | |
-|  | `filterTextureArgs` 新增 `airName` 参数：对 `air.sample_texture_2d_array` 保留第一个 `i32` 作为 `array_index`（Metal `texture2d_array.sample()` 必需参数）；对 `air.write_texture_*` 不过滤 `<N x i32>` 类型坐标（区分 offset 与 coord）；write 路径中对 zeroinitializer 解析为裸 `0` 的坐标自动包装为 `uint2(0)` 消除 ambiguous。`test_builtins.ll` 的 `test_texture_ops` 函数中 `sample` 和 `write` 调用全部修复，但暴露出预存在的 `metal::_atomic` 模板参数 blocker；compile improvement `0`（数值持平，但 blocker 内容更新），regression `0` | | |
 | E-006b9 | ↳ 收敛 `metal::_atomic` 类型支持 compile blocker | ✅ DONE | |
-|  | `IRToMSLConverter` 新增对 `metal::_atomic` 的完整支持：① `buildParametersFromMetadata` 根据 `struct_type_info` 字段类型将 `metal::_atomic` 映射为 `atomic_uint`/`atomic_int`；② `generateAllParams` 对 atomic 类型使用引用（`&`）而非指针（`*`）；③ `generateUserStructDefinitions` 跳过 `metal::_atomic`；④ 新增 `generateAtomicMSL` 过滤 AIR 原子函数内部控制参数（scope、volatile）并映射 `memory_order` i32 枚举；⑤ `translateGEP` 对 `metal::_atomic` field0 直接透传；⑥ `translateBitcast` 对 `ptr to ptr` 做 no-op。compile improvement `+1`，regression `0` | | |
 | E-006c | ↳ 最终 `.gputrace` 源码可见确认 | 🔄 IN PROGRESS | |
-|  | `E-006c1` / `E-006c2` 已修复已知 compile blocker，现有 corpus 离线验证已绿；但在 `E-004f4` / `E-006c3` 闭环补齐前，不应仅凭当前 corpus green 直接宣告最终可见性收敛。`E-006c` 的最终关闭条件仍是 **post-fix fresh capture + Xcode 人工截帧确认** | |
+|  | `capture_20260404_roadE_e006c3_final.gputrace` 中已有 2 个 valid MSL 文件（PlayTools 注入），离线回归全绿；**最终关闭条件**：Xcode 人工确认 Draw Call shader 面板显示 MSL 源码 | |
 | E-006c1 | ↳ 修复多模块 metallib 重复函数名导致替换静默失败 | ✅ DONE | |
-| E-006c2 | ↳ 修复 metadata 字段类型与 IR 结构体类型不一致的数组字段 | ✅ DONE | |
-|  | `generateUserStructDefinitions` 现在交叉检查 `structTypeDefs` 中的 IR 字段类型：当 metadata 的 `air.struct_type_info` 声明字段为标量（如 `"float"`）但 IR 结构体定义实际为 `[N x T]` 数组时，使用 IR 类型生成正确的 MSL 数组声明（如 `float fieldName[4]`）。这一修复解决了 `_MainLightClipPlaneAlphas` 对应的编译错误，但其 live 样本仍需通过 `E-006c3` 做 post-fix fresh capture 闭环 | | |
-| E-006c3 | ↳ 对 fresh capture 暴露的新 diagnostics 样本做 post-fix 入 corpus 确认 | TODO | [E-004f4-Closure](E-004-CorpusClosureAndRecapturePolicy.md) |
-|  | `E-004f4` 已实现失败路径导出闭环（路径 B），新失败样本自动携带 `_modules` 子目录；但 `2026-04-04` 历史样本没有 `_modules`。当前最高优先级：部署含 `E-004f4` + `E-006c2` 的最新 PlayTools，执行原神 fresh capture，确认 `_MainLightClipPlaneAlphas` 样本要么成功入库 corpus，要么失败时携带可离线 replay 的 `_modules` 产物；最终用 `.gputrace` 确认源码可见 | | |
+| E-006c2 | ↳ 修复 metadata 字段类型与 IR 结构体类型不一致的数组字段（IR 交叉检查） | ✅ DONE | |
+| E-006c3 | ↳ post-fix fresh capture 入 corpus 确认 + 新 blocker 修复 | ✅ DONE | |
+|  | **E-006c3a**：修复结构体类型名大小写不一致 — `pointedMSLType` 赋值时对用户结构体名（首字母小写且非 MSL 基本类型）应用 `sanitizeTypeName`，使参数声明与 `generateUserStructDefinitions` 输出一致（如 `unity_Builtins0Array_Type` → `Unity_Builtins0Array_Type`）。新增 `isMSLScalarOrVectorType` 辅助函数防止基本类型被错误大写。**E-006c3b**：修复 `air.struct_type_info` 第三个 i32 语义 — 该值是 `elementCount`（数组长度）而非 alignment；`StructFieldInfo` 新增 `elementCount` 字段，`parseStructTypeInfoNode` 解析，`generateUserStructDefinitions` 中 `elementCount > 1` 时生成 `typeName fieldName[N]` 数组声明。这两处修复共同解决了 `_MainLightClipPlaneAlphas` 的 `subscripted value is not an array` compile blocker。**新增** `test_struct_array_field.ll` 覆盖 `elementCount > 1` 场景。**`Scripts/check_gputrace_sources.py`** 修复 MSL 检测逻辑（支持 `//` 注释开头）。第三次 fresh capture 结果：corpus 43 → 91（+48），manifest 304 → 394（+90），**零失败样本**；新 `.gputrace` valid_msl_files = 2 | |
 | E-007 | **PlayCover settings / MCP / 工具暴露** | TODO | |
 |  | 为 corpus 导出 / replay 增加 UI 或 MCP 能力，使后续采集与回放不依赖手工路径操作 | | |
 
@@ -276,6 +253,9 @@ PlayTools.framework (注入到 iOS app)
 - **AIR 原子函数有内部控制参数需过滤**：`air.atomic.global.add.u.i32(ptr, val, order, scope, volatile)` 有 5 个参数，但 MSL 的 `atomic_fetch_add_explicit(obj, val, order)` 只需 3 个。`scope`（`i32 2` = agent）和 `volatile`（`i1 true`）是 AIR 内部控制参数，必须过滤掉。`order` 参数需要从 i32 映射为 `memory_order_relaxed` 等枚举。`cmpxchg` 有 7 个参数（多了 `fail_order`），需要特殊处理
 - **`bitcast ptr to ptr` 在 MSL 中是 no-op**：IR 中 `bitcast ptr %x to ptr` 经常出现在 alloca 附近（如 cmpxchg 的 expected 参数准备），不应翻译为 `as_type<uint8_t>(&var)`（`as_type` 只能用于相同大小的数值类型），应直接透传
 - **真实 corpus compile 通过不等于 `.gputrace` 源码可见**：`corpus_replay_runner.py --compile` 验证的是"生成的 MSL 能通过 `makeLibrary(source:)` 编译"，但 `.gputrace` 中源码是否可见还取决于：①runtime `attemptLibraryReplacement` 是否成功替换了原始 library；②新 library 是否被 GPU pipeline 真正使用；③截帧时是否捕获到了替换后的 library 而非原始的
+- **`air.struct_type_info` 第三个 i32 是 `elementCount`，不是 alignment**：metadata 格式 `i32 offset, i32 size, i32 elementCount, !"typeName", !"fieldName"`；当 `elementCount > 1` 时，字段是长度为 N 的数组（如 `float[4]`），生成 MSL 时必须用 `typeName fieldName[elementCount]`。之前代码误注释为 "alignment" 并跳过，导致 `_MainLightClipPlaneAlphas`（`elementCount=4`）被生成为标量 `float`，在函数体做 `[i]` subscript 时报 `subscripted value is not an array`
+- **结构体类型名要在参数声明和结构体定义两处保持一致**：`generateUserStructDefinitions` 对结构体名做 `sanitizeTypeName`（首字母大写），但 `pointedMSLType` 直接使用原始 metadata 名。对首字母小写的用户结构体名（排除 MSL 基本类型如 `float2`、`half3` 等），`pointedMSLType` 也需要应用 `sanitizeTypeName`，否则参数声明类型名与 struct 定义名不匹配（如 `unity_Builtins0Array_Type*` vs `struct Unity_Builtins0Array_Type`）
+- **`check_gputrace_sources.py` 的 MSL 检测逻辑需要识别注释开头的文件**：PlayTools 注入的 MSL 以 `// Auto-generated aggregated MSL source` 开头，原始脚本只认 `#include` 或 `using ` 开头，导致有效 MSL 被误判为非 MSL；修复后改为：若首行以 `//` 开头，再读前 2KB 内容检查是否含 `metal_stdlib` 或 `PlayTools` 关键词
 - **多模块 metallib 的重复函数名是 Unity shader 的典型特征**：Unity 编译的 `.shader` 文件经 Metal 编译器输出为 metallib 后，每个 shader variant（不同 feature combination / shader type）对应一个独立 bitcode module，但共享同一函数名（如 `xlatMtlMain`）。一个 metallib 通常包含 2-5 个同名 module（vertex-only 或 fragment-only）。MSL 不允许同一源文件中出现同名函数，聚合编译时必须去重
 - **`throw` + 静默 `catch` 回退是 runtime hook 的危险反模式**：`attemptLibraryReplacement` 的 catch 块将 `ReplacementAggregationError.duplicateFunctionNames` 吞掉并 `return nil`，调用方 `?? originalLibrary` 回退到原始 library。这种"静默失败"模式让 blocker 隐藏在日志中，无法被离线工具链或 corpus replay 发现。后续应在关键路径上用更醒目的日志（至少 `NSLog` 包含 `[BLOCKER]` 标记）或累积失败计数器供 MCP 查询
 - **`air.struct_type_info` metadata 的字段类型可能与 IR 结构体定义不一致**：Unity 编译的 shader 中，FGlobals 结构体的 `_MainLightClipPlaneAlphas` 在 metadata 中记录为 `"float"`（标量），但 IR 的 `%struct.FGlobals` 定义中实际是 `[4 x float]`（数组）。`translateGEP` 的 `currentType` 追踪使用 `IRStructTypeDef.fieldIRTypes`（正确识别数组），但 `generateUserStructDefinitions` 使用 metadata 的 `StructFieldInfo.typeName`（错误生成为标量），导致生成的 MSL 对标量做 subscript 编译失败。解决方案：`generateUserStructDefinitions` 交叉检查 `structTypeDefs`，当 IR 类型为 `[N x T]` 数组时使用 `irScalarTypeToMSL(T) fieldName[N]` 格式

@@ -1347,6 +1347,8 @@ struct IRToMSLConverter {
         let offset: Int
         /// 字段大小（字节）
         let size: Int
+        /// air.struct_type_info 第三个 i32：element count（数组长度，>1 时字段是数组类型）
+        let elementCount: Int
     }
 
     /// IR 中解析出的结构体类型定义
@@ -1811,11 +1813,12 @@ struct IRToMSLConverter {
         var i = 0
         var fieldIndex = 0
 
-        // 每个字段由 5 个 token 组成: i32 offset, i32 size, i32 align, !"typeName", !"fieldName"
+        // 每个字段由 5 个 token 组成: i32 offset, i32 size, i32 elementCount, !"typeName", !"fieldName"
+        // 注意：第三个 i32 是 element count（数组长度），而非 alignment；element_count > 1 表示数组字段
         while i + 4 < tokens.count {
             let offset = parseMetadataInt(tokens[i]) ?? 0
             let size = parseMetadataInt(tokens[i + 1]) ?? 0
-            // tokens[i+2] = alignment (跳过)
+            let elementCount = parseMetadataInt(tokens[i + 2]) ?? 1
             let typeName = unquoteMetadataString(tokens[i + 3])
             let fieldName = unquoteMetadataString(tokens[i + 4])
 
@@ -1824,7 +1827,8 @@ struct IRToMSLConverter {
                 typeName: typeName,
                 fieldName: fieldName,
                 offset: offset,
-                size: size
+                size: size,
+                elementCount: elementCount
             ))
             fieldIndex += 1
             i += 5
@@ -2446,7 +2450,17 @@ struct IRToMSLConverter {
                         resolvedTypeName = "atomic_int"
                     }
                 } else {
-                    resolvedTypeName = meta.typeName.isEmpty ? "uint8_t" : meta.typeName
+                    let rawName = meta.typeName.isEmpty ? "uint8_t" : meta.typeName
+                    // E-006c3: 对结构体类型名应用 sanitizeTypeName（首字母大写），
+                    // 使参数声明中的类型名与 generateUserStructDefinitions 输出的结构体定义名一致。
+                    // 例如 metadata 中 "unity_Builtins0Array_Type" → 参数声明用 "Unity_Builtins0Array_Type"
+                    // 与 struct 定义 "struct Unity_Builtins0Array_Type { ... }" 匹配。
+                    // 但 MSL 基本类型（float, half, int, uint 等小写开头）不做大写化。
+                    if rawName.first.map({ $0.isLowercase }) == true && !isMSLScalarOrVectorType(rawName) {
+                        resolvedTypeName = sanitizeTypeName(rawName)
+                    } else {
+                        resolvedTypeName = rawName
+                    }
                 }
                 ptrInfo = PointerInfo(
                     addressSpace: space,
@@ -3065,6 +3079,28 @@ struct IRToMSLConverter {
         }
 
         return cleaned.isEmpty ? "uint8_t" : cleaned
+    }
+
+    /// 判断类型名是否为 MSL 标量或向量基本类型（如 float, float2, float4, half, int, uint 等）。
+    /// 这些类型在 metadata 中可能出现为 arg_type_name，但不应被 sanitizeTypeName 大写化。
+    private static func isMSLScalarOrVectorType(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return false }
+        let baseTypes: Set<String> = [
+            "float", "half", "int", "uint", "short", "ushort", "char", "uchar",
+            "bool", "double", "long", "ulong", "size_t", "ptrdiff_t",
+            "float4x4", "float3x3", "float2x2", "half4x4", "half3x3", "half2x2",
+            "texture1d", "texture2d", "texture3d", "texturecube",
+            "texture1d_array", "texture2d_array",
+            "sampler",
+            "atomic_uint", "atomic_int",
+            "thread", "device", "constant",
+        ]
+        if baseTypes.contains(trimmed) { return true }
+        // 匹配 float2, float3, float4, int2, uint4 等向量类型
+        let vectorPattern = "^(float|half|int|uint|short|ushort|char|uchar|bool|double|long|ulong)([2-4])$"
+        if trimmed.range(of: vectorPattern, options: .regularExpression) != nil { return true }
+        return false
     }
 
     /// 将类型名清理为合法的 MSL 标识符
@@ -6284,6 +6320,17 @@ struct IRToMSLConverter {
             lines.append("struct \(sanitizedTypeName) {")
             for field in fields.sorted(by: { $0.index < $1.index }) {
                 let fieldName = sanitizeIdentifier(field.fieldName, fallback: "field\(field.index)", uppercaseFirst: false)
+
+                // E-006c3: 优先使用 air.struct_type_info 的 elementCount（第三个 i32）判断数组字段。
+                // elementCount > 1 说明该字段是数组，直接生成 "typeName fieldName[N]"，
+                // 比 IR 交叉检查更直接，覆盖 elementCount > 1 但 IR 字段不是 [N x T] 的边缘情况。
+                if field.elementCount > 1 {
+                    let elementTypeMSL = knownTypes.contains(field.typeName)
+                        ? sanitizeTypeName(field.typeName)
+                        : field.typeName
+                    lines.append("    \(elementTypeMSL) \(fieldName)[\(field.elementCount)];")
+                    continue
+                }
 
                 // E-006c2: 交叉检查 IR 结构体字段类型与 metadata 类型
                 // 当 metadata 声明为标量（如 "float"）但 IR 实际为 [N x T] 数组时，

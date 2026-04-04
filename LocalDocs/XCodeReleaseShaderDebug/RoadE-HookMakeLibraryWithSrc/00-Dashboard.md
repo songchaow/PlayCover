@@ -31,6 +31,8 @@ live 采集一次或少量几次真实 shader
 最终真实截帧确认源码可见
 ```
 
+**补充约束（当前最高优先级）**：`E-006c` 证明“.gputrace 中源码可见”已经打通，但这**不等于**“替换后的渲染结果已经稳定正确”。如果同一 app、同一界面、同一 mesh 布局下，多次启动仍出现随机渲染差异或局部异常，必须优先进入 `E-006d` 做**渲染一致性 / 非确定性归因**，不能再以“compile green”或“Xcode 能看到源码”作为阶段完成标准。当前最保守、最稳定的对照，不是直接认定“shader 改坏了”，而是比较**进行了反编译/重编译替换**与**完全不做替换**时的最终画面、draw call 行为与渲染链路差异。
+
 **分工原则**：
 - **live 的职责**：采集 corpus、扩覆盖、做最终真实验证
 - **离线的职责**：日常回归、归因分析、批量编译验证、diff 与收敛 blocker
@@ -116,6 +118,8 @@ open /Applications/PlayCover.app
 remove_playtools / inject_playtools / launch_app
 ```
 
+若本轮目标是 `E-006d`（重复启动画面不一致 / 随机渲染异常），除常规部署外，还应尽量保持**同一 app 版本、同一场景、同一停留界面、相同画质设置**，至少做 2~3 轮对照启动；并增加一组**不做替换**的稳定对照。每轮都保留 `manifest.jsonl` 增量、`ShaderCorpus/` 新增模块、`ShaderSourceDiagnostics/` 新文件、聚合 MSL 与 `.gputrace`，用于比较“输入是否相同、生成源码是否相同、是否真的发生替换、替换与不替换时的最终效果差异是否稳定存在”。
+
 ### 最终验证（保留）
 
 **自动检查**：
@@ -128,12 +132,13 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 **注意**：hash 文件不全是源码——原神样本中的 hash 文件是 bplist，必须以 `valid_msl_files` 而非 `source_files` 为准。
 
-**人工确认（最终）**：Xcode 打开 `.gputrace` → 选 Draw Call → 查看 Shader 面板是否显示源码而非 `Shader source not found`。
+**人工确认（最终）**：Xcode 打开 `.gputrace` → 选 Draw Call → 查看 Shader 面板是否显示源码而非 `Shader source not found`。若当前处理的是 `E-006d`，还需补充确认：在同一界面重复启动时，相关 Draw Call 的 shader 来源、render pass 行为与视觉结果是否保持一致；并对照**替换**与**不替换**两种运行方式的最终效果差异。
 
 ## 当前主线
 
-- **E-006c（✅ 已关闭）**：Xcode 人工确认 `capture_20260404_roadE_e006c3_final.gputrace` 中 Draw Call shader 面板可见 MSL 源码。**Road E 最终目标达成**：PlayTools hook `makeLibrary` 注入的 MSL 源码已成功嵌入 `.gputrace` 并在 Xcode 中可查看。
-- **E-004（已完成）** / **E-005（已完成）** / **E-006（已完成）**：参见下方 TODO 记录。
+- **E-006d（当前最高优先级）**：调查“用 PlayCover 打开原神，在同一界面重复启动时，画面表现每次都不完全一样；mesh 不变，但局部渲染结果异常”的现象。当前**不能实锤是 shader 改坏**：因为原神是延迟管线，base pass 对比看起来也可能类似，异常也可能来自后处理、着色阶段，或更上层的 render pipeline 顺序 / 配置差异。当前最保守的稳定结论只有：**进行了反编译/重编译替换**与**完全不做替换**时，最终效果确实不一样；后续需围绕这个稳定对照继续逐层归因。
+- **E-006c（✅ 已关闭，但仅作为里程碑基线）**：Xcode 人工确认 `capture_20260404_roadE_e006c3_final.gputrace` 中 Draw Call shader 面板可见 MSL 源码，说明“源码可见”链路已打通；但后续仍需对“渲染是否稳定正确”继续验证。
+- **E-006a（扩展真实 corpus 覆盖面）** / **E-007（UI/MCP 工具暴露）**：仍保留，但在 `E-006d` 完成根因归因前暂不作为最高优先级。
 
 ## 最新基线
 
@@ -145,6 +150,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 当前构建验证基线（2026-04-04，`E-006c3` 后） | `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`（**BUILD SUCCEEDED**）；`./BuildScripts/build_and_install.sh`（**BUILD SUCCEEDED**，签名验证通过） |
 | 当前 live 验证状态（2026-04-04，第三次 fresh capture，PID 26460） | `remove_playtools → inject_playtools → launch_app → create_session`：session 返回 `ready` 并保持稳定；manifest 从 304 → 394 行（+90 条），corpus 从 43 → **91 模块**（+48 个全新成功样本），diagnostics 文件数不变（18），**本轮零失败样本** |
 | 当前 `.gputrace` 源码可见性检查（2026-04-04，`E-006c` 已关闭） | `capture_20260404_roadE_e006c3_final.gputrace`（765 文件，968 index 引用）：`valid_msl_files: 2`（两个 PlayTools 注入的 MSL 文件，首行 `// Auto-generated aggregated MSL source by PlayTools LibrarySourceInjection`，包含完整 `#include <metal_stdlib>` 与结构体/函数定义）。**Xcode 人工确认：Draw Call shader 面板可见 MSL 源码**。覆盖率 2/11（18%）source 文件为 MSL，其余为 bplist（原始 metallib）。
+| 当前异常基线（2026-04-05，`E-006d` 新开） | 用 PlayCover 打开原神并停留在**同一界面**时，重复启动后画面表现会出现差异；**mesh 布局没有变化**，但局部渲染结果异常。当前仍**不能实锤是 shader 本身改坏**：由于原神是延迟管线，base pass 对比看起来也可能类似，问题也可能位于后处理、着色阶段，或 render pipeline 顺序 / 配置。当前最稳定的复现对照，是**做替换**与**不做替换**时最终效果稳定不同；该现象尚未完成更细的层级归因。 |
 | 历史 live blocker 时间线 | 见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
 
 ## 整体架构
@@ -178,7 +184,9 @@ PlayTools.framework (注入到 iOS app)
 
 ## TODO
 
-> **E-006c 已关闭（2026-04-04）**：Xcode 人工确认 `capture_20260404_roadE_e006c3_final.gputrace` shader 面板源码可见，**Road E 最终目标达成**。下一步优先级：E-006a（扩展真实 corpus 覆盖面）或 E-007（UI/MCP 工具暴露）。
+> **E-006c 已关闭（2026-04-04）**：Xcode 人工确认 `capture_20260404_roadE_e006c3_final.gputrace` shader 面板源码可见，**Road E 的“源码可见”目标已经达成**。
+
+> **优先级更新（2026-04-05）**：当前主线已切换到 **`E-006d`：原神重复启动时的随机渲染异常归因**。在 `E-006d` 明确根因前，`E-006a` / `E-007` 均下调一级优先级。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -196,6 +204,8 @@ PlayTools.framework (注入到 iOS app)
 | E-005b | ↳ 批量 Metal 编译与失败报告 | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
 | E-005c | ↳ 新旧转换结果 diff / 回归基线 | ✅ DONE | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | ✅ DONE | |
+| E-006d | ↳ 调查原神同一界面重复启动时的随机渲染异常 / shader 语义漂移 | TODO | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
+|  | 目标不是继续证明“源码可见”或“compile green”，而是先用**替换 vs 不替换**建立稳定对照，再确认异常究竟来自 `llvm-dis` / `IRToMSLConverter` / 聚合 MSL / `makeLibrary(source:)` 替换，还是更后面的着色、后处理、render pipeline 顺序 / 配置阶段 | |
 | E-006a | ↳ 扩展真实 corpus 覆盖面 | TODO | |
 |  | 在进入新地图 / 新场景 / 新画质设置时追加采集，逐步逼近"尽量全"的真实 shader 集合 | | |
 | E-006b | ↳ 离线批量 green 后做最小 live 复测 | ✅ DONE | |
@@ -213,7 +223,7 @@ PlayTools.framework (注入到 iOS app)
 | E-006c1 | ↳ 修复多模块 metallib 重复函数名导致替换静默失败 | ✅ DONE | |
 | E-006c2 | ↳ 修复 metadata 字段类型与 IR 结构体类型不一致的数组字段（IR 交叉检查） | ✅ DONE | |
 | E-006c3 | ↳ post-fix fresh capture 入 corpus 确认 + 新 blocker 修复 | ✅ DONE | |
-|  | **E-006c3a**：修复结构体类型名大小写不一致 — `pointedMSLType` 赋值时对用户结构体名（首字母小写且非 MSL 基本类型）应用 `sanitizeTypeName`，使参数声明与 `generateUserStructDefinitions` 输出一致（如 `unity_Builtins0Array_Type` → `Unity_Builtins0Array_Type`）。新增 `isMSLScalarOrVectorType` 辅助函数防止基本类型被错误大写。**E-006c3b**：修复 `air.struct_type_info` 第三个 i32 语义 — 该值是 `elementCount`（数组长度）而非 alignment；`StructFieldInfo` 新增 `elementCount` 字段，`parseStructTypeInfoNode` 解析，`generateUserStructDefinitions` 中 `elementCount > 1` 时生成 `typeName fieldName[N]` 数组声明。这两处修复共同解决了 `_MainLightClipPlaneAlphas` 的 `subscripted value is not an array` compile blocker。**新增** `test_struct_array_field.ll` 覆盖 `elementCount > 1` 场景。**`Scripts/check_gputrace_sources.py`** 修复 MSL 检测逻辑（支持 `//` 注释开头）。第三次 fresh capture 结果：corpus 43 → 91（+48），manifest 304 → 394（+90），**零失败样本**；新 `.gputrace` valid_msl_files = 2 | |
+|  | post-fix fresh capture 已闭环：新增结构体类型名一致性与数组字段 `elementCount` 修复；corpus 43 → 91，manifest 304 → 394，零失败样本，`valid_msl_files = 2`。更细的 blocker 细节见 archive / `E-006d-GenshinRenderingNondeterminism.md`。 | |
 | E-007 | **PlayCover settings / MCP / 工具暴露** | TODO | |
 |  | 为 corpus 导出 / replay 增加 UI 或 MCP 能力，使后续采集与回放不依赖手工路径操作 | | |
 
@@ -239,28 +249,11 @@ PlayTools.framework (注入到 iOS app)
 - **E-005c 的 baseline 应保存"结果 + 生成源码"双份快照**：仅保存 `replay-summary.json` 不足以做稳定 MSL diff；当前 `baseline.json + generated-sources/` 的组合既能比较 replay / compile 状态，也能对归一化后的 generated MSL 做哈希与 unified diff
 - **离线回归的失败判定要把"回归"与"当前失败"分开**：当前 runner 会在 replay / compile 失败时返回非 0，也会在与 baseline 对比发现 regression 时返回非 0；前者适合新功能验证，后者适合已有 corpus 的防退化守门
 - **更细的 lowering 经验、历史 live blocker 链路与已完成轮次见 archive**：主文档只保留当前仍影响决策的流程性经验
-- **Metal IR 的 shader 类型信息出现在三个位置，需要按优先级回退**：① `!air.vertex` / `!air.fragment` / `!air.kernel` 顶层 metadata（最可靠）② `attributes #N = { "air.fragment" ... }` 声明（某些合成/裁剪后的 IR 只有这个）③ 函数名/`inferShaderType` 启发式（最不可靠）。`inferShaderType` 会把 `void` 返回误判为 kernel，必须在前两步都无法确定时才使用
-- **孤立 metadata arg 节点可以通过 `air.arg_name` 做 fallback 匹配**：某些 IR 中 `air.texture` / `air.sampler` 的 metadata arg 节点存在但未被函数的 args 列表引用；按 IR 参数名与 `air.arg_name` 做 name-based lookup 可以恢复 texture/sampler 类型
-- **fragment shader 的无 attribute value 参数必须带 `[[color(N)]]`**：Metal 编译器会拒绝 "implicit color input declarations"。当 fragment 返回非 void 标量/向量类型时，隐式输出占用 `[[color(0)]]`，输入 value 参数的 color index 应从 1 开始
-- **texture access qualifier 不能一刀切删除**：IR metadata 的 `air.arg_type_name` 可能携带 `texture2d<float, write>` 或 `texture2d<float, read>`；`cleanTextureTypeName` 必须保留 `access::write`/`access::read`/`access::read_write`，仅省略默认的 `access::sample`，否则 `write()`/`read()` 方法调用会因缺少 access qualifier 而编译失败
-- **AIR 的 `write_texture_*` 参数顺序与 Metal 不同**：AIR 格式为 `(texture_ptr, coord, color, mip_level, ...)`，Metal 的 `texture.write()` 签名为 `write(color, coord)`，需要交换 coord 和 color 的顺序
-- **`___metal_fast_*` 和 `air.fast_*` 的 MSL 映射必须统一去掉 `fast_` 前缀**：Metal 标准库不提供 `fast_sin` 等无前缀顶级函数；fast-math 语义由编译器选项（`-ffast-math`）控制，不应体现在生成的 MSL 函数名中。`air.*` 系统从设计上就做了 `air.fast_sin` → `sin` 的映射，`___metal_*` 系统也应保持一致
-- **LLVM IR 的 `i32` 无 signedness，但 MSL 的 `int4`/`uint4` 是不同类型**：opaque pointer 模式下，`load <4 x i32>` 从 `device uint4*` 加载时，IR 的 `i32` 被 `irScalarTypeToMSL` 默认映射为 `int`（有符号），但指针的实际元素类型可能是 `uint`（无符号）。标量 signed/unsigned 可隐式转换，但向量类型不行。解决方案：在 `SSAContext` 中追踪 `pointerElementTypes`（从参数 metadata `air.arg_type_name` 获取，通过 GEP 传播），在 `translateLoad`/`translateStore` 中检测 signedness mismatch 并插入 `as_type<>()` bitcast
-- **AIR IR 中 builtin 参数的 IR 实际类型可能与 metadata 声明不一致**：某些编译器输出的 IR 中，`thread_position_in_grid` 参数的 IR 函数签名类型是 `<3 x float>`（float3），但 metadata 的 `air.arg_type_name` 声明为 `"uint3"`。Metal 的 `thread_position_in_grid` builtin 类型固定为 `uint`/`uint2`/`uint3`，但如果函数体内把该参数当作 float 向量传给 `sample()` 等需要 float 坐标的 API，就会产生类型错误。解决方案：在 `translateFunctionBody` 中，`setupParameterMappings` 之后检测 IR 实际类型是 float 向量但 metadata 声明为 uint 向量的参数，在函数体开头自动插入 `floatN(mslParam)` 转换并更新 SSA 映射
-- **`filterTextureArgs` 不能盲目过滤所有零值 i32 / `<N x i32>`**：AIR 的纹理调用参数结构因变体不同而异。`air.sample_texture_2d_array` 的 coord 后第一个 `i32` 是 `array_index`（语义参数），即使值为 `0` 也必须保留给 Metal 的 `texture2d_array.sample(sampler, coord, array_index)`。`air.write_texture_*` 的 `<2 x i32>` 是坐标而非 offset，不能被 `<N x i32> zeroinitializer` 过滤规则误删。`resolveIROperand` 将 `zeroinitializer` 解析为裸 `0`，传给 `write(color, coord)` 时需要包装为 `uint2(0)` 以消除 ambiguous。解决方案：`filterTextureArgs` 增加 `airName` 参数，按变体名做上下文感知过滤
-- **compile blocker 修复后可能暴露下一个预存在 blocker**：`test_builtins.ll` 包含 9 个函数，之前 `sample` 和 `write` 问题掩盖了更下游的 `metal::_atomic` 模板参数问题。修复 `sample`/`write` 后编译进度到 `test_atomics` 函数时才暴露出这个 blocker。数值上 `17/18` 没变（improvement `0`），但实际修复了 2 个独立问题
-- **`metal::_atomic` 在 MSL 中是 `atomic_int`/`atomic_uint` 引用类型，不是结构体**：IR 中 `%"struct.metal::_atomic" = type { i32 }` 看起来像结构体，但 metadata 的 `air.arg_type_name` 值为 `"metal::_atomic"`。必须根据 `struct_type_info` 中字段类型（`"uint"` → `atomic_uint`，`"int"` → `atomic_int`）映射为正确的 MSL atomic 类型。参数声明使用引用（`device atomic_uint&`）而非指针（`device atomic_uint*`），GEP 取 field0 直接透传不加 `.field0` 或 `[0]`
-- **AIR 原子函数有内部控制参数需过滤**：`air.atomic.global.add.u.i32(ptr, val, order, scope, volatile)` 有 5 个参数，但 MSL 的 `atomic_fetch_add_explicit(obj, val, order)` 只需 3 个。`scope`（`i32 2` = agent）和 `volatile`（`i1 true`）是 AIR 内部控制参数，必须过滤掉。`order` 参数需要从 i32 映射为 `memory_order_relaxed` 等枚举。`cmpxchg` 有 7 个参数（多了 `fail_order`），需要特殊处理
-- **`bitcast ptr to ptr` 在 MSL 中是 no-op**：IR 中 `bitcast ptr %x to ptr` 经常出现在 alloca 附近（如 cmpxchg 的 expected 参数准备），不应翻译为 `as_type<uint8_t>(&var)`（`as_type` 只能用于相同大小的数值类型），应直接透传
-- **真实 corpus compile 通过不等于 `.gputrace` 源码可见**：`corpus_replay_runner.py --compile` 验证的是"生成的 MSL 能通过 `makeLibrary(source:)` 编译"，但 `.gputrace` 中源码是否可见还取决于：①runtime `attemptLibraryReplacement` 是否成功替换了原始 library；②新 library 是否被 GPU pipeline 真正使用；③截帧时是否捕获到了替换后的 library 而非原始的
-- **`air.struct_type_info` 第三个 i32 是 `elementCount`，不是 alignment**：metadata 格式 `i32 offset, i32 size, i32 elementCount, !"typeName", !"fieldName"`；当 `elementCount > 1` 时，字段是长度为 N 的数组（如 `float[4]`），生成 MSL 时必须用 `typeName fieldName[elementCount]`。之前代码误注释为 "alignment" 并跳过，导致 `_MainLightClipPlaneAlphas`（`elementCount=4`）被生成为标量 `float`，在函数体做 `[i]` subscript 时报 `subscripted value is not an array`
-- **结构体类型名要在参数声明和结构体定义两处保持一致**：`generateUserStructDefinitions` 对结构体名做 `sanitizeTypeName`（首字母大写），但 `pointedMSLType` 直接使用原始 metadata 名。对首字母小写的用户结构体名（排除 MSL 基本类型如 `float2`、`half3` 等），`pointedMSLType` 也需要应用 `sanitizeTypeName`，否则参数声明类型名与 struct 定义名不匹配（如 `unity_Builtins0Array_Type*` vs `struct Unity_Builtins0Array_Type`）
-- **`check_gputrace_sources.py` 的 MSL 检测逻辑需要识别注释开头的文件**：PlayTools 注入的 MSL 以 `// Auto-generated aggregated MSL source` 开头，原始脚本只认 `#include` 或 `using ` 开头，导致有效 MSL 被误判为非 MSL；修复后改为：若首行以 `//` 开头，再读前 2KB 内容检查是否含 `metal_stdlib` 或 `PlayTools` 关键词
-- **多模块 metallib 的重复函数名是 Unity shader 的典型特征**：Unity 编译的 `.shader` 文件经 Metal 编译器输出为 metallib 后，每个 shader variant（不同 feature combination / shader type）对应一个独立 bitcode module，但共享同一函数名（如 `xlatMtlMain`）。一个 metallib 通常包含 2-5 个同名 module（vertex-only 或 fragment-only）。MSL 不允许同一源文件中出现同名函数，聚合编译时必须去重
-- **`throw` + 静默 `catch` 回退是 runtime hook 的危险反模式**：`attemptLibraryReplacement` 的 catch 块将 `ReplacementAggregationError.duplicateFunctionNames` 吞掉并 `return nil`，调用方 `?? originalLibrary` 回退到原始 library。这种"静默失败"模式让 blocker 隐藏在日志中，无法被离线工具链或 corpus replay 发现。后续应在关键路径上用更醒目的日志（至少 `NSLog` 包含 `[BLOCKER]` 标记）或累积失败计数器供 MCP 查询
-- **`air.struct_type_info` metadata 的字段类型可能与 IR 结构体定义不一致**：Unity 编译的 shader 中，FGlobals 结构体的 `_MainLightClipPlaneAlphas` 在 metadata 中记录为 `"float"`（标量），但 IR 的 `%struct.FGlobals` 定义中实际是 `[4 x float]`（数组）。`translateGEP` 的 `currentType` 追踪使用 `IRStructTypeDef.fieldIRTypes`（正确识别数组），但 `generateUserStructDefinitions` 使用 metadata 的 `StructFieldInfo.typeName`（错误生成为标量），导致生成的 MSL 对标量做 subscript 编译失败。解决方案：`generateUserStructDefinitions` 交叉检查 `structTypeDefs`，当 IR 类型为 `[N x T]` 数组时使用 `irScalarTypeToMSL(T) fieldName[N]` 格式
-- **失败路径导出是闭环的关键一环**：`E-004f4` 在 `compile_failed`/`preflight_rejected`/`exception` 路径中导出 `.bc/.ll/.metal/.meta.json` 到 `ShaderSourceDiagnostics/<baseName>_modules/`，使失败样本可直接进入离线 replay 主路径。失败路径的 `module.meta.json` 使用 `captureSource: "failure_path"` / `"partial_failure_path"` 和 `compileStatus: "compile_failed"` 等标记区分成功样本
-- **异常路径中 `preparedModules` 可能部分填充**：`attemptLibraryReplacement` 的 for 循环逐模块执行 `disassemble` + `convert`，若第 N 个模块抛出异常，`preparedModules` 包含前 N-1 个模块的数据。异常导出时应保存所有模块 `.bc`，但只对已成功准备的模块保存 `.ll`/`.metal`
+- **源码可见不等于渲染语义正确**：`E-006c` 已证明 `.gputrace` 中能看到 MSL，但 `E-006d` 关注的是“同一输入是否在重复启动下保持同一视觉结果”；两者必须分开验收
+- **当前最保守的稳定对照是“替换 vs 不替换”**：在还不能实锤具体根因位于哪个 pass / stage 之前，先确认“做替换”和“完全不做替换”时的最终效果是否稳定不同，这是 `E-006d` 最低风险的比较基线
+- **同一界面重复启动出现差异时，不要过早收敛为 shader root cause**：当前已知现象是 mesh 不变，但原神为延迟管线；base pass 看起来类似并不能排除后处理、着色阶段，或 render pipeline 顺序 / 配置差异
+- **`E-006d` 的归因顺序必须固定**：先做“替换 vs 不替换”稳定对照，再对齐“输入是否相同”（metallib / moduleKey / functionTypes），再比较“输出是否相同”（单模块 `.metal` / 聚合 MSL / compile 结果），最后才看“运行时是否真的使用了替换后的 library”以及更后续的 pass / pipeline 行为
+- **细粒度 lowering 备注、近期 compile blocker 细节与 `E-006d` 的调查框架已下沉到独立参考文档**：见 [E-006d-GenshinRenderingNondeterminism](E-006d-GenshinRenderingNondeterminism.md)
 
 ## 参考信息
 
@@ -268,6 +261,7 @@ PlayTools.framework (注入到 iOS app)
 |---|---|
 | dashboard 历史归档：live blocker 时间线 / 已完成轮次 | `00-Dashboard-Archive.md` |
 | 失败样本闭环 / re-capture 策略参考 | `E-004-CorpusClosureAndRecapturePolicy.md` |
+| `E-006d` 随机渲染异常调查 / 技术细节参考 | `E-006d-GenshinRenderingNondeterminism.md` |
 | `-frecord-sources` PoC 与关键否定结论 | `E-001-PoC-frecord-sources.md` |
 | metallib / bitcode / llvm-dis / IR→MSL / corpus 主实现记录 | `E-004-MetallibSourceExtraction.md` |
 | 离线 replay / batch compile / diff 工具链 | `E-005-OfflineReplayBatchCompileDiff.md` |

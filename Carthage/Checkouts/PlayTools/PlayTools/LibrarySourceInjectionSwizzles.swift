@@ -660,14 +660,11 @@ class LibrarySourceInjectionService {
 
     private enum ReplacementAggregationError: LocalizedError {
         case emptyModuleBody(String)
-        case duplicateFunctionNames([String])
 
         var errorDescription: String? {
             switch self {
             case .emptyModuleBody(let moduleSummary):
                 return "Aggregated MSL module body is empty: \(moduleSummary)"
-            case .duplicateFunctionNames(let names):
-                return "Duplicate MSL function names across modules: \(names.joined(separator: ", "))"
             }
         }
     }
@@ -675,6 +672,8 @@ class LibrarySourceInjectionService {
     private func buildAggregateReplacementSource(
         from preparedModules: [PreparedModuleReplacement]
     ) throws -> AggregateReplacementSource {
+        // E-006c: 多模块 metallib（如 Unity 编译产物）可能包含同名函数的多个 shader variant。
+        // MSL 不允许同一源文件中出现同名函数，因此对同名函数去重：保留首个模块，跳过后续重复。
         var seenFunctionNames: Set<String> = []
         var duplicateFunctionNames: Set<String> = []
         for prepared in preparedModules {
@@ -685,8 +684,33 @@ class LibrarySourceInjectionService {
                 }
             }
         }
+
+        // 去重：对每个唯一函数名只保留第一个出现的模块
+        var deduplicatedModules: [PreparedModuleReplacement] = []
+        var dedupSeenNames: Set<String> = []
+        var skippedModuleCount = 0
+        for prepared in preparedModules {
+            let moduleFuncNames = prepared.conversion.functions.map { sanitizeMSLIdentifier($0.name) }
+            let hasNewFunction = moduleFuncNames.contains { !dedupSeenNames.contains($0) }
+            if hasNewFunction {
+                deduplicatedModules.append(prepared)
+                for name in moduleFuncNames {
+                    dedupSeenNames.insert(name)
+                }
+            } else {
+                skippedModuleCount += 1
+            }
+        }
+
         if !duplicateFunctionNames.isEmpty {
-            throw ReplacementAggregationError.duplicateFunctionNames(duplicateFunctionNames.sorted())
+            NSLog("[PlayTools] LibrarySourceInjection: deduplicating %d modules with shared function name(s): %@ (keeping first occurrence of each, skipping %d modules)",
+                  preparedModules.count,
+                  duplicateFunctionNames.sorted().joined(separator: ", "),
+                  skippedModuleCount)
+        }
+
+        guard !deduplicatedModules.isEmpty else {
+            throw ReplacementAggregationError.emptyModuleBody("all modules deduplicated away")
         }
 
         var lines: [String] = [
@@ -694,8 +718,8 @@ class LibrarySourceInjectionService {
             "// Auto-generated aggregated MSL source by PlayTools LibrarySourceInjection",
             "// E-005b: multi-module source aggregation",
             "// Generated at: \(ISO8601DateFormatter().string(from: Date()))",
-            "// Modules: \(preparedModules.count)",
-            "// Functions: \(preparedModules.reduce(0) { $0 + $1.conversion.functions.count })",
+            "// Modules: \(deduplicatedModules.count)/\(preparedModules.count)",
+            "// Functions: \(deduplicatedModules.reduce(0) { $0 + $1.conversion.functions.count })",
             "//",
             "",
             "#include <metal_stdlib>",
@@ -703,7 +727,7 @@ class LibrarySourceInjectionService {
             ""
         ]
 
-        for (index, prepared) in preparedModules.enumerated() {
+        for (index, prepared) in deduplicatedModules.enumerated() {
             let body = stripGeneratedMSLHeader(from: prepared.conversion.mslSource)
             guard !body.isEmpty else {
                 throw ReplacementAggregationError.emptyModuleBody(prepared.module.summary)
@@ -715,10 +739,10 @@ class LibrarySourceInjectionService {
 
         return AggregateReplacementSource(
             source: lines.joined(separator: "\n"),
-            moduleCount: preparedModules.count,
-            functionCount: preparedModules.reduce(0) { $0 + $1.conversion.functions.count },
-            totalIRSize: preparedModules.reduce(0) { $0 + $1.irResult.outputSize },
-            moduleSummaries: preparedModules.map { $0.module.summary }.joined(separator: "; ")
+            moduleCount: deduplicatedModules.count,
+            functionCount: deduplicatedModules.reduce(0) { $0 + $1.conversion.functions.count },
+            totalIRSize: deduplicatedModules.reduce(0) { $0 + $1.irResult.outputSize },
+            moduleSummaries: deduplicatedModules.map { $0.module.summary }.joined(separator: "; ")
         )
     }
 

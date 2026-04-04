@@ -131,8 +131,8 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 ## 当前主线
 
-- **E-004（本轮已完成：`E-004f3` 扩展 `makeLibrary(URL/default/file)` 路径的采集覆盖）**：`newLibraryWithURL:error:`、`newDefaultLibrary`、`newDefaultLibraryWithBundle:error:`、`newLibraryWithFile:error:` 现已读取 `.metallib` 并复用统一的 `bitcode -> IR -> MSL -> makeLibrary(source:) -> ShaderCorpus` 主链路；default 路径额外加入了 bundle 内 `.metallib` 的保守定位策略。
-- **E-006（本轮执行：`E-006b3` texture access qualifier / write 参数顺序修复）**：`IRToMSLConverter.cleanTextureTypeName` 不再一刀切删除 access 限定符，改为将 AIR 的 `write`/`read`/`read_write` 正确映射为 Metal 的 `access::write`/`access::read`/`access::read_write`（仅省略默认的 `access::sample`）；同时修复 `generateMSLForAirCall` 中 `write` 方法的参数顺序（AIR 格式 `(texture, coord, color, ...)` → Metal `texture.write(color, coord)`）。`test-data/*.ll` 回归：replay `18/18` 成功、Metal compile `12/18` 成功（上一轮 `10/18`，improvement `+2`，regression `0`）：`test_sample_compare.ll` 从 `no member named 'write' in access::sample` 提升为 compile success，`test_builtins.ll` 的 `write` 相关错误（`no member named 'write'`）消除（剩余为 `sample` overload resolution 问题）。
+- **E-006（本轮执行：`E-006b4` `___metal_fast_*` intrinsic fast 前缀修正）**：`IRToMSLConverter.metalIntrinsicMappings` 中 `___metal_fast_*` 的 MSL 映射从 `fast_sin` 等改为同名标准函数 `sin` 等，与 `air.fast_*` 映射行为保持一致。Metal 标准库不提供 `fast_sin` 等无前缀顶级函数，fast-math 语义由编译选项控制而非函数名。`test-data/*.ll` 回归：replay `18/18` 成功、Metal compile `13/18` 成功（上一轮 `12/18`，improvement `+1`，regression `0`）：`test_metal_intrinsic_sampler_state.ll` 从 `use of undeclared identifier 'fast_sin'` 提升为 compile success。
+- **E-004（已完成：`E-004f3` 扩展 `makeLibrary(URL/default/file)` 路径的采集覆盖）**：`newLibraryWithURL:error:`、`newDefaultLibrary`、`newDefaultLibraryWithBundle:error:`、`newLibraryWithFile:error:` 现已读取 `.metallib` 并复用统一的 `bitcode -> IR -> MSL -> makeLibrary(source:) -> ShaderCorpus` 主链路；default 路径额外加入了 bundle 内 `.metallib` 的保守定位策略。
 - **E-005（已完成：`E-005c` 新旧转换结果 diff / 回归基线）**：`Scripts/corpus_replay_runner.py` 现已支持保存 baseline snapshot、比较新旧 replay / compile 结果、输出 `baseline-diffs/` 与结构化回归统计；日常离线回归已经具备"改前 vs 改后"防退化能力。
 
 ## 最新基线
@@ -143,8 +143,8 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 原神 6.4.0（最近一轮 live 基线） | 已确认 `ShaderSourceDiagnostics`、host bridge 与 runtime 注入主路径可用；真实 app 仍是 corpus 的生产来源与最终验证环境 |
 | 当前落盘能力（2026-04-04） | 失败的 MSL 会进入 `ShaderSourceDiagnostics/`；异常 payload 会进入 `ShaderPayloadSamples/`；`attemptLibraryReplacement(...)` 成功路径现已按 `ShaderCorpus/<bundleId>/modules/<moduleKey>/` 落盘 canonical `module.bc`、`module.ll`、`module.generated.metal` 与 `module.meta.json`，并在根目录追加 `manifest.jsonl` 事件索引；`moduleKey` 由 `sha256(module.bc)` 生成，重复样本默认复用基线，不再静默覆盖；`newLibraryWithURL:error:`、`newDefaultLibrary`、`newDefaultLibraryWithBundle:error:`、`newLibraryWithFile:error:` 代码路径也已接入同一套导出与替换逻辑 |
 | 当前离线 replay / batch compile / diff 能力（2026-04-03，`E-005a`/`E-005b`/`E-005c` 完成） | `Scripts/corpus_replay_runner.py` 现已支持扫描 `ShaderCorpus/` 或显式 `.ll`，读取 `module.meta.json` 中的 `functionNames/functionTypes` 做 `IRToMSLConverter.convert(...)`，并在 `--compile` 模式下继续输出 `.air`、`compile-summary.json`、逐样本 `primaryDiagnostic/sourceContext` 与 failure clusters；同时支持 `--save-baseline` 生成 `baseline.json + generated-sources/` 快照、`--baseline-report` 产出结构化 replay / compile / generated MSL 对比与 `baseline-diffs/`；`Scripts/ir_to_msl_smoketest.sh` 继续作为单样本兼容 wrapper |
-| 当前最小离线验证基线（2026-04-04，`E-006b3` 完成） | 已对 `test-data/*.ll` 执行一轮 batch replay + compile：replay `18/18` 成功，Metal compile `12/18` 成功（上轮 `10/18`，improvement `+2`，regression `0`）。`test_sample_compare.ll` 修复为 compile success（texture access qualifier + write arg swap），`test_builtins.ll` write 相关错误消除。剩余 6 个 compile blocker 为 body lowering 问题（GEP/load 类型缩窄、sample overload resolution、signed/unsigned 转换、fast_sin 等），不属于 metadata / shader type / resource kind 识别范畴 |
-| 当前构建验证基线（2026-04-04） | 已运行 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 与 `PLAYCOVER_INSTALL_MODE=user ./BuildScripts/build_and_install.sh`，PlayTools 标准构建链路、PlayCover Release 构建、安装与 ad-hoc 重签名均通过，并已成功拉起 `~/Applications/PlayCover.app` |
+| 当前最小离线验证基线（2026-04-04，`E-006b4` 完成） | 已对 `test-data/*.ll` 执行一轮 batch replay + compile：replay `18/18` 成功，Metal compile `13/18` 成功（上轮 `12/18`，improvement `+1`，regression `0`）。`test_metal_intrinsic_sampler_state.ll` 修复为 compile success（`___metal_fast_*` intrinsic 不再输出 `fast_sin` 等不存在的 MSL 函数，改为与 `air.fast_*` 一致映射到标准函数名）。剩余 5 个 compile blocker 为 body lowering 问题（GEP/load 类型缩窄、sample overload resolution、signed/unsigned 转换），不属于 metadata / shader type / resource kind 识别范畴 |
+| 当前构建验证基线（2026-04-04） | 已运行 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 与 `PLAYCOVER_INSTALL_MODE=user ./BuildScripts/build_and_install.sh`（均 **BUILD SUCCEEDED**），PlayTools 标准构建链路、PlayCover Release 构建、安装与 ad-hoc 重签名均通过 |
 | 当前最小 live 验证状态（2026-04-04） | PlayCover MCP 应用列表通道已恢复可用；已对原神 6.4.0 完成一次最小 live 复测：`remove_playtools`、`inject_playtools`、`launch_app` 成功，`create_session` 返回 `ready`（PID 98756，runtimePort 61205）；同时 `ShaderCorpus/com.miHoYo.Yuanshen/manifest.jsonl` 在 `2026-04-03T16:25:54Z`–`16:26:06Z` 追加了多条 `captureAction=conflict_preserved` / `selector=newLibraryWithData:error:` 事件，证明启动期已重新命中 hook 与 corpus 去重落盘链路。`2026-04-04 01:57` 再次 fresh `launch_app -> create_session(timeout=30)` 也曾返回 `ready`（PID 43383，runtimePort 61206），但很快转为 `disconnected`，且新增 `Yuanshen-2026-04-04-015803.ips`，说明 live 稳定性仍未收敛 |
 | 当前 `.gputrace` 源码可见性检查（2026-04-04，`E-006c` 本轮执行） | 已对原神现存 6 份真实 trace 批量执行 `Scripts/check_gputrace_sources.py`：`valid_msl_files` 全部为 `0`；Xcode 可打开 `capture_20260402_roadE_e006_diag.gputrace` 并进入具体 draw call（`Command Buffer 1` / `Render Encoder 12` / draw call `7688`，`editor_mode=Bound Resources`，Step 菜单启用），因此当前结论是"trace 可开/可步进，但源码仍不可见" |
 | 历史 live blocker 时间线 | 见 [00-Dashboard-Archive](00-Dashboard-Archive.md)；dashboard 主体不再重复堆叠逐轮 live 细节 |
@@ -178,7 +178,7 @@ PlayTools.framework (注入到 iOS app)
 
 ## TODO
 
-> 当前最高优先级：`E-006c`（真实 `.gputrace` 源码可见确认）。`E-006b2` 已完成 metadata / shader type / resource kind 识别收敛，`E-006b3` 已修复 texture access qualifier 与 write 参数顺序（compile `12/18`）；剩余 compile blocker 均为 body lowering 问题。历史 live blocker 归因链路见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
+> 当前最高优先级：`E-006c`（真实 `.gputrace` 源码可见确认）。`E-006b4` 已修复 `___metal_fast_*` intrinsic 映射（compile `13/18`）；剩余 compile blocker 均为 body lowering 问题。历史 live blocker 归因链路见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -211,7 +211,9 @@ PlayTools.framework (注入到 iOS app)
 | E-006b2 | ↳ 收敛 metadata / shader type / resource kind 识别不足的 compile blocker | ✅ DONE | |
 |  | `IRToMSLConverter` 已新增 `parseAttributeGroupDeclarations` 从 `attributes #N = { "air.fragment" ... }` 声明回退检测 shader 类型；新增 `parseOrphanedMetadataArgLookup` 扫描所有孤立 metadata arg 节点，按 `air.arg_name` 匹配 `air.texture` / `air.sampler` 并正确恢复为 `[[texture(N)]]` / `[[sampler(N)]]`；`generateAllParams` 为 fragment shader 的无 attribute value 参数自动添加 `[[color(N)]]`（从 1 开始避免与隐式输出冲突）。`test_metal_intrinsic_sampler_state.ll` 从 kernel 误判修复为 fragment，texture/sampler 正确识别；compile regression `0` | | |
 | E-006b3 | ↳ 收敛 texture access qualifier / write 参数顺序 compile blocker | ✅ DONE | |
-|  | `cleanTextureTypeName` 不再一刀切删除 access 限定符，改为将 AIR 的 `write`/`read`/`read_write` 正确映射为 `access::write`/`access::read`/`access::read_write`（仅省略默认 `access::sample`）；`generateMSLForAirCall` 对 `write` 方法交换前两个参数（AIR `(texture, coord, color)` → Metal `texture.write(color, coord)`）。`test_sample_compare.ll` 从 `no member named 'write'` 提升为 compile success，`test_builtins.ll` write 错误消除；compile improvement `+2`，regression `0` | | |
+|  | `cleanTextureTypeName` 不再一刀切删除 access 限定符，改为将 AIR 的 `write`/`read`/`read_write` 正确映射为 `access::write`/`access::read`/`access::read_write`（仅省略默认 `access::sample`）；`generateMSLForAirCall` 对 `write` 方法交换前两个参数（AIR `(texture, coord, color)` → Metal `texture.write(color, coord)`）。`test_sample_compare.ll` 从 `no member named 'write'` 提升为 compile success，`test_builtins.ll` write 错误消除；compile improvement `+2`，regression `0` | |
+| E-006b4 | ↳ 收敛 `___metal_fast_*` intrinsic fast 前缀 compile blocker | ✅ DONE | |
+|  | `IRToMSLConverter.metalIntrinsicMappings` 中 `___metal_fast_*` 的 MSL 映射从 `fast_sin` 等改为同名标准函数 `sin` 等，与 `air.fast_*` 映射行为一致（Metal 标准库不提供 `fast_sin` 无前缀顶级函数）。`test_metal_intrinsic_sampler_state.ll` 从 `use of undeclared identifier 'fast_sin'` 提升为 compile success；compile improvement `+1`，regression `0` | | |
 | E-006c | ↳ 最终 `.gputrace` 源码可见确认 | TODO | |
 |  | 本轮已完成一次真实检查：原神现存 6 份 `.gputrace` 的 `valid_msl_files` 均为 `0`；Xcode 可打开并步进，但尚未看到源码。待 live 稳定并解决当前 IR→MSL compile blocker 后，再做 fresh capture + Xcode 最终确认 | | |
 | E-007 | **PlayCover settings / MCP / 工具暴露** | TODO | |
@@ -242,6 +244,7 @@ PlayTools.framework (注入到 iOS app)
 - **fragment shader 的无 attribute value 参数必须带 `[[color(N)]]`**：Metal 编译器会拒绝 "implicit color input declarations"。当 fragment 返回非 void 标量/向量类型时，隐式输出占用 `[[color(0)]]`，输入 value 参数的 color index 应从 1 开始
 - **texture access qualifier 不能一刀切删除**：IR metadata 的 `air.arg_type_name` 可能携带 `texture2d<float, write>` 或 `texture2d<float, read>`；`cleanTextureTypeName` 必须保留 `access::write`/`access::read`/`access::read_write`，仅省略默认的 `access::sample`，否则 `write()`/`read()` 方法调用会因缺少 access qualifier 而编译失败
 - **AIR 的 `write_texture_*` 参数顺序与 Metal 不同**：AIR 格式为 `(texture_ptr, coord, color, mip_level, ...)`，Metal 的 `texture.write()` 签名为 `write(color, coord)`，需要交换 coord 和 color 的顺序
+- **`___metal_fast_*` 和 `air.fast_*` 的 MSL 映射必须统一去掉 `fast_` 前缀**：Metal 标准库不提供 `fast_sin` 等无前缀顶级函数；fast-math 语义由编译器选项（`-ffast-math`）控制，不应体现在生成的 MSL 函数名中。`air.*` 系统从设计上就做了 `air.fast_sin` → `sin` 的映射，`___metal_*` 系统也应保持一致
 
 ## 参考信息
 

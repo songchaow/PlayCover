@@ -4619,8 +4619,13 @@ struct IRToMSLConverter {
 
     /// 已知的 ___metal_* intrinsic 映射到 MSL 函数名
     /// 命名规则：___metal_<msl_name>[_<type_suffix>]
-    /// 例如：___metal_fract_v2float → fract(), ___metal_fast_sin_v4f32 → fast_sin()
+    /// 例如：___metal_fract_v2float → fract(), ___metal_fast_sin_v4f32 → sin()
     /// mslArgCount: MSL 函数期望的参数数量（IR intrinsic 可能有额外元数据参数）
+    ///
+    /// E-006b4: fast_* 变体统一映射到同名标准 MSL 函数（去掉 fast_ 前缀），
+    /// 与 air.fast_* 映射行为保持一致。Metal 标准库不提供 fast_sin 等
+    /// 无前缀函数，fast-math 语义由编译选项（-ffast-math）控制，
+    /// 不应体现在函数名中。
     private static let metalIntrinsicMappings: [(pattern: String, mslFunc: String, mslArgCount: Int)] = {
         var list: [(String, String, Int)] = []
         let unaryMath = [
@@ -4631,7 +4636,8 @@ struct IRToMSLConverter {
         ]
         for name in unaryMath {
             list.append(("___metal_\(name)", name, 1))
-            list.append(("___metal_fast_\(name)", "fast_\(name)", 1))
+            // E-006b4: fast_* 变体映射到同名标准函数（与 air.fast_* 一致）
+            list.append(("___metal_fast_\(name)", name, 1))
         }
         let binaryMath = [
             "fmin", "fmax", "pow", "fmod", "atan2", "copysign", "fdim", "step",
@@ -4639,27 +4645,27 @@ struct IRToMSLConverter {
         ]
         for name in binaryMath {
             list.append(("___metal_\(name)", name, 2))
-            list.append(("___metal_fast_\(name)", "fast_\(name)", 2))
+            list.append(("___metal_fast_\(name)", name, 2))
         }
         let ternaryMath = ["clamp", "mix", "smoothstep", "fma"]
         for name in ternaryMath {
             list.append(("___metal_\(name)", name, 3))
-            list.append(("___metal_fast_\(name)", "fast_\(name)", 3))
+            list.append(("___metal_fast_\(name)", name, 3))
         }
         let unaryVec = ["length", "normalize"]
         for name in unaryVec {
             list.append(("___metal_\(name)", name, 1))
-            list.append(("___metal_fast_\(name)", "fast_\(name)", 1))
+            list.append(("___metal_fast_\(name)", name, 1))
         }
         let binaryVec = ["dot", "cross", "distance", "reflect"]
         for name in binaryVec {
             list.append(("___metal_\(name)", name, 2))
-            list.append(("___metal_fast_\(name)", "fast_\(name)", 2))
+            list.append(("___metal_fast_\(name)", name, 2))
         }
         let ternaryVec = ["refract", "faceforward"]
         for name in ternaryVec {
             list.append(("___metal_\(name)", name, 3))
-            list.append(("___metal_fast_\(name)", "fast_\(name)", 3))
+            list.append(("___metal_fast_\(name)", name, 3))
         }
         list.append(("___metal_abs", "abs", 1))
         list.append(("___metal_fabs", "abs", 1))
@@ -4682,7 +4688,7 @@ struct IRToMSLConverter {
         let fullName = String(afterAt[afterAt.startIndex..<parenIdx])
 
         // 从完整名称（含类型后缀）查找 MSL 函数名和期望参数数
-        // 例如：fract_v2float → fract(1), fast_sin_v4f32 → fast_sin(1)
+        // 例如：fract_v2float → fract(1), fast_sin_v4f32 → sin(1)
         let mapping = lookupMetalIntrinsic(fullName)
         let mslFunc: String
         let mslArgCount: Int
@@ -4720,7 +4726,7 @@ struct IRToMSLConverter {
     }
 
     /// 查找 ___metal_* intrinsic 对应的 MSL 函数名和期望参数数
-    /// 支持：___metal_fract_v2float → (fract, 1), ___metal_fast_sin_v4f32 → (fast_sin, 1)
+    /// 支持：___metal_fract_v2float → (fract, 1), ___metal_fast_sin_v4f32 → (sin, 1)
     private static func lookupMetalIntrinsic(_ fullName: String) -> (mslFunc: String, mslArgCount: Int)? {
         // 按模式长度降序匹配，避免 "fast_sin" 被 "sin" 先匹配
         let sorted = metalIntrinsicMappings.sorted { $0.pattern.count > $1.pattern.count }

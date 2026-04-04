@@ -156,6 +156,10 @@ private final class LibrarySourceInjectionSwizzles: NSObject {
         originalLibrary: AnyObject?,
         selector: String
     ) -> AnyObject? {
+        guard PlaySettings.shared.shaderSourceReplacementEnabled else {
+            NSLog("[PlayTools] LibrarySourceInjection: %@ — replacement disabled by settings; returning original library", selector)
+            return originalLibrary
+        }
         let cacheKey = LibrarySourceInjectionService.shared.cacheKey(for: metallibData)
         let modules = LibrarySourceInjectionService.shared.extractAndCacheBitcodeModules(
             from: metallibData,

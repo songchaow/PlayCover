@@ -11,6 +11,8 @@
 - 这一步优先服务于第 2、3、4 个核心问题：**输入是否相同 / 输出是否相同 / 同 key 模块的离线产物是否稳定**
 - **E-006d2（✅ DONE）**：成功替换路径新增 `ShaderCorpus/<bundleId>/replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal` 与 `replacement.meta.json`，并向 `manifest.jsonl` 记录 `event=replacement`；`Scripts/compare_capture_runs.py` 同步扩展为比较两轮最新聚合替换产物的 `moduleKeys` / `functionCount` / `aggregateMSLBytes` / aggregate source sha256。
 - 这一步补齐了第 3 个核心问题里原先缺失的“**聚合 MSL 是否稳定**”证据链，避免只比较单模块 `.metal` 却看不到最终替换源码顺序、去重结果或聚合体漂移。
+- **E-006d3（✅ DONE）**：新增 `shaderSourceReplacementEnabled` runtime 开关；`PlayTools` 在 `LibrarySourceInjectionSwizzles` 入口处尊重该设置，关闭时直接返回原始 `MTLLibrary`，不再进入 `metallib -> IR -> MSL -> makeLibrary(source:)` 替换链路；并新增 `Scripts/set_shader_replacement_mode.py`，可直接切换指定 app 的 `App Settings/<bundleId>.plist`，用于建立“替换 vs 不替换”的稳定 live 对照。
+- 这一步补齐了第 1 个核心问题里此前缺失的可执行控制面：**现在可以在不改代码、不手工改 plist 的前提下，稳定切换“做替换 / 不做替换”两种运行模式**。
 
 ## 现象
 
@@ -35,6 +37,22 @@
 - 尽量固定 app 版本、账号状态、停留界面、画质设置、注入步骤和启动顺序
 - 同一条件下至少做 `2~3` 轮重复启动
 - 增加一组**完全不做替换**的对照运行，作为最低风险基线
+- 当前可直接使用：
+
+```bash
+python3 Scripts/set_shader_replacement_mode.py \
+  --bundle-id com.miHoYo.Yuanshen \
+  --mode off
+```
+
+- 对照结束后再切回：
+
+```bash
+python3 Scripts/set_shader_replacement_mode.py \
+  --bundle-id com.miHoYo.Yuanshen \
+  --mode on
+```
+
 - 每轮都保存：
   - `manifest.jsonl` 增量
   - `ShaderCorpus/` 新增模块目录
@@ -118,8 +136,9 @@ python3 Scripts/compare_capture_runs.py \
 ## 当前建议执行顺序
 
 1. 固定 live 条件，分别保留两轮 `manifest.jsonl` 与 `modules/` 快照
-2. 先用 `Scripts/compare_capture_runs.py` 对比 run-vs-run，先看 `onlyInRunA/B`、共享 `moduleKey` 差异，再看 `latestReplacementComparison`
-3. 若 `latestReplacementComparison` 已稳定一致，再继续下钻到 `.gputrace`、实际替换命中情况、以及更后续的 pass / pipeline 行为；若这里已漂移，优先留在离线层继续收敛聚合 / 替换差异
+2. 先用 `Scripts/set_shader_replacement_mode.py` 建立一组 **replacement=off** 的稳定对照，再切回 **replacement=on** 保留对应 run
+3. 再用 `Scripts/compare_capture_runs.py` 对比 run-vs-run，先看 `onlyInRunA/B`、共享 `moduleKey` 差异，再看 `latestReplacementComparison`
+4. 若 `latestReplacementComparison` 已稳定一致，再继续下钻到 `.gputrace`、实际替换命中情况、以及更后续的 pass / pipeline 行为；若这里已漂移，优先留在离线层继续收敛聚合 / 替换差异
 
 ## 从 dashboard 下沉的细粒度技术备注
 
@@ -138,6 +157,7 @@ python3 Scripts/compare_capture_runs.py \
 - **真实 corpus compile 通过不等于 `.gputrace` 源码可见，更不等于真实渲染正确**：这三层验证必须分开
 - **延迟管线下，base pass 看起来类似并不能排除后续阶段问题**：若当前观察主要来自最终画面差异，就必须把后处理、着色阶段与 render pipeline 顺序 / 配置一起纳入排查范围
 - **“替换 vs 不替换”是当前最低风险的稳定比较基线**：在根因层级未明确前，先确认开启替换后是否稳定引入了最终效果差异，再继续往具体 stage / pass 下钻
+- **“替换 vs 不替换”必须有明确控制面**：`E-006d3` 后不要再通过改代码或手改 plist 临时构造“无替换”样本，统一使用 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py`，避免把控制变量本身做脏
 - **成功路径也要落盘聚合产物，才能回答“最终替换源码是否稳定”**：只保留单模块 `.bc/.ll/.metal` 不足以覆盖聚合顺序、重名去重与最终 `makeLibrary(source:)` 输入；`E-006d2` 后应优先比较 `manifest.jsonl` 中最新 `event=replacement` 对应的 aggregate source hash
 - **`air.struct_type_info` 第三个 `i32` 是 `elementCount`，不是 alignment**：数组字段若被错当标量，会直接造成 subscript 类 compile blocker
 - **结构体类型名要在参数声明和结构体定义两处保持一致**：尤其是首字母小写的用户类型名，需要与 `sanitizeTypeName` 策略统一

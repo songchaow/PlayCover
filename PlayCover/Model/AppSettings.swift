@@ -52,6 +52,7 @@ struct AppSettingsData: Codable {
     var blockSleepSpamming = false
     var metalCaptureEnabled = false
     var injectMetalCaptureEnvironment = false
+    var shaderSourceReplacementEnabled = true
 
     init() {}
 
@@ -94,6 +95,7 @@ struct AppSettingsData: Codable {
         blockSleepSpamming = try container.decodeIfPresent(Bool.self, forKey: .blockSleepSpamming) ?? false
         metalCaptureEnabled = try container.decodeIfPresent(Bool.self, forKey: .metalCaptureEnabled) ?? false
         injectMetalCaptureEnvironment = try container.decodeIfPresent(Bool.self, forKey: .injectMetalCaptureEnvironment) ?? false
+        shaderSourceReplacementEnabled = try container.decodeIfPresent(Bool.self, forKey: .shaderSourceReplacementEnabled) ?? true
     }
 }
 

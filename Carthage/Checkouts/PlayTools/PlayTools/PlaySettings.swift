@@ -97,6 +97,8 @@ let settings = PlaySettings.shared
     @objc lazy var blockSleepSpamming = settingsData.blockSleepSpamming
 
     @objc lazy var metalCaptureEnabled = settingsData.metalCaptureEnabled
+
+    @objc lazy var shaderSourceReplacementEnabled = settingsData.shaderSourceReplacementEnabled
 }
 
 struct AppSettingsData: Codable {
@@ -131,4 +133,5 @@ struct AppSettingsData: Codable {
     var resizableAspectRatioHeight = 0
     var blockSleepSpamming = false
     var metalCaptureEnabled = false
+    var shaderSourceReplacementEnabled = true
 }

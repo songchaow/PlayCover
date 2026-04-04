@@ -110,7 +110,7 @@ struct KeyCoverUpdatePasswordView: View {
     @Binding var isPresented: Bool
 
     @State private var oldKeyCoverPassword = KeyCoverPreferences.shared.keyCoverEnabled == .selfGeneratedPassword ?
-                                        KeyCover.shared.keyCoverPlainTextKey ?? "" : ""
+                                        KeyCoverPassword.shared.loadPasswordIntoMemoryIfNeeded() ?? "" : ""
     @State private var keyCoverPassword = ""
     @State private var keyCoverPasswordConfirm = ""
     @State private var isWorking = false
@@ -225,7 +225,7 @@ struct KeyCoverRemovalView: View {
     @Binding var isPresented: Bool
 
     @State private var keyCoverPassword = KeyCoverPreferences.shared.keyCoverEnabled == .selfGeneratedPassword ?
-                                    KeyCover.shared.keyCoverPlainTextKey ?? "" : ""
+                                    KeyCoverPassword.shared.loadPasswordIntoMemoryIfNeeded() ?? "" : ""
     @State private var isWorking = false
 
     @State private var keyCoverPasswordError = false

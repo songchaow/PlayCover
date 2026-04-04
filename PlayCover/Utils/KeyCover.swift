@@ -60,12 +60,19 @@ struct KeyCover {
 
     func unlockChain(_ keychain: KeyCoverKey) async throws {
         if keyCoverPlainTextKey == nil {
-            let task = Task {@MainActor in
-                KeyCoverObservable.shared.isKeyCoverUnlockingPromptShown = true
-            }
-            await task.value
-            while KeyCoverObservable.shared.isKeyCoverUnlockingPromptShown {
-                sleep(1)
+            switch KeyCoverPreferences.shared.keyCoverEnabled {
+            case .selfGeneratedPassword:
+                _ = KeyCoverPassword.shared.loadPasswordIntoMemoryIfNeeded()
+            case .userProvidedPassword:
+                let task = Task { @MainActor in
+                    KeyCoverObservable.shared.isKeyCoverUnlockingPromptShown = true
+                }
+                await task.value
+                while KeyCoverObservable.shared.isKeyCoverUnlockingPromptShown {
+                    sleep(1)
+                }
+            case .disabled:
+                return
             }
         }
         if keychain.chainEncryptionStatus {
@@ -243,7 +250,20 @@ class KeyCoverPassword {
         return nil
     }
 
+    @discardableResult
+    func loadPasswordIntoMemoryIfNeeded() -> String? {
+        if let key = KeyCover.shared.keyCoverPlainTextKey {
+            return key
+        }
+
+        let key = getKeyCoverPassword()
+        KeyCover.shared.keyCoverPlainTextKey = key
+        return key
+    }
+
     func removeKeyCoverPassword() {
+        _ = loadPasswordIntoMemoryIfNeeded()
+
         // Decrypt all key dbs
         for chain in KeyCover.shared.listKeychains() where chain.chainEncryptionStatus {
                 try? chain.decryptKeyDB()

@@ -145,7 +145,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 样本 / 基线 | 结论 |
 |---|---|
 | 流程基线（2026-04-03，offline-first 切换完成） | Road E 的日常迭代主回路已经明确为 **采集 corpus → 离线 replay → 批量编译 → 最小 live 复测 → `.gputrace` 最终确认** |
-| 当前落盘能力（2026-04-04，`E-004f4` 后） | 成功路径按 `ShaderCorpus/<bundleId>/modules/<moduleKey>/` 落盘；失败路径在 `ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/` 落盘 `.bc/.ll/.metal/.meta.json`；两条路径均可进入离线 replay 主路径 |
+| 当前落盘能力（2026-04-05，`E-006d2` 后） | 成功路径按 `ShaderCorpus/<bundleId>/modules/<moduleKey>/` 落盘单模块 `.bc/.ll/.metal/.meta.json`，并新增 `ShaderCorpus/<bundleId>/replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal + replacement.meta.json` 记录成功聚合替换产物；失败路径在 `ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/` 落盘 `.bc/.ll/.metal/.meta.json`；三条路径均可进入 `E-006d` 离线 diff / replay 主路径 |
 | 当前最小离线验证基线（2026-04-04，`E-006c3` 后） | `test-data/*.ll`（19 个，含新增 `test_struct_array_field.ll`）replay + compile **全部成功**；`ShaderCorpus/com.miHoYo.Yuanshen/modules/` 全部 **91 个**真实 module replay + compile **91/91 成功**，preflight rejected `0`，regression `0` |
 | 当前构建验证基线（2026-04-04，`E-006c3` 后） | `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`（**BUILD SUCCEEDED**）；`./BuildScripts/build_and_install.sh`（**BUILD SUCCEEDED**，签名验证通过） |
 | 当前 live 验证状态（2026-04-04，第三次 fresh capture，PID 26460） | `remove_playtools → inject_playtools → launch_app → create_session`：session 返回 `ready` 并保持稳定；manifest 从 304 → 394 行（+90 条），corpus 从 43 → **91 模块**（+48 个全新成功样本），diagnostics 文件数不变（18），**本轮零失败样本** |
@@ -207,6 +207,8 @@ PlayTools.framework (注入到 iOS app)
 | E-006d | ↳ 调查原神同一界面重复启动时的随机渲染异常 / shader 语义漂移 | TODO | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
 | E-006d1 | ↳ 两轮采集输入/输出一致性离线对比工具 | ✅ DONE | |
 |  | 新增 `Scripts/compare_capture_runs.py`：对比两轮 `manifest.jsonl` 与 `modules/`，直接给出 `moduleKey` 集合差异，以及共享 `moduleKey` 在 `.bc/.ll/.metal/.meta`、函数签名、selector、状态摘要上的差异，用于先回答“输入是否相同 / 输出是否相同” | | |
+| E-006d2 | ↳ 成功替换聚合 MSL 落盘 + run-vs-run 聚合 diff | ✅ DONE | |
+|  | 成功替换路径新增 `ShaderCorpus/<bundleId>/replacements/.../aggregate.generated.metal` 与 `replacement.meta.json`，并向 `manifest.jsonl` 追加 `event=replacement`；`Scripts/compare_capture_runs.py` 现可直接比较两轮最新聚合替换产物的 `moduleKeys` / `functionCount` / `aggregateMSLBytes` / aggregate source sha256，用于回答“相同输入下聚合 MSL 是否稳定” | | |
 |  | 目标不是继续证明“源码可见”或“compile green”，而是先用**替换 vs 不替换**建立稳定对照，再确认异常究竟来自 `llvm-dis` / `IRToMSLConverter` / 聚合 MSL / `makeLibrary(source:)` 替换，还是更后面的着色、后处理、render pipeline 顺序 / 配置阶段 | |
 | E-006a | ↳ 扩展真实 corpus 覆盖面 | TODO | |
 |  | 在进入新地图 / 新场景 / 新画质设置时追加采集，逐步逼近"尽量全"的真实 shader 集合 | | |
@@ -256,6 +258,7 @@ PlayTools.framework (注入到 iOS app)
 - **同一界面重复启动出现差异时，不要过早收敛为 shader root cause**：当前已知现象是 mesh 不变，但原神为延迟管线；base pass 看起来类似并不能排除后处理、着色阶段，或 render pipeline 顺序 / 配置差异
 - **`E-006d` 的归因顺序必须固定**：先做“替换 vs 不替换”稳定对照，再对齐“输入是否相同”（metallib / moduleKey / functionTypes），再比较“输出是否相同”（单模块 `.metal` / 聚合 MSL / compile 结果），最后才看“运行时是否真的使用了替换后的 library”以及更后续的 pass / pipeline 行为
 - **`Scripts/compare_capture_runs.py` 是 `E-006d` 的第一层离线守门**：当两轮都已保留 `manifest.jsonl` 与 `modules/` 快照时，优先先跑该脚本，快速回答“哪些 `moduleKey` 只出现在单边”“相同 `moduleKey` 的 `.bc/.ll/.metal/.meta` 是否一致”，避免一上来就手翻 corpus 或直接回到 live 猜测
+- **`E-006d` 不能只盯单模块 `.metal`**：成功替换是否稳定，还要保留并比较每轮的聚合 `aggregate.generated.metal`；否则即使单模块输出一致，也无法快速回答聚合顺序、去重结果或最终替换源码是否漂移
 - **细粒度 lowering 备注、近期 compile blocker 细节与 `E-006d` 的调查框架已下沉到独立参考文档**：见 [E-006d-GenshinRenderingNondeterminism](E-006d-GenshinRenderingNondeterminism.md)
 
 ## 参考信息

@@ -36,6 +36,8 @@ ARTIFACT_FILENAMES = (
     "module.meta.json",
 )
 
+AGGREGATE_EVENT = "replacement"
+
 
 def sha256_file(path: Path) -> str | None:
     if not path.is_file():
@@ -117,6 +119,59 @@ def summarize_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         "firstTimestamp": min(timestamps) if timestamps else None,
         "lastTimestamp": max(timestamps) if timestamps else None,
         "moduleKeyCount": len(set(module_keys)),
+    }
+
+
+def summarize_replacement_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+    replacement_events = [event for event in events if event.get("event") == AGGREGATE_EVENT]
+    selectors = sorted({event.get("selector") for event in replacement_events if event.get("selector")})
+    aggregate_sizes = [event.get("aggregateMSLBytes") for event in replacement_events if isinstance(event.get("aggregateMSLBytes"), int)]
+
+    return {
+        "replacementEventCount": len(replacement_events),
+        "selectors": selectors,
+        "firstTimestamp": min((event.get("timestamp") for event in replacement_events if event.get("timestamp")), default=None),
+        "lastTimestamp": max((event.get("timestamp") for event in replacement_events if event.get("timestamp")), default=None),
+        "aggregateMSLBytes": {
+            "min": min(aggregate_sizes) if aggregate_sizes else None,
+            "max": max(aggregate_sizes) if aggregate_sizes else None,
+        },
+    }
+
+
+def build_replacement_index(run_input: RunInput) -> dict[str, Any]:
+    events = load_jsonl(run_input.manifest_path)
+    replacement_events = [event for event in events if event.get("event") == AGGREGATE_EVENT]
+    indexed: list[dict[str, Any]] = []
+
+    for event in replacement_events:
+        aggregate_relative_path = event.get("aggregateSourcePath")
+        aggregate_path = run_input.manifest_path.parent / aggregate_relative_path if aggregate_relative_path else None
+        indexed.append(
+            {
+                "timestamp": event.get("timestamp"),
+                "selector": event.get("selector"),
+                "cacheKey": event.get("cacheKey"),
+                "corpusRelativeDirectory": event.get("corpusRelativeDirectory"),
+                "moduleKeys": sorted(event.get("moduleKeys", []) or []),
+                "moduleCount": event.get("moduleCount"),
+                "functionCount": event.get("functionCount"),
+                "totalIRSize": event.get("totalIRSize"),
+                "aggregateMSLBytes": event.get("aggregateMSLBytes"),
+                "sourceFunctionNames": sorted(event.get("sourceFunctionNames", []) or []),
+                "sourceFunctionTypes": sorted(event.get("sourceFunctionTypes", []) or []),
+                "aggregateSourcePath": aggregate_relative_path,
+                "aggregateSourceSHA256": sha256_file(aggregate_path) if aggregate_path else None,
+                "aggregateSourceExists": aggregate_path.is_file() if aggregate_path else False,
+            }
+        )
+
+    indexed.sort(key=lambda item: (item.get("timestamp") or "", item.get("cacheKey") or "", item.get("selector") or ""))
+    latest = indexed[-1] if indexed else None
+    return {
+        "summary": summarize_replacement_events(events),
+        "events": indexed,
+        "latest": latest,
     }
 
 
@@ -242,11 +297,54 @@ def compare_shared_modules(
     return differences
 
 
+def compare_replacement_runs(
+    replacements_a: dict[str, Any],
+    replacements_b: dict[str, Any],
+) -> dict[str, Any]:
+    latest_a = replacements_a.get("latest")
+    latest_b = replacements_b.get("latest")
+    if latest_a is None or latest_b is None:
+        return {
+            "hasComparableReplacement": False,
+            "missingRunA": latest_a is None,
+            "missingRunB": latest_b is None,
+            "differences": [],
+        }
+
+    differences: list[dict[str, Any]] = []
+    for field in (
+        "selector",
+        "cacheKey",
+        "moduleKeys",
+        "moduleCount",
+        "functionCount",
+        "totalIRSize",
+        "aggregateMSLBytes",
+        "sourceFunctionNames",
+        "sourceFunctionTypes",
+        "aggregateSourcePath",
+        "aggregateSourceExists",
+        "aggregateSourceSHA256",
+    ):
+        compare_values(field, latest_a.get(field), latest_b.get(field), differences)
+
+    return {
+        "hasComparableReplacement": True,
+        "missingRunA": False,
+        "missingRunB": False,
+        "runA": latest_a,
+        "runB": latest_b,
+        "differences": differences,
+    }
+
+
 def build_report(run_a: RunInput, run_b: RunInput) -> dict[str, Any]:
     events_a = load_jsonl(run_a.manifest_path)
     events_b = load_jsonl(run_b.manifest_path)
     modules_a = build_module_index(run_a)
     modules_b = build_module_index(run_b)
+    replacements_a = build_replacement_index(run_a)
+    replacements_b = build_replacement_index(run_b)
 
     keys_a = set(modules_a)
     keys_b = set(modules_b)
@@ -261,22 +359,26 @@ def build_report(run_a: RunInput, run_b: RunInput) -> dict[str, Any]:
             "manifestPath": str(run_a.manifest_path),
             "modulesDir": str(run_a.modules_dir),
             "summary": summarize_events(events_a),
+            "replacementSummary": replacements_a["summary"],
         },
         "runB": {
             "label": run_b.label,
             "manifestPath": str(run_b.manifest_path),
             "modulesDir": str(run_b.modules_dir),
             "summary": summarize_events(events_b),
+            "replacementSummary": replacements_b["summary"],
         },
         "comparison": {
             "onlyInRunA": only_a,
             "onlyInRunB": only_b,
             "sharedModuleCount": len(keys_a & keys_b),
             "sharedModulesWithDifferences": shared_differences,
+            "latestReplacementComparison": compare_replacement_runs(replacements_a, replacements_b),
             "differenceSummary": {
                 "onlyInRunACount": len(only_a),
                 "onlyInRunBCount": len(only_b),
                 "sharedModulesWithDifferencesCount": len(shared_differences),
+                "replacementDifferenceCount": len(compare_replacement_runs(replacements_a, replacements_b)["differences"]),
             },
         },
     }
@@ -304,6 +406,18 @@ def print_summary(report: dict[str, Any]) -> None:
     if comparison["sharedModulesWithDifferences"]:
         preview = ", ".join(item["moduleKey"] for item in comparison["sharedModulesWithDifferences"][:5])
         print(f"changed shared modules ({len(comparison['sharedModulesWithDifferences'])}): {preview}")
+    replacement_comparison = comparison["latestReplacementComparison"]
+    if not replacement_comparison["hasComparableReplacement"]:
+        missing = []
+        if replacement_comparison["missingRunA"]:
+            missing.append("runA")
+        if replacement_comparison["missingRunB"]:
+            missing.append("runB")
+        if missing:
+            print(f"latest replacement aggregate unavailable for: {', '.join(missing)}")
+    elif replacement_comparison["differences"]:
+        preview = ", ".join(item["field"] for item in replacement_comparison["differences"][:5])
+        print(f"latest replacement aggregate differs ({len(replacement_comparison['differences'])} fields): {preview}")
 
 
 def parse_args() -> argparse.Namespace:

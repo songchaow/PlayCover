@@ -9,6 +9,8 @@
   - 共享 `moduleKey` 在 `module.bc` / `module.ll` / `module.generated.metal` / `module.meta.json` 上是否有 hash 或尺寸差异
   - `functionNames` / `functionTypes` / `generatedFunctionNames` / `generatedFunctionTypes` / `selector` / `captureAction` / compile 状态摘要是否一致
 - 这一步优先服务于第 2、3、4 个核心问题：**输入是否相同 / 输出是否相同 / 同 key 模块的离线产物是否稳定**
+- **E-006d2（✅ DONE）**：成功替换路径新增 `ShaderCorpus/<bundleId>/replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal` 与 `replacement.meta.json`，并向 `manifest.jsonl` 记录 `event=replacement`；`Scripts/compare_capture_runs.py` 同步扩展为比较两轮最新聚合替换产物的 `moduleKeys` / `functionCount` / `aggregateMSLBytes` / aggregate source sha256。
+- 这一步补齐了第 3 个核心问题里原先缺失的“**聚合 MSL 是否稳定**”证据链，避免只比较单模块 `.metal` 却看不到最终替换源码顺序、去重结果或聚合体漂移。
 
 ## 现象
 
@@ -65,6 +67,7 @@ python3 Scripts/compare_capture_runs.py \
 ```
 
 - 若报告中的 `onlyInRunA` / `onlyInRunB` 非空，说明同一界面重复启动时，至少进入 corpus 的 `moduleKey` 集合还不稳定
+- 若两轮都已有 `event=replacement`，脚本还会继续比较最新一次成功替换的聚合产物；若 `latestReplacementComparison.differences` 非空，则说明即使共享 `moduleKey` 看起来稳定，最终聚合替换源码仍可能发生漂移
 
 ### 4. 再比较“输出是否相同”
 
@@ -77,6 +80,7 @@ python3 Scripts/compare_capture_runs.py \
   - 聚合阶段是否存在函数顺序 / 去重 / struct emission 顺序不稳定
   - 日志 / diagnostics / baseline 是否把同一模块的不同版本混在一起
 - `Scripts/compare_capture_runs.py` 会对共享 `moduleKey` 直接比较 `.bc/.ll/.metal/.meta` 的 sha256；如果 `module.ll` 一致而 `module.generated.metal` 不一致，可优先怀疑 converter / 聚合稳定性，而不是先回到 live 侧猜测
+- `E-006d2` 后，成功替换的 aggregate source 也会落盘到 `ShaderCorpus/.../replacements/`；如果共享 `moduleKey` 与单模块 `.metal` 都一致，但 `aggregate.generated.metal` 的 sha256 仍不同，应优先怀疑聚合顺序、重名去重结果，或 runtime 成功路径拿到的 module 组合不同
 
 ### 5. 最后比较“替换与实际使用是否相同”
 
@@ -114,8 +118,8 @@ python3 Scripts/compare_capture_runs.py \
 ## 当前建议执行顺序
 
 1. 固定 live 条件，分别保留两轮 `manifest.jsonl` 与 `modules/` 快照
-2. 先用 `Scripts/compare_capture_runs.py` 对比 run-vs-run，确认输入/输出是否已经漂移
-3. 只有在离线差异已经收敛到具体 `moduleKey` 或具体产物差异后，才继续下钻到 `.gputrace`、实际替换命中情况、以及更后续的 pass / pipeline 行为
+2. 先用 `Scripts/compare_capture_runs.py` 对比 run-vs-run，先看 `onlyInRunA/B`、共享 `moduleKey` 差异，再看 `latestReplacementComparison`
+3. 若 `latestReplacementComparison` 已稳定一致，再继续下钻到 `.gputrace`、实际替换命中情况、以及更后续的 pass / pipeline 行为；若这里已漂移，优先留在离线层继续收敛聚合 / 替换差异
 
 ## 从 dashboard 下沉的细粒度技术备注
 
@@ -134,6 +138,7 @@ python3 Scripts/compare_capture_runs.py \
 - **真实 corpus compile 通过不等于 `.gputrace` 源码可见，更不等于真实渲染正确**：这三层验证必须分开
 - **延迟管线下，base pass 看起来类似并不能排除后续阶段问题**：若当前观察主要来自最终画面差异，就必须把后处理、着色阶段与 render pipeline 顺序 / 配置一起纳入排查范围
 - **“替换 vs 不替换”是当前最低风险的稳定比较基线**：在根因层级未明确前，先确认开启替换后是否稳定引入了最终效果差异，再继续往具体 stage / pass 下钻
+- **成功路径也要落盘聚合产物，才能回答“最终替换源码是否稳定”**：只保留单模块 `.bc/.ll/.metal` 不足以覆盖聚合顺序、重名去重与最终 `makeLibrary(source:)` 输入；`E-006d2` 后应优先比较 `manifest.jsonl` 中最新 `event=replacement` 对应的 aggregate source hash
 - **`air.struct_type_info` 第三个 `i32` 是 `elementCount`，不是 alignment**：数组字段若被错当标量，会直接造成 subscript 类 compile blocker
 - **结构体类型名要在参数声明和结构体定义两处保持一致**：尤其是首字母小写的用户类型名，需要与 `sanitizeTypeName` 策略统一
 - **`check_gputrace_sources.py` 需要识别注释开头的注入 MSL**：PlayTools 生成源码常以 `// Auto-generated ...` 开头

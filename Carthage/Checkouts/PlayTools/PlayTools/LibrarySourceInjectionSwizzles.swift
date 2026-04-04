@@ -288,10 +288,13 @@ class LibrarySourceInjectionService {
     private lazy var shaderCorpusModulesDirectoryURL: URL = {
         shaderCorpusDirectoryURL.appendingPathComponent("modules", isDirectory: true)
     }()
+    private lazy var shaderCorpusReplacementsDirectoryURL: URL = {
+        shaderCorpusDirectoryURL.appendingPathComponent("replacements", isDirectory: true)
+    }()
     private lazy var shaderCorpusManifestIndexURL: URL = {
         shaderCorpusDirectoryURL.appendingPathComponent("manifest.jsonl")
     }()
-    private let corpusManifestSchemaVersion = 2
+    private let corpusManifestSchemaVersion = 3
 
     // MARK: - E-004b: Bitcode 模块缓存
 
@@ -493,6 +496,7 @@ class LibrarySourceInjectionService {
             let replacedFunctionCount = functionCount(of: replacementLibrary)
             let dumpedCorpusPaths = dumpSuccessfulReplacementCorpus(
                 preparedModules,
+                aggregate: aggregate,
                 selector: selector,
                 cacheKey: cacheKey
             )
@@ -605,6 +609,42 @@ class LibrarySourceInjectionService {
         let artifactStatuses: [String: String]
         let functionNames: [String]
         let generatedFunctionNames: [String]
+    }
+
+    private struct ReplacementCorpusManifest: Codable {
+        let schemaVersion: Int
+        let bundleId: String
+        let selector: String
+        let cacheKey: String
+        let timestamp: String
+        let moduleKeys: [String]
+        let moduleCount: Int
+        let functionCount: Int
+        let totalIRSize: Int
+        let aggregateMSLBytes: Int
+        let sourceFunctionNames: [String]
+        let sourceFunctionTypes: [String]
+        let moduleSummaries: [String]
+        let aggregateSourcePath: String
+        let corpusRelativeDirectory: String
+    }
+
+    private struct ReplacementManifestIndexEntry: Codable {
+        let schemaVersion: Int
+        let event: String
+        let bundleId: String
+        let selector: String
+        let cacheKey: String
+        let timestamp: String
+        let corpusRelativeDirectory: String
+        let aggregateSourcePath: String
+        let moduleKeys: [String]
+        let moduleCount: Int
+        let functionCount: Int
+        let totalIRSize: Int
+        let aggregateMSLBytes: Int
+        let sourceFunctionNames: [String]
+        let sourceFunctionTypes: [String]
     }
 
     private enum CorpusArtifactWriteStatus: String {
@@ -1038,6 +1078,7 @@ class LibrarySourceInjectionService {
     @discardableResult
     private func dumpSuccessfulReplacementCorpus(
         _ preparedModules: [PreparedModuleReplacement],
+        aggregate: AggregateReplacementSource,
         selector: String,
         cacheKey: String
     ) -> [String] {
@@ -1050,6 +1091,7 @@ class LibrarySourceInjectionService {
         do {
             try fileManager.createDirectory(at: shaderCorpusDirectoryURL, withIntermediateDirectories: true)
             try fileManager.createDirectory(at: shaderCorpusModulesDirectoryURL, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: shaderCorpusReplacementsDirectoryURL, withIntermediateDirectories: true)
             if !fileManager.fileExists(atPath: shaderCorpusManifestIndexURL.path) {
                 fileManager.createFile(atPath: shaderCorpusManifestIndexURL.path, contents: nil)
             }
@@ -1062,7 +1104,69 @@ class LibrarySourceInjectionService {
 
         let timestamp = ISO8601DateFormatter().string(from: Date())
         var dumpedDirectories: [String] = []
-        dumpedDirectories.reserveCapacity(preparedModules.count)
+        dumpedDirectories.reserveCapacity(preparedModules.count + 1)
+
+        do {
+            let replacementDirectoryName = sanitizeDiagnosticFilenameComponent("\(timestamp)_\(selector)_\(cacheKey)")
+            let replacementDirectoryURL = shaderCorpusReplacementsDirectoryURL.appendingPathComponent(replacementDirectoryName, isDirectory: true)
+            let aggregateSourceURL = replacementDirectoryURL.appendingPathComponent("aggregate.generated.metal")
+            let metadataURL = replacementDirectoryURL.appendingPathComponent("replacement.meta.json")
+            let relativeDirectory = corpusRelativePath(for: replacementDirectoryURL)
+            let aggregateSourceRelativePath = corpusRelativePath(for: aggregateSourceURL)
+            let sourceFunctionNames = Array(Set(preparedModules.flatMap { prepared in
+                prepared.conversion.functions.map { $0.name }
+            })).sorted()
+            let sourceFunctionTypes = Array(Set(preparedModules.flatMap { $0.conversion.functions.map { $0.shaderType.rawValue } })).sorted()
+            let moduleKeys = preparedModules.map { stableCorpusModuleKey(for: $0.module) }.sorted()
+            let moduleSummaries = preparedModules.map { $0.module.summary }
+
+            try fileManager.createDirectory(at: replacementDirectoryURL, withIntermediateDirectories: true)
+            try Data(aggregate.source.utf8).write(to: aggregateSourceURL, options: .atomic)
+
+            let replacementManifest = ReplacementCorpusManifest(
+                schemaVersion: corpusManifestSchemaVersion,
+                bundleId: runtimeBundleIdentifier,
+                selector: selector,
+                cacheKey: cacheKey,
+                timestamp: timestamp,
+                moduleKeys: moduleKeys,
+                moduleCount: aggregate.moduleCount,
+                functionCount: aggregate.functionCount,
+                totalIRSize: aggregate.totalIRSize,
+                aggregateMSLBytes: aggregate.source.utf8.count,
+                sourceFunctionNames: sourceFunctionNames,
+                sourceFunctionTypes: sourceFunctionTypes,
+                moduleSummaries: moduleSummaries,
+                aggregateSourcePath: aggregateSourceRelativePath,
+                corpusRelativeDirectory: relativeDirectory
+            )
+            let replacementMetadataData = try manifestEncoder.encode(replacementManifest)
+            try replacementMetadataData.write(to: metadataURL, options: .atomic)
+
+            let replacementIndexEntry = ReplacementManifestIndexEntry(
+                schemaVersion: corpusManifestSchemaVersion,
+                event: "replacement",
+                bundleId: runtimeBundleIdentifier,
+                selector: selector,
+                cacheKey: cacheKey,
+                timestamp: timestamp,
+                corpusRelativeDirectory: relativeDirectory,
+                aggregateSourcePath: aggregateSourceRelativePath,
+                moduleKeys: moduleKeys,
+                moduleCount: aggregate.moduleCount,
+                functionCount: aggregate.functionCount,
+                totalIRSize: aggregate.totalIRSize,
+                aggregateMSLBytes: aggregate.source.utf8.count,
+                sourceFunctionNames: sourceFunctionNames,
+                sourceFunctionTypes: sourceFunctionTypes
+            )
+            try appendCorpusManifestIndexEntry(replacementIndexEntry, encoder: indexEncoder)
+            dumpedDirectories.append(replacementDirectoryURL.path)
+        } catch {
+            NSLog("[PlayTools] LibrarySourceInjection: failed to dump replacement aggregate corpus for %@ — %@",
+                  selector,
+                  error.localizedDescription)
+        }
 
         for prepared in preparedModules {
             let moduleKey = stableCorpusModuleKey(for: prepared.module)
@@ -1233,8 +1337,8 @@ class LibrarySourceInjectionService {
         return CorpusArtifactWriteResult(path: corpusRelativePath(for: url), status: .created)
     }
 
-    private func appendCorpusManifestIndexEntry(
-        _ entry: CorpusManifestIndexEntry,
+    private func appendCorpusManifestIndexEntry<Entry: Encodable>(
+        _ entry: Entry,
         encoder: JSONEncoder
     ) throws {
         let entryData = try encoder.encode(entry)

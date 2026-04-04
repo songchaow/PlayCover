@@ -26,6 +26,8 @@ IRToMSLConverter.convert(...)
 
 也就是说，E-004 负责**沉淀真实输入**，E-005 负责**稳定消费这些输入**。
 
+**注意**：E-005 的稳定保证只覆盖**已经进入 `ShaderCorpus/` 或被手工补成 `.ll` 的样本**。对于仅存在于 `ShaderSourceDiagnostics/` 的 `compile_failed` live 样本，仍需依赖 E-004 / E-006 的 re-capture / 导出闭环把它们带入离线主路径。
+
 ## E-005a：corpus replay runner
 
 ### 已落地能力

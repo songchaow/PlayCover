@@ -418,8 +418,8 @@ class LibrarySourceInjectionService {
             return nil
         }
 
+        var preparedModules: [PreparedModuleReplacement] = []
         do {
-            var preparedModules: [PreparedModuleReplacement] = []
             preparedModules.reserveCapacity(modules.count)
 
             for (index, module) in modules.enumerated() {
@@ -453,7 +453,8 @@ class LibrarySourceInjectionService {
                     detail: issueSummary,
                     moduleSummaries: aggregate.moduleSummaries,
                     validationIssues: validationIssues,
-                    compilerErrorDescription: nil
+                    compilerErrorDescription: nil,
+                    preparedModules: preparedModules
                 ) ?? "n/a"
                 NSLog("[PlayTools] LibrarySourceInjection: %@ — source preflight rejected: %@ (modules=%d, sourceFuncs=%d, dump=%@)",
                       selector,
@@ -475,7 +476,8 @@ class LibrarySourceInjectionService {
                     detail: compilerMessage,
                     moduleSummaries: aggregate.moduleSummaries,
                     validationIssues: [],
-                    compilerErrorDescription: compilerMessage
+                    compilerErrorDescription: compilerMessage,
+                    preparedModules: preparedModules
                 ) ?? "n/a"
                 let compilerContext = compileErrorContext(in: aggregate.source, errorDescription: compilerMessage)
                 NSLog("[PlayTools] LibrarySourceInjection: %@ — source recompile failed: %@ (modules=%d, sourceFuncs=%d, dump=%@%@)",
@@ -514,6 +516,21 @@ class LibrarySourceInjectionService {
                   error.localizedDescription,
                   modules.count,
                   moduleSummaries)
+            // E-004f4: Dump available module artifacts for partial-failure offline replay
+            if !preparedModules.isEmpty {
+                let timestamp = ISO8601DateFormatter().string(from: Date())
+                let baseName = sanitizeDiagnosticFilenameComponent("\(timestamp)_\(selector)_exception")
+                let dumpPath = dumpPartialFailureModuleArtifacts(
+                    allModules: modules,
+                    preparedModules: preparedModules,
+                    baseName: baseName,
+                    selector: selector,
+                    reason: "exception: \(error.localizedDescription)"
+                )
+                if let dumpPath {
+                    NSLog("[PlayTools] LibrarySourceInjection: partial module artifacts dumped to %@", dumpPath)
+                }
+            }
             return nil
         }
     }
@@ -821,7 +838,8 @@ class LibrarySourceInjectionService {
         detail: String,
         moduleSummaries: String,
         validationIssues: [ReplacementSourceValidationIssue],
-        compilerErrorDescription: String?
+        compilerErrorDescription: String?,
+        preparedModules: [PreparedModuleReplacement]? = nil
     ) -> String? {
         let fileManager = FileManager.default
         do {
@@ -862,9 +880,156 @@ class LibrarySourceInjectionService {
             }
 
             try metadataLines.joined(separator: "\n").write(to: metaURL, atomically: true, encoding: .utf8)
+
+            // E-004f4: Also dump per-module .bc/.ll/.metal for offline replay closure
+            if let preparedModules, !preparedModules.isEmpty {
+                let modulesDumpPath = dumpFailureModuleArtifacts(
+                    preparedModules: preparedModules,
+                    baseName: baseName,
+                    selector: selector,
+                    compileStatus: reason
+                )
+                if let modulesDumpPath {
+                    NSLog("[PlayTools] LibrarySourceInjection: per-module artifacts dumped to %@", modulesDumpPath)
+                }
+            }
+
             return sourceURL.path
         } catch {
             NSLog("[PlayTools] LibrarySourceInjection: failed to dump aggregate source diagnostic — %@",
+                  error.localizedDescription)
+            return nil
+        }
+    }
+
+    // MARK: - E-004f4: Failure path module artifact export
+
+    /// Dump per-module .bc/.ll/.metal/.meta.json for failed replacement samples.
+    /// Enables offline replay of compile_failed / preflight_rejected samples.
+    @discardableResult
+    private func dumpFailureModuleArtifacts(
+        preparedModules: [PreparedModuleReplacement],
+        baseName: String,
+        selector: String,
+        compileStatus: String
+    ) -> String? {
+        let modulesBaseURL = shaderSourceDiagnosticDirectoryURL.appendingPathComponent("\(baseName)_modules", isDirectory: true)
+        let fileManager = FileManager.default
+
+        do {
+            try fileManager.createDirectory(at: modulesBaseURL, withIntermediateDirectories: true)
+
+            for prepared in preparedModules {
+                let moduleKey = stableCorpusModuleKey(for: prepared.module)
+                let moduleDir = modulesBaseURL.appendingPathComponent(moduleKey, isDirectory: true)
+                try fileManager.createDirectory(at: moduleDir, withIntermediateDirectories: true)
+
+                try prepared.module.data.write(to: moduleDir.appendingPathComponent("module.bc"), options: .atomic)
+                try Data(prepared.irResult.irText.utf8).write(to: moduleDir.appendingPathComponent("module.ll"), options: .atomic)
+                try Data(prepared.conversion.mslSource.utf8).write(to: moduleDir.appendingPathComponent("module.generated.metal"), options: .atomic)
+
+                let meta: [String: Any] = [
+                    "schemaVersion": 2,
+                    "bundleId": runtimeBundleIdentifier,
+                    "moduleKey": moduleKey,
+                    "moduleKeyStrategy": "sha256(module.bc)",
+                    "selector": selector,
+                    "functionNames": prepared.module.functionNames,
+                    "functionTypes": prepared.module.functionTypes,
+                    "generatedFunctionNames": prepared.conversion.functions.map(\.name),
+                    "generatedFunctionTypes": prepared.conversion.functions.map(\.shaderType.rawValue),
+                    "llvmDisStatus": "success",
+                    "converterStatus": "success",
+                    "compileStatus": compileStatus,
+                    "bitcodeBytes": prepared.module.data.count,
+                    "llvmIRBytes": prepared.irResult.outputSize,
+                    "generatedMSLBytes": prepared.conversion.mslSource.utf8.count,
+                    "captureSource": "failure_path",
+                ]
+                let metaData = try JSONSerialization.data(withJSONObject: meta, options: [.prettyPrinted, .sortedKeys])
+                try metaData.write(to: moduleDir.appendingPathComponent("module.meta.json"), options: .atomic)
+            }
+
+            NSLog("[PlayTools] LibrarySourceInjection: dumped %d module artifacts for offline replay (%@)",
+                  preparedModules.count, compileStatus)
+            return modulesBaseURL.path
+        } catch {
+            NSLog("[PlayTools] LibrarySourceInjection: failed to dump failure module artifacts — %@",
+                  error.localizedDescription)
+            return nil
+        }
+    }
+
+    /// Dump per-module .bc/.ll for partially prepared modules (exception path).
+    /// Saves .bc for all modules, .ll/.metal only for successfully prepared ones.
+    @discardableResult
+    private func dumpPartialFailureModuleArtifacts(
+        allModules: [MetallibParser.BitcodeModule],
+        preparedModules: [PreparedModuleReplacement],
+        baseName: String,
+        selector: String,
+        reason: String
+    ) -> String? {
+        let modulesBaseURL = shaderSourceDiagnosticDirectoryURL.appendingPathComponent("\(baseName)_modules", isDirectory: true)
+        let fileManager = FileManager.default
+
+        do {
+            try fileManager.createDirectory(at: modulesBaseURL, withIntermediateDirectories: true)
+
+            let preparedCount = preparedModules.count
+            for (index, module) in allModules.enumerated() {
+                let moduleKey = stableCorpusModuleKey(for: module)
+                let moduleDir = modulesBaseURL.appendingPathComponent(moduleKey, isDirectory: true)
+                try fileManager.createDirectory(at: moduleDir, withIntermediateDirectories: true)
+
+                // Always save .bc for every module
+                try module.data.write(to: moduleDir.appendingPathComponent("module.bc"), options: .atomic)
+
+                if index < preparedCount {
+                    let prepared = preparedModules[index]
+                    // Save .ll and .metal for successfully prepared modules
+                    try Data(prepared.irResult.irText.utf8).write(to: moduleDir.appendingPathComponent("module.ll"), options: .atomic)
+                    try Data(prepared.conversion.mslSource.utf8).write(to: moduleDir.appendingPathComponent("module.generated.metal"), options: .atomic)
+
+                    // Minimal meta for offline replay
+                    var metaLines: [String] = [
+                        "schemaVersion=2",
+                        "bundleId=\(runtimeBundleIdentifier)",
+                        "moduleKey=\(moduleKey)",
+                        "selector=\(selector)",
+                        "functionNames=\(module.functionNames.joined(separator: ","))",
+                        "functionTypes=\(module.functionTypes.joined(separator: ","))",
+                        "llvmDisStatus=success",
+                        "converterStatus=success",
+                        "compileStatus=exception",
+                        "captureSource=partial_failure_path",
+                        "reason=\(reason)",
+                    ]
+                    try Data(metaLines.joined(separator: "\n").utf8).write(to: moduleDir.appendingPathComponent("module.meta.json"), options: .atomic)
+                } else {
+                    // Module not prepared — save minimal metadata
+                    var metaLines: [String] = [
+                        "schemaVersion=2",
+                        "bundleId=\(runtimeBundleIdentifier)",
+                        "moduleKey=\(moduleKey)",
+                        "selector=\(selector)",
+                        "functionNames=\(module.functionNames.joined(separator: ","))",
+                        "functionTypes=\(module.functionTypes.joined(separator: ","))",
+                        "llvmDisStatus=not_attempted",
+                        "converterStatus=not_attempted",
+                        "compileStatus=exception",
+                        "captureSource=partial_failure_path",
+                        "reason=\(reason)",
+                    ]
+                    try Data(metaLines.joined(separator: "\n").utf8).write(to: moduleDir.appendingPathComponent("module.meta.json"), options: .atomic)
+                }
+            }
+
+            NSLog("[PlayTools] LibrarySourceInjection: dumped %d module artifacts for partial failure (%d/%d prepared)",
+                  allModules.count, preparedCount, allModules.count)
+            return modulesBaseURL.path
+        } catch {
+            NSLog("[PlayTools] LibrarySourceInjection: failed to dump partial failure module artifacts — %@",
                   error.localizedDescription)
             return nil
         }

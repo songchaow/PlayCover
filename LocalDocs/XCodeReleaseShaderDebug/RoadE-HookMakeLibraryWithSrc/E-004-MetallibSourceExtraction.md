@@ -38,7 +38,7 @@ makeLibrary(source:) 重编译替换
 
 - 每次修 `IRToMSLConverter` 都要重装 / 重注入 / 启动原神
 - live 覆盖面受地图、场景、加载时机影响，**不稳定且随机**
-- 当前只有**失败样本**会落盘，成功路径没有形成可复用 corpus
+- 成功路径虽然已经形成可复用 `ShaderCorpus/`，但 **`compile_failed` live 样本仍主要只落在 `ShaderSourceDiagnostics/`**；若不额外 re-capture 或补失败路径 `.bc/.ll` 导出，修复后也无法自动进入离线主路径
 
 因此 E-004 这一阶段的主目标是：
 
@@ -94,6 +94,8 @@ makeLibrary(source:) 重编译替换
 - 覆盖策略：`.bc/.ll/.metal` 采用**基线优先**；若后续同一 `moduleKey` 再次出现但产物不同，则**不覆盖已有基线**，只在 `manifest.jsonl` 中记录 `conflict_preserved` 事件
 
 这意味着真实运行中采到的成功样本，已经具备长期可复用的目录、索引和去重约束；后续 replay / diff / 回归可以默认建立在这套稳定 corpus 之上。
+
+但当前仍有一个关键缺口：`compile_failed` live 样本仍主要只落在 `ShaderSourceDiagnostics/`（`.metal + .txt`），并不会自动进入 `ShaderCorpus/`。因此当某个 blocker 首次由 diagnostics 暴露时，后续即使修复了转换器，也不能只凭“现有 corpus 已绿”就宣布闭环；还必须补一次 post-fix fresh capture，或后续为失败路径补齐 `.bc/.ll` 导出，使该样本真正进入离线回归主路径。
 
 ### 2. `makeLibrary` 覆盖面已扩展到 `URL/default/file`
 
@@ -312,7 +314,7 @@ build_and_install.sh
 | E-004c | 宿主 LLVM 工具链管理 | ✅ DONE | `LLVMToolManager` 已可下载 / 校验 `llvm-dis` |
 | E-004d | runtime→host `llvm-dis` 主路径 | ✅ DONE | host bridge 已成为主路径 |
 | E-004e | IR→MSL 转换器 | 🔄 IN PROGRESS | 后续迭代应改为 corpus 驱动 |
-| E-004f | 成功路径导出 corpus | 🔄 IN PROGRESS | `E-004f1` 已完成，当前推进到 `E-004f2` |
+| E-004f | corpus 导出与闭环策略 | ✅ DONE | 成功路径已稳定，`E-004f4` 已实现失败路径导出闭环 |
 
 ### E-004f 细分
 
@@ -321,7 +323,8 @@ build_and_install.sh
 | E-004f1 | 成功路径导出 `.bc/.ll/.metal/.json` | ✅ DONE | `attemptLibraryReplacement(...)` 成功时已按 module 落盘真实样本 |
 | E-004f2 | corpus 命名 / 去重 / manifest 规范 | ✅ DONE | 已落地 `modules/<moduleKey>`、`manifest.jsonl` 与基线保护策略 |
 | E-004f3 | 扩展 `URL/default/file` 路径覆盖 | ✅ DONE | 相关 selector 已在代码路径上复用统一导出 / 替换逻辑；default 路径增加了 bundle `.metallib` 保守定位策略 |
-| E-004f4 | MCP / 脚本化导出接口 | TODO | 降低手工操作成本 |
+| E-004f4 | 失败样本闭环 / re-capture 策略 | ✅ DONE | 失败路径在 `ShaderSourceDiagnostics/<baseName>_modules/` 导出 `.bc/.ll/.metal/.meta.json`；异常路径导出所有模块 `.bc` 及已准备模块的 `.ll`/`.metal` |
+| E-004f5 | MCP / 脚本化导出接口 | TODO | 能力需求已弱化，后续与跨任务 `E-007` 一起收敛 |
 
 ## 与 E-005 / E-006 的衔接
 
@@ -350,10 +353,12 @@ E-004 这一阶段完成，不等于最终 `.gputrace` 目标完成；它的完�
 2. corpus 中每个 module 至少具备 `.bc/.ll/.metal/.json`
 3. 后续 `IRToMSLConverter` 修复能对 corpus 做离线 replay（当前已由 `Scripts/corpus_replay_runner.py` 落地）
 4. 新 blocker 的首轮归因，默认优先在 corpus 上完成，而不是回到原神里反复试错
+5. 若 blocker 首次只出现在 `ShaderSourceDiagnostics/`、尚未进入 `ShaderCorpus/`，则必须通过 post-fix fresh capture 或失败路径 `.bc/.ll` 导出补齐闭环，而不能只凭“现有 corpus 已绿”宣布完成
 
 ## 参考
 
 - 当前主线与跨任务 TODO：`00-Dashboard.md`
+- 失败样本闭环 / re-capture 策略：`E-004-CorpusClosureAndRecapturePolicy.md`
 - E-005 离线 replay / batch compile / diff：`E-005-OfflineReplayBatchCompileDiff.md`
 - live blocker 历史归档：`00-Dashboard-Archive.md`
 - 早期 E-004 历史细节：`E-004-MetallibSourceExtraction-Archive.md`

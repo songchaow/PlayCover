@@ -62,7 +62,8 @@ makeLibrary(source:)
 
 1. **采集层（runtime / host）**
    - 在真实 app 中拦截 shader 加载
-   - 保存成功与失败样本，形成 corpus
+   - 成功替换样本进入 `ShaderCorpus/`，失败样本上下文进入 `ShaderSourceDiagnostics/`
+   - 若 blocker 首次来自 `ShaderSourceDiagnostics/` 且样本尚未进入 `ShaderCorpus/`，修复后需通过 fresh capture 或失败路径补齐 `.bc/.ll` 导出完成闭环
 2. **离线回放层（offline replay）**
    - 对 corpus 做 `IR -> MSL -> Metal 编译` 批量验证
    - 作为 `IRToMSLConverter` 的日常回归主路径
@@ -78,7 +79,7 @@ makeLibrary(source:)
 4. **优先做离线测试**：若本轮涉及 `IRToMSLConverter` / corpus / replay，先补最小样本与离线回放；仅在确有必要时做 live
 5. 若本轮实现了新功能，执行相应验证：
    - 离线功能：最小样本 / corpus replay / Metal 编译
-   - runtime 导出链路：构建 + 安装 + 最小 live 采集
+   - runtime 导出链路：构建 + 安装 + 最小 live 采集；**若本轮修复来源于 `ShaderSourceDiagnostics/` 的 compile blocker，且对应样本尚未进入 `ShaderCorpus/`，不能只用既有 corpus green 结束，需补一次 post-fix fresh capture 或明确记录失败路径导出仍未闭环**
    - 最终截帧效果：live + `.gputrace` 人工确认
 6. 执行完毕后整理文档：结合已有内容，**深度整理并同步全局信息**，更新优先级、当前主线、TODO、验证与经验；较旧信息下沉到归档，主体保持简洁，**不要只做追加**
 7. 整理代码与改动内容；若本轮新增的测试样本、回放脚本或 corpus 工具对后续仍有价值，也应一并整理并提交
@@ -131,7 +132,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 ## 当前主线
 
-- **E-006（本轮执行：`E-006c` 真实 `.gputrace` 源码可见确认）**：`E-006c1` 已修复多模块 metallib 重复函数名致命 blocker；`E-006c2` 已修复 metadata 字段类型与 IR 结构体类型不一致的数组字段 compile blocker（`_MainLightClipPlaneAlphas` 在 metadata 中为 `float`，IR 中为 `[4 x float]`）。PlayTools 编译通过，离线 replay `18/18`（test-data）和 `43/43`（corpus）均 compile 成功。**fresh capture 已完成**（2026-04-04 14:34 UTC+8）：`build_and_install` → `remove_playtools` → `inject_playtools` → `launch_app` → `create_session` 返回 `ready`（PID 84835），`manifest.jsonl` 追加 43 条 `conflict_preserved` 事件，证明 hook 与 corpus 去重落盘链路正常工作。进程在采集后约 12 秒崩溃（`EXC_BAD_ACCESS`），属已知 live 稳定性问题。**下一步需人工操作 Xcode 截帧做最终确认**。
+- **E-006（本轮执行：`E-006c3` post-fix fresh capture 入 corpus 确认 + `.gputrace` 最终可见性确认）**：`E-006c1` / `E-006c2` 已清掉已知 compile blocker，`E-004f4` 已实现失败路径 `.bc/.ll/.metal/.meta.json` 导出闭环；现有 corpus 离线 replay `18/18`（test-data）+ `43/43`（corpus）均 compile 成功，regression `0`。**当前最高优先级**：部署最新 PlayTools（含 `E-004f4` + `E-006c2` 修复），执行原神 fresh capture，确认：①`_MainLightClipPlaneAlphas` 样本不再只停留在 diagnostics（进入 corpus 或仍失败但携带 `_modules` 产物可离线验证）；②新 `.gputrace` 中源码可见。
 - **E-004（已完成：`E-004f3` 扩展 `makeLibrary(URL/default/file)` 路径的采集覆盖）**：`newLibraryWithURL:error:`、`newDefaultLibrary`、`newDefaultLibraryWithBundle:error:`、`newLibraryWithFile:error:` 现已读取 `.metallib` 并复用统一的 `bitcode -> IR -> MSL -> makeLibrary(source:) -> ShaderCorpus` 主链路；default 路径额外加入了 bundle 内 `.metallib` 的保守定位策略。
 - **E-005（已完成：`E-005c` 新旧转换结果 diff / 回归基线）**：`Scripts/corpus_replay_runner.py` 现已支持保存 baseline snapshot、比较新旧 replay / compile 结果、输出 `baseline-diffs/` 与结构化回归统计；日常离线回归已经具备"改前 vs 改后"防退化能力。
 
@@ -140,15 +141,14 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 样本 / 基线 | 结论 |
 |---|---|
 | 流程基线（2026-04-03，offline-first 切换完成） | Road E 的日常迭代主回路已经明确为 **采集 corpus → 离线 replay → 批量编译 → 最小 live 复测 → `.gputrace` 最终确认** |
-| 原神 6.4.0（最近一轮 live 基线） | 已确认 `ShaderSourceDiagnostics`、host bridge 与 runtime 注入主路径可用；真实 app 仍是 corpus 的生产来源与最终验证环境 |
-| 当前落盘能力（2026-04-04） | 失败的 MSL 会进入 `ShaderSourceDiagnostics/`；异常 payload 会进入 `ShaderPayloadSamples/`；`attemptLibraryReplacement(...)` 成功路径现已按 `ShaderCorpus/<bundleId>/modules/<moduleKey>/` 落盘 canonical `module.bc`、`module.ll`、`module.generated.metal` 与 `module.meta.json`，并在根目录追加 `manifest.jsonl` 事件索引；`moduleKey` 由 `sha256(module.bc)` 生成，重复样本默认复用基线，不再静默覆盖；`newLibraryWithURL:error:`、`newDefaultLibrary`、`newDefaultLibraryWithBundle:error:`、`newLibraryWithFile:error:` 代码路径也已接入同一套导出与替换逻辑 |
-| 当前离线 replay / batch compile / diff 能力（2026-04-03，`E-005a`/`E-005b`/`E-005c` 完成） | `Scripts/corpus_replay_runner.py` 现已支持扫描 `ShaderCorpus/` 或显式 `.ll`，读取 `module.meta.json` 中的 `functionNames/functionTypes` 做 `IRToMSLConverter.convert(...)`，并在 `--compile` 模式下继续输出 `.air`、`compile-summary.json`、逐样本 `primaryDiagnostic/sourceContext` 与 failure clusters；同时支持 `--save-baseline` 生成 `baseline.json + generated-sources/` 快照、`--baseline-report` 产出结构化 replay / compile / generated MSL 对比与 `baseline-diffs/`；`Scripts/ir_to_msl_smoketest.sh` 继续作为单样本兼容 wrapper |
-| 当前最小离线验证基线（2026-04-04，`E-006b9` 完成） | 已对 `test-data/*.ll` 执行 batch replay + compile：replay `18/18` 成功，Metal compile **`18/18` 成功**（improvement `+1`，regression `0`）。`test_builtins.ll` 的 `metal::_atomic` 模板参数 blocker 已修复——`IRToMSLConverter` 现在将 `metal::_atomic` 正确映射为 `atomic_int`/`atomic_uint` 引用类型，过滤原子操作的内部控制参数并映射 `memory_order` 枚举，GEP 对 atomic 的 field0 直接透传。**所有 `test-data/*.ll` compile blocker 已收敛** |
-| 当前真实 corpus 离线验证基线（2026-04-04，`E-006c` 前置验证） | 已对 `ShaderCorpus/com.miHoYo.Yuanshen/modules/` 全部 43 个真实 module 执行 batch replay + compile：**replay `43/43` 成功，Metal compile `43/43` 成功，preflight rejected `0`**。`IRToMSLConverter` 对所有真实运行时采集的原神 shader 均可生成可编译的 MSL。**IR→MSL 转换质量已不再是 blocker** |
-| 多模块 metallib 重复函数名修复（2026-04-04，`E-006c1` 完成） | **根因确认**：Unity 编译的 metallib 每个 contain 2-5 个同名函数（如 `xlatMtlMain`）的 shader variant（42 个 vertex-only + 21 个 fragment-only，共 185 个 module / 43 个 metallib）。原 `buildAggregateReplacementSource` 检测到重复函数名后直接 `throw ReplacementAggregationError.duplicateFunctionNames`，导致 `attemptLibraryReplacement` 的 catch 块将异常吞掉并 `return nil`，调用方 `?? originalLibrary` 回退到原始 library。**所有原神 metallib 的替换均因此前置失败，即使 IR→MSL 转换和编译都通过了**。修复：改为去重策略，对每个唯一函数名保留首个模块，记录 NSLog 警告并继续聚合编译 |
-| 当前构建验证基线（2026-04-04，`E-006c2` 后） | 已运行 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`（**BUILD SUCCEEDED**），离线 replay test-data `18/18` compile 成功、corpus `43/43` compile 成功。`E-006c2` 修复后回归 `0` |
-| 当前最小 live 验证状态（2026-04-04，`E-006c2` fresh capture） | `build_and_install` → `remove_playtools` → `inject_playtools` → `launch_app` → `create_session` 返回 `ready`（PID 84835，runtimePort 61209）；`manifest.jsonl` 追加 43 条 `conflict_preserved` / `selector=newLibraryWithData:error:` 事件（`2026-04-04T06:34:15Z`–`06:34:27Z`），全部为去重复用（`module.bc: reused`），无新 module。进程在采集完成后约 12 秒崩溃（`Yuanshen-2026-04-04-143429.ips`，PID 84835），属已知 `EXC_BAD_ACCESS` live 稳定性问题 |
-| 当前 `.gputrace` 源码可见性检查（2026-04-04，`E-006c` 早期） | 已对原神现存 6 份真实 trace 批量执行 `Scripts/check_gputrace_sources.py`：`valid_msl_files` 全部为 `0`；Xcode 可打开 `capture_20260402_roadE_e006_diag.gputrace` 并进入具体 draw call（`Command Buffer 1` / `Render Encoder 12` / draw call `7688`，`editor_mode=Bound Resources`，Step 菜单启用），因此当前结论是"trace 可开/可步进，但源码仍不可见"。**注意：这些 trace 是在 `E-006c1` 修复前捕获的，不能反映修复后的效果** |
+| 原神 6.4.0（最近一轮 live 基线） | 已确认 `ShaderSourceDiagnostics`、host bridge 与 runtime 注入主路径可用；真实 app 仍是 corpus 的生产来源与最终验证环境，但**当前 `ShaderCorpus/` 只代表成功替换样本，不等于所有 live 样本** |
+| 当前落盘能力（2026-04-04，`E-004f4` 后） | 成功路径按 `ShaderCorpus/<bundleId>/modules/<moduleKey>/` 落盘 `module.bc`、`module.ll`、`module.generated.metal`、`module.meta.json`、`manifest.jsonl`；**失败路径（`E-004f4`）也在 `ShaderSourceDiagnostics/<bundleId>/<baseName>_modules/<moduleKey>/` 落盘 `module.bc`、`module.ll`、`module.generated.metal`、`module.meta.json`**；异常路径导出所有模块 `.bc` 及已成功模块的 `.ll`/`.metal`。失败样本现在可进入离线 replay 主路径 |
+| 当前离线 replay / batch compile / diff 能力（2026-04-03，`E-005a`/`E-005b`/`E-005c` 完成） | `Scripts/corpus_replay_runner.py` 现已支持扫描 `ShaderCorpus/` 或显式 `.ll`，读取 `module.meta.json` 中的 `functionNames/functionTypes` 做 `IRToMSLConverter.convert(...)`，并在 `--compile` 模式下继续输出 `.air`、`compile-summary.json`、逐样本 `primaryDiagnostic/sourceContext` 与 failure clusters；同时支持 `--save-baseline` 生成 `baseline.json + generated-sources/` 快照、`--baseline-report` 产出结构化 replay / compile / generated MSL 对比与 `baseline-diffs/`；但它的稳定输入前提仍是**样本已经进入 `ShaderCorpus/` 或手工补成 `.ll`** |
+| 当前最小离线验证基线（2026-04-04） | 已对 `test-data/*.ll` 执行 batch replay + compile：replay `18/18` 成功，Metal compile **`18/18` 成功**；对现有 `ShaderCorpus/com.miHoYo.Yuanshen/modules/` 全部 43 个真实 module 执行 batch replay + compile：**replay `43/43` 成功，Metal compile `43/43` 成功，preflight rejected `0`**。这说明**现有 corpus 已绿，但不等于 fresh live 中发现的新 `compile_failed` 样本已被覆盖** |
+| workflow gap（2026-04-04，`E-004f4` 前的遗留问题） | `E-006c2` fresh capture 中，`manifest.jsonl` 只追加了 43 条 `conflict_preserved` 复用事件；`ShaderSourceDiagnostics/` 新增 1 份 `compile_failed` 样本。**`E-004f4` 已通过失败路径 `.bc/.ll` 导出补齐了离线闭环能力**；但该历史样本是在 `E-004f4` 部署前捕获的，没有 `_modules` 子目录，后续 fresh capture 将自动携带 |
+| 当前构建验证基线（2026-04-04，`E-004f4` 后） | 已运行 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`（**BUILD SUCCEEDED**），离线 replay test-data `18/18` compile 成功、现有 corpus `43/43` compile 成功，当前回归 `0` |
+| 当前最小 live 验证状态（2026-04-04，`E-006c2` fresh capture） | `build_and_install` → `remove_playtools` → `inject_playtools` → `launch_app` → `create_session` 返回 `ready`（PID 84835，runtimePort 61209）；`manifest.jsonl` 追加 43 条 `conflict_preserved` / `selector=newLibraryWithData:error:` 事件，证明 hook 与 corpus 去重链路贯通；同时 `ShaderSourceDiagnostics/` 新增了 1 份 `compile_failed` 样本，说明仍存在"新 live 样本只进 diagnostics、不进 corpus"的闭环缺口。进程在采集完成后约 12 秒崩溃（`Yuanshen-2026-04-04-143429.ips`，PID 84835），属已知 `EXC_BAD_ACCESS` live 稳定性问题 |
+| 当前 `.gputrace` 源码可见性检查（2026-04-04，`E-006c` 早期） | 已对原神现存 6 份真实 trace 批量执行 `Scripts/check_gputrace_sources.py`：`valid_msl_files` 全部为 `0`；Xcode 可打开 `capture_20260402_roadE_e006_diag.gputrace` 并进入具体 draw call，但这些 trace 都是在 `E-006c1` 修复前捕获的，不能反映修复后的效果。**在失败样本闭环补齐前，不应直接把当前结论升级为最终可见确认** |
 | 历史 live blocker 时间线 | 见 [00-Dashboard-Archive](00-Dashboard-Archive.md)；dashboard 主体不再重复堆叠逐轮 live 细节 |
 
 ## 整体架构
@@ -161,9 +161,11 @@ PlayCover 主应用 (macOS)
   │     → 承接 injected runtime 的 host bridge 命令
   ├── 现有 diagnostics
   │     → ShaderSourceDiagnostics/   (失败的 .metal + .txt)
+  │     → ShaderSourceDiagnostics/<baseName>_modules/  (E-004f4: .bc/.ll/.metal/.meta.json)
   │     → ShaderPayloadSamples/      (异常 payload)
   └── 目标：ShaderCorpus/
-        → 成功 / 失败样本统一落盘为 .bc / .ll / .metal / manifest
+        → 稳定承载成功样本：.bc / .ll / .metal / manifest
+        → E-004f4 后失败样本也携带可离线 replay 的 .bc/.ll 产物
 
 PlayTools.framework (注入到 iOS app)
   ├── LibrarySourceInjectionSwizzles
@@ -180,7 +182,7 @@ PlayTools.framework (注入到 iOS app)
 
 ## TODO
 
-> 当前最高优先级：`E-006c`（真实 `.gputrace` 源码可见确认）。`E-006c1` 已修复多模块 metallib 重复函数名的致命 blocker，`E-006c2` 已修复 metadata 与 IR 结构体类型不一致的数组字段 blocker。PlayTools 编译通过，离线 replay `18/18` + `43/43` compile 成功。fresh capture 已完成（43 条 `conflict_preserved`，hook 链路正常）。**下一步需人工操作 Xcode 截帧做最终确认**。
+> 当前最高优先级：`E-006c3`（post-fix fresh capture 入 corpus 确认 + `.gputrace` 最终可见性）。`E-004f4` 已实现失败路径 `.bc/.ll` 导出闭环，`E-006c1`/`E-006c2` 已修复已知 blocker，现有 corpus 离线 replay `18/18` + `43/43` compile 成功。下一步应部署最新 PlayTools 执行 fresh capture 确认修复效果与 `.gputrace` 源码可见性。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -188,21 +190,23 @@ PlayTools.framework (注入到 iOS app)
 | E-002 | **调研 `MTLDevice` Library API 入口** | ✅ DONE | [E-002-API](E-002-MTLDevice-Library-API.md) |
 | E-003 | **makeLibrary swizzle 骨架** | ✅ DONE | [E-003-Swizzle](E-003-LibrarySwizzleSkeleton.md) |
 | E-004 | **metallib → bitcode / IR / MSL 采集与导出** | 🔄 IN PROGRESS | [E-004](E-004-MetallibSourceExtraction.md) |
-|  | `E-004a–e` 已完成基础链路；当前主线切换为 **corpus 导出优先** | | |
-| E-004f | ↳ 成功路径全量导出 corpus | 🔄 IN PROGRESS | |
+|  | `E-004a–e` 已完成基础链路；当前主线切换为 **成功样本稳定导出 + 失败样本闭环补齐** | | |
+| E-004f | ↳ corpus 导出与闭环策略 | 🔄 IN PROGRESS | |
 | E-004f1 | ↳ 成功路径保存 `.bc/.ll/.metal/.json` | ✅ DONE | |
 |  | `attemptLibraryReplacement(...)` 成功时已为每个 module 落盘 `module.bc`、`module.ll`、`module.generated.metal` 与 `module.meta.json`，后续回放不再只依赖失败 diagnostics | | |
 | E-004f2 | ↳ corpus 目录结构、去重键与 manifest 规范 | ✅ DONE | |
 |  | 已落地 `ShaderCorpus/<bundleId>/modules/<moduleKey>/`、`manifest.jsonl`、`moduleKey = sha256(module.bc)` 与"冲突不覆盖基线"的持久化策略；`cacheKey` 退回为 metallib 上下文信息 | | |
 | E-004f3 | ↳ 扩展 `makeLibrary(URL/default/file)` 路径的采集覆盖 | ✅ DONE | |
 |  | `newLibraryWithURL:error:`、`newDefaultLibrary`、`newDefaultLibraryWithBundle:error:`、`newLibraryWithFile:error:` 已在代码路径上接入统一 `bitcode -> IR -> MSL -> makeLibrary(source:) -> ShaderCorpus` 导出链路；default 路径当前通过 bundle 显式名称 + `.metallib` 资源扫描做保守定位 | | |
+| E-004f4 | ↳ 失败样本闭环：`compile_failed` 样本的 re-capture / 导出策略 | ✅ DONE | [E-004f4-Closure](E-004-CorpusClosureAndRecapturePolicy.md) |
+|  | `compile_failed` / `preflight_rejected` 失败路径现在在 `ShaderSourceDiagnostics/<bundleId>/<baseName>_modules/<moduleKey>/` 下自动落盘 `module.bc`、`module.ll`、`module.generated.metal` 与 `module.meta.json`；异常路径（disassemble/convert throw）导出所有模块 `.bc` 及已成功模块的 `.ll`/`.metal`。失败样本现在可直接通过 `corpus_replay_runner.py --ll` 做离线 replay + compile 验证，实现了**路径 B 闭环** | | |
 | E-005 | **离线 replay / batch compile / diff 工具链** | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
 | E-005a | ↳ `IR -> MSL` 离线回放 runner | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
 |  | 已落地 `Scripts/corpus_replay_runner.py`；支持扫描 `ShaderCorpus/`、读取 `manifest.jsonl` / `module.meta.json`、把 `functionNames/functionTypes` 传给 `IRToMSLConverter.convert(...)`，并稳定输出 replay `.metal` 与 `replay-summary.json`；`Scripts/ir_to_msl_smoketest.sh` 已改为兼容 wrapper | | |
 | E-005b | ↳ 批量 Metal 编译与失败报告 | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
-|  | `corpus_replay_runner.py` 已支持 `--compile`、`compile-summary.json`、`primaryDiagnostic/sourceContext`、failure clusters 与可选 preflight；`test-data/*.ll` 最小验证结果已更新为 replay `18/18` 成功、Metal compile `15/18` 成功 | | |
+|  | `corpus_replay_runner.py` 已支持 `--compile`、`compile-summary.json`、`primaryDiagnostic/sourceContext`、failure clusters 与可选 preflight；**该子任务完成时的首轮基线** 曾是 `test-data/*.ll` replay `18/18`、Metal compile `15/18`。当前最新 compile 基线以"最新基线"区为准 | | |
 | E-005c | ↳ 新旧转换结果 diff / 回归基线 | ✅ DONE | |
-|  | `corpus_replay_runner.py` 已支持 `--save-baseline` 保存 `baseline.json + generated-sources/` 快照、`--baseline-report` 进行 replay / compile / generated MSL 的结构化对比，并在发现回归时返回失败；同一批 `test-data/*.ll` 二次回放当前结果为 matched/new/removed `18/0/0`、replay changed `0`、generated MSL changed `0`、compile changed `0` | | |
+|  | `corpus_replay_runner.py` 已支持 `--save-baseline` 保存 `baseline.json + generated-sources/` 快照、`--baseline-report` 进行 replay / compile / generated MSL 的结构化对比，并在发现回归时返回失败；**该子任务完成时**，同一批 `test-data/*.ll` 二次回放结果为 matched/new/removed `18/0/0`、replay changed `0`、generated MSL changed `0`、compile changed `0`。当前最新 compile 基线以"最新基线"区为准 | | |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
 | E-006a | ↳ 扩展真实 corpus 覆盖面 | TODO | |
 |  | 在进入新地图 / 新场景 / 新画质设置时追加采集，逐步逼近"尽量全"的真实 shader 集合 | | |
@@ -227,16 +231,20 @@ PlayTools.framework (注入到 iOS app)
 | E-006b9 | ↳ 收敛 `metal::_atomic` 类型支持 compile blocker | ✅ DONE | |
 |  | `IRToMSLConverter` 新增对 `metal::_atomic` 的完整支持：① `buildParametersFromMetadata` 根据 `struct_type_info` 字段类型将 `metal::_atomic` 映射为 `atomic_uint`/`atomic_int`；② `generateAllParams` 对 atomic 类型使用引用（`&`）而非指针（`*`）；③ `generateUserStructDefinitions` 跳过 `metal::_atomic`；④ 新增 `generateAtomicMSL` 过滤 AIR 原子函数内部控制参数（scope、volatile）并映射 `memory_order` i32 枚举；⑤ `translateGEP` 对 `metal::_atomic` field0 直接透传；⑥ `translateBitcast` 对 `ptr to ptr` 做 no-op。compile improvement `+1`，regression `0` | | |
 | E-006c | ↳ 最终 `.gputrace` 源码可见确认 | 🔄 IN PROGRESS | |
-|  | **`E-006c1` 已修复多模块 metallib 重复函数名致命 blocker**；**`E-006c2` 已修复 metadata 与 IR 结构体字段类型不一致的数组字段 blocker**。PlayTools 编译通过，离线 replay compile `18/18`（test-data）+ `43/43`（corpus）。fresh capture 已完成（43 条 `conflict_preserved`，hook 与 corpus 链路正常）。**待人工 Xcode 截帧最终确认** | |
+|  | `E-006c1` / `E-006c2` 已修复已知 compile blocker，现有 corpus 离线验证已绿；但在 `E-004f4` / `E-006c3` 闭环补齐前，不应仅凭当前 corpus green 直接宣告最终可见性收敛。`E-006c` 的最终关闭条件仍是 **post-fix fresh capture + Xcode 人工截帧确认** | |
 | E-006c1 | ↳ 修复多模块 metallib 重复函数名导致替换静默失败 | ✅ DONE | |
 | E-006c2 | ↳ 修复 metadata 字段类型与 IR 结构体类型不一致的数组字段 | ✅ DONE | |
-|  | `generateUserStructDefinitions` 现在交叉检查 `structTypeDefs` 中的 IR 字段类型：当 metadata 的 `air.struct_type_info` 声明字段为标量（如 `"float"`）但 IR 结构体定义实际为 `[N x T]` 数组时，使用 IR 类型生成正确的 MSL 数组声明（如 `float fieldName[4]`）。根因：Unity 编译的 FGlobals 结构体中 `_MainLightClipPlaneAlphas` 等字段在 metadata 中记录为 `float`，但 IR 类型定义为 `[4 x float]`，`translateGEP` 的 `currentType` 追踪正确生成了 subscript 但 struct 声明却是标量，导致 `subscripted value is not an array` 编译错误。compile improvement `+1`（新修复），regression `0` | | |
+|  | `generateUserStructDefinitions` 现在交叉检查 `structTypeDefs` 中的 IR 字段类型：当 metadata 的 `air.struct_type_info` 声明字段为标量（如 `"float"`）但 IR 结构体定义实际为 `[N x T]` 数组时，使用 IR 类型生成正确的 MSL 数组声明（如 `float fieldName[4]`）。这一修复解决了 `_MainLightClipPlaneAlphas` 对应的编译错误，但其 live 样本仍需通过 `E-006c3` 做 post-fix fresh capture 闭环 | | |
+| E-006c3 | ↳ 对 fresh capture 暴露的新 diagnostics 样本做 post-fix 入 corpus 确认 | TODO | [E-004f4-Closure](E-004-CorpusClosureAndRecapturePolicy.md) |
+|  | `E-004f4` 已实现失败路径导出闭环（路径 B），新失败样本自动携带 `_modules` 子目录；但 `2026-04-04` 历史样本没有 `_modules`。当前最高优先级：部署含 `E-004f4` + `E-006c2` 的最新 PlayTools，执行原神 fresh capture，确认 `_MainLightClipPlaneAlphas` 样本要么成功入库 corpus，要么失败时携带可离线 replay 的 `_modules` 产物；最终用 `.gputrace` 确认源码可见 | | |
 | E-007 | **PlayCover settings / MCP / 工具暴露** | TODO | |
 |  | 为 corpus 导出 / replay 增加 UI 或 MCP 能力，使后续采集与回放不依赖手工路径操作 | | |
 
 ## 踩坑与经验
 
-- **核心原则：优先沉淀成功样本，再去扩 lowering**：失败的 `.metal` 已经会写入 `ShaderSourceDiagnostics/`，异常 payload 已有 `ShaderPayloadSamples/`；现在成功路径会把 canonical `.bc/.ll/.metal/.json` 写入 `ShaderCorpus/`，并通过 `manifest.jsonl` 记录 capture 事件，后续应优先围绕这些真实样本做 replay、diff 和回归，而不是重新回到高成本 live 试错
+- **核心原则：优先沉淀成功样本，再去扩 lowering**：失败的 `.metal` 已经会写入 `ShaderSourceDiagnostics/`，异常 payload 已有 `ShaderPayloadSamples/`；成功路径会把 canonical `.bc/.ll/.metal/.json` 写入 `ShaderCorpus/`，并通过 `manifest.jsonl` 记录 capture 事件，后续应优先围绕这些真实样本做 replay、diff 和回归，而不是重新回到高成本 live 试错
+- **当前 `ShaderCorpus/` 不是"所有 live 样本"的同义词**：它目前只覆盖成功替换样本；`ShaderSourceDiagnostics/` 中的 `compile_failed` live 样本，如果未额外 re-capture 或补 `.bc/.ll` 导出，并不会自动进入离线回归主路径
+- **修复来源于 diagnostics 的 blocker 后，不能只看既有 corpus green**：若该样本从未进入 `ShaderCorpus/`，修复完成后必须补一次 post-fix fresh capture，或（`E-004f4` 后）直接对 `ShaderSourceDiagnostics/<baseName>_modules/` 中的 `.ll` 做离线 replay + compile 验证；否则只能证明"现有 corpus 无退化"，不能证明"新样本已闭环"
 - **`moduleKey` 与 `cacheKey` 分层使用**：`moduleKey = sha256(module.bc)` 是长期稳定的 module 级去重键；`cacheKey` 只用于 metallib 级上下文与运行时缓存，不能再拿来当持久化目录主键
 - **最终目标不变，但日常主回路必须切到离线**：live 负责采集和最终验证，不适合作为日常 blocker 归因与回归主路径
 - **`test-data/` 和 `ShaderCorpus/` 不能混用**：`test-data/` 是手工构造的最小样本，适合验证单个 lowering；`ShaderCorpus/` 是真实运行时样本，适合批量 replay、diff 与回归基线
@@ -271,12 +279,15 @@ PlayTools.framework (注入到 iOS app)
 - **多模块 metallib 的重复函数名是 Unity shader 的典型特征**：Unity 编译的 `.shader` 文件经 Metal 编译器输出为 metallib 后，每个 shader variant（不同 feature combination / shader type）对应一个独立 bitcode module，但共享同一函数名（如 `xlatMtlMain`）。一个 metallib 通常包含 2-5 个同名 module（vertex-only 或 fragment-only）。MSL 不允许同一源文件中出现同名函数，聚合编译时必须去重
 - **`throw` + 静默 `catch` 回退是 runtime hook 的危险反模式**：`attemptLibraryReplacement` 的 catch 块将 `ReplacementAggregationError.duplicateFunctionNames` 吞掉并 `return nil`，调用方 `?? originalLibrary` 回退到原始 library。这种"静默失败"模式让 blocker 隐藏在日志中，无法被离线工具链或 corpus replay 发现。后续应在关键路径上用更醒目的日志（至少 `NSLog` 包含 `[BLOCKER]` 标记）或累积失败计数器供 MCP 查询
 - **`air.struct_type_info` metadata 的字段类型可能与 IR 结构体定义不一致**：Unity 编译的 shader 中，FGlobals 结构体的 `_MainLightClipPlaneAlphas` 在 metadata 中记录为 `"float"`（标量），但 IR 的 `%struct.FGlobals` 定义中实际是 `[4 x float]`（数组）。`translateGEP` 的 `currentType` 追踪使用 `IRStructTypeDef.fieldIRTypes`（正确识别数组），但 `generateUserStructDefinitions` 使用 metadata 的 `StructFieldInfo.typeName`（错误生成为标量），导致生成的 MSL 对标量做 subscript 编译失败。解决方案：`generateUserStructDefinitions` 交叉检查 `structTypeDefs`，当 IR 类型为 `[N x T]` 数组时使用 `irScalarTypeToMSL(T) fieldName[N]` 格式
+- **失败路径导出是闭环的关键一环**：`E-004f4` 在 `compile_failed`/`preflight_rejected`/`exception` 路径中导出 `.bc/.ll/.metal/.meta.json` 到 `ShaderSourceDiagnostics/<baseName>_modules/`，使失败样本可直接进入离线 replay 主路径。失败路径的 `module.meta.json` 使用 `captureSource: "failure_path"` / `"partial_failure_path"` 和 `compileStatus: "compile_failed"` 等标记区分成功样本
+- **异常路径中 `preparedModules` 可能部分填充**：`attemptLibraryReplacement` 的 for 循环逐模块执行 `disassemble` + `convert`，若第 N 个模块抛出异常，`preparedModules` 包含前 N-1 个模块的数据。异常导出时应保存所有模块 `.bc`，但只对已成功准备的模块保存 `.ll`/`.metal`
 
 ## 参考信息
 
 | 主题 | 位置 |
 |---|---|
 | dashboard 历史归档：live blocker 时间线 / 已完成轮次 | `00-Dashboard-Archive.md` |
+| 失败样本闭环 / re-capture 策略参考 | `E-004-CorpusClosureAndRecapturePolicy.md` |
 | `-frecord-sources` PoC 与关键否定结论 | `E-001-PoC-frecord-sources.md` |
 | metallib / bitcode / llvm-dis / IR→MSL / corpus 主实现记录 | `E-004-MetallibSourceExtraction.md` |
 | 离线 replay / batch compile / diff 工具链 | `E-005-OfflineReplayBatchCompileDiff.md` |

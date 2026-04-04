@@ -4881,6 +4881,15 @@ struct IRToMSLConverter {
                     }
                 }
 
+                // write: AIR 参数顺序是 (texture, coord, color, ...)，
+                // Metal 的 write 方法签名是 write(color, coord)，需要交换前两个参数
+                if mapping.mslFunction == "write" && finalArgs.count >= 2 {
+                    let a = finalArgs[0]
+                    let b = finalArgs[1]
+                    finalArgs[0] = b
+                    finalArgs[1] = a
+                }
+
                 return "\(obj).\(mapping.mslFunction)(\(finalArgs.joined(separator: ", ")))"
             }
             return "\(mapping.mslFunction)(/* args */)"
@@ -6200,11 +6209,12 @@ struct IRToMSLConverter {
         return !standardTypes.contains(name)
     }
 
-    /// 清理 texture 类型名：去掉 access 限定
-    /// "texture2d<float, sample>" → "texture2d<float>"
+    /// 清理 texture 类型名，将 AIR access 限定符映射为 Metal 格式
+    /// "texture2d<float, sample>"      → "texture2d<float>"          (默认，省略)
+    /// "texture2d<float, read>"       → "texture2d<float, access::read>"
+    /// "texture2d<float, write>"      → "texture2d<float, access::write>"
+    /// "texture2d<float, read_write>" → "texture2d<float, access::read_write>"
     private static func cleanTextureTypeName(_ name: String) -> String {
-        // 从 metadata 拿到的类型名可能是 `texture2d<float, sample>`，
-        // 若上游 token 里夹了残余引号，也一并去掉。
         let normalizedName = name.replacingOccurrences(of: "\"", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let ltIdx = normalizedName.firstIndex(of: "<"),
@@ -6213,11 +6223,24 @@ struct IRToMSLConverter {
         }
         let innerContent = normalizedName[normalizedName.index(after: ltIdx)..<gtIdx]
         let parts = innerContent.components(separatedBy: ",")
+        let elemType = parts[0].trimmingCharacters(in: .whitespaces)
+        let prefix = String(normalizedName[normalizedName.startIndex...ltIdx])
         if parts.count > 1 {
-            // 只保留元素类型，去掉 access
-            let elemType = parts[0].trimmingCharacters(in: .whitespaces)
-            let prefix = String(normalizedName[normalizedName.startIndex...ltIdx])
-            return "\(prefix)\(elemType)>"
+            let access = parts[1].trimmingCharacters(in: .whitespaces)
+            switch access {
+            case "sample":
+                // 默认 access，省略
+                return "\(prefix)\(elemType)>"
+            case "read":
+                return "\(prefix)\(elemType), access::read>"
+            case "write":
+                return "\(prefix)\(elemType), access::write>"
+            case "read_write":
+                return "\(prefix)\(elemType), access::read_write>"
+            default:
+                // 未知 access 限定符，原样保留
+                return "\(prefix)\(elemType), \(access)>"
+            }
         }
         return normalizedName
     }

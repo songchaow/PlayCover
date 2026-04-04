@@ -1948,7 +1948,8 @@ struct IRToMSLConverter {
             metallibNames: functionNames,
             metallibTypes: functionTypes,
             metadataFuncs: metadataFuncs,
-            airBuiltinCalls: allAirCalls
+            airBuiltinCalls: allAirCalls,
+            irText: irText
         )
 
         // 5. 生成 MSL 源码（传入结构体信息用于 GEP/extractvalue/insertvalue）
@@ -2139,13 +2140,101 @@ struct IRToMSLConverter {
 
     // MARK: - Shader Function Identification
 
+    // MARK: E-006b2: Attribute Group & Orphaned Metadata Helpers
+
+    /// 从 IR 文本中解析所有 attributes #N = { ... } 声明，返回 [ref → content] 映射。
+    ///
+    /// Metal AIR 中 shader 类型信息同时出现在两个位置：
+    /// 1. `!air.vertex` / `!air.fragment` / `!air.kernel` 顶层 metadata（最可靠）
+    /// 2. `attributes #N = { "air.fragment" ... }` 声明（define 行通过 #N 引用）
+    ///
+    /// 当顶层 metadata 缺失时（如某些合成 / 裁剪后的 IR），需要回退到 attributes 声明。
+    private static func parseAttributeGroupDeclarations(_ irText: String) -> [String: String] {
+        var groups: [String: String] = [:]
+        for line in irText.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("attributes #") else { continue }
+            guard let hashRange = trimmed.range(of: "#") else { continue }
+            let afterHash = trimmed[hashRange.upperBound...]
+            guard let eqRange = afterHash.range(of: " = ") else { continue }
+            let numStr = String(afterHash[afterHash.startIndex..<eqRange.lowerBound])
+            guard let openBrace = trimmed.range(of: "{"),
+                  let closeBrace = trimmed.range(of: "}", range: openBrace.upperBound..<trimmed.endIndex) else { continue }
+            let content = String(trimmed[openBrace.upperBound..<closeBrace.lowerBound])
+            groups["#\(numStr)"] = content
+        }
+        return groups
+    }
+
+    /// 从 define 行的 attribute 字符串中提取 #N 引用列表。
+    ///
+    /// 示例: `local_unnamed_addr #0` → `["#0"]`
+    private static func extractAttributeGroupRefs(from attributes: String) -> [String] {
+        var refs: [String] = []
+        var searchStart = attributes.startIndex
+        while searchStart < attributes.endIndex,
+              let range = attributes.range(of: "#", range: searchStart..<attributes.endIndex) {
+            let afterHash = attributes[range.upperBound...]
+            var numEnd = afterHash.startIndex
+            while numEnd < afterHash.endIndex, afterHash[numEnd].isNumber {
+                numEnd = afterHash.index(after: numEnd)
+            }
+            if numEnd > afterHash.startIndex {
+                refs.append("#" + String(afterHash[afterHash.startIndex..<numEnd]))
+            }
+            searchStart = range.upperBound
+        }
+        return refs
+    }
+
+    /// 从 attributes 声明内容中检测 shader 类型。
+    ///
+    /// 在 `attributes #N = { "air.fragment" ... }` 中查找 shader 类型标记。
+    private static func shaderTypeFromAttributeContent(_ content: String) -> ShaderType? {
+        if content.contains("\"air.fragment\"") { return .fragment }
+        if content.contains("\"air.vertex\"") { return .vertex }
+        if content.contains("\"air.kernel\"") { return .kernel }
+        return nil
+    }
+
+    /// 扫描所有 metadata 节点，收集 air.texture / air.sampler 类型的孤立参数信息。
+    ///
+    /// 某些 IR 中，`!air.vertex` / `!air.fragment` 顶层 metadata 缺失，但 `air.texture` / `air.sampler`
+    /// 的参数 metadata 节点仍然存在（只是未被函数 metadata 节点的 args 列表引用）。
+    /// 此函数扫描所有 `!N = !{...}` 节点，尝试解析为 MetadataArgInfo，
+    /// 并按 `air.arg_name` 构建查找表，供 metadata 缺失时的回退路径使用。
+    private static func parseOrphanedMetadataArgLookup(_ irText: String) -> [String: MetadataArgInfo] {
+        var lookup: [String: MetadataArgInfo] = [:]
+        let lines = irText.components(separatedBy: "\n")
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("!") else { continue }
+            guard let eqRange = trimmed.range(of: " = ") else { continue }
+            var content = String(trimmed[eqRange.upperBound...])
+            if content.hasPrefix("distinct ") {
+                content = String(content.dropFirst("distinct ".count))
+            }
+            guard let argInfo = parseMetadataArgNode(content) else { continue }
+            let kind = argInfo.kind
+            guard kind == "air.texture" || kind == "air.sampler" else { continue }
+            let argName = argInfo.argName
+            guard !argName.isEmpty, !argName.hasPrefix("arg") else { continue }
+            // 只在同名 key 不存在时写入，避免后面的覆盖前面的
+            if lookup[argName] == nil {
+                lookup[argName] = argInfo
+            }
+        }
+        return lookup
+    }
+
     /// 结合 IR 函数定义、metallib 元数据和 IR metadata，识别 shader 函数并推断其类型。
     private static func identifyShaderFunctions(
         irFunctions: [IRFunctionDef],
         metallibNames: [String],
         metallibTypes: [String],
         metadataFuncs: [MetadataFuncInfo] = [],
-        airBuiltinCalls: [AirBuiltinCall] = []
+        airBuiltinCalls: [AirBuiltinCall] = [],
+        irText: String = ""
     ) -> [ParsedShaderFunction] {
         // 构建 metadata 函数名→信息的映射
         var metadataMap: [String: MetadataFuncInfo] = [:]
@@ -2164,6 +2253,10 @@ struct IRToMSLConverter {
             }
         }
 
+        // E-006b2: 预解析 attributes #N 声明和孤立 texture/sampler metadata 参数
+        let attrGroups = !irText.isEmpty ? parseAttributeGroupDeclarations(irText) : [:]
+        let orphanedArgLookup = !irText.isEmpty ? parseOrphanedMetadataArgLookup(irText) : [:]
+
         var shaderFunctions: [ParsedShaderFunction] = []
 
         for irFunc in irFunctions {
@@ -2180,7 +2273,16 @@ struct IRToMSLConverter {
             // 其次使用 metallib 元数据中的类型信息
             else if let type = nameToType[irFunc.name] {
                 shaderType = type
-            } else if irFunc.name.contains("vertex") || irFunc.attributes.contains("vertex") {
+            }
+            // E-006b2: 从 attributes #N 声明中检测 shader 类型
+            // 当 !air.* 顶层 metadata 缺失时，"air.fragment" 等信息可能只在 attributes 声明中出现
+            else if let attrType = extractAttributeGroupRefs(from: irFunc.attributes)
+                .compactMap({ attrGroups[$0] })
+                .compactMap({ shaderTypeFromAttributeContent($0) })
+                .first {
+                shaderType = attrType
+            }
+            else if irFunc.name.contains("vertex") || irFunc.attributes.contains("vertex") {
                 shaderType = .vertex
             } else if irFunc.name.contains("fragment") || irFunc.attributes.contains("fragment") {
                 shaderType = .fragment
@@ -2214,7 +2316,8 @@ struct IRToMSLConverter {
                 params = parseParameters(
                     irFunc.parameterList,
                     irBody: irFunc.body,
-                    shaderType: type
+                    shaderType: type,
+                    orphanedArgLookup: orphanedArgLookup
                 )
                 outputs = []
                 isFullyParsed = false
@@ -2671,7 +2774,8 @@ struct IRToMSLConverter {
     private static func parseParameters(
         _ paramList: String,
         irBody: String,
-        shaderType: ShaderType
+        shaderType: ShaderType,
+        orphanedArgLookup: [String: MetadataArgInfo] = [:]
     ) -> [ParsedParameter] {
         guard !paramList.trimmingCharacters(in: .whitespaces).isEmpty else { return [] }
 
@@ -2696,11 +2800,44 @@ struct IRToMSLConverter {
 
             // 提取地址空间
             let addrSpace = extractAddressSpace(from: trimmed)
+            let paramName = fallbackIRParameterName(from: trimmed, index: index)
+
+            // E-006b2: 检查孤立 metadata 中是否有 texture/sampler 信息
+            if let orphaned = orphanedArgLookup[paramName] {
+                let attribute: String?
+                let ptrInfo: PointerInfo?
+                let irType: String
+                switch orphaned.kind {
+                case "air.texture":
+                    attribute = orphaned.locationIndex.map { "[[texture(\($0))]]" }
+                    ptrInfo = nil
+                    irType = orphaned.typeName.isEmpty ? "texture2d<float>" : orphaned.typeName
+                case "air.sampler":
+                    attribute = orphaned.locationIndex.map { "[[sampler(\($0))]]" }
+                    ptrInfo = nil
+                    irType = "sampler"
+                default:
+                    attribute = nil
+                    ptrInfo = nil
+                    irType = ""
+                }
+                params.append(ParsedParameter(
+                    name: orphaned.argName,
+                    irType: irType,
+                    addressSpace: addrSpace,
+                    bufferIndex: orphaned.locationIndex,
+                    attribute: attribute,
+                    pointerInfo: ptrInfo,
+                    irArgIndex: index,
+                    kind: orphaned.kind,
+                    emitAsValueParameter: false
+                ))
+                continue
+            }
 
             // 提取指针信息
             let ptrInfo = extractPointerInfo(from: trimmed, addressSpace: addrSpace)
             let cleanedValueType = extractIRValueParameterType(from: trimmed)
-            let paramName = fallbackIRParameterName(from: trimmed, index: index)
 
             // 确定 buffer/threadgroup 绑定索引
             let bindingIndex: Int?
@@ -5824,7 +5961,8 @@ struct IRToMSLConverter {
             func_.parameters,
             safeName: safeName,
             shaderType: func_.shaderType,
-            defaultBuiltin: defaultBuiltinParam(for: func_.shaderType)
+            defaultBuiltin: defaultBuiltinParam(for: func_.shaderType),
+            fragmentReturnType: func_.shaderType == .kernel ? "" : func_.returnType
         )
 
         let bodyStatements = translateFunctionBody(
@@ -5901,7 +6039,8 @@ struct IRToMSLConverter {
             func_.parameters,
             safeName: safeName,
             shaderType: .fragment,
-            defaultBuiltin: "float4 position [[position]]"
+            defaultBuiltin: "float4 position [[position]]",
+            fragmentReturnType: func_.returnType
         )
 
         return """
@@ -5937,11 +6076,21 @@ struct IRToMSLConverter {
         _ params: [ParsedParameter],
         safeName: String,
         shaderType: ShaderType,
-        defaultBuiltin: String
+        defaultBuiltin: String,
+        fragmentReturnType: String = ""
     ) -> String {
         var mslParams: [String] = []
         let usesStageIn = shouldUseStageInStruct(params, shaderType: shaderType)
         var hasEntryInput = usesStageIn
+        // E-006b2: fragment shader 中无 attribute 的 value 参数需要 [[color(N)]]
+        // 当 fragment 返回非 void 标量/向量类型时，Metal 编译器隐式将返回值绑定到 [[color(0)]]，
+        // 此时输入 value 参数的 color index 必须从 1 开始以避免冲突。
+        var colorInputIdx: Int
+        if shaderType == .fragment && fragmentReturnType != "void" && fragmentReturnType != "" {
+            colorInputIdx = 1
+        } else {
+            colorInputIdx = 0
+        }
 
         if usesStageIn {
             let stageInType = stageInStructName(for: safeName)
@@ -6004,7 +6153,17 @@ struct IRToMSLConverter {
             if param.emitAsValueParameter {
                 let rawTypeName = param.irType.isEmpty ? "float" : param.irType.replacingOccurrences(of: "\"", with: "")
                 let emittedType = irScalarTypeToMSL(rawTypeName)
-                mslParams.append("\(emittedType) \(emittedName)")
+                // E-006b2: fragment shader 的 value 参数必须带 [[color(N)]]，否则 Metal 编译器报
+                // "invalid implicit color input declarations"
+                let colorAttr: String
+                if shaderType == .fragment {
+                    colorAttr = " [[color(\(colorInputIdx))]]"
+                    colorInputIdx += 1
+                    hasEntryInput = true
+                } else {
+                    colorAttr = ""
+                }
+                mslParams.append("\(emittedType) \(emittedName)\(colorAttr)")
                 continue
             }
 

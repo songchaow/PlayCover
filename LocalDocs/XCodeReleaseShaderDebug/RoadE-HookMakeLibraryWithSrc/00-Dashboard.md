@@ -218,6 +218,8 @@ PlayTools.framework (注入到 iOS app)
 |  | 新增 `Scripts/snapshot_capture_run.py`，统一固化 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings 到 `build/e006d-run-snapshots/<label>/<bundleId>/`，并写出 `snapshot.meta.json`；后续可直接把输出目录喂给 `Scripts/compare_capture_runs.py` | | |
 | E-006d5 | ↳ run 快照补齐 `.gputrace` 固化与 trace-level diff 摘要 | ✅ DONE | |
 |  | `Scripts/snapshot_capture_run.py` 新增可选 `--gputrace`：把对应 `.gputrace` 一并保存到 run 快照，并自动生成 `gputrace-source-summary.json`；`Scripts/compare_capture_runs.py` 新增 `snapshotComparison`，可直接比较两轮快照的 replacement 开关状态、`validMSLFiles`、可见 MSL hash 集合与 `indexHashReferences`，用于把最终截帧证据纳入 `E-006d` 的统一离线 diff 主路径 | | |
+| E-006d6 | ↳ 多轮 run 矩阵汇总脚本 | ✅ DONE | |
+|  | 新增 `Scripts/analyze_capture_run_matrix.py`：批量读取 `build/e006d-run-snapshots/<label>/<bundleId>/` 多轮快照，自动按 replacement 开关分组，汇总 `replacement=off/on` 各自的重复启动是否稳定，以及 `off vs on` 跨模式差异是否稳定存在；用于先回答“是否已经形成稳定对照样本”，再决定是否继续下钻单对 run diff | | |
 | E-006a | ↳ 扩展真实 corpus 覆盖面 | TODO | |
 |  | 在进入新地图 / 新场景 / 新画质设置时追加采集，逐步逼近"尽量全"的真实 shader 集合 | | |
 | E-006b | ↳ 离线批量 green 后做最小 live 复测 | ✅ DONE | |
@@ -265,6 +267,7 @@ PlayTools.framework (注入到 iOS app)
 - **当前最保守的稳定对照是“替换 vs 不替换”**：在还不能实锤具体根因位于哪个 pass / stage 之前，先确认“做替换”和“完全不做替换”时的最终效果是否稳定不同，这是 `E-006d` 最低风险的比较基线
 - **“不做替换”对照必须复用统一开关**：`E-006d3` 后统一通过 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py` 控制，避免因手工改代码、临时删逻辑或脏 plist 导致对照本身不可靠
 - **run 快照也必须统一固化方式**：`E-006d5` 后统一通过 `Scripts/snapshot_capture_run.py` 保留单次 run 的 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings；若本轮已有 `.gputrace`，也应通过 `--gputrace` 一并纳入同一快照，避免把 replacement 开关状态、聚合产物与最终 trace 证据混淆
+- **多轮对照要先看矩阵结论，再下钻单对 run**：`E-006d6` 后优先用 `Scripts/analyze_capture_run_matrix.py` 汇总 `2~3` 轮 `replacement=off/on` 快照，先回答“同模式是否稳定、跨模式是否稳定不同”；只有矩阵层已形成稳定结论时，才继续回到 `Scripts/compare_capture_runs.py` 下钻单对 run 差异
 - **同一界面重复启动出现差异时，不要过早收敛为 shader root cause**：当前已知现象是 mesh 不变，但原神为延迟管线；base pass 看起来类似并不能排除后处理、着色阶段，或 render pipeline 顺序 / 配置差异
 - **`E-006d` 的归因顺序必须固定**：先做“替换 vs 不替换”稳定对照，再对齐“输入是否相同”（metallib / moduleKey / functionTypes），再比较“输出是否相同”（单模块 `.metal` / 聚合 MSL / compile 结果），最后才看“运行时是否真的使用了替换后的 library”以及更后续的 pass / pipeline 行为
 - **`Scripts/compare_capture_runs.py` 是 `E-006d` 的第一层离线守门**：当两轮都已保留 `manifest.jsonl` 与 `modules/` 快照时，优先先跑该脚本，快速回答“哪些 `moduleKey` 只出现在单边”“相同 `moduleKey` 的 `.bc/.ll/.metal/.meta` 是否一致”，避免一上来就手翻 corpus 或直接回到 live 猜测

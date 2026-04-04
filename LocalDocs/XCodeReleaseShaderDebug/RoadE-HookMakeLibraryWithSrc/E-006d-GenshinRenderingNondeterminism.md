@@ -17,6 +17,8 @@
 - 这一步把第 1~3 个核心问题之间缺失的“**单次 run 快照固化**”补齐：后续做 `replacement=off/on` 对照时，不再需要手工拷贝多个目录或临时记忆当前开关状态，直接按 run label 落盘即可接给 `Scripts/compare_capture_runs.py`。
 - **E-006d5（✅ DONE）**：扩展 `Scripts/snapshot_capture_run.py` 支持可选 `--gputrace`，把对应 `.gputrace` 一并固化到 run 快照，并自动写出 `gputrace-source-summary.json` / `snapshot.meta.json.gputraceSummary`；`Scripts/compare_capture_runs.py` 同步新增 `snapshotComparison`，可直接比较两轮 run 的 replacement 开关和 `.gputrace` 源码覆盖摘要。
 - 这一步补齐了第 1、5 个核心问题之间原本断开的证据：run 快照现在不只保留 corpus / replacements / diagnostics / settings，也能保留“**这轮最终截帧看到了什么源码**”，从而把 live 侧 `.gputrace` 结果纳入同一份离线 diff 报告。
+- **E-006d6（✅ DONE）**：新增 `Scripts/analyze_capture_run_matrix.py`，可批量读取 `build/e006d-run-snapshots/<label>/<bundleId>/` 多轮快照，自动按 `snapshot.meta.json.replacementMode.enabled` 分组为 `replacement=off/on`，汇总同模式重复启动是否稳定，以及 `off vs on` 跨模式差异是否稳定存在。
+- 这一步补齐了“至少做 2~3 轮重复启动”与“先回答是否形成稳定对照样本”之间缺失的自动汇总层：不再需要手工逐对运行 `compare_capture_runs.py` 才能判断 `within-mode stable / cross-mode different` 是否成立。
 
 ## 现象
 
@@ -84,6 +86,20 @@ python3 Scripts/snapshot_capture_run.py \
   - 单模块 `module.bc` / `module.ll` / `module.generated.metal`
   - 聚合 MSL
   - 对应 `.gputrace`
+- 当 `replacement=off` 与 `replacement=on` 各自都已积累 `2~3` 轮快照后，可直接批量汇总：
+
+```bash
+python3 Scripts/analyze_capture_run_matrix.py \
+  --runs-root build/e006d-run-snapshots \
+  --bundle-id com.miHoYo.Yuanshen \
+  --output build/e006d-run-matrix.json
+```
+
+- 重点先看：
+  - `groups.off.pairSummary.allPairsInputStable`
+  - `groups.on.pairSummary.allPairsInputStable`
+  - `crossMode.offVsOnPairSummary.allPairsDifferent`
+- 只有当“同模式稳定、跨模式稳定不同”成立后，才说明已经形成可复用的 `E-006d` 稳定对照样本，可继续往更细的 stage / pipeline 归因下钻。
 
 ### 2. 先确认“替换 vs 不替换”差异是否稳定
 
@@ -162,8 +178,9 @@ python3 Scripts/compare_capture_runs.py \
 
 1. 固定 live 条件；每轮结束后立即用 `Scripts/snapshot_capture_run.py` 固化 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings 快照
 2. 先用 `Scripts/set_shader_replacement_mode.py` 建立一组 **replacement=off** 的稳定对照，再切回 **replacement=on** 保留对应 run
-3. 再用 `Scripts/compare_capture_runs.py` 对比 run-vs-run，先看 `onlyInRunA/B`、共享 `moduleKey` 差异，再看 `latestReplacementComparison`
-4. 若 `latestReplacementComparison` 已稳定一致，再继续下钻到 `.gputrace`、实际替换命中情况、以及更后续的 pass / pipeline 行为；若这里已漂移，优先留在离线层继续收敛聚合 / 替换差异
+3. 每个模式累计到 `2~3` 轮后，先用 `Scripts/analyze_capture_run_matrix.py` 汇总“同模式是否稳定 / 跨模式是否稳定不同”
+4. 若矩阵汇总已显示稳定，再用 `Scripts/compare_capture_runs.py` 下钻具体 run-vs-run，查看 `onlyInRunA/B`、共享 `moduleKey` 差异，以及 `latestReplacementComparison`
+5. 若 `latestReplacementComparison` 已稳定一致，再继续下钻到 `.gputrace`、实际替换命中情况、以及更后续的 pass / pipeline 行为；若这里已漂移，优先留在离线层继续收敛聚合 / 替换差异
 
 ## 从 dashboard 下沉的细粒度技术备注
 

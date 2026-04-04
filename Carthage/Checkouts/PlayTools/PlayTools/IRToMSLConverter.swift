@@ -2436,9 +2436,21 @@ struct IRToMSLConverter {
             case "air.buffer":
                 attribute = nil
                 let space = addrSpace ?? .device
+                // E-006b9: metal::_atomic → 根据内部字段类型映射为 atomic_int/atomic_uint
+                let resolvedTypeName: String
+                if meta.typeName == "metal::_atomic" {
+                    if let firstField = meta.structFieldInfo.first {
+                        // struct_type_info 格式: {offset, size, align, "uint"/"int", "__s"}
+                        resolvedTypeName = "atomic_\(firstField.typeName)"
+                    } else {
+                        resolvedTypeName = "atomic_int"
+                    }
+                } else {
+                    resolvedTypeName = meta.typeName.isEmpty ? "uint8_t" : meta.typeName
+                }
                 ptrInfo = PointerInfo(
                     addressSpace: space,
-                    pointedMSLType: meta.typeName.isEmpty ? "uint8_t" : meta.typeName,
+                    pointedMSLType: resolvedTypeName,
                     isOpaquePointer: true
                 )
             case "air.vertex_input":
@@ -2992,13 +3004,19 @@ struct IRToMSLConverter {
 
     /// 将单个 IR 标量/向量类型转换为 MSL 类型（公共方法，供 ParsedParameter 使用）。
     ///
-    /// 处理 IR 中出现的所有基本类型：
+    /// 将 IR 中出现的所有基本类型映射为 MSL 类型：
     /// - 整数: i1→bool, i8→char/uint8_t, i16→short, i32→int, i64→long
     /// - 浮点: half, float, double
     /// - 向量: <4 x float>→float4, <2 x i32>→int2
     /// - 结构体名: %struct.X→X
+    /// - metal::_atomic: 需配合 structFieldInfo 确定具体 atomic_int/atomic_uint，
+    ///   此处仅做基本映射回退，精确映射在 buildParametersFromMetadata 中完成
     static func irScalarTypeToMSL(_ irType: String) -> String {
         let cleaned = irType.trimmingCharacters(in: .whitespaces)
+
+        // E-006b9: metal::_atomic → atomic_int 默认回退
+        // 精确映射（atomic_uint 等）在 buildParametersFromMetadata 中根据 structFieldInfo 完成
+        if cleaned == "metal::_atomic" { return "atomic_int" }
 
         // 基本整数类型
         if cleaned == "i1" { return "bool" }
@@ -4582,10 +4600,18 @@ struct IRToMSLConverter {
         // 多级索引：parts[2] 是基指针偏移（数组索引），parts[3..] 是类型层级索引
         let firstIdx = resolveIROperand(parts[2].value, ctx: ctx)
 
+        // E-006b9: metal::_atomic GEP 的特殊处理
+        // IR: getelementptr %"struct.metal::_atomic", ptr %0, i64 0, i32 0
+        // MSL: counter 是 device atomic_int& 引用，直接透传不加 [0] 或 .field0
+        let isAtomicGEP = pointeeType.contains("metal::_atomic")
+
         // 构建表达式。对真正的指针参数先落到合法的下标/解引用语义；
         // 对 constant struct 引用等"值语义入口"则保留原表达式，避免误发射 `ptr.field`。
         var expr: String
-        if baseIsPointerLike {
+        if isAtomicGEP {
+            // atomic 类型是引用，不需要下标访问
+            expr = baseTarget
+        } else if baseIsPointerLike {
             if stripAddressOfExpression(basePtr) != nil {
                 expr = baseTarget
                 if firstIdx != "0" {
@@ -4609,6 +4635,22 @@ struct IRToMSLConverter {
 
             // 判断当前类型层级
             if currentType.hasPrefix("%") {
+                // E-006b9: metal::_atomic 是 MSL 内建 atomic 类型的 IR 表示
+                // GEP field0 取的是内部 __s 字段指针，但 MSL 中 atomic 变量本身就是原子操作的目标
+                // 因此直接透传指针，不加 .field0 / .__s 后缀
+                if (currentType.contains("metal::_atomic") || currentType.contains("metal::_atomic.25")) {
+                    if let fieldIdx = Int(idxStr), fieldIdx == 0 {
+                        // 直接透传 expr，不加任何字段访问
+                        if let def = ctx.structTypeDefs[currentType],
+                           fieldIdx < def.fieldIRTypes.count {
+                            currentType = def.fieldIRTypes[fieldIdx].trimmingCharacters(in: .whitespaces)
+                        } else {
+                            currentType = ""
+                        }
+                        continue
+                    }
+                }
+
                 // 结构体类型 → 字段访问
                 if let fieldIdx = Int(idxStr) {
                     if let fieldName = ctx.lookupFieldName(irStructType: currentType, fieldIndex: fieldIdx) {
@@ -4790,6 +4832,14 @@ struct IRToMSLConverter {
 
         let srcParts = splitTypedOperands(srcPart, count: 1)
         let srcVal = srcParts.isEmpty ? "0" : resolveIROperand(srcParts[0].value, ctx: ctx)
+
+        // E-006b9: ptr to ptr bitcast 是 no-op（MSL 中 thread 空间指针类型兼容）
+        if dstType == "ptr" && (srcParts.first?.type == "ptr" || srcParts.first?.type.contains("ptr") == true) {
+            ctx.define(lhs, expr: srcVal)
+            ctx.markPointer(lhs)
+            return
+        }
+
         let mslDstType = irScalarTypeToMSL(dstType)
         ctx.emitAutoAssign(lhs, expr: "as_type<\(mslDstType)>(\(srcVal))", knownType: mslDstType)
     }
@@ -5138,6 +5188,14 @@ struct IRToMSLConverter {
             let flags = args.first ?? "0"
             let flagStr = barrierFlagsToMSL(flags)
             return "\(mapping.mslFunction)(\(flagStr))"
+        }
+
+        // E-006b9: atomic 操作特殊处理
+        // AIR 原子函数参数格式: (ptr, val, order, scope, volatile)
+        // MSL 只需: (obj, val, order) 或 (obj, order) 或 (obj, expected, desired, succ_order, fail_order)
+        // 需要过滤掉 scope (i32 2=agent) 和 volatile (i1 true) 参数
+        if mapping.category == .atomic {
+            return generateAtomicMSL(mapping: mapping, airName: airName, args: args, argTypes: argTypes)
         }
 
         // 普通函数调用
@@ -5978,6 +6036,85 @@ struct IRToMSLConverter {
         }
     }
 
+    /// AIR memory_order i32 值映射为 MSL memory_order 枚举
+    /// 0=relaxed, 1=acquire, 2=release, 3=acq_rel, 5=seq_cst
+    private static func memoryOrderToMSL(_ order: String) -> String {
+        switch order.trimmingCharacters(in: .whitespaces) {
+        case "0": return "memory_order_relaxed"
+        case "1": return "memory_order_acquire"
+        case "2": return "memory_order_release"
+        case "3": return "memory_order_acq_rel"
+        case "5": return "memory_order_seq_cst"
+        default: return "memory_order_relaxed"
+        }
+    }
+
+    /// E-006b9: 为 atomic 操作生成 MSL 调用
+    ///
+    /// AIR 原子函数参数格式:
+    ///   fetch_* / exchange / load:   (ptr, val, order, scope, volatile)
+    ///   store:                       (ptr, val, order, scope, volatile)
+    ///   cmpxchg:                     (ptr, expected, desired, succ_order, fail_order, scope, volatile)
+    ///
+    /// MSL 对应签名:
+    ///   fetch_* / exchange:          atomic_fetch_*_explicit(obj, val, order)
+    ///   load:                        atomic_load_explicit(obj, order)
+    ///   store:                       atomic_store_explicit(obj, val, order)
+    ///   cmpxchg:                     atomic_compare_exchange_weak_explicit(obj, expected, desired, succ_order, fail_order)
+    private static func generateAtomicMSL(
+        mapping: AirBuiltinMapping,
+        airName: String,
+        args: [String],
+        argTypes: [String]
+    ) -> String {
+        let mslFunc = mapping.mslFunction
+
+        // cmpxchg 有 7 个 AIR 参数: (ptr, expected, desired, succ_order, fail_order, scope, volatile)
+        if mslFunc.contains("compare_exchange") {
+            // AIR: ptr, expected, desired, succ_order(i32), fail_order(i32), scope(i32), volatile(i1)
+            // MSL: obj, expected, desired, succ_order, fail_order
+            guard args.count >= 5 else {
+                return "\(mslFunc)(/* atomic args error */)"
+            }
+            let obj = args[0]
+            let expected = args[1]
+            let desired = args[2]
+            let succOrder = memoryOrderToMSL(args[3])
+            let failOrder = memoryOrderToMSL(args[4])
+            return "\(mslFunc)(\(obj), \(expected), \(desired), \(succOrder), \(failOrder))"
+        }
+
+        // load: (ptr, order, scope, volatile)
+        if mslFunc.contains("atomic_load") {
+            guard args.count >= 2 else {
+                return "\(mslFunc)(/* atomic args error */)"
+            }
+            let obj = args[0]
+            let order = memoryOrderToMSL(args[1])
+            return "\(mslFunc)(\(obj), \(order))"
+        }
+
+        // store: (ptr, val, order, scope, volatile)
+        if mslFunc.contains("atomic_store") {
+            guard args.count >= 3 else {
+                return "\(mslFunc)(/* atomic args error */)"
+            }
+            let obj = args[0]
+            let val = args[1]
+            let order = memoryOrderToMSL(args[2])
+            return "\(mslFunc)(\(obj), \(val), \(order))"
+        }
+
+        // fetch_* / exchange: (ptr, val, order, scope, volatile)
+        guard args.count >= 3 else {
+            return "\(mslFunc)(/* atomic args error */)"
+        }
+        let obj = args[0]
+        let val = args[1]
+        let order = memoryOrderToMSL(args[2])
+        return "\(mslFunc)(\(obj), \(val), \(order))"
+    }
+
     /// 过滤纹理 air 调用的内部控制参数，只保留用户可见参数
     /// 返回 (filtered_args, filtered_types) 元组，保留类型信息供 bias/level 包装使用
     /// - airName: AIR 内建函数名，用于识别需要保留 i32 参数的变体（如 _2d_array 的 array_index）
@@ -6134,6 +6271,8 @@ struct IRToMSLConverter {
         }
 
         for rawTypeName in structFieldInfo.keys.sorted() {
+            // E-006b9: metal::_atomic 是 MSL 内建 atomic 类型，不需要生成 struct 定义
+            if rawTypeName == "metal::_atomic" { continue }
             emitStruct(named: rawTypeName)
         }
 
@@ -6429,9 +6568,14 @@ struct IRToMSLConverter {
 
                 if ptr.addressSpace.isBufferAddressSpace {
                     let idx = param.bufferIndex ?? 0
-                    if isStructTypeName(elemType) && ptr.addressSpace == .constant {
+                    // E-006b9: atomic 类型在 MSL 中是引用类型，使用 & 而非 *
+                    let isAtomicType = elemType.hasPrefix("atomic_")
+                    if isStructTypeName(elemType) && ptr.addressSpace == .constant && !isAtomicType {
                         // constant struct 往往是单个 uniforms 对象，更贴近 `constant Uniforms& uniforms`。
                         mslParams.append("\(constPrefix)\(qualifier) \(elemType)& \(emittedName) [[buffer(\(idx))]]")
+                    } else if isAtomicType {
+                        // MSL 中 atomic 类型作为 buffer 参数使用引用: device atomic_uint& counter
+                        mslParams.append("\(qualifier) \(elemType)& \(emittedName) [[buffer(\(idx))]]")
                     } else {
                         mslParams.append("\(constPrefix)\(qualifier) \(elemType)* \(emittedName) [[buffer(\(idx))]]")
                     }

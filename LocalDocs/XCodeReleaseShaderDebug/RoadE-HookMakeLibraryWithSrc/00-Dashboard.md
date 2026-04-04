@@ -131,7 +131,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 ## 当前主线
 
-- **E-006（本轮执行：`E-006b9` `metal::_atomic` 类型支持修复）**：`IRToMSLConverter` 新增对 `metal::_atomic` 类型的完整支持：① `buildParametersFromMetadata` 根据 `struct_type_info` 的字段类型将 `metal::_atomic` 映射为 `atomic_uint`/`atomic_int`；② `generateAllParams` 对 atomic 类型参数使用引用（`&`）而非指针（`*`）；③ `generateUserStructDefinitions` 跳过 `metal::_atomic` 不生成假结构体；④ 新增 `generateAtomicMSL` 函数过滤 AIR 原子函数的内部控制参数（scope、volatile）并将 `memory_order` i32 值映射为 MSL 枚举（`memory_order_relaxed` 等）；⑤ `translateGEP` 对 `metal::_atomic` 结构体的 field0 直接透传不生成下标；⑥ `translateBitcast` 对 `ptr to ptr` bitcast 做 no-op 透传。`test-data/*.ll` 回归：replay `18/18` 成功、Metal compile **`18/18` 成功**（improvement `+1`，regression `0`），**所有 compile blocker 已收敛**。
+- **E-006（本轮执行：`E-006c` 真实 `.gputrace` 源码可见确认）**：`E-006b9` 已完成 `metal::_atomic` 类型支持修复，`test-data/*.ll` compile `18/18`，真实 corpus（原神 43 个 module）compile **`43/43`**。**IR→MSL 转换质量已不再是 blocker**。当前唯一待验证的是：runtime `attemptLibraryReplacement` 成功替换 library 后，新生成的 library 是否真正被 GPU pipeline 使用、并在截帧 `.gputrace` 中携带源码。下一步需做 fresh capture + Xcode 最终确认（需人工操作 Xcode 截帧）。
 - **E-004（已完成：`E-004f3` 扩展 `makeLibrary(URL/default/file)` 路径的采集覆盖）**：`newLibraryWithURL:error:`、`newDefaultLibrary`、`newDefaultLibraryWithBundle:error:`、`newLibraryWithFile:error:` 现已读取 `.metallib` 并复用统一的 `bitcode -> IR -> MSL -> makeLibrary(source:) -> ShaderCorpus` 主链路；default 路径额外加入了 bundle 内 `.metallib` 的保守定位策略。
 - **E-005（已完成：`E-005c` 新旧转换结果 diff / 回归基线）**：`Scripts/corpus_replay_runner.py` 现已支持保存 baseline snapshot、比较新旧 replay / compile 结果、输出 `baseline-diffs/` 与结构化回归统计；日常离线回归已经具备"改前 vs 改后"防退化能力。
 
@@ -144,6 +144,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 当前落盘能力（2026-04-04） | 失败的 MSL 会进入 `ShaderSourceDiagnostics/`；异常 payload 会进入 `ShaderPayloadSamples/`；`attemptLibraryReplacement(...)` 成功路径现已按 `ShaderCorpus/<bundleId>/modules/<moduleKey>/` 落盘 canonical `module.bc`、`module.ll`、`module.generated.metal` 与 `module.meta.json`，并在根目录追加 `manifest.jsonl` 事件索引；`moduleKey` 由 `sha256(module.bc)` 生成，重复样本默认复用基线，不再静默覆盖；`newLibraryWithURL:error:`、`newDefaultLibrary`、`newDefaultLibraryWithBundle:error:`、`newLibraryWithFile:error:` 代码路径也已接入同一套导出与替换逻辑 |
 | 当前离线 replay / batch compile / diff 能力（2026-04-03，`E-005a`/`E-005b`/`E-005c` 完成） | `Scripts/corpus_replay_runner.py` 现已支持扫描 `ShaderCorpus/` 或显式 `.ll`，读取 `module.meta.json` 中的 `functionNames/functionTypes` 做 `IRToMSLConverter.convert(...)`，并在 `--compile` 模式下继续输出 `.air`、`compile-summary.json`、逐样本 `primaryDiagnostic/sourceContext` 与 failure clusters；同时支持 `--save-baseline` 生成 `baseline.json + generated-sources/` 快照、`--baseline-report` 产出结构化 replay / compile / generated MSL 对比与 `baseline-diffs/`；`Scripts/ir_to_msl_smoketest.sh` 继续作为单样本兼容 wrapper |
 | 当前最小离线验证基线（2026-04-04，`E-006b9` 完成） | 已对 `test-data/*.ll` 执行 batch replay + compile：replay `18/18` 成功，Metal compile **`18/18` 成功**（improvement `+1`，regression `0`）。`test_builtins.ll` 的 `metal::_atomic` 模板参数 blocker 已修复——`IRToMSLConverter` 现在将 `metal::_atomic` 正确映射为 `atomic_int`/`atomic_uint` 引用类型，过滤原子操作的内部控制参数并映射 `memory_order` 枚举，GEP 对 atomic 的 field0 直接透传。**所有 `test-data/*.ll` compile blocker 已收敛** |
+| 当前真实 corpus 离线验证基线（2026-04-04，`E-006c` 前置验证） | 已对 `ShaderCorpus/com.miHoYo.Yuanshen/modules/` 全部 43 个真实 module 执行 batch replay + compile：**replay `43/43` 成功，Metal compile `43/43` 成功，preflight rejected `0`**。`IRToMSLConverter` 对所有真实运行时采集的原神 shader 均可生成可编译的 MSL。**IR→MSL 转换质量已不再是 blocker**，`.gputrace` 源码不可见的原因需从 runtime 替换链路和截帧机制排查 |
 | 当前构建验证基线（2026-04-04） | 已运行 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 与 `PLAYCOVER_INSTALL_MODE=user ./BuildScripts/build_and_install.sh`（均 **BUILD SUCCEEDED**），PlayTools 标准构建链路、PlayCover Release 构建、安装与 ad-hoc 重签名均通过 |
 | 当前最小 live 验证状态（2026-04-04） | PlayCover MCP 应用列表通道已恢复可用；已对原神 6.4.0 完成一次最小 live 复测：`remove_playtools`、`inject_playtools`、`launch_app` 成功，`create_session` 返回 `ready`（PID 98756，runtimePort 61205）；同时 `ShaderCorpus/com.miHoYo.Yuanshen/manifest.jsonl` 在 `2026-04-03T16:25:54Z`–`16:26:06Z` 追加了多条 `captureAction=conflict_preserved` / `selector=newLibraryWithData:error:` 事件，证明启动期已重新命中 hook 与 corpus 去重落盘链路。`2026-04-04 01:57` 再次 fresh `launch_app -> create_session(timeout=30)` 也曾返回 `ready`（PID 43383，runtimePort 61206），但很快转为 `disconnected`，且新增 `Yuanshen-2026-04-04-015803.ips`，说明 live 稳定性仍未收敛 |
 | 当前 `.gputrace` 源码可见性检查（2026-04-04，`E-006c` 本轮执行） | 已对原神现存 6 份真实 trace 批量执行 `Scripts/check_gputrace_sources.py`：`valid_msl_files` 全部为 `0`；Xcode 可打开 `capture_20260402_roadE_e006_diag.gputrace` 并进入具体 draw call（`Command Buffer 1` / `Render Encoder 12` / draw call `7688`，`editor_mode=Bound Resources`，Step 菜单启用），因此当前结论是"trace 可开/可步进，但源码仍不可见" |
@@ -178,7 +179,7 @@ PlayTools.framework (注入到 iOS app)
 
 ## TODO
 
-> 当前最高优先级：`E-006c`（真实 `.gputrace` 源码可见确认）。`E-006b9` 已修复 `metal::_atomic` 类型支持（compile `18/18`，**所有 test-data compile blocker 已收敛**）。下一步需做 fresh capture + Xcode 最终确认。历史 live blocker 归因链路见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
+> 当前最高优先级：`E-006c`（真实 `.gputrace` 源码可见确认）。`IRToMSLConverter` 对 test-data `18/18` 和真实 corpus `43/43` 均可编译通过，**IR→MSL 已不再是 blocker**。下一步需做 fresh capture + Xcode 最终确认（需人工操作 Xcode 截帧）。若 fresh capture 后 `.gputrace` 源码仍不可见，需排查 runtime `attemptLibraryReplacement` 替换链路（library 替换是否成功、新 library 是否被 GPU pipeline 使用）。历史 live blocker 归因链路见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -224,8 +225,8 @@ PlayTools.framework (注入到 iOS app)
 |  | `filterTextureArgs` 新增 `airName` 参数：对 `air.sample_texture_2d_array` 保留第一个 `i32` 作为 `array_index`（Metal `texture2d_array.sample()` 必需参数）；对 `air.write_texture_*` 不过滤 `<N x i32>` 类型坐标（区分 offset 与 coord）；write 路径中对 zeroinitializer 解析为裸 `0` 的坐标自动包装为 `uint2(0)` 消除 ambiguous。`test_builtins.ll` 的 `test_texture_ops` 函数中 `sample` 和 `write` 调用全部修复，但暴露出预存在的 `metal::_atomic` 模板参数 blocker；compile improvement `0`（数值持平，但 blocker 内容更新），regression `0` | | |
 | E-006b9 | ↳ 收敛 `metal::_atomic` 类型支持 compile blocker | ✅ DONE | |
 |  | `IRToMSLConverter` 新增对 `metal::_atomic` 的完整支持：① `buildParametersFromMetadata` 根据 `struct_type_info` 字段类型将 `metal::_atomic` 映射为 `atomic_uint`/`atomic_int`；② `generateAllParams` 对 atomic 类型使用引用（`&`）而非指针（`*`）；③ `generateUserStructDefinitions` 跳过 `metal::_atomic`；④ 新增 `generateAtomicMSL` 过滤 AIR 原子函数内部控制参数（scope、volatile）并映射 `memory_order` i32 枚举；⑤ `translateGEP` 对 `metal::_atomic` field0 直接透传；⑥ `translateBitcast` 对 `ptr to ptr` 做 no-op。compile improvement `+1`，regression `0` | | |
-| E-006c | ↳ 最终 `.gputrace` 源码可见确认 | TODO | |
-|  | 当前离线 compile 已收敛至 `18/18`，所有 test-data compile blocker 已清零。待做 fresh capture + Xcode 最终确认 | | |
+| E-006c | ↳ 最终 `.gputrace` 源码可见确认 | 🔄 IN PROGRESS | |
+|  | **前置验证已完成**：真实 corpus `43/43` compile 成功，IR→MSL 已不再是 blocker。待做 fresh capture + Xcode 最终确认（需人工操作截帧）。若源码仍不可见，需排查 runtime `attemptLibraryReplacement` 替换链路 | | |
 | E-007 | **PlayCover settings / MCP / 工具暴露** | TODO | |
 |  | 为 corpus 导出 / replay 增加 UI 或 MCP 能力，使后续采集与回放不依赖手工路径操作 | | |
 
@@ -262,6 +263,7 @@ PlayTools.framework (注入到 iOS app)
 - **`metal::_atomic` 在 MSL 中是 `atomic_int`/`atomic_uint` 引用类型，不是结构体**：IR 中 `%"struct.metal::_atomic" = type { i32 }` 看起来像结构体，但 metadata 的 `air.arg_type_name` 值为 `"metal::_atomic"`。必须根据 `struct_type_info` 中字段类型（`"uint"` → `atomic_uint`，`"int"` → `atomic_int`）映射为正确的 MSL atomic 类型。参数声明使用引用（`device atomic_uint&`）而非指针（`device atomic_uint*`），GEP 取 field0 直接透传不加 `.field0` 或 `[0]`
 - **AIR 原子函数有内部控制参数需过滤**：`air.atomic.global.add.u.i32(ptr, val, order, scope, volatile)` 有 5 个参数，但 MSL 的 `atomic_fetch_add_explicit(obj, val, order)` 只需 3 个。`scope`（`i32 2` = agent）和 `volatile`（`i1 true`）是 AIR 内部控制参数，必须过滤掉。`order` 参数需要从 i32 映射为 `memory_order_relaxed` 等枚举。`cmpxchg` 有 7 个参数（多了 `fail_order`），需要特殊处理
 - **`bitcast ptr to ptr` 在 MSL 中是 no-op**：IR 中 `bitcast ptr %x to ptr` 经常出现在 alloca 附近（如 cmpxchg 的 expected 参数准备），不应翻译为 `as_type<uint8_t>(&var)`（`as_type` 只能用于相同大小的数值类型），应直接透传
+- **真实 corpus compile 通过不等于 `.gputrace` 源码可见**：`corpus_replay_runner.py --compile` 验证的是"生成的 MSL 能通过 `makeLibrary(source:)` 编译"，但 `.gputrace` 中源码是否可见还取决于：①runtime `attemptLibraryReplacement` 是否成功替换了原始 library；②新 library 是否被 GPU pipeline 真正使用；③截帧时是否捕获到了替换后的 library 而非原始的
 
 ## 参考信息
 

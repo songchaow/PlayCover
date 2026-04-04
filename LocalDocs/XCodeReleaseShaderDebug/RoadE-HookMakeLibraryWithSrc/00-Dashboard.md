@@ -132,8 +132,8 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 ## 当前主线
 
-- **E-006c3（本轮已完成）**：完成了两个新 blocker 的发现与修复，并通过三次 fresh capture 验证闭环：①`E-006c3a` 修复了结构体类型名大小写不一致（`pointedMSLType` 未经 `sanitizeTypeName` 导致参数声明用 `unity_Builtins0Array_Type` 但 struct 定义用 `Unity_Builtins0Array_Type`）；②`E-006c3b` 修复了 `air.struct_type_info` 的第三个 i32 被误作 `alignment` 跳过（实际是 `elementCount`，`elementCount>1` 时字段应为数组，如 `_MainLightClipPlaneAlphas` 的 `float[4]`）。修复后：corpus 从 43 扩充至 **91 个模块**，均无失败样本；新截帧 `capture_20260404_roadE_e006c3_final.gputrace` 中 `valid_msl_files: 2`（PlayTools 注入 MSL 已嵌入 `.gputrace`）。**下一步**：Xcode 人工打开新 trace 确认 shader 面板源码可见。
-- **E-004（已完成）** / **E-005（已完成）**：参见下方 TODO 记录。
+- **E-006c（✅ 已关闭）**：Xcode 人工确认 `capture_20260404_roadE_e006c3_final.gputrace` 中 Draw Call shader 面板可见 MSL 源码。**Road E 最终目标达成**：PlayTools hook `makeLibrary` 注入的 MSL 源码已成功嵌入 `.gputrace` 并在 Xcode 中可查看。
+- **E-004（已完成）** / **E-005（已完成）** / **E-006（已完成）**：参见下方 TODO 记录。
 
 ## 最新基线
 
@@ -144,7 +144,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 当前最小离线验证基线（2026-04-04，`E-006c3` 后） | `test-data/*.ll`（19 个，含新增 `test_struct_array_field.ll`）replay + compile **全部成功**；`ShaderCorpus/com.miHoYo.Yuanshen/modules/` 全部 **91 个**真实 module replay + compile **91/91 成功**，preflight rejected `0`，regression `0` |
 | 当前构建验证基线（2026-04-04，`E-006c3` 后） | `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`（**BUILD SUCCEEDED**）；`./BuildScripts/build_and_install.sh`（**BUILD SUCCEEDED**，签名验证通过） |
 | 当前 live 验证状态（2026-04-04，第三次 fresh capture，PID 26460） | `remove_playtools → inject_playtools → launch_app → create_session`：session 返回 `ready` 并保持稳定；manifest 从 304 → 394 行（+90 条），corpus 从 43 → **91 模块**（+48 个全新成功样本），diagnostics 文件数不变（18），**本轮零失败样本** |
-| 当前 `.gputrace` 源码可见性检查（2026-04-04，`E-006c3` 完成后） | `capture_20260404_roadE_e006c3_final.gputrace`（765 文件，968 index 引用）：`valid_msl_files: 2`（两个 PlayTools 注入的 MSL 文件，首行 `// Auto-generated aggregated MSL source by PlayTools LibrarySourceInjection`，包含完整 `#include <metal_stdlib>` 与结构体/函数定义）。`Scripts/check_gputrace_sources.py` 已修复以识别 `//` 注释开头的 MSL。**覆盖率 2/11（18%）source 文件为 MSL**，其余为 bplist（原始 metallib）。**待人工确认**：Xcode 打开此 trace → 选 Draw Call → 确认 shader 面板可见 MSL 源码 |
+| 当前 `.gputrace` 源码可见性检查（2026-04-04，`E-006c` 已关闭） | `capture_20260404_roadE_e006c3_final.gputrace`（765 文件，968 index 引用）：`valid_msl_files: 2`（两个 PlayTools 注入的 MSL 文件，首行 `// Auto-generated aggregated MSL source by PlayTools LibrarySourceInjection`，包含完整 `#include <metal_stdlib>` 与结构体/函数定义）。**Xcode 人工确认：Draw Call shader 面板可见 MSL 源码**。覆盖率 2/11（18%）source 文件为 MSL，其余为 bplist（原始 metallib）。
 | 历史 live blocker 时间线 | 见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
 
 ## 整体架构
@@ -178,7 +178,7 @@ PlayTools.framework (注入到 iOS app)
 
 ## TODO
 
-> 当前最高优先级：Xcode 人工确认 `capture_20260404_roadE_e006c3_final.gputrace` 中 shader 源码可见（`E-006c` 最终关闭条件）。离线回归 test-data `19/19`（含新增 `test_struct_array_field.ll`）+ corpus `91/91` compile 成功，regression `0`。
+> **E-006c 已关闭（2026-04-04）**：Xcode 人工确认 `capture_20260404_roadE_e006c3_final.gputrace` shader 面板源码可见，**Road E 最终目标达成**。下一步优先级：E-006a（扩展真实 corpus 覆盖面）或 E-007（UI/MCP 工具暴露）。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -195,7 +195,7 @@ PlayTools.framework (注入到 iOS app)
 | E-005a | ↳ `IR -> MSL` 离线回放 runner | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
 | E-005b | ↳ 批量 Metal 编译与失败报告 | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
 | E-005c | ↳ 新旧转换结果 diff / 回归基线 | ✅ DONE | |
-| E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | 🔄 IN PROGRESS | |
+| E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | ✅ DONE | |
 | E-006a | ↳ 扩展真实 corpus 覆盖面 | TODO | |
 |  | 在进入新地图 / 新场景 / 新画质设置时追加采集，逐步逼近"尽量全"的真实 shader 集合 | | |
 | E-006b | ↳ 离线批量 green 后做最小 live 复测 | ✅ DONE | |
@@ -208,8 +208,8 @@ PlayTools.framework (注入到 iOS app)
 | E-006b7 | ↳ 收敛 GEP/load 类型缩窄 compile blocker | ✅ DONE | |
 | E-006b8 | ↳ 收敛 `filterTextureArgs` 误过滤 compile blocker | ✅ DONE | |
 | E-006b9 | ↳ 收敛 `metal::_atomic` 类型支持 compile blocker | ✅ DONE | |
-| E-006c | ↳ 最终 `.gputrace` 源码可见确认 | 🔄 IN PROGRESS | |
-|  | `capture_20260404_roadE_e006c3_final.gputrace` 中已有 2 个 valid MSL 文件（PlayTools 注入），离线回归全绿；**最终关闭条件**：Xcode 人工确认 Draw Call shader 面板显示 MSL 源码 | |
+| E-006c | ↳ 最终 `.gputrace` 源码可见确认 | ✅ DONE | |
+|  | `capture_20260404_roadE_e006c3_final.gputrace` 中已有 2 个 valid MSL 文件（PlayTools 注入），离线回归全绿；**Xcode 人工确认 Draw Call shader 面板显示 MSL 源码（2026-04-04）** | |
 | E-006c1 | ↳ 修复多模块 metallib 重复函数名导致替换静默失败 | ✅ DONE | |
 | E-006c2 | ↳ 修复 metadata 字段类型与 IR 结构体类型不一致的数组字段（IR 交叉检查） | ✅ DONE | |
 | E-006c3 | ↳ post-fix fresh capture 入 corpus 确认 + 新 blocker 修复 | ✅ DONE | |

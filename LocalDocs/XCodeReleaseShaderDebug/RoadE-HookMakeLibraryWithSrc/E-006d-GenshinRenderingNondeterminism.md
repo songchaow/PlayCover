@@ -29,6 +29,7 @@
 ## 当前最该做的事
 
 - 先完成 `E-006d8`：在**同一界面、相同设置**下，积累 **replacement=off / on 各 2~3 轮** run 快照，并用现有工具输出矩阵结论。
+- 若本轮还拿不到完整 live 矩阵，先把采集动作固定为统一入口：使用 `Scripts/e006d_matrix_runner.py` 的 `prepare-run` / `finalize-run` / `analyze` 薄封装，固定 `replacement-<mode>-runN` 标签与分析入口，避免把模式、标签、快照目录或 compare 输入串错。
 - 本轮完成标准不是“继续加脚本”或“继续补文档”，而是至少把当前问题明确收敛到以下之一：
   1. 输入集合不稳定
   2. 输入稳定但输出/聚合结果不稳定
@@ -51,7 +52,27 @@ python3 Scripts/set_shader_replacement_mode.py \
   --mode off
 ```
 
+- 更推荐先用统一 runner 准备该轮：
+
+```bash
+python3 Scripts/e006d_matrix_runner.py prepare-run \
+  --bundle-id com.miHoYo.Yuanshen \
+  --mode off \
+  --run-index 1
+```
+
 - 切完开关并完成该轮 live 后，立刻固化当前 run：
+
+```bash
+python3 Scripts/e006d_matrix_runner.py finalize-run \
+  --bundle-id com.miHoYo.Yuanshen \
+  --mode off \
+  --run-index 1 \
+  --gputrace /path/to/replacement-off-run1.gputrace \
+  --print-compare-path
+```
+
+- 如需直接调用底层脚本，原命令仍保持不变：
 
 ```bash
 python3 Scripts/snapshot_capture_run.py \
@@ -87,6 +108,14 @@ python3 Scripts/snapshot_capture_run.py \
   - 聚合 MSL
   - 对应 `.gputrace`
 - 当 `replacement=off` 与 `replacement=on` 各自都已积累 `2~3` 轮快照后，可直接批量汇总：
+
+```bash
+python3 Scripts/e006d_matrix_runner.py analyze \
+  --bundle-id com.miHoYo.Yuanshen \
+  --output build/e006d-run-matrix.json
+```
+
+- 如需直接调用底层汇总脚本，原命令仍保持不变：
 
 ```bash
 python3 Scripts/analyze_capture_run_matrix.py \

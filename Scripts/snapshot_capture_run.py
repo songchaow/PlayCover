@@ -26,6 +26,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from gputrace_attribution import build_gputrace_attribution
+
 
 DEFAULT_CONTAINER = Path.home() / "Library/Containers/io.playcover.PlayCover"
 DEFAULT_OUTPUT_ROOT = Path("build/e006d-run-snapshots")
@@ -211,6 +213,7 @@ def main() -> int:
     if settings_payload is not None:
         copy_required_file(settings_path, snapshot_bundle_dir / "app-settings" / settings_path.name)
     gputrace_relative_path = None
+    gputrace_attribution = None
     if gputrace_path is not None:
         gputrace_relative_path = f"gputrace/{gputrace_path.name}"
         shutil.copytree(gputrace_path, snapshot_bundle_dir / gputrace_relative_path)
@@ -219,9 +222,16 @@ def main() -> int:
             json.dumps(gputrace_summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        gputrace_attribution = build_gputrace_attribution(snapshot_bundle_dir, gputrace_relative_path, gputrace_summary)
+        if gputrace_attribution is not None:
+            attribution_path = snapshot_bundle_dir / "gputrace-attribution-index.json"
+            attribution_path.write_text(
+                json.dumps(gputrace_attribution, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
 
     snapshot_meta = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "capturedAt": datetime.now(timezone.utc).isoformat(),
         "bundleId": args.bundle_id,
         "label": args.label,
@@ -241,6 +251,7 @@ def main() -> int:
             "settingsPath": f"app-settings/{settings_path.name}" if settings_payload is not None else None,
             "gputracePath": gputrace_relative_path,
             "gputraceSourceSummaryPath": "gputrace-source-summary.json" if gputrace_summary is not None else None,
+            "gputraceAttributionIndexPath": "gputrace-attribution-index.json" if gputrace_attribution is not None else None,
         },
         "sourceSummary": {
             "manifestLineCount": count_nonempty_lines(manifest_path),
@@ -249,6 +260,13 @@ def main() -> int:
             "diagnosticEntryCount": count_child_entries(diagnostics_bundle_dir),
         },
         "gputraceSummary": gputrace_summary,
+        "gputraceAttribution": {
+            "visibleMSLFileCount": gputrace_attribution.get("visibleMSLFileCount") if gputrace_attribution is not None else None,
+            "attributedVisibleMSLHashes": gputrace_attribution.get("attributedVisibleMSLHashes") if gputrace_attribution is not None else [],
+            "unattributedVisibleMSLHashes": gputrace_attribution.get("unattributedVisibleMSLHashes") if gputrace_attribution is not None else [],
+            "attributedModuleKeys": gputrace_attribution.get("attributedModuleKeys") if gputrace_attribution is not None else [],
+            "attributedReplacementDirectories": gputrace_attribution.get("attributedReplacementDirectories") if gputrace_attribution is not None else [],
+        },
     }
     meta_path = snapshot_bundle_dir / "snapshot.meta.json"
     meta_path.write_text(json.dumps(snapshot_meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")

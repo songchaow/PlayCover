@@ -4,7 +4,7 @@
 
 ## 当前定位
 
-E-003 已经完成“能 hook 到 `MTLDevice.makeLibrary(...)` 系列 API”这一基础目标。随着 Road E 主流程转向**离线优先**，E-003 的定位也从“单纯 log-only 骨架”升级为：
+E-003 已经完成"能 hook 到 `MTLDevice.makeLibrary(...)` 系列 API"这一基础目标。随着 Road E 主流程转向**离线优先**，E-003 的定位也从"单纯 log-only 骨架"升级为：
 
 **所有后续 shader corpus 采集能力的统一入口。**
 
@@ -57,55 +57,18 @@ E-003 决定了我们能从哪些真实 runtime API 入口观察到 shader 加�
 - 我们当前的 corpus 覆盖边界已经不再只受单一 selector 限制
 - 后续 coverage boundary 更主要取决于真实 app 在 live 中是否命中这些入口，以及 default 路径的 bundle `.metallib` 定位是否与目标 app 的打包方式一致
 
-因此 E-003 仍然是 **coverage boundary** 文档：它现在更关注“哪些入口已经接通、哪些还需要真实样本验证”，而不再只是解释为什么 corpus 只来自 `data` 路径。
+因此 E-003 仍然是 **coverage boundary** 文档：它现在更关注"哪些入口已经接通、哪些还需要真实样本验证"，而不再只是解释为什么 corpus 只来自 `data` 路径。
 
 ### 角色 3：后续 E-004f 的扩展起点
 
-后续若要做“成功路径全量导出 corpus”，最自然的扩展顺序是：
+后续若要做"成功路径全量导出 corpus"，最自然的扩展顺序是：
 
 1. 继续把 `newLibraryWithData:error:` 打磨成稳定导出主路径
 2. 再逐步把 `URL/default/file` 路径纳入同样的提取 / 导出逻辑
 3. 最后再看是否需要处理更少见的 stitched / source 路径
 
-## 当前建议的覆盖优先级
+## 结论
 
-### P0：必须完整采集
-
-- `newLibraryWithData:error:`
-
-原因：
-- 当前真实 app 最常见
-- 已有 `dispatch_data_t -> Data`、bitcode 提取、替换逻辑
-- 是建立 corpus 的最低成本主入口
-
-### P1：尽快补齐
-
-- `newLibraryWithURL:error:`
-- `newDefaultLibrary`
-- `newDefaultLibraryWithBundle:error:`
-- `newLibraryWithFile:error:`
-
-原因：
-- 这些入口会直接影响 corpus 的完整性
-- 在离线优先流程下，它们的意义已经高于“单纯记录日志”
-
-### P2：继续观测即可
-
-- `newLibraryWithSource:options:error:`
-- `newLibraryWithSource:options:completionHandler:`
-
-原因：
-- 这些路径主要服务于我们自己回编译生成的 MSL
-- 对“抓真实 shader 样本”帮助有限
-
-## 经验结论
-
-- E-003 已经证明 swizzle 面是够用的，当前瓶颈**不在 hook 能不能装上**，而在**真实 app 上如何继续扩大 corpus 覆盖并完成最小 live 复测**
-- 在离线优先流程下，`makeLibrary` hook 的首要职责是**采集真实 corpus**，不是继续扩大 live 日志量
-- `URL/default/file` 已完成统一导出逻辑接入；下一步更值得投入的是验证真实 app 命中情况，而不是继续停留在文档层面的 selector 讨论
-
-## 与后续任务的关系
-
-- 与 `E-004`：E-003 提供采集面，E-004 负责把采集面转成可复用 corpus
-- 与 `E-005`：离线 replay 依赖 E-003/E-004 先把真实样本抓下来
-- 与 `E-006`：live 的作用将缩减为补覆盖和做最终验证，不再是主要调试路径
+- E-003 已经证明 swizzle 面是够用的，当前瓶颈**不在 hook 能不能装上**
+- 五大真实加载入口已全部接入统一导出 / 替换链路
+- 后续更值得投入的是验证真实 app 命中情况，而不是继续停留在文档层面的 selector 讨论

@@ -6,7 +6,7 @@
 
 ## 目标
 
-E-004 的目标已经从“证明可以在运行时做 metallib → IR → MSL”升级为：
+E-004 的目标已经从"证明可以在运行时做 metallib → IR → MSL"升级为：
 
 1. 在真实 app 里稳定拦截 shader 加载
 2. 从 metallib 提取可复用的 **bitcode / IR / MSL**
@@ -36,11 +36,11 @@ IRToMSLConverter 生成 MSL
 makeLibrary(source:) 重编译替换
 ```
 
-真正拖慢效率的，不再是“链路能不能跑通”，而是：
+真正拖慢效率的，不再是"链路能不能跑通"，而是：
 
 - 每次修 `IRToMSLConverter` 都要重装 / 重注入 / 启动原神
 - live 覆盖面受地图、场景、加载时机影响，**不稳定且随机**
-- 虽然成功路径已经形成 `ShaderCorpus/`，失败路径在 `E-004f4` 后也已补齐 `.bc/.ll/.metal/.meta.json` 导出，但**新 blocker 仍必须按闭环规则判断**：不能只凭“既有 corpus 已绿”就宣告完成
+- 虽然成功路径已经形成 `ShaderCorpus/`，失败路径在 `E-004f4` 后也已补齐 `.bc/.ll/.metal/.meta.json` 导出，但**新 blocker 仍必须按闭环规则判断**：不能只凭"既有 corpus 已绿"就宣告完成
 
 因此 E-004 这一阶段留下来的核心价值是：
 
@@ -74,40 +74,15 @@ makeLibrary(source:) 重编译替换
 ### E-004e：IR -> MSL
 
 - `IRToMSLConverter` 已能完成大部分基础 lowering
-- 当前改进方式不应再是“看到一个 live blocker 修一个”，而应逐步切到“对 corpus 批量回放，按错误模式聚类修复”
+- 当前改进方式不应再是"看到一个 live blocker 修一个"，而应逐步切到"对 corpus 批量回放，按错误模式聚类修复"
 
 ## 当前缺口
 
-> ⚠️ **本节保留的不是“仍待 E-004 继续开发的功能”，而是当前交接时仍必须记住的边界。** E-004 原始缺口已经收敛，真正的当前主线以 `00-Dashboard.md` / `E-006d-GenshinRenderingNondeterminism.md` 为准。
+> ⚠️ **本节保留的不是"仍待 E-004 继续开发的功能"，而是当前交接时仍必须记住的边界。** E-004 原始缺口已经收敛，真正的当前主线以 `00-Dashboard.md` / `E-006d-GenshinRenderingNondeterminism.md` 为准。
 
-### 1. 闭环边界：失败样本不能只靠既有 corpus green 视为完成
-
-- 成功路径：`ShaderCorpus/<bundleId>/modules/<moduleKey>/` 已稳定落盘 `.bc/.ll/.metal/.meta.json`
-- 失败路径：`ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/` 在 `E-004f4` 后也会落盘 `.bc/.ll/.metal/.meta.json`
-- 仍需坚持的规则：当 blocker 首次来自 diagnostics 且样本未进入成功 corpus 时，不能只凭“既有 corpus 已绿”宣告闭环；必须通过失败路径 replay 或 post-fix fresh capture 把它真正带入离线主路径
-
-### 2. 覆盖边界：`makeLibrary` 主采集面已经够用，但命中率仍以真实 app 为准
-
-截至 2026-04-04，以下入口都已在代码路径上接入统一的 bitcode 提取、IR 反汇编、MSL 转换、`makeLibrary(source:)` 替换与导出链路：
-
-- `newLibraryWithData:error:`
-- `newLibraryWithURL:error:`
-- `newDefaultLibrary`
-- `newDefaultLibraryWithBundle:error:`
-- `newLibraryWithFile:error:`
-
-其中 default 路径当前通过两级保守策略定位 bundle 内默认 `.metallib`：
-
-1. 优先按 `CFBundleExecutable` / `CFBundleName` / bundle 名 / `default` 显式匹配
-2. 若显式名称未命中，再扫描 bundle `resourceURL` 下的 `.metallib` 资源并按路径稳定排序后选择
-
-因此当前剩余边界已经不是“入口没接上”，而是“真实 app 是否会稳定命中这些入口、命中后是否需要最小 live 验证”。
-
-### 3. 输入边界：离线输入规范已经收敛，当前只保留职责划分
-
-- `test-data/`：手工构造的**最小样本**，用于验证单个 lowering、air builtin 或特定 IR 模式
-- `ShaderCorpus/`：真实运行时采集的**真实样本集**，用于批量 replay、diff、失败聚类与回归基线
-- 新增日常验证方法时，应继续保持脚本化 / agent 可自主执行，不能把人工交互变成默认 gate
+1. **闭环边界**：blocker 首次来自 `ShaderSourceDiagnostics/` 且样本未进入 `ShaderCorpus/` 时，不能只凭"既有 corpus 已绿"宣告闭环。详见 [E-004-CorpusClosureAndRecapturePolicy](E-004-CorpusClosureAndRecapturePolicy.md)
+2. **覆盖边界**：五大 selector 已全部接入统一导出 / 替换链路；剩余边界取决于真实 app 命中情况
+3. **输入边界**：`test-data/`（最小 lowering 样本）和 `ShaderCorpus/`（真实 corpus）不能混用
 
 ## 推荐的新主路径
 
@@ -191,7 +166,7 @@ build_and_install.sh
 - **采集与状态**：`timestamp`、`firstCapturedAt`、`lastCapturedAt`、`captureCount`、`baselineConflictCount`、`llvmDisStatus`、`converterStatus`、`compileStatus`
 - **摘要与路径**：`bitcodeBytes`、`llvmIRBytes`、`generatedMSLBytes`、`moduleSummary`、`irSummary`、`conversionSummary`、`corpusRelativeDirectory`、`artifactPaths`
 
-若需要逐字段追查历史含义，应优先回看对应代码或 archive；当前主文档只保留“如何使用这些字段做闭环和回归”的层次。
+若需要逐字段追查历史含义，应优先回看对应代码或 archive；当前主文档只保留"如何使用这些字段做闭环和回归"的层次。
 
 ### 去重与覆盖策略（已落地）
 
@@ -214,7 +189,7 @@ build_and_install.sh
 - **`attemptLibraryReplacement(...)`**：当前成功路径的 canonical 汇总点，`module.bc` / `module.ll` / `module.generated.metal` / `module.meta.json` 都以这里为主线组织
 - **host bridge 命令处理**：若未来需要把文件保存、MCP 暴露或宿主侧诊断继续前移，这里仍是自然扩展点
 
-当前日常推进不再围绕“把插入点接上”展开，而是围绕已落地的 corpus / replay / live 闭环能力做归因。
+当前日常推进不再围绕"把插入点接上"展开，而是围绕已落地的 corpus / replay / live 闭环能力做归因。
 
 ## E-004 新的任务拆分
 
@@ -241,7 +216,7 @@ build_and_install.sh
 
 ### E-005：离线回放与批量编译
 
-E-004 的价值不是“把文件存下来”，而是为 E-005 提供真实输入：
+E-004 的价值不是"把文件存下来"，而是为 E-005 提供真实输入：
 
 - `module.ll` 已成为 `Scripts/corpus_replay_runner.py` 的稳定输入
 - `module.generated.metal` 成为后续新旧输出 diff 的基线
@@ -264,7 +239,7 @@ E-004 这一阶段完成，不等于最终 `.gputrace` 目标完成；它的完�
 2. corpus 中每个 module 至少具备 `.bc/.ll/.metal/.json`
 3. 后续 `IRToMSLConverter` 修复能对 corpus 做离线 replay（当前已由 `Scripts/corpus_replay_runner.py` 落地）
 4. 新 blocker 的首轮归因，默认优先在 corpus 上完成，而不是回到原神里反复试错
-5. 若 blocker 首次只出现在 `ShaderSourceDiagnostics/`、尚未进入 `ShaderCorpus/`，则必须通过 post-fix fresh capture 或失败路径 `.bc/.ll` 导出补齐闭环，而不能只凭“现有 corpus 已绿”宣布完成
+5. 若 blocker 首次只出现在 `ShaderSourceDiagnostics/`、尚未进入 `ShaderCorpus/`，则必须通过 post-fix fresh capture 或失败路径 `.bc/.ll` 导出补齐闭环，而不能只凭"现有 corpus 已绿"宣布完成
 
 ## 参考
 

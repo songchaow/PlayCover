@@ -357,9 +357,11 @@ python3 Scripts/corpus_replay_runner.py \
 
 ## 下一步
 
-`E-005` 主线已完成；后续优先级回到：
+`E-005` 主线已完成；后续优先级回到 `E-006d`（详见 `00-Dashboard.md` 与 `E-006d-GenshinRenderingNondeterminism.md`）。
 
-- `E-006d8`：继续使用现有 replay / diff / run-matrix / replacement-attempt 工具，但当前下一步已不再是机械补 run，也不再只是围绕旧的 `llvm-dis` `Operation not permitted` 桶打转；而是优先支撑四条更窄主线：**`session=ready` 之后的 host bridge `Session not registered` 生命周期问题**、**`capture_metal_frame` 自定义 `output_path` 权限问题**、**trace 侧合法 MSL 覆盖偏低**，以及 **代表性 off/on 截帧的 draw call / Render Encoder / Pipeline State 结构对比**。其中前 3 条仍主要依赖 `E-005` 这套 corpus / replay / diff 能力做分层归因，第 4 条则应转到 `E-006d-RenderingPathDiffReference.md` 所定义的 Xcode GUI 自动化路径
-- `E-007`：若后续确认人工路径操作已成为效率瓶颈，再把现有离线工具能力经 UI / MCP 暴露出来；前提仍是不能破坏 agent 日常自主执行
+E-005 的能力继续作为以下场景的稳定底座：
+- `E-006d8` 四条 blocker 的 corpus 级归因
+- `IRToMSLConverter` 日常回归守门
+- 新 lowering 修复的 replay + compile + baseline diff
 
-也就是说，接下来离线回归能力本身不再是 blocker，重点转为**用这套能力支撑 `E-006d` 当前四条收敛线**；只有当主线再次被操作成本卡住时，才回头推进 `E-007`。
+`E-007`（UI/MCP 工具暴露）若后续推进，也只是把现有离线工具能力经 UI / MCP 暴露，不会改变 E-005 的核心逻辑。

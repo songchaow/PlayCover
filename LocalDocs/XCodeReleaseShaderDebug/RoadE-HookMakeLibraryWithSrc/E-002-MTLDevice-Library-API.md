@@ -6,7 +6,7 @@
 
 E-002 的原始结论没有变化：我们已经识别出 `MTLDevice` 创建 `MTLLibrary` 的主要 API 入口，并据此完成了 E-003 的 swizzle 骨架。
 
-随着 Road E 转向**离线优先**，本文件的重点也从“列全 API 名单”变成：
+随着 Road E 转向**离线优先**，本文件的重点也从"列全 API 名单"变成：
 
 1. **哪些入口决定真实 shader corpus 的覆盖面**
 2. **哪些入口已经被纳入主链路，哪些还只是日志**
@@ -68,46 +68,8 @@ E-002 的原始结论没有变化：我们已经识别出 `MTLDevice` 创建 `MT
 
 **当前离线 corpus 的覆盖范围已经不再只受限于 `newLibraryWithData:error:` 的真实命中率，而是取决于真实 app 是否会命中这些入口以及 default 路径的 bundle `.metallib` 解析是否与目标包体一致。**
 
-## 为什么这个优先级对新流程很重要
-
-在旧流程里，我们更关心“哪个入口最容易触发 live 问题”。
-在新流程里，我们更关心：
-
-**哪个入口最决定离线 corpus 的完整性。**
-
-因此优先级判断也要变化：
-
-- 不是“哪个入口最常见就只做哪个”
-- 而是“在成本可接受的前提下，尽快让更多真实加载路径进入统一导出逻辑”
-
-换句话说，E-002 现在不仅是 API 清单，也是 **corpus coverage roadmap**。
-
-## 建议的后续补齐顺序
-
-### 第一步
-
-继续把 `newLibraryWithData:error:` 打磨成稳定的成功路径导出入口：
-- `.bc`
-- `.ll`
-- `.metal`
-- manifest
-
-### 第二步
-
-把以下路径纳入与 `newLibraryWithData:error:` 同级的采集逻辑：
-- `newLibraryWithURL:error:`
-- `newDefaultLibrary`
-- `newDefaultLibraryWithBundle:error:`
-- `newLibraryWithFile:error:`
-
-### 第三步
-
-只在确有必要时，再考虑 stitched / source 路径是否需要更多处理。
-
 ## 结论
 
-E-002 的核心结论仍然成立：Library API 入口已经被识别清楚。新的变化在于：
+E-002 的核心结论仍然成立：Library API 入口已经被识别清楚，且 **全部真实加载入口已接入统一导出 / 替换 / corpus 链路**。
 
-- 这些入口不再只是 hook 覆盖清单
-- 它们现在决定了离线 corpus 的真实覆盖边界
-- 后续若要减少原神 live 次数，最值得投入的不是继续补文档，而是把 P1 入口逐步纳入统一导出链路
+当前 corpus 覆盖边界不再受 selector 限制，而取决于真实 app 是否会稳定命中这些入口、default 路径的 bundle `.metallib` 定位是否与目标包体一致。

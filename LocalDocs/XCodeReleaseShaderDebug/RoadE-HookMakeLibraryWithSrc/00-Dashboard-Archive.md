@@ -13,29 +13,32 @@
 | 时间 / 阶段 | 关键现象 | 结论 |
 |---|---|---|
 | 2026-04-02，host bridge 修复前 | 重启 PlayCover、重新注入后，`session` 与 `capture_metal_frame` 都能稳定执行；但 `.gputrace` 中 `valid_msl=0`，注入 runtime 内 `posix_spawn(llvm-dis)` 统一报 `Operation not permitted` | 当时主 blocker 仍是 injected runtime 直接拉起 `llvm-dis` 的权限问题 |
-| 2026-04-02，host bridge 修复后受控 5 轮复测 | `session` 能 `ready`，但很快 `disconnected`，每轮都新增 `Yuanshen-*.ips`；统一日志已进入 `LibrarySourceInjection` 主路径，并稳定出现 `source recompile failed: expected unqualified-id` | blocker 从“无法执行 `llvm-dis`”前移到 “IR→MSL 产物本身无效” |
+| 2026-04-02，host bridge 修复后受控 5 轮复测 | `session` 能 `ready`，但很快 `disconnected`，每轮都新增 `Yuanshen-*.ips`；统一日志已进入 `LibrarySourceInjection` 主路径，并稳定出现 `source recompile failed: expected unqualified-id` | blocker 从"无法执行 `llvm-dis`"前移到 "IR→MSL 产物本身无效" |
 | 2026-04-03，preflight guard 后单轮对照复测 | `session` 一度可维持约 73 秒，`get_capture_status` 返回 `available=true`，但最终 crash 栈顶落在 `playcover.toucher` 的 `Toucher.touchcam(...)` Optional unwrap | preflight guard 已显著改变 live 表现，说明应先隔离 toucher / keymapping 干扰 |
 | 2026-04-03，关闭 `keymapping` 后 2 轮受控复测 | crash 从 `playcover.toucher` 转回 `UnityGfxDeviceWorker`；同时 `ShaderSourceDiagnostics` 再次出现 `preflight_rejected` / `compile_failed`，坏行示例为 `fragment float4{ <4 xlatMtlMain(...)` | toucher / keymapping 干扰已基本剥离，主 blocker 回到 IR→MSL lowering |
 | 2026-04-03，`E-006a2d3` 后单轮 live 复测 | `create_session(timeout=30)` 在 30 秒内未等到 runtime 注册；新的 diagnostics 已从 `<N x T>` / `%...` 残留前移到 vertex `xlatMtlMain` 的参数映射 / pointer 访问坏行 | 说明 `E-006a2d3` 已清掉一批 SSA/vector 问题，但仍被 vertex `stage_in` / pointer 发射拦住 |
 | 2026-04-03，`E-006a2e3` 后单轮 live 复测 | `session` 10 秒内 `ready` 后 ~10 秒 `disconnected`，无新 crash report。diagnostics 仅 `compile_failed`（无 `preflight_rejected`）；旧 blocker 全清。新 blocker 为 `clamp`/`fma` 歧义、`bool2` → `bool` 赋值、`uint8_t2` 不存在 | `undef` / `0xH8000` 修复有效，blocker 进一步前移到 intrinsic 类型系统与 vector 整型映射 |
-| 2026-04-04，`E-006c` 真实 `.gputrace` 可见性确认 | 原神现存 6 份 `.gputrace` 批量检查 `valid_msl_files` 全为 `0`；Xcode 可打开 `capture_20260402_roadE_e006_diag.gputrace` 并进入 draw call 分析，但 fresh `launch_app -> create_session` 后 session 很快 `disconnected`，新增 `Yuanshen-2026-04-04-015803.ips`（`EXC_BAD_ACCESS / SIGSEGV`） | 说明当前 trace 仍只具备“可开/可步进”而非“源码可见”；主 blocker 仍在 IR→MSL 有效性与 live 稳定性，`E-006c` 暂不能关单 |
-| 2026-04-05，`E-006d8` 五轮矩阵 + fresh `replacement-on-run3` | 最近一串提交把 `run matrix`、benign metadata drift 过滤、`replacement_attempt` 落盘与文档口径逐步收敛到同一主线；fresh `replacement-on-run3` 已恢复 `replacement_attempt=91`、`replacement=36`，但 `session=ready` 后仍会在 `get_capture_status` / `capture_metal_frame` 前后掉线 | 当前主线已从“为什么没有 replacement attempt”收窄为“session/capture bridge 不稳定 + 55 个 `llvm-dis` 权限失败样本”；并且这两条线都应继续通过 agent 可独立完成的自动流程推进，而不是重新引入人工 gate |
+| 2026-04-04，`E-006c` 真实 `.gputrace` 可见性确认 | 原神现存 6 份 `.gputrace` 批量检查 `valid_msl_files` 全为 `0`；Xcode 可打开 `capture_20260402_roadE_e006_diag.gputrace` 并进入 draw call 分析，但 fresh `launch_app -> create_session` 后 session 很快 `disconnected`，新增 `Yuanshen-2026-04-04-015803.ips`（`EXC_BAD_ACCESS / SIGSEGV`） | 说明当前 trace 仍只具备"可开/可步进"而非"源码可见"；主 blocker 仍在 IR→MSL 有效性与 live 稳定性，`E-006c` 暂不能关单 |
+| 2026-04-05，`E-006d8` 五轮矩阵 + fresh `replacement-on-run3` | 最近一串提交把 `run matrix`、benign metadata drift 过滤、`replacement_attempt` 落盘与文档口径逐步收敛到同一主线；fresh `replacement-on-run3` 已恢复 `replacement_attempt=91`、`replacement=36`，但 `session=ready` 后仍会在 `get_capture_status` / `capture_metal_frame` 前后掉线 | 当前主线已从"为什么没有 replacement attempt"收窄为"session/capture bridge 不稳定 + 55 个 `llvm-dis` 权限失败样本"；并且这两条线都应继续通过 agent 可独立完成的自动流程推进，而不是重新引入人工 gate |
+| 2026-04-05~06，`E-006d8` fresh `replacement-on-run5` 恢复 | fresh build/install + 注入后 `session=ready`，成功产出带源码的 `.gputrace`（`valid_msl=2/11`）；launch / registration 主链恢复；`RuntimeLaunchDiagnostics` 记录了完整阶段链路 | capture 链路恢复，但 trace 侧合法 MSL 覆盖仍偏低 |
+| 2026-04-06，`E-006d8` host split-brain 修复 + `replacement-on-run6` | 定位到 `SessionHealthMonitor` stale cleanup 只删 registry 不断 registration channel，导致 runtime 持有旧 sessionId 触发 `Session not registered`；修复为同步 `disconnectSessions(...)`。`on-run6` fresh run 再次验证 launch / registration 主链可拉起，但没有成功补到新 `.gputrace` | split-brain 型 `Session not registered` 修复已落地并通过测试；当前 blocker 从 split-brain 前移为 capture bridge reachability |
+| 2026-04-06，`E-006d8` fresh `replacement-on-run7` + `e006d_render_diff.py` | `remove_playtools` 成功 → 首次 `inject_playtools` 失败 → `re-sign` + 再次注入恢复。`session=ready` 后连续两次 `get_capture_status` 返回 `Receive timed out`，但 session 保持 `ready` 未再掉线。未再复现 split-brain 型 `Session not registered`。新增 `Scripts/e006d_render_diff.py` 把 run 快照接到 Xcode GUI 自动化统一入口。`finalize-run --latest-gputrace` 自动从默认容器回收 `.gputrace` | 当前四条 blocker 正式收敛：capture bridge reachability、capture 输出路径权限、trace MSL 覆盖、绘制内容差异结构化 diff |
 
 ## 已完成子任务归档
 
 ### E-005：payload 恢复与 runtime library 替换
 
-- **`E-005a` / `E-005b`**：`pc_newLibraryWithData` 主路径已接入 `bitcode 提取 → llvm-dis → IRToMSLConverter → makeLibrary(source:)`；多 module 聚合也已落地，并明确采用“全成全退”策略。
+- **`E-005a` / `E-005b`**：`pc_newLibraryWithData` 主路径已接入 `bitcode 提取 → llvm-dis → IRToMSLConverter → makeLibrary(source:)`；多 module 聚合也已落地，并明确采用"全成全退"策略。
 - **`E-005e` 当前结论**：对已知真实样本，wrapper / header-compat / function list / `OFFT` slicing 已打通；raw `MTLB` / `xar` / `bplist_keyed_archive` recovered payload 都已推进到 `OK modules=3 functions=3` 且 `valid_llvm=3`。这条链路对当前已知样本不再是主 blocker。
 - **`E-005e1 / E-005e1b`**：已补 `payload` 指纹、前导字节、`dispatch_data` 运行时类名，以及非 `MTLB` payload 的调用栈诊断，便于下一轮 live 样本反推上游来源。
 - **`E-005e2a` 系列**：已落地通用 wrapper 剥离、`mtlb_suspicious` 二次剥离、非标准 raw `MTLB` header 兼容解析，并把未识别或已 recovered 的 payload 落盘到 `ShaderPayloadSamples`。
-- **`E-005e2b` 系列**：已打通 `gzip`、`zip`、`xar`、`NSKeyedArchiver bplist` 的定向恢复路径；剩余“其他自定义 archive / keyed archive”仅在出现新的真实样本时再继续。
+- **`E-005e2b` 系列**：已打通 `gzip`、`zip`、`xar`、`NSKeyedArchiver bplist` 的定向恢复路径；剩余"其他自定义 archive / keyed archive"仅在出现新的真实样本时再继续。
 
 ### E-006：live blocker 前移路径
 
 - **`E-006a1`**：runtime→host `llvm-dis` bridge 已落地；`RegistrationListener` / `MCPManager` / `LLVMToolManager` 可承接 `host_disassemble_bitcode`，runtime 侧改为优先走 bridge。
 - **`E-006a2a`**：`LibrarySourceInjectionService` 已在 `makeLibrary(source:)` 前加入 preflight，并把 `preflight_rejected` / `compile_failed` 的聚合源码和上下文落到 `ShaderSourceDiagnostics/<bundleId>/`。
-- **`E-006a2b`**：preflight guard 改变了 live 基线，说明问题已不再只是“刚 ready 就掉线”，而是开始进入更可定位的 runtime / shader 主线分流。
+- **`E-006a2b`**：preflight guard 改变了 live 基线，说明问题已不再只是"刚 ready 就掉线"，而是开始进入更可定位的 runtime / shader 主线分流。
 - **`E-006a2c1 / E-006a2c2`**：先修 `Toucher.touchcam` 的 `keyWindow` 空值崩溃，再通过禁用 `keymapping` 的受控复测把 toucher 干扰从 shader 主线里剥离。
 - **`E-006a2d1`**：修 fragment packed-return 误判为向量的问题；最小样本验证 `<{ <4 x float> }>` 必须先走 aggregate 分支。
 - **`E-006a2d2a`**：修 metadata→参数映射、suffixed SSA 回接，以及 `fadd/fmul/fdiv fast` 共享类型二元算术解析。
@@ -49,11 +52,11 @@
 
 ### 从 dashboard 主体下沉的非当前决策性备注
 
-- 以下内容曾在 `00-Dashboard.md` 的“踩坑与经验”中长期保留，但它们更适合作为**历史实现脉络 / 已收敛技术经验**来查阅，而不是继续占据当前控制面：
+- 以下内容曾在 `00-Dashboard.md` 的"踩坑与经验"中长期保留，但它们更适合作为**历史实现脉络 / 已收敛技术经验**来查阅，而不是继续占据当前控制面：
   - 早期 live 中 `session ready` / crash / diagnostics 三者之间的时间线关系
   - `IR metadata`、缺失值参数 fallback、`air.struct_type_info`、结构体类型名一致性等 lowering 细节
   - 注入 MSL 注释识别、重复函数名、多模块聚合失败等已知 compile blocker 的历史演进
-- 当前 dashboard 只保留仍直接影响“下一步做什么”的规则；这些历史技术备注如果再次影响判断，应优先回看 `E-004-MetallibSourceExtraction.md`、`E-006d-GenshinRenderingNondeterminism.md` 与本归档。
+- 当前 dashboard 只保留仍直接影响"下一步做什么"的规则；这些历史技术备注如果再次影响判断，应优先回看 `E-004-MetallibSourceExtraction.md`、`E-006d-GenshinRenderingNondeterminism.md` 与本归档。
 
 ### Payload / wrapper 恢复
 
@@ -69,7 +72,7 @@
 
 - **`NSHomeDirectory()` 在 injected runtime 中返回的是目标 app 容器，不是宿主用户 Home**：宿主 LLVM 工具链路径不能直接基于它拼接。
 - **PlayTools 是 iOS target**：不能依赖 `Foundation.Process`；若必须在 injected runtime 内起子进程，只能自己走 `posix_spawn`。
-- **真正拦住 `llvm-dis` 的不是“找不到工具”，而是目标 app 的 macOS sandbox**：`composeEntitlements()` 会带 `com.apple.security.app-sandbox = true`，SBPL 中明确有 `(deny process-fork)`。
+- **真正拦住 `llvm-dis` 的不是"找不到工具"，而是目标 app 的 macOS sandbox**：`composeEntitlements()` 会带 `com.apple.security.app-sandbox = true`，SBPL 中明确有 `(deny process-fork)`。
 - **现有 `RegistrationListener` 足够承接一次性 runtime→host 工具请求**：不必额外新开 IPC；新增短连接 `command` / `commandResponse` 即可。
 
 ### IR→MSL 历史修复
@@ -77,7 +80,7 @@
 - **`<{ ... }>` packed return 必须先于 `<N x T>` 向量分支处理**：否则会把 packed aggregate 错拆成 `float4{ <4` 这类坏函数签名。
 - **参数映射必须按 metadata `argIndex` 精确回接，且不能继续跳过 `air.vertex_input`**：否则 vertex `%0/%1/%2` 容易退化成 `param0/param1/param2`。
 - **`parseMetadataFuncNode` 里拿参数列表引用时，不能把开头的 `ptr @func` 也算进 `refs` 下标**：`parseMetadataRefList(...)` 实际只返回 `!N` 引用。
-- **`setupParameterMappings` 必须吃“纯 IR 参数列表”，不能喂整条 `define ...` 签名**：否则会出现把 `long(tid)` 错翻成 `long(vectorOut)` 这类回接错误。
+- **`setupParameterMappings` 必须吃"纯 IR 参数列表"，不能喂整条 `define ...` 签名**：否则会出现把 `long(tid)` 错翻成 `long(vectorOut)` 这类回接错误。
 - **LLVM 二元算术要按 `<type> lhs, rhs` 的共享类型文法解析**：尤其是 `fadd/fmul/fdiv fast` 的第二个操作数不会重复写类型。
 - **metadata token 拆分必须识别引号上下文**：`!"texture2d<float, sample>"` 这类字符串内部自带逗号，不能按普通 token 切。
 - **`parseStructFieldInfoFromMetadata` 必须先取 `=` 右侧的 node content**：否则 `Uniforms` / `Particle` 这类字段表会一直为空。
@@ -87,7 +90,7 @@
 ### Live 复测方法论
 
 - **host bridge 版本 live 复测要同时看 session、进程、crash report 与 diagnostics**：`create_session` 返回 `ready` 只能说明 runtime 曾注册过，不能说明应用已经稳定。
-- **“`llvm-dis` 权限问题已解”不等于 live 主线已通**：统一日志里看到 `LibrarySourceInjection` 主路径稳定执行，往往意味着问题已经前移到 IR→MSL 产物 / fallback / 运行时稳定性层。
+- **"`llvm-dis` 权限问题已解"不等于 live 主线已通**：统一日志里看到 `LibrarySourceInjection` 主路径稳定执行，往往意味着问题已经前移到 IR→MSL 产物 / fallback / 运行时稳定性层。
 - **先堵 toucher 自身硬崩溃，再做 keymapping 隔离复测**：这样才能把 shader 主线问题和输入路径问题拆开看。
 - **关闭 `keymapping` 后若 crash 从 `playcover.toucher` 转回 `UnityGfxDeviceWorker`，说明 toucher 干扰已基本剥离**。
 - **即使 `session` 从未 `ready`，live 复测也要同时对齐 diagnostics 与 crash 时间线**：diagnostics 往往比 MCP 的 session 状态更早给出有效信号。

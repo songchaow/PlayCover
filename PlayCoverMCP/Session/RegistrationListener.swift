@@ -138,6 +138,33 @@ public final class RegistrationListener: Sendable {
         listener?.cancel()
     }
 
+    public func disconnectSessions(_ sessionIds: [String], reason: String) {
+        let requestedIds = Set(sessionIds)
+        guard !requestedIds.isEmpty else {
+            return
+        }
+
+        lock.lock()
+        let connections = activeConnections
+            .filter { requestedIds.contains($0.key) }
+            .map { ($0.key, $0.value) }
+        lock.unlock()
+
+        guard !connections.isEmpty else {
+            return
+        }
+
+        for (sessionId, connection) in connections {
+            if let framed = try? bridgeFrame(.close(ClosePayload(sessionId: sessionId, reason: reason))) {
+                connection.send(content: framed, completion: .contentProcessed { _ in
+                    connection.cancel()
+                })
+            } else {
+                connection.cancel()
+            }
+        }
+    }
+
     // MARK: - Private
 
     private func handleConnection(_ connection: NWConnection) {

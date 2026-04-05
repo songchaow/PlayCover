@@ -85,6 +85,10 @@ do {
 
 let healthMonitor = SessionHealthMonitor(registry: sessionRegistry, staleTimeout: 30.0)
 healthMonitor.onStaleSessions = { staleSessions in
+    registrationListener.disconnectSessions(
+        staleSessions.map(\.sessionId),
+        reason: "stale session removed by health monitor"
+    )
     logger.log(.info, "Removed \(staleSessions.count) stale session(s): \(staleSessions.map(\.sessionId).joined(separator: ", "))")
 }
 healthMonitor.start(interval: 10.0)

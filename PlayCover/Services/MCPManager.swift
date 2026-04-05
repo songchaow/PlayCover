@@ -494,6 +494,10 @@ class MCPManager: ObservableObject {
 
         let healthMonitor = SessionHealthMonitor(registry: sessionRegistry, staleTimeout: 30.0)
         healthMonitor.onStaleSessions = { [weak self] staleSessions in
+            registrationListener.disconnectSessions(
+                staleSessions.map(\.sessionId),
+                reason: "stale session removed by health monitor"
+            )
             self?.logger?.log(.info, "Removed \(staleSessions.count) stale session(s): \(staleSessions.map(\.sessionId).joined(separator: ", "))")
         }
         healthMonitor.start(interval: 10.0)

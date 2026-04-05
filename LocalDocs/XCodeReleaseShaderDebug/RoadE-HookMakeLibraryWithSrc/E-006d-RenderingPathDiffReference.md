@@ -28,6 +28,11 @@
 
 当前仓库里已经有可直接复用的 Xcode GUI 自动化工具：
 
+- `../../../Scripts/e006d_render_diff.py`
+  - 新的标准专项入口，负责把 `build/e006d-run-snapshots/<label>/<bundle-id>` 下的标准 run 快照，接到本目录现有 GUI 自动化脚本
+  - 支持按 run label 自动解析 `.gputrace`、顺序导出 `frame_dump/`、`cb_data.json`、可选 `key_pass_details.json`，并生成 `comparison.json + summary.txt`
+  - 默认先做首轮结构 diff；只有需要下钻关键 pass 时，再显式加 `--include-re-details`
+
 - `../../XCodeOperation/xcode_gpu_ops.py`
   - 支持 `open` / `status` / `dump` / `summary` / `walk`
   - 可自动完成：打开 `.gputrace`、点击 Replay、导出 Navigator / Pipeline State 视图、读取当前 draw call summary
@@ -43,6 +48,33 @@
 ## 推荐执行顺序（代表性 off/on 对照）
 
 先比较结构，再决定是否需要逐步遍历 draw call：
+
+### 0. 优先走统一 runner（推荐默认入口）
+
+```bash
+python3 Scripts/e006d_render_diff.py collect-pair \
+  --bundle-id com.miHoYo.Yuanshen \
+  --run-a replacement-off-run1 \
+  --run-b replacement-on-run5
+```
+
+默认产物位置：
+
+- `build/e006d-render-diff/com.miHoYo.Yuanshen/replacement-off-run1/`
+- `build/e006d-render-diff/com.miHoYo.Yuanshen/replacement-on-run5/`
+- `build/e006d-render-diff/replacement-off-run1-vs-replacement-on-run5/comparison.json`
+- `build/e006d-render-diff/replacement-off-run1-vs-replacement-on-run5/summary.txt`
+
+若首轮结构对比还不够，再补：
+
+```bash
+python3 Scripts/e006d_render_diff.py collect-pair \
+  --bundle-id com.miHoYo.Yuanshen \
+  --run-a replacement-off-run1 \
+  --run-b replacement-on-run5 \
+  --include-re-details \
+  --force
+```
 
 ### 1. 打开 `.gputrace` 并导出整帧摘要
 
@@ -123,6 +155,7 @@ python3 $OPS/xcode_gpu_ops.py walk -o build/e006d-render-diff/off1/walk -n 100
 - `.gputrace` 的 `device-resources` / `unsorted-capture` 当前是私有 `MTSP` 结构，仓库里**没有**稳定的纯离线解析器来直接回答 draw call 数或 render pass 数
 - 因此现阶段最稳的做法仍是：**Xcode 打开 `.gputrace` + GUI 自动化脚本采集结构化结果**
 - `collect_re_details.py` 成本较高，整帧可能需要 `15~20` 分钟；默认应先跑 `dump` 和 `collect_cbs.py`
+- `Scripts/e006d_render_diff.py` 只负责把现有 Xcode GUI 自动化工具接成统一 runner；它不会绕过 Xcode / Accessibility / `cliclick` 前提，也不能替代最终人工打开 `.gputrace` 做视觉确认
 - 若环境缺少 Accessibility 权限或 `cliclick`，这条线只能作为专项分析能力记录，**不能**写成当前日常默认 gate
 
 ## 与其他文档的关系

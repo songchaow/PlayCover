@@ -2,25 +2,13 @@
 
 ## 状态：TODO
 
+> ⚠️ **本文档是 `E-006d` 当前主线的详细执行说明。** `00-Dashboard.md` 负责记录当前最高优先级、最新基线与全局 TODO；本文档只展开 `E-006d` 自身的判断顺序、交付标准与技术备注。
+
 ## 当前已完成子项
 
-- **E-006d1（✅ DONE）**：新增 `Scripts/compare_capture_runs.py`，用于对比两轮采集的 `manifest.jsonl` 与 `modules/` 快照，直接输出：
-  - 哪些 `moduleKey` 仅出现在单边
-  - 共享 `moduleKey` 在 `module.bc` / `module.ll` / `module.generated.metal` / `module.meta.json` 上是否有 hash 或尺寸差异
-  - `functionNames` / `functionTypes` / `generatedFunctionNames` / `generatedFunctionTypes` / `selector` / `captureAction` / compile 状态摘要是否一致
-- 这一步优先服务于第 2、3、4 个核心问题：**输入是否相同 / 输出是否相同 / 同 key 模块的离线产物是否稳定**
-- **E-006d2（✅ DONE）**：成功替换路径新增 `ShaderCorpus/<bundleId>/replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal` 与 `replacement.meta.json`，并向 `manifest.jsonl` 记录 `event=replacement`；`Scripts/compare_capture_runs.py` 同步扩展为比较两轮最新聚合替换产物的 `moduleKeys` / `functionCount` / `aggregateMSLBytes` / aggregate source sha256。
-- 这一步补齐了第 3 个核心问题里原先缺失的“**聚合 MSL 是否稳定**”证据链，避免只比较单模块 `.metal` 却看不到最终替换源码顺序、去重结果或聚合体漂移。
-- **E-006d3（✅ DONE）**：新增 `shaderSourceReplacementEnabled` runtime 开关；`PlayTools` 在 `LibrarySourceInjectionSwizzles` 入口处尊重该设置，关闭时直接返回原始 `MTLLibrary`，不再进入 `metallib -> IR -> MSL -> makeLibrary(source:)` 替换链路；并新增 `Scripts/set_shader_replacement_mode.py`，可直接切换指定 app 的 `App Settings/<bundleId>.plist`，用于建立“替换 vs 不替换”的稳定 live 对照。
-- 这一步补齐了第 1 个核心问题里此前缺失的可执行控制面：**现在可以在不改代码、不手工改 plist 的前提下，稳定切换“做替换 / 不做替换”两种运行模式**。
-- **E-006d4（✅ DONE）**：新增 `Scripts/snapshot_capture_run.py`，可把当前 `ShaderCorpus/<bundleId>/manifest.jsonl + modules/ (+ replacements/)`、`ShaderSourceDiagnostics/<bundleId>/` 与 `App Settings/<bundleId>.plist` 一次性固化到 `build/e006d-run-snapshots/<label>/<bundleId>/`，并额外写出 `snapshot.meta.json` 记录本轮 replacement 开关、模块数、diagnostics 条目数。
-- 这一步把第 1~3 个核心问题之间缺失的“**单次 run 快照固化**”补齐：后续做 `replacement=off/on` 对照时，不再需要手工拷贝多个目录或临时记忆当前开关状态，直接按 run label 落盘即可接给 `Scripts/compare_capture_runs.py`。
-- **E-006d5（✅ DONE）**：扩展 `Scripts/snapshot_capture_run.py` 支持可选 `--gputrace`，把对应 `.gputrace` 一并固化到 run 快照，并自动写出 `gputrace-source-summary.json` / `snapshot.meta.json.gputraceSummary`；`Scripts/compare_capture_runs.py` 同步新增 `snapshotComparison`，可直接比较两轮 run 的 replacement 开关和 `.gputrace` 源码覆盖摘要。
-- 这一步补齐了第 1、5 个核心问题之间原本断开的证据：run 快照现在不只保留 corpus / replacements / diagnostics / settings，也能保留“**这轮最终截帧看到了什么源码**”，从而把 live 侧 `.gputrace` 结果纳入同一份离线 diff 报告。
-- **E-006d6（✅ DONE）**：新增 `Scripts/analyze_capture_run_matrix.py`，可批量读取 `build/e006d-run-snapshots/<label>/<bundleId>/` 多轮快照，自动按 `snapshot.meta.json.replacementMode.enabled` 分组为 `replacement=off/on`，汇总同模式重复启动是否稳定，以及 `off vs on` 跨模式差异是否稳定存在。
-- 这一步补齐了“至少做 2~3 轮重复启动”与“先回答是否形成稳定对照样本”之间缺失的自动汇总层：不再需要手工逐对运行 `compare_capture_runs.py` 才能判断 `within-mode stable / cross-mode different` 是否成立。
-- **E-006d7（✅ DONE）**：新增 `.gputrace` 可见源码归因索引：`Scripts/snapshot_capture_run.py` 现在会额外写出 `gputrace-attribution-index.json`，把每个可见 MSL hash 按源码内容指纹关联到 `modules/<moduleKey>/module.generated.metal` 与 `replacements/.../aggregate.generated.metal`；`Scripts/compare_capture_runs.py` 也会把这些归因结果纳入 `snapshotComparison`。
-- 这一步补齐了第 4、5 个核心问题之间原本缺失的“**最终 trace 里看到的源码究竟来自哪一个 module / aggregate replacement**”证据链：后续不再只能看到 `validMSLFiles` 或 hash 集合变化，而能直接回答“这些可见 shader 对应的是哪些 capture module 与哪次聚合替换产物”。
+- **E-006d1 ~ E-006d7（✅ DONE）** 已补齐当前主线所需的离线 / live 对照工具链：输入 diff、聚合源码 diff、replacement 开关、run 快照、`.gputrace` 固化、run matrix 汇总，以及 trace-level 归因索引都已落地。
+- 这些子项的共同作用是：把 `E-006d` 当前最关键的问题从“缺工具、缺证据”前移为“已有工具，但还缺一组足够稳定的 off/on 多轮 run 结论”。
+- 因此 `E-006d` 现在的主要工作，不是继续增加新基础设施，而是用现有工具把结论收敛到更窄的根因分支。
 
 ## 现象
 
@@ -37,6 +25,16 @@
 2. **同一界面重复启动时，进入 shader 链路的输入是否相同？**
 3. **若输入相同，生成出的单模块 MSL / 聚合 MSL / compile 结果是否完全一致？**
 4. **若生成结果也相同，运行时是否稳定使用了替换后的 library，还是问题出在更后续的着色 / 后处理 / render pipeline 阶段？**
+
+## 当前最该做的事
+
+- 先完成 `E-006d8`：在**同一界面、相同设置**下，积累 **replacement=off / on 各 2~3 轮** run 快照，并用现有工具输出矩阵结论。
+- 本轮完成标准不是“继续加脚本”或“继续补文档”，而是至少把当前问题明确收敛到以下之一：
+  1. 输入集合不稳定
+  2. 输入稳定但输出/聚合结果不稳定
+  3. 输出稳定但替换实际命中不稳定
+  4. 替换链路稳定，但差异落在更后续 render pipeline / post-processing
+- 只有在这一层结论明确后，下一轮才应该决定是否回到 `IRToMSLConverter`、replacement runtime，还是更后续的渲染链路。
 
 ## 优先排查顺序
 
@@ -180,25 +178,13 @@ python3 Scripts/compare_capture_runs.py \
 ## 当前建议执行顺序
 
 1. 固定 live 条件；每轮结束后立即用 `Scripts/snapshot_capture_run.py` 固化 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings 快照
-2. 先用 `Scripts/set_shader_replacement_mode.py` 建立一组 **replacement=off** 的稳定对照，再切回 **replacement=on** 保留对应 run
-3. 每个模式累计到 `2~3` 轮后，先用 `Scripts/analyze_capture_run_matrix.py` 汇总“同模式是否稳定 / 跨模式是否稳定不同”
-4. 若矩阵汇总已显示稳定，再用 `Scripts/compare_capture_runs.py` 下钻具体 run-vs-run，查看 `onlyInRunA/B`、共享 `moduleKey` 差异、`latestReplacementComparison`，以及 `snapshotComparison` 中的 `.gputrace` 归因字段
-5. 若 `latestReplacementComparison` 已稳定一致，再继续下钻到 `.gputrace`、实际替换命中情况、以及更后续的 pass / pipeline 行为；若这里已漂移，优先留在离线层继续收敛聚合 / 替换差异
+2. 先补足 **replacement=off** 的 `2~3` 轮稳定对照，再补足 **replacement=on** 的 `2~3` 轮对应 run
+3. 用 `Scripts/analyze_capture_run_matrix.py` 先回答“同模式是否稳定 / 跨模式是否稳定不同”——这是 `E-006d8` 的第一层交付物
+4. 若矩阵已稳定，再用 `Scripts/compare_capture_runs.py` 下钻具体 run-vs-run，查看 `onlyInRunA/B`、共享 `moduleKey` 差异、`latestReplacementComparison`，以及 `snapshotComparison` 中的 `.gputrace` 归因字段——这是 `E-006d8` 的第二层交付物
+5. 只有在上面两层都拿到稳定结论后，才继续决定下一轮是回到 converter / replacement，还是进入更后续的 pass / pipeline 行为排查
 
 ## 从 dashboard 下沉的细粒度技术备注
 
-- **Metal IR 的 shader 类型信息出现在三个位置，需要按优先级回退**：① `!air.vertex` / `!air.fragment` / `!air.kernel` 顶层 metadata（最可靠）② `attributes #N = { "air.fragment" ... }` 声明（某些合成/裁剪后的 IR 只有这个）③ 函数名/`inferShaderType` 启发式（最不可靠）
-- **孤立 metadata arg 节点可以通过 `air.arg_name` 做 fallback 匹配**：某些 IR 中 `air.texture` / `air.sampler` 的 metadata arg 节点存在但未被函数 args 列表引用；按 IR 参数名与 `air.arg_name` 做 name-based lookup 可以恢复 texture/sampler 类型
-- **fragment shader 的无 attribute value 参数必须带 `[[color(N)]]`**：fragment 返回非 void 标量/向量类型时，隐式输出占用 `[[color(0)]]`，输入 value 参数的 color index 应从 1 开始
-- **texture access qualifier 不能一刀切删除**：`texture2d<float, write/read/read_write>` 的 access qualifier 若丢失，会让 `write()` / `read()` 编译失败
-- **AIR 的 `write_texture_*` 参数顺序与 Metal 不同**：AIR 为 `(texture_ptr, coord, color, ...)`，Metal 为 `write(color, coord)`
-- **`___metal_fast_*` 与 `air.fast_*` 的 MSL 映射必须统一去掉 `fast_` 前缀**：fast-math 语义属于编译选项，而不是生成的顶级函数名
-- **LLVM IR 的 `i32` 无 signedness，但 MSL 的 `int4` / `uint4` 是不同类型**：vector load/store 需结合 pointer element type 做 signedness 修正
-- **AIR IR 中 builtin 参数的 IR 实际类型可能与 metadata 声明不一致**：如 metadata 声明为 `uint3`，IR 实际却是 `float3`，必要时需在函数体开头插入显式转换
-- **`filterTextureArgs` 不能盲目过滤所有零值 `i32` / `<N x i32>`**：某些变体中这些值是语义参数或真实坐标，误删会造成错误 lowering
-- **compile blocker 修复后可能暴露下一个预存在 blocker**：数值统计不变并不代表本轮修复无效
-- **`metal::_atomic` 在 MSL 中是 `atomic_int` / `atomic_uint` 引用类型，不是结构体**；AIR 原子函数中的 `scope` / `volatile` 等内部控制参数需过滤
-- **`bitcast ptr to ptr` 在 MSL 中通常是 no-op**：不应误发射为数值 `as_type<>()`
 - **真实 corpus compile 通过不等于 `.gputrace` 源码可见，更不等于真实渲染正确**：这三层验证必须分开
 - **延迟管线下，base pass 看起来类似并不能排除后续阶段问题**：若当前观察主要来自最终画面差异，就必须把后处理、着色阶段与 render pipeline 顺序 / 配置一起纳入排查范围
 - **“替换 vs 不替换”是当前最低风险的稳定比较基线**：在根因层级未明确前，先确认开启替换后是否稳定引入了最终效果差异，再继续往具体 stage / pass 下钻
@@ -206,14 +192,9 @@ python3 Scripts/compare_capture_runs.py \
 - **run 快照要在 live 结束后立即固化**：`E-006d4` 后统一使用 `Scripts/snapshot_capture_run.py` 保留 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings；不要再手工从容器里零散拷目录，否则很容易把 replacement 开关状态与对应 run 搞混
 - **若本轮已产出 `.gputrace`，也要与 run 快照一起固化**：`E-006d5` 后优先通过 `Scripts/snapshot_capture_run.py --gputrace /path/to/xxx.gputrace` 一次性保留 trace 与源码覆盖摘要，不要再把 `.gputrace` 单独散落在其它目录，避免后续 run-vs-run diff 时丢失最终可见性证据
 - **成功路径也要落盘聚合产物，才能回答“最终替换源码是否稳定”**：只保留单模块 `.bc/.ll/.metal` 不足以覆盖聚合顺序、重名去重与最终 `makeLibrary(source:)` 输入；`E-006d2` 后应优先比较 `manifest.jsonl` 中最新 `event=replacement` 对应的 aggregate source hash
-- **`air.struct_type_info` 第三个 `i32` 是 `elementCount`，不是 alignment**：数组字段若被错当标量，会直接造成 subscript 类 compile blocker
-- **结构体类型名要在参数声明和结构体定义两处保持一致**：尤其是首字母小写的用户类型名，需要与 `sanitizeTypeName` 策略统一
-- **`check_gputrace_sources.py` 需要识别注释开头的注入 MSL**：PlayTools 生成源码常以 `// Auto-generated ...` 开头
-- **多模块 metallib 的重复函数名是 Unity shader 的典型特征**：聚合编译前必须去重，否则会在单个 MSL 文件内产生重名函数
 - **`throw` + 静默 `catch` 回退是 runtime hook 的危险反模式**：会把关键 blocker 隐藏为“看似正常但实际回退原始 library”
-- **`air.struct_type_info` metadata 的字段类型可能与 IR 结构体定义不一致**：必要时要用 IR 结构体定义交叉校正 metadata 字段信息
-- **失败路径导出是闭环的关键一环**：`ShaderSourceDiagnostics/<baseName>_modules/` 让失败样本也能进入离线 replay 主路径
-- **异常路径中 `preparedModules` 可能部分填充**：导出时应区分“所有模块的 `.bc`”与“已成功准备模块的 `.ll/.metal`”
+- **失败路径导出是闭环的关键一环**：`ShaderSourceDiagnostics/<baseName>_modules/` 让失败样本也能进入离线 replay 主路径；该闭环规则本身见 `E-004-CorpusClosureAndRecapturePolicy.md`
+- **更早的 lowering 细节与已收敛 compile blocker 不再由本文档维护**：相关历史实现经验已经沉到 `E-004-MetallibSourceExtraction.md` 与 archive，避免当前主线文档同时承担“执行说明”和“历史修复百科”两种职责
 
 ## 与其他文档的关系
 

@@ -137,6 +137,8 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 ## 当前主线
 
 - **E-006d（当前最高优先级）**：调查“用 PlayCover 打开原神，在同一界面重复启动时，画面表现每次都不完全一样；mesh 不变，但局部渲染结果异常”的现象。当前**不能实锤是 shader 改坏**：因为原神是延迟管线，base pass 对比看起来也可能类似，异常也可能来自后处理、着色阶段，或更上层的 render pipeline 顺序 / 配置差异。当前最保守的稳定结论只有：**进行了反编译/重编译替换**与**完全不做替换**时，最终效果确实不一样；后续需围绕这个稳定对照继续逐层归因。
+- **当前最该做的事**：不是继续扩 lowering，也不是继续证明“源码可见”，而是用现有 `E-006d1 ~ E-006d7` 工具，先形成一组**replacement=off / on 各 2~3 轮**的稳定 run 矩阵，并把结论收敛到“输入漂移 / 输出漂移 / 替换命中漂移 / 更后续 render pipeline 差异”四类之一。
+- **当前执行口径**：dashboard 只保留“现在最该做什么、做到什么算推进、有哪些基线已经可直接复用”；`E-006d-GenshinRenderingNondeterminism.md` 负责承载当前主线的详细判断路径与技术细节。
 - **E-006c（✅ 已关闭，但仅作为里程碑基线）**：Xcode 人工确认 `capture_20260404_roadE_e006c3_final.gputrace` 中 Draw Call shader 面板可见 MSL 源码，说明“源码可见”链路已打通；但后续仍需对“渲染是否稳定正确”继续验证。
 - **E-006a（扩展真实 corpus 覆盖面）** / **E-007（UI/MCP 工具暴露）**：仍保留，但在 `E-006d` 完成根因归因前暂不作为最高优先级。
 
@@ -153,6 +155,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 当前异常基线（2026-04-05，`E-006d` 新开） | 用 PlayCover 打开原神并停留在**同一界面**时，重复启动后画面表现会出现差异；**mesh 布局没有变化**，但局部渲染结果异常。当前仍**不能实锤是 shader 本身改坏**：由于原神是延迟管线，base pass 对比看起来也可能类似，问题也可能位于后处理、着色阶段，或 render pipeline 顺序 / 配置。当前最稳定的复现对照，是**做替换**与**不做替换**时最终效果稳定不同；该现象尚未完成更细的层级归因。 |
 | 当前控制面基线（2026-04-05，`E-006d3` 后） | 已新增 `shaderSourceReplacementEnabled` runtime 开关：关闭后 `PlayTools` 在 `LibrarySourceInjectionSwizzles` 入口直接返回原始 `MTLLibrary`，不再进入 `IR -> MSL -> makeLibrary(source:)` 替换链路；可用 `python3 Scripts/set_shader_replacement_mode.py --bundle-id <bundleId> --mode on/off` 直接切换单 app 的“替换 / 不替换” live 对照模式。 |
 | 当前 run 固化基线（2026-04-05，`E-006d7` 后） | `Scripts/snapshot_capture_run.py` 现可在原有 `manifest.jsonl + modules/ (+ replacements/) + diagnostics + app settings` 快照基础上，额外通过 `--gputrace /path/to/xxx.gputrace` 一并固化最终截帧，并写出 `gputrace-source-summary.json`、`gputrace-attribution-index.json` 与 `snapshot.meta.json.gputraceAttribution` 摘要；`Scripts/compare_capture_runs.py` 的 `snapshotComparison` 也会同步比较 `attributedVisibleMSLHashes`、`attributedModuleKeys`、`attributedReplacementDirectories` 与 `visibleMSLContentSHA256`，把最终 trace 中可见源码直接回连到 `modules/` 与 `replacements/`。 |
+| 当前下一步（2026-04-05，`E-006d8` 待执行） | 用已落地的 `set_shader_replacement_mode.py + snapshot_capture_run.py + analyze_capture_run_matrix.py + compare_capture_runs.py`，先形成 **replacement=off / on 各 2~3 轮**的稳定矩阵；完成标准不是再加新工具，而是输出“同模式是否稳定、跨模式是否稳定不同，以及第一层明确归因落点”。 |
 | 历史 live blocker 时间线 | 见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
 
 ## 整体架构
@@ -190,6 +193,8 @@ PlayTools.framework (注入到 iOS app)
 
 > **优先级更新（2026-04-05）**：当前主线已切换到 **`E-006d`：原神重复启动时的随机渲染异常归因**。在 `E-006d` 明确根因前，`E-006a` / `E-007` 均下调一级优先级。
 
+> **当前 TODO 口径**：这里只保留“现在最该做什么”和“各已完成子项产出了什么能力”；更细的技术细节、判断顺序与历史问题链路统一下沉到 `E-006d-GenshinRenderingNondeterminism.md`、`E-004-MetallibSourceExtraction.md`、`E-005-OfflineReplayBatchCompileDiff.md` 与 archive。
+
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
 | E-001 | **可行性 PoC：`-frecord-sources` 重编译验证** | ✅ DONE | [E-001-PoC](E-001-PoC-frecord-sources.md) |
@@ -205,23 +210,17 @@ PlayTools.framework (注入到 iOS app)
 | E-005a | ↳ `IR -> MSL` 离线回放 runner | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
 | E-005b | ↳ 批量 Metal 编译与失败报告 | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
 | E-005c | ↳ 新旧转换结果 diff / 回归基线 | ✅ DONE | |
-| E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | ✅ DONE | |
+| E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | ✅ DONE（源码可见里程碑） | |
 | E-006d | ↳ 调查原神同一界面重复启动时的随机渲染异常 / shader 语义漂移 | TODO | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
 | E-006d1 | ↳ 两轮采集输入/输出一致性离线对比工具 | ✅ DONE | |
-|  | 新增 `Scripts/compare_capture_runs.py`：对比两轮 `manifest.jsonl` 与 `modules/`，直接给出 `moduleKey` 集合差异，以及共享 `moduleKey` 在 `.bc/.ll/.metal/.meta`、函数签名、selector、状态摘要上的差异，用于先回答“输入是否相同 / 输出是否相同” | | |
 | E-006d2 | ↳ 成功替换聚合 MSL 落盘 + run-vs-run 聚合 diff | ✅ DONE | |
-|  | 成功替换路径新增 `ShaderCorpus/<bundleId>/replacements/.../aggregate.generated.metal` 与 `replacement.meta.json`，并向 `manifest.jsonl` 追加 `event=replacement`；`Scripts/compare_capture_runs.py` 现可直接比较两轮最新聚合替换产物的 `moduleKeys` / `functionCount` / `aggregateMSLBytes` / aggregate source sha256，用于回答“相同输入下聚合 MSL 是否稳定” | | |
 | E-006d3 | ↳ “替换 vs 不替换” runtime 开关与 plist 切换脚本 | ✅ DONE | |
-|  | 新增 `shaderSourceReplacementEnabled` 设置；关闭后 hook 直接返回原始 library，不再进入替换链路；新增 `Scripts/set_shader_replacement_mode.py` 直接切换 `App Settings/<bundleId>.plist`，用于建立稳定的 live A/B 对照 | | |
-|  | 目标不是继续证明“源码可见”或“compile green”，而是先用**替换 vs 不替换**建立稳定对照，再确认异常究竟来自 `llvm-dis` / `IRToMSLConverter` / 聚合 MSL / `makeLibrary(source:)` 替换，还是更后面的着色、后处理、render pipeline 顺序 / 配置阶段 | |
 | E-006d4 | ↳ 单次 run 快照固化脚本 | ✅ DONE | |
-|  | 新增 `Scripts/snapshot_capture_run.py`，统一固化 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings 到 `build/e006d-run-snapshots/<label>/<bundleId>/`，并写出 `snapshot.meta.json`；后续可直接把输出目录喂给 `Scripts/compare_capture_runs.py` | | |
 | E-006d5 | ↳ run 快照补齐 `.gputrace` 固化与 trace-level diff 摘要 | ✅ DONE | |
-|  | `Scripts/snapshot_capture_run.py` 新增可选 `--gputrace`：把对应 `.gputrace` 一并保存到 run 快照，并自动生成 `gputrace-source-summary.json`；`Scripts/compare_capture_runs.py` 新增 `snapshotComparison`，可直接比较两轮快照的 replacement 开关状态、`validMSLFiles`、可见 MSL hash 集合与 `indexHashReferences`，用于把最终截帧证据纳入 `E-006d` 的统一离线 diff 主路径 | | |
 | E-006d6 | ↳ 多轮 run 矩阵汇总脚本 | ✅ DONE | |
-|  | 新增 `Scripts/analyze_capture_run_matrix.py`：批量读取 `build/e006d-run-snapshots/<label>/<bundleId>/` 多轮快照，自动按 replacement 开关分组，汇总 `replacement=off/on` 各自的重复启动是否稳定，以及 `off vs on` 跨模式差异是否稳定存在；用于先回答“是否已经形成稳定对照样本”，再决定是否继续下钻单对 run diff | | |
 | E-006d7 | ↳ `.gputrace` 可见源码归因索引 | ✅ DONE | |
-|  | `Scripts/snapshot_capture_run.py` 新增 `gputrace-attribution-index.json`：按源码内容指纹把可见 MSL hash 归因到 `modules/<moduleKey>/module.generated.metal` 与 `replacements/.../aggregate.generated.metal`；`Scripts/compare_capture_runs.py` 的 `snapshotComparison` 同步新增 `attributedVisibleMSLHashes`、`attributedModuleKeys`、`attributedReplacementDirectories` 与 `visibleMSLContentSHA256` 对比，用于把最终 trace 证据回连到 corpus / replacement 侧 | | |
+| E-006d8 | ↳ replacement=off/on 多轮矩阵结论与第一层归因 | TODO | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
+|  | 目标：先拿到 **off / on 各 2~3 轮**稳定 run 快照，输出矩阵结论（同模式是否稳定、跨模式是否稳定不同），并把下一层工作明确收敛到“输入漂移 / 输出漂移 / 替换命中漂移 / 更后续 pipeline 差异”之一 | | |
 | E-006a | ↳ 扩展真实 corpus 覆盖面 | TODO | |
 |  | 在进入新地图 / 新场景 / 新画质设置时追加采集，逐步逼近"尽量全"的真实 shader 集合 | | |
 | E-006b | ↳ 离线批量 green 后做最小 live 复测 | ✅ DONE | |
@@ -253,18 +252,14 @@ PlayTools.framework (注入到 iOS app)
 - **`test-data/` 和 `ShaderCorpus/` 不能混用**：`test-data/` 是手工构造的最小样本，适合验证单个 lowering；`ShaderCorpus/` 是真实运行时样本，适合批量 replay、diff 与回归基线
 - **`newLibraryWithData:error:` 仍是当前最可靠的真实采集入口，但已不再是唯一入口**：`URL/default/file` 代码路径现已接入统一导出逻辑；其中 default 路径当前通过 bundle 显式名称 + `.metallib` 资源扫描保守定位，后续仍需结合真实 app 命中情况继续做最小 live 验证
 - **`build_and_install.sh` 是更新运行时 framework 的唯一可靠路径**：`sync_playtools_xcframework.sh` 只更新构建产物；涉及 live 时必须 `build_and_install.sh`，否则注入的还是旧 framework
-- **`session ready` + `manifest.jsonl` 新事件，是最小 live 已重新命中主链路的最低成本证据**：这轮原神复测中，即使还没进入 `.gputrace` 最终确认，`create_session` 返回 `ready`，且 `manifest.jsonl` 追加了 `captureAction=conflict_preserved` / `selector=newLibraryWithData:error:` 事件，已经足以证明注入、host bridge、hook 与 corpus 去重落盘链路重新贯通
 - **`valid_msl_files=0` 是 `E-006c` 的快速失败信号**：对现有 `.gputrace` 批量跑 `Scripts/check_gputrace_sources.py` 时，如果 `valid_msl_files` 全为 `0`，就不要把"Xcode 能打开 / 能步进"误判成"源码已可见"；前者只说明 trace 结构可分析，后者仍取决于 library 替换是否真的把可读 MSL 带进 trace
 - **`session ready` 不是"capture-ready 且稳定"的充分条件**：`2026-04-04` 这轮 fresh 原神复测里，`create_session` 先返回 `ready`，但紧接着变为 `disconnected`，并新增 `Yuanshen-2026-04-04-015803.ips`（`EXC_BAD_ACCESS / SIGSEGV`）；因此 live 收尾仍要同时核对 session 状态、capture 目录和 `DiagnosticReports`
 - **多 module 聚合仍要坚持"全成全退"**：所有 module 都能完成 `llvm-dis + IRToMSLConverter` 且聚合后无重名时才重编译；否则整体 fallback，避免部分替换把问题混淆
 - **离线 replay 可以替代大部分回归，但不能替代最终真实渲染验证**：`IR -> MSL -> Metal 编译` 只能证明"更接近正确"，不能替代真实 GPU 渲染、时序与 `.gputrace` 可见性的最终确认
-- **IR metadata 仍是精确类型信息的主要来源**：opaque pointer 模式下，很多参数/返回类型只能从 `!air.vertex` / `!air.fragment` / `!air.kernel` metadata 恢复
-- **缺失值参数的 fallback 必须只覆盖"函数体真实引用到"的那部分**：把 metadata 漏掉的普通值参数一律塞进 entry signature，虽然能修掉 `undeclared_identifier`，但会在 fragment 样本里把未使用的隐式输入误补成显式参数（如 `test_fragment_depth_output.ll` 的 implicit color inputs）；本轮收敛后的策略是"仅补函数体真正引用到的缺失值参数，并继续保留默认 builtin 为 builtin"
 - **已知坏 MSL 不要继续盲编译**：preflight、batch compile 和 diagnostics 的价值，是把问题从"运行时崩溃"前移到"可离线定位的源码问题"
 - **failure cluster 报告比手翻 diagnostics 更适合作为日常 blocker 看板**：`compile-summary.json` 现在会同时保留 `clusterKey`、`primaryDiagnostic` 与局部 `sourceContext`，优先按簇归因，再回到单样本源码查看细节
 - **E-005c 的 baseline 应保存"结果 + 生成源码"双份快照**：仅保存 `replay-summary.json` 不足以做稳定 MSL diff；当前 `baseline.json + generated-sources/` 的组合既能比较 replay / compile 状态，也能对归一化后的 generated MSL 做哈希与 unified diff
 - **离线回归的失败判定要把"回归"与"当前失败"分开**：当前 runner 会在 replay / compile 失败时返回非 0，也会在与 baseline 对比发现 regression 时返回非 0；前者适合新功能验证，后者适合已有 corpus 的防退化守门
-- **更细的 lowering 经验、历史 live blocker 链路与已完成轮次见 archive**：主文档只保留当前仍影响决策的流程性经验
 - **源码可见不等于渲染语义正确**：`E-006c` 已证明 `.gputrace` 中能看到 MSL，但 `E-006d` 关注的是“同一输入是否在重复启动下保持同一视觉结果”；两者必须分开验收
 - **当前最保守的稳定对照是“替换 vs 不替换”**：在还不能实锤具体根因位于哪个 pass / stage 之前，先确认“做替换”和“完全不做替换”时的最终效果是否稳定不同，这是 `E-006d` 最低风险的比较基线
 - **“不做替换”对照必须复用统一开关**：`E-006d3` 后统一通过 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py` 控制，避免因手工改代码、临时删逻辑或脏 plist 导致对照本身不可靠
@@ -275,7 +270,7 @@ PlayTools.framework (注入到 iOS app)
 - **`E-006d` 的归因顺序必须固定**：先做“替换 vs 不替换”稳定对照，再对齐“输入是否相同”（metallib / moduleKey / functionTypes），再比较“输出是否相同”（单模块 `.metal` / 聚合 MSL / compile 结果），最后才看“运行时是否真的使用了替换后的 library”以及更后续的 pass / pipeline 行为
 - **`Scripts/compare_capture_runs.py` 是 `E-006d` 的第一层离线守门**：当两轮都已保留 `manifest.jsonl` 与 `modules/` 快照时，优先先跑该脚本，快速回答“哪些 `moduleKey` 只出现在单边”“相同 `moduleKey` 的 `.bc/.ll/.metal/.meta` 是否一致”，避免一上来就手翻 corpus 或直接回到 live 猜测
 - **`E-006d` 不能只盯单模块 `.metal`**：成功替换是否稳定，还要保留并比较每轮的聚合 `aggregate.generated.metal`；否则即使单模块输出一致，也无法快速回答聚合顺序、去重结果或最终替换源码是否漂移
-- **细粒度 lowering 备注、近期 compile blocker 细节与 `E-006d` 的调查框架已下沉到独立参考文档**：见 [E-006d-GenshinRenderingNondeterminism](E-006d-GenshinRenderingNondeterminism.md)
+- **更细的 lowering 经验、历史 live blocker 链路与已完成轮次已下沉到独立参考文档**：当前主文档只保留仍影响决策的规则；细粒度技术备注见 `E-006d-GenshinRenderingNondeterminism.md`，更早的 live / lowering 演进见 `00-Dashboard-Archive.md` 与 `E-004-MetallibSourceExtraction-Archive.md`
 
 ## 参考信息
 

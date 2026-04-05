@@ -46,6 +46,14 @@
 
 ## 经验归档
 
+### 从 dashboard 主体下沉的非当前决策性备注
+
+- 以下内容曾在 `00-Dashboard.md` 的“踩坑与经验”中长期保留，但它们更适合作为**历史实现脉络 / 已收敛技术经验**来查阅，而不是继续占据当前控制面：
+  - 早期 live 中 `session ready` / crash / diagnostics 三者之间的时间线关系
+  - `IR metadata`、缺失值参数 fallback、`air.struct_type_info`、结构体类型名一致性等 lowering 细节
+  - 注入 MSL 注释识别、重复函数名、多模块聚合失败等已知 compile blocker 的历史演进
+- 当前 dashboard 只保留仍直接影响“下一步做什么”的规则；这些历史技术备注如果再次影响判断，应优先回看 `E-004-MetallibSourceExtraction.md`、`E-006d-GenshinRenderingNondeterminism.md` 与本归档。
+
 ### Payload / wrapper 恢复
 
 - **真实 `headerSize=15` 样本里的 `OFFT` payload 是 3×`UInt64` 三元组**：前两项分别是 public/private metadata 偏移，第 3 项才是 bitcode section 内相对偏移；此前误读首个 `UInt64` 才会把 3 个 module 错切成 `0/8/16`。

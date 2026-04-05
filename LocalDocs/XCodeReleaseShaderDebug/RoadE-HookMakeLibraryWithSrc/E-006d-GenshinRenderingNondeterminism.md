@@ -15,7 +15,7 @@
 - 当前现象：用 PlayCover 打开原神，按既有 Road E 流程会执行 `metal IR 提取 -> 反编译为 MSL -> makeLibrary(source:) 重编译替换`；即使停留在**同一个界面**，多次启动后画面表现也会不完全一样
 - 已知边界：当前观察到的是**mesh 没有变化**，但局部渲染结果会随机异常；这说明异常不一定来自几何体本身，但也**还不能直接实锤是 shader 改坏**
 - 新增判断：由于原神是延迟管线，base pass 对比看起来也可能类似，因此异常也可能出现在后处理、着色阶段，或更上层的 render pipeline 顺序 / 配置，而不一定只在 `IR -> MSL -> makeLibrary(source:)` 这条链路
-- 当前最保守结论：在现阶段，最稳定的复现对照不是“证明哪一段 shader 错了”，而是**进行了反编译/重编译替换**与**完全不做替换**时，最终效果确实不一样
+- 当前最保守结论：在现阶段，最稳定的复现口径仍是比较**进行了反编译/重编译替换**与**完全不做替换**两种运行方式；但根据当前 `off1/off2/on1/on2` 四轮快照，**跨模式稳定不同尚未被 corpus / trace 级证据坐实**，因此它现在是正确的比较基线，而不是已经完成证明的结论
 
 ## 目标
 
@@ -28,13 +28,15 @@
 
 ## 当前最该做的事
 
-- 先完成 `E-006d8`：在**同一界面、相同设置**下，积累 **replacement=off / on 各 2~3 轮** run 快照，并用现有工具输出矩阵结论。
-- 若本轮还拿不到完整 live 矩阵，先把采集动作固定为统一入口：使用 `Scripts/e006d_matrix_runner.py` 的 `prepare-run` / `finalize-run` / `analyze` 薄封装，固定 `replacement-<mode>-runN` 标签与分析入口，避免把模式、标签、快照目录或 compare 输入串错。
+- `E-006d8` 的第一轮 run matrix 已经完成 first-pass：`off1/off2/on1/on2` 足够证明“同模式输入稳定”，也足够说明当前**不该**继续机械补 run。
+- 下一步应优先把 blocker 收敛到两个更窄的问题：1）`replacement=on` 时为什么始终没有 aggregate / 成功 replacement 证据；2）`create_session -> get_capture_status / capture_metal_frame` 为什么会在 `ready` 后仍超时掉线。
+- 若本轮还拿不到完整 live 证据，采集动作必须继续固定为统一入口：使用 `Scripts/e006d_matrix_runner.py` 的 `prepare-run` / `finalize-run` / `analyze` 薄封装，固定 `replacement-<mode>-runN` 标签与分析入口，避免把模式、标签、快照目录或 compare 输入串错。
 - 本轮完成标准不是“继续加脚本”或“继续补文档”，而是至少把当前问题明确收敛到以下之一：
   1. 输入集合不稳定
   2. 输入稳定但输出/聚合结果不稳定
   3. 输出稳定但替换实际命中不稳定
   4. 替换链路稳定，但差异落在更后续 render pipeline / post-processing
+- **新增日常验证方法时，默认只接受 agent 可通过脚本或命令独立完成的方案。** 若某一步需要人工登录、摆场景、点按钮或其它交互，它不能成为当前阶段默认 gate；只有在 blocker 明确依赖该人工条件、且已得到用户确认后，才可作为例外保留。
 - 只有在这一层结论明确后，下一轮才应该决定是否回到 `IRToMSLConverter`、replacement runtime，还是更后续的渲染链路。
 
 ## 最新执行结果（2026-04-05，本轮）

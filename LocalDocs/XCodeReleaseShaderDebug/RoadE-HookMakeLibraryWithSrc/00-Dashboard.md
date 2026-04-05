@@ -91,6 +91,8 @@ makeLibrary(source:)
 
 ## 验证方式
 
+> ⚠️ **新增 build / test / validation 方法时，默认要求 agent 可通过脚本或命令独立完成。** 若某一步需要人工登录、摆场景、点按钮或其它交互，它不能成为日常 gate；只有当该步对当前 blocker 确属必要，且已得到用户明确确认后，才可作为例外保留。
+
 ### 日常验证（默认）
 
 仅在修改 `IRToMSLConverter`、导出链路或离线工具时执行：
@@ -136,9 +138,9 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 ## 当前主线
 
-- **E-006d（当前最高优先级）**：调查“用 PlayCover 打开原神，在同一界面重复启动时，画面表现每次都不完全一样；mesh 不变，但局部渲染结果异常”的现象。当前**不能实锤是 shader 改坏**：因为原神是延迟管线，base pass 对比看起来也可能类似，异常也可能来自后处理、着色阶段，或更上层的 render pipeline 顺序 / 配置差异。当前最保守的稳定结论只有：**进行了反编译/重编译替换**与**完全不做替换**时，最终效果确实不一样；后续需围绕这个稳定对照继续逐层归因。
-- **当前最该做的事**：不是继续扩 lowering，也不是继续证明“源码可见”，而是用现有 `E-006d1 ~ E-006d7` 工具，先形成一组**replacement=off / on 各 2~3 轮**的稳定 run 矩阵，并把结论收敛到“输入漂移 / 输出漂移 / 替换命中漂移 / 更后续 render pipeline 差异”四类之一。
-- **当前执行口径**：dashboard 只保留“现在最该做什么、做到什么算推进、有哪些基线已经可直接复用”；`E-006d-GenshinRenderingNondeterminism.md` 负责承载当前主线的详细判断路径与技术细节。
+- **E-006d（当前最高优先级）**：调查“用 PlayCover 打开原神，在同一界面重复启动时，画面表现每次都不完全一样；mesh 不变，但局部渲染结果异常”的现象。当前**不能实锤是 shader 改坏**：因为原神是延迟管线，base pass 对比看起来也可能类似，异常也可能来自后处理、着色阶段，或更上层的 render pipeline 顺序 / 配置差异。最新 `off1/off2/on1/on2` 四轮快照已经稳定排除了 **captured corpus / 单模块 artifact 层面的随机漂移**，但**还没有形成“跨模式稳定不同”的 corpus / trace 级证据**；因此 `replacement=off / on` 仍是最低风险的对照口径，但不能再表述成“已经稳定证明差异存在”的结论。
+- **当前最该做的事**：`E-006d8` 的第一轮 run matrix 已经够用，下一步**不是**继续机械补 run，也不是回头扩 lowering；而是优先收敛两个 blocker：1）`replacement=on` 时为什么始终没有 aggregate / 成功 replacement 证据；2）`create_session -> get_capture_status / capture_metal_frame` 为什么会在 `ready` 后仍然超时掉线。只有先恢复**至少一轮 `replacement=on` 且带 `.gputrace + aggregate source` 的稳定样本**，矩阵才有资格继续回答“替换 vs 不替换”是否稳定不同。
+- **当前执行口径**：dashboard 只保留“现在最该做什么、做到什么算推进、有哪些基线已经可直接复用”；`E-006d-GenshinRenderingNondeterminism.md` 负责承载当前主线的详细判断路径、归因顺序与技术细节。
 - **E-006c（✅ 已关闭，但仅作为里程碑基线）**：Xcode 人工确认 `capture_20260404_roadE_e006c3_final.gputrace` 中 Draw Call shader 面板可见 MSL 源码，说明“源码可见”链路已打通；但后续仍需对“渲染是否稳定正确”继续验证。
 - **E-006a（扩展真实 corpus 覆盖面）** / **E-007（UI/MCP 工具暴露）**：仍保留，但在 `E-006d` 完成根因归因前暂不作为最高优先级。
 
@@ -146,18 +148,15 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 | 样本 / 基线 | 结论 |
 |---|---|
-| 流程基线（2026-04-03，offline-first 切换完成） | Road E 的日常迭代主回路已经明确为 **采集 corpus → 离线 replay → 批量编译 → 最小 live 复测 → `.gputrace` 最终确认** |
-| 当前落盘能力（2026-04-05，`E-006d2` 后） | 成功路径按 `ShaderCorpus/<bundleId>/modules/<moduleKey>/` 落盘单模块 `.bc/.ll/.metal/.meta.json`，并新增 `ShaderCorpus/<bundleId>/replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal + replacement.meta.json` 记录成功聚合替换产物；失败路径在 `ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/` 落盘 `.bc/.ll/.metal/.meta.json`；三条路径均可进入 `E-006d` 离线 diff / replay 主路径 |
-| 当前最小离线验证基线（2026-04-04，`E-006c3` 后） | `test-data/*.ll`（19 个，含新增 `test_struct_array_field.ll`）replay + compile **全部成功**；`ShaderCorpus/com.miHoYo.Yuanshen/modules/` 全部 **91 个**真实 module replay + compile **91/91 成功**，preflight rejected `0`，regression `0` |
-| 当前构建验证基线（2026-04-04，`E-006c3` 后） | `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`（**BUILD SUCCEEDED**）；`./BuildScripts/build_and_install.sh`（**BUILD SUCCEEDED**，签名验证通过） |
-| 当前 live 验证状态（2026-04-04，第三次 fresh capture，PID 26460） | `remove_playtools → inject_playtools → launch_app → create_session`：session 返回 `ready` 并保持稳定；manifest 从 304 → 394 行（+90 条），corpus 从 43 → **91 模块**（+48 个全新成功样本），diagnostics 文件数不变（18），**本轮零失败样本** |
-| 当前 `.gputrace` 源码可见性检查（2026-04-04，`E-006c` 已关闭） | `capture_20260404_roadE_e006c3_final.gputrace`（765 文件，968 index 引用）：`valid_msl_files: 2`（两个 PlayTools 注入的 MSL 文件，首行 `// Auto-generated aggregated MSL source by PlayTools LibrarySourceInjection`，包含完整 `#include <metal_stdlib>` 与结构体/函数定义）。**Xcode 人工确认：Draw Call shader 面板可见 MSL 源码**。覆盖率 2/11（18%）source 文件为 MSL，其余为 bplist（原始 metallib）。
-| 当前异常基线（2026-04-05，`E-006d` 新开） | 用 PlayCover 打开原神并停留在**同一界面**时，重复启动后画面表现会出现差异；**mesh 布局没有变化**，但局部渲染结果异常。当前仍**不能实锤是 shader 本身改坏**：由于原神是延迟管线，base pass 对比看起来也可能类似，问题也可能位于后处理、着色阶段，或 render pipeline 顺序 / 配置。当前最稳定的复现对照，是**做替换**与**不做替换**时最终效果稳定不同；对当前任务口径，默认把“启动后数十秒自动停在登录界面”视为可重复的同一界面，因此 live 采集与 `.gputrace` 固化可由 agent 独立完成。 |
-| 当前控制面基线（2026-04-05，`E-006d3` 后） | 已新增 `shaderSourceReplacementEnabled` runtime 开关：关闭后 `PlayTools` 在 `LibrarySourceInjectionSwizzles` 入口直接返回原始 `MTLLibrary`，不再进入 `IR -> MSL -> makeLibrary(source:)` 替换链路；可用 `python3 Scripts/set_shader_replacement_mode.py --bundle-id <bundleId> --mode on/off` 直接切换单 app 的“替换 / 不替换” live 对照模式。 |
-| 当前 run 固化基线（2026-04-05，`E-006d7` 后） | `Scripts/snapshot_capture_run.py` 现可在原有 `manifest.jsonl + modules/ (+ replacements/) + diagnostics + app settings` 快照基础上，额外通过 `--gputrace /path/to/xxx.gputrace` 一并固化最终截帧，并写出 `gputrace-source-summary.json`、`gputrace-attribution-index.json` 与 `snapshot.meta.json.gputraceAttribution` 摘要；`Scripts/compare_capture_runs.py` 的 `snapshotComparison` 也会同步比较 `attributedVisibleMSLHashes`、`attributedModuleKeys`、`attributedReplacementDirectories` 与 `visibleMSLContentSHA256`，把最终 trace 中可见源码直接回连到 `modules/` 与 `replacements/`。 |
-| 当前 replacement 证据基线（2026-04-05，`E-006d8` 本轮） | `LibrarySourceInjectionSwizzles` 现会把每次 runtime replacement 尝试都追加为 `manifest.jsonl` 中的 `event=replacement_attempt`，至少记录 `outcome` / `reasonCode` / `moduleKeys` / `invalidModuleCount` / `dumpPath`；因此后续 `replacements=0` 不再只等价于“没有成功 aggregate”，还可进一步区分为 `original_library_missing`、`no_bitcode_modules`、`invalid_llvm_bitcode`、`preflight_rejected`、`compile_failed` 或 `exception`。`Scripts/compare_capture_runs.py` 与 `Scripts/analyze_capture_run_matrix.py` 也已同步输出 latest replacement attempt 对比与稳定性摘要，用于先回答“replacement 根本没命中，还是命中了但总在某个固定阶段 fallback”。 |
-| 当前 `E-006d8` 第二轮执行（2026-04-05，本轮续） | 已继续实际落盘 `build/e006d-run-snapshots/replacement-off-run2/com.miHoYo.Yuanshen`（`replacementEnabled=false`，`manifestLines=1427`，`modules=91`，`replacements=0`，`diagnostics=18`）与 `build/e006d-run-snapshots/replacement-on-run2/com.miHoYo.Yuanshen`（`replacementEnabled=true`，`manifestLines=1473`，`modules=91`，`replacements=0`，`diagnostics=18`）。其中 `replacement-off-run2` 两次 `create_session` 都超时，未拿到 `.gputrace`；`replacement-on-run2` 则先成功拿到一次 `session=ready`，但随后 `get_capture_status` bridge timeout，session 在真正截帧前消失，因此同样只保留无 trace 快照。基于四轮快照重新跑出的 `build/e006d-run-matrix.json` 目前给出：`groups.off.pairSummary.allPairsInputStable=true`、`groups.on.pairSummary.allPairsInputStable=true`、`crossMode.offVsOnPairSummary.allPairsDifferent=false`、`differentPairCount=2`、`allPairsReplacementStable=false`。配合 `build/e006d-run-diff-off1-vs-off2.json`、`build/e006d-run-diff-on1-vs-on2.json` 与 `build/e006d-run-diff-off2-vs-on2.json`，当前可稳定确认：**同模式与跨模式的 captured `moduleKey` 集合都保持 91/91 一致，单模块 `.bc/.ll/.metal` 本体未出现语义差异；当前漂移只落在 `captureCount` / `module.meta.json` 这类 bookkeeping 字段，以及 `off1` 独有的 `.gputrace` 摘要字段。** 这说明现阶段还**没有**形成“跨模式稳定不同”的 corpus 级证据；当前排除的只是 **captured corpus / 单模块 artifact 层面的 drift**，尚未排除 runtime replacement-hit 漂移或更后续 live render-path 差异。真正的 blocker 仍是 **replacement aggregate 始终缺失** 与 **live capture/session 不稳定**。 |
-| 当前下一步（2026-04-05，`E-006d8` 继续执行） | `off2/on2` 已补齐，下一步不再是继续机械补 run 数，而是优先处理两件事：1）基于新增 `event=replacement_attempt` 证据，先把 `replacement=on` 时“`replacements=0` / 无 aggregate event”的原因收敛到 runtime replacement 成功路径未命中、固定 fallback，还是仅成功路径持久化缺失；2）把 live bridge / capture 稳定性单独视为 blocker，重点核对 `create_session -> get_capture_status / capture_metal_frame` 这一段为什么会在 `session=ready` 后超时并掉线。只有先恢复**至少一轮 replacement=on 且含 `.gputrace` / aggregate source 的稳定样本**，后续矩阵才有资格继续回答“替换 vs 不替换”是否稳定不同。人工仍只保留到最终 Xcode 验收。 |
+| 流程与验收口径（当前默认） | Road E 的日常主回路已经稳定为 **采集 corpus → 离线 replay / compile / diff → 最小 live 复测 → `.gputrace` 最终确认**；除最终 Xcode 验收外，前置 build / test / live 采集 / 快照固化 / 自动检查都默认由 agent 独立完成 |
+| 当前日常自动化验证基线（2026-04-05） | `test-data/*.ll`（19 个）replay + compile **全部成功**；`ShaderCorpus/com.miHoYo.Yuanshen/modules/` 全部 **91/91** replay + compile **成功**，preflight rejected `0`，regression `0`；`FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 与 `./BuildScripts/build_and_install.sh` 都已形成可复用的标准构建验证路径 |
+| 当前落盘 / 闭环能力（2026-04-05） | 成功路径按 `ShaderCorpus/<bundleId>/modules/<moduleKey>/` 落盘单模块 `.bc/.ll/.metal/.meta.json`；成功 replacement 额外落盘 `ShaderCorpus/<bundleId>/replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal + replacement.meta.json`；失败路径在 `ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/` 落盘 `.bc/.ll/.metal/.meta.json`。三条路径都已能进入离线 replay / diff / 归因主回路 |
+| 当前控制面与统一工作流（2026-04-05） | 已统一使用 `shaderSourceReplacementEnabled` + `Scripts/set_shader_replacement_mode.py` 控制 `replacement=off/on`；使用 `Scripts/snapshot_capture_run.py` / `Scripts/e006d_matrix_runner.py` 统一固化单轮 run 与矩阵分析；使用 `Scripts/check_gputrace_sources.py` 做 `.gputrace` 自动检查。当前这组日常方法都可由 agent 自主执行，不要求人工登录、摆场景或手工拷目录 |
+| `.gputrace` 里程碑基线（2026-04-04，`E-006c` 已关闭） | `capture_20260404_roadE_e006c3_final.gputrace` 已被 Xcode 人工确认可在 Draw Call shader 面板中看到 MSL 源码；这说明“源码可见”链路已打通，但它只作为里程碑基线，不再代表 `E-006d` 已完成 |
+| 当前 `E-006d8` 第一层矩阵结论（2026-04-05） | `off1/off2/on1/on2` 四轮快照已经足够证明：**同模式输入稳定**、共享 `moduleKey` 为 **91/91**、单模块 `.bc/.ll/.metal` 本体未出现语义级随机漂移；脚本已显式忽略 `captureCount`、`sourceCacheKeys` 等 benign metadata 漂移 |
+| 当前尚未证明的部分（2026-04-05） | 现阶段**仍未形成“跨模式稳定不同”的 corpus / trace 级证据**：`crossMode.offVsOnPairSummary.allPairsDifferent=false`，且四轮都没有可比较的 replacement aggregate；因此当前还不能把结论提前收敛为“替换开启后一定稳定引入了最终差异” |
+| 当前 replacement 证据基线（2026-04-05） | `LibrarySourceInjectionSwizzles` 现会把每次 runtime replacement 尝试都追加为 `manifest.jsonl` 中的 `event=replacement_attempt`，至少记录 `outcome` / `reasonCode` / `moduleKeys` / `invalidModuleCount` / `dumpPath`；`Scripts/compare_capture_runs.py` 与 `Scripts/analyze_capture_run_matrix.py` 也已同步汇总 latest replacement attempt，用于先回答“replacement 根本没命中，还是命中了但固定 fallback” |
+| 当前 blocker 与下一步（2026-04-05） | 真正的 blocker 已收敛为两件事：1）`replacement=on` 时为什么始终没有 aggregate / 成功 replacement 证据；2）`create_session -> get_capture_status / capture_metal_frame` 为什么会在 `session=ready` 后仍超时掉线。下一步应先恢复**至少一轮 `replacement=on` 且带 `.gputrace + aggregate source` 的稳定样本**，再继续回答“替换 vs 不替换”是否稳定不同 |
 | 历史 live blocker 时间线 | 见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
 
 ## 整体架构
@@ -195,85 +194,46 @@ PlayTools.framework (注入到 iOS app)
 
 > **优先级更新（2026-04-05）**：当前主线已切换到 **`E-006d`：原神重复启动时的随机渲染异常归因**。在 `E-006d` 明确根因前，`E-006a` / `E-007` 均下调一级优先级。
 
-> **当前 TODO 口径**：这里只保留“现在最该做什么”和“各已完成子项产出了什么能力”；更细的技术细节、判断顺序与历史问题链路统一下沉到 `E-006d-GenshinRenderingNondeterminism.md`、`E-004-MetallibSourceExtraction.md`、`E-005-OfflineReplayBatchCompileDiff.md` 与 archive。
+> **当前 TODO 口径**：这里只保留“现在最该做什么”和“各已完成阶段目前产出了什么能力”；已完成但不再直接影响当前决策的细项统一下沉到 `E-006d-GenshinRenderingNondeterminism.md`、`E-004-MetallibSourceExtraction.md`、`E-005-OfflineReplayBatchCompileDiff.md` 与 archive。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
 | E-001 | **可行性 PoC：`-frecord-sources` 重编译验证** | ✅ DONE | [E-001-PoC](E-001-PoC-frecord-sources.md) |
 | E-002 | **调研 `MTLDevice` Library API 入口** | ✅ DONE | [E-002-API](E-002-MTLDevice-Library-API.md) |
 | E-003 | **makeLibrary swizzle 骨架** | ✅ DONE | [E-003-Swizzle](E-003-LibrarySwizzleSkeleton.md) |
-| E-004 | **metallib → bitcode / IR / MSL 采集与导出** | ✅ DONE | [E-004](E-004-MetallibSourceExtraction.md) |
-| E-004f | ↳ corpus 导出与闭环策略 | ✅ DONE | |
-| E-004f1 | ↳ 成功路径保存 `.bc/.ll/.metal/.json` | ✅ DONE | |
-| E-004f2 | ↳ corpus 目录结构、去重键与 manifest 规范 | ✅ DONE | |
-| E-004f3 | ↳ 扩展 `makeLibrary(URL/default/file)` 路径的采集覆盖 | ✅ DONE | |
-| E-004f4 | ↳ 失败样本闭环：`compile_failed` 样本的 re-capture / 导出策略 | ✅ DONE | [E-004f4-Closure](E-004-CorpusClosureAndRecapturePolicy.md) |
-| E-005 | **离线 replay / batch compile / diff 工具链** | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
-| E-005a | ↳ `IR -> MSL` 离线回放 runner | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
-| E-005b | ↳ 批量 Metal 编译与失败报告 | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
-| E-005c | ↳ 新旧转换结果 diff / 回归基线 | ✅ DONE | |
-| E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | ✅ DONE（源码可见里程碑） | |
-| E-006d | ↳ 调查原神同一界面重复启动时的随机渲染异常 / shader 语义漂移 | TODO | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006d1 | ↳ 两轮采集输入/输出一致性离线对比工具 | ✅ DONE | |
-| E-006d2 | ↳ 成功替换聚合 MSL 落盘 + run-vs-run 聚合 diff | ✅ DONE | |
-| E-006d3 | ↳ “替换 vs 不替换” runtime 开关与 plist 切换脚本 | ✅ DONE | |
-| E-006d4 | ↳ 单次 run 快照固化脚本 | ✅ DONE | |
-| E-006d5 | ↳ run 快照补齐 `.gputrace` 固化与 trace-level diff 摘要 | ✅ DONE | |
-| E-006d6 | ↳ 多轮 run 矩阵汇总脚本 | ✅ DONE | |
-| E-006d7 | ↳ `.gputrace` 可见源码归因索引 | ✅ DONE | |
-| E-006d8 | ↳ replacement=off/on 多轮矩阵结论与第一层归因 | TODO | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-|  | 当前已拿到 `off1/off2/on1/on2` 四轮快照：`build/e006d-run-matrix.json` 已证明 **同模式输入稳定**，但**跨模式稳定不同尚未成立**（`differentPairCount=2/4`），且四轮都**没有**可比较的 replacement aggregate。首层结论现已进一步收敛为：先排除“captured corpus / 单模块 artifact 层面的 drift”，同时把后续排查重点前移到 **replacement 成功路径为什么始终未落盘** 与 **live capture/session 为什么会在 ready 后掉线**；在拿到至少一轮 `replacement=on` 的 trace + aggregate 成功样本前，不应继续把结论往 shader lowering 或更后续 pipeline 方向过早定性。 | | |
-| E-006a | ↳ 扩展真实 corpus 覆盖面 | TODO | |
-|  | 在进入新地图 / 新场景 / 新画质设置时追加采集，逐步逼近"尽量全"的真实 shader 集合 | | |
-| E-006b | ↳ 离线批量 green 后做最小 live 复测 | ✅ DONE | |
-| E-006b1 | ↳ 收敛 metadata 缺失导致的"缺参未声明" compile blocker | ✅ DONE | |
-| E-006b2 | ↳ 收敛 metadata / shader type / resource kind 识别不足的 compile blocker | ✅ DONE | |
-| E-006b3 | ↳ 收敛 texture access qualifier / write 参数顺序 compile blocker | ✅ DONE | |
-| E-006b4 | ↳ 收敛 `___metal_fast_*` intrinsic fast 前缀 compile blocker | ✅ DONE | |
-| E-006b5 | ↳ 收敛 load/store signedness mismatch compile blocker | ✅ DONE | |
-| E-006b6 | ↳ 收敛 builtin 参数 IR/MSL 类型不匹配 compile blocker | ✅ DONE | |
-| E-006b7 | ↳ 收敛 GEP/load 类型缩窄 compile blocker | ✅ DONE | |
-| E-006b8 | ↳ 收敛 `filterTextureArgs` 误过滤 compile blocker | ✅ DONE | |
-| E-006b9 | ↳ 收敛 `metal::_atomic` 类型支持 compile blocker | ✅ DONE | |
-| E-006c | ↳ 最终 `.gputrace` 源码可见确认 | ✅ DONE | |
-|  | `capture_20260404_roadE_e006c3_final.gputrace` 中已有 2 个 valid MSL 文件（PlayTools 注入），离线回归全绿；**Xcode 人工确认 Draw Call shader 面板显示 MSL 源码（2026-04-04）** | |
-| E-006c1 | ↳ 修复多模块 metallib 重复函数名导致替换静默失败 | ✅ DONE | |
-| E-006c2 | ↳ 修复 metadata 字段类型与 IR 结构体类型不一致的数组字段（IR 交叉检查） | ✅ DONE | |
-| E-006c3 | ↳ post-fix fresh capture 入 corpus 确认 + 新 blocker 修复 | ✅ DONE | |
-|  | post-fix fresh capture 已闭环：新增结构体类型名一致性与数组字段 `elementCount` 修复；corpus 43 → 91，manifest 304 → 394，零失败样本，`valid_msl_files = 2`。更细的 blocker 细节见 archive / `E-006d-GenshinRenderingNondeterminism.md`。 | |
-| E-007 | **PlayCover settings / MCP / 工具暴露** | TODO | |
-|  | 为 corpus 导出 / replay 增加 UI 或 MCP 能力，使后续采集与回放不依赖手工路径操作 | | |
+| E-004 | **metallib → bitcode / IR / MSL 采集与导出** | ✅ DONE（含 `E-004f1 ~ E-004f4`，当前作为 corpus / 闭环参考底座） | [E-004](E-004-MetallibSourceExtraction.md) |
+| E-005 | **离线 replay / batch compile / diff 工具链** | ✅ DONE（含 `E-005a ~ E-005c`，当前作为日常自动化回归底座） | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
+| E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | ✅ DONE（源码可见里程碑；`E-006b1 ~ E-006b9` 与 `E-006c1 ~ E-006c3` 已关闭并下沉） | [00-Dashboard-Archive](00-Dashboard-Archive.md) |
+| E-006d | ↳ 调查原神同一界面重复启动时的随机渲染异常 / shader 语义漂移 | **TODO（当前主线）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
+| E-006d1 ~ E-006d7 | ↳ 输入 diff、aggregate diff、replacement 开关、run 快照、`.gputrace` 固化、run matrix、trace 归因索引 | ✅ DONE（工具已齐） | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
+| E-006d8 | ↳ replacement=off/on 多轮矩阵结论与第一层归因 | **TODO** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
+|  | 当前已拿到 `off1/off2/on1/on2` 四轮快照：已稳定排除 **captured corpus / 单模块 artifact 层面的 drift**，但**跨模式稳定不同尚未成立**，且四轮都没有可比较的 replacement aggregate。下一步应优先下钻 **replacement 成功路径为什么始终未命中 / 未落盘** 与 **live capture/session 为什么会在 ready 后掉线**；在恢复至少一轮 `replacement=on` 且带 `.gputrace + aggregate source` 的稳定样本前，不应继续把结论过早推向 shader lowering 或更后续 pipeline。 | | |
+| E-006a | ↳ 扩展真实 corpus 覆盖面 | TODO（已降级） | |
+|  | 仅在 `E-006d` 当前 blocker 收敛后，再继续进入新地图 / 新场景 / 新画质设置追加采集，逐步逼近“尽量全”的真实 shader 集合 | | |
+| E-007 | **PlayCover settings / MCP / 工具暴露** | TODO（已降级） | |
+|  | 为 corpus 导出 / replay 增加 UI 或 MCP 能力，使后续采集与回放不依赖手工路径操作；但若新增方法无法保持 agent 日常自主执行，则不能提前升级为当前主线 gate | | |
 
 ## 踩坑与经验
 
-- **核心原则：优先沉淀成功样本，再去扩 lowering**：失败的 `.metal` 已经会写入 `ShaderSourceDiagnostics/`，异常 payload 已有 `ShaderPayloadSamples/`；成功路径会把 canonical `.bc/.ll/.metal/.json` 写入 `ShaderCorpus/`，并通过 `manifest.jsonl` 记录 capture 事件，后续应优先围绕这些真实样本做 replay、diff 和回归，而不是重新回到高成本 live 试错
-- **当前 `ShaderCorpus/` 不是"所有 live 样本"的同义词**：它目前只覆盖成功替换样本；`ShaderSourceDiagnostics/` 中的 `compile_failed` live 样本，如果未额外 re-capture 或补 `.bc/.ll` 导出，并不会自动进入离线回归主路径
-- **修复来源于 diagnostics 的 blocker 后，不能只看既有 corpus green**：若该样本从未进入 `ShaderCorpus/`，修复完成后必须补一次 post-fix fresh capture，或（`E-004f4` 后）直接对 `ShaderSourceDiagnostics/<baseName>_modules/` 中的 `.ll` 做离线 replay + compile 验证；否则只能证明"现有 corpus 无退化"，不能证明"新样本已闭环"
-- **`moduleKey` 与 `cacheKey` 分层使用**：`moduleKey = sha256(module.bc)` 是长期稳定的 module 级去重键；`cacheKey` 只用于 metallib 级上下文与运行时缓存，不能再拿来当持久化目录主键
+- **核心原则：优先沉淀成功样本，再去扩 lowering**：后续应优先围绕 `ShaderCorpus/`、`manifest.jsonl`、`replacements/` 与失败路径导出样本做 replay、diff 和回归，而不是重新回到高成本 live 试错
+- **当前 `ShaderCorpus/` 不是“所有 live 样本”的同义词**：它主要覆盖成功替换样本；只落在 `ShaderSourceDiagnostics/` 的 blocker，如不补失败路径导出或 post-fix fresh capture，并不会自动进入离线主路径
+- **修复来源于 diagnostics 的 blocker 后，不能只看既有 corpus green**：若该样本从未进入 `ShaderCorpus/`，修复完成后必须补一次 post-fix fresh capture，或直接对 `ShaderSourceDiagnostics/<baseName>_modules/` 中的 `.ll` 做离线 replay + compile 验证
+- **`moduleKey` 与 `cacheKey` 必须分层使用**：`moduleKey = sha256(module.bc)` 是长期稳定的 module 级去重键；`cacheKey` 只用于 metallib 级上下文与运行时缓存，不能再拿来当持久化目录主键
 - **最终目标不变，但日常主回路必须切到离线**：live 负责采集和最终验证，不适合作为日常 blocker 归因与回归主路径
-- **`test-data/` 和 `ShaderCorpus/` 不能混用**：`test-data/` 是手工构造的最小样本，适合验证单个 lowering；`ShaderCorpus/` 是真实运行时样本，适合批量 replay、diff 与回归基线
-- **`newLibraryWithData:error:` 仍是当前最可靠的真实采集入口，但已不再是唯一入口**：`URL/default/file` 代码路径现已接入统一导出逻辑；其中 default 路径当前通过 bundle 显式名称 + `.metallib` 资源扫描保守定位，后续仍需结合真实 app 命中情况继续做最小 live 验证
-- **`build_and_install.sh` 是更新运行时 framework 的唯一可靠路径**：`sync_playtools_xcframework.sh` 只更新构建产物；涉及 live 时必须 `build_and_install.sh`，否则注入的还是旧 framework
-- **`valid_msl_files=0` 是 `E-006c` 的快速失败信号**：对现有 `.gputrace` 批量跑 `Scripts/check_gputrace_sources.py` 时，如果 `valid_msl_files` 全为 `0`，就不要把"Xcode 能打开 / 能步进"误判成"源码已可见"；前者只说明 trace 结构可分析，后者仍取决于 library 替换是否真的把可读 MSL 带进 trace
-- **`session ready` 不是"capture-ready 且稳定"的充分条件**：`2026-04-04` 这轮 fresh 原神复测里，`create_session` 先返回 `ready`，但紧接着变为 `disconnected`，并新增 `Yuanshen-2026-04-04-015803.ips`（`EXC_BAD_ACCESS / SIGSEGV`）；因此 live 收尾仍要同时核对 session 状态、capture 目录和 `DiagnosticReports`
-- **多 module 聚合仍要坚持"全成全退"**：所有 module 都能完成 `llvm-dis + IRToMSLConverter` 且聚合后无重名时才重编译；否则整体 fallback，避免部分替换把问题混淆
-- **离线 replay 可以替代大部分回归，但不能替代最终真实渲染验证**：`IR -> MSL -> Metal 编译` 只能证明"更接近正确"，不能替代真实 GPU 渲染、时序与 `.gputrace` 可见性的最终确认
-- **已知坏 MSL 不要继续盲编译**：preflight、batch compile 和 diagnostics 的价值，是把问题从"运行时崩溃"前移到"可离线定位的源码问题"
-- **failure cluster 报告比手翻 diagnostics 更适合作为日常 blocker 看板**：`compile-summary.json` 现在会同时保留 `clusterKey`、`primaryDiagnostic` 与局部 `sourceContext`，优先按簇归因，再回到单样本源码查看细节
-- **E-005c 的 baseline 应保存"结果 + 生成源码"双份快照**：仅保存 `replay-summary.json` 不足以做稳定 MSL diff；当前 `baseline.json + generated-sources/` 的组合既能比较 replay / compile 状态，也能对归一化后的 generated MSL 做哈希与 unified diff
-- **离线回归的失败判定要把"回归"与"当前失败"分开**：当前 runner 会在 replay / compile 失败时返回非 0，也会在与 baseline 对比发现 regression 时返回非 0；前者适合新功能验证，后者适合已有 corpus 的防退化守门
-- **源码可见不等于渲染语义正确**：`E-006c` 已证明 `.gputrace` 中能看到 MSL，但 `E-006d` 关注的是“同一输入是否在重复启动下保持同一视觉结果”；两者必须分开验收
-- **当前最保守的稳定对照是“替换 vs 不替换”**：在还不能实锤具体根因位于哪个 pass / stage 之前，先确认“做替换”和“完全不做替换”时的最终效果是否稳定不同，这是 `E-006d` 最低风险的比较基线
-- **“不做替换”对照必须复用统一开关**：`E-006d3` 后统一通过 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py` 控制，避免因手工改代码、临时删逻辑或脏 plist 导致对照本身不可靠
-- **run 快照也必须统一固化方式**：`E-006d5` 后统一通过 `Scripts/snapshot_capture_run.py` 保留单次 run 的 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings；若本轮已有 `.gputrace`，也应通过 `--gputrace` 一并纳入同一快照，避免把 replacement 开关状态、聚合产物与最终 trace 证据混淆
-- **当前原神的 live 复现不要求人工摆场景**：对 `E-006d8` 当前基线，默认以“启动后数十秒自动停在登录界面”为稳定复现面；agent 可以独立完成启动、等待、截帧与快照固化。只有当后续 blocker 明确依赖登录后场景或人工交互时，才需要提升人工参与级别
-- **`.gputrace` 可见源码现在需要继续看“归因是否闭环”**：`E-006d7` 后不只看 `validMSLFiles` 或 hash 集合是否变化，还要看 `gputrace-attribution-index.json` 是否已把这些可见 MSL 回连到 `module.generated.metal` 或 `aggregate.generated.metal`；若可见 hash 无法归因，说明最终 trace 证据与 corpus / replacement 侧仍未闭环
-- **多轮对照要先看矩阵结论，再下钻单对 run**：`E-006d6` 后优先用 `Scripts/analyze_capture_run_matrix.py` 汇总 `2~3` 轮 `replacement=off/on` 快照，先回答“同模式是否稳定、跨模式是否稳定不同”；只有矩阵层已形成稳定结论时，才继续回到 `Scripts/compare_capture_runs.py` 下钻单对 run 差异
-- **`module.meta.json` 的 benign 漂移不能误判成输入/输出漂移**：`E-006d8` 首个 off/on pair 实测里，很多 shared module 只是在 `captureCount`、`sourceCacheKeys` 或字节统计字段上发生 metadata 级变化，而 `.bc/.ll/.metal` 本体未变；`Scripts/analyze_capture_run_matrix.py` 现已显式忽略这类 benign 差异，避免把 bookkeeping 噪音误报成 `inputStable=false`
-- **同一界面重复启动出现差异时，不要过早收敛为 shader root cause**：当前已知现象是 mesh 不变，但原神为延迟管线；base pass 看起来类似并不能排除后处理、着色阶段，或 render pipeline 顺序 / 配置差异
-- **`E-006d` 的归因顺序必须固定**：先做“替换 vs 不替换”稳定对照，再对齐“输入是否相同”（metallib / moduleKey / functionTypes），再比较“输出是否相同”（单模块 `.metal` / 聚合 MSL / compile 结果），最后才看“运行时是否真的使用了替换后的 library”以及更后续的 pass / pipeline 行为
-- **`Scripts/compare_capture_runs.py` 是 `E-006d` 的第一层离线守门**：当两轮都已保留 `manifest.jsonl` 与 `modules/` 快照时，优先先跑该脚本，快速回答“哪些 `moduleKey` 只出现在单边”“相同 `moduleKey` 的 `.bc/.ll/.metal/.meta` 是否一致”，避免一上来就手翻 corpus 或直接回到 live 猜测
-- **`E-006d` 不能只盯单模块 `.metal`**：成功替换是否稳定，还要保留并比较每轮的聚合 `aggregate.generated.metal`；否则即使单模块输出一致，也无法快速回答聚合顺序、去重结果或最终替换源码是否漂移
+- **`test-data/` 和 `ShaderCorpus/` 不能混用**：`test-data/` 用于验证单个 lowering；`ShaderCorpus/` 用于真实样本的批量 replay、diff 与回归基线
+- **`build_and_install.sh` 是更新运行时 framework 的唯一可靠路径**：`sync_playtools_xcframework.sh` 只更新构建产物；涉及 live 时必须走 `BuildScripts/build_and_install.sh`
+- **`session ready` 不是“capture-ready 且稳定”的充分条件**：live 收尾仍要同时核对 session 状态、capture 目录、`DiagnosticReports` 与对应快照是否完整固化
+- **多 module 聚合仍要坚持“全成全退”**：所有 module 都能完成 `llvm-dis + IRToMSLConverter` 且聚合后无重名时才重编译；否则整体 fallback，避免部分替换把问题混淆
+- **源码可见 / compile green 都不等于渲染语义正确**：`.gputrace` 中能看到 MSL 只证明“源码可见”链路已通；`E-006d` 关注的是相同输入下最终视觉结果、trace 与 replacement 证据是否稳定一致
+- **当前最低风险的比较基线仍是“替换 vs 不替换”**：但最新四轮矩阵**尚未**形成“跨模式稳定不同”的 corpus / trace 级证据；因此它当前只是正确的比较口径，不是已经坐实的结论
+- **“不做替换”对照必须复用统一开关**：统一通过 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py` 控制，避免因手工改代码或手改 plist 导致对照本身不可靠
+- **run 快照必须统一固化**：统一通过 `Scripts/snapshot_capture_run.py` 或 `Scripts/e006d_matrix_runner.py finalize-run` 保留 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings；若已有 `.gputrace`，也应通过 `--gputrace` 一并纳入同一快照
+- **当前原神的 live 复现默认不要求人工摆场景**：以“启动后数十秒自动停在登录界面”为稳定复现面；只有当 blocker 明确依赖登录后场景或其它人工交互时，才允许提升人工参与级别
+- **`.gputrace` 可见源码还要继续看“归因是否闭环”**：不只看 `validMSLFiles` 或 hash 集合是否变化，还要看 `gputrace-attribution-index.json` 是否已把可见 MSL 回连到 `module.generated.metal` 或 `aggregate.generated.metal`
+- **多轮对照要先看矩阵结论，再下钻单对 run**：优先用 `Scripts/analyze_capture_run_matrix.py` 回答“同模式是否稳定、跨模式是否稳定不同”，只有矩阵层已有稳定结论时，才回到 `Scripts/compare_capture_runs.py` 下钻单对 run 差异
+- **`module.meta.json` 的 benign 漂移不能误判成输入/输出漂移**：`captureCount`、`sourceCacheKeys` 等 bookkeeping 字段变化不等于 `.bc/.ll/.metal` 本体变化，矩阵判断应优先看真实 artifact 与 aggregate source
+- **同一界面重复启动出现差异时，不要过早收敛为 shader root cause**：当前已知现象是 mesh 不变，但原神为延迟管线；base pass 看起来类似并不能排除后处理、着色阶段或 render pipeline 顺序 / 配置差异
+- **`E-006d` 的归因顺序必须固定**：先做“替换 vs 不替换”对照，再对齐“输入是否相同”，再比较“输出是否相同”，最后才看 runtime 是否真的使用了替换后的 library 以及更后续的 pass / pipeline 行为
 - **更细的 lowering 经验、历史 live blocker 链路与已完成轮次已下沉到独立参考文档**：当前主文档只保留仍影响决策的规则；细粒度技术备注见 `E-006d-GenshinRenderingNondeterminism.md`，更早的 live / lowering 演进见 `00-Dashboard-Archive.md` 与 `E-004-MetallibSourceExtraction-Archive.md`
 
 ## 参考信息

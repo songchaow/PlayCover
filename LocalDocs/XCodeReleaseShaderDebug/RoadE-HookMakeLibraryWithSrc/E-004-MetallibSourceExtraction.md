@@ -40,11 +40,11 @@ makeLibrary(source:) 重编译替换
 
 - 每次修 `IRToMSLConverter` 都要重装 / 重注入 / 启动原神
 - live 覆盖面受地图、场景、加载时机影响，**不稳定且随机**
-- 成功路径虽然已经形成可复用 `ShaderCorpus/`，但 **`compile_failed` live 样本仍主要只落在 `ShaderSourceDiagnostics/`**；若不额外 re-capture 或补失败路径 `.bc/.ll` 导出，修复后也无法自动进入离线主路径
+- 虽然成功路径已经形成 `ShaderCorpus/`，失败路径在 `E-004f4` 后也已补齐 `.bc/.ll/.metal/.meta.json` 导出，但**新 blocker 仍必须按闭环规则判断**：不能只凭“既有 corpus 已绿”就宣告完成
 
-因此 E-004 这一阶段的主目标是：
+因此 E-004 这一阶段留下来的核心价值是：
 
-**把真实运行中遇到的 shader 系统性导出为离线 corpus，使 `IR -> MSL -> 编译` 成为日常回归主路径。**
+**把真实运行中遇到的 shader 系统性导出为离线 corpus，并把失败样本也转成可回放输入，使 `IR -> MSL -> 编译 / diff` 成为日常回归主路径。**
 
 ## 当前已具备的能力
 
@@ -78,30 +78,17 @@ makeLibrary(source:) 重编译替换
 
 ## 当前缺口
 
-### 1. 成功路径持久化已打通，且基础规范已落地
+> ⚠️ **本节保留的不是“仍待 E-004 继续开发的功能”，而是当前交接时仍必须记住的边界。** E-004 原始缺口已经收敛，真正的当前主线以 `00-Dashboard.md` / `E-006d-GenshinRenderingNondeterminism.md` 为准。
 
-当前已有落盘目录：
+### 1. 闭环边界：失败样本不能只靠既有 corpus green 视为完成
 
-- `ShaderSourceDiagnostics/`：**失败的** `.metal + .txt`
-- `ShaderPayloadSamples/`：**异常 payload** 的 `.bin + .txt (+ .plist)`
-- `ShaderCorpus/`：`attemptLibraryReplacement(...)` 成功路径下导出的稳定 corpus
+- 成功路径：`ShaderCorpus/<bundleId>/modules/<moduleKey>/` 已稳定落盘 `.bc/.ll/.metal/.meta.json`
+- 失败路径：`ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/` 在 `E-004f4` 后也会落盘 `.bc/.ll/.metal/.meta.json`
+- 仍需坚持的规则：当 blocker 首次来自 diagnostics 且样本未进入成功 corpus 时，不能只凭“既有 corpus 已绿”宣告闭环；必须通过失败路径 replay 或 post-fix fresh capture 把它真正带入离线主路径
 
-其中 `ShaderCorpus/` 已收敛为：
+### 2. 覆盖边界：`makeLibrary` 主采集面已经够用，但命中率仍以真实 app 为准
 
-- 根目录：`ShaderCorpus/<bundleId>/`
-- 模块目录：`modules/<moduleKey>/`
-- 总索引：`manifest.jsonl`
-- `moduleKey`：`sha256(module.bc)`，作为长期稳定的 module 级去重键
-- `cacheKey`：仅保留为 metallib 级上下文，不再承担长期去重职责
-- 覆盖策略：`.bc/.ll/.metal` 采用**基线优先**；若后续同一 `moduleKey` 再次出现但产物不同，则**不覆盖已有基线**，只在 `manifest.jsonl` 中记录 `conflict_preserved` 事件
-
-这意味着真实运行中采到的成功样本，已经具备长期可复用的目录、索引和去重约束；后续 replay / diff / 回归可以默认建立在这套稳定 corpus 之上。
-
-但当前仍有一个关键缺口：`compile_failed` live 样本仍主要只落在 `ShaderSourceDiagnostics/`（`.metal + .txt`），并不会自动进入 `ShaderCorpus/`。因此当某个 blocker 首次由 diagnostics 暴露时，后续即使修复了转换器，也不能只凭“现有 corpus 已绿”就宣布闭环；还必须补一次 post-fix fresh capture，或后续为失败路径补齐 `.bc/.ll` 导出，使该样本真正进入离线回归主路径。
-
-### 2. `makeLibrary` 覆盖面已扩展到 `URL/default/file`
-
-截至 2026-04-04，以下入口都已在代码路径上接入统一的 bitcode 提取、IR 反汇编、MSL 转换、`makeLibrary(source:)` 替换与 `ShaderCorpus/` 导出链路：
+截至 2026-04-04，以下入口都已在代码路径上接入统一的 bitcode 提取、IR 反汇编、MSL 转换、`makeLibrary(source:)` 替换与导出链路：
 
 - `newLibraryWithData:error:`
 - `newLibraryWithURL:error:`
@@ -109,32 +96,18 @@ makeLibrary(source:) 重编译替换
 - `newDefaultLibraryWithBundle:error:`
 - `newLibraryWithFile:error:`
 
-其中 default 路径当前通过两级保守策略定位 bundle 内的默认 `.metallib`：
+其中 default 路径当前通过两级保守策略定位 bundle 内默认 `.metallib`：
 
 1. 优先按 `CFBundleExecutable` / `CFBundleName` / bundle 名 / `default` 显式匹配
 2. 若显式名称未命中，再扫描 bundle `resourceURL` 下的 `.metallib` 资源并按路径稳定排序后选择
 
-因此当前剩余工作已从“把这些入口接入统一导出逻辑”转为“在真实 app 上确认这些入口的命中情况与最小 live 验证”。
+因此当前剩余边界已经不是“入口没接上”，而是“真实 app 是否会稳定命中这些入口、命中后是否需要最小 live 验证”。
 
-### 3. 缺少离线 replay 的稳定输入规范
-
-现在已经存在两类离线输入，但边界还不够明确：
+### 3. 输入边界：离线输入规范已经收敛，当前只保留职责划分
 
 - `test-data/`：手工构造的**最小样本**，用于验证单个 lowering、air builtin 或特定 IR 模式
 - `ShaderCorpus/`：真实运行时采集的**真实样本集**，用于批量 replay、diff、失败聚类与回归基线
-
-> ⚠️ 这一缺口对应的核心规范已经在 `E-004f` / `E-005` / dashboard 中收敛为当前工作流；本节保留是为了说明 E-004 当时为什么要转向 corpus-driven，而不是表示它仍是当前最高优先级未完成项。
-
-当前的问题不是“完全没有离线输入”，而是当时还没有一个统一的**真实 corpus 样本规范**。
-
-后续需要统一约定：
-
-- 目录结构
-- 命名规则
-- 去重键
-- manifest 字段
-- 成功 / 失败 / fallback 的状态标记
-- `test-data/` 与 `ShaderCorpus/` 的职责边界
+- 新增日常验证方法时，应继续保持脚本化 / agent 可自主执行，不能把人工交互变成默认 gate
 
 ## 推荐的新主路径
 
@@ -211,38 +184,14 @@ build_and_install.sh
 
 ### `module.meta.json` 当前核心字段
 
-当前已稳定写入：
+当前字段已经稳定，日常主要按下面四类理解即可：
 
-- `schemaVersion`
-- `bundleId`
-- `moduleKey`
-- `moduleKeyStrategy`
-- `selector`（首个 canonical selector）
-- `observedSelectors`
-- `cacheKey`（首个 canonical metallib cacheKey）
-- `sourceCacheKeys`
-- `moduleRelativeOffset`
-- `moduleSize`
-- `functionNames`
-- `functionTypes`
-- `generatedFunctionNames`
-- `generatedFunctionTypes`
-- `timestamp`
-- `firstCapturedAt`
-- `lastCapturedAt`
-- `captureCount`
-- `baselineConflictCount`
-- `llvmDisStatus`
-- `converterStatus`
-- `compileStatus`
-- `bitcodeBytes`
-- `llvmIRBytes`
-- `generatedMSLBytes`
-- `moduleSummary`
-- `irSummary`
-- `conversionSummary`
-- `corpusRelativeDirectory`
-- `artifactPaths`
+- **标识与去重**：`schemaVersion`、`bundleId`、`moduleKey`、`moduleKeyStrategy`、`selector`、`observedSelectors`、`cacheKey`、`sourceCacheKeys`
+- **模块与函数信息**：`moduleRelativeOffset`、`moduleSize`、`functionNames`、`functionTypes`、`generatedFunctionNames`、`generatedFunctionTypes`
+- **采集与状态**：`timestamp`、`firstCapturedAt`、`lastCapturedAt`、`captureCount`、`baselineConflictCount`、`llvmDisStatus`、`converterStatus`、`compileStatus`
+- **摘要与路径**：`bitcodeBytes`、`llvmIRBytes`、`generatedMSLBytes`、`moduleSummary`、`irSummary`、`conversionSummary`、`corpusRelativeDirectory`、`artifactPaths`
+
+若需要逐字段追查历史含义，应优先回看对应代码或 archive；当前主文档只保留“如何使用这些字段做闭环和回归”的层次。
 
 ### 去重与覆盖策略（已落地）
 
@@ -259,55 +208,13 @@ build_and_install.sh
 
 ## 现有代码中的最佳插入点
 
-### 插入点 1：`extractAndCacheBitcodeModules(...)`
+> ⚠️ **这一节现在只保留给回看实现时参考，不再代表当前待办。** 更细的设计取舍已下沉到 `E-004-MetallibSourceExtraction-Archive.md`。
 
-职责：**最早拿到成功的 `BitcodeModule.data`**
+- **`extractAndCacheBitcodeModules(...)`**：最早拿到稳定 `BitcodeModule.data` 的位置，适合回看原始 `.bc` 提取链路
+- **`attemptLibraryReplacement(...)`**：当前成功路径的 canonical 汇总点，`module.bc` / `module.ll` / `module.generated.metal` / `module.meta.json` 都以这里为主线组织
+- **host bridge 命令处理**：若未来需要把文件保存、MCP 暴露或宿主侧诊断继续前移，这里仍是自然扩展点
 
-适合新增：
-- `.bc` 原始落盘
-- metallib / module manifest 的初步记录
-
-优点：
-- 拿到的是最原始、最稳定的 bitcode
-- 便于后续离线重复 `llvm-dis`
-
-限制：
-- 此时还没有 `.ll` / `.metal`
-
-### 插入点 2：`attemptLibraryReplacement(...)`
-
-职责：**最自然的成功路径汇总点**
-
-当前这里已经顺序拿到了：
-- `module`
-- `irResult.irText`
-- `conversion.mslSource`
-- `compileError` / success
-
-这是当前最适合先落地的点。建议在这里直接写：
-- `module.bc`
-- `module.ll`
-- `module.generated.metal`
-- `module.meta.json`
-
-优点：
-- 一次函数调用内拿齐所有关键产物
-- 能在同一个 manifest 里记录“提取成功 / 反汇编成功 / 转换成功 / 编译成功或失败”
-
-### 插入点 3：host bridge 命令处理
-
-职责：**在宿主进程保存 `.bc/.ll`**
-
-可作为第二阶段优化：
-- 让 `host_disassemble_bitcode` 在返回 `ir_text` 的同时，把 `.bc/.ll` 存到宿主目录
-- 这样运行时只负责发命令，不负责文件写入
-
-优点：
-- 文件权限与调试体验更好
-- 更适合未来 MCP / UI 暴露导出功能
-
-限制：
-- 需要 runtime 额外把上下文（bundleId、selector、cacheKey、offset/size）带给宿主
+当前日常推进不再围绕“把插入点接上”展开，而是围绕已落地的 corpus / replay / live 闭环能力做归因。
 
 ## E-004 新的任务拆分
 

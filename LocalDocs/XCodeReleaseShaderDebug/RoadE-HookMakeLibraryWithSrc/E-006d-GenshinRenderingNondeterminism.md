@@ -35,7 +35,7 @@
 - 2026-04-06 随后补了一轮 host 侧 split-brain 修复：`SessionHealthMonitor` 在移除 stale session 后，不再只在 registry 里静默删除，而会同步通过 `RegistrationListener.disconnectSessions(...)` 主动断开对应 runtime 的 registration channel。这样 runtime 若仍持有旧 `sessionId`，会立刻感知连接被 host 关闭并走标准 re-register，而不是继续在 host bridge 命令阶段才暴露为 `Session not registered`。这条修复当前已由 `PlayCoverMCPTests` 集成用例覆盖，但还需要新的 fresh on-run 把 live 证据补齐。
 - **绘制内容差异检查现在必须并入 `E-006d8` 主线，不能继续只看 shader / corpus / trace 哈希。** 当前优先对照应是 `replacement-off-run1` vs `replacement-on-run5`：前者是目前最低风险的“未替换 + 带 `.gputrace`”基线，后者是当前唯一稳定拿到 `.gputrace` 的“替换成功”侧代表样本。应至少导出 **Command Buffer 数、Render Encoder 列表、Pipeline State 分组、关键 pass summary**，先回答差异是否已经落在更后续 render pipeline / post-processing。
 - 这条线优先复用 `LocalDocs/XCodeOperation/` 现有脚本：`xcode_gpu_ops.py`、`collect_cbs.py`、`collect_re_details.py`。它们已经能自动打开 `.gputrace`、点击 Replay、导出结构化 JSON；但它们依赖 Xcode GUI 环境、Accessibility 权限，以及部分 `cliclick` 操作。因此**在已验证 agent 能独立跑通前，它只能作为重要专项分析分支，不能写成当前默认日常 gate。**
-- 若本轮还要继续扩证据，采集动作仍必须固定为统一入口：使用 `Scripts/e006d_matrix_runner.py` 的 `prepare-run` / `finalize-run` / `analyze` 薄封装，固定 `replacement-<mode>-runN` 标签与分析入口，避免把模式、标签、快照目录或 compare 输入串错；其中 `capture_metal_frame` 当前优先走默认 `Captures/` 输出，再并回 run 快照。
+- 若本轮还要继续扩证据，采集动作仍必须固定为统一入口：使用 `Scripts/e006d_matrix_runner.py` 的 `prepare-run` / `finalize-run` / `analyze` 薄封装，固定 `replacement-<mode>-runN` 标签与分析入口，避免把模式、标签、快照目录或 compare 输入串错；其中 `capture_metal_frame` 当前优先走目标 app 容器默认 `Captures/` 输出，再通过 `finalize-run --latest-gputrace` 自动并回 run 快照，避免继续依赖自定义工作区 `output_path`。
 - 本轮完成标准不是“继续加脚本”或“继续补文档”，而是至少把当前问题明确收敛到以下之一：
   1. 输入集合不稳定
   2. 输入稳定但输出/聚合结果不稳定
@@ -57,6 +57,7 @@
 - `replacement-on-run7` 现已作为标准快照固化，摘要为：`replacementEnabled=true`、`manifestLines=2249`、`modules=91`、`replacements=206`、`diagnostics=18`、`gputraceMSL=n/a`。将 `on7` 纳入矩阵后，`build/e006d-run-matrix.json` 最新摘要为：`mode=off allInputStable=True`、`mode=on allInputStable=True`、`mode=on allReplacementAttemptStable=False`、`mode=on missingAttemptWhileEnabledPairs=11`、`off-vs-on allPairsDifferent=False`、`differentPairCount=12`
 - 截至当前，**绘制内容差异**这条线已经不是“缺工具”，而是“还没把现成工具正式接入 `E-006d8` 的默认执行顺序”：`LocalDocs/XCodeOperation/` 已具备打开 `.gputrace`、Replay、导出 `Command Buffer` / `Render Encoder` / `Pipeline State` 结构摘要的脚本，但还没对 `replacement-off-run1` vs `replacement-on-run5` 产出正式结构化 diff。
 - 因此当前主线已经进一步收敛为四条更窄的 blocker：1）**对 latest fresh `replacement-on` 路径而言**，为什么 `session=ready` 之后，capture bridge / `get_capture_status` 仍会稳定 `Receive timed out`，以及这是否与 `capture_metal_frame` reachability 或 runtime service 状态有关；2）**为什么 `capture_metal_frame` 的自定义工作区 `output_path` 仍会被权限拒绝**；3）**为什么上一轮成功 `.gputrace` 仍只有 `2/11` 个合法 MSL**；4）**当前代表性 off/on 截帧在 draw call / Render Encoder / Pipeline State 层面到底有没有结构差异**。在这四条线收敛前，还不能继续把结论往 shader lowering 或更后续 pipeline 方向过早定性
+- 2026-04-06 本轮新增了一步小闭环：`Scripts/e006d_matrix_runner.py finalize-run` 已支持 `--latest-gputrace`，会默认从 `~/Library/Containers/<bundleId>/Data/Documents/Captures/` 选取最新 `.gputrace` 并直接纳入 run 快照；只有在确需对比非默认落盘路径时，才继续显式传 `--gputrace /path/to/trace.gputrace`。
 
 ## 优先排查顺序
 
@@ -91,7 +92,19 @@ python3 Scripts/e006d_matrix_runner.py finalize-run \
   --bundle-id com.miHoYo.Yuanshen \
   --mode off \
   --run-index 1 \
-  --gputrace /path/to/replacement-off-run1.gputrace \
+  --latest-gputrace \
+  --print-compare-path
+```
+
+- 若需要覆盖默认搜索目录，可追加：
+
+```bash
+python3 Scripts/e006d_matrix_runner.py finalize-run \
+  --bundle-id com.miHoYo.Yuanshen \
+  --mode off \
+  --run-index 1 \
+  --latest-gputrace \
+  --capture-root /custom/Captures \
   --print-compare-path
 ```
 
@@ -237,6 +250,7 @@ python3 Scripts/compare_capture_runs.py \
 ## 当前建议执行顺序
 
 1. 固定 live 条件；对当前原神基线，继续以“启动后数十秒自动停在登录界面”为统一复现面，由 agent 独立完成每轮启动与等待；每轮结束后立即用 `Scripts/snapshot_capture_run.py` 或 `Scripts/e006d_matrix_runner.py finalize-run` 固化 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings 快照
+   - 若该轮已经通过 `capture_metal_frame` 产出了默认容器内 `.gputrace`，优先使用 `finalize-run --latest-gputrace` 自动接回最新产物，不再默认手填工作区 `--gputrace` 路径
 2. 当前已完成 `replacement-off-run1/off-run2/on-run1/on-run2/on-run3/on-run4/on-run5/on-run6`；“同模式输入稳定”已经成立，而 fresh `replacement-on-run6` 也已经证明 launch / registration 主链可以再次拉起。2026-04-06 还额外补上了 host 侧 stale-session cleanup 主动断开 registration channel 的修复与对应 `PlayCoverMCPTests` 集成验证。因此下一步不再是继续机械补 run，而是把**当前四条更窄 blocker**继续收敛：带着该修复重新验证 host bridge `Session not registered` 生命周期问题、自定义 `capture` 输出路径权限、trace 侧合法 MSL 覆盖偏低，以及代表性 off/on 截帧的 draw call / Render Encoder / Pipeline State 结构化差异
 3. 为了继续推进，优先保留当前已经打通的 **launch / session 标准链路**：fresh on-run 结束后先用 `Scripts/runtime_launch_diagnostics_summary.py --bundle-id <bundleId>` 读取 `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl`，确认 runtime 是否进入 `PlayCover.launch()`、是否起了 command listener、是否真的发起并建立了 registration channel；随后继续用 `create_session` / `list_sessions` / `get_capture_status` 观察 session 在 `ready` 之后是否会掉到 `Session not registered`，并在必要时先无 `.gputrace` 地通过 `Scripts/e006d_matrix_runner.py finalize-run` 固化证据
 4. 与此同时，并行处理 manifest 中**历史仍存在**但本轮最新增量已不再前移到最前面的 `llvm-dis` `Operation not permitted` 失败样本：优先复用现有 diagnostics、run 快照与 replay/diff 工具，把它们与新的 `Session not registered` 失败桶分层整理，而不是回到人工 live 观察

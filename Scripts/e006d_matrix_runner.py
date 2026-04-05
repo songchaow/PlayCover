@@ -34,6 +34,26 @@ ANALYZE_SCRIPT = SCRIPT_DIR / "analyze_capture_run_matrix.py"
 DEFAULT_RUNS_ROOT = Path("build/e006d-run-snapshots")
 
 
+def default_capture_root(bundle_id: str) -> Path:
+    return Path.home() / "Library/Containers" / bundle_id / "Data/Documents/Captures"
+
+
+def resolve_latest_gputrace(capture_root: Path) -> Path:
+    expanded_root = capture_root.expanduser().resolve()
+    if not expanded_root.is_dir():
+        raise SystemExit(f"capture root not found: {expanded_root}")
+
+    candidates = [
+        child for child in expanded_root.iterdir()
+        if child.is_dir() and child.suffix == ".gputrace"
+    ]
+    if not candidates:
+        raise SystemExit(f"no .gputrace directories found under {expanded_root}")
+
+    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Orchestrate the standard E-006d8 off/on matrix workflow"
@@ -78,6 +98,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--print-compare-path",
         action="store_true",
         help="forward --print-compare-path to snapshot_capture_run.py",
+    )
+    finalize_parser.add_argument(
+        "--latest-gputrace",
+        action="store_true",
+        help="use the newest .gputrace from the target app's default Captures directory",
+    )
+    finalize_parser.add_argument(
+        "--capture-root",
+        help="override the directory searched by --latest-gputrace (default: ~/Library/Containers/<bundle-id>/Data/Documents/Captures)",
     )
 
     analyze_parser = subparsers.add_parser(
@@ -128,6 +157,7 @@ def run_command(command: list[str]) -> int:
 
 def prepare_run(args: argparse.Namespace) -> int:
     label = standard_label(args.mode, args.run_index)
+    capture_root = default_capture_root(args.bundle_id)
     command = [
         sys.executable,
         str(SET_MODE_SCRIPT),
@@ -145,7 +175,7 @@ def prepare_run(args: argparse.Namespace) -> int:
     print(f"prepared {label}")
     print("next:")
     print("1. Launch the app and reproduce the same scene once.")
-    print("2. Capture a .gputrace if this round includes trace evidence.")
+    print(f"2. If you capture a trace, prefer the target app default Captures directory: {capture_root}")
     print("3. Finalize the run with:")
     finalize_command = [
         "python3",
@@ -157,14 +187,31 @@ def prepare_run(args: argparse.Namespace) -> int:
         args.mode,
         "--run-index",
         str(args.run_index),
+        "--latest-gputrace",
         "--print-compare-path",
     ]
-    print("   " + " ".join(finalize_command) + " --gputrace /path/to/trace.gputrace")
+    print("   " + " ".join(finalize_command))
+    print("   # Or replace --latest-gputrace with --gputrace /path/to/trace.gputrace if needed")
     return 0
+
+
+def resolve_finalize_gputrace(args: argparse.Namespace) -> Path | None:
+    if args.gputrace and args.latest_gputrace:
+        raise SystemExit("--gputrace and --latest-gputrace are mutually exclusive")
+
+    if args.gputrace:
+        return Path(args.gputrace).expanduser().resolve()
+
+    if not args.latest_gputrace:
+        return None
+
+    capture_root = Path(args.capture_root).expanduser().resolve() if args.capture_root else default_capture_root(args.bundle_id)
+    return resolve_latest_gputrace(capture_root)
 
 
 def finalize_run(args: argparse.Namespace) -> int:
     label = standard_label(args.mode, args.run_index)
+    gputrace_path = resolve_finalize_gputrace(args)
     command = [
         sys.executable,
         str(SNAPSHOT_SCRIPT),
@@ -177,8 +224,9 @@ def finalize_run(args: argparse.Namespace) -> int:
     ]
     if args.container:
         command.extend(["--container", args.container])
-    if args.gputrace:
-        command.extend(["--gputrace", args.gputrace])
+    if gputrace_path is not None:
+        print(f"using gputrace: {gputrace_path}")
+        command.extend(["--gputrace", str(gputrace_path)])
     if args.skip_diagnostics:
         command.append("--skip-diagnostics")
     if args.print_compare_path:

@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from gputrace_attribution import build_gputrace_attribution
+
 
 ARTIFACT_FILENAMES = (
     "module.bc",
@@ -85,6 +87,16 @@ def load_snapshot_meta(run_input: RunInput) -> dict[str, Any] | None:
     if not meta_path.is_file():
         return None
     payload = load_json(meta_path)
+    return payload if isinstance(payload, dict) else None
+
+
+def load_snapshot_artifact_json(run_input: RunInput, relative_path: str | None) -> dict[str, Any] | None:
+    if not relative_path:
+        return None
+    artifact_path = run_input.manifest_path.parent / relative_path
+    if not artifact_path.is_file():
+        return None
+    payload = load_json(artifact_path)
     return payload if isinstance(payload, dict) else None
 
 
@@ -349,17 +361,32 @@ def compare_replacement_runs(
     }
 
 
-def build_snapshot_context(meta: dict[str, Any] | None) -> dict[str, Any]:
+def build_snapshot_context(run_input: RunInput, meta: dict[str, Any] | None) -> dict[str, Any]:
     if meta is None:
         return {
             "hasSnapshotMeta": False,
             "label": None,
             "replacementMode": None,
             "gputraceSummary": None,
+            "gputraceAttribution": None,
             "visibleMSLHashes": [],
+            "attributedVisibleMSLHashes": [],
+            "unattributedVisibleMSLHashes": [],
+            "attributedModuleKeys": [],
+            "attributedReplacementDirectories": [],
+            "visibleMSLContentSHA256": [],
         }
 
     gputrace_summary = meta.get("gputraceSummary")
+    copied_artifacts = meta.get("copiedArtifacts") if isinstance(meta.get("copiedArtifacts"), dict) else {}
+    gputrace_attribution = load_snapshot_artifact_json(
+        run_input,
+        copied_artifacts.get("gputraceAttributionIndexPath") if isinstance(copied_artifacts, dict) else None,
+    )
+    if gputrace_attribution is None:
+        gputrace_relative_path = copied_artifacts.get("gputracePath") if isinstance(copied_artifacts, dict) else None
+        gputrace_attribution = build_gputrace_attribution(run_input.manifest_path.parent, gputrace_relative_path, gputrace_summary)
+
     visible_msl_hashes: list[str] = []
     if isinstance(gputrace_summary, dict):
         files = gputrace_summary.get("files")
@@ -375,11 +402,17 @@ def build_snapshot_context(meta: dict[str, Any] | None) -> dict[str, Any]:
         "label": meta.get("label"),
         "replacementMode": meta.get("replacementMode"),
         "gputraceSummary": gputrace_summary,
+        "gputraceAttribution": gputrace_attribution,
         "visibleMSLHashes": visible_msl_hashes,
+        "attributedVisibleMSLHashes": gputrace_attribution.get("attributedVisibleMSLHashes", []) if gputrace_attribution else [],
+        "unattributedVisibleMSLHashes": gputrace_attribution.get("unattributedVisibleMSLHashes", []) if gputrace_attribution else [],
+        "attributedModuleKeys": gputrace_attribution.get("attributedModuleKeys", []) if gputrace_attribution else [],
+        "attributedReplacementDirectories": gputrace_attribution.get("attributedReplacementDirectories", []) if gputrace_attribution else [],
+        "visibleMSLContentSHA256": gputrace_attribution.get("visibleMSLContentSHA256", []) if gputrace_attribution else [],
     }
 
 
-def compare_snapshot_context(meta_a: dict[str, Any] | None, meta_b: dict[str, Any] | None) -> dict[str, Any]:
+def compare_snapshot_context(run_a: RunInput, meta_a: dict[str, Any] | None, run_b: RunInput, meta_b: dict[str, Any] | None) -> dict[str, Any]:
     if meta_a is None or meta_b is None:
         return {
             "hasComparableSnapshots": False,
@@ -388,8 +421,8 @@ def compare_snapshot_context(meta_a: dict[str, Any] | None, meta_b: dict[str, An
             "differences": [],
         }
 
-    context_a = build_snapshot_context(meta_a)
-    context_b = build_snapshot_context(meta_b)
+    context_a = build_snapshot_context(run_a, meta_a)
+    context_b = build_snapshot_context(run_b, meta_b)
     differences: list[dict[str, Any]] = []
     compare_values(
         "replacementMode.enabled",
@@ -413,6 +446,36 @@ def compare_snapshot_context(meta_a: dict[str, Any] | None, meta_b: dict[str, An
         "gputraceSummary.indexHashReferences",
         (context_a.get("gputraceSummary") or {}).get("indexHashReferences"),
         (context_b.get("gputraceSummary") or {}).get("indexHashReferences"),
+        differences,
+    )
+    compare_values(
+        "gputraceAttribution.attributedVisibleMSLHashes",
+        context_a.get("attributedVisibleMSLHashes"),
+        context_b.get("attributedVisibleMSLHashes"),
+        differences,
+    )
+    compare_values(
+        "gputraceAttribution.unattributedVisibleMSLHashes",
+        context_a.get("unattributedVisibleMSLHashes"),
+        context_b.get("unattributedVisibleMSLHashes"),
+        differences,
+    )
+    compare_values(
+        "gputraceAttribution.attributedModuleKeys",
+        context_a.get("attributedModuleKeys"),
+        context_b.get("attributedModuleKeys"),
+        differences,
+    )
+    compare_values(
+        "gputraceAttribution.attributedReplacementDirectories",
+        context_a.get("attributedReplacementDirectories"),
+        context_b.get("attributedReplacementDirectories"),
+        differences,
+    )
+    compare_values(
+        "gputraceAttribution.visibleMSLContentSHA256",
+        context_a.get("visibleMSLContentSHA256"),
+        context_b.get("visibleMSLContentSHA256"),
         differences,
     )
 
@@ -443,14 +506,14 @@ def build_report(run_a: RunInput, run_b: RunInput) -> dict[str, Any]:
     shared_differences = compare_shared_modules(modules_a, modules_b)
 
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "runA": {
             "label": run_a.label,
             "manifestPath": str(run_a.manifest_path),
             "modulesDir": str(run_a.modules_dir),
             "summary": summarize_events(events_a),
             "replacementSummary": replacements_a["summary"],
-            "snapshotContext": build_snapshot_context(snapshot_meta_a),
+            "snapshotContext": build_snapshot_context(run_a, snapshot_meta_a),
         },
         "runB": {
             "label": run_b.label,
@@ -458,7 +521,7 @@ def build_report(run_a: RunInput, run_b: RunInput) -> dict[str, Any]:
             "modulesDir": str(run_b.modules_dir),
             "summary": summarize_events(events_b),
             "replacementSummary": replacements_b["summary"],
-            "snapshotContext": build_snapshot_context(snapshot_meta_b),
+            "snapshotContext": build_snapshot_context(run_b, snapshot_meta_b),
         },
         "comparison": {
             "onlyInRunA": only_a,
@@ -466,13 +529,13 @@ def build_report(run_a: RunInput, run_b: RunInput) -> dict[str, Any]:
             "sharedModuleCount": len(keys_a & keys_b),
             "sharedModulesWithDifferences": shared_differences,
             "latestReplacementComparison": compare_replacement_runs(replacements_a, replacements_b),
-            "snapshotComparison": compare_snapshot_context(snapshot_meta_a, snapshot_meta_b),
+            "snapshotComparison": compare_snapshot_context(run_a, snapshot_meta_a, run_b, snapshot_meta_b),
             "differenceSummary": {
                 "onlyInRunACount": len(only_a),
                 "onlyInRunBCount": len(only_b),
                 "sharedModulesWithDifferencesCount": len(shared_differences),
                 "replacementDifferenceCount": len(compare_replacement_runs(replacements_a, replacements_b)["differences"]),
-                "snapshotDifferenceCount": len(compare_snapshot_context(snapshot_meta_a, snapshot_meta_b)["differences"]),
+                "snapshotDifferenceCount": len(compare_snapshot_context(run_a, snapshot_meta_a, run_b, snapshot_meta_b)["differences"]),
             },
         },
     }
@@ -525,6 +588,15 @@ def print_summary(report: dict[str, Any]) -> None:
     elif snapshot_comparison["differences"]:
         preview = ", ".join(item["field"] for item in snapshot_comparison["differences"][:5])
         print(f"snapshot context differs ({len(snapshot_comparison['differences'])} fields): {preview}")
+    if snapshot_comparison.get("runA") and snapshot_comparison.get("runB"):
+        attributed_a = snapshot_comparison["runA"].get("attributedVisibleMSLHashes", [])
+        attributed_b = snapshot_comparison["runB"].get("attributedVisibleMSLHashes", [])
+        if attributed_a or attributed_b:
+            print(
+                "gputrace attribution: "
+                f"runA={len(attributed_a)} visible hashes, "
+                f"runB={len(attributed_b)} visible hashes"
+            )
 
 
 def parse_args() -> argparse.Namespace:

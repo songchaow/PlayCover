@@ -1,6 +1,8 @@
 ## E-004: 将运行时 metallib 提升为可复用的离线 corpus
 
-## 状态：🔄 IN PROGRESS
+## 状态：✅ DONE（当前作为参考主文档保留）
+
+> ⚠️ **E-004 已不再是当前最高优先级执行分支。** 相关能力已经成为 Road E 的稳定底座；当前主线与 TODO 以 `00-Dashboard.md` / `E-006d-GenshinRenderingNondeterminism.md` 为准。本文档保留为 corpus / extraction 能力的参考主文档。
 
 ## 目标
 
@@ -121,7 +123,9 @@ makeLibrary(source:) 重编译替换
 - `test-data/`：手工构造的**最小样本**，用于验证单个 lowering、air builtin 或特定 IR 模式
 - `ShaderCorpus/`：真实运行时采集的**真实样本集**，用于批量 replay、diff、失败聚类与回归基线
 
-当前的问题不是“完全没有离线输入”，而是还没有一个统一的**真实 corpus 样本规范**。
+> ⚠️ 这一缺口对应的核心规范已经在 `E-004f` / `E-005` / dashboard 中收敛为当前工作流；本节保留是为了说明 E-004 当时为什么要转向 corpus-driven，而不是表示它仍是当前最高优先级未完成项。
+
+当前的问题不是“完全没有离线输入”，而是当时还没有一个统一的**真实 corpus 样本规范**。
 
 后续需要统一约定：
 
@@ -313,7 +317,7 @@ build_and_install.sh
 | E-004b | bitcode module 提取与去重 | ✅ DONE | `BitcodeModule` 已具备数据、函数名、类型信息 |
 | E-004c | 宿主 LLVM 工具链管理 | ✅ DONE | `LLVMToolManager` 已可下载 / 校验 `llvm-dis` |
 | E-004d | runtime→host `llvm-dis` 主路径 | ✅ DONE | host bridge 已成为主路径 |
-| E-004e | IR→MSL 转换器 | 🔄 IN PROGRESS | 后续迭代应改为 corpus 驱动 |
+| E-004e | IR→MSL 转换器 | ✅ DONE（基础能力） | 当前作为稳定底座保留；后续具体收敛工作已转入 `E-006d` / 离线回归主线 |
 | E-004f | corpus 导出与闭环策略 | ✅ DONE | 成功路径已稳定，`E-004f4` 已实现失败路径导出闭环 |
 
 ### E-004f 细分
@@ -324,7 +328,7 @@ build_and_install.sh
 | E-004f2 | corpus 命名 / 去重 / manifest 规范 | ✅ DONE | 已落地 `modules/<moduleKey>`、`manifest.jsonl` 与基线保护策略 |
 | E-004f3 | 扩展 `URL/default/file` 路径覆盖 | ✅ DONE | 相关 selector 已在代码路径上复用统一导出 / 替换逻辑；default 路径增加了 bundle `.metallib` 保守定位策略 |
 | E-004f4 | 失败样本闭环 / re-capture 策略 | ✅ DONE | 失败路径在 `ShaderSourceDiagnostics/<baseName>_modules/` 导出 `.bc/.ll/.metal/.meta.json`；异常路径导出所有模块 `.bc` 及已准备模块的 `.ll`/`.metal` |
-| E-004f5 | MCP / 脚本化导出接口 | TODO | 能力需求已弱化，后续与跨任务 `E-007` 一起收敛 |
+| E-004f5 | MCP / 脚本化导出接口 | 已并入 `E-007` | 该能力不再单独作为 E-004 未完成项维护，后续统一由 dashboard 中的跨任务 `E-007` 收敛 |
 
 ## 与 E-005 / E-006 的衔接
 

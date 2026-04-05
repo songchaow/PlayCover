@@ -2,6 +2,8 @@
 
 ## 状态：✅ DONE
 
+> ⚠️ **E-005 已作为稳定参考能力收敛。** 当前 Road E 的最高优先级不是继续扩离线工具，而是使用这些工具完成 `E-006d` 的稳定对照与归因；本文档保留为 offline replay / compile / diff 能力说明。
+
 当前进度：
 
 - `E-005a` **已完成**：`Scripts/corpus_replay_runner.py` 的稳定 replay 入口
@@ -372,7 +374,7 @@ python3 Scripts/corpus_replay_runner.py \
 
 `E-005` 主线已完成；后续优先级回到：
 
-- `E-004f3`：扩展 `makeLibrary(URL/default/file)` 路径的 corpus 采集覆盖
-- `E-006b`：在离线 batch compile 已绿的一组样本上做最小 live 复测
+- `E-006d8`：使用现有 replay / diff / run-matrix 工具，先形成 `replacement=off/on` 多轮稳定矩阵，并输出第一层归因结论
+- `E-007`：若后续确认人工路径操作已成为效率瓶颈，再把现有离线工具能力经 UI / MCP 暴露出来
 
-也就是说，接下来离线回归能力本身不再是 blocker，重点转为**把更多真实样本接入同一套回归链路**。
+也就是说，接下来离线回归能力本身不再是 blocker，重点转为**用这套能力支撑 `E-006d` 当前归因主线**；只有当主线再次被操作成本卡住时，才回头推进 `E-007`。

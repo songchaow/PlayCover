@@ -19,6 +19,8 @@
 - 这一步补齐了第 1、5 个核心问题之间原本断开的证据：run 快照现在不只保留 corpus / replacements / diagnostics / settings，也能保留“**这轮最终截帧看到了什么源码**”，从而把 live 侧 `.gputrace` 结果纳入同一份离线 diff 报告。
 - **E-006d6（✅ DONE）**：新增 `Scripts/analyze_capture_run_matrix.py`，可批量读取 `build/e006d-run-snapshots/<label>/<bundleId>/` 多轮快照，自动按 `snapshot.meta.json.replacementMode.enabled` 分组为 `replacement=off/on`，汇总同模式重复启动是否稳定，以及 `off vs on` 跨模式差异是否稳定存在。
 - 这一步补齐了“至少做 2~3 轮重复启动”与“先回答是否形成稳定对照样本”之间缺失的自动汇总层：不再需要手工逐对运行 `compare_capture_runs.py` 才能判断 `within-mode stable / cross-mode different` 是否成立。
+- **E-006d7（✅ DONE）**：新增 `.gputrace` 可见源码归因索引：`Scripts/snapshot_capture_run.py` 现在会额外写出 `gputrace-attribution-index.json`，把每个可见 MSL hash 按源码内容指纹关联到 `modules/<moduleKey>/module.generated.metal` 与 `replacements/.../aggregate.generated.metal`；`Scripts/compare_capture_runs.py` 也会把这些归因结果纳入 `snapshotComparison`。
+- 这一步补齐了第 4、5 个核心问题之间原本缺失的“**最终 trace 里看到的源码究竟来自哪一个 module / aggregate replacement**”证据链：后续不再只能看到 `validMSLFiles` 或 hash 集合变化，而能直接回答“这些可见 shader 对应的是哪些 capture module 与哪次聚合替换产物”。
 
 ## 现象
 
@@ -140,6 +142,7 @@ python3 Scripts/compare_capture_runs.py \
 - `Scripts/compare_capture_runs.py` 会对共享 `moduleKey` 直接比较 `.bc/.ll/.metal/.meta` 的 sha256；如果 `module.ll` 一致而 `module.generated.metal` 不一致，可优先怀疑 converter / 聚合稳定性，而不是先回到 live 侧猜测
 - `E-006d2` 后，成功替换的 aggregate source 也会落盘到 `ShaderCorpus/.../replacements/`；如果共享 `moduleKey` 与单模块 `.metal` 都一致，但 `aggregate.generated.metal` 的 sha256 仍不同，应优先怀疑聚合顺序、重名去重结果，或 runtime 成功路径拿到的 module 组合不同
 - 若两轮都含 `snapshot.meta.json` 且通过 `--gputrace` 固化了最终截帧，`Scripts/compare_capture_runs.py` 还会补充 `snapshotComparison`，直接比较 replacement 开关状态、`validMSLFiles`、可见 MSL hash 集合与 `indexHashReferences`，先回答“最终 trace 层证据是否一致”。
+- `E-006d7` 后，若 run 快照含 `.gputrace`，还可直接查看 `gputrace-attribution-index.json`：它会按源码内容指纹把可见 MSL hash 归因到 `module.generated.metal` 与 `aggregate.generated.metal`，用于回答“最终 trace 里新增/消失的源码究竟来自哪个 moduleKey / replacement 目录”。若两轮快照都具备该索引，`Scripts/compare_capture_runs.py` 也会继续比较 `attributedVisibleMSLHashes`、`attributedModuleKeys`、`attributedReplacementDirectories` 与 `visibleMSLContentSHA256`，把最终 trace 差异直接拉回 corpus / replacement 侧证据。
 
 ### 5. 最后比较“替换与实际使用是否相同”
 
@@ -179,7 +182,7 @@ python3 Scripts/compare_capture_runs.py \
 1. 固定 live 条件；每轮结束后立即用 `Scripts/snapshot_capture_run.py` 固化 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings 快照
 2. 先用 `Scripts/set_shader_replacement_mode.py` 建立一组 **replacement=off** 的稳定对照，再切回 **replacement=on** 保留对应 run
 3. 每个模式累计到 `2~3` 轮后，先用 `Scripts/analyze_capture_run_matrix.py` 汇总“同模式是否稳定 / 跨模式是否稳定不同”
-4. 若矩阵汇总已显示稳定，再用 `Scripts/compare_capture_runs.py` 下钻具体 run-vs-run，查看 `onlyInRunA/B`、共享 `moduleKey` 差异，以及 `latestReplacementComparison`
+4. 若矩阵汇总已显示稳定，再用 `Scripts/compare_capture_runs.py` 下钻具体 run-vs-run，查看 `onlyInRunA/B`、共享 `moduleKey` 差异、`latestReplacementComparison`，以及 `snapshotComparison` 中的 `.gputrace` 归因字段
 5. 若 `latestReplacementComparison` 已稳定一致，再继续下钻到 `.gputrace`、实际替换命中情况、以及更后续的 pass / pipeline 行为；若这里已漂移，优先留在离线层继续收敛聚合 / 替换差异
 
 ## 从 dashboard 下沉的细粒度技术备注

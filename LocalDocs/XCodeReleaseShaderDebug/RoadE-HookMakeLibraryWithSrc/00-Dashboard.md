@@ -152,7 +152,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 当前 `.gputrace` 源码可见性检查（2026-04-04，`E-006c` 已关闭） | `capture_20260404_roadE_e006c3_final.gputrace`（765 文件，968 index 引用）：`valid_msl_files: 2`（两个 PlayTools 注入的 MSL 文件，首行 `// Auto-generated aggregated MSL source by PlayTools LibrarySourceInjection`，包含完整 `#include <metal_stdlib>` 与结构体/函数定义）。**Xcode 人工确认：Draw Call shader 面板可见 MSL 源码**。覆盖率 2/11（18%）source 文件为 MSL，其余为 bplist（原始 metallib）。
 | 当前异常基线（2026-04-05，`E-006d` 新开） | 用 PlayCover 打开原神并停留在**同一界面**时，重复启动后画面表现会出现差异；**mesh 布局没有变化**，但局部渲染结果异常。当前仍**不能实锤是 shader 本身改坏**：由于原神是延迟管线，base pass 对比看起来也可能类似，问题也可能位于后处理、着色阶段，或 render pipeline 顺序 / 配置。当前最稳定的复现对照，是**做替换**与**不做替换**时最终效果稳定不同；该现象尚未完成更细的层级归因。 |
 | 当前控制面基线（2026-04-05，`E-006d3` 后） | 已新增 `shaderSourceReplacementEnabled` runtime 开关：关闭后 `PlayTools` 在 `LibrarySourceInjectionSwizzles` 入口直接返回原始 `MTLLibrary`，不再进入 `IR -> MSL -> makeLibrary(source:)` 替换链路；可用 `python3 Scripts/set_shader_replacement_mode.py --bundle-id <bundleId> --mode on/off` 直接切换单 app 的“替换 / 不替换” live 对照模式。 |
-| 当前 run 固化基线（2026-04-05，`E-006d5` 后） | `Scripts/snapshot_capture_run.py` 现可在原有 `manifest.jsonl + modules/ (+ replacements/) + diagnostics + app settings` 快照基础上，额外通过 `--gputrace /path/to/xxx.gputrace` 一并固化最终截帧，并写出 `gputrace-source-summary.json` / `snapshot.meta.json.gputraceSummary`；`Scripts/compare_capture_runs.py` 同步新增 `snapshotComparison`，可直接比较两轮 run 的 replacement 开关、`validMSLFiles`、可见 MSL hash 集合与 `indexHashReferences`。 |
+| 当前 run 固化基线（2026-04-05，`E-006d7` 后） | `Scripts/snapshot_capture_run.py` 现可在原有 `manifest.jsonl + modules/ (+ replacements/) + diagnostics + app settings` 快照基础上，额外通过 `--gputrace /path/to/xxx.gputrace` 一并固化最终截帧，并写出 `gputrace-source-summary.json`、`gputrace-attribution-index.json` 与 `snapshot.meta.json.gputraceAttribution` 摘要；`Scripts/compare_capture_runs.py` 的 `snapshotComparison` 也会同步比较 `attributedVisibleMSLHashes`、`attributedModuleKeys`、`attributedReplacementDirectories` 与 `visibleMSLContentSHA256`，把最终 trace 中可见源码直接回连到 `modules/` 与 `replacements/`。 |
 | 历史 live blocker 时间线 | 见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
 
 ## 整体架构
@@ -220,6 +220,8 @@ PlayTools.framework (注入到 iOS app)
 |  | `Scripts/snapshot_capture_run.py` 新增可选 `--gputrace`：把对应 `.gputrace` 一并保存到 run 快照，并自动生成 `gputrace-source-summary.json`；`Scripts/compare_capture_runs.py` 新增 `snapshotComparison`，可直接比较两轮快照的 replacement 开关状态、`validMSLFiles`、可见 MSL hash 集合与 `indexHashReferences`，用于把最终截帧证据纳入 `E-006d` 的统一离线 diff 主路径 | | |
 | E-006d6 | ↳ 多轮 run 矩阵汇总脚本 | ✅ DONE | |
 |  | 新增 `Scripts/analyze_capture_run_matrix.py`：批量读取 `build/e006d-run-snapshots/<label>/<bundleId>/` 多轮快照，自动按 replacement 开关分组，汇总 `replacement=off/on` 各自的重复启动是否稳定，以及 `off vs on` 跨模式差异是否稳定存在；用于先回答“是否已经形成稳定对照样本”，再决定是否继续下钻单对 run diff | | |
+| E-006d7 | ↳ `.gputrace` 可见源码归因索引 | ✅ DONE | |
+|  | `Scripts/snapshot_capture_run.py` 新增 `gputrace-attribution-index.json`：按源码内容指纹把可见 MSL hash 归因到 `modules/<moduleKey>/module.generated.metal` 与 `replacements/.../aggregate.generated.metal`；`Scripts/compare_capture_runs.py` 的 `snapshotComparison` 同步新增 `attributedVisibleMSLHashes`、`attributedModuleKeys`、`attributedReplacementDirectories` 与 `visibleMSLContentSHA256` 对比，用于把最终 trace 证据回连到 corpus / replacement 侧 | | |
 | E-006a | ↳ 扩展真实 corpus 覆盖面 | TODO | |
 |  | 在进入新地图 / 新场景 / 新画质设置时追加采集，逐步逼近"尽量全"的真实 shader 集合 | | |
 | E-006b | ↳ 离线批量 green 后做最小 live 复测 | ✅ DONE | |
@@ -267,6 +269,7 @@ PlayTools.framework (注入到 iOS app)
 - **当前最保守的稳定对照是“替换 vs 不替换”**：在还不能实锤具体根因位于哪个 pass / stage 之前，先确认“做替换”和“完全不做替换”时的最终效果是否稳定不同，这是 `E-006d` 最低风险的比较基线
 - **“不做替换”对照必须复用统一开关**：`E-006d3` 后统一通过 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py` 控制，避免因手工改代码、临时删逻辑或脏 plist 导致对照本身不可靠
 - **run 快照也必须统一固化方式**：`E-006d5` 后统一通过 `Scripts/snapshot_capture_run.py` 保留单次 run 的 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings；若本轮已有 `.gputrace`，也应通过 `--gputrace` 一并纳入同一快照，避免把 replacement 开关状态、聚合产物与最终 trace 证据混淆
+- **`.gputrace` 可见源码现在需要继续看“归因是否闭环”**：`E-006d7` 后不只看 `validMSLFiles` 或 hash 集合是否变化，还要看 `gputrace-attribution-index.json` 是否已把这些可见 MSL 回连到 `module.generated.metal` 或 `aggregate.generated.metal`；若可见 hash 无法归因，说明最终 trace 证据与 corpus / replacement 侧仍未闭环
 - **多轮对照要先看矩阵结论，再下钻单对 run**：`E-006d6` 后优先用 `Scripts/analyze_capture_run_matrix.py` 汇总 `2~3` 轮 `replacement=off/on` 快照，先回答“同模式是否稳定、跨模式是否稳定不同”；只有矩阵层已形成稳定结论时，才继续回到 `Scripts/compare_capture_runs.py` 下钻单对 run 差异
 - **同一界面重复启动出现差异时，不要过早收敛为 shader root cause**：当前已知现象是 mesh 不变，但原神为延迟管线；base pass 看起来类似并不能排除后处理、着色阶段，或 render pipeline 顺序 / 配置差异
 - **`E-006d` 的归因顺序必须固定**：先做“替换 vs 不替换”稳定对照，再对齐“输入是否相同”（metallib / moduleKey / functionTypes），再比较“输出是否相同”（单模块 `.metal` / 聚合 MSL / compile 结果），最后才看“运行时是否真的使用了替换后的 library”以及更后续的 pass / pipeline 行为

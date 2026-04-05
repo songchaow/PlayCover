@@ -28,31 +28,31 @@
 
 ## 当前最该做的事
 
-- `E-006d8` 的第一轮 run matrix 已经完成 first-pass：`off1/off2/on1/on2/on3/on4` 已足够证明“同模式输入稳定”，也足够说明当前**不该**继续机械补 run。
-- 标准 `BuildScripts/build_and_install.sh` + fresh `replacement-on-run3/on4` 已经把第一个 blocker 从“为什么没有 `replacement_attempt` / aggregate”收窄为两个更具体的问题：1）fresh on-run 期间 replacement 证据已恢复，但当前仍是**部分替换成功**——manifest 中 `replacement_attempt=91`、`replacement=36`，其余 `55` 次都落为 `reasonCode=exception`，`detail="Failed to launch llvm-dis: Operation not permitted"`；2）live session / capture 链路仍未稳定，现象已从 `on3` 的“`create_session=ready` 后超时并丢 session”前移到 `on4` 的“**原神进程仍在，但 `create_session(timeout=120)` 未等到 runtime 注册**”，因此 fresh on-run 依旧没有新的 `.gputrace`。
-- 若本轮还拿不到完整 live 证据，采集动作必须继续固定为统一入口：使用 `Scripts/e006d_matrix_runner.py` 的 `prepare-run` / `finalize-run` / `analyze` 薄封装，固定 `replacement-<mode>-runN` 标签与分析入口，避免把模式、标签、快照目录或 compare 输入串错。
+- `E-006d8` 的第一轮 run matrix 已经完成 first-pass：`off1/off2/on1/on2/on3/on4/on5` 已足够证明“同模式输入稳定”，也足够说明当前**不该**继续机械补 run。
+- 标准 `BuildScripts/build_and_install.sh` + fresh `replacement-on-run5` 已经把 live blocker 从“fresh 注入后 runtime 可能根本没进入 launch / registration”前移到更具体的三件事：1）这轮 `remove_playtools / inject_playtools / launch_app / create_session(timeout=20)` 已成功拿到 `session=ready`，`RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl` 也完整命中了 `playcover_launch_enter -> ... -> bridge_registration_established -> playcover_launch_complete`，说明 fresh on-run **确实已经进入 `PlayCover.launch()` / `BridgeListener.start()` 并建立 registration channel**；2）`get_capture_status` 已返回 `available=true` / `supportsGPUTrace=true`，改用默认输出路径后也拿到了新的 `.gputrace`，说明 live session / capture 主链已经恢复；3）真正剩下的 blocker 改为 **部分 replacement 仍因 `llvm-dis` `Operation not permitted` 失败**、**自定义工作区 `output_path` 的 capture 导出权限失败**，以及**新 trace 只有 `2/11` 个合法 MSL**。
+- 若本轮还要继续扩证据，采集动作仍必须固定为统一入口：使用 `Scripts/e006d_matrix_runner.py` 的 `prepare-run` / `finalize-run` / `analyze` 薄封装，固定 `replacement-<mode>-runN` 标签与分析入口，避免把模式、标签、快照目录或 compare 输入串错；其中 `capture_metal_frame` 当前优先走默认 `Captures/` 输出，再并回 run 快照。
 - 本轮完成标准不是“继续加脚本”或“继续补文档”，而是至少把当前问题明确收敛到以下之一：
   1. 输入集合不稳定
   2. 输入稳定但输出/聚合结果不稳定
   3. 输出稳定但 replacement / `llvm-dis` 闭环只部分命中
-  4. live session / capture bridge 不稳定
+  4. capture 导出 / trace 可见性仍不稳定
   5. 替换链路稳定，但差异落在更后续 render pipeline / post-processing
 - **新增日常验证方法时，默认只接受 agent 可通过脚本或命令独立完成的方案。** 若某一步需要人工登录、摆场景、点按钮或其它交互，它不能成为当前阶段默认 gate；只有在 blocker 明确依赖该人工条件、且已得到用户确认后，才可作为例外保留。
 - 只有在这一层结论明确后，下一轮才应该决定是否回到 `IRToMSLConverter`、replacement runtime，还是更后续的渲染链路。
 
 ## 最新执行结果（2026-04-05，本轮）
 
-- `E-006d8` 已通过统一入口形成 `off1/off2/on1/on2/on3/on4` 六轮快照；更早 live blocker 如何逐步前移，以及本轮之前的详细 run-history，统一下沉到 `00-Dashboard-Archive.md`
-- `replacement-off-run1` 仍是当前唯一带 `.gputrace` 的快照，继续作为 trace-level 基线；而本轮 fresh `replacement-on-run3/on4` 则提供了最新的 replacement 命中证据
-- 本轮执行的标准 fresh 路径为：`BuildScripts/build_and_install.sh` → `Scripts/set_shader_replacement_mode.py --bundle-id com.miHoYo.Yuanshen --mode on` → `Scripts/e006d_matrix_runner.py prepare-run --bundle-id com.miHoYo.Yuanshen --mode on --run-index 4` → `remove_playtools` / `inject_playtools` / `launch_app` / `create_session`。这条路径本身仍保持为 agent 可独立完成的自动流程，不需要人工登录、摆场景或手工拷目录
-- 本轮在前一轮 `LLVMDisassembler` host bridge **重试 + 防误回退到本地 `posix_spawn`** 的基础上，继续对 runtime 注册链路做收口：`BridgeListener` 现在会在**首次注册失败时保活 command listener 并自动重试**，在**注册通道断开时自动重注册**，同时 `LLVMDisassembler` 在 session pending 时会**先短等 `2s` 再决定是否回退**
-- 本轮新增了 runtime 启动期的**持久化 breadcrumb**：在 `PlayCover.launch()`、`BridgeListener.start()`、registration attempt / success / retry / disconnect 等关键节点写入 `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl`，并补了 `Scripts/runtime_launch_diagnostics_summary.py` 统一汇总最近几次 `processLaunchId` 的阶段命中情况。这样后续 fresh `replacement=on` live 复测时，可以直接回答“runtime 有没有进入 launch / listener / registration”，而不是继续只靠 unified log 猜测
-- 构建验证方面，`FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 与 `./BuildScripts/build_and_install.sh` 均已通过，说明这轮 session/bridge 修复没有破坏标准 build/install 路径
-- live 复测方面，本轮重新对原神执行 fresh `remove_playtools` / `inject_playtools` / `launch_app` / `create_session(timeout=120)`；结果仍是：**app 进程存活、`list_sessions` 为空、MCP `create_session` 请求超时**，且最近 Yuanshen unified log 中仍未看到 `PlayTools` / `BridgeListener` 关键字，也未发现新的 `Yuanshen*.ips` crash report
-- `replacement-on-run3` 与 `replacement-on-run4` 仍是当前最新的 replacement 证据快照，摘要都为：`replacementEnabled=true`、`manifestLines=1636`、`modules=91`、`replacements=36`、`diagnostics=18`、`gputraceMSL=n/a`；manifest 统计仍为 `replacement_attempt=91`（`succeeded=36`、`failed=55`）。这说明 blocker 已不再是“`replacementEnabled=true` 但完全没有 attempt / aggregate”；标准 build/install 后，runtime replacement 命中证据仍保持存在，但**部分 `llvm-dis` 权限失败**的问题也仍未消失
-- 基于六轮快照重新跑出的 `build/e006d-run-matrix.json` 目前给出：`groups.off.pairSummary.allPairsInputStable=true`、`groups.on.pairSummary.allPairsInputStable=true`、`groups.on.pairSummary.allSnapshotStable=true`、`groups.on.pairSummary.allPairsReplacementAttemptPresentWhenEnabled=false`、`crossMode.offVsOnPairSummary.allPairsDifferent=false`、`differentPairCount=6`
-- 其中 `groups.on.pairSummary.allPairsReplacementAttemptPresentWhenEnabled=false` 之所以仍为 `false`，并不是因为 `on3/on4` 继续缺 attempt，而是因为历史 `on1/on2` 仍是“enabled 但没有 attempt”的旧样本；与此同时，`on3 vs on4` 已足以证明 fresh build/install 与前一轮 host bridge 收口并未破坏 replacement 证据
-- 因此当前主线已经进一步收敛为两条更窄的 blocker：1）**fresh 注入后的 runtime 是否根本没有稳定进入 `PlayCover.launch()` / `BridgeListener.start()` 路径**（当前新证据是 app 仍活着、无 session、无 PlayTools/BridgeListener 日志）；2）**为什么同一轮 on-run 中仍有 `55` 个 module 在 `llvm-dis` 这一步以 `Operation not permitted` 失败**。在拿到至少一轮 `replacement=on` 且带 `.gputrace + aggregate source` 的稳定样本前，还不能继续把结论往 shader lowering 或更后续 pipeline 方向过早定性
+- `E-006d8` 已通过统一入口形成 `off1/off2/on1/on2/on3/on4/on5` 七轮快照；更早 live blocker 如何逐步前移，以及本轮之前的详细 run-history，统一下沉到 `00-Dashboard-Archive.md`
+- `replacement-off-run1` 仍是当前最低风险的 trace-level 基线；而 fresh `replacement-on-run5` 则成为本轮新的 on-run live 基线：它同时补齐了 `session=ready`、`RuntimeLaunchDiagnostics` breadcrumb 和新的 `.gputrace`
+- 本轮执行的标准 fresh 路径为：`BuildScripts/build_and_install.sh` → `Scripts/set_shader_replacement_mode.py --bundle-id com.miHoYo.Yuanshen --mode on` → `Scripts/e006d_matrix_runner.py prepare-run --bundle-id com.miHoYo.Yuanshen --mode on --run-index 5` → `remove_playtools` / `inject_playtools` / `launch_app` / `create_session(timeout=20)` → `get_capture_status` → `capture_metal_frame` → `Scripts/e006d_matrix_runner.py finalize-run --gputrace ...`。这条路径本身仍保持为 agent 可独立完成的自动流程，不需要人工登录、摆场景或手工拷目录
+- 本轮 `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl` 已明确记录最近一次 `processLaunchId` 的完整阶段链路：`playcover_launch_enter`、`playcover_quit_observer_installed`、`playcover_akinterface_initialized`、`playcover_screen_initialized`、`playcover_input_initialized`、`playcover_discord_initialized`、`playcover_metal_capture_initialized`、`playcover_library_injection_installed`、`playcover_bridge_listener_start_requested`、`bridge_listener_starting`、`bridge_listener_command_listener_ready`、`bridge_registration_attempt_started`、`bridge_registration_established`、`playcover_bridge_listener_start_succeeded`、`playcover_working_directory_changed`、`playcover_launch_complete`。这直接证明 fresh 注入后的 runtime 已完整进入 launch / listener / registration 主链，而不是继续停留在 unified log 层面的猜测
+- 构建验证方面，`./BuildScripts/build_and_install.sh` 本轮再次通过，说明当前 fresh run5 基线没有被新的 live/capture 操作打坏
+- live 复测方面，本轮在 fresh 注入前先确认 `list_sessions` 为空；随后 `create_session(timeout=20)` 成功返回 `session=ready`，`lastHeartbeat` 可持续更新。之后 `get_capture_status` 返回 `available=true`、`supportsGPUTrace=true`、`queueDiscoveryInstalled=true`、`trackedCommandQueues=2`，说明当前 session/capture 主链已经恢复
+- 本轮第一次 `capture_metal_frame` 尝试把 `.gputrace` 直接输出到工作区快照目录时失败，报错为“没有将文件存储到文件夹中的权限”；改为使用默认输出路径后成功导出 `/Users/songdogwang/Library/Containers/com.miHoYo.Yuanshen/Data/Documents/Captures/capture_20260405_235322.gputrace`。这说明当前问题不在 capture 能力本身，而在**自定义输出路径权限**
+- 对这份新 trace 运行 `Scripts/check_gputrace_sources.py` 后得到：`源码文件=11`、`合法 MSL=2`、`index 引用=915`、覆盖率 `1.2%`。因此本轮虽然已恢复 on-run 的 live session / capture 闭环，但最终 trace 侧源码可见性仍偏低，不能把“拿到新 `.gputrace`”直接等同于 `E-006d` 主问题已解决
+- `replacement-on-run5` 现已作为标准快照固化，摘要为：`replacementEnabled=true`、`manifestLines=1909`、`modules=91`、`replacements=127`、`diagnostics=18`、`gputraceMSL=2`。这说明当前已不再是“fresh on-run 无法注册或无法截帧”；与此同时，manifest 历史/当前快照中仍可见多条 `reasonCode=exception`、`detail="Failed to launch llvm-dis: Operation not permitted"`，说明**部分 `llvm-dis` 权限失败**的问题也仍未消失
+- 基于七轮快照重新跑出的 `build/e006d-run-matrix.json` 目前给出：`groups.off.pairSummary.allPairsInputStable=true`、`groups.on.pairSummary.allPairsInputStable=true`、`groups.on.pairSummary.allSnapshotStable=true`、`crossMode.offVsOnPairSummary.allPairsDifferent=false`、`differentPairCount=8`
+- 因此当前主线已经进一步收敛为三条更窄的 blocker：1）**为什么同一轮 on-run 中仍有一批 module 在 `llvm-dis` 这一步以 `Operation not permitted` 失败**；2）**为什么 `capture_metal_frame` 的自定义工作区 `output_path` 仍会被权限拒绝**；3）**为什么 fresh `replacement-on-run5` 已恢复 session/capture 主链，但新 trace 仍只有 `2/11` 个合法 MSL**。在这三条线收敛前，还不能继续把结论往 shader lowering 或更后续 pipeline 方向过早定性
 
 ## 优先排查顺序
 
@@ -228,11 +228,11 @@ python3 Scripts/compare_capture_runs.py \
 ## 当前建议执行顺序
 
 1. 固定 live 条件；对当前原神基线，继续以“启动后数十秒自动停在登录界面”为统一复现面，由 agent 独立完成每轮启动与等待；每轮结束后立即用 `Scripts/snapshot_capture_run.py` 或 `Scripts/e006d_matrix_runner.py finalize-run` 固化 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings 快照
-2. 当前已完成 `replacement-off-run1/off-run2/on-run1/on-run2/on-run3`；“同模式输入稳定”已经成立，因此下一步不再是继续机械补 run，而是先把 **fresh `replacement=on` 拿到稳定 `.gputrace`** 重新确立为最小 gate
-3. 为了达成这一步，优先下钻 **live bridge / session 稳定性**：`on3` 已证明标准 `BuildScripts/build_and_install.sh` 后 fresh on-run 可以恢复 `replacement_attempt` 与 aggregate source，因此当前第一优先级不是怀疑“完全没命中 replacement”，而是继续解释 `session=ready` 之后为什么会在 `get_capture_status` / `capture_metal_frame` 前后超时并消失；从本轮开始，fresh on-run 结束后应先用 `Scripts/runtime_launch_diagnostics_summary.py --bundle-id <bundleId>` 读取 `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl`，确认 runtime 是否进入 `PlayCover.launch()`、是否起了 command listener、是否真的发起并建立了 registration channel
-4. 与此同时，并行处理 **`55` 个 `llvm-dis` `Operation not permitted` 失败样本**：优先复用现有 diagnostics、run 快照与 replay/diff 工具，把它们收敛为可复现、可归类、可继续自动验证的失败桶，而不是回到人工 live 观察
-5. `Scripts/analyze_capture_run_matrix.py` 与 `Scripts/compare_capture_runs.py` 的现有结论已经足够回答：同模式输入稳定、fresh build/install 已恢复 replacement 证据、但跨模式稳定不同仍未成立；因此当前还不能把最终差异稳定位于 replacement 开关本身
-6. 只有在 agent 可独立完成的自动流程内拿到 replacement 成功且带 `.gputrace` 的 fresh on-run 后，才继续把问题往 converter、本体 replacement runtime，或更后续的 pass / pipeline 方向展开；若某个新方法必须引入人工交互，需先得到用户确认
+2. 当前已完成 `replacement-off-run1/off-run2/on-run1/on-run2/on-run3/on-run4/on-run5`；“同模式输入稳定”已经成立，而 fresh `replacement-on-run5` 也已经重新拿到 `.gputrace`。因此下一步不再是继续机械补 run，而是把**run5 暴露出来的三个更窄 blocker**继续收敛：`llvm-dis` 权限失败、自定义 `capture` 输出路径权限、以及 trace 侧合法 MSL 覆盖偏低
+3. 为了继续推进，优先保留当前已经打通的 **launch / session / capture 标准链路**：fresh on-run 结束后先用 `Scripts/runtime_launch_diagnostics_summary.py --bundle-id <bundleId>` 读取 `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl`，确认 runtime 是否进入 `PlayCover.launch()`、是否起了 command listener、是否真的发起并建立了 registration channel；随后用 `get_capture_status` 检查 `available/supportsGPUTrace`，再优先把 `capture_metal_frame` 输出到默认 `Captures/` 路径，最后通过 `Scripts/e006d_matrix_runner.py finalize-run --gputrace ...` 并回标准快照
+4. 与此同时，并行处理 manifest 中仍然存在的 **`llvm-dis` `Operation not permitted` 失败样本**：优先复用现有 diagnostics、run 快照与 replay/diff 工具，把它们收敛为可复现、可归类、可继续自动验证的失败桶，而不是回到人工 live 观察
+5. `Scripts/analyze_capture_run_matrix.py` 与 `Scripts/compare_capture_runs.py` 的现有结论已经足够回答：同模式输入稳定、fresh build/install 已恢复 replacement 证据、live session/capture 主链也已恢复，但跨模式稳定不同仍未成立；因此当前还不能把最终差异稳定位于 replacement 开关本身
+6. 只有在 agent 可独立完成的自动流程内继续提高 replacement 成功覆盖或 trace 可见性后，才继续把问题往 converter、本体 replacement runtime，或更后续的 pass / pipeline 方向展开；若某个新方法必须引入人工交互，需先得到用户确认
 
 ## 从 dashboard 下沉的细粒度技术备注
 

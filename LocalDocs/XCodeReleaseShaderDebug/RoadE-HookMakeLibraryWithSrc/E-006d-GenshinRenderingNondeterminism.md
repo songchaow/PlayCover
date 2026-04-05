@@ -30,6 +30,7 @@
 
 - `E-006d8` 的第一轮 run matrix 已经完成 first-pass：`off1/off2/on1/on2/on3/on4/on5` 已足够证明“同模式输入稳定”，也足够说明当前**不该**继续机械补 run。
 - 标准 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` + `./BuildScripts/build_and_install.sh` + fresh `replacement-on-run6` 已经把 live blocker 继续从“fresh 注入后 runtime 可能根本没进入 launch / registration”前移到更具体的三件事：1）这轮 `remove_playtools / inject_playtools / launch_app / create_session(timeout=30)` 再次成功拿到 `session=ready`，`RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl` 也继续完整命中了 `playcover_launch_enter -> ... -> bridge_registration_established -> playcover_launch_complete`，说明 fresh on-run **确实已经进入 `PlayCover.launch()` / `BridgeListener.start()` 并建立 registration channel**；2）本轮对 `LLVMDisassembler` 做了 host bridge 重试 / fallback 调整后，最新 manifest 增量里的 failure 已不再前移为 `Failed to launch llvm-dis: Operation not permitted`，而是前移为 `Host bridge reported an error: Session not registered: <sessionId>`，说明“session 未就绪 → 本地 spawn → sandbox EPERM”这条错误分支已被压掉；3）真正剩下的 blocker 改为 **host bridge session 生命周期 / command reachability 仍不稳定**、**自定义工作区 `output_path` 的 capture 导出权限失败**，以及**上一轮成功 trace 仍只有 `2/11` 个合法 MSL**。
+- 2026-04-06 随后补了一轮 host 侧 split-brain 修复：`SessionHealthMonitor` 在移除 stale session 后，不再只在 registry 里静默删除，而会同步通过 `RegistrationListener.disconnectSessions(...)` 主动断开对应 runtime 的 registration channel。这样 runtime 若仍持有旧 `sessionId`，会立刻感知连接被 host 关闭并走标准 re-register，而不是继续在 host bridge 命令阶段才暴露为 `Session not registered`。这条修复当前已由 `PlayCoverMCPTests` 集成用例覆盖，但还需要新的 fresh on-run 把 live 证据补齐。
 - 若本轮还要继续扩证据，采集动作仍必须固定为统一入口：使用 `Scripts/e006d_matrix_runner.py` 的 `prepare-run` / `finalize-run` / `analyze` 薄封装，固定 `replacement-<mode>-runN` 标签与分析入口，避免把模式、标签、快照目录或 compare 输入串错；其中 `capture_metal_frame` 当前优先走默认 `Captures/` 输出，再并回 run 快照。
 - 本轮完成标准不是“继续加脚本”或“继续补文档”，而是至少把当前问题明确收敛到以下之一：
   1. 输入集合不稳定
@@ -50,7 +51,7 @@
 - 但本轮在 `session=ready` 之后，`get_capture_status` 先出现 `Receive timed out`，数秒后 session 进一步掉成 `Session not found`；再次 `create_session(timeout=20)` 也返回 `No runtime registered for bundleId ... within 20s`。这说明当前 blocker 已不再是“fresh 注入后完全起不来”，而是 **session / host bridge 生命周期在 ready 之后仍会波动**
 - 更关键的是，本轮修改 `LLVMDisassembler` 后，`replacement-on-run6` 最新 manifest 增量里的 `reasonCode=exception` 已前移为 `detail="Host bridge reported an error: Session not registered: runtime-20828-..."`；`on5 -> on6` 对比中，latest replacement attempt 也从 `succeeded / none` 变成了 `failed / exception`。换句话说，当前最新失败**不再前移为** `Failed to launch llvm-dis: Operation not permitted`，说明“session 未就绪 → 本地 spawn → sandbox EPERM”这条错误分支已被压掉
 - `replacement-on-run6` 现已作为标准快照固化，摘要为：`replacementEnabled=true`、`manifestLines=2104`、`modules=91`、`replacements=179`、`diagnostics=18`、`gputraceMSL=n/a`。同时 `Scripts/compare_capture_runs.py --run-a replacement-on-run5 --run-b replacement-on-run6` 给出：共享 `moduleKey=91/91`、`changedShared=52`，但 latest replacement attempt 已前移为 `failed/exception`
-- 因此当前主线已经进一步收敛为三条更窄的 blocker：1）**为什么 fresh on-run 中 session 虽然能 `ready`，但后续 host bridge 仍会掉到 `Session not registered`**；2）**为什么 `capture_metal_frame` 的自定义工作区 `output_path` 仍会被权限拒绝**；3）**为什么上一轮成功 `.gputrace` 仍只有 `2/11` 个合法 MSL**。在这三条线收敛前，还不能继续把结论往 shader lowering 或更后续 pipeline 方向过早定性
+- 因此当前主线已经进一步收敛为三条更窄的 blocker：1）**带着 stale-session cleanup 主动断链修复重新做 fresh on-run 后，`Session not registered` 是否还能复现，以及剩余 failure 是否已经从 split-brain 收敛为更窄的 reachability 问题**；2）**为什么 `capture_metal_frame` 的自定义工作区 `output_path` 仍会被权限拒绝**；3）**为什么上一轮成功 `.gputrace` 仍只有 `2/11` 个合法 MSL**。在这三条线收敛前，还不能继续把结论往 shader lowering 或更后续 pipeline 方向过早定性
 
 ## 优先排查顺序
 
@@ -226,7 +227,7 @@ python3 Scripts/compare_capture_runs.py \
 ## 当前建议执行顺序
 
 1. 固定 live 条件；对当前原神基线，继续以“启动后数十秒自动停在登录界面”为统一复现面，由 agent 独立完成每轮启动与等待；每轮结束后立即用 `Scripts/snapshot_capture_run.py` 或 `Scripts/e006d_matrix_runner.py finalize-run` 固化 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings 快照
-2. 当前已完成 `replacement-off-run1/off-run2/on-run1/on-run2/on-run3/on-run4/on-run5/on-run6`；“同模式输入稳定”已经成立，而 fresh `replacement-on-run6` 也已经证明 launch / registration 主链可以再次拉起。因此下一步不再是继续机械补 run，而是把**run6 暴露出来的三个更窄 blocker**继续收敛：host bridge `Session not registered` 生命周期问题、自定义 `capture` 输出路径权限、以及 trace 侧合法 MSL 覆盖偏低
+2. 当前已完成 `replacement-off-run1/off-run2/on-run1/on-run2/on-run3/on-run4/on-run5/on-run6`；“同模式输入稳定”已经成立，而 fresh `replacement-on-run6` 也已经证明 launch / registration 主链可以再次拉起。2026-04-06 还额外补上了 host 侧 stale-session cleanup 主动断开 registration channel 的修复与对应 `PlayCoverMCPTests` 集成验证。因此下一步不再是继续机械补 run，而是把**run6 暴露出来的三个更窄 blocker**继续收敛：带着该修复重新验证 host bridge `Session not registered` 生命周期问题、自定义 `capture` 输出路径权限、以及 trace 侧合法 MSL 覆盖偏低
 3. 为了继续推进，优先保留当前已经打通的 **launch / session 标准链路**：fresh on-run 结束后先用 `Scripts/runtime_launch_diagnostics_summary.py --bundle-id <bundleId>` 读取 `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl`，确认 runtime 是否进入 `PlayCover.launch()`、是否起了 command listener、是否真的发起并建立了 registration channel；随后继续用 `create_session` / `list_sessions` / `get_capture_status` 观察 session 在 `ready` 之后是否会掉到 `Session not registered`，并在必要时先无 `.gputrace` 地通过 `Scripts/e006d_matrix_runner.py finalize-run` 固化证据
 4. 与此同时，并行处理 manifest 中**历史仍存在**但本轮最新增量已不再前移到最前面的 `llvm-dis` `Operation not permitted` 失败样本：优先复用现有 diagnostics、run 快照与 replay/diff 工具，把它们与新的 `Session not registered` 失败桶分层整理，而不是回到人工 live 观察
 5. `Scripts/analyze_capture_run_matrix.py` 与 `Scripts/compare_capture_runs.py` 的现有结论已经足够回答：同模式输入稳定、fresh build/install 已恢复 replacement 证据、live session/capture 主链也已恢复，但跨模式稳定不同仍未成立；因此当前还不能把最终差异稳定位于 replacement 开关本身
@@ -244,6 +245,7 @@ python3 Scripts/compare_capture_runs.py \
 - **成功路径也要落盘聚合产物，才能回答“最终替换源码是否稳定”**：只保留单模块 `.bc/.ll/.metal` 不足以覆盖聚合顺序、重名去重与最终 `makeLibrary(source:)` 输入；`E-006d2` 后应优先比较 `manifest.jsonl` 中最新 `event=replacement` 对应的 aggregate source hash
 - **`module.meta.json` 的统计字段要与真实 artifact diff 分开看**：`captureCount`、`sourceCacheKeys`、`generatedMSLBytes`、`llvmIRBytes`、`bitcodeBytes` 这类 bookkeeping 字段会让 `module.meta.json` hash 变化，但不等于 `.bc/.ll/.metal` 本体变化；对 `E-006d8` 的“输入 / 输出是否稳定”判断，必须优先看真实 artifact 与 aggregate source，不能把 metadata 漂移误收敛成 shader 漂移
 - **`throw` + 静默 `catch` 回退是 runtime hook 的危险反模式**：会把关键 blocker 隐藏为“看似正常但实际回退原始 library”
+- **host 侧 stale cleanup 若不主动断链，会制造 host/runtime split-brain**：只删除 registry 中的 session，而不关闭 runtime 仍在使用的 registration channel，会让 runtime 继续持有旧 `sessionId` 并在后续 host bridge 命令阶段才暴露为 `Session not registered`。当前已改为 stale cleanup 时同步调用 `RegistrationListener.disconnectSessions(...)` 断链；后续若同类错误仍存在，应优先判断是否为断链后的剩余重注册 / reachability 问题。
 - **失败路径导出是闭环的关键一环**：`ShaderSourceDiagnostics/<baseName>_modules/` 让失败样本也能进入离线 replay 主路径；该闭环规则本身见 `E-004-CorpusClosureAndRecapturePolicy.md`
 - **更早的 lowering 细节与已收敛 compile blocker 不再由本文档维护**：相关历史实现经验已经沉到 `E-004-MetallibSourceExtraction.md` 与 archive，避免当前主线文档同时承担“执行说明”和“历史修复百科”两种职责
 

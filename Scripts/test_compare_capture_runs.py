@@ -23,7 +23,14 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
 
 
-def make_container_run(container_root: Path, aggregate_text: str, module_text: str) -> None:
+def make_container_run(
+    container_root: Path,
+    aggregate_text: str,
+    module_text: str,
+    *,
+    attempt_outcome: str | None = "succeeded",
+    attempt_reason_code: str | None = None,
+) -> None:
     bundle_id = "com.example.demo"
     corpus_dir = container_root / "ShaderCorpus" / bundle_id
     module_dir = corpus_dir / "modules" / "module-key-1"
@@ -54,21 +61,36 @@ def make_container_run(container_root: Path, aggregate_text: str, module_text: s
 
     (replacement_dir / "aggregate.generated.metal").write_text(aggregate_text, encoding="utf-8")
     write_json(replacement_dir / "replacement.meta.json", {"moduleKeys": ["module-key-1"]})
-    write_jsonl(
-        corpus_dir / "manifest.jsonl",
-        [
+    events = [
+        {
+            "event": "capture",
+            "bundleId": bundle_id,
+            "selector": "newLibraryWithData:error:",
+            "moduleKey": "module-key-1",
+            "captureAction": "saved",
+            "functionNames": ["main0"],
+            "functionTypes": ["fragment"],
+            "generatedFunctionNames": ["main0"],
+            "generatedFunctionTypes": ["fragment"],
+            "timestamp": "2026-04-05T00:00:01Z",
+        }
+    ]
+    if attempt_outcome is not None:
+        events.append(
             {
-                "event": "capture",
-                "bundleId": bundle_id,
+                "event": "replacement_attempt",
+                "timestamp": "2026-04-05T00:00:015Z",
                 "selector": "newLibraryWithData:error:",
-                "moduleKey": "module-key-1",
-                "captureAction": "saved",
-                "functionNames": ["main0"],
-                "functionTypes": ["fragment"],
-                "generatedFunctionNames": ["main0"],
-                "generatedFunctionTypes": ["fragment"],
-                "timestamp": "2026-04-05T00:00:01Z",
-            },
+                "cacheKey": "cache-key",
+                "outcome": attempt_outcome,
+                "reasonCode": attempt_reason_code,
+                "moduleKeys": ["module-key-1"],
+                "moduleCount": 1,
+                "invalidModuleCount": None,
+            }
+        )
+    if attempt_outcome == "succeeded":
+        events.append(
             {
                 "event": "replacement",
                 "timestamp": "2026-04-05T00:00:02Z",
@@ -83,9 +105,9 @@ def make_container_run(container_root: Path, aggregate_text: str, module_text: s
                 "sourceFunctionNames": ["main0"],
                 "sourceFunctionTypes": ["fragment"],
                 "aggregateSourcePath": "replacements/20260405_selector_cache/aggregate.generated.metal",
-            },
-        ],
-    )
+            }
+        )
+    write_jsonl(corpus_dir / "manifest.jsonl", events)
     with settings_path.open("wb") as handle:
         plistlib.dump({"shaderSourceReplacementEnabled": True}, handle)
 
@@ -304,6 +326,46 @@ class CompareCaptureRunsTests(unittest.TestCase):
                 report["runB"]["snapshotContext"]["attributedVisibleMSLHashes"],
                 ["FEDCBA9876543210"],
             )
+
+    def test_compare_capture_runs_reports_latest_replacement_attempt_difference(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_a = root / "run-a"
+            run_b = root / "run-b"
+            aggregate_text = "// Auto-generated aggregated MSL source by PlayTools LibrarySourceInjection\n#include <metal_stdlib>\n"
+            module_text = "#include <metal_stdlib>\nfragment float4 main0() { return float4(1.0); }\n"
+
+            make_container_run(run_a, aggregate_text, module_text, attempt_outcome="failed", attempt_reason_code="compile_failed")
+            make_container_run(run_b, aggregate_text, module_text, attempt_outcome="failed", attempt_reason_code="preflight_rejected")
+
+            output_path = root / "compare-attempts.json"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(COMPARE_SCRIPT),
+                    "--run-a",
+                    str(run_a / "ShaderCorpus" / "com.example.demo"),
+                    "--run-b",
+                    str(run_b / "ShaderCorpus" / "com.example.demo"),
+                    "--output",
+                    str(output_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("latest replacement attempt differs", completed.stdout)
+            self.assertIn("replacement attempts: runA=failed/compile_failed runB=failed/preflight_rejected", completed.stdout)
+
+            report = json.loads(output_path.read_text(encoding="utf-8"))
+            difference_fields = {
+                item["field"] for item in report["comparison"]["latestReplacementAttemptComparison"]["differences"]
+            }
+            self.assertEqual(report["runA"]["replacementAttemptSummary"]["latestReasonCode"], "compile_failed")
+            self.assertEqual(report["runB"]["replacementAttemptSummary"]["latestReasonCode"], "preflight_rejected")
+            self.assertIn("reasonCode", difference_fields)
 
 
 if __name__ == "__main__":

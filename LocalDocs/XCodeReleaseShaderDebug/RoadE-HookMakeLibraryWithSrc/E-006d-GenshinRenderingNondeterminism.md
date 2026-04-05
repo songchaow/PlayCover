@@ -55,6 +55,7 @@
   - `crossMode.offVsOnPairSummary.allPairsReplacementStable=false`
 - 对应的 `build/e006d-run-diff-off1-vs-off2.json`、`build/e006d-run-diff-on1-vs-on2.json` 与 `build/e006d-run-diff-off2-vs-on2.json` 都显示：共享 `moduleKey=91`、`onlyInRunA=0`、`onlyInRunB=0`；脚本报告中的 `sharedModulesWithDifferencesCount` 主要来自 `module.meta.json` / `captureCount` 这类 bookkeeping 漂移，而不是 `module.bc` / `module.ll` / `module.generated.metal` 的语义差异
 - `build/e006d-run-diff-off2-vs-on2.json` 还进一步表明：在排除 `.gputrace` 缺失带来的快照差异后，当前跨模式可见的语义级 snapshot 差异只剩 `replacementMode.enabled` 本身；与此同时，两侧都没有可比较的 replacement aggregate（`hasComparableReplacement=false`）
+- 本轮已补充 runtime replacement 尝试级证据：`LibrarySourceInjectionSwizzles` 会把每次替换尝试都记为 `manifest.jsonl` 中的 `event=replacement_attempt`，并写出 `outcome` / `reasonCode` / `moduleKeys` / `invalidModuleCount` / `dumpPath`。`Scripts/compare_capture_runs.py` 现会额外输出 latest replacement attempt 对比；`Scripts/analyze_capture_run_matrix.py` 也会额外汇总 `allPairsReplacementAttemptStable`。因此后续再遇到 `replacements=0` 时，可以先直接判断是 runtime 根本没命中成功路径，还是稳定卡在 `preflight_rejected` / `compile_failed` / `exception` 等固定 fallback。
 - 这意味着当前已可稳定排除“captured corpus 输入集合漂移”与“单模块输出本体随机变化”两条分支；但这里排除的仍只是 **captured corpus / 单模块 artifact 层面的 drift**，还**没有**排除 runtime replacement-hit 是否稳定、以及更后续 live render-path / trace 行为是否稳定。现阶段最值得优先排查的 blocker 已进一步收敛为：**replacement 成功路径为什么始终没有命中 / 落盘**，以及 **live capture/session 为什么会在 ready 后超时掉线**。在拿到至少一轮 `replacement=on` 且带 `.gputrace` + aggregate source 的稳定样本前，还不能继续把结论往 shader lowering 或更后续 pipeline 方向过早定性。
 
 ## 优先排查顺序
@@ -232,7 +233,7 @@ python3 Scripts/compare_capture_runs.py \
 
 1. 固定 live 条件；对当前原神基线，直接以“启动后数十秒自动停在登录界面”为统一复现面，由 agent 独立完成每轮启动与等待；每轮结束后立即用 `Scripts/snapshot_capture_run.py` 或 `Scripts/e006d_matrix_runner.py finalize-run` 固化 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings 快照
 2. 当前已完成 `replacement-off-run1/off-run2/on-run1/on-run2`；“同模式输入稳定”已经成立，因此下一步不再是继续机械补 run，而是优先恢复**至少一轮 replacement=on 的稳定 `.gputrace` + aggregate source 样本**
-3. 把 `replacement=on` 的 live 异常单独视为 blocker：重点看为什么 `shaderSourceReplacementEnabled=true` 时仍然没有 `replacements/` 目录与 aggregate event，并且 runtime session 会在 `ready` 之后于 `get_capture_status` / `capture_metal_frame` 前后超时掉线
+3. 把 `replacement=on` 的 live 异常单独视为 blocker：先查看最新 `event=replacement_attempt` 的 `outcome` / `reasonCode`，确认为什么 `shaderSourceReplacementEnabled=true` 时仍然没有 `replacements/` 目录与 aggregate event；并继续核对 runtime session 为什么会在 `ready` 之后于 `get_capture_status` / `capture_metal_frame` 前后超时掉线
 4. `Scripts/analyze_capture_run_matrix.py` 的第一层结论已更新为：“captured corpus / 单模块 artifact 层面的同模式稳定”成立，但“跨模式稳定不同”**尚未**成立；这意味着当前还不能把最终差异稳定位于 replacement 开关本身
 5. `Scripts/compare_capture_runs.py` 的第二层结论也已更新为：共享 `moduleKey` 与单模块 `.bc/.ll/.metal` 本体仍然稳定，当前没有任何一轮 run 落出可比较的 `latestReplacementComparison`
 6. 因此下一轮应优先下钻 runtime replacement / live bridge 稳定性，而不是先回到 converter 或更后续的 pass / pipeline；只有在拿到 replacement 成功样本后，后两条分支才值得继续展开

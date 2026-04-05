@@ -42,6 +42,7 @@ ARTIFACT_FILENAMES = (
 )
 
 AGGREGATE_EVENT = "replacement"
+REPLACEMENT_ATTEMPT_EVENT = "replacement_attempt"
 
 
 def sha256_file(path: Path) -> str | None:
@@ -162,6 +163,26 @@ def summarize_replacement_events(events: list[dict[str, Any]]) -> dict[str, Any]
     }
 
 
+def summarize_replacement_attempt_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+    attempt_events = [event for event in events if event.get("event") == REPLACEMENT_ATTEMPT_EVENT]
+    outcomes = Counter(event.get("outcome", "unknown") for event in attempt_events)
+    reason_codes = Counter(event.get("reasonCode", "none") for event in attempt_events)
+    latest = max(
+        attempt_events,
+        key=lambda event: ((event.get("timestamp") or ""), (event.get("cacheKey") or ""), (event.get("selector") or "")),
+        default=None,
+    )
+    return {
+        "replacementAttemptEventCount": len(attempt_events),
+        "outcomes": dict(sorted(outcomes.items())),
+        "reasonCodes": dict(sorted(reason_codes.items())),
+        "latestOutcome": latest.get("outcome") if latest else None,
+        "latestReasonCode": latest.get("reasonCode") if latest else None,
+        "latestDetail": latest.get("detail") if latest else None,
+        "latestDumpPath": latest.get("dumpPath") if latest else None,
+    }
+
+
 def build_replacement_index(run_input: RunInput) -> dict[str, Any]:
     events = load_jsonl(run_input.manifest_path)
     replacement_events = [event for event in events if event.get("event") == AGGREGATE_EVENT]
@@ -193,6 +214,36 @@ def build_replacement_index(run_input: RunInput) -> dict[str, Any]:
     latest = indexed[-1] if indexed else None
     return {
         "summary": summarize_replacement_events(events),
+        "events": indexed,
+        "latest": latest,
+    }
+
+
+def build_replacement_attempt_index(run_input: RunInput) -> dict[str, Any]:
+    events = load_jsonl(run_input.manifest_path)
+    attempt_events = [event for event in events if event.get("event") == REPLACEMENT_ATTEMPT_EVENT]
+    indexed: list[dict[str, Any]] = []
+
+    for event in attempt_events:
+        indexed.append(
+            {
+                "timestamp": event.get("timestamp"),
+                "selector": event.get("selector"),
+                "cacheKey": event.get("cacheKey"),
+                "outcome": event.get("outcome"),
+                "reasonCode": event.get("reasonCode"),
+                "detail": event.get("detail"),
+                "dumpPath": event.get("dumpPath"),
+                "moduleKeys": sorted(event.get("moduleKeys", []) or []),
+                "moduleCount": event.get("moduleCount"),
+                "invalidModuleCount": event.get("invalidModuleCount"),
+            }
+        )
+
+    indexed.sort(key=lambda item: (item.get("timestamp") or "", item.get("cacheKey") or "", item.get("selector") or ""))
+    latest = indexed[-1] if indexed else None
+    return {
+        "summary": summarize_replacement_attempt_events(events),
         "events": indexed,
         "latest": latest,
     }
@@ -361,6 +412,42 @@ def compare_replacement_runs(
     }
 
 
+def compare_replacement_attempt_runs(
+    attempts_a: dict[str, Any],
+    attempts_b: dict[str, Any],
+) -> dict[str, Any]:
+    latest_a = attempts_a.get("latest")
+    latest_b = attempts_b.get("latest")
+    if latest_a is None or latest_b is None:
+        return {
+            "hasComparableReplacementAttempt": False,
+            "missingRunA": latest_a is None,
+            "missingRunB": latest_b is None,
+            "differences": [],
+        }
+
+    differences: list[dict[str, Any]] = []
+    for field in (
+        "selector",
+        "cacheKey",
+        "outcome",
+        "reasonCode",
+        "moduleKeys",
+        "moduleCount",
+        "invalidModuleCount",
+    ):
+        compare_values(field, latest_a.get(field), latest_b.get(field), differences)
+
+    return {
+        "hasComparableReplacementAttempt": True,
+        "missingRunA": False,
+        "missingRunB": False,
+        "runA": latest_a,
+        "runB": latest_b,
+        "differences": differences,
+    }
+
+
 def build_snapshot_context(run_input: RunInput, meta: dict[str, Any] | None) -> dict[str, Any]:
     if meta is None:
         return {
@@ -496,8 +583,14 @@ def build_report(run_a: RunInput, run_b: RunInput) -> dict[str, Any]:
     modules_b = build_module_index(run_b)
     replacements_a = build_replacement_index(run_a)
     replacements_b = build_replacement_index(run_b)
+    replacement_attempts_a = build_replacement_attempt_index(run_a)
+    replacement_attempts_b = build_replacement_attempt_index(run_b)
     snapshot_meta_a = load_snapshot_meta(run_a)
     snapshot_meta_b = load_snapshot_meta(run_b)
+
+    latest_replacement_comparison = compare_replacement_runs(replacements_a, replacements_b)
+    latest_replacement_attempt_comparison = compare_replacement_attempt_runs(replacement_attempts_a, replacement_attempts_b)
+    snapshot_comparison = compare_snapshot_context(run_a, snapshot_meta_a, run_b, snapshot_meta_b)
 
     keys_a = set(modules_a)
     keys_b = set(modules_b)
@@ -513,6 +606,7 @@ def build_report(run_a: RunInput, run_b: RunInput) -> dict[str, Any]:
             "modulesDir": str(run_a.modules_dir),
             "summary": summarize_events(events_a),
             "replacementSummary": replacements_a["summary"],
+            "replacementAttemptSummary": replacement_attempts_a["summary"],
             "snapshotContext": build_snapshot_context(run_a, snapshot_meta_a),
         },
         "runB": {
@@ -521,6 +615,7 @@ def build_report(run_a: RunInput, run_b: RunInput) -> dict[str, Any]:
             "modulesDir": str(run_b.modules_dir),
             "summary": summarize_events(events_b),
             "replacementSummary": replacements_b["summary"],
+            "replacementAttemptSummary": replacement_attempts_b["summary"],
             "snapshotContext": build_snapshot_context(run_b, snapshot_meta_b),
         },
         "comparison": {
@@ -528,14 +623,16 @@ def build_report(run_a: RunInput, run_b: RunInput) -> dict[str, Any]:
             "onlyInRunB": only_b,
             "sharedModuleCount": len(keys_a & keys_b),
             "sharedModulesWithDifferences": shared_differences,
-            "latestReplacementComparison": compare_replacement_runs(replacements_a, replacements_b),
-            "snapshotComparison": compare_snapshot_context(run_a, snapshot_meta_a, run_b, snapshot_meta_b),
+            "latestReplacementComparison": latest_replacement_comparison,
+            "latestReplacementAttemptComparison": latest_replacement_attempt_comparison,
+            "snapshotComparison": snapshot_comparison,
             "differenceSummary": {
                 "onlyInRunACount": len(only_a),
                 "onlyInRunBCount": len(only_b),
                 "sharedModulesWithDifferencesCount": len(shared_differences),
-                "replacementDifferenceCount": len(compare_replacement_runs(replacements_a, replacements_b)["differences"]),
-                "snapshotDifferenceCount": len(compare_snapshot_context(run_a, snapshot_meta_a, run_b, snapshot_meta_b)["differences"]),
+                "replacementDifferenceCount": len(latest_replacement_comparison["differences"]),
+                "replacementAttemptDifferenceCount": len(latest_replacement_attempt_comparison["differences"]),
+                "snapshotDifferenceCount": len(snapshot_comparison["differences"]),
             },
         },
     }
@@ -575,6 +672,33 @@ def print_summary(report: dict[str, Any]) -> None:
     elif replacement_comparison["differences"]:
         preview = ", ".join(item["field"] for item in replacement_comparison["differences"][:5])
         print(f"latest replacement aggregate differs ({len(replacement_comparison['differences'])} fields): {preview}")
+
+    replacement_attempt_comparison = comparison["latestReplacementAttemptComparison"]
+    if not replacement_attempt_comparison["hasComparableReplacementAttempt"]:
+        missing = []
+        if replacement_attempt_comparison["missingRunA"]:
+            missing.append("runA")
+        if replacement_attempt_comparison["missingRunB"]:
+            missing.append("runB")
+        if missing:
+            print(f"latest replacement attempt unavailable for: {', '.join(missing)}")
+    elif replacement_attempt_comparison["differences"]:
+        preview = ", ".join(item["field"] for item in replacement_attempt_comparison["differences"][:5])
+        print(
+            "latest replacement attempt differs "
+            f"({len(replacement_attempt_comparison['differences'])} fields): {preview}"
+        )
+
+    attempt_summary_a = run_a["replacementAttemptSummary"]
+    attempt_summary_b = run_b["replacementAttemptSummary"]
+    if attempt_summary_a["replacementAttemptEventCount"] or attempt_summary_b["replacementAttemptEventCount"]:
+        print(
+            "replacement attempts: "
+            f"runA={attempt_summary_a['latestOutcome'] or 'n/a'}"
+            f"/{attempt_summary_a['latestReasonCode'] or 'none'} "
+            f"runB={attempt_summary_b['latestOutcome'] or 'n/a'}"
+            f"/{attempt_summary_b['latestReasonCode'] or 'none'}"
+        )
 
     snapshot_comparison = comparison["snapshotComparison"]
     if not snapshot_comparison["hasComparableSnapshots"]:

@@ -408,20 +408,51 @@ class LibrarySourceInjectionService {
         compileSource: (_ source: NSString, _ error: UnsafeMutablePointer<NSError?>?) -> AnyObject?
     ) -> AnyObject? {
         guard originalLibrary != nil else {
+            appendReplacementAttemptEvent(
+                selector: selector,
+                cacheKey: cacheKey,
+                modules: modules,
+                outcome: "skipped",
+                reasonCode: "original_library_missing",
+                detail: "original library creation failed",
+                dumpPath: nil,
+                invalidModuleCount: nil
+            )
             NSLog("[PlayTools] LibrarySourceInjection: %@ — skip replacement, original library creation failed", selector)
             return nil
         }
         guard !modules.isEmpty else {
+            appendReplacementAttemptEvent(
+                selector: selector,
+                cacheKey: cacheKey,
+                modules: modules,
+                outcome: "skipped",
+                reasonCode: "no_bitcode_modules",
+                detail: "no valid bitcode modules extracted from metallib payload",
+                dumpPath: nil,
+                invalidModuleCount: nil
+            )
             return nil
         }
 
         let invalidModules = modules.filter { !$0.isValidLLVMBitcode }
         guard invalidModules.isEmpty else {
+            let invalidSummary = invalidModules.map(\.summary).joined(separator: "; ")
+            appendReplacementAttemptEvent(
+                selector: selector,
+                cacheKey: cacheKey,
+                modules: modules,
+                outcome: "skipped",
+                reasonCode: "invalid_llvm_bitcode",
+                detail: invalidSummary,
+                dumpPath: nil,
+                invalidModuleCount: invalidModules.count
+            )
             NSLog("[PlayTools] LibrarySourceInjection: %@ — skip replacement, %d/%d modules are invalid LLVM (%@)",
                   selector,
                   invalidModules.count,
                   modules.count,
-                  invalidModules.map(\.summary).joined(separator: "; "))
+                  invalidSummary)
             return nil
         }
 
@@ -463,6 +494,16 @@ class LibrarySourceInjectionService {
                     compilerErrorDescription: nil,
                     preparedModules: preparedModules
                 ) ?? "n/a"
+                appendReplacementAttemptEvent(
+                    selector: selector,
+                    cacheKey: cacheKey,
+                    modules: modules,
+                    outcome: "failed",
+                    reasonCode: "preflight_rejected",
+                    detail: issueSummary,
+                    dumpPath: dumpPath,
+                    invalidModuleCount: nil
+                )
                 NSLog("[PlayTools] LibrarySourceInjection: %@ — source preflight rejected: %@ (modules=%d, sourceFuncs=%d, dump=%@)",
                       selector,
                       issueSummary,
@@ -487,6 +528,16 @@ class LibrarySourceInjectionService {
                     preparedModules: preparedModules
                 ) ?? "n/a"
                 let compilerContext = compileErrorContext(in: aggregate.source, errorDescription: compilerMessage)
+                appendReplacementAttemptEvent(
+                    selector: selector,
+                    cacheKey: cacheKey,
+                    modules: modules,
+                    outcome: "failed",
+                    reasonCode: "compile_failed",
+                    detail: compilerMessage,
+                    dumpPath: dumpPath,
+                    invalidModuleCount: nil
+                )
                 NSLog("[PlayTools] LibrarySourceInjection: %@ — source recompile failed: %@ (modules=%d, sourceFuncs=%d, dump=%@%@)",
                       selector,
                       compilerMessage,
@@ -503,6 +554,16 @@ class LibrarySourceInjectionService {
                 aggregate: aggregate,
                 selector: selector,
                 cacheKey: cacheKey
+            )
+            appendReplacementAttemptEvent(
+                selector: selector,
+                cacheKey: cacheKey,
+                modules: modules,
+                outcome: "succeeded",
+                reasonCode: nil,
+                detail: nil,
+                dumpPath: nil,
+                invalidModuleCount: nil
             )
             let deviceClassName = NSStringFromClass(object_getClass(device)!)
             NSLog("[PlayTools] LibrarySourceInjection: %@ — replacement success (device=%@, functions=%d, modules=%d, sourceFuncs=%d, irSize=%d, mslSize=%d, corpus=%d, cacheKey=%@, moduleSummaries=%@)",
@@ -536,8 +597,40 @@ class LibrarySourceInjectionService {
                     reason: "exception: \(error.localizedDescription)"
                 )
                 if let dumpPath {
+                    appendReplacementAttemptEvent(
+                        selector: selector,
+                        cacheKey: cacheKey,
+                        modules: modules,
+                        outcome: "failed",
+                        reasonCode: "exception",
+                        detail: error.localizedDescription,
+                        dumpPath: dumpPath,
+                        invalidModuleCount: nil
+                    )
                     NSLog("[PlayTools] LibrarySourceInjection: partial module artifacts dumped to %@", dumpPath)
+                } else {
+                    appendReplacementAttemptEvent(
+                        selector: selector,
+                        cacheKey: cacheKey,
+                        modules: modules,
+                        outcome: "failed",
+                        reasonCode: "exception",
+                        detail: error.localizedDescription,
+                        dumpPath: nil,
+                        invalidModuleCount: nil
+                    )
                 }
+            } else {
+                appendReplacementAttemptEvent(
+                    selector: selector,
+                    cacheKey: cacheKey,
+                    modules: modules,
+                    outcome: "failed",
+                    reasonCode: "exception",
+                    detail: error.localizedDescription,
+                    dumpPath: nil,
+                    invalidModuleCount: nil
+                )
             }
             return nil
         }
@@ -649,6 +742,22 @@ class LibrarySourceInjectionService {
         let aggregateMSLBytes: Int
         let sourceFunctionNames: [String]
         let sourceFunctionTypes: [String]
+    }
+
+    private struct ReplacementAttemptManifestIndexEntry: Codable {
+        let schemaVersion: Int
+        let event: String
+        let bundleId: String
+        let selector: String
+        let cacheKey: String
+        let timestamp: String
+        let outcome: String
+        let reasonCode: String?
+        let detail: String?
+        let dumpPath: String?
+        let moduleKeys: [String]
+        let moduleCount: Int
+        let invalidModuleCount: Int?
     }
 
     private enum CorpusArtifactWriteStatus: String {
@@ -1356,6 +1465,43 @@ class LibrarySourceInjectionService {
         _ = try handle.seekToEnd()
         try handle.write(contentsOf: entryData)
         try handle.write(contentsOf: Data("\n".utf8))
+    }
+
+    private func appendReplacementAttemptEvent(
+        selector: String,
+        cacheKey: String,
+        modules: [MetallibParser.BitcodeModule],
+        outcome: String,
+        reasonCode: String?,
+        detail: String?,
+        dumpPath: String?,
+        invalidModuleCount: Int?
+    ) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let entry = ReplacementAttemptManifestIndexEntry(
+            schemaVersion: corpusManifestSchemaVersion,
+            event: "replacement_attempt",
+            bundleId: runtimeBundleIdentifier,
+            selector: selector,
+            cacheKey: cacheKey,
+            timestamp: ISO8601DateFormatter().string(from: Date()),
+            outcome: outcome,
+            reasonCode: reasonCode,
+            detail: detail,
+            dumpPath: dumpPath,
+            moduleKeys: modules.map { stableCorpusModuleKey(for: $0) }.sorted(),
+            moduleCount: modules.count,
+            invalidModuleCount: invalidModuleCount
+        )
+
+        do {
+            try appendCorpusManifestIndexEntry(entry, encoder: encoder)
+        } catch {
+            NSLog("[PlayTools] LibrarySourceInjection: failed to append replacement attempt event for %@ — %@",
+                  selector,
+                  error.localizedDescription)
+        }
     }
 
     private func sanitizeDiagnosticFilenameComponent(_ value: String) -> String {

@@ -29,6 +29,8 @@ def make_run(
     *,
     compile_status: str = "compiled",
     capture_count: int = 1,
+    attempt_outcome: str | None = "succeeded",
+    attempt_reason_code: str | None = None,
 ) -> Path:
     bundle_dir = root / label / "com.miHoYo.Yuanshen"
     modules_dir = bundle_dir / "modules" / module_key
@@ -68,21 +70,36 @@ def make_run(
             "moduleKeys": [module_key],
         },
     )
-    write_jsonl(
-        bundle_dir / "manifest.jsonl",
-        [
+    events = [
+        {
+            "event": "capture",
+            "bundleId": "com.miHoYo.Yuanshen",
+            "selector": "newLibraryWithData:error:",
+            "moduleKey": module_key,
+            "captureAction": "saved",
+            "functionNames": ["main0"],
+            "functionTypes": ["fragment"],
+            "generatedFunctionNames": ["main0"],
+            "generatedFunctionTypes": ["fragment"],
+            "timestamp": f"2026-04-05T00:00:0{1 if enabled else 2}Z",
+        }
+    ]
+    if enabled and attempt_outcome is not None:
+        events.append(
             {
-                "event": "capture",
-                "bundleId": "com.miHoYo.Yuanshen",
+                "event": "replacement_attempt",
+                "timestamp": f"2026-04-05T00:00:05{1 if enabled else 2}Z",
                 "selector": "newLibraryWithData:error:",
-                "moduleKey": module_key,
-                "captureAction": "saved",
-                "functionNames": ["main0"],
-                "functionTypes": ["fragment"],
-                "generatedFunctionNames": ["main0"],
-                "generatedFunctionTypes": ["fragment"],
-                "timestamp": f"2026-04-05T00:00:0{1 if enabled else 2}Z",
-            },
+                "cacheKey": f"cache-{label}",
+                "outcome": attempt_outcome,
+                "reasonCode": attempt_reason_code,
+                "moduleKeys": [module_key],
+                "moduleCount": 1,
+                "invalidModuleCount": None,
+            }
+        )
+    if enabled and attempt_outcome == "succeeded":
+        events.append(
             {
                 "event": "replacement",
                 "timestamp": f"2026-04-05T00:00:1{1 if enabled else 2}Z",
@@ -97,9 +114,9 @@ def make_run(
                 "sourceFunctionNames": ["main0"],
                 "sourceFunctionTypes": ["fragment"],
                 "aggregateSourcePath": aggregate_relative,
-            },
-        ],
-    )
+            }
+        )
+    write_jsonl(bundle_dir / "manifest.jsonl", events)
     write_json(
         bundle_dir / "snapshot.meta.json",
         {
@@ -183,7 +200,7 @@ class AnalyzeCaptureRunMatrixTests(unittest.TestCase):
             )
 
             report = json.loads(output_path.read_text(encoding="utf-8"))
-            self.assertEqual(report["crossMode"]["offVsOnPairSummary"]["allPairsDifferent"], False)
+            self.assertEqual(report["crossMode"]["offVsOnPairSummary"]["allPairsDifferent"], True)
 
     def test_same_mode_compile_status_drift_breaks_stability(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -242,6 +259,84 @@ class AnalyzeCaptureRunMatrixTests(unittest.TestCase):
             self.assertEqual(report["groups"]["on"]["pairSummary"]["allPairsInputStable"], True)
             pair = report["groups"]["on"]["pairs"][0]
             self.assertEqual(pair["classification"]["semanticSharedModuleDifferenceCount"], 0)
+
+    def test_same_mode_replacement_attempt_reason_drift_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            make_run(
+                root,
+                "replacement-on-run1",
+                True,
+                "shared-module",
+                "same",
+                ["AAAAAAAAAAAAAAAA"],
+                attempt_outcome="failed",
+                attempt_reason_code="compile_failed",
+            )
+            make_run(
+                root,
+                "replacement-on-run2",
+                True,
+                "shared-module",
+                "same",
+                ["AAAAAAAAAAAAAAAA"],
+                attempt_outcome="failed",
+                attempt_reason_code="preflight_rejected",
+            )
+
+            output_path = root / "matrix.json"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT_PATH),
+                    "--runs-root",
+                    str(root),
+                    "--bundle-id",
+                    "com.miHoYo.Yuanshen",
+                    "--output",
+                    str(output_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("allReplacementAttemptStable=False", completed.stdout)
+            report = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["groups"]["on"]["pairSummary"]["allPairsReplacementAttemptStable"], False)
+            pair = report["groups"]["on"]["pairs"][0]
+            self.assertEqual(pair["classification"]["semanticReplacementAttemptDifferenceCount"], 2)
+
+    def test_off_mode_missing_attempts_are_treated_as_stable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            make_run(root, "replacement-off-run1", False, "shared-module", "off", ["AAAAAAAAAAAAAAAA"], attempt_outcome=None)
+            make_run(root, "replacement-off-run2", False, "shared-module", "off", ["AAAAAAAAAAAAAAAA"], attempt_outcome=None)
+
+            output_path = root / "matrix.json"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT_PATH),
+                    "--runs-root",
+                    str(root),
+                    "--bundle-id",
+                    "com.miHoYo.Yuanshen",
+                    "--output",
+                    str(output_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("mode=off: runs=2 pairs=1 allInputStable=True allReplacementStable=False allReplacementAttemptStable=True", completed.stdout)
+            report = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["groups"]["off"]["pairSummary"]["allPairsReplacementAttemptStable"], True)
+            pair = report["groups"]["off"]["pairs"][0]
+            self.assertEqual(pair["classification"]["replacementAttemptPresenceDiff"], False)
 
     def test_same_mode_summary_byte_drift_is_benign_when_artifacts_match(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

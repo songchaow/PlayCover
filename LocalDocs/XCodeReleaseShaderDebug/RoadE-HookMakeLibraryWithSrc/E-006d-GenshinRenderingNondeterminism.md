@@ -7,8 +7,8 @@
 ## 当前已完成子项
 
 - **E-006d1 ~ E-006d7（✅ DONE）** 已补齐当前主线所需的离线 / live 对照工具链：输入 diff、聚合源码 diff、replacement 开关、run 快照、`.gputrace` 固化、run matrix 汇总，以及 trace-level 归因索引都已落地。
-- 这些子项的共同作用是：把 `E-006d` 当前最关键的问题从“缺工具、缺证据”前移为“已有工具，但还缺一组足够稳定的 off/on 多轮 run 结论”。
-- 因此 `E-006d` 现在的主要工作，不是继续增加新基础设施，而是用现有工具把结论收敛到更窄的根因分支。
+- 这些子项的共同作用是：把 `E-006d` 当前最关键的问题从“缺工具、缺证据”前移为“已有 first-pass run matrix，且已能把 blocker 收敛到更窄的 live / replacement 分支”。
+- 因此 `E-006d` 现在的主要工作，不是继续增加新基础设施，也不是继续机械补 run，而是用现有工具优先收敛 **session / capture bridge 不稳定** 与 **`llvm-dis` 权限失败只部分命中** 这两条主线。
 
 ## 现象
 
@@ -42,27 +42,15 @@
 
 ## 最新执行结果（2026-04-05，本轮）
 
-- 已通过统一入口把 `E-006d8` 的 run 矩阵扩到五轮：
-  - `build/e006d-run-snapshots/replacement-off-run1/com.miHoYo.Yuanshen`
-  - `build/e006d-run-snapshots/replacement-off-run2/com.miHoYo.Yuanshen`
-  - `build/e006d-run-snapshots/replacement-on-run1/com.miHoYo.Yuanshen`
-  - `build/e006d-run-snapshots/replacement-on-run2/com.miHoYo.Yuanshen`
-  - `build/e006d-run-snapshots/replacement-on-run3/com.miHoYo.Yuanshen`
-- `replacement-off-run1` 仍是当前唯一带 `.gputrace` 的快照，`snapshot.meta.json` 摘要为：`replacementEnabled=false`、`gputraceMSL=2`、`modules=91`、`diagnostics=18`
-- 本轮首先按 dashboard 口径执行了标准 fresh 流程：`BuildScripts/build_and_install.sh` → `Scripts/set_shader_replacement_mode.py --mode on` → `e006d_matrix_runner.py prepare-run --mode on --run-index 3` → `remove_playtools` / `inject_playtools` / `launch_app` → `create_session`
-- `replacement-on-run3` 已成功固化快照，摘要为：`replacementEnabled=true`、`manifestLines=1636`、`modules=91`、`replacements=36`、`diagnostics=18`、`gputraceMSL=n/a`
-- 本轮 fresh on-run 的 replacement 证据已明确恢复：`manifest.jsonl` 统计为 `capture=1509`、`replacement_attempt=91`、`replacement=36`；其中 `replacement_attempt` 的结果分布为 `succeeded=36`、`failed=55`，失败全部落为 `reasonCode=exception`，最新 `detail="Failed to launch llvm-dis: Operation not permitted"`
-- 这说明 blocker 已不再是“`replacementEnabled=true` 但完全没有 attempt / aggregate”；标准 build/install 后，runtime 确实已经重新命中 replacement 并落出新的 `aggregate.generated.metal + replacement.meta.json`。当前更准确的描述是：**replacement 命中已经恢复，但仍是部分成功、部分 `llvm-dis` 权限失败**
-- live capture blocker 也被 fresh on-run 再次稳定复现：`create_session` 已成功拿到 `session=ready`，但随后 `get_capture_status` 发生 bridge timeout；继续调用 `capture_metal_frame` 时直接返回 `Session not found`，随后 `list_sessions` 为空。这说明当前 live blocker 已经稳定收敛为：**session 即使 ready 也会在真正截帧前掉线**
-- 基于五轮快照重新跑出的 `build/e006d-run-matrix.json` 目前给出：
-  - `groups.off.pairSummary.allPairsInputStable=true`
-  - `groups.on.pairSummary.allPairsInputStable=true`
-  - `groups.on.pairSummary.allPairsReplacementAttemptPresentWhenEnabled=false`
-  - `crossMode.offVsOnPairSummary.allPairsDifferent=false`
-  - `crossMode.offVsOnPairSummary.differentPairCount=4`
-- 其中 `groups.on.pairSummary.allPairsReplacementAttemptPresentWhenEnabled=false` 仍然成立，并**不是**因为 `on3` 继续缺 attempt，而是因为历史 `on1/on2` 仍是 “enabled 但没有 attempt” 的旧样本；`on2 vs on3` 的 diff 已明确显示：`runA=n/a/none`，`runB=failed/exception`
-- `build/e006d-run-diff-on2-vs-on3.json` 与 `build/e006d-run-diff-off2-vs-on3.json` 继续证明：共享 `moduleKey=91`、`onlyInRunA=0`、`onlyInRunB=0`，因此当前依然可以稳定排除“captured corpus 输入集合漂移”；但 fresh on-run 还没有新的 `.gputrace`，所以跨模式最终 trace 级证据仍然不足
-- 这意味着当前已可稳定把 blocker 收敛到两条更窄的主线：1）**为什么 session 会在 ready 后于 `get_capture_status` / `capture_metal_frame` 前后超时并消失**；2）**为什么同一轮 on-run 中仍有 `55` 个 module 在 `llvm-dis` 这一步以 `Operation not permitted` 失败**。在拿到至少一轮 `replacement=on` 且带 `.gputrace + aggregate source` 的稳定样本前，还不能继续把结论往 shader lowering 或更后续 pipeline 方向过早定性。
+- `E-006d8` 已通过统一入口形成 `off1/off2/on1/on2/on3` 五轮快照；更早 live blocker 如何逐步前移，以及本轮之前的详细 run-history，统一下沉到 `00-Dashboard-Archive.md`
+- `replacement-off-run1` 仍是当前唯一带 `.gputrace` 的快照，继续作为 trace-level 基线；而本轮 fresh `replacement-on-run3` 则提供了最新的 replacement 命中证据
+- 本轮执行的标准 fresh 路径为：`BuildScripts/build_and_install.sh` → `Scripts/set_shader_replacement_mode.py --mode on` → `Scripts/e006d_matrix_runner.py prepare-run --mode on --run-index 3` → `remove_playtools` / `inject_playtools` / `launch_app` / `create_session`。这条路径本身仍保持为 agent 可独立完成的自动流程，不需要人工登录、摆场景或手工拷目录
+- `replacement-on-run3` 已成功固化快照，摘要为：`replacementEnabled=true`、`manifestLines=1636`、`modules=91`、`replacements=36`、`diagnostics=18`、`gputraceMSL=n/a`；manifest 统计为 `replacement_attempt=91`（`succeeded=36`、`failed=55`）
+- 这说明 blocker 已不再是“`replacementEnabled=true` 但完全没有 attempt / aggregate”；标准 build/install 后，runtime 已重新命中 replacement 并落出新的 `aggregate.generated.metal + replacement.meta.json`。当前更准确的描述是：**replacement 命中已经恢复，但仍是部分成功、部分 `llvm-dis` 权限失败**，失败 detail 当前集中为 `Failed to launch llvm-dis: Operation not permitted`
+- live capture blocker 也被 fresh on-run 再次稳定复现：`create_session=ready` 后，`get_capture_status` 发生 bridge timeout；继续调用 `capture_metal_frame` 时直接返回 `Session not found`，随后 `list_sessions` 为空。这说明当前 live blocker 已稳定收敛为：**session 即使 ready，也会在真正截帧前掉线**
+- 基于五轮快照重新跑出的 `build/e006d-run-matrix.json` 目前仍给出：`groups.off.pairSummary.allPairsInputStable=true`、`groups.on.pairSummary.allPairsInputStable=true`、`groups.on.pairSummary.allPairsReplacementAttemptPresentWhenEnabled=false`、`crossMode.offVsOnPairSummary.allPairsDifferent=false`、`differentPairCount=4`
+- 其中 `groups.on.pairSummary.allPairsReplacementAttemptPresentWhenEnabled=false` 之所以仍为 `false`，并不是因为 `on3` 继续缺 attempt，而是因为历史 `on1/on2` 仍是“enabled 但没有 attempt”的旧样本；与此同时，`on2 vs on3` 已足以证明 fresh build/install 确实恢复了 replacement 证据
+- 因此当前主线已经可以稳定收敛为两条更窄的 blocker：1）**session / capture bridge 为什么会在 ready 后超时并消失**；2）**为什么同一轮 on-run 中仍有 `55` 个 module 在 `llvm-dis` 这一步以 `Operation not permitted` 失败**。在拿到至少一轮 `replacement=on` 且带 `.gputrace + aggregate source` 的稳定样本前，还不能继续把结论往 shader lowering 或更后续 pipeline 方向过早定性
 
 ## 优先排查顺序
 
@@ -237,12 +225,12 @@ python3 Scripts/compare_capture_runs.py \
 
 ## 当前建议执行顺序
 
-1. 固定 live 条件；对当前原神基线，直接以“启动后数十秒自动停在登录界面”为统一复现面，由 agent 独立完成每轮启动与等待；每轮结束后立即用 `Scripts/snapshot_capture_run.py` 或 `Scripts/e006d_matrix_runner.py finalize-run` 固化 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings 快照
-2. 当前已完成 `replacement-off-run1/off-run2/on-run1/on-run2/on-run3`；“同模式输入稳定”已经成立，因此下一步不再是继续机械补 run，而是优先恢复**至少一轮 replacement=on 的稳定 `.gputrace` + aggregate source 样本**
-3. 把 `replacement=on` 的 live 异常单独视为 blocker：`on3` 已经证明标准 `BuildScripts/build_and_install.sh` 后 fresh on-run 可以恢复 `replacement_attempt` 与 aggregate source，因此下一步不再优先怀疑“完全没命中 replacement”，而是继续下钻两个更窄的问题：一是 runtime session 为什么会在 `ready` 之后于 `get_capture_status` / `capture_metal_frame` 前后超时并消失；二是为什么同一轮里仍有 `55` 个 module 在 `llvm-dis` 这一步以 `Operation not permitted` 失败
-4. `Scripts/analyze_capture_run_matrix.py` 的第一层结论已更新为：“captured corpus / 单模块 artifact 层面的同模式稳定”成立，但“跨模式稳定不同”**尚未**成立；这意味着当前还不能把最终差异稳定位于 replacement 开关本身
-5. `Scripts/compare_capture_runs.py` 的第二层结论也已更新为：共享 `moduleKey` 与单模块 `.bc/.ll/.metal` 本体仍然稳定；`on2 vs on3` 已能明确回答“fresh build/install 确实恢复了 replacement 证据”，但由于 `on3` 仍无 `.gputrace`，当前还没有可复用的 trace-level 结论
-6. 因此下一轮应优先下钻 live bridge / session 稳定性，并并行处理 `llvm-dis` 权限失败样本，而不是先回到 converter 或更后续的 pass / pipeline；只有在拿到 replacement 成功且带 `.gputrace` 的 fresh on-run 后，后两条分支才值得继续展开
+1. 固定 live 条件；对当前原神基线，继续以“启动后数十秒自动停在登录界面”为统一复现面，由 agent 独立完成每轮启动与等待；每轮结束后立即用 `Scripts/snapshot_capture_run.py` 或 `Scripts/e006d_matrix_runner.py finalize-run` 固化 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings 快照
+2. 当前已完成 `replacement-off-run1/off-run2/on-run1/on-run2/on-run3`；“同模式输入稳定”已经成立，因此下一步不再是继续机械补 run，而是先把 **fresh `replacement=on` 拿到稳定 `.gputrace`** 重新确立为最小 gate
+3. 为了达成这一步，优先下钻 **live bridge / session 稳定性**：`on3` 已证明标准 `BuildScripts/build_and_install.sh` 后 fresh on-run 可以恢复 `replacement_attempt` 与 aggregate source，因此当前第一优先级不是怀疑“完全没命中 replacement”，而是继续解释 `session=ready` 之后为什么会在 `get_capture_status` / `capture_metal_frame` 前后超时并消失
+4. 与此同时，并行处理 **`55` 个 `llvm-dis` `Operation not permitted` 失败样本**：优先复用现有 diagnostics、run 快照与 replay/diff 工具，把它们收敛为可复现、可归类、可继续自动验证的失败桶，而不是回到人工 live 观察
+5. `Scripts/analyze_capture_run_matrix.py` 与 `Scripts/compare_capture_runs.py` 的现有结论已经足够回答：同模式输入稳定、fresh build/install 已恢复 replacement 证据、但跨模式稳定不同仍未成立；因此当前还不能把最终差异稳定位于 replacement 开关本身
+6. 只有在 agent 可独立完成的自动流程内拿到 replacement 成功且带 `.gputrace` 的 fresh on-run 后，才继续把问题往 converter、本体 replacement runtime，或更后续的 pass / pipeline 方向展开；若某个新方法必须引入人工交互，需先得到用户确认
 
 ## 从 dashboard 下沉的细粒度技术备注
 

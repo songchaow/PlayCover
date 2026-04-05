@@ -357,7 +357,7 @@ python3 Scripts/corpus_replay_runner.py \
 
 `E-005` 主线已完成；后续优先级回到：
 
-- `E-006d8`：继续使用现有 replay / diff / run-matrix / replacement-attempt 工具，先恢复**至少一轮 `replacement=on` 且带 `.gputrace + aggregate source` 的稳定样本**，再继续回答“替换 vs 不替换”是否稳定不同
+- `E-006d8`：继续使用现有 replay / diff / run-matrix / replacement-attempt 工具，但当前下一步已不再是机械补 run；而是优先收敛两条更窄 blocker：**`session=ready` 后的 capture bridge 掉线**，以及 **`replacement-on-run3` 中 `55` 个 `llvm-dis` `Operation not permitted` 失败样本**。只有在 agent 可独立完成的自动流程内恢复**至少一轮 `replacement=on` 且带 `.gputrace + aggregate source` 的稳定样本**后，才继续回答“替换 vs 不替换”是否稳定不同
 - `E-007`：若后续确认人工路径操作已成为效率瓶颈，再把现有离线工具能力经 UI / MCP 暴露出来；前提仍是不能破坏 agent 日常自主执行
 
 也就是说，接下来离线回归能力本身不再是 blocker，重点转为**用这套能力支撑 `E-006d` 当前两类 blocker 的归因**；只有当主线再次被操作成本卡住时，才回头推进 `E-007`。

@@ -19,6 +19,7 @@
 | 2026-04-03，`E-006a2d3` 后单轮 live 复测 | `create_session(timeout=30)` 在 30 秒内未等到 runtime 注册；新的 diagnostics 已从 `<N x T>` / `%...` 残留前移到 vertex `xlatMtlMain` 的参数映射 / pointer 访问坏行 | 说明 `E-006a2d3` 已清掉一批 SSA/vector 问题，但仍被 vertex `stage_in` / pointer 发射拦住 |
 | 2026-04-03，`E-006a2e3` 后单轮 live 复测 | `session` 10 秒内 `ready` 后 ~10 秒 `disconnected`，无新 crash report。diagnostics 仅 `compile_failed`（无 `preflight_rejected`）；旧 blocker 全清。新 blocker 为 `clamp`/`fma` 歧义、`bool2` → `bool` 赋值、`uint8_t2` 不存在 | `undef` / `0xH8000` 修复有效，blocker 进一步前移到 intrinsic 类型系统与 vector 整型映射 |
 | 2026-04-04，`E-006c` 真实 `.gputrace` 可见性确认 | 原神现存 6 份 `.gputrace` 批量检查 `valid_msl_files` 全为 `0`；Xcode 可打开 `capture_20260402_roadE_e006_diag.gputrace` 并进入 draw call 分析，但 fresh `launch_app -> create_session` 后 session 很快 `disconnected`，新增 `Yuanshen-2026-04-04-015803.ips`（`EXC_BAD_ACCESS / SIGSEGV`） | 说明当前 trace 仍只具备“可开/可步进”而非“源码可见”；主 blocker 仍在 IR→MSL 有效性与 live 稳定性，`E-006c` 暂不能关单 |
+| 2026-04-05，`E-006d8` 五轮矩阵 + fresh `replacement-on-run3` | 最近一串提交把 `run matrix`、benign metadata drift 过滤、`replacement_attempt` 落盘与文档口径逐步收敛到同一主线；fresh `replacement-on-run3` 已恢复 `replacement_attempt=91`、`replacement=36`，但 `session=ready` 后仍会在 `get_capture_status` / `capture_metal_frame` 前后掉线 | 当前主线已从“为什么没有 replacement attempt”收窄为“session/capture bridge 不稳定 + 55 个 `llvm-dis` 权限失败样本”；并且这两条线都应继续通过 agent 可独立完成的自动流程推进，而不是重新引入人工 gate |
 
 ## 已完成子任务归档
 

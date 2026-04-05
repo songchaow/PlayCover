@@ -97,7 +97,9 @@ struct LLVMDisassembler {
 
     /// llvm-dis 进程超时时间（秒）
     static let defaultTimeoutSeconds: Int = 30
-    private static let hostBridgeCommandTimeout: TimeInterval = 5.0
+    private static let hostBridgeCommandTimeout: TimeInterval = 10.0
+    private static let hostBridgeRetryCount: Int = 3
+    private static let hostBridgeRetryDelayMicros: useconds_t = 200_000
     private static let hostBridgeCommandName = "host_disassemble_bitcode"
     private static let hostBridgeQueue = DispatchQueue(label: "com.playtools.llvm-dis.host-bridge")
 
@@ -107,6 +109,7 @@ struct LLVMDisassembler {
         case connectionFailed(String)
         case connectionTimedOut(TimeInterval)
         case sendTimedOut(TimeInterval)
+        case responseTimedOut(TimeInterval)
         case invalidResponse(String)
         case remoteError(String)
 
@@ -122,6 +125,8 @@ struct LLVMDisassembler {
                 return "Timed out connecting to host bridge after \(String(format: "%.1f", timeout))s"
             case .sendTimedOut(let timeout):
                 return "Timed out sending host bridge request after \(String(format: "%.1f", timeout))s"
+            case .responseTimedOut(let timeout):
+                return "Timed out waiting for host bridge response after \(String(format: "%.1f", timeout))s"
             case .invalidResponse(let message):
                 return "Invalid host bridge response: \(message)"
             case .remoteError(let message):
@@ -252,12 +257,23 @@ struct LLVMDisassembler {
         }
 
         // 2. 优先尝试让宿主 PlayCover 进程代跑 llvm-dis，绕开 injected runtime 的 spawn 权限限制。
-        if let hostBridgeResult = safeDisassembleViaHostBridge(
-            bitcodeData: bitcodeData,
-            functionNames: functionNames,
-            timeoutSeconds: timeoutSeconds
-        ) {
+        do {
+            let hostBridgeResult = try disassembleViaHostBridgeWithRetries(
+                bitcodeData: bitcodeData,
+                functionNames: functionNames,
+                timeoutSeconds: timeoutSeconds
+            )
+            NSLog("[PlayTools] LLVMDisassembler: host bridge success — %@", hostBridgeResult.summary)
             return hostBridgeResult
+        } catch {
+            if shouldFallbackToLocalSpawn(afterHostBridgeError: error) {
+                NSLog("[PlayTools] LLVMDisassembler: host bridge unavailable, fallback to local spawn — %@",
+                      error.localizedDescription)
+            } else {
+                NSLog("[PlayTools] LLVMDisassembler: host bridge failed after retries; skip local spawn fallback to avoid sandbox noise — %@",
+                      error.localizedDescription)
+                throw error
+            }
         }
 
         // 3. fallback：直接在当前 runtime 中查找并调用 llvm-dis。
@@ -426,23 +442,79 @@ struct LLVMDisassembler {
         return successes
     }
 
-    private static func safeDisassembleViaHostBridge(
+    private static func disassembleViaHostBridgeWithRetries(
         bitcodeData: Data,
         functionNames: [String],
         timeoutSeconds: Int
-    ) -> DisassemblyResult? {
-        do {
-            let result = try disassembleViaHostBridge(
-                bitcodeData: bitcodeData,
-                functionNames: functionNames,
-                timeoutSeconds: timeoutSeconds
-            )
-            NSLog("[PlayTools] LLVMDisassembler: host bridge success — %@", result.summary)
-            return result
-        } catch {
-            NSLog("[PlayTools] LLVMDisassembler: host bridge unavailable, fallback to local spawn — %@",
-                  error.localizedDescription)
-            return nil
+    ) throws -> DisassemblyResult {
+        let maxAttempts = max(1, hostBridgeRetryCount)
+        var lastError: Error = HostBridgeError.sessionUnavailable
+
+        for attempt in 1...maxAttempts {
+            do {
+                let result = try disassembleViaHostBridge(
+                    bitcodeData: bitcodeData,
+                    functionNames: functionNames,
+                    timeoutSeconds: timeoutSeconds
+                )
+                if attempt > 1 {
+                    NSLog("[PlayTools] LLVMDisassembler: host bridge recovered on retry %d/%d — %@",
+                          attempt,
+                          maxAttempts,
+                          result.summary)
+                }
+                return result
+            } catch {
+                lastError = error
+                let retryable = isRetryableHostBridgeError(error)
+                NSLog("[PlayTools] LLVMDisassembler: host bridge attempt %d/%d failed — %@ (retryable=%d)",
+                      attempt,
+                      maxAttempts,
+                      error.localizedDescription,
+                      retryable ? 1 : 0)
+                guard retryable, attempt < maxAttempts else {
+                    break
+                }
+                usleep(hostBridgeRetryDelayMicros * useconds_t(attempt))
+            }
+        }
+
+        throw lastError
+    }
+
+    private static func isRetryableHostBridgeError(_ error: Error) -> Bool {
+        guard let hostError = error as? HostBridgeError else {
+            return false
+        }
+
+        switch hostError {
+        case .connectionFailed, .connectionTimedOut, .sendTimedOut, .responseTimedOut:
+            return true
+        case .invalidResponse(let message):
+            let normalized = message.lowercased()
+            return normalized.contains("empty response")
+                || normalized.contains("missing host bridge payload")
+                || normalized.contains("connection closed")
+        case .sessionUnavailable, .invalidPort, .remoteError:
+            return false
+        }
+    }
+
+    private static func shouldFallbackToLocalSpawn(afterHostBridgeError error: Error) -> Bool {
+        guard let hostError = error as? HostBridgeError else {
+            return false
+        }
+
+        switch hostError {
+        case .sessionUnavailable, .invalidPort:
+            return true
+        case .remoteError(let message):
+            let normalized = message.lowercased()
+            return normalized.contains("unknown host bridge command")
+                || normalized.contains("host command handler is unavailable")
+                || normalized.contains("session not registered")
+        case .connectionFailed, .connectionTimedOut, .sendTimedOut, .responseTimedOut, .invalidResponse:
+            return false
         }
     }
 
@@ -605,7 +677,7 @@ struct LLVMDisassembler {
         receiveNextChunk()
 
         if semaphore.wait(timeout: .now() + timeout) == .timedOut {
-            throw HostBridgeError.connectionTimedOut(timeout)
+            throw HostBridgeError.responseTimedOut(timeout)
         }
         if let receiveError {
             throw receiveError

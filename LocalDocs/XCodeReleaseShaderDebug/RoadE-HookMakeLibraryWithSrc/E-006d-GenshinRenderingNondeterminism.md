@@ -28,8 +28,8 @@
 
 ## 当前最该做的事
 
-- `E-006d8` 的第一轮 run matrix 已经完成 first-pass：`off1/off2/on1/on2/on3` 已足够证明“同模式输入稳定”，也足够说明当前**不该**继续机械补 run。
-- 标准 `BuildScripts/build_and_install.sh` + fresh `replacement-on-run3` 已经把第一个 blocker 从“为什么没有 `replacement_attempt` / aggregate”收窄为两个更具体的问题：1）fresh on-run 期间 replacement 证据已恢复，但当前是**部分替换成功**——manifest 中 `replacement_attempt=91`、`replacement=36`，其余 `55` 次都落为 `reasonCode=exception`，`detail="Failed to launch llvm-dis: Operation not permitted"`；2）`create_session -> get_capture_status / capture_metal_frame` 仍会在 `ready` 后超时或直接丢 session，导致 fresh on-run 依旧没有新的 `.gputrace`。
+- `E-006d8` 的第一轮 run matrix 已经完成 first-pass：`off1/off2/on1/on2/on3/on4` 已足够证明“同模式输入稳定”，也足够说明当前**不该**继续机械补 run。
+- 标准 `BuildScripts/build_and_install.sh` + fresh `replacement-on-run3/on4` 已经把第一个 blocker 从“为什么没有 `replacement_attempt` / aggregate”收窄为两个更具体的问题：1）fresh on-run 期间 replacement 证据已恢复，但当前仍是**部分替换成功**——manifest 中 `replacement_attempt=91`、`replacement=36`，其余 `55` 次都落为 `reasonCode=exception`，`detail="Failed to launch llvm-dis: Operation not permitted"`；2）live session / capture 链路仍未稳定，现象已从 `on3` 的“`create_session=ready` 后超时并丢 session”前移到 `on4` 的“**原神进程仍在，但 `create_session(timeout=120)` 未等到 runtime 注册**”，因此 fresh on-run 依旧没有新的 `.gputrace`。
 - 若本轮还拿不到完整 live 证据，采集动作必须继续固定为统一入口：使用 `Scripts/e006d_matrix_runner.py` 的 `prepare-run` / `finalize-run` / `analyze` 薄封装，固定 `replacement-<mode>-runN` 标签与分析入口，避免把模式、标签、快照目录或 compare 输入串错。
 - 本轮完成标准不是“继续加脚本”或“继续补文档”，而是至少把当前问题明确收敛到以下之一：
   1. 输入集合不稳定
@@ -42,15 +42,16 @@
 
 ## 最新执行结果（2026-04-05，本轮）
 
-- `E-006d8` 已通过统一入口形成 `off1/off2/on1/on2/on3` 五轮快照；更早 live blocker 如何逐步前移，以及本轮之前的详细 run-history，统一下沉到 `00-Dashboard-Archive.md`
-- `replacement-off-run1` 仍是当前唯一带 `.gputrace` 的快照，继续作为 trace-level 基线；而本轮 fresh `replacement-on-run3` 则提供了最新的 replacement 命中证据
-- 本轮执行的标准 fresh 路径为：`BuildScripts/build_and_install.sh` → `Scripts/set_shader_replacement_mode.py --mode on` → `Scripts/e006d_matrix_runner.py prepare-run --mode on --run-index 3` → `remove_playtools` / `inject_playtools` / `launch_app` / `create_session`。这条路径本身仍保持为 agent 可独立完成的自动流程，不需要人工登录、摆场景或手工拷目录
-- `replacement-on-run3` 已成功固化快照，摘要为：`replacementEnabled=true`、`manifestLines=1636`、`modules=91`、`replacements=36`、`diagnostics=18`、`gputraceMSL=n/a`；manifest 统计为 `replacement_attempt=91`（`succeeded=36`、`failed=55`）
-- 这说明 blocker 已不再是“`replacementEnabled=true` 但完全没有 attempt / aggregate”；标准 build/install 后，runtime 已重新命中 replacement 并落出新的 `aggregate.generated.metal + replacement.meta.json`。当前更准确的描述是：**replacement 命中已经恢复，但仍是部分成功、部分 `llvm-dis` 权限失败**，失败 detail 当前集中为 `Failed to launch llvm-dis: Operation not permitted`
-- live capture blocker 也被 fresh on-run 再次稳定复现：`create_session=ready` 后，`get_capture_status` 发生 bridge timeout；继续调用 `capture_metal_frame` 时直接返回 `Session not found`，随后 `list_sessions` 为空。这说明当前 live blocker 已稳定收敛为：**session 即使 ready，也会在真正截帧前掉线**
-- 基于五轮快照重新跑出的 `build/e006d-run-matrix.json` 目前仍给出：`groups.off.pairSummary.allPairsInputStable=true`、`groups.on.pairSummary.allPairsInputStable=true`、`groups.on.pairSummary.allPairsReplacementAttemptPresentWhenEnabled=false`、`crossMode.offVsOnPairSummary.allPairsDifferent=false`、`differentPairCount=4`
-- 其中 `groups.on.pairSummary.allPairsReplacementAttemptPresentWhenEnabled=false` 之所以仍为 `false`，并不是因为 `on3` 继续缺 attempt，而是因为历史 `on1/on2` 仍是“enabled 但没有 attempt”的旧样本；与此同时，`on2 vs on3` 已足以证明 fresh build/install 确实恢复了 replacement 证据
-- 因此当前主线已经可以稳定收敛为两条更窄的 blocker：1）**session / capture bridge 为什么会在 ready 后超时并消失**；2）**为什么同一轮 on-run 中仍有 `55` 个 module 在 `llvm-dis` 这一步以 `Operation not permitted` 失败**。在拿到至少一轮 `replacement=on` 且带 `.gputrace + aggregate source` 的稳定样本前，还不能继续把结论往 shader lowering 或更后续 pipeline 方向过早定性
+- `E-006d8` 已通过统一入口形成 `off1/off2/on1/on2/on3/on4` 六轮快照；更早 live blocker 如何逐步前移，以及本轮之前的详细 run-history，统一下沉到 `00-Dashboard-Archive.md`
+- `replacement-off-run1` 仍是当前唯一带 `.gputrace` 的快照，继续作为 trace-level 基线；而本轮 fresh `replacement-on-run3/on4` 则提供了最新的 replacement 命中证据
+- 本轮执行的标准 fresh 路径为：`BuildScripts/build_and_install.sh` → `Scripts/set_shader_replacement_mode.py --bundle-id com.miHoYo.Yuanshen --mode on` → `Scripts/e006d_matrix_runner.py prepare-run --bundle-id com.miHoYo.Yuanshen --mode on --run-index 4` → `remove_playtools` / `inject_playtools` / `launch_app` / `create_session`。这条路径本身仍保持为 agent 可独立完成的自动流程，不需要人工登录、摆场景或手工拷目录
+- 本轮先对 `LLVMDisassembler` 做了 host bridge **重试 + 防误回退到本地 `posix_spawn`** 的收口，然后完成 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`、`./BuildScripts/build_and_install.sh`、fresh remove/inject/launch，并固化 `replacement-on-run4`
+- `replacement-on-run3` 与 `replacement-on-run4` 已成功固化快照，摘要都为：`replacementEnabled=true`、`manifestLines=1636`、`modules=91`、`replacements=36`、`diagnostics=18`、`gputraceMSL=n/a`；manifest 统计仍为 `replacement_attempt=91`（`succeeded=36`、`failed=55`）
+- 这说明 blocker 已不再是“`replacementEnabled=true` 但完全没有 attempt / aggregate”；标准 build/install 后，runtime 已重新命中 replacement 并落出新的 `aggregate.generated.metal + replacement.meta.json`。同时，本轮对 `LLVMDisassembler` 的 host bridge 收口**没有引入新的 artifact 回归**：`on4` 与 `on3` 的快照摘要保持一致。当前更准确的描述仍是：**replacement 命中已经恢复，但仍是部分成功、部分 `llvm-dis` 权限失败**，失败 detail 当前集中为 `Failed to launch llvm-dis: Operation not permitted`
+- live capture blocker 这轮没有消失，反而进一步前移：`on3` 仍是“`create_session=ready` 后，`get_capture_status` bridge timeout → `capture_metal_frame` 返回 `Session not found` → `list_sessions` 为空”；而 fresh `on4` 则变成“**原神进程仍在，但 `create_session(timeout=120)` 未等到 runtime 注册，`list_sessions` 仍为空**”。这说明当前 live blocker 不能再只描述为“ready 后掉线”，而应上升为：**runtime session / capture bridge 整体仍不稳定，且已出现更早的注册缺失形态**
+- 基于六轮快照重新跑出的 `build/e006d-run-matrix.json` 目前给出：`groups.off.pairSummary.allPairsInputStable=true`、`groups.on.pairSummary.allPairsInputStable=true`、`groups.on.pairSummary.allSnapshotStable=true`、`groups.on.pairSummary.allPairsReplacementAttemptPresentWhenEnabled=false`、`crossMode.offVsOnPairSummary.allPairsDifferent=false`、`differentPairCount=6`
+- 其中 `groups.on.pairSummary.allPairsReplacementAttemptPresentWhenEnabled=false` 之所以仍为 `false`，并不是因为 `on3/on4` 继续缺 attempt，而是因为历史 `on1/on2` 仍是“enabled 但没有 attempt”的旧样本；与此同时，`on3 vs on4` 已足以证明 fresh build/install 与本轮 host bridge 收口并未破坏 replacement 证据
+- 因此当前主线已经可以稳定收敛为两条更窄的 blocker：1）**session / capture bridge 为什么会先表现为 `ready` 后超时并消失，而本轮又前移成 runtime 根本未注册**；2）**为什么同一轮 on-run 中仍有 `55` 个 module 在 `llvm-dis` 这一步以 `Operation not permitted` 失败**。在拿到至少一轮 `replacement=on` 且带 `.gputrace + aggregate source` 的稳定样本前，还不能继续把结论往 shader lowering 或更后续 pipeline 方向过早定性
 
 ## 优先排查顺序
 

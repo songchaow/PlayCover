@@ -19,6 +19,10 @@ final class BridgeListener {
     /// The well-known host registration port.
     static let defaultRegistrationPort: UInt16 = 52741
     static let shared = BridgeListener()
+    private static let registrationConnectTimeout: TimeInterval = 5.0
+    private static let registrationAckTimeout: TimeInterval = 5.0
+    private static let registrationRetryDelay: TimeInterval = 1.0
+    private static let sessionRegistrationPollIntervalMicros: useconds_t = 100_000
 
     private enum BridgeMessageType: String {
         case register
@@ -60,6 +64,10 @@ final class BridgeListener {
     // MARK: - State
 
     private let callbackQueue = DispatchQueue(label: "com.playcover.bridge-listener")
+    private let registrationAttemptQueue = DispatchQueue(
+        label: "com.playcover.bridge-listener.registration-attempt",
+        qos: .userInitiated
+    )
     private let lock = NSLock()
 
     private var commandListener: NWListener?
@@ -69,6 +77,11 @@ final class BridgeListener {
     private var registrationConnection: NWConnection?
     private var registrationReadBuffer = Data()
     private var heartbeatTimer: DispatchSourceTimer?
+    private var registrationRetryTimer: DispatchSourceTimer?
+    private var pendingSessionId: String?
+    private var pendingBundleId: String?
+    private var pendingRegistrationPort: UInt16?
+    private var registrationAttemptInFlight = false
 
     private(set) var sessionId: String?
     private(set) var bundleId: String?
@@ -92,43 +105,85 @@ final class BridgeListener {
     @discardableResult
     func start(bundleId: String, registrationPort: UInt16 = defaultRegistrationPort) -> UInt16 {
         lock.lock()
-        if isRunning, let existingPort = localPort {
-            lock.unlock()
-            log("BridgeListener already running for \(bundleId) on port \(existingPort)")
+        let existingPort = localPort
+        let hasCommandListener = commandListener != nil
+        let alreadyRegistered = sessionId != nil
+        lock.unlock()
+
+        if hasCommandListener, let existingPort {
+            if alreadyRegistered {
+                log("BridgeListener already running for \(bundleId) on port \(existingPort)")
+            } else {
+                log("BridgeListener already has command listener on port \(existingPort); registration still pending, ensuring retry loop")
+                scheduleRegistrationRetry(reason: "start() called while registration pending")
+            }
             return existingPort
         }
-        lock.unlock()
 
         log("BridgeListener starting for bundleId=\(bundleId), registrationPort=\(registrationPort)")
 
         do {
             let runtimePort = try startCommandListener()
             let runtimeSessionId = "runtime-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString.lowercased())"
-            log("BridgeListener command listener ready on port \(runtimePort); sessionId=\(runtimeSessionId)")
-
-            try connectAndRegister(
-                sessionId: runtimeSessionId,
-                bundleId: bundleId,
-                registrationPort: registrationPort,
-                runtimePort: runtimePort
-            )
 
             lock.lock()
-            self.sessionId = runtimeSessionId
             self.bundleId = bundleId
             self.localPort = runtimePort
+            self.pendingSessionId = runtimeSessionId
+            self.pendingBundleId = bundleId
+            self.pendingRegistrationPort = registrationPort
             self.isRunning = true
             lock.unlock()
 
-            startRegistrationReceiveLoop()
-            startHeartbeatLoop()
-            log("BridgeListener started for \(bundleId) on port \(runtimePort)")
+            log("BridgeListener command listener ready on port \(runtimePort); sessionId=\(runtimeSessionId)")
+
+            if !attemptRegistrationIfNeeded(trigger: "initial startup") {
+                log("BridgeListener initial registration did not complete; keeping command listener alive and scheduling retries")
+                scheduleRegistrationRetry(reason: "initial registration failed")
+            }
             return runtimePort
         } catch {
             log("BridgeListener failed to start: \(error.localizedDescription)")
             stop()
             return 0
         }
+    }
+
+    func waitForRegisteredSession(timeout: TimeInterval) -> String? {
+        lock.lock()
+        if let sessionId {
+            lock.unlock()
+            return sessionId
+        }
+        let hasPendingRegistration = pendingSessionId != nil
+        lock.unlock()
+
+        guard hasPendingRegistration else {
+            return nil
+        }
+
+        scheduleRegistrationRetry(reason: "host bridge request waiting for registration")
+        registrationAttemptQueue.async { [weak self] in
+            _ = self?.attemptRegistrationIfNeeded(trigger: "session wait")
+        }
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            lock.lock()
+            let currentSessionId = sessionId
+            let registrationStillPending = pendingSessionId != nil
+            lock.unlock()
+
+            if let currentSessionId {
+                return currentSessionId
+            }
+            if !registrationStillPending {
+                return nil
+            }
+            usleep(Self.sessionRegistrationPollIntervalMicros)
+        }
+
+        return nil
     }
 
     /// Stop the bridge listener.
@@ -139,6 +194,7 @@ final class BridgeListener {
         let listener = self.commandListener
         let connections = Array(self.commandConnections.values)
         let heartbeatTimer = self.heartbeatTimer
+        let registrationRetryTimer = self.registrationRetryTimer
 
         self.commandListener = nil
         self.commandConnections.removeAll()
@@ -146,6 +202,11 @@ final class BridgeListener {
         self.registrationConnection = nil
         self.registrationReadBuffer = Data()
         self.heartbeatTimer = nil
+        self.registrationRetryTimer = nil
+        self.pendingSessionId = nil
+        self.pendingBundleId = nil
+        self.pendingRegistrationPort = nil
+        self.registrationAttemptInFlight = false
         self.localPort = nil
         self.bundleId = nil
         self.sessionId = nil
@@ -164,6 +225,7 @@ final class BridgeListener {
         }
 
         heartbeatTimer?.cancel()
+        registrationRetryTimer?.cancel()
         registrationConnection?.cancel()
         connections.forEach { $0.cancel() }
         listener?.cancel()
@@ -176,7 +238,7 @@ final class BridgeListener {
         bundleId: String,
         registrationPort: UInt16,
         runtimePort: UInt16
-    ) throws {
+    ) throws -> NWConnection {
         let host = NWEndpoint.Host("127.0.0.1")
         guard let nwPort = NWEndpoint.Port(rawValue: registrationPort) else {
             throw BridgeRuntimeError.invalidPort(registrationPort)
@@ -208,7 +270,7 @@ final class BridgeListener {
 
         connection.start(queue: callbackQueue)
 
-        if readySemaphore.wait(timeout: .now() + 5.0) == .timedOut {
+        if readySemaphore.wait(timeout: .now() + Self.registrationConnectTimeout) == .timedOut {
             log("BridgeListener timed out waiting for registration connection readiness")
             connection.cancel()
             throw BridgeRuntimeError.registrationTimeout
@@ -218,10 +280,6 @@ final class BridgeListener {
             connection.cancel()
             throw readyError
         }
-
-        lock.lock()
-        registrationConnection = connection
-        lock.unlock()
 
         let registerMessage: [String: Any] = [
             "type": BridgeMessageType.register.rawValue,
@@ -233,27 +291,32 @@ final class BridgeListener {
         log("BridgeListener sending register message: \(registerMessage)")
         sendSync(message: registerMessage, on: connection)
 
-        let ackMessage = try receiveSingleMessage(on: connection, timeout: 5.0)
-        let ackType = stringValue("type", in: ackMessage)
-        log("BridgeListener received registration response: \(ackMessage)")
+        do {
+            let ackMessage = try receiveSingleMessage(on: connection, timeout: Self.registrationAckTimeout)
+            let ackType = stringValue("type", in: ackMessage)
+            log("BridgeListener received registration response: \(ackMessage)")
 
-        if ackType == BridgeMessageType.registerAck.rawValue {
-            guard stringValue("sessionId", in: ackMessage) == sessionId else {
-                throw BridgeRuntimeError.registrationFailed("sessionId mismatch in registerAck")
+            if ackType == BridgeMessageType.registerAck.rawValue {
+                guard stringValue("sessionId", in: ackMessage) == sessionId else {
+                    throw BridgeRuntimeError.registrationFailed("sessionId mismatch in registerAck")
+                }
+                let status = stringValue("status", in: ackMessage) ?? ""
+                guard status == "ok" else {
+                    throw BridgeRuntimeError.registrationFailed(status)
+                }
+                return connection
             }
-            let status = stringValue("status", in: ackMessage) ?? ""
-            guard status == "ok" else {
-                throw BridgeRuntimeError.registrationFailed(status)
+
+            if ackType == BridgeMessageType.error.rawValue {
+                let message = stringValue("message", in: ackMessage) ?? "unknown bridge error"
+                throw BridgeRuntimeError.registrationFailed(message)
             }
-            return
-        }
 
-        if ackType == BridgeMessageType.error.rawValue {
-            let message = stringValue("message", in: ackMessage) ?? "unknown bridge error"
-            throw BridgeRuntimeError.registrationFailed(message)
+            throw BridgeRuntimeError.registrationFailed("Unexpected registration response")
+        } catch {
+            connection.cancel()
+            throw error
         }
-
-        throw BridgeRuntimeError.registrationFailed("Unexpected registration response")
     }
 
     private func startRegistrationReceiveLoop() {
@@ -284,7 +347,13 @@ final class BridgeListener {
             }
 
             if isComplete || error != nil {
-                self.stopHeartbeatLoop()
+                let reason: String
+                if let error {
+                    reason = "registration channel error: \(error.localizedDescription)"
+                } else {
+                    reason = "registration channel closed"
+                }
+                self.handleRegistrationChannelDisconnect(connection: connection, reason: reason)
             }
         }
     }
@@ -353,6 +422,141 @@ final class BridgeListener {
         let connection = registrationConnection
         lock.unlock()
         sendSync(message: message, on: connection)
+    }
+
+    @discardableResult
+    private func attemptRegistrationIfNeeded(trigger: String) -> Bool {
+        lock.lock()
+        if sessionId != nil {
+            lock.unlock()
+            return true
+        }
+        guard !registrationAttemptInFlight,
+              commandListener != nil,
+              let pendingSessionId,
+              let pendingBundleId,
+              let pendingRegistrationPort,
+              let runtimePort = localPort else {
+            lock.unlock()
+            return false
+        }
+        registrationAttemptInFlight = true
+        lock.unlock()
+
+        defer {
+            lock.lock()
+            registrationAttemptInFlight = false
+            lock.unlock()
+        }
+
+        do {
+            log("BridgeListener attempting registration (trigger=\(trigger), sessionId=\(pendingSessionId), runtimePort=\(runtimePort))")
+            let connection = try connectAndRegister(
+                sessionId: pendingSessionId,
+                bundleId: pendingBundleId,
+                registrationPort: pendingRegistrationPort,
+                runtimePort: runtimePort
+            )
+            completeSuccessfulRegistration(
+                connection: connection,
+                sessionId: pendingSessionId,
+                bundleId: pendingBundleId,
+                runtimePort: runtimePort
+            )
+            return true
+        } catch {
+            log("BridgeListener registration attempt failed (trigger=\(trigger)): \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    private func completeSuccessfulRegistration(
+        connection: NWConnection,
+        sessionId: String,
+        bundleId: String,
+        runtimePort: UInt16
+    ) {
+        lock.lock()
+        guard commandListener != nil,
+              pendingSessionId == sessionId,
+              pendingBundleId == bundleId,
+              localPort == runtimePort else {
+            lock.unlock()
+            connection.cancel()
+            return
+        }
+        let previousConnection = registrationConnection
+        let previousRetryTimer = registrationRetryTimer
+        registrationConnection = connection
+        registrationReadBuffer = Data()
+        registrationRetryTimer = nil
+        self.sessionId = sessionId
+        self.bundleId = bundleId
+        self.localPort = runtimePort
+        self.isRunning = true
+        lock.unlock()
+
+        previousRetryTimer?.cancel()
+        previousConnection?.cancel()
+        startRegistrationReceiveLoop()
+        startHeartbeatLoop()
+        log("BridgeListener registration established for \(bundleId) on port \(runtimePort)")
+    }
+
+    private func scheduleRegistrationRetry(reason: String) {
+        lock.lock()
+        guard sessionId == nil,
+              commandListener != nil,
+              pendingSessionId != nil,
+              pendingBundleId != nil,
+              pendingRegistrationPort != nil,
+              localPort != nil else {
+            lock.unlock()
+            return
+        }
+        if registrationRetryTimer != nil {
+            lock.unlock()
+            return
+        }
+
+        let timer = DispatchSource.makeTimerSource(queue: callbackQueue)
+        timer.schedule(deadline: .now() + Self.registrationRetryDelay, repeating: Self.registrationRetryDelay)
+        timer.setEventHandler { [weak self] in
+            self?.registrationAttemptQueue.async {
+                _ = self?.attemptRegistrationIfNeeded(trigger: "retry timer")
+            }
+        }
+        registrationRetryTimer = timer
+        lock.unlock()
+
+        timer.resume()
+        log("BridgeListener scheduled registration retry: \(reason)")
+    }
+
+    private func handleRegistrationChannelDisconnect(connection: NWConnection, reason: String) {
+        lock.lock()
+        guard registrationConnection === connection else {
+            lock.unlock()
+            return
+        }
+        let heartbeatTimer = self.heartbeatTimer
+        registrationConnection = nil
+        registrationReadBuffer = Data()
+        self.heartbeatTimer = nil
+        sessionId = nil
+        let shouldRetry = commandListener != nil
+            && pendingSessionId != nil
+            && pendingBundleId != nil
+            && pendingRegistrationPort != nil
+            && localPort != nil
+        lock.unlock()
+
+        heartbeatTimer?.cancel()
+        log("BridgeListener lost registration channel: \(reason)")
+
+        if shouldRetry {
+            scheduleRegistrationRetry(reason: reason)
+        }
     }
 
     // MARK: - Command Listener

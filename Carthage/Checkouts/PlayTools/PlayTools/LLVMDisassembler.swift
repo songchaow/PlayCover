@@ -98,6 +98,7 @@ struct LLVMDisassembler {
     /// llvm-dis 进程超时时间（秒）
     static let defaultTimeoutSeconds: Int = 30
     private static let hostBridgeCommandTimeout: TimeInterval = 10.0
+    private static let hostBridgeSessionWaitTimeout: TimeInterval = 2.0
     private static let hostBridgeRetryCount: Int = 3
     private static let hostBridgeRetryDelayMicros: useconds_t = 200_000
     private static let hostBridgeCommandName = "host_disassemble_bitcode"
@@ -523,7 +524,7 @@ struct LLVMDisassembler {
         functionNames: [String],
         timeoutSeconds: Int
     ) throws -> DisassemblyResult {
-        guard let sessionId = BridgeListener.shared.sessionId else {
+        guard let sessionId = BridgeListener.shared.waitForRegisteredSession(timeout: hostBridgeSessionWaitTimeout) else {
             throw HostBridgeError.sessionUnavailable
         }
 

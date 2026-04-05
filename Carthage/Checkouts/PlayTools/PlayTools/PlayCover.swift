@@ -12,32 +12,62 @@ public class PlayCover: NSObject {
     var menuController: MenuController?
 
     @objc static public func launch() {
+        let runtimeBundleId = Bundle.main.bundleIdentifier
+            ?? "playtools.runtime.\(ProcessInfo.processInfo.processIdentifier)"
+        RuntimeLaunchDiagnostics.record(event: "playcover_launch_enter", bundleId: runtimeBundleId)
+
         quitWhenClose()
+        RuntimeLaunchDiagnostics.record(event: "playcover_quit_observer_installed", bundleId: runtimeBundleId)
+
         AKInterface.initialize()
+        RuntimeLaunchDiagnostics.record(event: "playcover_akinterface_initialized", bundleId: runtimeBundleId)
+
         PlayScreen.shared.initialize()
+        RuntimeLaunchDiagnostics.record(event: "playcover_screen_initialized", bundleId: runtimeBundleId)
+
         PlayInput.shared.initialize()
+        RuntimeLaunchDiagnostics.record(event: "playcover_input_initialized", bundleId: runtimeBundleId)
+
         DiscordIPC.shared.initialize()
+        RuntimeLaunchDiagnostics.record(event: "playcover_discord_initialized", bundleId: runtimeBundleId)
 
         // 初始化 Metal 截帧服务
         MetalCaptureService.shared.initialize()
+        RuntimeLaunchDiagnostics.record(event: "playcover_metal_capture_initialized", bundleId: runtimeBundleId)
 
         // E-003 / E-004f3: 安装 makeLibrary swizzle（运行时 shader corpus 导出 + 源码替换入口）
         LibrarySourceInjectionService.shared.installIfNeeded()
+        RuntimeLaunchDiagnostics.record(event: "playcover_library_injection_installed", bundleId: runtimeBundleId)
 
-        let runtimeBundleId = Bundle.main.bundleIdentifier
-            ?? "playtools.runtime.\(ProcessInfo.processInfo.processIdentifier)"
         NSLog("%@", "[PlayTools] PlayCover.launch bundleId=\(runtimeBundleId)")
+        RuntimeLaunchDiagnostics.record(event: "playcover_bridge_listener_start_requested", bundleId: runtimeBundleId)
         let runtimePort = BridgeListener.shared.start(bundleId: runtimeBundleId)
         if runtimePort > 0 {
             NSLog("%@", "[PlayTools] BridgeListener launched on port \(runtimePort)")
+            RuntimeLaunchDiagnostics.record(
+                event: "playcover_bridge_listener_start_succeeded",
+                bundleId: runtimeBundleId,
+                details: ["localPort": String(runtimePort)]
+            )
         } else {
             NSLog("%@", "[PlayTools] BridgeListener launch returned port 0")
+            RuntimeLaunchDiagnostics.record(event: "playcover_bridge_listener_start_failed", bundleId: runtimeBundleId)
         }
 
         if PlaySettings.shared.rootWorkDir {
             // Change the working directory to / just like iOS
             FileManager.default.changeCurrentDirectoryPath("/")
+            RuntimeLaunchDiagnostics.record(event: "playcover_working_directory_changed", bundleId: runtimeBundleId, details: ["cwd": "/"])
         }
+
+        RuntimeLaunchDiagnostics.record(
+            event: "playcover_launch_complete",
+            bundleId: runtimeBundleId,
+            details: [
+                "metalCaptureEnabled": PlaySettings.shared.metalCaptureEnabled ? "true" : "false",
+                "shaderSourceReplacementEnabled": PlaySettings.shared.shaderSourceReplacementEnabled ? "true" : "false",
+            ]
+        )
     }
 
     @objc static public func initMenu(menu: NSObject) {

@@ -4,6 +4,86 @@
 import Foundation
 import Network
 import UIKit
+import Darwin
+
+enum RuntimeLaunchDiagnostics {
+    private static let schemaVersion = 1
+    private static let writeQueue = DispatchQueue(label: "com.playtools.runtime-launch-diagnostics")
+    static let processLaunchId = "launch-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString.lowercased())"
+
+    private static var hostUserHomeDirectoryPath: String {
+        let currentUID = getuid()
+        if let pw = getpwuid(currentUID), let dir = pw.pointee.pw_dir {
+            return String(cString: dir)
+        }
+        return URL(fileURLWithPath: "/Users/\(NSUserName())").path
+    }
+
+    private static var bundleIdentifier: String {
+        Bundle.main.bundleIdentifier ?? "playtools.runtime.\(ProcessInfo.processInfo.processIdentifier)"
+    }
+
+    private static var diagnosticsRootURL: URL {
+        URL(fileURLWithPath: hostUserHomeDirectoryPath, isDirectory: true)
+            .appendingPathComponent("Library/Containers/io.playcover.PlayCover", isDirectory: true)
+            .appendingPathComponent("RuntimeLaunchDiagnostics", isDirectory: true)
+    }
+
+    private static func diagnosticsFileURL(bundleId: String) -> URL {
+        diagnosticsRootURL
+            .appendingPathComponent(bundleId, isDirectory: true)
+            .appendingPathComponent("launch-events.jsonl")
+    }
+
+    static func record(event: String, bundleId: String? = nil, details: [String: String] = [:]) {
+        let resolvedBundleId = bundleId ?? self.bundleIdentifier
+        var entry: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "timestamp": ISO8601DateFormatter().string(from: Date()),
+            "event": event,
+            "bundleId": resolvedBundleId,
+            "pid": ProcessInfo.processInfo.processIdentifier,
+            "processLaunchId": processLaunchId,
+            "isMainThread": Thread.isMainThread,
+        ]
+        for (key, value) in details.sorted(by: { $0.key < $1.key }) {
+            entry[key] = value
+        }
+
+        let logSuffix = details.isEmpty
+            ? ""
+            : " — " + details.sorted(by: { $0.key < $1.key }).map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
+        NSLog("%@", "[PlayTools] RuntimeLaunchDiagnostics: \(event)\(logSuffix)")
+
+        let entryData: Data
+        do {
+            entryData = try JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys])
+        } catch {
+            NSLog("%@", "[PlayTools] RuntimeLaunchDiagnostics: failed to encode \(event) — \(error.localizedDescription)")
+            return
+        }
+
+        writeQueue.sync {
+            do {
+                let fileManager = FileManager.default
+                let fileURL = diagnosticsFileURL(bundleId: resolvedBundleId)
+                try fileManager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                if !fileManager.fileExists(atPath: fileURL.path) {
+                    _ = fileManager.createFile(atPath: fileURL.path, contents: nil)
+                }
+                let handle = try FileHandle(forWritingTo: fileURL)
+                defer {
+                    try? handle.close()
+                }
+                _ = try handle.seekToEnd()
+                try handle.write(contentsOf: entryData)
+                try handle.write(contentsOf: Data("\n".utf8))
+            } catch {
+                NSLog("%@", "[PlayTools] RuntimeLaunchDiagnostics: failed to persist \(event) — \(error.localizedDescription)")
+            }
+        }
+    }
+}
 
 /// Runtime-side bridge listener used by PlayTools inside the launched app process.
 ///
@@ -113,14 +193,37 @@ final class BridgeListener {
         if hasCommandListener, let existingPort {
             if alreadyRegistered {
                 log("BridgeListener already running for \(bundleId) on port \(existingPort)")
+                RuntimeLaunchDiagnostics.record(
+                    event: "bridge_listener_start_reused",
+                    bundleId: bundleId,
+                    details: [
+                        "localPort": String(existingPort),
+                        "registrationState": "registered",
+                    ]
+                )
             } else {
                 log("BridgeListener already has command listener on port \(existingPort); registration still pending, ensuring retry loop")
+                RuntimeLaunchDiagnostics.record(
+                    event: "bridge_listener_start_reused",
+                    bundleId: bundleId,
+                    details: [
+                        "localPort": String(existingPort),
+                        "registrationState": "pending",
+                    ]
+                )
                 scheduleRegistrationRetry(reason: "start() called while registration pending")
             }
             return existingPort
         }
 
         log("BridgeListener starting for bundleId=\(bundleId), registrationPort=\(registrationPort)")
+        RuntimeLaunchDiagnostics.record(
+            event: "bridge_listener_starting",
+            bundleId: bundleId,
+            details: [
+                "registrationPort": String(registrationPort),
+            ]
+        )
 
         do {
             let runtimePort = try startCommandListener()
@@ -136,14 +239,38 @@ final class BridgeListener {
             lock.unlock()
 
             log("BridgeListener command listener ready on port \(runtimePort); sessionId=\(runtimeSessionId)")
+            RuntimeLaunchDiagnostics.record(
+                event: "bridge_listener_command_listener_ready",
+                bundleId: bundleId,
+                details: [
+                    "localPort": String(runtimePort),
+                    "sessionId": runtimeSessionId,
+                ]
+            )
 
             if !attemptRegistrationIfNeeded(trigger: "initial startup") {
                 log("BridgeListener initial registration did not complete; keeping command listener alive and scheduling retries")
+                RuntimeLaunchDiagnostics.record(
+                    event: "bridge_registration_initial_attempt_incomplete",
+                    bundleId: bundleId,
+                    details: [
+                        "localPort": String(runtimePort),
+                        "sessionId": runtimeSessionId,
+                    ]
+                )
                 scheduleRegistrationRetry(reason: "initial registration failed")
             }
             return runtimePort
         } catch {
             log("BridgeListener failed to start: \(error.localizedDescription)")
+            RuntimeLaunchDiagnostics.record(
+                event: "bridge_listener_start_failed",
+                bundleId: bundleId,
+                details: [
+                    "error": error.localizedDescription,
+                    "registrationPort": String(registrationPort),
+                ]
+            )
             stop()
             return 0
         }
@@ -190,6 +317,8 @@ final class BridgeListener {
     func stop() {
         lock.lock()
         let sessionId = self.sessionId
+        let bundleId = self.bundleId
+        let previousLocalPort = self.localPort
         let registrationConnection = self.registrationConnection
         let listener = self.commandListener
         let connections = Array(self.commandConnections.values)
@@ -212,6 +341,15 @@ final class BridgeListener {
         self.sessionId = nil
         self.isRunning = false
         lock.unlock()
+
+        RuntimeLaunchDiagnostics.record(
+            event: "bridge_listener_stopped",
+            bundleId: bundleId,
+            details: [
+                "hadSessionId": sessionId ?? "",
+                "hadLocalPort": previousLocalPort.map { String($0) } ?? "",
+            ]
+        )
 
         if let sessionId {
             sendSync(
@@ -451,6 +589,16 @@ final class BridgeListener {
 
         do {
             log("BridgeListener attempting registration (trigger=\(trigger), sessionId=\(pendingSessionId), runtimePort=\(runtimePort))")
+            RuntimeLaunchDiagnostics.record(
+                event: "bridge_registration_attempt_started",
+                bundleId: pendingBundleId,
+                details: [
+                    "trigger": trigger,
+                    "sessionId": pendingSessionId,
+                    "runtimePort": String(runtimePort),
+                    "registrationPort": String(pendingRegistrationPort),
+                ]
+            )
             let connection = try connectAndRegister(
                 sessionId: pendingSessionId,
                 bundleId: pendingBundleId,
@@ -466,6 +614,17 @@ final class BridgeListener {
             return true
         } catch {
             log("BridgeListener registration attempt failed (trigger=\(trigger)): \(error.localizedDescription)")
+            RuntimeLaunchDiagnostics.record(
+                event: "bridge_registration_attempt_failed",
+                bundleId: pendingBundleId,
+                details: [
+                    "trigger": trigger,
+                    "sessionId": pendingSessionId,
+                    "runtimePort": String(runtimePort),
+                    "registrationPort": String(pendingRegistrationPort),
+                    "error": error.localizedDescription,
+                ]
+            )
             return false
         }
     }
@@ -500,6 +659,14 @@ final class BridgeListener {
         previousConnection?.cancel()
         startRegistrationReceiveLoop()
         startHeartbeatLoop()
+        RuntimeLaunchDiagnostics.record(
+            event: "bridge_registration_established",
+            bundleId: bundleId,
+            details: [
+                "sessionId": sessionId,
+                "runtimePort": String(runtimePort),
+            ]
+        )
         log("BridgeListener registration established for \(bundleId) on port \(runtimePort)")
     }
 
@@ -530,6 +697,15 @@ final class BridgeListener {
         lock.unlock()
 
         timer.resume()
+        RuntimeLaunchDiagnostics.record(
+            event: "bridge_registration_retry_scheduled",
+            bundleId: pendingBundleId,
+            details: [
+                "reason": reason,
+                "sessionId": pendingSessionId ?? "",
+                "runtimePort": localPort.map { String($0) } ?? "",
+            ]
+        )
         log("BridgeListener scheduled registration retry: \(reason)")
     }
 
@@ -552,6 +728,14 @@ final class BridgeListener {
         lock.unlock()
 
         heartbeatTimer?.cancel()
+        RuntimeLaunchDiagnostics.record(
+            event: "bridge_registration_channel_lost",
+            bundleId: bundleId,
+            details: [
+                "reason": reason,
+                "shouldRetry": shouldRetry ? "true" : "false",
+            ]
+        )
         log("BridgeListener lost registration channel: \(reason)")
 
         if shouldRetry {

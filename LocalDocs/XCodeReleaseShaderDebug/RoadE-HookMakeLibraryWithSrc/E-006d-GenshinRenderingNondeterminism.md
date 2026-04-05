@@ -37,13 +37,27 @@
   4. 替换链路稳定，但差异落在更后续 render pipeline / post-processing
 - 只有在这一层结论明确后，下一轮才应该决定是否回到 `IRToMSLConverter`、replacement runtime，还是更后续的渲染链路。
 
+## 最新执行结果（2026-04-05，本轮）
+
+- 已通过统一入口实际完成首个 off/on pair：
+  - `build/e006d-run-snapshots/replacement-off-run1/com.miHoYo.Yuanshen`
+  - `build/e006d-run-snapshots/replacement-on-run1/com.miHoYo.Yuanshen`
+- `replacement-off-run1` 成功保留 `.gputrace`，`snapshot.meta.json` 摘要为：`replacementEnabled=false`、`gputraceMSL=2`、`modules=91`、`diagnostics=18`
+- `replacement-on-run1` 在尝试 GPU capture 时出现 bridge timeout，随后 runtime session 消失；因此本轮只保留了**无 `.gputrace`** 的快照，但同样固化了 `manifest.jsonl + modules/ + diagnostics + app settings`
+- 基于本轮快照重新跑出的 `build/e006d-run-matrix.json` 目前给出：`crossMode.offVsOnPairSummary.allPairsDifferent=true`、`allPairsInputStable=true`、`allPairsReplacementStable=false`
+- 对应的 `build/e006d-run-diff-off1-vs-on1.json` 显示：共享 `moduleKey=91`、`onlyInRunA=0`、`onlyInRunB=0`，且两侧都没有可比较的 replacement aggregate（`hasComparableReplacement=false`）
+- 这意味着本轮已可以先排除“captured corpus 输入集合本身漂移”；当前更值得优先排查的是 **replacement 成功路径是否真正命中、runtime capture/session 是否不稳定，或差异是否落在更后续 pipeline**，但还不能仅凭这一对 run 直接把结论定性为 replacement 命中漂移
+- 本轮同时修正了 `Scripts/analyze_capture_run_matrix.py`：shared module 若仅在 `module.meta.json` 的 `captureCount`、`sourceCacheKeys`、`generatedMSLBytes`、`llvmIRBytes`、`bitcodeBytes` 等 bookkeeping 字段上漂移，不再误报为 `inputStable=false`
+
 ## 优先排查顺序
 
 ### 1. 先固定复现条件
 
-- 尽量固定 app 版本、账号状态、停留界面、画质设置、注入步骤和启动顺序
+- 尽量固定 app 版本、停留界面、画质设置、注入步骤和启动顺序
 - 同一条件下至少做 `2~3` 轮重复启动
 - 增加一组**完全不做替换**的对照运行，作为最低风险基线
+- 对当前原神链路，默认可把“启动后数十秒自动停在登录界面”视为稳定复现面；因此 `E-006d8` 当前轮次的 live 启动、等待、截帧、快照固化都默认可由 agent 独立完成，不要求人工登录、选场景或手动停到指定位置
+- 只有当某个 blocker 明确依赖登录后场景、账号态或其它人工交互条件时，才把“人工把界面摆到指定位置”升级为本轮前置条件；若出现这种情况，必须在对应子任务文档中单独写明
 - 当前可直接使用：
 
 ```bash
@@ -107,6 +121,7 @@ python3 Scripts/snapshot_capture_run.py \
   - 单模块 `module.bc` / `module.ll` / `module.generated.metal`
   - 聚合 MSL
   - 对应 `.gputrace`
+- 对当前主线，默认要求 agent 把以上 live 证据全部采齐并固化；人工只保留到最后用 Xcode 打开 `.gputrace` 做可视确认
 - 当 `replacement=off` 与 `replacement=on` 各自都已积累 `2~3` 轮快照后，可直接批量汇总：
 
 ```bash
@@ -195,6 +210,7 @@ python3 Scripts/compare_capture_runs.py \
 
 - 至少形成一组**可重复复现**的对照样本
 - 至少形成一组**替换 vs 不替换**的稳定对照样本
+- 至少形成一组**agent 独立完成**的 live 启动 / 等待 / 截帧 / 快照固化样本；不要再把“人工先把游戏停到某个界面”当作 `E-006d8` 当前阶段的默认前提
 - 能明确将问题归到以下某一层：
   - 替换开启后引入的稳定差异（但根因层级未定）
   - 输入差异
@@ -206,11 +222,12 @@ python3 Scripts/compare_capture_runs.py \
 
 ## 当前建议执行顺序
 
-1. 固定 live 条件；每轮结束后立即用 `Scripts/snapshot_capture_run.py` 固化 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings 快照
-2. 先补足 **replacement=off** 的 `2~3` 轮稳定对照，再补足 **replacement=on** 的 `2~3` 轮对应 run
-3. 用 `Scripts/analyze_capture_run_matrix.py` 先回答“同模式是否稳定 / 跨模式是否稳定不同”——这是 `E-006d8` 的第一层交付物
-4. 若矩阵已稳定，再用 `Scripts/compare_capture_runs.py` 下钻具体 run-vs-run，查看 `onlyInRunA/B`、共享 `moduleKey` 差异、`latestReplacementComparison`，以及 `snapshotComparison` 中的 `.gputrace` 归因字段——这是 `E-006d8` 的第二层交付物
-5. 只有在上面两层都拿到稳定结论后，才继续决定下一轮是回到 converter / replacement，还是进入更后续的 pass / pipeline 行为排查
+1. 固定 live 条件；对当前原神基线，直接以“启动后数十秒自动停在登录界面”为统一复现面，由 agent 独立完成每轮启动与等待；每轮结束后立即用 `Scripts/snapshot_capture_run.py` 或 `Scripts/e006d_matrix_runner.py finalize-run` 固化 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings 快照
+2. 当前已完成 `replacement-off-run1` 与 `replacement-on-run1`；下一步优先补 `replacement-off-run2` 与 `replacement-on-run2`，确认“同模式稳定”是否成立
+3. 在补第二轮之前，先把 `replacement=on` 的 live 异常单独视为 blocker：重点看为什么 `shaderSourceReplacementEnabled=true` 时仍然没有 `replacements/` 目录与 aggregate event，并且 GPU capture 超时后 session 会直接消失
+4. 用 `Scripts/analyze_capture_run_matrix.py` 先回答“同模式是否稳定 / 跨模式是否稳定不同”——这是 `E-006d8` 的第一层交付物；当前首个 off/on pair 已回答了“跨模式不同”且“输入稳定”
+5. 若矩阵已稳定，再用 `Scripts/compare_capture_runs.py` 下钻具体 run-vs-run，查看 `onlyInRunA/B`、共享 `moduleKey` 差异、`latestReplacementComparison`，以及 `snapshotComparison` 中的 `.gputrace` 归因字段——这是 `E-006d8` 的第二层交付物
+6. 只有在上面两层都拿到稳定结论后，才继续决定下一轮是回到 converter / replacement，还是进入更后续的 pass / pipeline 行为排查
 
 ## 从 dashboard 下沉的细粒度技术备注
 
@@ -220,7 +237,9 @@ python3 Scripts/compare_capture_runs.py \
 - **“替换 vs 不替换”必须有明确控制面**：`E-006d3` 后不要再通过改代码或手改 plist 临时构造“无替换”样本，统一使用 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py`，避免把控制变量本身做脏
 - **run 快照要在 live 结束后立即固化**：`E-006d4` 后统一使用 `Scripts/snapshot_capture_run.py` 保留 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings；不要再手工从容器里零散拷目录，否则很容易把 replacement 开关状态与对应 run 搞混
 - **若本轮已产出 `.gputrace`，也要与 run 快照一起固化**：`E-006d5` 后优先通过 `Scripts/snapshot_capture_run.py --gputrace /path/to/xxx.gputrace` 一次性保留 trace 与源码覆盖摘要，不要再把 `.gputrace` 单独散落在其它目录，避免后续 run-vs-run diff 时丢失最终可见性证据
+- **当前默认不是“人工控场”，而是“agent 自动到登录界面”**：对原神当前阶段，登录界面已经足够作为 `E-006d8` 的稳定对照面；文档里出现“同一界面 / 相同设置”时，默认指这个 agent 可独立到达的界面，除非子任务另行声明更深的人工场景要求
 - **成功路径也要落盘聚合产物，才能回答“最终替换源码是否稳定”**：只保留单模块 `.bc/.ll/.metal` 不足以覆盖聚合顺序、重名去重与最终 `makeLibrary(source:)` 输入；`E-006d2` 后应优先比较 `manifest.jsonl` 中最新 `event=replacement` 对应的 aggregate source hash
+- **`module.meta.json` 的统计字段要与真实 artifact diff 分开看**：`captureCount`、`sourceCacheKeys`、`generatedMSLBytes`、`llvmIRBytes`、`bitcodeBytes` 这类 bookkeeping 字段会让 `module.meta.json` hash 变化，但不等于 `.bc/.ll/.metal` 本体变化；对 `E-006d8` 的“输入 / 输出是否稳定”判断，必须优先看真实 artifact 与 aggregate source，不能把 metadata 漂移误收敛成 shader 漂移
 - **`throw` + 静默 `catch` 回退是 runtime hook 的危险反模式**：会把关键 blocker 隐藏为“看似正常但实际回退原始 library”
 - **失败路径导出是闭环的关键一环**：`ShaderSourceDiagnostics/<baseName>_modules/` 让失败样本也能进入离线 replay 主路径；该闭环规则本身见 `E-004-CorpusClosureAndRecapturePolicy.md`
 - **更早的 lowering 细节与已收敛 compile blocker 不再由本文档维护**：相关历史实现经验已经沉到 `E-004-MetallibSourceExtraction.md` 与 archive，避免当前主线文档同时承担“执行说明”和“历史修复百科”两种职责

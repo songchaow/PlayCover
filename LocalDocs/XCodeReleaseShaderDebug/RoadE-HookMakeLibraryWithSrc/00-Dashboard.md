@@ -82,7 +82,7 @@ makeLibrary(source:)
 5. 若本轮实现了新功能，执行相应验证：
    - 离线功能：最小样本 / corpus replay / Metal 编译
    - runtime 导出链路：构建 + 安装 + 最小 live 采集；**若本轮修复来源于 `ShaderSourceDiagnostics/` 的 compile blocker，且对应样本尚未进入 `ShaderCorpus/`，不能只用既有 corpus green 结束，需补一次 post-fix fresh capture 或明确记录失败路径导出仍未闭环**
-   - 最终截帧效果：live + `.gputrace` 人工确认
+   - 最终截帧效果：agent 完成 live 启动、等待、截帧、快照固化与自动检查；**仅在最后一步保留 Xcode 人工确认**
 6. 执行完毕后整理文档：结合已有内容，**深度整理并同步全局信息**，更新优先级、当前主线、TODO、验证与经验；较旧信息下沉到归档，主体保持简洁，**不要只做追加**
 7. 整理代码与改动内容；若本轮新增的测试样本、回放脚本或 corpus 工具对后续仍有价值，也应一并整理并提交
 8. 收尾完成后执行 `git commit`
@@ -118,7 +118,7 @@ open /Applications/PlayCover.app
 remove_playtools / inject_playtools / launch_app
 ```
 
-若本轮目标是 `E-006d`（重复启动画面不一致 / 随机渲染异常），除常规部署外，还应尽量保持**同一 app 版本、同一场景、同一停留界面、相同画质设置**，至少做 2~3 轮对照启动；并增加一组**不做替换**的稳定对照。每轮都保留 `manifest.jsonl` 增量、`ShaderCorpus/` 新增模块、`ShaderSourceDiagnostics/` 新文件、聚合 MSL 与 `.gputrace`，用于比较“输入是否相同、生成源码是否相同、是否真的发生替换、替换与不替换时的最终效果差异是否稳定存在”。
+若本轮目标是 `E-006d`（重复启动画面不一致 / 随机渲染异常），除常规部署外，还应尽量保持**同一 app 版本、同一停留界面、相同画质设置**，至少做 2~3 轮对照启动；并增加一组**不做替换**的稳定对照。对原神当前链路，默认可把“启动后数十秒自动停在登录界面”视为稳定复现面：agent 可以独立完成 `launch_app`、等待进入该界面、执行 Metal capture / `.gputrace` 固化、保存 `manifest.jsonl` 增量、`ShaderCorpus/` 新增模块、`ShaderSourceDiagnostics/` 新文件与聚合 MSL；**不要求人工登录、选场景或手动把界面摆到指定位置**。只有当本轮问题明确依赖登录后场景、账号态或其它人工交互条件时，才需要额外人工介入并在文档中单独说明。
 
 ### 最终验证（保留）
 
@@ -132,7 +132,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 **注意**：hash 文件不全是源码——原神样本中的 hash 文件是 bplist，必须以 `valid_msl_files` 而非 `source_files` 为准。
 
-**人工确认（最终）**：Xcode 打开 `.gputrace` → 选 Draw Call → 查看 Shader 面板是否显示源码而非 `Shader source not found`。若当前处理的是 `E-006d`，还需补充确认：在同一界面重复启动时，相关 Draw Call 的 shader 来源、render pass 行为与视觉结果是否保持一致；并对照**替换**与**不替换**两种运行方式的最终效果差异。
+**人工确认（最终）**：Xcode 打开 `.gputrace` → 选 Draw Call → 查看 Shader 面板是否显示源码而非 `Shader source not found`。若当前处理的是 `E-006d`，还需补充确认：在同一界面重复启动时，相关 Draw Call 的 shader 来源、render pass 行为与视觉结果是否保持一致；并对照**替换**与**不替换**两种运行方式的最终效果差异。除这一步外，前置的 live 启动、等待、截帧、快照固化与自动脚本分析都默认由 agent 独立完成。
 
 ## 当前主线
 
@@ -152,10 +152,11 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 当前构建验证基线（2026-04-04，`E-006c3` 后） | `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`（**BUILD SUCCEEDED**）；`./BuildScripts/build_and_install.sh`（**BUILD SUCCEEDED**，签名验证通过） |
 | 当前 live 验证状态（2026-04-04，第三次 fresh capture，PID 26460） | `remove_playtools → inject_playtools → launch_app → create_session`：session 返回 `ready` 并保持稳定；manifest 从 304 → 394 行（+90 条），corpus 从 43 → **91 模块**（+48 个全新成功样本），diagnostics 文件数不变（18），**本轮零失败样本** |
 | 当前 `.gputrace` 源码可见性检查（2026-04-04，`E-006c` 已关闭） | `capture_20260404_roadE_e006c3_final.gputrace`（765 文件，968 index 引用）：`valid_msl_files: 2`（两个 PlayTools 注入的 MSL 文件，首行 `// Auto-generated aggregated MSL source by PlayTools LibrarySourceInjection`，包含完整 `#include <metal_stdlib>` 与结构体/函数定义）。**Xcode 人工确认：Draw Call shader 面板可见 MSL 源码**。覆盖率 2/11（18%）source 文件为 MSL，其余为 bplist（原始 metallib）。
-| 当前异常基线（2026-04-05，`E-006d` 新开） | 用 PlayCover 打开原神并停留在**同一界面**时，重复启动后画面表现会出现差异；**mesh 布局没有变化**，但局部渲染结果异常。当前仍**不能实锤是 shader 本身改坏**：由于原神是延迟管线，base pass 对比看起来也可能类似，问题也可能位于后处理、着色阶段，或 render pipeline 顺序 / 配置。当前最稳定的复现对照，是**做替换**与**不做替换**时最终效果稳定不同；该现象尚未完成更细的层级归因。 |
+| 当前异常基线（2026-04-05，`E-006d` 新开） | 用 PlayCover 打开原神并停留在**同一界面**时，重复启动后画面表现会出现差异；**mesh 布局没有变化**，但局部渲染结果异常。当前仍**不能实锤是 shader 本身改坏**：由于原神是延迟管线，base pass 对比看起来也可能类似，问题也可能位于后处理、着色阶段，或 render pipeline 顺序 / 配置。当前最稳定的复现对照，是**做替换**与**不做替换**时最终效果稳定不同；对当前任务口径，默认把“启动后数十秒自动停在登录界面”视为可重复的同一界面，因此 live 采集与 `.gputrace` 固化可由 agent 独立完成。 |
 | 当前控制面基线（2026-04-05，`E-006d3` 后） | 已新增 `shaderSourceReplacementEnabled` runtime 开关：关闭后 `PlayTools` 在 `LibrarySourceInjectionSwizzles` 入口直接返回原始 `MTLLibrary`，不再进入 `IR -> MSL -> makeLibrary(source:)` 替换链路；可用 `python3 Scripts/set_shader_replacement_mode.py --bundle-id <bundleId> --mode on/off` 直接切换单 app 的“替换 / 不替换” live 对照模式。 |
 | 当前 run 固化基线（2026-04-05，`E-006d7` 后） | `Scripts/snapshot_capture_run.py` 现可在原有 `manifest.jsonl + modules/ (+ replacements/) + diagnostics + app settings` 快照基础上，额外通过 `--gputrace /path/to/xxx.gputrace` 一并固化最终截帧，并写出 `gputrace-source-summary.json`、`gputrace-attribution-index.json` 与 `snapshot.meta.json.gputraceAttribution` 摘要；`Scripts/compare_capture_runs.py` 的 `snapshotComparison` 也会同步比较 `attributedVisibleMSLHashes`、`attributedModuleKeys`、`attributedReplacementDirectories` 与 `visibleMSLContentSHA256`，把最终 trace 中可见源码直接回连到 `modules/` 与 `replacements/`。 |
-| 当前下一步（2026-04-05，`E-006d8` 待执行） | 用已落地的 `set_shader_replacement_mode.py + snapshot_capture_run.py + analyze_capture_run_matrix.py + compare_capture_runs.py`，先形成 **replacement=off / on 各 2~3 轮**的稳定矩阵；完成标准不是再加新工具，而是输出“同模式是否稳定、跨模式是否稳定不同，以及第一层明确归因落点”。 |
+| 当前 `E-006d8` 首轮执行（2026-04-05，本轮） | 已实际落盘 `build/e006d-run-snapshots/replacement-off-run1/com.miHoYo.Yuanshen`（`gputraceMSL=2`，`replacementEnabled=false`）与 `build/e006d-run-snapshots/replacement-on-run1/com.miHoYo.Yuanshen`（`replacementEnabled=true`，本轮 `.gputrace` capture 超时后 session 消失，只保留无 trace 快照）。重新修正 `Scripts/analyze_capture_run_matrix.py` 后，`build/e006d-run-matrix.json` 对首个 off/on pair 给出 `allPairsDifferent=true`、`allPairsInputStable=true`、`allPairsReplacementStable=false`；`build/e006d-run-diff-off1-vs-on1.json` 也显示共享 `moduleKey=91`、`onlyInRunA/B=0`、两侧都**没有**可比较的 replacement aggregate。当前已可先排除“captured corpus 输入集合漂移”，并把下一层排查重点收敛到 **replacement 成功路径是否真正命中、runtime capture/session 不稳定，或更后续 pipeline 差异**；还不能仅凭这一对 run 直接定性为 replacement 命中漂移。 |
+| 当前下一步（2026-04-05，`E-006d8` 继续执行） | 继续补齐 **replacement=off / on 各 2~3 轮**稳定矩阵，但优先处理两件事：1）补 `replacement-off-run2` / `replacement-on-run2`，确认同模式是否稳定；2）专门盯住 replacement=on 的 live capture/session 掉线与“`replacementEnabled=true` 但 `replacements=0` / 无 aggregate event”现象，确认问题究竟是 replacement 成功路径未命中、runtime 在 capture 阶段回退/掉线，还是更后续的 pipeline 差异。人工仍只保留到最终 Xcode 验收。 |
 | 历史 live blocker 时间线 | 见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
 
 ## 整体架构
@@ -220,7 +221,7 @@ PlayTools.framework (注入到 iOS app)
 | E-006d6 | ↳ 多轮 run 矩阵汇总脚本 | ✅ DONE | |
 | E-006d7 | ↳ `.gputrace` 可见源码归因索引 | ✅ DONE | |
 | E-006d8 | ↳ replacement=off/on 多轮矩阵结论与第一层归因 | TODO | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-|  | 目标：先拿到 **off / on 各 2~3 轮**稳定 run 快照，输出矩阵结论（同模式是否稳定、跨模式是否稳定不同），并把下一层工作明确收敛到“输入漂移 / 输出漂移 / 替换命中漂移 / 更后续 pipeline 差异”之一 | | |
+|  | 当前已拿到首个 `off1/on1` pair：`build/e006d-run-matrix.json` 已证明 **跨模式不同** 且这对 run 的 **captured inputs 稳定**；首层结论先排除“输入漂移”，并把下一步聚焦到 replacement 成功路径、runtime capture/session 不稳定，或更后续 pipeline。接下来要补 `off2/on2`，确认同模式是否稳定，再决定是否优先下钻 runtime replacement 还是更后续 pipeline。 | | |
 | E-006a | ↳ 扩展真实 corpus 覆盖面 | TODO | |
 |  | 在进入新地图 / 新场景 / 新画质设置时追加采集，逐步逼近"尽量全"的真实 shader 集合 | | |
 | E-006b | ↳ 离线批量 green 后做最小 live 复测 | ✅ DONE | |
@@ -264,8 +265,10 @@ PlayTools.framework (注入到 iOS app)
 - **当前最保守的稳定对照是“替换 vs 不替换”**：在还不能实锤具体根因位于哪个 pass / stage 之前，先确认“做替换”和“完全不做替换”时的最终效果是否稳定不同，这是 `E-006d` 最低风险的比较基线
 - **“不做替换”对照必须复用统一开关**：`E-006d3` 后统一通过 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py` 控制，避免因手工改代码、临时删逻辑或脏 plist 导致对照本身不可靠
 - **run 快照也必须统一固化方式**：`E-006d5` 后统一通过 `Scripts/snapshot_capture_run.py` 保留单次 run 的 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings；若本轮已有 `.gputrace`，也应通过 `--gputrace` 一并纳入同一快照，避免把 replacement 开关状态、聚合产物与最终 trace 证据混淆
+- **当前原神的 live 复现不要求人工摆场景**：对 `E-006d8` 当前基线，默认以“启动后数十秒自动停在登录界面”为稳定复现面；agent 可以独立完成启动、等待、截帧与快照固化。只有当后续 blocker 明确依赖登录后场景或人工交互时，才需要提升人工参与级别
 - **`.gputrace` 可见源码现在需要继续看“归因是否闭环”**：`E-006d7` 后不只看 `validMSLFiles` 或 hash 集合是否变化，还要看 `gputrace-attribution-index.json` 是否已把这些可见 MSL 回连到 `module.generated.metal` 或 `aggregate.generated.metal`；若可见 hash 无法归因，说明最终 trace 证据与 corpus / replacement 侧仍未闭环
 - **多轮对照要先看矩阵结论，再下钻单对 run**：`E-006d6` 后优先用 `Scripts/analyze_capture_run_matrix.py` 汇总 `2~3` 轮 `replacement=off/on` 快照，先回答“同模式是否稳定、跨模式是否稳定不同”；只有矩阵层已形成稳定结论时，才继续回到 `Scripts/compare_capture_runs.py` 下钻单对 run 差异
+- **`module.meta.json` 的 benign 漂移不能误判成输入/输出漂移**：`E-006d8` 首个 off/on pair 实测里，很多 shared module 只是在 `captureCount`、`sourceCacheKeys` 或字节统计字段上发生 metadata 级变化，而 `.bc/.ll/.metal` 本体未变；`Scripts/analyze_capture_run_matrix.py` 现已显式忽略这类 benign 差异，避免把 bookkeeping 噪音误报成 `inputStable=false`
 - **同一界面重复启动出现差异时，不要过早收敛为 shader root cause**：当前已知现象是 mesh 不变，但原神为延迟管线；base pass 看起来类似并不能排除后处理、着色阶段，或 render pipeline 顺序 / 配置差异
 - **`E-006d` 的归因顺序必须固定**：先做“替换 vs 不替换”稳定对照，再对齐“输入是否相同”（metallib / moduleKey / functionTypes），再比较“输出是否相同”（单模块 `.metal` / 聚合 MSL / compile 结果），最后才看“运行时是否真的使用了替换后的 library”以及更后续的 pass / pipeline 行为
 - **`Scripts/compare_capture_runs.py` 是 `E-006d` 的第一层离线守门**：当两轮都已保留 `manifest.jsonl` 与 `modules/` 快照时，优先先跑该脚本，快速回答“哪些 `moduleKey` 只出现在单边”“相同 `moduleKey` 的 `.bc/.ll/.metal/.meta` 是否一致”，避免一上来就手翻 corpus 或直接回到 live 猜测

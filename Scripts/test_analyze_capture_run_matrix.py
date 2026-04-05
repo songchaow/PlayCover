@@ -214,6 +214,69 @@ class AnalyzeCaptureRunMatrixTests(unittest.TestCase):
             pair = report["groups"]["on"]["pairs"][0]
             self.assertEqual(pair["classification"]["semanticSharedModuleDifferenceCount"], 1)
 
+    def test_same_mode_capture_count_drift_is_benign(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            make_run(root, "replacement-on-run1", True, "shared-module", "same", ["AAAAAAAAAAAAAAAA"], capture_count=1)
+            make_run(root, "replacement-on-run2", True, "shared-module", "same", ["AAAAAAAAAAAAAAAA"], capture_count=2)
+
+            output_path = root / "matrix.json"
+            subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT_PATH),
+                    "--runs-root",
+                    str(root),
+                    "--bundle-id",
+                    "com.miHoYo.Yuanshen",
+                    "--output",
+                    str(output_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            report = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["groups"]["on"]["pairSummary"]["allPairsInputStable"], True)
+            pair = report["groups"]["on"]["pairs"][0]
+            self.assertEqual(pair["classification"]["semanticSharedModuleDifferenceCount"], 0)
+
+    def test_same_mode_summary_byte_drift_is_benign_when_artifacts_match(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_a = make_run(root, "replacement-on-run1", True, "shared-module", "same", ["AAAAAAAAAAAAAAAA"])
+            run_b = make_run(root, "replacement-on-run2", True, "shared-module", "same", ["AAAAAAAAAAAAAAAA"])
+
+            meta_path = run_b / "modules" / "shared-module" / "module.meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["generatedMSLBytes"] += 6
+            write_json(meta_path, meta)
+
+            output_path = root / "matrix.json"
+            subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT_PATH),
+                    "--runs-root",
+                    str(root),
+                    "--bundle-id",
+                    "com.miHoYo.Yuanshen",
+                    "--output",
+                    str(output_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            report = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["groups"]["on"]["pairSummary"]["allPairsInputStable"], True)
+            pair = report["groups"]["on"]["pairs"][0]
+            self.assertEqual(pair["classification"]["semanticSharedModuleDifferenceCount"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

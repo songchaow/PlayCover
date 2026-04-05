@@ -27,9 +27,16 @@ from typing import Any
 from compare_capture_runs import build_report, load_snapshot_meta, resolve_run_input
 
 
-BENIGN_META_SUMMARY_FIELDS = {"captureCount", "sourceCacheKeys"}
+BENIGN_META_SUMMARY_FIELDS = {
+    "bitcodeBytes",
+    "captureCount",
+    "generatedMSLBytes",
+    "llvmIRBytes",
+    "sourceCacheKeys",
+}
 BENIGN_REPLACEMENT_FIELDS = {"cacheKey", "aggregateSourcePath"}
 BENIGN_SNAPSHOT_FIELDS = {"replacementMode.enabled"}
+BENIGN_MODULE_ARTIFACTS = {"module.meta.json"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -102,9 +109,28 @@ def classify_pair(report: dict[str, Any]) -> dict[str, Any]:
         semantic_differences: list[dict[str, Any]] = []
         for diff in item.get("differences", []):
             field = diff.get("field")
+            if field == "artifactHashes" or field == "artifactSizes":
+                left_artifacts = diff.get("runA") if isinstance(diff.get("runA"), dict) else {}
+                right_artifacts = diff.get("runB") if isinstance(diff.get("runB"), dict) else {}
+                semantic_artifacts: dict[str, dict[str, Any]] = {}
+                for artifact_name in sorted(set(left_artifacts) | set(right_artifacts)):
+                    if artifact_name in BENIGN_MODULE_ARTIFACTS:
+                        continue
+                    left_value = left_artifacts.get(artifact_name)
+                    right_value = right_artifacts.get(artifact_name)
+                    if left_value != right_value:
+                        semantic_artifacts[artifact_name] = {
+                            "runA": left_value,
+                            "runB": right_value,
+                        }
+                if semantic_artifacts:
+                    semantic_differences.append({"field": field, "artifacts": semantic_artifacts})
+                continue
+
             if field != "metaSummary":
                 semantic_differences.append(diff)
                 continue
+
             left_meta = diff.get("runA") if isinstance(diff.get("runA"), dict) else {}
             right_meta = diff.get("runB") if isinstance(diff.get("runB"), dict) else {}
             for meta_field in sorted(set(left_meta) | set(right_meta)):

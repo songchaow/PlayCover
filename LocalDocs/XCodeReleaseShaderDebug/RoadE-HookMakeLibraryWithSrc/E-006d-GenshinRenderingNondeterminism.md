@@ -29,7 +29,7 @@
 
 | # | blocker | 现状 | 推进方式 | agent 可独立完成？ |
 |---|---|---|---|---|
-| 1 | **capture bridge reachability** | `session=ready` 后 `get_capture_status` 稳定 `Receive timed out`；session 假 ready 已被排除（`create_session` 已要求 bridge `ping` + 单测覆盖）；blocker 收敛到 capture command 路径本身 | 做 fresh on-run，排查 runtime `MetalCaptureService.getStatus()` 与 capture command 在主线程上的可达性；区分"ping 能通但 capture 命令不通"vs"capture service 根本没注册" | ✅ 是（构建 + 安装 + 注入 + launch + session） |
+| 1 | **capture bridge reachability** | `session=ready` 后 `get_capture_status` 一度稳定 `Receive timed out`；session 假 ready 已被排除（`create_session` 已要求 bridge `ping` + 单测覆盖）；**本轮又把 status probe 从"同步主线程 + status 时触发 lazy `dlopen`"改为"线程安全快照 + 不在 `get_capture_status` 中触发 lazy load"**。若 fresh run 仍超时，剩余 blocker 将更明确指向真正的 capture command 路径 | 做 fresh on-run，先确认 `get_capture_status` 是否恢复；若仍 timeout，再排查 runtime `captureFrame(...)` / capture command 在主线程上的可达性；区分"ping 能通但 capture 命令不通"vs"capture service 根本没注册" | ✅ 是（构建 + 安装 + 注入 + launch + session） |
 | 2 | **capture 输出路径权限** | `capture_metal_frame` 自定义 `output_path` 被拒 | 短期走默认容器 `Captures/` + `finalize-run --latest-gputrace`；长期需解决自定义路径沙盒权限 | ✅ 是（`--latest-gputrace` 已自动化） |
 | 3 | **trace 合法 MSL 覆盖偏低** | 成功 trace 仍只有 `2/11` 合法 MSL（`1.2%`） | 新 fresh capture 后用 `check_gputrace_sources.py` 检查并归因 | ✅ 是（需先解决 blocker 1 获得 trace） |
 | 4 | **绘制内容差异未正式产出** | `e006d_render_diff.py` 入口就绪，GUI 自动化环境未验证 | 在 Xcode GUI / Accessibility / `cliclick` 可用时，跑 `off-run1` vs `on-run5` 结构化 diff | ⚠️ 需 GUI 自动化环境 |
@@ -41,10 +41,9 @@
 4. capture 导出 / trace 可见性仍不稳定
 5. 替换链路稳定，但差异落在更后续 render pipeline / post-processing
 
-**当前最新收敛（2026-04-06）**：host 侧"session 假 ready"已独立收口（`create_session` 要求 bridge `ping` + 单测覆盖）。后续若 fresh run 仍复现 `get_capture_status -> Receive timed out`，blocker 已收敛到以下三层之一：
+**当前最新收敛（2026-04-06）**：host 侧"session 假 ready"已独立收口（`create_session` 要求 bridge `ping` + 单测覆盖），runtime 侧 `get_capture_status` 也已去掉"同步主线程 + status probe 触发 lazy `dlopen`"这层副作用。后续若 fresh run 仍复现 `get_capture_status -> Receive timed out`，blocker 将进一步收敛到以下两层之一：
 1. **capture command 路径本身**：host → runtime 的 capture 命令传递在 session ready 后是否真正可达
-2. **runtime `MetalCaptureService.getStatus()`**：capture service 是否在主线程上注册、是否阻塞、是否与 command bridge 共享队列
-3. **capture 输出 / finalize 路径**：即使 capture 成功，`.gputrace` 是否能正确写入并回收
+2. **capture 输出 / finalize 路径**：即使 capture 成功，`.gputrace` 是否能正确写入并回收
 
 ## 已完成的子项
 
@@ -128,6 +127,7 @@
 - **`throw` + 静默 `catch` 回退是 runtime hook 的危险反模式**
 - **host 侧 stale cleanup 必须同步断链**：否则会制造 split-brain
 - **`session ready` 必须区分"已 registration"与"command bridge 可达"**：该检查已落地（`create_session` 的 ready 判定收紧到 bridge `ping` 成功 + 单测覆盖），session 假 ready 已被排除。后续 `get_capture_status -> Receive timed out` 的排查重点集中在 capture command 路径 / runtime `MetalCaptureService.getStatus()` / 主线程执行
+- **`get_capture_status` 不应在查询路径里触发 lazy `dlopen` 或同步占用主线程**：status probe 的职责是快速回答"当前是否可截帧"，而不是在 probe 路径里完成 capture 库初始化；本轮已把 runtime status query 改成线程安全快照，并在 `diagnostic_summary` 中追加 `gpuToolsCaptureLoaded=`，方便把"capture 库未加载"与"真正的 bridge / capture timeout"分开看
 - **更早的 lowering 细节与已收敛 compile blocker 不再由本文档维护**：见 `E-004-MetallibSourceExtraction.md`、`E-006d-RenderingPathDiffReference.md` 与 archive
 
 ## 与其他文档的关系

@@ -67,6 +67,14 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
 @objc public class MetalCaptureService: NSObject {
     @objc public static let shared = MetalCaptureService()
 
+    private struct StatusStateSnapshot {
+        let captureManager: MTLCaptureManager?
+        let gpuToolsCaptureLoaded: Bool
+        let isCapturing: Bool
+        let queueDiscoveryInstalled: Bool
+        let lastCaptureWasEmptyTrace: Bool
+    }
+
     private enum CaptureTarget: String {
         case device
         case scope
@@ -120,6 +128,8 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
 
     private static let maxTrackedCommandQueues = 8
 
+    private let stateLock = NSLock()
+    private let captureLoadLock = NSLock()
     private var captureManager: MTLCaptureManager?
     private var gpuToolsCaptureLoaded = false
     private var isCapturing = false
@@ -173,14 +183,19 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
     /// the hook. `GPUToolsCapture` will overwrite this with its real implementation for layers
     /// created *after* loading.
     private func ensureGPUToolsCaptureLoaded() -> Bool {
-        guard !gpuToolsCaptureLoaded else { return true }
+        captureLoadLock.lock()
+        defer { captureLoadLock.unlock() }
+
+        guard !withStateLock({ gpuToolsCaptureLoaded }) else { return true }
 
         // Check if GPUToolsCapture was already loaded via DYLD_INSERT_LIBRARIES
         // at dyld time. If CaptureMTLDevice exists, the library is already active
         // and all Metal objects are already wrapped — no need for delayed dlopen.
         if NSClassFromString("CaptureMTLDevice") != nil {
-            gpuToolsCaptureLoaded = true
-            captureManager = MTLCaptureManager.shared()
+            withStateLock {
+                gpuToolsCaptureLoaded = true
+                captureManager = MTLCaptureManager.shared()
+            }
             logStatusProbe("ensureGPUToolsCaptureLoaded: already loaded via DYLD_INSERT (CaptureMTLDevice exists)")
             return true
         }
@@ -207,9 +222,11 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
 
         let handle = dlopen(libPath, RTLD_NOW)
         if handle != nil {
-            gpuToolsCaptureLoaded = true
-            // Re-acquire the singleton so supportsDestination reflects the newly loaded library.
-            captureManager = MTLCaptureManager.shared()
+            withStateLock {
+                gpuToolsCaptureLoaded = true
+                // Re-acquire the singleton so supportsDestination reflects the newly loaded library.
+                captureManager = MTLCaptureManager.shared()
+            }
             logStatusProbe("ensureGPUToolsCaptureLoaded: SUCCESS — captureManager re-acquired")
 
             // RC-012: Re-install compat stubs AFTER dlopen, because GPUToolsCapture may
@@ -224,7 +241,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         // Restore previous handler
         NSSetUncaughtExceptionHandler(previousHandler)
 
-        return gpuToolsCaptureLoaded
+        return withStateLock { gpuToolsCaptureLoaded }
     }
 
     /// RC-012: Install nil-returning fallback implementations for selectors that
@@ -328,7 +345,9 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         captureTargetRawValue: String? = nil
     ) -> CaptureResult {
         // RC-013: Reset empty trace flag at the start of each capture attempt
-        lastCaptureWasEmptyTrace = false
+        withStateLock {
+            lastCaptureWasEmptyTrace = false
+        }
 
         // Lazily load libmtlcapture.dylib and re-acquire MTLCaptureManager (RC-009)
         _ = ensureGPUToolsCaptureLoaded()
@@ -336,7 +355,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         // RC-015: One-time deep diagnostics at capture time
         logRC015CaptureFrameDiagnostics()
 
-        guard let manager = captureManager else {
+        guard let manager = currentCaptureManager() else {
             let status = makeStatus(manager: nil)
             return CaptureResult(
                 success: false,
@@ -345,7 +364,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
             )
         }
 
-        guard !isCapturing else {
+        guard !isCurrentlyCapturing() else {
             return CaptureResult(success: false, message: "Capture already in progress", outputPath: nil)
         }
 
@@ -398,7 +417,9 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
 
         do {
             try manager.startCapture(with: descriptor)
-            isCapturing = true
+            withStateLock {
+                isCapturing = true
+            }
             captureStartTime = CACurrentMediaTime()
             minimumCaptureDurationMs = normalizedDurationMs
             vsyncCount = 0
@@ -436,7 +457,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
 
     /// vsync 回调：在达到阈值后停止截帧
     @objc private func onVsync(_ link: CADisplayLink) {
-        guard isCapturing else {
+        guard isCurrentlyCapturing() else {
             invalidateStopTriggers()
             return
         }
@@ -466,7 +487,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
 
     /// 手动停止当前截帧（通常不需要，CADisplayLink 会自动停止）
     @objc public func stopCapture() -> CaptureResult {
-        guard isCapturing else {
+        guard isCurrentlyCapturing() else {
             return CaptureResult(success: false, message: "No capture in progress", outputPath: nil)
         }
 
@@ -495,7 +516,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
 
         let watchdogDelayMs = max(durationMs + 2_000, 3_000)
         let workItem = DispatchWorkItem { [weak self] in
-            guard let self, self.isCapturing else { return }
+            guard let self, self.isCurrentlyCapturing() else { return }
             self.logStatusProbe("capture watchdog fired after \(watchdogDelayMs)ms")
             self.stopActiveCapture(reason: "watchdog after \(watchdogDelayMs)ms")
         }
@@ -504,7 +525,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
     }
 
     private func stopActiveCapture(reason: String) {
-        guard let manager = captureManager, isCapturing else {
+        guard let manager = currentCaptureManager(), isCurrentlyCapturing() else {
             invalidateStopTriggers()
             resetActiveCaptureState()
             return
@@ -531,7 +552,9 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
             } else {
                 logStatusProbe("stopActiveCapture: SIGSEGV recovered during manager.stopCapture() — empty trace context (pre-existing Metal objects not wrapped by GPUToolsCapture); target=\(captureTarget.rawValue), reason=\(reason)")
                 // Mark that this capture produced an empty/invalid result
-                lastCaptureWasEmptyTrace = true
+                withStateLock {
+                    lastCaptureWasEmptyTrace = true
+                }
             }
         } else {
             logStatusProbe("stopActiveCapture: manager.isCapturing is false, skipping stopCapture(); target=\(captureTarget.rawValue), reason=\(reason)")
@@ -577,7 +600,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
                     .trackedCommandQueueUnavailable(
                         target: target,
                         trackedQueueCount: trackedCommandQueueCount(),
-                        queueDiscoveryInstalled: queueDiscoveryInstalled
+                        queueDiscoveryInstalled: isQueueDiscoveryInstalled()
                     )
                 )
             }
@@ -604,7 +627,9 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
     }
 
     private func resetActiveCaptureState() {
-        isCapturing = false
+        withStateLock {
+            isCapturing = false
+        }
         captureStartTime = 0
         vsyncCount = 0
         minimumCaptureDurationMs = 100
@@ -616,16 +641,20 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
     }
 
     /// 查询截帧状态
-    @objc public func getStatus() -> CaptureStatus {
-        // Lazily load libmtlcapture.dylib and re-acquire MTLCaptureManager (RC-009)
-        _ = ensureGPUToolsCaptureLoaded()
-        return makeStatus(manager: captureManager)
+    @objc public func getStatus(allowLazyLoad: Bool = true) -> CaptureStatus {
+        if allowLazyLoad {
+            // Lazily load libmtlcapture.dylib and re-acquire MTLCaptureManager (RC-009)
+            _ = ensureGPUToolsCaptureLoaded()
+        }
+        return makeStatus(manager: currentCaptureManager())
     }
 
     private func installQueueDiscoveryIfNeeded() {
-        guard !queueDiscoveryInstalled else { return }
+        guard !isQueueDiscoveryInstalled() else { return }
 
-        queueDiscoveryInstalled = true
+        withStateLock {
+            queueDiscoveryInstalled = true
+        }
         guard let device = MTLCreateSystemDefaultDevice() else {
             logStatusProbe("queue discovery skipped because default Metal device is unavailable")
             return
@@ -767,14 +796,15 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
     }
 
     private func makeStatus(manager: MTLCaptureManager?) -> CaptureStatus {
+        let state = snapshotStatusState(manager: manager)
         let enabled = PlaySettings.shared.metalCaptureEnabled
-        let available = manager != nil
-        let supportsGPUTrace = manager?.supportsDestination(.gpuTraceDocument) ?? false
-        let supportsDeveloperTools = manager?.supportsDestination(.developerTools) ?? false
+        let available = state.captureManager != nil
+        let supportsGPUTrace = state.captureManager?.supportsDestination(.gpuTraceDocument) ?? false
+        let supportsDeveloperTools = state.captureManager?.supportsDestination(.developerTools) ?? false
         let defaultDevice = MTLCreateSystemDefaultDevice()
         let hasDefaultDevice = defaultDevice != nil
         let defaultDeviceName = defaultDevice?.name
-        let defaultCaptureScope = manager?.defaultCaptureScope
+        let defaultCaptureScope = state.captureManager?.defaultCaptureScope
         let latestTrackedQueue = latestTrackedCommandQueue()
         let trackedQueueCount = trackedCommandQueueCount()
         let failureReason: String?
@@ -794,15 +824,16 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         let diagnosticSummary = [
             "enabled=\(enabled)",
             "captureManagerAvailable=\(available)",
+            "gpuToolsCaptureLoaded=\(state.gpuToolsCaptureLoaded)",
             "supportsGPUTrace=\(supportsGPUTrace)",
             "supportsDeveloperTools=\(supportsDeveloperTools)",
             "hasDefaultDevice=\(hasDefaultDevice)",
             "defaultDeviceName=\(Self.describeOptionalString(defaultDeviceName))",
-            "queueDiscoveryInstalled=\(queueDiscoveryInstalled)",
+            "queueDiscoveryInstalled=\(state.queueDiscoveryInstalled)",
             "trackedCommandQueues=\(trackedQueueCount)",
             "latestTrackedQueue=\(Self.describeOptionalString(latestTrackedQueue?.summary))",
             "defaultCaptureScopeLabel=\(Self.describeOptionalString(defaultCaptureScope?.label))",
-            "lastCaptureWasEmptyTrace=\(lastCaptureWasEmptyTrace)",
+            "lastCaptureWasEmptyTrace=\(state.lastCaptureWasEmptyTrace)",
             "failureReason=\(failureReason ?? "none")",
         ].joined(separator: ", ")
         logStatusProbe("makeStatus end. \(diagnosticSummary)")
@@ -811,13 +842,13 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
             available: available,
             supportsGPUTrace: supportsGPUTrace,
             supportsDeveloperTools: supportsDeveloperTools,
-            isCapturing: isCapturing,
+            isCapturing: state.isCapturing,
             enabled: enabled,
             hasDefaultDevice: hasDefaultDevice,
             defaultDeviceName: defaultDeviceName,
             failureReason: failureReason,
             diagnosticSummary: diagnosticSummary,
-            queueDiscoveryInstalled: queueDiscoveryInstalled,
+            queueDiscoveryInstalled: state.queueDiscoveryInstalled,
             trackedCommandQueueCount: trackedQueueCount,
             latestCommandQueueLabel: latestTrackedQueue?.label,
             latestCommandQueueDeviceName: latestTrackedQueue?.deviceName,
@@ -828,6 +859,36 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
 
     private func logStatusProbe(_ message: String) {
         print("[PlayTools] MetalCaptureService: \(message)")
+    }
+
+    private func withStateLock<T>(_ work: () -> T) -> T {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return work()
+    }
+
+    private func currentCaptureManager() -> MTLCaptureManager? {
+        withStateLock { captureManager }
+    }
+
+    private func isCurrentlyCapturing() -> Bool {
+        withStateLock { isCapturing }
+    }
+
+    private func isQueueDiscoveryInstalled() -> Bool {
+        withStateLock { queueDiscoveryInstalled }
+    }
+
+    private func snapshotStatusState(manager overrideManager: MTLCaptureManager?) -> StatusStateSnapshot {
+        withStateLock {
+            StatusStateSnapshot(
+                captureManager: overrideManager ?? captureManager,
+                gpuToolsCaptureLoaded: gpuToolsCaptureLoaded,
+                isCapturing: isCapturing,
+                queueDiscoveryInstalled: queueDiscoveryInstalled,
+                lastCaptureWasEmptyTrace: lastCaptureWasEmptyTrace
+            )
+        }
     }
 
     private static func describeOptionalString(_ value: String?) -> String {

@@ -140,7 +140,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 - **E-006d（当前最高优先级）**：调查"用 PlayCover 打开原神，在同一界面重复启动时，画面表现每次都不完全一样；mesh 不变，但局部渲染结果异常"的现象。当前**仍不能实锤是 shader 改坏**：原神是延迟管线，异常也可能来自后处理、着色阶段，或更上层的 render pipeline 顺序 / 配置差异。
 - **当前最该做的事**：`E-006d8` 已从"缺工具、缺证据"前移为"四条具体 blocker 收敛"。agent 可独立推进的四条线：
-  1. **capture bridge reachability**：`session=ready` 后 `get_capture_status` 仍稳定 `Receive timed out`；session 假 ready 已排除（`create_session` 已要求 bridge `ping`），blocker 收敛到 capture command 路径 / runtime `MetalCaptureService.getStatus()` / 主线程执行
+  1. **capture bridge reachability**：`session=ready` 后 `get_capture_status` 一度稳定 `Receive timed out`；session 假 ready 已排除（`create_session` 已要求 bridge `ping`），本轮进一步把 **status query 自身** 从"同步主线程 + status 时触发 lazy `dlopen`"改为"线程安全快照 + 不在 `get_capture_status` 中触发 lazy load"。**若 fresh run 仍超时，剩余排查面将进一步收敛到真正的 capture command / runtime `captureFrame(...)` 路径，而不再是 status probe 本身。**
   2. **capture 输出路径**：`capture_metal_frame` 自定义 `output_path` 权限失败，当前走默认容器 `Captures/` + `finalize-run --latest-gputrace` 回收
   3. **trace 合法 MSL 覆盖**：上一轮成功 `.gputrace` 仍只有 `2/11` 个合法 MSL，覆盖率 `1.2%`，需提高
   4. **绘制内容差异**：对 `replacement-off-run1` vs `replacement-on-run5` 做正式 draw call / Render Encoder / Pipeline State 结构化 diff
@@ -158,6 +158,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 当前落盘 / 闭环能力（2026-04-05） | 成功路径按 `ShaderCorpus/<bundleId>/modules/<moduleKey>/` 落盘单模块 `.bc/.ll/.metal/.meta.json`；成功 replacement 额外落盘 `ShaderCorpus/<bundleId>/replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal + replacement.meta.json`；失败路径在 `ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/` 落盘 `.bc/.ll/.metal/.meta.json`。三条路径都已能进入离线 replay / diff / 归因主回路 |
 | 当前控制面与统一工作流（2026-04-06） | 已统一使用 `shaderSourceReplacementEnabled` + `Scripts/set_shader_replacement_mode.py` 控制 `replacement=off/on`；使用 `Scripts/snapshot_capture_run.py` / `Scripts/e006d_matrix_runner.py` 统一固化单轮 run 与矩阵分析；使用 `Scripts/check_gputrace_sources.py` 做 `.gputrace` 自动检查；`RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl` 与 `Scripts/runtime_launch_diagnostics_summary.py` 用于判断 fresh 注入后是否真的进入主链路。当前这组日常方法都可由 agent 自主执行 |
 | `create_session` reachability 收口（2026-04-06） | host 侧 `SessionService.createSession(...)` 不再把"runtime 已 registration"等同于"session ready"，而是额外要求 command bridge `ping` 成功后才返回；已新增 `PlayCoverMCPTests` 覆盖"bridge 延迟可达 / 已注册但不可达"两类场景。**后续若 fresh run 仍出现 `get_capture_status -> Receive timed out`，blocker 已收敛到 capture command 路径 / runtime `MetalCaptureService.getStatus()` / 主线程执行，而不是 session 注册或 bridge ping 层。** |
+| `get_capture_status` 去主线程 / 去 lazy-load（2026-04-06） | runtime 侧 `BridgeListener` 不再为 `get_capture_status` 强制 `valueOnMainSync`，同时 `MetalCaptureService.getStatus(allowLazyLoad: false)` 不再在 status probe 中触发 `ensureGPUToolsCaptureLoaded()` / `dlopen`。状态查询现在返回线程安全快照，并在 `diagnostic_summary` 中显式带出 `gpuToolsCaptureLoaded=`，便于区分"capture 库尚未加载"与"真正的 bridge/capture 超时"。这一步的目标不是直接宣告 blocker 关闭，而是把剩余排查面进一步收窄到 capture command 本身。 |
 | 默认 `Captures/` 回收闭环（2026-04-06） | `Scripts/e006d_matrix_runner.py finalize-run` 已支持 `--latest-gputrace`；传入该参数时，会默认从 `~/Library/Containers/<bundleId>/Data/Documents/Captures/` 选取最新 `.gputrace` 并纳入 run 快照。agent 不需要手工拷路径 |
 | 绘制内容差异分析能力（2026-04-06） | `Scripts/e006d_render_diff.py` 已可作为统一入口，从 `build/e006d-run-snapshots/<label>/<bundle-id>` 解析快照内 `.gputrace`，导出 `frame_dump/`、`cb_data.json`、可选 `key_pass_details.json`，生成 `comparison.json + summary.txt`。当前缺的不是工具，而是**尚未对 `replacement-off-run1` vs `replacement-on-run5` 正式产出结构化 diff**（依赖 GUI 自动化环境） |
 | `.gputrace` 里程碑基线（2026-04-04） | `capture_20260404_roadE_e006c3_final.gputrace` 已被 Xcode 人工确认可在 Draw Call shader 面板中看到 MSL 源码（`E-006c` 已关闭） |
@@ -222,7 +223,7 @@ PlayTools.framework (注入到 iOS app)
 
 | # | blocker | 当前状态 | 推进方式 |
 |---|---|---|---|
-| 1 | capture bridge reachability：`session=ready` 后 `get_capture_status` 稳定 `Receive timed out` | `on-run7` 确认 session 不再掉线；`create_session` 已要求 bridge `ping` 成功，session 假 ready 已排除；blocker 收敛到 capture command 路径本身 | fresh on-run + 排查 runtime `MetalCaptureService.getStatus()` 与 capture command 在主线程上的可达性 |
+| 1 | capture bridge reachability：`session=ready` 后 `get_capture_status` 稳定 `Receive timed out` | `on-run7` 确认 session 不再掉线；`create_session` 已要求 bridge `ping` 成功，session 假 ready 已排除；**本轮已去掉 status probe 的主线程强耦合与 lazy `dlopen`**，若 fresh run 仍超时，剩余 blocker 将更明确指向真正的 capture command 路径 | fresh on-run，优先确认 `get_capture_status` 是否恢复；若仍 timeout，转入 runtime `captureFrame(...)` / capture command 主线程执行链路排查 |
 | 2 | capture 输出路径权限：自定义 `output_path` 被拒 | 已走默认容器 `Captures/` + `--latest-gputrace` 规避 | 长期需解决自定义路径权限；短期不影响主线 |
 | 3 | trace 合法 MSL 覆盖偏低 | 成功 trace 仍只有 `2/11` 合法 MSL（`1.2%`） | 新 fresh capture 后用 `check_gputrace_sources.py` 检查并归因 |
 | 4 | 绘制内容差异未正式产出 | `e006d_render_diff.py` 入口已就绪 | 需 GUI 自动化环境跑通 `off-run1` vs `on-run5` |
@@ -238,6 +239,7 @@ PlayTools.framework (注入到 iOS app)
 - **`E-006d` 的归因顺序必须固定**：先做"替换 vs 不替换"对照，再对齐"输入是否相同"，再比较"输出是否相同"，最后才看 runtime 是否真的使用了替换后的 library 以及更后续的 pass / pipeline 行为
 - **host 侧 stale cleanup 不能只删 registry，不断 registration channel 会制造 split-brain**：当前已改为 stale cleanup 时同步调用 `RegistrationListener.disconnectSessions(...)` 主动断开对应连接
 - **`session ready` 必须区分"已 registration"与"command bridge 可达"**：当前 `create_session` 已改为返回前额外做 bridge `ping`（已落地 + 单测覆盖）；**session 假 ready 已被排除**，后续 `get_capture_status -> Receive timed out` 的排查重点集中在 capture command 路径 / runtime `MetalCaptureService.getStatus()` / 主线程执行
+- **`get_capture_status` 不应再承担 lazy load / 主线程阻塞副作用**：status probe 的职责是快速回答"当前看起来是否可截帧"，而不是在查询路径里触发 `dlopen(libmtlcapture)` 或同步占用主线程；本轮已把 runtime status query 改成线程安全快照，并把 `gpuToolsCaptureLoaded=` 直接写进 `diagnostic_summary`
 - **更细的 lowering 经验、历史 live blocker 链路与已完成轮次已下沉到独立参考文档**：见 `E-006d-GenshinRenderingNondeterminism.md`、`E-006d-RenderingPathDiffReference.md`、`00-Dashboard-Archive.md` 与 `E-004-MetallibSourceExtraction-Archive.md`
 
 ## 参考信息

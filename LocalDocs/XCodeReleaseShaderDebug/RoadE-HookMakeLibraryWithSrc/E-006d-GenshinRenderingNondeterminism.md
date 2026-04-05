@@ -28,38 +28,41 @@
 
 ## 当前最该做的事
 
-- `E-006d8` 的第一轮 run matrix 已经完成 first-pass：`off1/off2/on1/on2` 足够证明“同模式输入稳定”，也足够说明当前**不该**继续机械补 run。
-- 下一步应优先把 blocker 收敛到两个更窄的问题：1）`replacement=on` 时为什么始终没有 aggregate / 成功 replacement 证据；2）`create_session -> get_capture_status / capture_metal_frame` 为什么会在 `ready` 后仍超时掉线。
+- `E-006d8` 的第一轮 run matrix 已经完成 first-pass：`off1/off2/on1/on2/on3` 已足够证明“同模式输入稳定”，也足够说明当前**不该**继续机械补 run。
+- 标准 `BuildScripts/build_and_install.sh` + fresh `replacement-on-run3` 已经把第一个 blocker 从“为什么没有 `replacement_attempt` / aggregate”收窄为两个更具体的问题：1）fresh on-run 期间 replacement 证据已恢复，但当前是**部分替换成功**——manifest 中 `replacement_attempt=91`、`replacement=36`，其余 `55` 次都落为 `reasonCode=exception`，`detail="Failed to launch llvm-dis: Operation not permitted"`；2）`create_session -> get_capture_status / capture_metal_frame` 仍会在 `ready` 后超时或直接丢 session，导致 fresh on-run 依旧没有新的 `.gputrace`。
 - 若本轮还拿不到完整 live 证据，采集动作必须继续固定为统一入口：使用 `Scripts/e006d_matrix_runner.py` 的 `prepare-run` / `finalize-run` / `analyze` 薄封装，固定 `replacement-<mode>-runN` 标签与分析入口，避免把模式、标签、快照目录或 compare 输入串错。
 - 本轮完成标准不是“继续加脚本”或“继续补文档”，而是至少把当前问题明确收敛到以下之一：
   1. 输入集合不稳定
   2. 输入稳定但输出/聚合结果不稳定
-  3. 输出稳定但替换实际命中不稳定
-  4. 替换链路稳定，但差异落在更后续 render pipeline / post-processing
+  3. 输出稳定但 replacement / `llvm-dis` 闭环只部分命中
+  4. live session / capture bridge 不稳定
+  5. 替换链路稳定，但差异落在更后续 render pipeline / post-processing
 - **新增日常验证方法时，默认只接受 agent 可通过脚本或命令独立完成的方案。** 若某一步需要人工登录、摆场景、点按钮或其它交互，它不能成为当前阶段默认 gate；只有在 blocker 明确依赖该人工条件、且已得到用户确认后，才可作为例外保留。
 - 只有在这一层结论明确后，下一轮才应该决定是否回到 `IRToMSLConverter`、replacement runtime，还是更后续的渲染链路。
 
 ## 最新执行结果（2026-04-05，本轮）
 
-- 已通过统一入口把 `E-006d8` 的 run 矩阵扩到四轮：
+- 已通过统一入口把 `E-006d8` 的 run 矩阵扩到五轮：
   - `build/e006d-run-snapshots/replacement-off-run1/com.miHoYo.Yuanshen`
   - `build/e006d-run-snapshots/replacement-off-run2/com.miHoYo.Yuanshen`
   - `build/e006d-run-snapshots/replacement-on-run1/com.miHoYo.Yuanshen`
   - `build/e006d-run-snapshots/replacement-on-run2/com.miHoYo.Yuanshen`
+  - `build/e006d-run-snapshots/replacement-on-run3/com.miHoYo.Yuanshen`
 - `replacement-off-run1` 仍是当前唯一带 `.gputrace` 的快照，`snapshot.meta.json` 摘要为：`replacementEnabled=false`、`gputraceMSL=2`、`modules=91`、`diagnostics=18`
-- `replacement-off-run2` 在同样 live 条件下两次 `create_session` 都直接超时；因此本轮只保留了**无 `.gputrace`** 的快照，但同样固化了 `manifest.jsonl + modules/ + diagnostics + app settings`，摘要为：`replacementEnabled=false`、`manifestLines=1427`、`modules=91`、`replacements=0`、`diagnostics=18`
-- `replacement-on-run1` 与 `replacement-on-run2` 都没有拿到 `.gputrace`，且两轮摘要都显示 `replacements=0`；其中 `replacement-on-run2` 一度成功拿到 `session=ready`，但随后 `get_capture_status` bridge timeout，session 在真正截帧前消失，说明当前 live blocker 已经从“单纯拿不到 session”收敛为“session 即使 ready 也不稳定、并且 replacement 成功路径始终没有落盘 aggregate event”
-- 基于四轮快照重新跑出的 `build/e006d-run-matrix.json` 目前给出：
+- 本轮首先按 dashboard 口径执行了标准 fresh 流程：`BuildScripts/build_and_install.sh` → `Scripts/set_shader_replacement_mode.py --mode on` → `e006d_matrix_runner.py prepare-run --mode on --run-index 3` → `remove_playtools` / `inject_playtools` / `launch_app` → `create_session`
+- `replacement-on-run3` 已成功固化快照，摘要为：`replacementEnabled=true`、`manifestLines=1636`、`modules=91`、`replacements=36`、`diagnostics=18`、`gputraceMSL=n/a`
+- 本轮 fresh on-run 的 replacement 证据已明确恢复：`manifest.jsonl` 统计为 `capture=1509`、`replacement_attempt=91`、`replacement=36`；其中 `replacement_attempt` 的结果分布为 `succeeded=36`、`failed=55`，失败全部落为 `reasonCode=exception`，最新 `detail="Failed to launch llvm-dis: Operation not permitted"`
+- 这说明 blocker 已不再是“`replacementEnabled=true` 但完全没有 attempt / aggregate”；标准 build/install 后，runtime 确实已经重新命中 replacement 并落出新的 `aggregate.generated.metal + replacement.meta.json`。当前更准确的描述是：**replacement 命中已经恢复，但仍是部分成功、部分 `llvm-dis` 权限失败**
+- live capture blocker 也被 fresh on-run 再次稳定复现：`create_session` 已成功拿到 `session=ready`，但随后 `get_capture_status` 发生 bridge timeout；继续调用 `capture_metal_frame` 时直接返回 `Session not found`，随后 `list_sessions` 为空。这说明当前 live blocker 已经稳定收敛为：**session 即使 ready 也会在真正截帧前掉线**
+- 基于五轮快照重新跑出的 `build/e006d-run-matrix.json` 目前给出：
   - `groups.off.pairSummary.allPairsInputStable=true`
   - `groups.on.pairSummary.allPairsInputStable=true`
+  - `groups.on.pairSummary.allPairsReplacementAttemptPresentWhenEnabled=false`
   - `crossMode.offVsOnPairSummary.allPairsDifferent=false`
-  - `crossMode.offVsOnPairSummary.differentPairCount=2`
-  - `crossMode.offVsOnPairSummary.allPairsReplacementStable=false`
-- 对应的 `build/e006d-run-diff-off1-vs-off2.json`、`build/e006d-run-diff-on1-vs-on2.json` 与 `build/e006d-run-diff-off2-vs-on2.json` 都显示：共享 `moduleKey=91`、`onlyInRunA=0`、`onlyInRunB=0`；脚本报告中的 `sharedModulesWithDifferencesCount` 主要来自 `module.meta.json` / `captureCount` 这类 bookkeeping 漂移，而不是 `module.bc` / `module.ll` / `module.generated.metal` 的语义差异
-- `build/e006d-run-diff-off2-vs-on2.json` 还进一步表明：在排除 `.gputrace` 缺失带来的快照差异后，当前跨模式可见的语义级 snapshot 差异只剩 `replacementMode.enabled` 本身；与此同时，两侧都没有可比较的 replacement aggregate（`hasComparableReplacement=false`）
-- 本轮已补充 runtime replacement 尝试级证据：`LibrarySourceInjectionSwizzles` 会把每次替换尝试都记为 `manifest.jsonl` 中的 `event=replacement_attempt`，并写出 `outcome` / `reasonCode` / `moduleKeys` / `invalidModuleCount` / `dumpPath`。`Scripts/compare_capture_runs.py` 现会额外输出 latest replacement attempt 对比；`Scripts/analyze_capture_run_matrix.py` 也会额外汇总 `allPairsReplacementAttemptStable`，并把 **`replacementEnabled=true` 但 `replacement_attempt=0`** 单独标成 blocker。
-- 基于这轮对现有快照的重跑结果，`replacement-on-run1` 与 `replacement-on-run2` 当前都被明确标记为：`latest replacement attempt unavailable for: runA, runB` 且 `replacement attempts missing while replacementEnabled=true for: runA, runB`；矩阵层则对应 `groups.on.pairSummary.allPairsReplacementAttemptPresentWhenEnabled=false` 与 `missingAttemptWhileEnabledPairs=1`。这说明当前 on-run 证据仍停留在“enabled 但没有 attempt 级落盘”，还**不能**把 blocker收敛成某个固定 `reasonCode`。
-- 这意味着当前已可稳定排除“captured corpus 输入集合漂移”与“单模块输出本体随机变化”两条分支；但这里排除的仍只是 **captured corpus / 单模块 artifact 层面的 drift**，还**没有**排除 runtime replacement-hit 是否稳定、以及更后续 live render-path / trace 行为是否稳定。现阶段最值得优先排查的 blocker 已进一步收敛为：**先通过标准 `BuildScripts/build_and_install.sh` 恢复一轮 fresh `replacement=on` run，使其至少出现 `replacement_attempt` 级证据**，以及 **live capture/session 为什么会在 ready 后超时掉线**。在拿到至少一轮 `replacement=on` 且带 `.gputrace` + aggregate source 的稳定样本前，还不能继续把结论往 shader lowering 或更后续 pipeline 方向过早定性。
+  - `crossMode.offVsOnPairSummary.differentPairCount=4`
+- 其中 `groups.on.pairSummary.allPairsReplacementAttemptPresentWhenEnabled=false` 仍然成立，并**不是**因为 `on3` 继续缺 attempt，而是因为历史 `on1/on2` 仍是 “enabled 但没有 attempt” 的旧样本；`on2 vs on3` 的 diff 已明确显示：`runA=n/a/none`，`runB=failed/exception`
+- `build/e006d-run-diff-on2-vs-on3.json` 与 `build/e006d-run-diff-off2-vs-on3.json` 继续证明：共享 `moduleKey=91`、`onlyInRunA=0`、`onlyInRunB=0`，因此当前依然可以稳定排除“captured corpus 输入集合漂移”；但 fresh on-run 还没有新的 `.gputrace`，所以跨模式最终 trace 级证据仍然不足
+- 这意味着当前已可稳定把 blocker 收敛到两条更窄的主线：1）**为什么 session 会在 ready 后于 `get_capture_status` / `capture_metal_frame` 前后超时并消失**；2）**为什么同一轮 on-run 中仍有 `55` 个 module 在 `llvm-dis` 这一步以 `Operation not permitted` 失败**。在拿到至少一轮 `replacement=on` 且带 `.gputrace + aggregate source` 的稳定样本前，还不能继续把结论往 shader lowering 或更后续 pipeline 方向过早定性。
 
 ## 优先排查顺序
 
@@ -235,11 +238,11 @@ python3 Scripts/compare_capture_runs.py \
 ## 当前建议执行顺序
 
 1. 固定 live 条件；对当前原神基线，直接以“启动后数十秒自动停在登录界面”为统一复现面，由 agent 独立完成每轮启动与等待；每轮结束后立即用 `Scripts/snapshot_capture_run.py` 或 `Scripts/e006d_matrix_runner.py finalize-run` 固化 `manifest.jsonl` / `modules/` / `replacements/` / diagnostics / app settings 快照
-2. 当前已完成 `replacement-off-run1/off-run2/on-run1/on-run2`；“同模式输入稳定”已经成立，因此下一步不再是继续机械补 run，而是优先恢复**至少一轮 replacement=on 的稳定 `.gputrace` + aggregate source 样本**
-3. 把 `replacement=on` 的 live 异常单独视为 blocker：先看最新 run 是否至少出现 `event=replacement_attempt`。若像当前 `on1/on2` 一样已经被脚本明确标成 **`replacementEnabled=true` 但 `replacement_attempt` 缺失**，则下一步应先做一次标准 `BuildScripts/build_and_install.sh` 后的 fresh on-run，确认是部署/命中问题；只有在 attempt 级证据重新出现后，才继续下钻 `outcome` / `reasonCode`。与此同时，继续核对 runtime session 为什么会在 `ready` 之后于 `get_capture_status` / `capture_metal_frame` 前后超时掉线
+2. 当前已完成 `replacement-off-run1/off-run2/on-run1/on-run2/on-run3`；“同模式输入稳定”已经成立，因此下一步不再是继续机械补 run，而是优先恢复**至少一轮 replacement=on 的稳定 `.gputrace` + aggregate source 样本**
+3. 把 `replacement=on` 的 live 异常单独视为 blocker：`on3` 已经证明标准 `BuildScripts/build_and_install.sh` 后 fresh on-run 可以恢复 `replacement_attempt` 与 aggregate source，因此下一步不再优先怀疑“完全没命中 replacement”，而是继续下钻两个更窄的问题：一是 runtime session 为什么会在 `ready` 之后于 `get_capture_status` / `capture_metal_frame` 前后超时并消失；二是为什么同一轮里仍有 `55` 个 module 在 `llvm-dis` 这一步以 `Operation not permitted` 失败
 4. `Scripts/analyze_capture_run_matrix.py` 的第一层结论已更新为：“captured corpus / 单模块 artifact 层面的同模式稳定”成立，但“跨模式稳定不同”**尚未**成立；这意味着当前还不能把最终差异稳定位于 replacement 开关本身
-5. `Scripts/compare_capture_runs.py` 的第二层结论也已更新为：共享 `moduleKey` 与单模块 `.bc/.ll/.metal` 本体仍然稳定，当前没有任何一轮 run 落出可比较的 `latestReplacementComparison`
-6. 因此下一轮应优先下钻 runtime replacement / live bridge 稳定性，而不是先回到 converter 或更后续的 pass / pipeline；只有在拿到 replacement 成功样本后，后两条分支才值得继续展开
+5. `Scripts/compare_capture_runs.py` 的第二层结论也已更新为：共享 `moduleKey` 与单模块 `.bc/.ll/.metal` 本体仍然稳定；`on2 vs on3` 已能明确回答“fresh build/install 确实恢复了 replacement 证据”，但由于 `on3` 仍无 `.gputrace`，当前还没有可复用的 trace-level 结论
+6. 因此下一轮应优先下钻 live bridge / session 稳定性，并并行处理 `llvm-dis` 权限失败样本，而不是先回到 converter 或更后续的 pass / pipeline；只有在拿到 replacement 成功且带 `.gputrace` 的 fresh on-run 后，后两条分支才值得继续展开
 
 ## 从 dashboard 下沉的细粒度技术备注
 

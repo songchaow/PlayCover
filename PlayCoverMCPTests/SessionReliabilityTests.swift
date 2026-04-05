@@ -178,6 +178,85 @@ final class RegistrationListenerDisconnectTests: XCTestCase {
         // Session should have been unregistered by close message handler
         XCTAssertNil(registry.get("disc-sess-1"))
     }
+
+    func testDisconnectSessionsNotifiesRuntimeAndCleansUpSession() throws {
+        let port = try registrationListener.start()
+
+        let fakeRuntime = FakeRuntimeServer(bundleId: "com.disconnect.test", sessionId: "disc-sess-2")
+        let started = expectation(description: "runtime started")
+        let registered = expectation(description: "runtime registered")
+
+        try fakeRuntime.start(registrationPort: port, startedExpectation: started, registeredExpectation: registered)
+        wait(for: [started, registered], timeout: 5.0)
+
+        XCTAssertEqual(registry.get("disc-sess-2")?.status, .ready)
+
+        registrationListener.disconnectSessions(["disc-sess-2"], reason: "test forced disconnect")
+
+        let disconnected = expectation(description: "session marked disconnected")
+        DispatchQueue.global().async {
+            let deadline = Date().addingTimeInterval(2.0)
+            while Date() < deadline {
+                if self.registry.get("disc-sess-2")?.status == .disconnected {
+                    disconnected.fulfill()
+                    return
+                }
+                usleep(50_000)
+            }
+        }
+        wait(for: [disconnected], timeout: 2.5)
+
+        XCTAssertEqual(registry.get("disc-sess-2")?.status, .disconnected)
+
+        fakeRuntime.stop()
+    }
+
+    func testStaleCleanupDisconnectsAndRuntimeReregisters() throws {
+        let port = try registrationListener.start()
+
+        let fakeRuntime = FakeRuntimeServer(bundleId: "com.disconnect.test", sessionId: "disc-sess-3")
+        fakeRuntime.autoReconnectOnRegistrationClose = true
+
+        let started = expectation(description: "runtime started")
+        let registered = expectation(description: "runtime registered")
+        try fakeRuntime.start(registrationPort: port, startedExpectation: started, registeredExpectation: registered)
+        wait(for: [started, registered], timeout: 5.0)
+
+        guard var staleSession = registry.get("disc-sess-3") else {
+            return XCTFail("Expected registered runtime session")
+        }
+        try registry.unregister(sessionId: staleSession.sessionId)
+        staleSession.lastHeartbeat = Date().addingTimeInterval(-120)
+        try registry.register(staleSession)
+
+        let healthMonitor = SessionHealthMonitor(registry: registry, staleTimeout: 30.0)
+        healthMonitor.onStaleSessions = { [weak registrationListener] staleSessions in
+            registrationListener?.disconnectSessions(
+                staleSessions.map(\.sessionId),
+                reason: "stale session removed by health monitor"
+            )
+        }
+
+        let reRegistered = expectation(description: "runtime re-registered after stale cleanup")
+        DispatchQueue.global().async {
+            let deadline = Date().addingTimeInterval(3.0)
+            while Date() < deadline {
+                if let session = self.registry.get("disc-sess-3"), session.status == .ready,
+                   session.lastHeartbeat > staleSession.lastHeartbeat {
+                    reRegistered.fulfill()
+                    return
+                }
+                usleep(50_000)
+            }
+        }
+
+        healthMonitor.checkHealth()
+
+        wait(for: [reRegistered], timeout: 3.5)
+        XCTAssertEqual(registry.get("disc-sess-3")?.status, .ready)
+
+        fakeRuntime.stop()
+    }
 }
 
 // MARK: - Session Closed Error Tests

@@ -382,6 +382,7 @@ final class FakeRuntimeServer: NSObject {
     private var registrationConnection: NWConnection?
     private(set) var commandPort: UInt16?
     private(set) var isRunning = false
+    private var registrationPort: UInt16?
 
     /// All commands received by this fake runtime.
     private(set) var receivedCommands: [CommandPayload] = []
@@ -396,6 +397,9 @@ final class FakeRuntimeServer: NSObject {
     /// Called when the server stops.
     var onStop: (() -> Void)?
 
+    var onRegistrationMessage: ((BridgeMessage) -> Void)?
+    var autoReconnectOnRegistrationClose = false
+
     init(bundleId: String = "com.fake.app", pid: Int32 = 9999, sessionId: String = "fake-session-1") {
         self.bundleId = bundleId
         self.pid = pid
@@ -409,6 +413,7 @@ final class FakeRuntimeServer: NSObject {
     /// - Parameter startedExpectation: Fulfilled when the command listener is ready.
     /// - Parameter registeredExpectation: Fulfilled when registration with host is complete.
     func start(registrationPort: UInt16 = 52741, startedExpectation: XCTestExpectation, registeredExpectation: XCTestExpectation) throws {
+        self.registrationPort = registrationPort
         // 1. Start command listener on ephemeral port
         guard let nwPort = NWEndpoint.Port(rawValue: 0) else {
             throw BridgeProtocolError.invalidMessage("Cannot create ephemeral port")
@@ -457,7 +462,7 @@ final class FakeRuntimeServer: NSObject {
     }
 
     /// Connect to the host's registration listener and send a register message.
-    private func connectAndRegister(registrationPort: UInt16, registeredExpectation: XCTestExpectation) {
+    private func connectAndRegister(registrationPort: UInt16, registeredExpectation: XCTestExpectation?) {
         guard let cmdPort = commandPort else { return }
 
         let regHost = NWEndpoint.Host("127.0.0.1")
@@ -487,19 +492,19 @@ final class FakeRuntimeServer: NSObject {
                 // Clear handler after initiating registration to prevent
                 // double-fulfill when stop() cancels the connection
                 regConn.stateUpdateHandler = nil
-                self.readRegistrationResponse(connection: regConn, expectation: registeredExpectation)
+                self.readRegistrationMessages(connection: regConn, expectation: registeredExpectation)
             case .failed:
                 self.lock.lock()
                 let shouldFulfill = !self.registeredFulfilled
                 self.registeredFulfilled = true
                 self.lock.unlock()
-                if shouldFulfill { registeredExpectation.fulfill() }
+                if shouldFulfill { registeredExpectation?.fulfill() }
             case .cancelled:
                 self.lock.lock()
                 let shouldFulfill = !self.registeredFulfilled
                 self.registeredFulfilled = true
                 self.lock.unlock()
-                if shouldFulfill { registeredExpectation.fulfill() }
+                if shouldFulfill { registeredExpectation?.fulfill() }
             default:
                 break
             }
@@ -533,34 +538,55 @@ final class FakeRuntimeServer: NSObject {
 
     // MARK: - Private
 
-    private func readRegistrationResponse(connection: NWConnection, expectation: XCTestExpectation) {
+    private func readRegistrationMessages(connection: NWConnection, expectation: XCTestExpectation?) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, _, _ in
+            guard let self else { return }
             guard let data = data, !data.isEmpty else {
                 // Connection closed or no data - stop reading
                 return
             }
 
             if let message = try? bridgeDecode(data) {
+                self.onRegistrationMessage?(message)
                 switch message {
                 case .registerAck:
-                    self?.lock.lock()
-                    self?.registeredFulfilled = true
-                    self?.lock.unlock()
-                    expectation.fulfill()
-                    return
+                    if let expectation {
+                        self.lock.lock()
+                        let shouldFulfill = !self.registeredFulfilled
+                        self.registeredFulfilled = true
+                        self.lock.unlock()
+                        if shouldFulfill {
+                            expectation.fulfill()
+                        }
+                    }
                 case .error:
-                    self?.lock.lock()
-                    self?.registeredFulfilled = true
-                    self?.lock.unlock()
-                    expectation.fulfill()
-                    return
+                    if let expectation {
+                        self.lock.lock()
+                        let shouldFulfill = !self.registeredFulfilled
+                        self.registeredFulfilled = true
+                        self.lock.unlock()
+                        if shouldFulfill {
+                            expectation.fulfill()
+                        }
+                    }
+                case .close:
+                    if self.autoReconnectOnRegistrationClose,
+                       self.isRunning,
+                       let registrationPort = self.registrationPort {
+                        connection.cancel()
+                        self.registrationConnection = nil
+                        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                            guard let self else { return }
+                            self.connectAndRegister(registrationPort: registrationPort, registeredExpectation: nil)
+                        }
+                        return
+                    }
                 default:
                     break
                 }
             }
 
-            // Read more (only for non-terminating messages)
-            self?.readRegistrationResponse(connection: connection, expectation: expectation)
+            self.readRegistrationMessages(connection: connection, expectation: nil)
         }
     }
 

@@ -333,10 +333,51 @@ class AnalyzeCaptureRunMatrixTests(unittest.TestCase):
             )
 
             self.assertIn("mode=off: runs=2 pairs=1 allInputStable=True allReplacementStable=False allReplacementAttemptStable=True", completed.stdout)
+            self.assertIn("allReplacementAttemptPresentWhenEnabled=True", completed.stdout)
+            self.assertIn("missingAttemptWhileEnabledPairs=0", completed.stdout)
             report = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertEqual(report["groups"]["off"]["pairSummary"]["allPairsReplacementAttemptStable"], True)
+            self.assertEqual(report["groups"]["off"]["pairSummary"]["allPairsReplacementAttemptPresentWhenEnabled"], True)
             pair = report["groups"]["off"]["pairs"][0]
             self.assertEqual(pair["classification"]["replacementAttemptPresenceDiff"], False)
+            self.assertEqual(pair["classification"]["replacementAttemptMissingWhenEnabled"], False)
+
+    def test_on_mode_missing_attempts_are_reported_as_explicit_blocker(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            make_run(root, "replacement-on-run1", True, "shared-module", "same", ["AAAAAAAAAAAAAAAA"], attempt_outcome=None)
+            make_run(root, "replacement-on-run2", True, "shared-module", "same", ["AAAAAAAAAAAAAAAA"], attempt_outcome=None)
+
+            output_path = root / "matrix.json"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT_PATH),
+                    "--runs-root",
+                    str(root),
+                    "--bundle-id",
+                    "com.miHoYo.Yuanshen",
+                    "--output",
+                    str(output_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("allReplacementAttemptPresentWhenEnabled=False", completed.stdout)
+            self.assertIn("missingAttemptWhileEnabledPairs=1", completed.stdout)
+            report = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["groups"]["on"]["pairSummary"]["allPairsReplacementAttemptStable"], False)
+            self.assertEqual(report["groups"]["on"]["pairSummary"]["allPairsReplacementAttemptPresentWhenEnabled"], False)
+            self.assertEqual(report["groups"]["on"]["pairSummary"]["missingReplacementAttemptWhenEnabledPairCount"], 1)
+            pair = report["groups"]["on"]["pairs"][0]
+            self.assertEqual(pair["classification"]["replacementAttemptMissingWhenEnabled"], True)
+            self.assertEqual(
+                pair["classification"]["replacementAttemptMissingWhenEnabledRuns"],
+                ["runA", "runB"],
+            )
 
     def test_same_mode_summary_byte_drift_is_benign_when_artifacts_match(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

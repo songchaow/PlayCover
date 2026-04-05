@@ -576,6 +576,27 @@ def compare_snapshot_context(run_a: RunInput, meta_a: dict[str, Any] | None, run
     }
 
 
+def build_replacement_attempt_coverage(
+    attempt_summary_a: dict[str, Any],
+    attempt_summary_b: dict[str, Any],
+    snapshot_context_a: dict[str, Any],
+    snapshot_context_b: dict[str, Any],
+) -> dict[str, Any]:
+    missing_when_enabled: list[str] = []
+
+    if (snapshot_context_a.get("replacementMode") or {}).get("enabled") is True and attempt_summary_a.get("replacementAttemptEventCount") == 0:
+        missing_when_enabled.append("runA")
+    if (snapshot_context_b.get("replacementMode") or {}).get("enabled") is True and attempt_summary_b.get("replacementAttemptEventCount") == 0:
+        missing_when_enabled.append("runB")
+
+    return {
+        "missingWhenEnabled": missing_when_enabled,
+        "runAEnabledWithoutAttempt": "runA" in missing_when_enabled,
+        "runBEnabledWithoutAttempt": "runB" in missing_when_enabled,
+        "bothRunsMissingWhenEnabled": len(missing_when_enabled) == 2,
+    }
+
+
 def build_report(run_a: RunInput, run_b: RunInput) -> dict[str, Any]:
     events_a = load_jsonl(run_a.manifest_path)
     events_b = load_jsonl(run_b.manifest_path)
@@ -587,10 +608,18 @@ def build_report(run_a: RunInput, run_b: RunInput) -> dict[str, Any]:
     replacement_attempts_b = build_replacement_attempt_index(run_b)
     snapshot_meta_a = load_snapshot_meta(run_a)
     snapshot_meta_b = load_snapshot_meta(run_b)
+    snapshot_context_a = build_snapshot_context(run_a, snapshot_meta_a)
+    snapshot_context_b = build_snapshot_context(run_b, snapshot_meta_b)
 
     latest_replacement_comparison = compare_replacement_runs(replacements_a, replacements_b)
     latest_replacement_attempt_comparison = compare_replacement_attempt_runs(replacement_attempts_a, replacement_attempts_b)
     snapshot_comparison = compare_snapshot_context(run_a, snapshot_meta_a, run_b, snapshot_meta_b)
+    replacement_attempt_coverage = build_replacement_attempt_coverage(
+        replacement_attempts_a["summary"],
+        replacement_attempts_b["summary"],
+        snapshot_context_a,
+        snapshot_context_b,
+    )
 
     keys_a = set(modules_a)
     keys_b = set(modules_b)
@@ -607,7 +636,7 @@ def build_report(run_a: RunInput, run_b: RunInput) -> dict[str, Any]:
             "summary": summarize_events(events_a),
             "replacementSummary": replacements_a["summary"],
             "replacementAttemptSummary": replacement_attempts_a["summary"],
-            "snapshotContext": build_snapshot_context(run_a, snapshot_meta_a),
+            "snapshotContext": snapshot_context_a,
         },
         "runB": {
             "label": run_b.label,
@@ -616,7 +645,7 @@ def build_report(run_a: RunInput, run_b: RunInput) -> dict[str, Any]:
             "summary": summarize_events(events_b),
             "replacementSummary": replacements_b["summary"],
             "replacementAttemptSummary": replacement_attempts_b["summary"],
-            "snapshotContext": build_snapshot_context(run_b, snapshot_meta_b),
+            "snapshotContext": snapshot_context_b,
         },
         "comparison": {
             "onlyInRunA": only_a,
@@ -625,6 +654,7 @@ def build_report(run_a: RunInput, run_b: RunInput) -> dict[str, Any]:
             "sharedModulesWithDifferences": shared_differences,
             "latestReplacementComparison": latest_replacement_comparison,
             "latestReplacementAttemptComparison": latest_replacement_attempt_comparison,
+            "replacementAttemptCoverage": replacement_attempt_coverage,
             "snapshotComparison": snapshot_comparison,
             "differenceSummary": {
                 "onlyInRunACount": len(only_a),
@@ -698,6 +728,13 @@ def print_summary(report: dict[str, Any]) -> None:
             f"/{attempt_summary_a['latestReasonCode'] or 'none'} "
             f"runB={attempt_summary_b['latestOutcome'] or 'n/a'}"
             f"/{attempt_summary_b['latestReasonCode'] or 'none'}"
+        )
+
+    replacement_attempt_coverage = comparison["replacementAttemptCoverage"]
+    if replacement_attempt_coverage["missingWhenEnabled"]:
+        print(
+            "replacement attempts missing while replacementEnabled=true for: "
+            f"{', '.join(replacement_attempt_coverage['missingWhenEnabled'])}"
         )
 
     snapshot_comparison = comparison["snapshotComparison"]

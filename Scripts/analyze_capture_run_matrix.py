@@ -103,6 +103,7 @@ def classify_pair(report: dict[str, Any]) -> dict[str, Any]:
     diff_summary = comparison["differenceSummary"]
     replacement_comparison = comparison["latestReplacementComparison"]
     replacement_attempt_comparison = comparison["latestReplacementAttemptComparison"]
+    replacement_attempt_coverage = comparison.get("replacementAttemptCoverage") or {}
     snapshot_comparison = comparison["snapshotComparison"]
     snapshot_context_a = snapshot_comparison.get("runA") or {}
     snapshot_context_b = snapshot_comparison.get("runB") or {}
@@ -196,6 +197,7 @@ def classify_pair(report: dict[str, Any]) -> dict[str, Any]:
         and replacement_mode_a is False
         and replacement_mode_b is False
     )
+    missing_attempt_when_enabled_runs = list(replacement_attempt_coverage.get("missingWhenEnabled", []))
     snapshot_stable = (
         snapshot_comparison["hasComparableSnapshots"]
         and len(semantic_snapshot_differences) == 0
@@ -214,6 +216,8 @@ def classify_pair(report: dict[str, Any]) -> dict[str, Any]:
         "inputStable": input_stable,
         "replacementStable": replacement_stable,
         "replacementAttemptStable": replacement_attempt_stable,
+        "replacementAttemptMissingWhenEnabled": bool(missing_attempt_when_enabled_runs),
+        "replacementAttemptMissingWhenEnabledRuns": missing_attempt_when_enabled_runs,
         "snapshotStable": snapshot_stable,
         "anyDifference": any_difference,
         "semanticSharedModuleDifferenceCount": len(semantic_shared_differences),
@@ -231,10 +235,12 @@ def summarize_pairs(pair_reports: list[dict[str, Any]]) -> dict[str, Any]:
             "allPairsInputStable": None,
             "allPairsReplacementStable": None,
             "allPairsReplacementAttemptStable": None,
+            "allPairsReplacementAttemptPresentWhenEnabled": None,
             "allPairsSnapshotStable": None,
             "allPairsDifferent": None,
             "stablePairCount": 0,
             "differentPairCount": 0,
+            "missingReplacementAttemptWhenEnabledPairCount": 0,
         }
 
     classifications = [classify_pair(pair_report["report"]) for pair_report in pair_reports]
@@ -243,10 +249,16 @@ def summarize_pairs(pair_reports: list[dict[str, Any]]) -> dict[str, Any]:
         "allPairsInputStable": all(item["inputStable"] for item in classifications),
         "allPairsReplacementStable": all(item["replacementStable"] for item in classifications),
         "allPairsReplacementAttemptStable": all(item["replacementAttemptStable"] for item in classifications),
+        "allPairsReplacementAttemptPresentWhenEnabled": all(
+            not item["replacementAttemptMissingWhenEnabled"] for item in classifications
+        ),
         "allPairsSnapshotStable": all(item["snapshotStable"] for item in classifications),
         "allPairsDifferent": all(item["anyDifference"] for item in classifications),
         "stablePairCount": sum(1 for item in classifications if item["inputStable"]),
         "differentPairCount": sum(1 for item in classifications if item["anyDifference"]),
+        "missingReplacementAttemptWhenEnabledPairCount": sum(
+            1 for item in classifications if item["replacementAttemptMissingWhenEnabled"]
+        ),
     }
 
 
@@ -322,6 +334,8 @@ def print_summary(report: dict[str, Any]) -> None:
             f"allInputStable={summary['allPairsInputStable']} "
             f"allReplacementStable={summary['allPairsReplacementStable']} "
             f"allReplacementAttemptStable={summary['allPairsReplacementAttemptStable']} "
+            f"allReplacementAttemptPresentWhenEnabled={summary['allPairsReplacementAttemptPresentWhenEnabled']} "
+            f"missingAttemptWhileEnabledPairs={summary['missingReplacementAttemptWhenEnabledPairCount']} "
             f"allSnapshotStable={summary['allPairsSnapshotStable']}"
         )
 

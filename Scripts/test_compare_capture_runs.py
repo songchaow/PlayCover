@@ -367,6 +367,64 @@ class CompareCaptureRunsTests(unittest.TestCase):
             self.assertEqual(report["runB"]["replacementAttemptSummary"]["latestReasonCode"], "preflight_rejected")
             self.assertIn("reasonCode", difference_fields)
 
+    def test_compare_capture_runs_warns_when_attempts_missing_while_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            runs_root = root / "runs"
+            aggregate_text = "// Auto-generated aggregated MSL source by PlayTools LibrarySourceInjection\n#include <metal_stdlib>\n"
+            module_text = "#include <metal_stdlib>\nfragment float4 main0() { return float4(1.0); }\n"
+
+            for label in ("run-a", "run-b"):
+                container_root = root / f"container-{label}"
+                make_container_run(container_root, aggregate_text, module_text, attempt_outcome=None)
+                subprocess.run(
+                    [
+                        "python3",
+                        str(SNAPSHOT_SCRIPT),
+                        "--bundle-id",
+                        "com.example.demo",
+                        "--label",
+                        label,
+                        "--container",
+                        str(container_root),
+                        "--output-root",
+                        str(runs_root),
+                    ],
+                    cwd=REPO_ROOT,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+            output_path = root / "compare-missing-attempts.json"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(COMPARE_SCRIPT),
+                    "--run-a",
+                    str(runs_root / "run-a" / "com.example.demo"),
+                    "--run-b",
+                    str(runs_root / "run-b" / "com.example.demo"),
+                    "--output",
+                    str(output_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn(
+                "replacement attempts missing while replacementEnabled=true for: runA, runB",
+                completed.stdout,
+            )
+            report = json.loads(output_path.read_text(encoding="utf-8"))
+            coverage = report["comparison"]["replacementAttemptCoverage"]
+            self.assertEqual(coverage["missingWhenEnabled"], ["runA", "runB"])
+            self.assertEqual(coverage["runAEnabledWithoutAttempt"], True)
+            self.assertEqual(coverage["runBEnabledWithoutAttempt"], True)
+            self.assertEqual(coverage["bothRunsMissingWhenEnabled"], True)
+
 
 if __name__ == "__main__":
     unittest.main()

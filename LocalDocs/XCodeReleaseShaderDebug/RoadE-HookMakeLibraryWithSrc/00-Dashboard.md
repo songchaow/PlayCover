@@ -155,8 +155,8 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | `.gputrace` 里程碑基线（2026-04-04，`E-006c` 已关闭） | `capture_20260404_roadE_e006c3_final.gputrace` 已被 Xcode 人工确认可在 Draw Call shader 面板中看到 MSL 源码；这说明“源码可见”链路已打通，但它只作为里程碑基线，不再代表 `E-006d` 已完成 |
 | 当前 `E-006d8` 第一层矩阵结论（2026-04-05） | `off1/off2/on1/on2` 四轮快照已经足够证明：**同模式输入稳定**、共享 `moduleKey` 为 **91/91**、单模块 `.bc/.ll/.metal` 本体未出现语义级随机漂移；脚本已显式忽略 `captureCount`、`sourceCacheKeys` 等 benign metadata 漂移 |
 | 当前尚未证明的部分（2026-04-05） | 现阶段**仍未形成“跨模式稳定不同”的 corpus / trace 级证据**：`crossMode.offVsOnPairSummary.allPairsDifferent=false`，且四轮都没有可比较的 replacement aggregate；因此当前还不能把结论提前收敛为“替换开启后一定稳定引入了最终差异” |
-| 当前 replacement 证据基线（2026-04-05） | `LibrarySourceInjectionSwizzles` 现会把每次 runtime replacement 尝试都追加为 `manifest.jsonl` 中的 `event=replacement_attempt`，至少记录 `outcome` / `reasonCode` / `moduleKeys` / `invalidModuleCount` / `dumpPath`；`Scripts/compare_capture_runs.py` 与 `Scripts/analyze_capture_run_matrix.py` 也已同步汇总 latest replacement attempt，用于先回答“replacement 根本没命中，还是命中了但固定 fallback” |
-| 当前 blocker 与下一步（2026-04-05） | 真正的 blocker 已收敛为两件事：1）`replacement=on` 时为什么始终没有 aggregate / 成功 replacement 证据；2）`create_session -> get_capture_status / capture_metal_frame` 为什么会在 `session=ready` 后仍超时掉线。下一步应先恢复**至少一轮 `replacement=on` 且带 `.gputrace + aggregate source` 的稳定样本**，再继续回答“替换 vs 不替换”是否稳定不同 |
+| 当前 replacement 证据基线（2026-04-05） | `LibrarySourceInjectionSwizzles` 现会把每次 runtime replacement 尝试都追加为 `manifest.jsonl` 中的 `event=replacement_attempt`，至少记录 `outcome` / `reasonCode` / `moduleKeys` / `invalidModuleCount` / `dumpPath`；`Scripts/compare_capture_runs.py` 与 `Scripts/analyze_capture_run_matrix.py` 也已同步汇总 latest replacement attempt，并把 **`replacementEnabled=true` 但 `replacement_attempt=0`** 显式标成 blocker，用于先回答“runtime 根本没命中 / 没部署到带证据的新 runtime”，还是“命中了但固定 fallback” |
+| 当前 blocker 与下一步（2026-04-05） | 真正的 blocker 已进一步收敛为两件事：1）当前 `replacement-on-run1/on2` 已被离线脚本明确标记为 **`replacementEnabled=true` 但 `replacement_attempt` 事件缺失**，因此下一步应先用标准 `BuildScripts/build_and_install.sh` 做一次 fresh `replacement=on` run，确认是部署/命中问题还是进入替换后固定失败；2）`create_session -> get_capture_status / capture_metal_frame` 为什么会在 `session=ready` 后仍超时掉线。只有先恢复**至少一轮 `replacement=on` 且带 `.gputrace + aggregate source` 的稳定样本**，再继续回答“替换 vs 不替换”是否稳定不同 |
 | 历史 live blocker 时间线 | 见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
 
 ## 整体架构
@@ -207,7 +207,7 @@ PlayTools.framework (注入到 iOS app)
 | E-006d | ↳ 调查原神同一界面重复启动时的随机渲染异常 / shader 语义漂移 | **TODO（当前主线）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
 | E-006d1 ~ E-006d7 | ↳ 输入 diff、aggregate diff、replacement 开关、run 快照、`.gputrace` 固化、run matrix、trace 归因索引 | ✅ DONE（工具已齐） | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
 | E-006d8 | ↳ replacement=off/on 多轮矩阵结论与第一层归因 | **TODO** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-|  | 当前已拿到 `off1/off2/on1/on2` 四轮快照：已稳定排除 **captured corpus / 单模块 artifact 层面的 drift**，但**跨模式稳定不同尚未成立**，且四轮都没有可比较的 replacement aggregate。下一步应优先下钻 **replacement 成功路径为什么始终未命中 / 未落盘** 与 **live capture/session 为什么会在 ready 后掉线**；在恢复至少一轮 `replacement=on` 且带 `.gputrace + aggregate source` 的稳定样本前，不应继续把结论过早推向 shader lowering 或更后续 pipeline。 | | |
+|  | 当前已拿到 `off1/off2/on1/on2` 四轮快照：已稳定排除 **captured corpus / 单模块 artifact 层面的 drift**，但**跨模式稳定不同尚未成立**，且四轮都没有可比较的 replacement aggregate。最新离线脚本已进一步明确：`replacement-on-run1/on2` 当前属于 **`replacementEnabled=true` 但 `replacement_attempt` 缺失**，不是“已有固定 `reasonCode` 的稳定失败”。下一步应优先做一次标准 build/install 后的 fresh `replacement=on` run，并继续下钻 **live capture/session 为什么会在 ready 后掉线**；在恢复至少一轮 `replacement=on` 且带 `.gputrace + aggregate source` 的稳定样本前，不应继续把结论过早推向 shader lowering 或更后续 pipeline。 | | |
 | E-006a | ↳ 扩展真实 corpus 覆盖面 | TODO（已降级） | |
 |  | 仅在 `E-006d` 当前 blocker 收敛后，再继续进入新地图 / 新场景 / 新画质设置追加采集，逐步逼近“尽量全”的真实 shader 集合 | | |
 | E-007 | **PlayCover settings / MCP / 工具暴露** | TODO（已降级） | |

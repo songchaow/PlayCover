@@ -30,6 +30,8 @@ IRToMSLConverter.convert(...)
 
 **注意**：E-005 的稳定保证只覆盖**已经进入 `ShaderCorpus/` 或被手工补成 `.ll` 的样本**。对于仅存在于 `ShaderSourceDiagnostics/` 的 `compile_failed` live 样本，仍需依赖 E-004 / E-006 的 re-capture / 导出闭环把它们带入离线主路径。
 
+换句话说，E-005 负责的是 **corpus / generated MSL / compile / baseline** 这一层；对于 `.gputrace` 中的 **draw call / Render Encoder / Pipeline State** 结构差异，应转到 `E-006d-GenshinRenderingNondeterminism.md` 与 `E-006d-RenderingPathDiffReference.md`，不要把两层证据混用。
+
 ## E-005a：corpus replay runner
 
 ### 已落地能力
@@ -357,7 +359,7 @@ python3 Scripts/corpus_replay_runner.py \
 
 `E-005` 主线已完成；后续优先级回到：
 
-- `E-006d8`：继续使用现有 replay / diff / run-matrix / replacement-attempt 工具，但当前下一步已不再是机械补 run；而是优先收敛两条更窄 blocker：**`session=ready` 后的 capture bridge 掉线**，以及 **`replacement-on-run3` 中 `55` 个 `llvm-dis` `Operation not permitted` 失败样本**。只有在 agent 可独立完成的自动流程内恢复**至少一轮 `replacement=on` 且带 `.gputrace + aggregate source` 的稳定样本**后，才继续回答“替换 vs 不替换”是否稳定不同
+- `E-006d8`：继续使用现有 replay / diff / run-matrix / replacement-attempt 工具，但当前下一步已不再是机械补 run，也不再只是围绕旧的 `llvm-dis` `Operation not permitted` 桶打转；而是优先支撑四条更窄主线：**`session=ready` 之后的 host bridge `Session not registered` 生命周期问题**、**`capture_metal_frame` 自定义 `output_path` 权限问题**、**trace 侧合法 MSL 覆盖偏低**，以及 **代表性 off/on 截帧的 draw call / Render Encoder / Pipeline State 结构对比**。其中前 3 条仍主要依赖 `E-005` 这套 corpus / replay / diff 能力做分层归因，第 4 条则应转到 `E-006d-RenderingPathDiffReference.md` 所定义的 Xcode GUI 自动化路径
 - `E-007`：若后续确认人工路径操作已成为效率瓶颈，再把现有离线工具能力经 UI / MCP 暴露出来；前提仍是不能破坏 agent 日常自主执行
 
-也就是说，接下来离线回归能力本身不再是 blocker，重点转为**用这套能力支撑 `E-006d` 当前两类 blocker 的归因**；只有当主线再次被操作成本卡住时，才回头推进 `E-007`。
+也就是说，接下来离线回归能力本身不再是 blocker，重点转为**用这套能力支撑 `E-006d` 当前四条收敛线**；只有当主线再次被操作成本卡住时，才回头推进 `E-007`。

@@ -29,7 +29,7 @@
 
 | # | blocker | 现状 | 推进方式 | agent 可独立完成？ |
 |---|---|---|---|---|
-| 1 | **capture bridge reachability** | `session=ready` 后 `get_capture_status` 稳定 `Receive timed out`；但 session 不再掉线到 `Session not found` | 做 fresh on-run，排查 capture bridge 在 session ready 下的命令传递；区分 split-brain 已修复后的剩余 reachability 问题 | ✅ 是（构建 + 安装 + 注入 + launch + session） |
+| 1 | **capture bridge reachability** | `session=ready` 后 `get_capture_status` 稳定 `Receive timed out`；session 假 ready 已被排除（`create_session` 已要求 bridge `ping` + 单测覆盖）；blocker 收敛到 capture command 路径本身 | 做 fresh on-run，排查 runtime `MetalCaptureService.getStatus()` 与 capture command 在主线程上的可达性；区分"ping 能通但 capture 命令不通"vs"capture service 根本没注册" | ✅ 是（构建 + 安装 + 注入 + launch + session） |
 | 2 | **capture 输出路径权限** | `capture_metal_frame` 自定义 `output_path` 被拒 | 短期走默认容器 `Captures/` + `finalize-run --latest-gputrace`；长期需解决自定义路径沙盒权限 | ✅ 是（`--latest-gputrace` 已自动化） |
 | 3 | **trace 合法 MSL 覆盖偏低** | 成功 trace 仍只有 `2/11` 合法 MSL（`1.2%`） | 新 fresh capture 后用 `check_gputrace_sources.py` 检查并归因 | ✅ 是（需先解决 blocker 1 获得 trace） |
 | 4 | **绘制内容差异未正式产出** | `e006d_render_diff.py` 入口就绪，GUI 自动化环境未验证 | 在 Xcode GUI / Accessibility / `cliclick` 可用时，跑 `off-run1` vs `on-run5` 结构化 diff | ⚠️ 需 GUI 自动化环境 |
@@ -41,7 +41,10 @@
 4. capture 导出 / trace 可见性仍不稳定
 5. 替换链路稳定，但差异落在更后续 render pipeline / post-processing
 
-**当前最新收敛（2026-04-06）**：host 侧“session 假 ready”已单独收口。`SessionService.createSession(...)` 现在要求 command bridge `ping` 成功后才返回 ready，并已有单测覆盖“bridge 延迟可达 / 已注册但不可达”。后续若 fresh run 仍复现 `get_capture_status -> Receive timed out`，应直接把它视为 **capture command 自身不可达** 或 **runtime `MetalCaptureService.getStatus()` 阻塞**，而不是再回到 registration ready 语义本身。
+**当前最新收敛（2026-04-06）**：host 侧"session 假 ready"已独立收口（`create_session` 要求 bridge `ping` + 单测覆盖）。后续若 fresh run 仍复现 `get_capture_status -> Receive timed out`，blocker 已收敛到以下三层之一：
+1. **capture command 路径本身**：host → runtime 的 capture 命令传递在 session ready 后是否真正可达
+2. **runtime `MetalCaptureService.getStatus()`**：capture service 是否在主线程上注册、是否阻塞、是否与 command bridge 共享队列
+3. **capture 输出 / finalize 路径**：即使 capture 成功，`.gputrace` 是否能正确写入并回收
 
 ## 已完成的子项
 
@@ -57,7 +60,7 @@
 | E-006d8a | runtime 启动 breadcrumb（`RuntimeLaunchDiagnostics` + summary 脚本） | ✅ DONE |
 | E-006d8b1 | 标准化 render-diff runner（`e006d_render_diff.py`） | ✅ DONE |
 | host split-brain 修复 | stale cleanup 时主动断开 registration channel | ✅ DONE + 测试覆盖 |
-| host session ready 收口 | `SessionService.createSession(...)` 改为返回前额外要求 command bridge `ping` 成功；补充 `PlayCoverMCPTests` 覆盖“bridge 延迟可达 / 已注册但不可达” | ✅ DONE + 测试覆盖 |
+| host session ready 收口 | `SessionService.createSession(...)` 改为返回前额外要求 command bridge `ping` 成功；补充 `PlayCoverMCPTests` 覆盖"bridge 延迟可达 / 已注册但不可达" | ✅ DONE + 测试覆盖 |
 
 ## 优先排查顺序
 
@@ -98,7 +101,7 @@
 - **假设 C：runtime 替换或 pipeline 实际使用不稳定**（部分证据：`missingAttemptWhileEnabledPairs=11`）
 - **假设 D：问题出在更后续的着色 / 后处理 / render pipeline 阶段**（待验证）
 - **假设 E：MSL 只是"可编译"而非"语义等价"**（待验证）
-- **假设 F：host 把 registration ready 误判成 command-ready**（本轮已基本否定：`create_session` 现已要求 bridge `ping` 成功）
+- **假设 F：host 把 registration ready 误判成 command-ready**（❌ 已否定：`create_session` 已要求 bridge `ping` 成功 + 单测覆盖；`on-run7` 未再复现 split-brain）
 
 ## 完成标准
 
@@ -124,7 +127,7 @@
 - **`module.meta.json` 的统计字段要与真实 artifact diff 分开看**：`captureCount`、`sourceCacheKeys` 等变化不等于本体变化
 - **`throw` + 静默 `catch` 回退是 runtime hook 的危险反模式**
 - **host 侧 stale cleanup 必须同步断链**：否则会制造 split-brain
-- **`session ready` 必须区分“已 registration”与“command bridge 可达”**：当前 host 侧已把 `create_session` 的 ready 判定收紧到 bridge `ping` 成功；因此若 fresh run 仍卡在 `get_capture_status -> Receive timed out`，应把排查重点集中到 capture command path / runtime 主线程执行，而不是 session 注册闭环
+- **`session ready` 必须区分"已 registration"与"command bridge 可达"**：该检查已落地（`create_session` 的 ready 判定收紧到 bridge `ping` 成功 + 单测覆盖），session 假 ready 已被排除。后续 `get_capture_status -> Receive timed out` 的排查重点集中在 capture command 路径 / runtime `MetalCaptureService.getStatus()` / 主线程执行
 - **更早的 lowering 细节与已收敛 compile blocker 不再由本文档维护**：见 `E-004-MetallibSourceExtraction.md`、`E-006d-RenderingPathDiffReference.md` 与 archive
 
 ## 与其他文档的关系

@@ -9,6 +9,25 @@ import Foundation
 /// `create_session` waits for a runtime to register (polling-based).
 public final class SessionService: Sendable {
 
+    public typealias BridgeReadinessProbe = @Sendable (SessionInfo, TimeInterval) -> Bool
+
+    private final class ProbeResultBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+
+        func set(_ newValue: Bool) {
+            lock.lock()
+            value = newValue
+            lock.unlock()
+        }
+
+        func get() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+    }
+
     private static let timeoutFormatter: NumberFormatter = {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
@@ -18,15 +37,48 @@ public final class SessionService: Sendable {
         formatter.groupingSeparator = ""
         return formatter
     }()
+    private static let minimumBridgeProbeTimeout: TimeInterval = 0.2
+    private static let maximumBridgeProbeTimeout: TimeInterval = 1.0
+    public static let defaultBridgeReadinessProbe: BridgeReadinessProbe = { session, timeout in
+        let semaphore = DispatchSemaphore(value: 0)
+        let resultBox = ProbeResultBox()
+
+        Task.detached {
+            let client = BridgeClient(sessionId: session.sessionId, port: session.runtimePort)
+            defer {
+                client.close()
+                semaphore.signal()
+            }
+
+            do {
+                try await client.connect(timeout: timeout)
+                try await client.ping(timeout: timeout)
+                resultBox.set(true)
+            } catch {
+                resultBox.set(false)
+            }
+        }
+
+        let waitResult = semaphore.wait(timeout: .now() + timeout + 0.1)
+        if waitResult == .timedOut {
+            return false
+        }
+        return resultBox.get()
+    }
 
     // MARK: - Dependencies
 
     private let registry: SessionRegistry
+    private let bridgeReadinessProbe: BridgeReadinessProbe
 
     // MARK: - Init
 
-    public init(registry: SessionRegistry) {
+    public init(
+        registry: SessionRegistry,
+        bridgeReadinessProbe: @escaping BridgeReadinessProbe = SessionService.defaultBridgeReadinessProbe
+    ) {
         self.registry = registry
+        self.bridgeReadinessProbe = bridgeReadinessProbe
     }
 
     // MARK: - Create
@@ -43,8 +95,8 @@ public final class SessionService: Sendable {
     /// - Returns: The ready session info.
     /// - Throws: `SessionError` on timeout or registration failure.
     public func createSession(bundleId: String, timeout: TimeInterval = 10.0) throws -> SessionInfo {
-        // 1. Check for existing ready session
-        if let existing = registry.getByBundleId(bundleId).first(where: { $0.status == .ready }) {
+        let deadline = Date().addingTimeInterval(timeout)
+        if let existing = findReachableReadySession(bundleId: bundleId, excludingSessionId: nil, deadline: deadline) {
             return existing
         }
 
@@ -60,19 +112,28 @@ public final class SessionService: Sendable {
         try registry.register(pendingInfo)
 
         // 3. Poll for runtime registration
-        let deadline = Date().addingTimeInterval(timeout)
+        var observedRegisteredButUnreachableRuntime = false
         while Date() < deadline {
-            if let ready = registry.getByBundleId(bundleId)
-                .first(where: { $0.status == .ready && $0.sessionId != pendingId }) {
-                // Clean up pending session
+            let readyCandidates = registry.getByBundleId(bundleId)
+                .filter { $0.status == .ready && $0.sessionId != pendingId }
+
+            if !readyCandidates.isEmpty {
+                observedRegisteredButUnreachableRuntime = true
+            }
+
+            if let ready = findReachableReadySession(bundleId: bundleId, excludingSessionId: pendingId, deadline: deadline) {
                 try? registry.unregister(sessionId: pendingId)
                 return ready
             }
             usleep(100_000) // 100ms
         }
 
-        // 4. Timeout: clean up and throw
         try? registry.unregister(sessionId: pendingId)
+        if observedRegisteredButUnreachableRuntime {
+            throw SessionError.heartbeatTimeout(
+                "Runtime registered for bundleId '\(bundleId)' but command bridge was not reachable within \(Self.formatTimeout(timeout))"
+            )
+        }
         throw SessionError.heartbeatTimeout(
             "No runtime registered for bundleId '\(bundleId)' within \(Self.formatTimeout(timeout))"
         )
@@ -136,4 +197,38 @@ public final class SessionService: Sendable {
         let formatted = timeoutFormatter.string(from: number) ?? String(timeout)
         return "\(formatted)s"
     }
+
+    private func findReachableReadySession(
+        bundleId: String,
+        excludingSessionId: String?,
+        deadline: Date
+    ) -> SessionInfo? {
+        let candidates = registry.getByBundleId(bundleId)
+            .filter { session in
+                session.status == .ready && session.sessionId != excludingSessionId
+            }
+
+        guard !candidates.isEmpty else {
+            return nil
+        }
+
+        let remaining = deadline.timeIntervalSinceNow
+        guard remaining > 0 else {
+            return nil
+        }
+
+        let probeTimeout = min(
+            Self.maximumBridgeProbeTimeout,
+            max(Self.minimumBridgeProbeTimeout, remaining)
+        )
+
+        for candidate in candidates {
+            if bridgeReadinessProbe(candidate, probeTimeout) {
+                return candidate
+            }
+        }
+
+        return nil
+    }
+
 }

@@ -57,7 +57,7 @@ final class SessionServiceTests: XCTestCase {
     override func setUp() {
         super.setUp()
         registry = SessionRegistry()
-        service = SessionService(registry: registry)
+        service = SessionService(registry: registry, bridgeReadinessProbe: { _, _ in true })
     }
 
     override func tearDown() {
@@ -142,6 +142,52 @@ final class SessionServiceTests: XCTestCase {
         let allSessions = registry.listSessions()
         XCTAssertEqual(allSessions.count, 1)
         XCTAssertEqual(allSessions.first?.sessionId, "r-1")
+    }
+
+    func testCreateSessionWaitsForBridgeReachability() throws {
+        let bridgeBecomesReachableAt = Date().addingTimeInterval(0.4)
+        service = SessionService(registry: registry, bridgeReadinessProbe: { session, _ in
+            session.sessionId == "runtime-sess-1" && Date() >= bridgeBecomesReachableAt
+        })
+
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
+            let runtimeInfo = SessionInfo(
+                sessionId: "runtime-sess-1",
+                bundleId: "com.bridge.ready",
+                pid: 500,
+                runtimePort: 53000,
+                status: .ready
+            )
+            try? self.registry.register(runtimeInfo)
+        }
+
+        let start = Date()
+        let result = try service.createSession(bundleId: "com.bridge.ready", timeout: 1.5)
+
+        XCTAssertEqual(result.sessionId, "runtime-sess-1")
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(start), 0.35)
+    }
+
+    func testCreateSessionTimesOutWhenRuntimeRegisteredButBridgeNotReachable() throws {
+        let readyRuntime = SessionInfo(
+            sessionId: "runtime-sess-1",
+            bundleId: "com.bridge.timeout",
+            pid: 500,
+            runtimePort: 53000,
+            status: .ready
+        )
+        try registry.register(readyRuntime)
+        service = SessionService(registry: registry, bridgeReadinessProbe: { _, _ in false })
+
+        XCTAssertThrowsError(try service.createSession(bundleId: "com.bridge.timeout", timeout: 0.3)) { error in
+            XCTAssertTrue(error is SessionError)
+            if let sessionError = error as? SessionError {
+                XCTAssertEqual(
+                    sessionError,
+                    .heartbeatTimeout("Runtime registered for bundleId 'com.bridge.timeout' but command bridge was not reachable within 0.3s")
+                )
+            }
+        }
     }
 
     // MARK: - list_sessions
@@ -295,7 +341,7 @@ final class SessionToolsAndResourcesTests: XCTestCase {
     override func setUp() {
         super.setUp()
         registry = SessionRegistry()
-        service = SessionService(registry: registry)
+        service = SessionService(registry: registry, bridgeReadinessProbe: { _, _ in true })
         let logger = MCPLogger(minLevel: .info)
         let taskManager = TaskManager()
         server = MCPServer(

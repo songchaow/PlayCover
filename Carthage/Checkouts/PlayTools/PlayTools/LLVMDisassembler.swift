@@ -98,9 +98,13 @@ struct LLVMDisassembler {
     /// llvm-dis 进程超时时间（秒）
     static let defaultTimeoutSeconds: Int = 30
     private static let hostBridgeCommandTimeout: TimeInterval = 10.0
-    private static let hostBridgeSessionWaitTimeout: TimeInterval = 2.0
-    private static let hostBridgeRetryCount: Int = 3
-    private static let hostBridgeRetryDelayMicros: useconds_t = 200_000
+    /// 等待 runtime session 注册的窗口需要覆盖 fresh launch 早期的桥接建立时间，
+    /// 否则会把暂时未注册误判成 bridge 不可用并错误回退到本地 spawn。
+    private static let hostBridgeSessionWaitTimeout: TimeInterval = 4.0
+    /// 新鲜注入后的首批 shader 很容易与 registration 建立竞态；这里保守增加几轮 host 侧重试，
+    /// 优先等待宿主桥接恢复，而不是直接退回到会被 sandbox 拦截的本地执行路径。
+    private static let hostBridgeRetryCount: Int = 4
+    private static let hostBridgeRetryDelayMicros: useconds_t = 300_000
     private static let hostBridgeCommandName = "host_disassemble_bitcode"
     private static let hostBridgeQueue = DispatchQueue(label: "com.playtools.llvm-dis.host-bridge")
 
@@ -489,14 +493,14 @@ struct LLVMDisassembler {
         }
 
         switch hostError {
-        case .connectionFailed, .connectionTimedOut, .sendTimedOut, .responseTimedOut:
+        case .sessionUnavailable, .connectionFailed, .connectionTimedOut, .sendTimedOut, .responseTimedOut:
             return true
         case .invalidResponse(let message):
             let normalized = message.lowercased()
             return normalized.contains("empty response")
                 || normalized.contains("missing host bridge payload")
                 || normalized.contains("connection closed")
-        case .sessionUnavailable, .invalidPort, .remoteError:
+        case .invalidPort, .remoteError:
             return false
         }
     }
@@ -508,12 +512,13 @@ struct LLVMDisassembler {
 
         switch hostError {
         case .sessionUnavailable, .invalidPort:
-            return true
+            // session 尚未注册通常只是 fresh launch 早期竞态；此时回退到本地 spawn
+            // 只会命中 sandbox 的 process-fork deny，制造额外的 EPERM 噪音。
+            return false
         case .remoteError(let message):
             let normalized = message.lowercased()
             return normalized.contains("unknown host bridge command")
                 || normalized.contains("host command handler is unavailable")
-                || normalized.contains("session not registered")
         case .connectionFailed, .connectionTimedOut, .sendTimedOut, .responseTimedOut, .invalidResponse:
             return false
         }

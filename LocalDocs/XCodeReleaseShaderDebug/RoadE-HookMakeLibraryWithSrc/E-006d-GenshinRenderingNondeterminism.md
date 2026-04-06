@@ -29,9 +29,9 @@
 
 | # | blocker | 现状 | 推进方式 | agent 可独立完成？ |
 |---|---|---|---|---|
-| 1 | **capture bridge reachability** | `session=ready` 后 `get_capture_status` 一度稳定 `Receive timed out`；session 假 ready 已被排除（`create_session` 已要求 bridge `ping` + 单测覆盖）；**本轮又把 status probe 从"同步主线程 + status 时触发 lazy `dlopen`"改为"线程安全快照 + 不在 `get_capture_status` 中触发 lazy load"**。若 fresh run 仍超时，剩余 blocker 将更明确指向真正的 capture command 路径 | 做 fresh on-run，先确认 `get_capture_status` 是否恢复；若仍 timeout，再排查 runtime `captureFrame(...)` / capture command 在主线程上的可达性；区分"ping 能通但 capture 命令不通"vs"capture service 根本没注册" | ✅ 是（构建 + 安装 + 注入 + launch + session） |
+| 1 | **capture bridge reachability** | `replacement-on-run8` fresh run 表明：launch / registration 主链完整，等待到更稳定界面后同一 session 的 `get_capture_status` 可恢复返回 `available=true / supportsGPUTrace=true`；但在此之前，status probe 会先返回 unavailable，`capture_metal_frame` 也仍可能出现 host 侧 timeout。与此同时，默认 `Captures/` 最终成功生成 fresh `.gputrace` 并完成 `finalize-run --latest-gputrace` | 后续不再把 blocker #1 表述为"status probe 稳定超时"，而是固定等待窗口后继续比较**加载期 vs 稳定期**的 `captureFrame(...)` / capture command 可达性；并区分"host 等待超时"与"capture 真失败未落盘" | ✅ 是（构建 + 安装 + 注入 + launch + session） |
 | 2 | **capture 输出路径权限** | `capture_metal_frame` 自定义 `output_path` 被拒 | 短期走默认容器 `Captures/` + `finalize-run --latest-gputrace`；长期需解决自定义路径沙盒权限 | ✅ 是（`--latest-gputrace` 已自动化） |
-| 3 | **trace 合法 MSL 覆盖偏低** | 成功 trace 仍只有 `2/11` 合法 MSL（`1.2%`） | 新 fresh capture 后用 `check_gputrace_sources.py` 检查并归因 | ✅ 是（需先解决 blocker 1 获得 trace） |
+| 3 | **trace 合法 MSL 覆盖偏低** | `replacement-on-run8` fresh trace 已更新为 `3/14` 合法 MSL（`1.6%`），但覆盖仍偏低 | 新 fresh capture 后继续用 `check_gputrace_sources.py` 检查并归因 | ✅ 是（需先解决 blocker 1 获得 trace） |
 | 4 | **绘制内容差异未正式产出** | `e006d_render_diff.py` 入口就绪，GUI 自动化环境未验证 | 在 Xcode GUI / Accessibility / `cliclick` 可用时，跑 `off-run1` vs `on-run5` 结构化 diff | ⚠️ 需 GUI 自动化环境 |
 
 **本轮推进标准**：至少把当前问题明确收敛到以下之一：
@@ -41,9 +41,9 @@
 4. capture 导出 / trace 可见性仍不稳定
 5. 替换链路稳定，但差异落在更后续 render pipeline / post-processing
 
-**当前最新收敛（2026-04-06）**：host 侧"session 假 ready"已独立收口（`create_session` 要求 bridge `ping` + 单测覆盖），runtime 侧 `get_capture_status` 也已去掉"同步主线程 + status probe 触发 lazy `dlopen`"这层副作用。后续若 fresh run 仍复现 `get_capture_status -> Receive timed out`，blocker 将进一步收敛到以下两层之一：
-1. **capture command 路径本身**：host → runtime 的 capture 命令传递在 session ready 后是否真正可达
-2. **capture 输出 / finalize 路径**：即使 capture 成功，`.gputrace` 是否能正确写入并回收
+**当前最新收敛（2026-04-06）**：host 侧"session 假 ready"已独立收口（`create_session` 要求 bridge `ping` + 单测覆盖），runtime 侧 `get_capture_status` 也已去掉"同步主线程 + status probe 触发 lazy `dlopen`"这层副作用。`replacement-on-run8` 进一步表明：status probe 不再像 `on-run7` 那样表现为唯一且稳定的超时现象——在加载较稳定后，同一 session 已可返回 `available=true / supportsGPUTrace=true`；当前更像是**加载期 command bridge / capture command 时序波动**，以及 host 侧 timeout 与实际 `.gputrace` 落盘之间的时序不一致。后续排查面收敛为以下两层：
+1. **capture command 路径本身**：host → runtime 的 capture 命令在加载期 vs 稳定期是否存在不同的可达性 / 返回时序
+2. **capture 输出 / finalize 路径**：即使 host 侧等待超时，`.gputrace` 是否已在默认 `Captures/` 成功写入并可被 `finalize-run --latest-gputrace` 回收
 
 ## 已完成的子项
 
@@ -73,7 +73,7 @@
 
 ### 2. 先确认"替换 vs 不替换"差异是否稳定
 
-- 当前矩阵结论：`off-vs-on allPairsDifferent=False`，**尚未形成跨模式稳定不同证据**
+- 当前矩阵结论：`off-vs-on allPairsDifferent=False`，**尚未形成跨模式稳定不同证据**；`replacement-on-run8` 纳入后，`mode=on missingAttemptWhileEnabledPairs=13`
 - 只有当"同模式稳定、跨模式稳定不同"成立后，才继续往更细的 stage / pipeline 归因下钻
 
 ### 3. 再比较"输入是否相同"
@@ -85,7 +85,7 @@
 
 - 对相同 `moduleKey` 比较 `module.generated.metal`、聚合 MSL、compile 结果
 - 当前已证明：单模块本体未出现语义级随机漂移
-- 但 `mode=on allReplacementAttemptStable=False`、`missingAttemptWhileEnabledPairs=11`
+- 但 `mode=on allReplacementAttemptStable=False`、`missingAttemptWhileEnabledPairs=13`
 
 ### 5. 最后比较"替换与实际使用"
 
@@ -97,7 +97,7 @@
 
 - **假设 A：输入并不稳定**（已被矩阵否定：同模式输入稳定）
 - **假设 B：`IR -> MSL` 结果不稳定**（已被否定：单模块本体未漂移）
-- **假设 C：runtime 替换或 pipeline 实际使用不稳定**（部分证据：`missingAttemptWhileEnabledPairs=11`）
+- **假设 C：runtime 替换或 pipeline 实际使用不稳定**（部分证据：`missingAttemptWhileEnabledPairs=13`）
 - **假设 D：问题出在更后续的着色 / 后处理 / render pipeline 阶段**（待验证）
 - **假设 E：MSL 只是"可编译"而非"语义等价"**（待验证）
 - **假设 F：host 把 registration ready 误判成 command-ready**（❌ 已否定：`create_session` 已要求 bridge `ping` 成功 + 单测覆盖；`on-run7` 未再复现 split-brain）
@@ -125,7 +125,7 @@
 - **draw call / Render Encoder / Pipeline State 是独立证据层**：当 shader / trace 侧证据不足时必须补
 - **`module.meta.json` 的统计字段要与真实 artifact diff 分开看**：`captureCount`、`sourceCacheKeys` 等变化不等于本体变化
 - **`throw` + 静默 `catch` 回退是 runtime hook 的危险反模式**
-- **host 侧 session / capture 基础设施修复已全部落地**：stale cleanup 同步断链、`create_session` 收紧到 bridge `ping`（+ 单测覆盖）、`get_capture_status` 去 lazy-load 与主线程耦合（线程安全快照 + `gpuToolsCaptureLoaded=` 诊断字段）——详见 `00-Dashboard-Archive.md` 最新条目
+- **host 侧 session / capture 基础设施修复已全部落地**：stale cleanup 同步断链、`create_session` 收紧到 bridge `ping`（+ 单测覆盖）、`get_capture_status` 去 lazy-load 与主线程耦合（线程安全快照 + `gpuToolsCaptureLoaded=` 诊断字段）都已经被 fresh `replacement-on-run8` 进一步侧面支持；当前剩余现象更偏向加载期 bridge / capture command 时序波动，而不是 status probe 本身——详见 `00-Dashboard-Archive.md` 最新条目
 - **更早的 lowering 细节与已收敛 compile blocker 不再由本文档维护**：见 `E-004-MetallibSourceExtraction.md`、`E-006d-RenderingPathDiffReference.md` 与 archive
 
 ## 与其他文档的关系

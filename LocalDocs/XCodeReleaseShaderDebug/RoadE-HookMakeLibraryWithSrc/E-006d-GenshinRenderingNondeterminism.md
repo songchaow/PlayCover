@@ -60,6 +60,7 @@
 | E-006d8b1 | 标准化 render-diff runner（`e006d_render_diff.py`） | ✅ DONE |
 | host split-brain 修复 | stale cleanup 时主动断开 registration channel | ✅ DONE + 测试覆盖 |
 | host session ready 收口 | `SessionService.createSession(...)` 改为返回前额外要求 command bridge `ping` 成功；补充 `PlayCoverMCPTests` 覆盖"bridge 延迟可达 / 已注册但不可达" | ✅ DONE + 测试覆盖 |
+| host ready-session probe 对齐 | `create_session(bundleId)` 改为优先探测最新 heartbeat 的 ready session，并把单候选 bridge probe 超时放宽到与真实 bridge 命令同量级（最多 5s；若剩余 deadline 已低于最小 probe 窗口则不再强行探测）；补充 `PlayCoverMCPTests` 覆盖最新 session 优先、旧 session fallback 与 probe timeout | ✅ DONE + 测试覆盖，待下一轮 live 验证 |
 
 ## 优先排查顺序
 
@@ -127,6 +128,7 @@
 - **`module.meta.json` 的统计字段要与真实 artifact diff 分开看**：`captureCount`、`sourceCacheKeys` 等变化不等于本体变化
 - **`throw` + 静默 `catch` 回退是 runtime hook 的危险反模式**
 - **host 侧 session / capture 基础设施修复已全部落地 + 测试覆盖**：stale cleanup 同步断链、`create_session` 收紧到 bridge `ping`、`get_capture_status` 去 lazy-load + 去 valueOnMainSync——这些都已被 `on-run8`/`on-run9` 验证。剩余问题更像 host 侧 reachability probe / session 选取，而不是 runtime capture 命令整体失效。详细修复历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)
+- **`create_session` 当前 probe 行为已进一步对齐真实命令路径**：ready-session 现在按 heartbeat / 创建时间优先最新会话，单候选 probe 不再硬性截断在 1s，且当剩余 deadline 已不足最小 probe 窗口时不会再额外透支时间；如果后续 live 仍复现 bundle 级 timeout，就应继续把焦点收敛到 runtime 侧命令端口时序，而不是 host registry 排序本身
 - **更早的 lowering 细节与已收敛 compile blocker 不再由本文档维护**：见 `E-004-MetallibSourceExtraction.md`、`E-006d-RenderingPathDiffReference.md` 与 archive
 
 ## 与其他文档的关系

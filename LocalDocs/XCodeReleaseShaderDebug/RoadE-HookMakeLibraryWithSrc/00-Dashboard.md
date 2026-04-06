@@ -180,6 +180,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 - host split-brain 修复（stale cleanup 同步断链）
 - `create_session` 收紧到 bridge `ping` 成功
+- `create_session` ready-session 选取改为优先最新 heartbeat，并将单候选 probe 超时对齐到真实 bridge 命令量级（最多 5s；剩余 deadline 不足最小 probe 窗口时不再强行探测）
 - `get_capture_status` 去 lazy-load + 去 `valueOnMainSync`
 - 默认容器 `Captures/` 回收闭环（`--latest-gputrace`）
 - 绘制内容差异 runner（`e006d_render_diff.py`，需 GUI 环境）

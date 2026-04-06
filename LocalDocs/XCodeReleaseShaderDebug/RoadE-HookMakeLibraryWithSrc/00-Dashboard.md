@@ -240,6 +240,7 @@ PlayTools.framework (注入到 iOS app)
 - **源码可见 / compile green 都不等于渲染语义正确**：`E-006d` 关注的是相同输入下最终视觉结果、trace 与 replacement 证据是否稳定一致
 - **当前最低风险的比较基线仍是"替换 vs 不替换"**：统一通过 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py` 控制
 - **GPUToolsCapture 预加载时序是 trace 覆盖率的关键**：`makeLibrary(source:)` replacement 必须在 capture 库已加载后才发生，否则替换后的 library 会错过观测窗口
+- **`.gputrace` 可见 MSL 可能带尾部 `NUL` 终止符**：做 attribution / diff / 指纹匹配时不能只比原始字节；至少要按文本归一化并去掉尾部 `\0`，否则会把内容完全相同的 `aggregate.generated.metal` 误判为未归因
 - **更细的 lowering 经验、历史 live blocker 链路与已完成轮次已下沉到独立参考文档**：见 `E-004-MetallibSourceExtraction-Archive.md`、`E-006d-RenderingPathDiffReference.md` 与 `00-Dashboard-Archive.md`
 
 ## 参考信息

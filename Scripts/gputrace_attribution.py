@@ -17,6 +17,7 @@ def sha256_bytes(data: bytes) -> str:
 def normalize_text_bytes(data: bytes) -> bytes:
     text = data.decode("utf-8", errors="replace")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.rstrip("\x00")
     return text.encode("utf-8")
 
 

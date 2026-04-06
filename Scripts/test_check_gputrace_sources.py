@@ -166,6 +166,54 @@ class CheckGputraceSourcesTests(unittest.TestCase):
                 ["replacements/20260405_selector_cache"],
             )
 
+    def test_bundle_dir_attribution_ignores_trailing_nul_in_gputrace_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bundle_dir = root / "com.example.demo"
+            trace_dir = root / "trace.gputrace"
+            make_bundle_dir(bundle_dir)
+
+            aggregate_text = (
+                "// Auto-generated aggregated MSL source by PlayTools LibrarySourceInjection\n"
+                "#include <metal_stdlib>\n"
+                "using namespace metal;\n"
+                "fragment float4 aggregate0() { return float4(1.0); }\n"
+            )
+            make_gputrace(
+                trace_dir,
+                {
+                    "0123456789ABCDEF": aggregate_text.encode("utf-8") + b"\x00",
+                },
+                index_hashes=["0123456789ABCDEF"],
+            )
+
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(CHECK_SCRIPT),
+                    str(trace_dir),
+                    "--bundle-dir",
+                    str(bundle_dir),
+                    "--json",
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            result = json.loads(completed.stdout)
+            attribution = result["attribution"]
+            self.assertEqual(attribution["attributedVisibleMSLHashes"], ["0123456789ABCDEF"])
+            self.assertEqual(attribution["attributedReferencedMSLHashes"], ["0123456789ABCDEF"])
+            self.assertEqual(attribution["unattributedVisibleMSLHashes"], [])
+            self.assertEqual(attribution["unattributedReferencedMSLHashes"], [])
+            self.assertEqual(attribution["attributedModuleKeys"], ["module-key-1"])
+            self.assertEqual(
+                attribution["attributedReplacementDirectories"],
+                ["replacements/20260405_selector_cache"],
+            )
+
     def test_short_hex_hashes_are_counted_and_classified(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -45,9 +45,14 @@
 
 **preload 修复 + fresh live 验证**：改为在 `PlayCover.launch()` 早期预加载 GPUToolsCapture 后，`on-run11` scope capture 提升到 **`922 refs = 3 valid + 9 non-MSL + 910 missing`**、`visibleMSL=3`。当前问题已从"源码完全没有写入 bundle"收窄为 **"源码写入已部分恢复，但覆盖率仍极低"**。
 
+**本轮 `b3a` 收敛结果**：通过修正 `gputrace` 归因指纹（文本归一化时忽略尾部 `NUL` 终止符），已确认 `on-run11` 的 3 个 visible MSL 全部对应当前快照中的 replacement 聚合源码：
+- `1FFE161430820025` → `replacements/2026-04-06T07_53_01Z_newLibraryWithData_error__4C7A83D19766A73B_13773/aggregate.generated.metal` → `moduleKey=1fb4a75fea7068193e423222a343c90b63f5f47cc72ad1b0220fd5b7b33140f7`
+- `BA4DCBC544C3032F` → `replacements/2026-04-06T07_52_27Z_newLibraryWithData_error__EB43EED3823F29C4_21837/aggregate.generated.metal` → `moduleKey=94d08d40f46279c2ecd81522e7b2a2bd27cddd03bc2452458043034ae03d1936`
+- `F184B789D1F6CEF4` → `replacements/2026-04-06T07_52_27Z_newLibraryWithData_error__3D7324EDF8B2830A_19165/aggregate.generated.metal` → `moduleKey=91c46448ca24983b29716a9fe2c28a7930c10b81802758ded6977907bf01ae9b`
+
 后续排查面：
-1. **归因 3 个可见 MSL**：对照 `ShaderCorpus` 的 `module.generated.metal` / `aggregate.generated.metal`，确认这 3 个 visible MSL 的指纹来源
-2. **排查 910 missing 的 bundle 写入条件**：对照 `E-006c` 可见源码 trace，找出差异；关注 replacement 时序、module 大小、compile 成功率等因素
+1. **✅ `b3a` 已完成：3 个可见 MSL 已归因**
+2. **排查 910 missing 的 bundle 写入条件（当前最高优先级）**：对照 `E-006c` 可见源码 trace，找出差异；关注 replacement 时序、module 大小、compile 成功率等因素
 3. **补充 capture 策略差异**：`device` 仍可能产出瘦 trace，`scope` 得到部分恢复；需明确这是否直接影响源码写入规模
 4. **session 可见性抖动**：继续观察，确认只影响 registry 而不影响实际 bridge reachability
 

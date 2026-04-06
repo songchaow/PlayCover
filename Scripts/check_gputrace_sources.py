@@ -9,10 +9,10 @@ check_gputrace_sources.py — 检查 `.gputrace` 中 shader 源码覆盖率，�
     python3 check_gputrace_sources.py /path/to/xxx.gputrace --save-baseline baseline.json
 
 输出:
-    - hex hash 文件数量、合法 MSL 数量、非 MSL 数量
+    - 15/16 位 hex hash 文件数量、合法 MSL 数量、非 MSL 数量
     - `index` 引用总数，以及基于“被 index 引用的合法 MSL”的覆盖率
     - 覆盖率拆解：被引用的合法 MSL / 被引用但非 MSL / 引用缺失文件 / 仅落盘未被引用
-    - 每个可见 hash 文件的首行特征
+    - 每个可见 hash 文件的首行特征、内容类型、hash 长度
     - 可选：把可见 MSL 以及“被 index 引用的可见 MSL”归因到 `module.generated.metal` / `aggregate.generated.metal`
 """
 
@@ -48,6 +48,8 @@ def convert_files_for_cli(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "lines": file_info.get("lines"),
             "first_line": file_info.get("firstLine"),
             "is_msl": file_info.get("isMSL"),
+            "content_type": file_info.get("contentType"),
+            "hash_length": file_info.get("hashLength"),
         }
         for name, file_info in sorted(files.items())
         if isinstance(file_info, dict)
@@ -72,6 +74,11 @@ def build_result(gputrace_path: Path, summary: dict[str, Any], attribution: dict
         "missing_referenced_hashes": summary.get("missingReferencedHashes", []),
         "unreferenced_valid_msl_hashes": summary.get("unreferencedValidMSLHashes", []),
         "unreferenced_non_msl_hashes": summary.get("unreferencedNonMSLHashes", []),
+        "source_hash_length_counts": summary.get("sourceHashLengthCounts", {}),
+        "index_hash_length_counts": summary.get("indexHashLengthCounts", {}),
+        "noncanonical_visible_hashes": summary.get("nonCanonicalVisibleHashes", []),
+        "noncanonical_visible_hashes_mentioned_in_index": summary.get("nonCanonicalVisibleHashesMentionedInIndex", []),
+        "non_msl_type_counts": summary.get("nonMSLTypeCounts", {}),
         "files": files,
     }
     if attribution is not None:
@@ -90,6 +97,13 @@ def preview_hashes(items: list[str], *, limit: int = 8) -> str:
 
 
 
+def format_count_map(value: dict[str, Any] | None) -> str:
+    if not isinstance(value, dict) or not value:
+        return "<none>"
+    return ", ".join(f"{key}={value[key]}" for key in sorted(value))
+
+
+
 def print_human_readable(result: dict[str, Any]) -> None:
     print("=== gputrace shader 源码检查 ===")
     print(f"路径: {result['gputrace']}")
@@ -99,6 +113,14 @@ def print_human_readable(result: dict[str, Any]) -> None:
     )
     print(f"index 引用: {result['index_hash_references']} 个")
     print(f"覆盖率(referenced_valid_msl/index): {float(result['coverage_pct']):.1f}%")
+    print(f"可见 hash 长度分布: {format_count_map(result.get('source_hash_length_counts'))}")
+    print(f"index hash 长度分布: {format_count_map(result.get('index_hash_length_counts'))}")
+    noncanonical_visible_hashes = result.get("noncanonical_visible_hashes") or []
+    noncanonical_visible_hashes_mentioned = result.get("noncanonical_visible_hashes_mentioned_in_index") or []
+    if noncanonical_visible_hashes:
+        print(f"额外短 hash 可见文件: {preview_hashes(noncanonical_visible_hashes)}")
+    if noncanonical_visible_hashes_mentioned:
+        print(f"raw index 中也出现的短 hash: {preview_hashes(noncanonical_visible_hashes_mentioned)}")
     print()
 
     print("=== 覆盖率拆解 ===")
@@ -110,6 +132,7 @@ def print_human_readable(result: dict[str, Any]) -> None:
     print(f"被 index 引用的合法 MSL: {len(referenced_valid)}")
     print(f"被 index 引用但不是 MSL: {len(referenced_non_msl)}")
     print(f"index 引用缺少对应文件: {len(missing_referenced)}")
+    print(f"非 MSL 类型分布: {format_count_map(result.get('non_msl_type_counts'))}")
     if unreferenced_valid or unreferenced_non_msl:
         print(f"仅落盘未被 index 引用的合法 MSL: {len(unreferenced_valid)}")
         print(f"仅落盘未被 index 引用的非 MSL: {len(unreferenced_non_msl)}")
@@ -126,13 +149,15 @@ def print_human_readable(result: dict[str, Any]) -> None:
 
     files = result.get("files") if isinstance(result.get("files"), dict) else {}
     if files:
-        print(f"{'Hash':<20} {'Lines':>6} {'Size':>8} {'MSL':>4}  First Line")
-        print("-" * 90)
+        print(f"{'Hash':<20} {'Len':>3} {'Lines':>6} {'Size':>8} {'MSL':>4} {'Type':>12}  First Line")
+        print("-" * 110)
         for name, file_info in sorted(files.items()):
             print(
-                f"{name:<20} {int(file_info.get('lines') or 0):>6} "
+                f"{name:<20} {int(file_info.get('hash_length') or 0):>3} "
+                f"{int(file_info.get('lines') or 0):>6} "
                 f"{int(file_info.get('size') or 0):>7}B "
-                f"{'✅' if file_info.get('is_msl') else '❌':>4}  "
+                f"{'✅' if file_info.get('is_msl') else '❌':>4} "
+                f"{str(file_info.get('content_type') or '<unknown>'):>12}  "
                 f"{str(file_info.get('first_line') or '')}"
             )
     else:

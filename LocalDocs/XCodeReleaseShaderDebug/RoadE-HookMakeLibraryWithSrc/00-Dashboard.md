@@ -146,7 +146,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 |---|---|---|---|
 | 1 | capture bridge reachability | ✅ 基本收敛 | `on-run10` 确认 `create_session(bundleId)` 首次即返回 ready session；仅偶发 session 可见性抖动，不影响主排查面 |
 | 2 | capture 输出路径 | ✅ 短期绕过 | 继续用默认容器路径 + `--latest-gputrace` |
-| 3 | **trace 合法 MSL 覆盖偏低** | **进行中（当前最高优先级）** | `on-run10` v3 归因：`807 refs = 0 valid + 9 non-MSL + 798 missing`，`visibleMSL=0`；瓶颈在 trace 导出/源码可见性未闭环，而非"可见 MSL 未归因" |
+| 3 | **trace 合法 MSL 覆盖偏低** | **进行中（当前最高优先级）** | `on-run10` v4 归因：canonical `index` 仍是 `807 refs = 0 valid + 9 referenced non-MSL + 798 missing`，`visibleMSL=0`；另确认 trace 目录里还有 2 个 **14/15 位短 hash** 可见文件，也都是 compiler telemetry/remarks 的 bplist。11/11 可见 hash 文件均非 MSL，主瓶颈已收敛为 **trace 导出 / 源码未写入 bundle**，而非 attribution 未命中 |
 | 4 | 绘制内容差异未正式产出 | 工具就绪，需 GUI 环境 | `e006d_render_diff.py` 已就绪，需 Xcode GUI / Accessibility / `cliclick`；**重要专项但非日常 gate** |
 
 - **绘制内容差异分支**：这条线依赖 Xcode GUI 环境、Accessibility 权限与 `cliclick`。**它是重要专项分析分支，不是默认日常 gate**。详细方法见 `E-006d-RenderingPathDiffReference.md`。
@@ -174,7 +174,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | corpus 编译基线（2026-04-05） | `test-data/*.ll`（19 个）replay + compile **全绿**；`ShaderCorpus/com.miHoYo.Yuanshen/modules/` **91/91** replay + compile **全绿**，preflight rejected `0`，regression `0` |
 | `.gputrace` 里程碑（2026-04-04） | `capture_20260404_roadE_e006c3_final.gputrace` Xcode 人工确认 shader 面板源码可见（`E-006c` 已关闭） |
 | E-006d8 第一层矩阵（2026-04-06） | `off1/off2/on1~on10` 十二轮快照：**同模式输入稳定**、共享 `moduleKey=91/91`、单模块本体未漂移；`mode=on missingAttemptWhileEnabledPairs=17`；`off-vs-on allPairsDifferent=False`，**尚未形成"跨模式稳定不同"证据** |
-| E-006d8 blocker 1 live 复测（2026-04-06） | `replacement-on-run10`：`create_session` 首次即返回 ready session，`get_capture_status` 最终 `available=true`，容器内 `capture_metal_frame` 成功并经 `finalize-run --latest-gputrace` 固化；v3 归因 `807 refs = 0 valid + 9 non-MSL + 798 missing`，`visibleMSL=0`，主瓶颈确认收敛为 trace 覆盖 |
+| E-006d8 blocker 1 live 复测（2026-04-06） | `replacement-on-run10`：`create_session` 首次即返回 ready session，`get_capture_status` 最终 `available=true`，容器内 `capture_metal_frame` 成功并经 `finalize-run --latest-gputrace` 固化；随后用 v4 工具复盘确认：canonical `index` 为 `807 refs = 0 valid + 9 referenced non-MSL + 798 missing`，trace 目录另含 2 个 raw-index 可见短 hash bplist，`visibleMSL=0`。主瓶颈确认收敛为 **trace 导出 / 源码未写入 bundle** |
 
 ### 已完成的 session / capture 基础设施修复（2026-04-06）
 
@@ -224,7 +224,7 @@ PlayTools.framework (注入到 iOS app)
 | E-006c | ↳ `.gputrace` shader 源码可见性确认 | ✅ DONE | [Archive](00-Dashboard-Archive.md) |
 | E-006d | ↳ **原神同一界面重复启动时的随机渲染异常归因** | **TODO（当前主线）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
 | E-006d8 | ↳ 四条 blocker 收敛 | **TODO（当前推进焦点）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006d8-b3 | ↳ trace 合法 MSL 覆盖偏低归因 | **TODO（当前最高优先级 blocker）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
+| E-006d8-b3 | ↳ trace 合法 MSL 覆盖偏低归因 | **TODO（当前最高优先级 blocker；hash/bplist 来源已归因，下一步转 trace 导出 / 源码未写入 bundle）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
 | E-006d8-b4 | ↳ 绘制内容差异结构对比 | **TODO**（需 GUI 环境，非日常 gate） | [E-006d8b 参考](E-006d-RenderingPathDiffReference.md) |
 | E-006a | 扩展真实 corpus 覆盖面 | TODO（已降级） | |
 | E-007 | PlayCover settings / MCP / 工具暴露 | TODO（已降级） | |
@@ -237,7 +237,7 @@ PlayTools.framework (注入到 iOS app)
 - **源码可见 / compile green 都不等于渲染语义正确**：`E-006d` 关注的是相同输入下最终视觉结果、trace 与 replacement 证据是否稳定一致
 - **当前最低风险的比较基线仍是"替换 vs 不替换"**：统一通过 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py` 控制
 - **`E-006d` 的归因顺序必须固定**：先"替换 vs 不替换"对照 → 再对齐"输入是否相同" → 再比较"输出是否相同" → 最后看 runtime / render pipeline / post-processing 行为
-- **当前 trace 合法 MSL 覆盖率是最大瓶颈**：`on-run10` v3 归因 `807 refs = 0 valid + 9 non-MSL + 798 missing`，`visibleMSL=0`；主矛盾在 trace 导出/源码可见性未闭环。下一步优先解释 `missingReferencedHashes` 与 9 个 bplist-only 文件来源，再决定是否进入 draw call 级专项
+- **当前 trace 合法 MSL 覆盖率是最大瓶颈**：`on-run10` v4 归因已确认 canonical `index` 为 `807 refs = 0 valid + 9 referenced non-MSL + 798 missing`，trace 目录另有 2 个 raw-index 可见短 hash bplist；11/11 可见 hash 文件全部是 compiler telemetry/remarks 的 bplist，`visibleMSL=0`。主矛盾已收敛为 **trace 导出 / 源码未写入 bundle**。下一步应优先对照 `E-006c` 那份可见源码 trace 与 `on-run10` 的 bundle 导出差异，再决定是否进入 draw call 级专项
 - **更细的 lowering 经验、历史 live blocker 链路与已完成轮次已下沉到独立参考文档**：见 `E-004-MetallibSourceExtraction-Archive.md`、`E-006d-RenderingPathDiffReference.md` 与 `00-Dashboard-Archive.md`
 
 ## 参考信息

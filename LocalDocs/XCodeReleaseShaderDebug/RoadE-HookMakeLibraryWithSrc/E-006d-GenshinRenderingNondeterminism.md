@@ -31,7 +31,7 @@
 |---|---|---|---|---|
 | 1 | **capture bridge reachability** | `on-run10` 确认：`create_session(bundleId)` 首次即返回 ready session，`get_capture_status` 进入 `available=true`，容器内 `capture_metal_frame` 成功；bundle 级 `bridge not reachable` 未复现。一次短暂 `list_sessions` 空窗更像 registry 可见性抖动。详细演进见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | 继续观察 session 可见性偶发不一致，主排查面已下移到 trace 覆盖 | ✅ 是 |
 | 2 | **capture 输出路径** | 容器内 custom path 已验证可用；容器外权限边界未明。短期可继续用默认容器路径 + `--latest-gputrace` | 长期再单独验证容器外路径沙盒权限 | ✅ 是（`--latest-gputrace` 已自动化） |
-| 3 | **trace 合法 MSL 覆盖偏低** | `on-run10` v3 归因：`807 refs = 0 valid + 9 non-MSL + 798 missing`，`visibleMSL=0`；瓶颈在 trace 导出/源码可见性未闭环。`check_gputrace_sources.py` 可拆 `referenced-valid` / `referenced-non-MSL` / `missing-referenced-hash`，`compare_capture_runs.py` 已对旧快照过期 attribution index 自动重建 | fresh trace 后用 `check_gputrace_sources.py [--bundle-dir ...]`，优先解释 `missingReferencedHashes` 与 9 个 bplist-only 来源 | ✅ 是 |
+| 3 | **trace 合法 MSL 覆盖偏低** | `on-run10` v4 归因：canonical `index` 仍是 `807 refs = 0 valid + 9 referenced non-MSL + 798 missing`，`visibleMSL=0`；另确认 trace 目录里有 2 个 raw-index 可见短 hash 文件（14/15 位），同样是 compiler telemetry/remarks 的 bplist。11/11 可见 hash 文件均非 MSL，瓶颈已收敛为 trace 导出/源码未写入 bundle。`check_gputrace_sources.py` 现可同时暴露 canonical index 统计、短 hash 可见文件与 bplist 类型分布，`compare_capture_runs.py` 已对旧快照过期 attribution index 自动重建 | fresh trace 后用 `check_gputrace_sources.py [--bundle-dir ...]`，下一步优先对照 `E-006c` 可见源码 trace 与 `on-run10` 的 bundle 导出差异 | ✅ 是 |
 | 4 | **绘制内容差异未正式产出** | `e006d_render_diff.py` 入口就绪，GUI 自动化环境未验证 | 在 Xcode GUI / Accessibility / `cliclick` 可用时，跑 `off-run1` vs `on-run5` 结构化 diff | ⚠️ 需 GUI 自动化环境 |
 
 **本轮推进标准**：至少把当前问题明确收敛到以下之一：
@@ -41,8 +41,8 @@
 4. capture 导出 / trace 可见性仍不稳定
 5. 替换链路稳定，但差异落在更后续 render pipeline / post-processing
 
-**当前最新收敛（2026-04-06）**：host 侧 session / capture 修复已全部落地（详见 [00-Dashboard-Archive](00-Dashboard-Archive.md)）。`on-run10` 确认 `create_session(bundleId)` 首次即返回 ready session，`get_capture_status` 最终 `available=true`，容器内 `capture_metal_frame` 成功，bundle 级 `bridge not reachable` 未复现；一次短暂 `list_sessions` 空窗更像 registry 可见性抖动。v3 归因 `807 refs = 0 valid + 9 non-MSL + 798 missing`，`visibleMSL=0`，主瓶颈确认落在 **trace 导出 / 源码可见性未闭环**。后续排查面：
-1. **trace 覆盖与归因路径**：fresh trace 已能稳定产出，但当前 v3 拆解表明没有任何可见 MSL 可供继续做 `moduleKey` / replacement 匹配；下一步应优先解释 `missingReferencedHashes` 与 9 个 bplist-only 文件的来源，确认问题落在 trace 导出、hash 引用语义，还是源码文件未被写入 bundle
+**当前最新收敛（2026-04-06）**：host 侧 session / capture 修复已全部落地（详见 [00-Dashboard-Archive](00-Dashboard-Archive.md)）。`on-run10` 确认 `create_session(bundleId)` 首次即返回 ready session，`get_capture_status` 最终 `available=true`，容器内 `capture_metal_frame` 成功，bundle 级 `bridge not reachable` 未复现；一次短暂 `list_sessions` 空窗更像 registry 可见性抖动。v4 归因进一步确认：canonical `index` 仍是 `807 refs = 0 valid + 9 referenced non-MSL + 798 missing`，`visibleMSL=0`；trace 目录里额外可见的 2 个 14/15 位短 hash 文件也都是 compiler telemetry/remarks 的 bplist。也就是说，**11/11 可见 hash 文件全部不是 MSL**，当前问题已明确收敛到第 4 类：**capture 导出 / trace 可见性仍不稳定，源码文件没有被写入 bundle**，而不是 attribution 未命中。后续排查面：
+1. **trace 导出 / bundle 差异**：以 `E-006c` 那份已确认可见源码的 `.gputrace` 为对照，比对 `index` / 可见 hash 文件集 / bundle 元数据 / 导出目录差异，确认源码文件为何未写入 `on-run10` trace
 2. **session 可见性抖动**：继续观察 `list_sessions` 与 `create_session(bundleId)` 是否偶发短暂不一致，确认它是否只影响 registry 可见性而不影响实际 bridge reachability
 
 ## 已完成的子项

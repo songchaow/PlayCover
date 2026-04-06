@@ -103,7 +103,12 @@ class CheckGputraceSourcesTests(unittest.TestCase):
             self.assertEqual(result["missing_referenced_hashes"], ["AAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBB"])
             self.assertEqual(result["unreferenced_valid_msl_hashes"], [])
             self.assertEqual(result["unreferenced_non_msl_hashes"], [])
+            self.assertEqual(result["source_hash_length_counts"], {"16": 2})
+            self.assertEqual(result["index_hash_length_counts"], {"16": 4})
+            self.assertEqual(result["non_msl_type_counts"], {"bplist": 1})
             self.assertEqual(result["files"]["FEDCBA9876543210"]["is_msl"], False)
+            self.assertEqual(result["files"]["FEDCBA9876543210"]["content_type"], "bplist")
+            self.assertEqual(result["files"]["FEDCBA9876543210"]["hash_length"], 16)
 
     def test_bundle_dir_enables_visible_msl_attribution(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -161,6 +166,50 @@ class CheckGputraceSourcesTests(unittest.TestCase):
                 ["replacements/20260405_selector_cache"],
             )
 
+    def test_short_hex_hashes_are_counted_and_classified(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            trace_dir = root / "trace.gputrace"
+            make_gputrace(
+                trace_dir,
+                {
+                    "A123456789ABCD": b"bplist00\x00\x01\x02",
+                    "B123456789ABCDE": b"bplist00\x00\x01\x02",
+                    "0123456789ABCDEF": "#include <metal_stdlib>\nusing namespace metal;\n",
+                },
+                index_hashes=[
+                    "A123456789ABCD",
+                    "B123456789ABCDE",
+                    "0123456789ABCDEF",
+                    "AAAAAAAAAAAAAAAA",
+                ],
+            )
+
+            completed = subprocess.run(
+                ["python3", str(CHECK_SCRIPT), str(trace_dir), "--json"],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            result = json.loads(completed.stdout)
+            self.assertEqual(result["source_files"], 3)
+            self.assertEqual(result["index_hash_references"], 2)
+            self.assertEqual(result["referenced_non_msl_hashes"], [])
+            self.assertEqual(result["missing_referenced_hashes"], ["AAAAAAAAAAAAAAAA"])
+            self.assertEqual(result["source_hash_length_counts"], {"14": 1, "15": 1, "16": 1})
+            self.assertEqual(result["index_hash_length_counts"], {"16": 2})
+            self.assertEqual(result["noncanonical_visible_hashes"], ["A123456789ABCD", "B123456789ABCDE"])
+            self.assertEqual(
+                result["noncanonical_visible_hashes_mentioned_in_index"],
+                ["A123456789ABCD", "B123456789ABCDE"],
+            )
+            self.assertEqual(result["non_msl_type_counts"], {"bplist": 2})
+            self.assertEqual(result["files"]["A123456789ABCD"]["content_type"], "bplist")
+            self.assertEqual(result["files"]["A123456789ABCD"]["hash_length"], 14)
+            self.assertEqual(result["files"]["B123456789ABCDE"]["hash_length"], 15)
+
     def test_snapshot_capture_uses_same_valid_msl_coverage_rule(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -213,6 +262,9 @@ class CheckGputraceSourcesTests(unittest.TestCase):
             self.assertEqual(summary["referencedValidMSLHashes"], ["0123456789ABCDEF"])
             self.assertEqual(summary["referencedNonMSLHashes"], ["FEDCBA9876543210"])
             self.assertEqual(summary["missingReferencedHashes"], ["AAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBB"])
+            self.assertEqual(summary["sourceHashLengthCounts"], {"16": 2})
+            self.assertEqual(summary["indexHashLengthCounts"], {"16": 4})
+            self.assertEqual(summary["nonMSLTypeCounts"], {"bplist": 1})
             self.assertEqual(summary["coveragePct"], 25.0)
 
 

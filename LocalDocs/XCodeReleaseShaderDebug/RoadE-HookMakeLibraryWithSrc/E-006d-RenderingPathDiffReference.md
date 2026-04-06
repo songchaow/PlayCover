@@ -12,7 +12,7 @@
 - 当前还没有完成：对**当前代表性截帧对**做正式的绘制内容结构化 diff。现阶段最适合优先下钻的是：
   - **未替换**：`replacement-off-run1`
   - **替换成功且带 `.gputrace`**：`replacement-on-run5`
-- `replacement-on-run6` 虽然是最新 live 基线，但当前没有新的 `.gputrace`，因此它更适合继续承接 session / capture / trace 覆盖率问题，而不是直接拿来做 draw content 结构对比
+- `replacement-on-run10` 虽然是最新 live 基线（`valid_msl=0/9`，覆盖率 `1.1%`），但当前没有新的高质量 `.gputrace`（即源码可见覆盖充足的 trace），因此它更适合继续承接 session / capture / trace 覆盖率问题，而不是直接拿来做 draw content 结构对比
 
 ## 为什么这条线不能漏
 

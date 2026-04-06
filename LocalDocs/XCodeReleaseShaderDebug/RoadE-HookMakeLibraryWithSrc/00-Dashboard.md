@@ -140,17 +140,16 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 ## 当前主线
 
 - **E-006d（当前最高优先级）**：调查"用 PlayCover 打开原神，在同一界面重复启动时，画面表现每次都不完全一样；mesh 不变，但局部渲染结果异常"的现象。详细判断路径、归因顺序与技术备注见 `E-006d-GenshinRenderingNondeterminism.md`。
-- **E-006d8 四条 blocker（agent 可独立推进三条，一条需 GUI 环境）**：
+- **E-006d8 剩余 blocker**：
 
 | # | blocker | 状态 | 推进方式 |
 |---|---|---|---|
-| 1 | capture bridge reachability：`create_session(bundleId)` 与 ready session 的 reachability 误报 | 基本收敛（`on-run10` live 复测通过；`create_session(bundleId)`、`get_capture_status` 与容器内显式 `output_path` capture 均成功，待继续观察偶发 session 可见性抖动） | 继续记录 `list_sessions` / `create_session` 是否出现短暂不一致，但主排查面已转向 trace 覆盖与归因 |
-| 2 | capture 输出路径：容器外自定义路径权限边界未明 | 短期绕过 | 继续用默认容器路径 + `--latest-gputrace` |
-| 3 | trace 合法 MSL 覆盖偏低（`on-run10: 0/9`，覆盖率 `1.1%`） | 进行中（当前最高优先级 blocker） | 归因已有 / 缺失合法 MSL 对应的 draw call / replacement 路径 |
-| 4 | 绘制内容差异未正式产出 | 工具就绪，需 GUI 环境 | `e006d_render_diff.py` 已就绪，需 Xcode GUI / Accessibility / `cliclick` |
+| 1 | capture bridge reachability | ✅ 基本收敛 | `on-run10` 确认 `create_session(bundleId)` 首次即返回 ready session；仅偶发 session 可见性抖动，不影响主排查面 |
+| 2 | capture 输出路径 | ✅ 短期绕过 | 继续用默认容器路径 + `--latest-gputrace` |
+| 3 | **trace 合法 MSL 覆盖偏低** | **进行中（当前最高优先级）** | `on-run10: valid_msl=0/9, 覆盖率 1.1%`；需归因已有/缺失合法 MSL 对应的 draw call / replacement 路径 |
+| 4 | 绘制内容差异未正式产出 | 工具就绪，需 GUI 环境 | `e006d_render_diff.py` 已就绪，需 Xcode GUI / Accessibility / `cliclick`；**重要专项但非日常 gate** |
 
 - **绘制内容差异分支**：这条线依赖 Xcode GUI 环境、Accessibility 权限与 `cliclick`。**它是重要专项分析分支，不是默认日常 gate**。详细方法见 `E-006d-RenderingPathDiffReference.md`。
-- **E-006c（✅ 已关闭）**：Xcode 人工确认 shader 面板源码可见，"源码可见"链路已打通。
 - **E-006a / E-007**：在 `E-006d` 明确根因前暂不作为最高优先级。
 
 ## 最新基线
@@ -177,16 +176,9 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | E-006d8 第一层矩阵（2026-04-06） | `off1/off2/on1~on10` 十二轮快照：**同模式输入稳定**、共享 `moduleKey=91/91`、单模块本体未漂移；`mode=on missingAttemptWhileEnabledPairs=17`；`off-vs-on allPairsDifferent=False`，**尚未形成"跨模式稳定不同"证据** |
 | E-006d8 blocker 1 live 复测（2026-04-06） | `replacement-on-run10`：`create_session(bundleId)` 首次即返回 ready session，`get_capture_status` 最终为 `available=true`，容器内显式 `output_path` 的 `capture_metal_frame` 成功并经 `finalize-run --latest-gputrace` 固化；fresh trace 自动检查 `valid MSL = 0/9`、覆盖率 `1.1%`，主瓶颈转向 trace 归因而非 bundle 级 reachability |
 
-### 已完成的 session / capture 基础设施修复（2026-04-06，全部已落地 + 测试覆盖）
+### 已完成的 session / capture 基础设施修复（2026-04-06）
 
-- host split-brain 修复（stale cleanup 同步断链）
-- `create_session` 收紧到 bridge `ping` 成功
-- `create_session` ready-session 选取改为优先最新 heartbeat，并将单候选 probe 超时对齐到真实 bridge 命令量级（最多 5s；剩余 deadline 不足最小 probe 窗口时不再强行探测）
-- `get_capture_status` 去 lazy-load + 去 `valueOnMainSync`
-- 默认容器 `Captures/` 回收闭环（`--latest-gputrace`）
-- 绘制内容差异 runner（`e006d_render_diff.py`，需 GUI 环境）
-
-> 更细的修复历史见 `E-006d-GenshinRenderingNondeterminism.md` 技术备注与 [00-Dashboard-Archive](00-Dashboard-Archive.md)
+host split-brain 修复、`create_session` bridge ping 收紧、ready-session probe 对齐与 multi-candidate 预算保护、`get_capture_status` 去 lazy-load、默认容器 `Captures/` 回收闭环——全部已落地 + 测试覆盖。详细修复历史见 `E-006d-GenshinRenderingNondeterminism.md` 技术备注与 [00-Dashboard-Archive](00-Dashboard-Archive.md)。绘制内容差异 runner（`e006d_render_diff.py`）已就绪，需 GUI 环境。
 
 ## 整体架构
 
@@ -229,13 +221,13 @@ PlayTools.framework (注入到 iOS app)
 | E-004 | **metallib → bitcode / IR / MSL 采集与导出** | ✅ DONE | [E-004](E-004-MetallibSourceExtraction.md) |
 | E-005 | **离线 replay / batch compile / diff 工具链** | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | ✅ DONE | [Archive](00-Dashboard-Archive.md) |
-| E-006d | **原神同一界面重复启动时的随机渲染异常归因** | **TODO（当前主线）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006d1~d8a | ↳ 对照工具链 + 基础设施修复（全部已落地） | ✅ DONE | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006d8 | ↳ 四条 blocker 收敛 | **TODO** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006d8b1 | ↳ 标准化 render-diff runner | ✅ DONE | [E-006d8b 参考](E-006d-RenderingPathDiffReference.md) |
-| E-006d8b | ↳ 绘制内容差异结构对比 | **TODO**（需 GUI 环境） | [E-006d8b 参考](E-006d-RenderingPathDiffReference.md) |
-| E-006a | ↳ 扩展真实 corpus 覆盖面 | TODO（已降级） | |
-| E-007 | **PlayCover settings / MCP / 工具暴露** | TODO（已降级） | |
+| E-006c | ↳ `.gputrace` shader 源码可见性确认 | ✅ DONE | [Archive](00-Dashboard-Archive.md) |
+| E-006d | ↳ **原神同一界面重复启动时的随机渲染异常归因** | **TODO（当前主线）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
+| E-006d8 | ↳ 四条 blocker 收敛 | **TODO（当前推进焦点）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
+| E-006d8-b3 | ↳ trace 合法 MSL 覆盖偏低归因 | **TODO（当前最高优先级 blocker）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
+| E-006d8-b4 | ↳ 绘制内容差异结构对比 | **TODO**（需 GUI 环境，非日常 gate） | [E-006d8b 参考](E-006d-RenderingPathDiffReference.md) |
+| E-006a | 扩展真实 corpus 覆盖面 | TODO（已降级） | |
+| E-007 | PlayCover settings / MCP / 工具暴露 | TODO（已降级） | |
 
 ## 踩坑与经验
 
@@ -245,7 +237,7 @@ PlayTools.framework (注入到 iOS app)
 - **源码可见 / compile green 都不等于渲染语义正确**：`E-006d` 关注的是相同输入下最终视觉结果、trace 与 replacement 证据是否稳定一致
 - **当前最低风险的比较基线仍是"替换 vs 不替换"**：统一通过 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py` 控制
 - **`E-006d` 的归因顺序必须固定**：先"替换 vs 不替换"对照 → 再对齐"输入是否相同" → 再比较"输出是否相同" → 最后看 runtime / render pipeline / post-processing 行为
-- **session / capture 基础设施修复已全部落地 + 测试覆盖**：stale cleanup、`create_session` bridge ping、`get_capture_status` 去 lazy-load——详见 `E-006d-GenshinRenderingNondeterminism.md`
+- **当前 trace 合法 MSL 覆盖率是最大瓶颈**：`on-run10` fresh trace `valid_msl = 0/9`，覆盖率 `1.1%`；下一步应优先解释已有 / 缺失合法 MSL 对应的 replacement / draw call 归属
 - **更细的 lowering 经验、历史 live blocker 链路与已完成轮次已下沉到独立参考文档**：见 `E-004-MetallibSourceExtraction-Archive.md`、`E-006d-RenderingPathDiffReference.md` 与 `00-Dashboard-Archive.md`
 
 ## 参考信息

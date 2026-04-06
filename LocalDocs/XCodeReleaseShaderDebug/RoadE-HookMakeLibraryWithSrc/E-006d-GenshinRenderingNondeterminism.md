@@ -10,7 +10,7 @@
 - 停留在**同一个界面**，多次启动后画面表现不完全一样
 - **mesh 没有变化**，但局部渲染结果会随机异常
 - 由于原神是延迟管线，异常也可能出现在后处理、着色阶段，或更上层的 render pipeline 顺序 / 配置
-- **当前最保守结论**：最稳定的复现口径是比较**进行了反编译/重编译替换**与**完全不做替换**两种运行方式；但根据当前九轮快照矩阵，**跨模式稳定不同尚未被 corpus / trace 级证据坐实**
+- **当前最保守结论**：最稳定的复现口径是比较**进行了反编译/重编译替换**与**完全不做替换**两种运行方式；但根据当前十二轮快照矩阵（`off1/off2/on1~on10`），**跨模式稳定不同尚未被 corpus / trace 级证据坐实**
 
 ## 目标
 
@@ -58,10 +58,7 @@
 | E-006d7 | trace 归因索引（`gputrace-attribution-index.json`） | ✅ DONE |
 | E-006d8a | runtime 启动 breadcrumb（`RuntimeLaunchDiagnostics` + summary 脚本） | ✅ DONE |
 | E-006d8b1 | 标准化 render-diff runner（`e006d_render_diff.py`） | ✅ DONE |
-| host split-brain 修复 | stale cleanup 时主动断开 registration channel | ✅ DONE + 测试覆盖 |
-| host session ready 收口 | `SessionService.createSession(...)` 改为返回前额外要求 command bridge `ping` 成功；补充 `PlayCoverMCPTests` 覆盖"bridge 延迟可达 / 已注册但不可达" | ✅ DONE + 测试覆盖 |
-| host ready-session probe 对齐 | `create_session(bundleId)` 改为优先探测最新 heartbeat 的 ready session，并把单候选 bridge probe 超时放宽到与真实 bridge 命令同量级（最多 5s；若剩余 deadline 已低于最小 probe 窗口则不再强行探测）；补充 `PlayCoverMCPTests` 覆盖最新 session 优先、旧 session fallback 与 probe timeout | ✅ DONE + 测试覆盖，待下一轮 live 验证 |
-| host multi-candidate probe 预算保护 | `create_session(bundleId)` 在同 bundle 存在多个 ready session 时，会为后续候选预留最小 probe 窗口，避免"最新 session 慢失败 → 旧 session 来不及探测"；补充 `PlayCoverMCPTests` 覆盖慢失败 fallback 场景 | ✅ DONE + 测试覆盖，待下一轮 live 验证 |
+| host session / capture 基础设施修复 | split-brain 修复、bridge ping 收紧、ready-session probe 对齐、multi-candidate 预算保护、capture status 去 lazy-load、默认容器回收闭环 | ✅ DONE + 测试覆盖 |
 
 ## 优先排查顺序
 
@@ -99,7 +96,7 @@
 
 - **假设 A：输入并不稳定**（已被矩阵否定：同模式输入稳定）
 - **假设 B：`IR -> MSL` 结果不稳定**（已被否定：单模块本体未漂移）
-- **假设 C：runtime 替换或 pipeline 实际使用不稳定**（部分证据：`missingAttemptWhileEnabledPairs=13`）
+- **假设 C：runtime 替换或 pipeline 实际使用不稳定**（部分证据：`missingAttemptWhileEnabledPairs=17`（含 `on-run10`））
 - **假设 D：问题出在更后续的着色 / 后处理 / render pipeline 阶段**（待验证）
 - **假设 E：MSL 只是"可编译"而非"语义等价"**（待验证）
 - **假设 F：host 把 registration ready 误判成 command-ready**（❌ 已否定：`create_session` 已要求 bridge `ping` 成功 + 单测覆盖；`on-run7` 未再复现 split-brain）
@@ -128,8 +125,7 @@
 - **draw call / Render Encoder / Pipeline State 是独立证据层**：当 shader / trace 侧证据不足时必须补
 - **`module.meta.json` 的统计字段要与真实 artifact diff 分开看**：`captureCount`、`sourceCacheKeys` 等变化不等于本体变化
 - **`throw` + 静默 `catch` 回退是 runtime hook 的危险反模式**
-- **host 侧 session / capture 基础设施修复已完成，本轮 live 复测继续支持其有效性**：stale cleanup 同步断链、`create_session` 收紧到 bridge `ping`、`get_capture_status` 去 lazy-load + 去 valueOnMainSync——当前 bundle 级 reachability 误报未再出现，剩余风险更像 session registry 可见性抖动，而非 runtime capture 命令整体失效。详细修复历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)
-- **`create_session` 当前 probe 行为已进一步对齐真实命令路径**：ready-session 现在按 heartbeat / 创建时间优先最新会话；多候选场景会为 fallback 候选预留最小 probe 窗口，避免首个慢失败候选吞掉整个 bundle 级 deadline；单候选 probe 不再硬性截断在 1s，且当剩余 deadline 已不足最小 probe 窗口时不会再额外透支时间。若后续 live 仍复现 bundle 级 timeout，就应继续把焦点收敛到 runtime 侧命令端口时序，而不是 host registry 排序本身
+- **host 侧 session / capture 基础设施修复已全部落地**：stale cleanup 同步断链、`create_session` 收紧到 bridge `ping`、ready-session probe 对齐（最新 heartbeat 优先 + multi-candidate 预算保护）、`get_capture_status` 去 lazy-load + 去 valueOnMainSync——当前 bundle 级 reachability 误报未再出现。详细修复历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)
 - **更早的 lowering 细节与已收敛 compile blocker 不再由本文档维护**：见 `E-004-MetallibSourceExtraction.md`、`E-006d-RenderingPathDiffReference.md` 与 archive
 
 ## 与其他文档的关系

@@ -38,7 +38,7 @@ public final class SessionService: Sendable {
         return formatter
     }()
     private static let minimumBridgeProbeTimeout: TimeInterval = 0.2
-    private static let maximumBridgeProbeTimeout: TimeInterval = 1.0
+    private static let maximumBridgeProbeTimeout: TimeInterval = 5.0
     public static let defaultBridgeReadinessProbe: BridgeReadinessProbe = { session, timeout in
         let semaphore = DispatchSemaphore(value: 0)
         let resultBox = ProbeResultBox()
@@ -207,22 +207,35 @@ public final class SessionService: Sendable {
             .filter { session in
                 session.status == .ready && session.sessionId != excludingSessionId
             }
+            .sorted { lhs, rhs in
+                if lhs.lastHeartbeat != rhs.lastHeartbeat {
+                    return lhs.lastHeartbeat > rhs.lastHeartbeat
+                }
+                if lhs.createdAt != rhs.createdAt {
+                    return lhs.createdAt > rhs.createdAt
+                }
+                return lhs.sessionId < rhs.sessionId
+            }
 
         guard !candidates.isEmpty else {
             return nil
         }
 
-        let remaining = deadline.timeIntervalSinceNow
-        guard remaining > 0 else {
-            return nil
-        }
-
-        let probeTimeout = min(
-            Self.maximumBridgeProbeTimeout,
-            max(Self.minimumBridgeProbeTimeout, remaining)
-        )
-
         for candidate in candidates {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else {
+                return nil
+            }
+
+            let probeTimeout = min(
+                Self.maximumBridgeProbeTimeout,
+                remaining
+            )
+
+            guard probeTimeout >= Self.minimumBridgeProbeTimeout else {
+                return nil
+            }
+
             if bridgeReadinessProbe(candidate, probeTimeout) {
                 return candidate
             }

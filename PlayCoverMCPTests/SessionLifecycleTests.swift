@@ -51,6 +51,31 @@ final class SessionStatusTests: XCTestCase {
 
 final class SessionServiceTests: XCTestCase {
 
+    private final class ProbeRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var sessionIds: [String] = []
+        private var timeouts: [TimeInterval] = []
+
+        func record(sessionId: String, timeout: TimeInterval) {
+            lock.lock()
+            sessionIds.append(sessionId)
+            timeouts.append(timeout)
+            lock.unlock()
+        }
+
+        func recordedSessionIds() -> [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return sessionIds
+        }
+
+        func recordedTimeouts() -> [TimeInterval] {
+            lock.lock()
+            defer { lock.unlock() }
+            return timeouts
+        }
+    }
+
     private var registry: SessionRegistry!
     private var service: SessionService!
 
@@ -188,6 +213,128 @@ final class SessionServiceTests: XCTestCase {
                 )
             }
         }
+    }
+
+    func testCreateSessionPrefersFreshestReachableReadySession() throws {
+        let staleRuntime = SessionInfo(
+            sessionId: "runtime-stale",
+            bundleId: "com.bridge.order",
+            pid: 500,
+            runtimePort: 53000,
+            createdAt: Date().addingTimeInterval(-20),
+            lastHeartbeat: Date().addingTimeInterval(-20),
+            status: .ready
+        )
+        let freshRuntime = SessionInfo(
+            sessionId: "runtime-fresh",
+            bundleId: "com.bridge.order",
+            pid: 501,
+            runtimePort: 53001,
+            createdAt: Date().addingTimeInterval(-5),
+            lastHeartbeat: Date().addingTimeInterval(-1),
+            status: .ready
+        )
+        try registry.register(staleRuntime)
+        try registry.register(freshRuntime)
+
+        let recorder = ProbeRecorder()
+        service = SessionService(registry: registry, bridgeReadinessProbe: { session, _ in
+            recorder.record(sessionId: session.sessionId, timeout: 0)
+            return session.sessionId == "runtime-fresh"
+        })
+
+        let result = try service.createSession(bundleId: "com.bridge.order", timeout: 1.0)
+        let probedSessionIds = recorder.recordedSessionIds()
+
+        XCTAssertEqual(result.sessionId, "runtime-fresh")
+        XCTAssertEqual(probedSessionIds.first, "runtime-fresh")
+    }
+
+    func testCreateSessionBridgeProbeUsesRemainingDeadlineUpToCommandTimeout() throws {
+        let readyRuntime = SessionInfo(
+            sessionId: "runtime-sess-1",
+            bundleId: "com.bridge.probe-timeout",
+            pid: 500,
+            runtimePort: 53000,
+            status: .ready
+        )
+        try registry.register(readyRuntime)
+
+        let recorder = ProbeRecorder()
+        service = SessionService(registry: registry, bridgeReadinessProbe: { _, timeout in
+            recorder.record(sessionId: "runtime-sess-1", timeout: timeout)
+            return true
+        })
+
+        _ = try service.createSession(bundleId: "com.bridge.probe-timeout", timeout: 10.0)
+        let observedTimeouts = recorder.recordedTimeouts()
+
+        XCTAssertEqual(observedTimeouts.count, 1)
+        guard let firstTimeout = observedTimeouts.first else {
+            return XCTFail("Expected a probe timeout to be recorded")
+        }
+        XCTAssertEqual(firstTimeout, 5.0, accuracy: 0.001)
+    }
+
+    func testCreateSessionFallsBackToOlderReachableSessionWhenFreshestProbeFails() throws {
+        let olderReachableRuntime = SessionInfo(
+            sessionId: "runtime-older-reachable",
+            bundleId: "com.bridge.fallback",
+            pid: 500,
+            runtimePort: 53000,
+            createdAt: Date().addingTimeInterval(-20),
+            lastHeartbeat: Date().addingTimeInterval(-10),
+            status: .ready
+        )
+        let freshestUnreachableRuntime = SessionInfo(
+            sessionId: "runtime-freshest-unreachable",
+            bundleId: "com.bridge.fallback",
+            pid: 501,
+            runtimePort: 53001,
+            createdAt: Date().addingTimeInterval(-2),
+            lastHeartbeat: Date().addingTimeInterval(-1),
+            status: .ready
+        )
+        try registry.register(olderReachableRuntime)
+        try registry.register(freshestUnreachableRuntime)
+
+        let recorder = ProbeRecorder()
+        service = SessionService(registry: registry, bridgeReadinessProbe: { session, timeout in
+            recorder.record(sessionId: session.sessionId, timeout: timeout)
+            return session.sessionId == "runtime-older-reachable"
+        })
+
+        let result = try service.createSession(bundleId: "com.bridge.fallback", timeout: 1.0)
+        let probedSessionIds = recorder.recordedSessionIds()
+
+        XCTAssertEqual(result.sessionId, "runtime-older-reachable")
+        XCTAssertEqual(probedSessionIds, ["runtime-freshest-unreachable", "runtime-older-reachable"])
+    }
+
+    func testCreateSessionSkipsProbeWhenRemainingDeadlineBelowMinimumProbeTimeout() throws {
+        let readyRuntime = SessionInfo(
+            sessionId: "runtime-sess-1",
+            bundleId: "com.bridge.short-deadline",
+            pid: 500,
+            runtimePort: 53000,
+            status: .ready
+        )
+        try registry.register(readyRuntime)
+
+        let recorder = ProbeRecorder()
+        service = SessionService(registry: registry, bridgeReadinessProbe: { session, timeout in
+            recorder.record(sessionId: session.sessionId, timeout: timeout)
+            return true
+        })
+
+        XCTAssertThrowsError(try service.createSession(bundleId: "com.bridge.short-deadline", timeout: 0.05)) { error in
+            XCTAssertEqual(
+                error as? SessionError,
+                .heartbeatTimeout("Runtime registered for bundleId 'com.bridge.short-deadline' but command bridge was not reachable within 0.05s")
+            )
+        }
+
+        XCTAssertTrue(recorder.recordedTimeouts().isEmpty)
     }
 
     // MARK: - list_sessions

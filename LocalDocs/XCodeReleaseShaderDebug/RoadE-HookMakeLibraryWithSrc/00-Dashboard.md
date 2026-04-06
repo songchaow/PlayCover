@@ -144,9 +144,9 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 | # | blocker | 状态 | 推进方式 |
 |---|---|---|---|
-| 1 | capture bridge reachability | ✅ 基本收敛 | `on-run10` 确认 `create_session(bundleId)` 首次即返回 ready session；仅偶发 session 可见性抖动，不影响主排查面 |
+| 1 | capture bridge reachability | ✅ 已收敛 | `on-run10` / `on-run11` 均确认首次 `create_session(bundleId)` 即返回 ready session；偶发 session 可见性抖动不影响主排查面 |
 | 2 | capture 输出路径 | ✅ 短期绕过 | 继续用默认容器路径 + `--latest-gputrace` |
-| 3 | **trace 合法 MSL 覆盖偏低** | **进行中（当前最高优先级）** | `on-run10` v4 归因：canonical `index` 为 `807 refs = 0 valid + 9 referenced non-MSL + 798 missing`，`visibleMSL=0`，主瓶颈收敛为 **trace 导出 / 源码未写入 bundle**。**2026-04-06 已落地 runtime 早期预加载 GPUToolsCapture 的修复，并完成 `replacement-on-run11` fresh live 验证：runtime status 显示 `gpuToolsCaptureLoaded=true`、latest queue class=`CaptureMTLCommandQueue`；新的 scope trace 已提升到 `922 refs = 3 valid + 9 referenced non-MSL + 910 missing`、`visibleMSL=3`。说明源码写入已部分恢复，但覆盖率仍仅 `0.3%`，且 3 个可见 MSL 暂未归因到当前 `ShaderCorpus`。** |
+| 3 | **trace 合法 MSL 覆盖偏低** | **进行中（当前最高优先级）** | preload 修复已生效：`on-run11` 从 `visibleMSL=0` 提升到 `visibleMSL=3`（`922 refs = 3 valid + 9 non-MSL + 910 missing`）。下一步：归因 3 个可见 MSL 到 `ShaderCorpus`、对照 `E-006c` 可见 trace 排查其余 910 missing 的 bundle 写入条件 |
 | 4 | 绘制内容差异未正式产出 | 工具就绪，需 GUI 环境 | `e006d_render_diff.py` 已就绪，需 Xcode GUI / Accessibility / `cliclick`；**重要专项但非日常 gate** |
 
 - **绘制内容差异分支**：这条线依赖 Xcode GUI 环境、Accessibility 权限与 `cliclick`。**它是重要专项分析分支，不是默认日常 gate**。详细方法见 `E-006d-RenderingPathDiffReference.md`。
@@ -173,13 +173,13 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 落盘与闭环能力 | 成功路径 → `ShaderCorpus/<bundleId>/modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`；replacement → `replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal`；失败路径 → `ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`。三条路径均已进入离线 replay / diff / 归因主回路。详见 `E-004-CorpusClosureAndRecapturePolicy.md` |
 | corpus 编译基线（2026-04-05） | `test-data/*.ll`（19 个）replay + compile **全绿**；`ShaderCorpus/com.miHoYo.Yuanshen/modules/` **91/91** replay + compile **全绿**，preflight rejected `0`，regression `0` |
 | `.gputrace` 里程碑（2026-04-04） | `capture_20260404_roadE_e006c3_final.gputrace` Xcode 人工确认 shader 面板源码可见（`E-006c` 已关闭） |
-| E-006d8 第一层矩阵（2026-04-06） | `off1/off2/on1~on10` 十二轮快照：**同模式输入稳定**、共享 `moduleKey=91/91`、单模块本体未漂移；`mode=on missingAttemptWhileEnabledPairs=17`；`off-vs-on allPairsDifferent=False`，**尚未形成"跨模式稳定不同"证据** |
-| E-006d8 blocker 1 live 复测（2026-04-06） | `replacement-on-run10`：`create_session` 首次即返回 ready session，`get_capture_status` 最终 `available=true`，容器内 `capture_metal_frame` 成功并经 `finalize-run --latest-gputrace` 固化；随后用 v4 工具复盘确认：canonical `index` 为 `807 refs = 0 valid + 9 referenced non-MSL + 798 missing`，trace 目录另含 2 个 raw-index 可见短 hash bplist，`visibleMSL=0`。主瓶颈确认收敛为 **trace 导出 / 源码未写入 bundle** |
-| E-006d8 blocker 3 preload live 验证（2026-04-06） | 本轮先按标准脚本完成 `sync_playtools_xcframework.sh` + `build_and_install.sh`，再对原神做 fresh live。runtime `get_capture_status` 显示 `gpuToolsCaptureLoaded=true`、latest queue class=`CaptureMTLCommandQueue`。第一次 `device` capture 仅落盘瘦 trace（`index/metadata/store0`，`14` 个 hash 全缺失）；第二次改用 `scope` 并等待稳定后，`capture_20260406_sourcepreload_validation.gputrace` / `replacement-on-run11` 提升为 **`922 refs = 3 valid + 9 referenced non-MSL + 910 missing`、`visibleMSL=3`**。说明源码写入已重新进入 trace，但覆盖率仍偏低，且 3 个可见 MSL 尚未归因到当前 `ShaderCorpus` |
+| E-006d8 preload 验证（2026-04-06） | `replacement-on-run11`：preload 修复生效，`gpuToolsCaptureLoaded=true`、queue class=`CaptureMTLCommandQueue`；scope capture 提升到 `922 refs = 3 valid + 9 non-MSL + 910 missing`、`visibleMSL=3`。源码写入已部分恢复，但覆盖率仍极低 |
 
 ### 已完成的 session / capture 基础设施修复（2026-04-06）
 
-host split-brain 修复、`create_session` bridge ping 收紧、ready-session probe 对齐与 multi-candidate 预算保护、`get_capture_status` 去 lazy-load、默认容器 `Captures/` 回收闭环——全部已落地 + 测试覆盖。详细修复历史见 `E-006d-GenshinRenderingNondeterminism.md` 技术备注与 [00-Dashboard-Archive](00-Dashboard-Archive.md)。绘制内容差异 runner（`e006d_render_diff.py`）已就绪，需 GUI 环境。
+host split-brain 修复、`create_session` bridge ping 收紧、ready-session probe 对齐、`get_capture_status` 去 lazy-load、默认容器 `Captures/` 回收闭环——全部已落地 + 测试覆盖。**2026-04-06 新增**：runtime 早期预加载 GPUToolsCapture（`PlayCover.launch()` 中、`LibrarySourceInjectionService.installIfNeeded()` 之前），确保 replacement library 不错过 capture 观测窗口。绘制内容差异 runner（`e006d_render_diff.py`）已就绪，需 GUI 环境。
+
+详细修复历史见 `E-006d-GenshinRenderingNondeterminism.md` 技术备注与 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
 
 ## 整体架构
 
@@ -225,7 +225,9 @@ PlayTools.framework (注入到 iOS app)
 | E-006c | ↳ `.gputrace` shader 源码可见性确认 | ✅ DONE | [Archive](00-Dashboard-Archive.md) |
 | E-006d | ↳ **原神同一界面重复启动时的随机渲染异常归因** | **TODO（当前主线）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
 | E-006d8 | ↳ 四条 blocker 收敛 | **TODO（当前推进焦点）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006d8-b3 | ↳ trace 合法 MSL 覆盖偏低归因 | **TODO（当前最高优先级 blocker；hash/bplist 来源已归因，下一步转 trace 导出 / 源码未写入 bundle）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
+| E-006d8-b3 | ↳ trace 合法 MSL 覆盖偏低归因 | **TODO（当前最高优先级 blocker）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
+| E-006d8-b3a | ↳ 归因 3 个可见 MSL 到 ShaderCorpus | **TODO（b3 下一步）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
+| E-006d8-b3b | ↳ 对照 E-006c 可见 trace 排查 910 missing | **TODO（b3 下一步）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
 | E-006d8-b4 | ↳ 绘制内容差异结构对比 | **TODO**（需 GUI 环境，非日常 gate） | [E-006d8b 参考](E-006d-RenderingPathDiffReference.md) |
 | E-006a | 扩展真实 corpus 覆盖面 | TODO（已降级） | |
 | E-007 | PlayCover settings / MCP / 工具暴露 | TODO（已降级） | |
@@ -237,8 +239,7 @@ PlayTools.framework (注入到 iOS app)
 - **`build_and_install.sh` 是更新运行时 framework 的唯一可靠路径**：`sync_playtools_xcframework.sh` 只更新构建产物；涉及 live 时必须走 `BuildScripts/build_and_install.sh`
 - **源码可见 / compile green 都不等于渲染语义正确**：`E-006d` 关注的是相同输入下最终视觉结果、trace 与 replacement 证据是否稳定一致
 - **当前最低风险的比较基线仍是"替换 vs 不替换"**：统一通过 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py` 控制
-- **`E-006d` 的归因顺序必须固定**：先"替换 vs 不替换"对照 → 再对齐"输入是否相同" → 再比较"输出是否相同" → 最后看 runtime / render pipeline / post-processing 行为
-- **当前 trace 合法 MSL 覆盖率是最大瓶颈**：`on-run10` v4 归因已确认 canonical `index` 为 `807 refs = 0 valid + 9 referenced non-MSL + 798 missing`，trace 目录另有 2 个 raw-index 可见短 hash bplist；11/11 可见 hash 文件全部是 compiler telemetry/remarks 的 bplist，`visibleMSL=0`。主矛盾已收敛为 **trace 导出 / 源码未写入 bundle**。下一步应优先对照 `E-006c` 那份可见源码 trace 与 `on-run10` 的 bundle 导出差异，再决定是否进入 draw call 级专项
+- **GPUToolsCapture 预加载时序是 trace 覆盖率的关键**：`makeLibrary(source:)` replacement 必须在 capture 库已加载后才发生，否则替换后的 library 会错过观测窗口
 - **更细的 lowering 经验、历史 live blocker 链路与已完成轮次已下沉到独立参考文档**：见 `E-004-MetallibSourceExtraction-Archive.md`、`E-006d-RenderingPathDiffReference.md` 与 `00-Dashboard-Archive.md`
 
 ## 参考信息

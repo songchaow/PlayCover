@@ -31,7 +31,7 @@
 |---|---|---|---|---|
 | 1 | **capture bridge reachability** | `on-run10` 确认：`create_session(bundleId)` 首次即返回 ready session，`get_capture_status` 进入 `available=true`，容器内 `capture_metal_frame` 成功；bundle 级 `bridge not reachable` 未复现。一次短暂 `list_sessions` 空窗更像 registry 可见性抖动。详细演进见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | 继续观察 session 可见性偶发不一致，主排查面已下移到 trace 覆盖 | ✅ 是 |
 | 2 | **capture 输出路径** | 容器内 custom path 已验证可用；容器外权限边界未明。短期可继续用默认容器路径 + `--latest-gputrace` | 长期再单独验证容器外路径沙盒权限 | ✅ 是（`--latest-gputrace` 已自动化） |
-| 3 | **trace 合法 MSL 覆盖偏低** | `on-run10` v4 归因：canonical `index` 仍是 `807 refs = 0 valid + 9 referenced non-MSL + 798 missing`，`visibleMSL=0`；另确认 trace 目录里有 2 个 raw-index 可见短 hash 文件（14/15 位），同样是 compiler telemetry/remarks 的 bplist。11/11 可见 hash 文件均非 MSL，瓶颈已收敛为 trace 导出/源码未写入 bundle。`check_gputrace_sources.py` 现可同时暴露 canonical index 统计、短 hash 可见文件与 bplist 类型分布，`compare_capture_runs.py` 已对旧快照过期 attribution index 自动重建 | fresh trace 后用 `check_gputrace_sources.py [--bundle-dir ...]`，下一步优先对照 `E-006c` 可见源码 trace 与 `on-run10` 的 bundle 导出差异 | ✅ 是 |
+| 3 | **trace 合法 MSL 覆盖偏低** | preload 修复后 `on-run11`：`922 refs = 3 valid + 9 non-MSL + 910 missing`、`visibleMSL=3`。源码写入已部分恢复（从 `on-run10` 的 `0` 到 `3`），但覆盖率仍极低（`0.3%`）。3 个可见 MSL 尚未归因到 `ShaderCorpus` | ①归因 3 个可见 MSL 到 `ShaderCorpus` 的 `module.generated.metal` / `aggregate.generated.metal`；②对照 `E-006c` 可见 trace 排查其余 910 missing 的 bundle 写入条件 | ✅ 是 |
 | 4 | **绘制内容差异未正式产出** | `e006d_render_diff.py` 入口就绪，GUI 自动化环境未验证 | 在 Xcode GUI / Accessibility / `cliclick` 可用时，跑 `off-run1` vs `on-run5` 结构化 diff | ⚠️ 需 GUI 自动化环境 |
 
 **本轮推进标准**：至少把当前问题明确收敛到以下之一：
@@ -41,16 +41,15 @@
 4. capture 导出 / trace 可见性仍不稳定
 5. 替换链路稳定，但差异落在更后续 render pipeline / post-processing
 
-**当前最新收敛（2026-04-06）**：host 侧 session / capture 修复已全部落地（详见 [00-Dashboard-Archive](00-Dashboard-Archive.md)）。`on-run10` 确认 `create_session(bundleId)` 首次即返回 ready session，`get_capture_status` 最终 `available=true`，容器内 `capture_metal_frame` 成功，bundle 级 `bridge not reachable` 未复现；一次短暂 `list_sessions` 空窗更像 registry 可见性抖动。v4 归因进一步确认：canonical `index` 为 `807 refs = 0 valid + 9 referenced non-MSL + 798 missing`，`visibleMSL=0`，当时问题已收敛为 **trace 导出 / 源码未写入 bundle**，而不是 attribution 未命中。
+**当前最新收敛（2026-04-06）**：host 侧 session / capture 修复已全部落地（详见 [00-Dashboard-Archive](00-Dashboard-Archive.md)）。`on-run10` 确认 capture bridge reachability 基本收敛；v4 归因确认当时 `visibleMSL=0`，瓶颈在 trace 导出/源码未写入 bundle。
 
-**本轮已落地的优先验证修复**：根据当前代码链路，runtime 此前只在 `captureFrame()` / `getStatus()` 阶段才 `dlopen(/usr/lib/libmtlcapture.dylib)`，而 shader replacement 的 `makeLibrary(source:)` 可能早已发生；这会让 replacement library 错过 GPUToolsCapture 对源码库的观测窗口。现已改为：当 `metalCaptureEnabled && shaderSourceReplacementEnabled` 同时开启时，在 `PlayCover.launch()` 早期、`LibrarySourceInjectionService.installIfNeeded()` 之前预加载 GPUToolsCapture，并记录 `playcover_capture_library_preload_checked` runtime breadcrumb，作为 `E-006d8-b3` 的第一条代码级验证修复。
-
-**fresh live 验证结果**：本轮按标准脚本完成 `sync_playtools_xcframework.sh` + `build_and_install.sh` 后，对原神执行 fresh live。runtime `get_capture_status` 显示 `gpuToolsCaptureLoaded=true`、latest queue class=`CaptureMTLCommandQueue`，说明 capture 库已在 replacement 前进入运行态。第一次 `device` capture 仍只落盘一份瘦 trace（仅 `index/metadata/store0`，`14` 个 hash 全缺失）；第二次在更稳定界面下改用 `scope` 后，`capture_20260406_sourcepreload_validation.gputrace` / `replacement-on-run11` 已出现 **14 个可见 hash 文件，其中 3 个是被 `index` 引用的合法 MSL**，canonical `index` 提升为 **`922 refs = 3 valid + 9 referenced non-MSL + 910 missing`**，`visibleMSL=3`。这说明当前问题已经从“源码完全没有写入 bundle”收窄为 **“源码写入已部分恢复，但覆盖率仍极低”**；同时这 3 个 visible MSL 还**未归因**到当前 `ShaderCorpus` 的 `module.generated.metal / aggregate.generated.metal`。
+**preload 修复 + fresh live 验证**：改为在 `PlayCover.launch()` 早期预加载 GPUToolsCapture 后，`on-run11` scope capture 提升到 **`922 refs = 3 valid + 9 non-MSL + 910 missing`**、`visibleMSL=3`。当前问题已从"源码完全没有写入 bundle"收窄为 **"源码写入已部分恢复，但覆盖率仍极低"**。
 
 后续排查面：
-1. **优先解释为什么只恢复到 `3/922`**：继续对照 `E-006c` 可见源码 trace、排查其余 `910 missing` 的 bundle 写入条件，并核对这 3 个 visible MSL 与当前 replacement aggregate / `module.generated.metal` 的指纹差异
-2. **补充 capture 策略差异**：本轮 `device` 仍可能产出瘦 trace，而 `scope` 已得到部分恢复结果；后续需明确这是否只是稳定性差异，还是直接影响源码文件写入规模
-3. **session 可见性抖动**：继续观察 `list_sessions` 与 `create_session(bundleId)` 是否偶发短暂不一致，确认它是否只影响 registry 可见性而不影响实际 bridge reachability
+1. **归因 3 个可见 MSL**：对照 `ShaderCorpus` 的 `module.generated.metal` / `aggregate.generated.metal`，确认这 3 个 visible MSL 的指纹来源
+2. **排查 910 missing 的 bundle 写入条件**：对照 `E-006c` 可见源码 trace，找出差异；关注 replacement 时序、module 大小、compile 成功率等因素
+3. **补充 capture 策略差异**：`device` 仍可能产出瘦 trace，`scope` 得到部分恢复；需明确这是否直接影响源码写入规模
+4. **session 可见性抖动**：继续观察，确认只影响 registry 而不影响实际 bridge reachability
 
 ## 已完成的子项
 
@@ -66,6 +65,7 @@
 | E-006d8a | runtime 启动 breadcrumb（`RuntimeLaunchDiagnostics` + summary 脚本） | ✅ DONE |
 | E-006d8b1 | 标准化 render-diff runner（`e006d_render_diff.py`） | ✅ DONE |
 | host session / capture 基础设施修复 | split-brain 修复、bridge ping 收紧、ready-session probe 对齐、multi-candidate 预算保护、capture status 去 lazy-load、默认容器回收闭环 | ✅ DONE + 测试覆盖 |
+| E-006d8-b3-fix1 | GPUToolsCapture 预加载（`PlayCover.launch()` 早期，replacement 前加载 capture 库） | ✅ DONE（`on-run11` 验证生效） |
 
 ## 优先排查顺序
 
@@ -101,13 +101,14 @@
 
 ## 当前工作假设
 
-- **假设 A：输入并不稳定**（已被矩阵否定：同模式输入稳定）
-- **假设 B：`IR -> MSL` 结果不稳定**（已被否定：单模块本体未漂移）
-- **假设 C：runtime 替换或 pipeline 实际使用不稳定**（部分证据：`missingAttemptWhileEnabledPairs=17`（含 `on-run10`））
+- **假设 A：输入并不稳定**（❌ 已否定：同模式输入稳定）
+- **假设 B：`IR -> MSL` 结果不稳定**（❌ 已否定：单模块本体未漂移）
+- **假设 C：runtime 替换或 pipeline 实际使用不稳定**（⚠️ 部分证据：`missingAttemptWhileEnabledPairs=17`）
 - **假设 D：问题出在更后续的着色 / 后处理 / render pipeline 阶段**（待验证）
 - **假设 E：MSL 只是"可编译"而非"语义等价"**（待验证）
-- **假设 F：host 把 registration ready 误判成 command-ready**（❌ 已否定：`create_session` 已要求 bridge `ping` 成功 + 单测覆盖；`on-run7` 未再复现 split-brain）
-- **假设 G：host 侧 `create_session(bundleId)` 的 ready-session 选择 / reachability probe 仍与 `list_sessions` 暴露出的真实可用 session 不一致**（⚠️ 已明显收窄：`on-run10` 未复现 bundle 级 timeout，一次短暂 `list_sessions` 空窗更像 registry 可见性抖动）
+- **假设 F：host 把 registration ready 误判成 command-ready**（❌ 已否定）
+- **假设 G：host 侧 `create_session(bundleId)` reachability 不一致**（❌ 已基本否定：`on-run10`/`on-run11` 未复现）
+- **假设 H：GPUToolsCapture 加载时序导致 replacement library 错过观测窗口**（⚠️ 部分确认：preload 修复后 `visibleMSL` 从 `0` 恢复到 `3`，但覆盖率仍极低，说明时序是因素之一但不是唯一瓶颈）
 
 ## 完成标准
 
@@ -131,8 +132,8 @@
 - **成功路径也要落盘聚合产物**：只保留单模块 `.bc/.ll/.metal` 不足以覆盖聚合顺序、重名去重
 - **draw call / Render Encoder / Pipeline State 是独立证据层**：当 shader / trace 侧证据不足时必须补
 - **`module.meta.json` 的统计字段要与真实 artifact diff 分开看**：`captureCount`、`sourceCacheKeys` 等变化不等于本体变化
-- **`throw` + 静默 `catch` 回退是 runtime hook 的危险反模式**
-- **host 侧 session / capture 基础设施修复已全部落地**：stale cleanup 同步断链、`create_session` 收紧到 bridge `ping`、ready-session probe 对齐、`get_capture_status` 去 lazy-load——bundle 级 reachability 误报未再出现。详细修复历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)
+- **GPUToolsCapture 预加载时序直接影响 trace 覆盖率**：`makeLibrary(source:)` 发生在 `dlopen(libmtlcapture.dylib)` 之前会导致 replacement library 不被观测；preload 修复已将 `visibleMSL` 从 `0` 提升到 `3`，但仍有 910 missing 待归因
+- **host 侧 session / capture 基础设施已全部修复**：详细修复历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)
 - **更早的 lowering 细节与已收敛 compile blocker 不再由本文档维护**：见 `E-004-MetallibSourceExtraction.md`、`E-006d-RenderingPathDiffReference.md` 与 archive
 
 ## 与其他文档的关系

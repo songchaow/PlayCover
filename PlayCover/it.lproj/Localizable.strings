@@ -214,6 +214,10 @@
 "settings.unavailable.hud" = "HUD Metal non disponibile";
 "settings.toggle.metalCapture" = "Metal Capture";
 "settings.help.metalCapture" = "Abilita la cattura dei frame Metal GPU. Consente la cattura programmatica dei frame GPU per l'analisi del rendering. Richiede il riavvio dell'app.";
+"settings.toggle.injectMetalCaptureEnvironment" = "Inject Metal Capture Environment";
+"settings.help.injectMetalCaptureEnvironment" = "Inject Metal capture environment variables when launching the app. Turn this off to avoid loading capture-related hooks at startup. Requires app restart.";
+"settings.toggle.shaderSourceReplacement" = "Shader Source Replacement";
+"settings.help.shaderSourceReplacement" = "Hook makeLibrary APIs and replace metallib-loaded shaders with recompiled source when available. Requires app restart.";
 "settings.text.debugger" = "Debugger:";
 "settings.toggle.lldb" = "Apri con LLDB";
 "settings.toggle.lldbWithTerminal" = "Apri nel terminale";

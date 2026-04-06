@@ -207,6 +207,10 @@
 "settings.toggle.hud" = "啟用Metal HUD";
 "settings.toggle.metalCapture" = "Metal 截幀";
 "settings.help.metalCapture" = "啟用 Metal GPU 幀截取。允許程式化截取 GPU 幀用於渲染分析。需要重啟應用生效。";
+"settings.toggle.injectMetalCaptureEnvironment" = "注入 Metal 截幀環境";
+"settings.help.injectMetalCaptureEnvironment" = "啟動應用時注入 Metal 截幀相關環境變數。關閉後將不再於啟動階段載入截幀相關 hook。需要重新啟動應用生效。";
+"settings.toggle.shaderSourceReplacement" = "Shader 原始碼替換";
+"settings.help.shaderSourceReplacement" = "Hook makeLibrary API，並在可用時用重新編譯的原始碼替換從 metallib 載入的 shader。需要重新啟動應用生效。";
 "settings.info.bundleVersion" = "Bundle 版本:";
 "playapp.deleteConfirm" = "解除安裝";
 "playapp.deleteMessage" = "你是否確定要解除安裝 %@？";

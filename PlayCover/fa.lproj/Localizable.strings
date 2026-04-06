@@ -104,6 +104,10 @@
 "settings.toggle.hud" = "فعال‌سازی Metal HUD";
 "settings.toggle.metalCapture" = "Metal Capture";
 "settings.help.metalCapture" = "Enable Metal GPU frame capture. Allows programmatic capture of GPU frames for render analysis. Requires app restart.";
+"settings.toggle.injectMetalCaptureEnvironment" = "Inject Metal Capture Environment";
+"settings.help.injectMetalCaptureEnvironment" = "Inject Metal capture environment variables when launching the app. Turn this off to avoid loading capture-related hooks at startup. Requires app restart.";
+"settings.toggle.shaderSourceReplacement" = "Shader Source Replacement";
+"settings.help.shaderSourceReplacement" = "Hook makeLibrary APIs and replace metallib-loaded shaders with recompiled source when available. Requires app restart.";
 "settings.info.bundleVersion" = "نسخه:";
 "playapp.deleteConfirm" = "بله، حذف کن";
 "playapp.deleteMessage" = "آیا از حذف %@ مطمئن هستید؟";

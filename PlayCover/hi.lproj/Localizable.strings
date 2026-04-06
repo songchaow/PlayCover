@@ -165,6 +165,10 @@
 "settings.toggle.hud" = "मेटल HUD";
 "settings.toggle.metalCapture" = "Metal Capture";
 "settings.help.metalCapture" = "Metal GPU फ्रेम कैप्चर सक्षम करें। रेंडर विश्लेषण के लिए GPU फ्रेम की प्रोग्रामेटिक कैप्चर की अनुमति देता है। ऐप पुनरारंभ आवश्यक है।";
+"settings.toggle.injectMetalCaptureEnvironment" = "Inject Metal Capture Environment";
+"settings.help.injectMetalCaptureEnvironment" = "Inject Metal capture environment variables when launching the app. Turn this off to avoid loading capture-related hooks at startup. Requires app restart.";
+"settings.toggle.shaderSourceReplacement" = "Shader Source Replacement";
+"settings.help.shaderSourceReplacement" = "Hook makeLibrary APIs and replace metallib-loaded shaders with recompiled source when available. Requires app restart.";
 "settings.text.debugger" = "डीबगर:";
 "settings.toggle.lldb" = "LLDB के साथ खोलें";
 "settings.toggle.lldbWithTerminal" = "Terminal में खोलें";

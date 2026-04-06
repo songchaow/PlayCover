@@ -147,6 +147,10 @@
 "settings.toggle.hud" = "Metal HUD";
 "settings.toggle.metalCapture" = "Metal Capture";
 "settings.help.metalCapture" = "Metal GPU kare yakalamayı etkinleştir. Render analizi için GPU karelerinin programlı olarak yakalanmasına izin verir. Uygulamanın yeniden başlatılması gerekir.";
+"settings.toggle.injectMetalCaptureEnvironment" = "Inject Metal Capture Environment";
+"settings.help.injectMetalCaptureEnvironment" = "Inject Metal capture environment variables when launching the app. Turn this off to avoid loading capture-related hooks at startup. Requires app restart.";
+"settings.toggle.shaderSourceReplacement" = "Shader Source Replacement";
+"settings.help.shaderSourceReplacement" = "Hook makeLibrary APIs and replace metallib-loaded shaders with recompiled source when available. Requires app restart.";
 "error.appMaliciousProhibited" = "Bu uygulama Macler için tehlikelidir ve cihazınızı açılamaz bir hâlde bırakabilir. Bu nedenle PlayCover'da kullanılması bloke edilniştir. (Siliniyor...)";
 "alert.install.injectPlayToolsQuestion" = "Bu uygulamaya PlayTools injekte edilsin mi?";
 "alert.install.playToolsInformative" = "PlayTools klavye haraketlerini ekranın belli yerlerine ayarlamayı, ekran çözünürlüğünü değiştirmeyi, ve daha fazlasını yapmanıza izin verir. Fakat bazı uygulamaları bozabilir";

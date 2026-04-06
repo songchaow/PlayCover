@@ -105,6 +105,10 @@
 "settings.toggle.hud" = "HUD Metal";
 "settings.toggle.metalCapture" = "Metal Capture";
 "settings.help.metalCapture" = "Ativar captura de quadros Metal GPU. Permite a captura programática de quadros GPU para análise de renderização. Requer reinicialização do app.";
+"settings.toggle.injectMetalCaptureEnvironment" = "Inject Metal Capture Environment";
+"settings.help.injectMetalCaptureEnvironment" = "Inject Metal capture environment variables when launching the app. Turn this off to avoid loading capture-related hooks at startup. Requires app restart.";
+"settings.toggle.shaderSourceReplacement" = "Shader Source Replacement";
+"settings.help.shaderSourceReplacement" = "Hook makeLibrary APIs and replace metallib-loaded shaders with recompiled source when available. Requires app restart.";
 "playapp.add" = "Adicionar aplicativo";
 "alert.wrongFileType.title" = "Tipo de arquivo incorreto!";
 "alert.wrongFileType.subtitle" = "O PlayCover pode instalar somente arquivos .ipa válidos.";

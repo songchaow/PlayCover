@@ -227,6 +227,10 @@
 "settings.toggle.hud" = "Metal HUD";
 "settings.toggle.metalCapture" = "Metal キャプチャ";
 "settings.help.metalCapture" = "Metal GPU フレームキャプチャを有効にします。レンダリング分析のための GPU フレームのプログラム的キャプチャを可能にします。アプリの再起動が必要です。";
+"settings.toggle.injectMetalCaptureEnvironment" = "Inject Metal Capture Environment";
+"settings.help.injectMetalCaptureEnvironment" = "Inject Metal capture environment variables when launching the app. Turn this off to avoid loading capture-related hooks at startup. Requires app restart.";
+"settings.toggle.shaderSourceReplacement" = "Shader Source Replacement";
+"settings.help.shaderSourceReplacement" = "Hook makeLibrary APIs and replace metallib-loaded shaders with recompiled source when available. Requires app restart.";
 "settings.info.bundleVersion" = "バンドルバージョン:";
 "playapp.deleteConfirm" = "アンインストール";
 "playapp.deleteMessage" = "本当に %@ をアンインストールしますか？";

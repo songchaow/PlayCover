@@ -104,6 +104,10 @@
 "settings.toggle.hud" = "Metal HUD";
 "settings.toggle.metalCapture" = "Metal Capture";
 "settings.help.metalCapture" = "Bật chụp khung Metal GPU. Cho phép chụp khung GPU theo chương trình để phân tích kết xuất. Yêu cầu khởi động lại ứng dụng.";
+"settings.toggle.injectMetalCaptureEnvironment" = "Inject Metal Capture Environment";
+"settings.help.injectMetalCaptureEnvironment" = "Inject Metal capture environment variables when launching the app. Turn this off to avoid loading capture-related hooks at startup. Requires app restart.";
+"settings.toggle.shaderSourceReplacement" = "Shader Source Replacement";
+"settings.help.shaderSourceReplacement" = "Hook makeLibrary APIs and replace metallib-loaded shaders with recompiled source when available. Requires app restart.";
 "settings.info.bundleVersion" = "Phiên bản:";
 "alert.legacyImport.title" = "Đã phát hiện thiết lập kế thừa!";
 "alert.legacyImport.subtitle" = "Các thiết lập ứng dụng và bộ keymap cũ đã được phát hiện. Bạn có muốn chuyển đổi các tệp này sang định dạng mới không?";

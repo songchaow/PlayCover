@@ -224,6 +224,10 @@
 "settings.toggle.hud" = "HUD de Metal";
 "settings.toggle.metalCapture" = "Metal Capture";
 "settings.help.metalCapture" = "Habilitar captura de fotogramas Metal GPU. Permite la captura programática de fotogramas GPU para análisis de renderizado. Requiere reiniciar la app.";
+"settings.toggle.injectMetalCaptureEnvironment" = "Inject Metal Capture Environment";
+"settings.help.injectMetalCaptureEnvironment" = "Inject Metal capture environment variables when launching the app. Turn this off to avoid loading capture-related hooks at startup. Requires app restart.";
+"settings.toggle.shaderSourceReplacement" = "Shader Source Replacement";
+"settings.help.shaderSourceReplacement" = "Hook makeLibrary APIs and replace metallib-loaded shaders with recompiled source when available. Requires app restart.";
 "settings.resetSettingsCompleted" = "¡La configuración se ha revertido a la predeterminada!";
 "settings.resetKmCompleted" = "¡La asignación de teclas se ha restablecido!";
 "settings.tab.misc" = "Varios";

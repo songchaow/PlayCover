@@ -198,6 +198,10 @@
 "settings.toggle.hud" = "Metal HUD";
 "settings.toggle.metalCapture" = "Metal Capture";
 "settings.help.metalCapture" = "Metal GPU Frame Capture aktivieren. Ermöglicht die programmgesteuerte Erfassung von GPU-Frames zur Renderanalyse. Erfordert App-Neustart.";
+"settings.toggle.injectMetalCaptureEnvironment" = "Inject Metal Capture Environment";
+"settings.help.injectMetalCaptureEnvironment" = "Inject Metal capture environment variables when launching the app. Turn this off to avoid loading capture-related hooks at startup. Requires app restart.";
+"settings.toggle.shaderSourceReplacement" = "Shader Source Replacement";
+"settings.help.shaderSourceReplacement" = "Hook makeLibrary APIs and replace metallib-loaded shaders with recompiled source when available. Requires app restart.";
 "playapp.exportKmPanel.fieldLabel" = "PlayMap Name:";
 "sidebar.appLibrary" = "App-Bibliothek";
 "alert.moveAppToApplications.title" = "In den Anwendungsordner verschieben?";

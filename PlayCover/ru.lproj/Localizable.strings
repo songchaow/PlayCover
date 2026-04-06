@@ -227,6 +227,10 @@
 "settings.toggle.hud" = "Metal HUD";
 "settings.toggle.metalCapture" = "Metal Capture";
 "settings.help.metalCapture" = "Включить захват кадров Metal GPU. Позволяет программно захватывать кадры GPU для анализа рендеринга. Требуется перезапуск приложения.";
+"settings.toggle.injectMetalCaptureEnvironment" = "Inject Metal Capture Environment";
+"settings.help.injectMetalCaptureEnvironment" = "Inject Metal capture environment variables when launching the app. Turn this off to avoid loading capture-related hooks at startup. Requires app restart.";
+"settings.toggle.shaderSourceReplacement" = "Shader Source Replacement";
+"settings.help.shaderSourceReplacement" = "Hook makeLibrary APIs and replace metallib-loaded shaders with recompiled source when available. Requires app restart.";
 "settings.info.bundleVersion" = "Версия пакета:";
 "playapp.deleteConfirm" = "Удалить";
 "playapp.deleteMessage" = "Вы уверены, что хотите удалить %@?";

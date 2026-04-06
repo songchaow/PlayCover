@@ -724,6 +724,19 @@ struct MiscView: View {
                 HStack {
                     Toggle("settings.toggle.metalCapture", isOn: $settings.settings.metalCaptureEnabled)
                         .help("settings.help.metalCapture")
+                        .disabled(!(hasPlayTools ?? true))
+                    Spacer()
+                }
+                HStack {
+                    Toggle("settings.toggle.injectMetalCaptureEnvironment", isOn: $settings.settings.injectMetalCaptureEnvironment)
+                        .help("settings.help.injectMetalCaptureEnvironment")
+                        .disabled(!(hasPlayTools ?? true))
+                    Spacer()
+                }
+                HStack {
+                    Toggle("settings.toggle.shaderSourceReplacement", isOn: $settings.settings.shaderSourceReplacementEnabled)
+                        .help("settings.help.shaderSourceReplacement")
+                        .disabled(!(hasPlayTools ?? true))
                     Spacer()
                 }
                 Spacer()

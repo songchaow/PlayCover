@@ -227,6 +227,10 @@
 "settings.toggle.hud" = "HUD Logam";
 "settings.toggle.metalCapture" = "Metal Capture";
 "settings.help.metalCapture" = "Aktifkan tangkapan frame Metal GPU. Memungkinkan tangkapan frame GPU secara terprogram untuk analisis render. Memerlukan restart aplikasi.";
+"settings.toggle.injectMetalCaptureEnvironment" = "Inject Metal Capture Environment";
+"settings.help.injectMetalCaptureEnvironment" = "Inject Metal capture environment variables when launching the app. Turn this off to avoid loading capture-related hooks at startup. Requires app restart.";
+"settings.toggle.shaderSourceReplacement" = "Shader Source Replacement";
+"settings.help.shaderSourceReplacement" = "Hook makeLibrary APIs and replace metallib-loaded shaders with recompiled source when available. Requires app restart.";
 "settings.info.bundleVersion" = "Versi paket:";
 "playapp.deleteConfirm" = "Uninstall";
 "playapp.deleteMessage" = "Apakah kamu yakin kamu ingin uninstall %@?";

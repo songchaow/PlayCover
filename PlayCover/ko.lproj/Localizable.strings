@@ -226,6 +226,10 @@
 "settings.toggle.hud" = "Metal HUD 사용";
 "settings.toggle.metalCapture" = "Metal 캡처";
 "settings.help.metalCapture" = "Metal GPU 프레임 캡처를 활성화합니다. 렌더링 분석을 위해 GPU 프레임을 프로그래밍 방식으로 캡처할 수 있습니다. 앱을 다시 시작해야 합니다.";
+"settings.toggle.injectMetalCaptureEnvironment" = "Inject Metal Capture Environment";
+"settings.help.injectMetalCaptureEnvironment" = "Inject Metal capture environment variables when launching the app. Turn this off to avoid loading capture-related hooks at startup. Requires app restart.";
+"settings.toggle.shaderSourceReplacement" = "Shader Source Replacement";
+"settings.help.shaderSourceReplacement" = "Hook makeLibrary APIs and replace metallib-loaded shaders with recompiled source when available. Requires app restart.";
 "settings.info.bundleVersion" = "번들 버전:";
 "playapp.deleteConfirm" = "삭제하기";
 "playapp.deleteMessage" = "%@을(를) 삭제하겠습니까?";

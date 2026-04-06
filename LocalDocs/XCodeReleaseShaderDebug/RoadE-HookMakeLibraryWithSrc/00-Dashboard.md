@@ -237,9 +237,7 @@ PlayTools.framework (注入到 iOS app)
 - **当前最低风险的比较基线仍是"替换 vs 不替换"**：统一通过 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py` 控制
 - **不能只看 shader 文本差异**：在延迟管线场景里，draw call / Render Encoder / Pipeline State / post-processing 结构本身就是一层独立证据
 - **`E-006d` 的归因顺序必须固定**：先做"替换 vs 不替换"对照，再对齐"输入是否相同"，再比较"输出是否相同"，最后才看 runtime 是否真的使用了替换后的 library 以及更后续的 pass / pipeline 行为
-- **host 侧 stale cleanup 不能只删 registry，不断 registration channel 会制造 split-brain**：当前已改为 stale cleanup 时同步调用 `RegistrationListener.disconnectSessions(...)` 主动断开对应连接
-- **`session ready` 必须区分"已 registration"与"command bridge 可达"**：当前 `create_session` 已改为返回前额外做 bridge `ping`（已落地 + 单测覆盖）；**session 假 ready 已被排除**，后续 `get_capture_status -> Receive timed out` 的排查重点集中在 capture command 路径 / runtime `MetalCaptureService.getStatus()` / 主线程执行
-- **`get_capture_status` 不应再承担 lazy load / 主线程阻塞副作用**：status probe 的职责是快速回答"当前看起来是否可截帧"，而不是在查询路径里触发 `dlopen(libmtlcapture)` 或同步占用主线程；本轮已把 runtime status query 改成线程安全快照，并把 `gpuToolsCaptureLoaded=` 直接写进 `diagnostic_summary`
+- **session / capture 基础设施修复已全部落地并测试覆盖**：stale cleanup 同步断链、`create_session` 收紧到 bridge `ping` 成功、`get_capture_status` 去 lazy-load 与主线程耦合——均已落地 + 单测覆盖，详见 `E-006d-GenshinRenderingNondeterminism.md` 技术备注与 archive
 - **更细的 lowering 经验、历史 live blocker 链路与已完成轮次已下沉到独立参考文档**：见 `E-006d-GenshinRenderingNondeterminism.md`、`E-006d-RenderingPathDiffReference.md`、`00-Dashboard-Archive.md` 与 `E-004-MetallibSourceExtraction-Archive.md`
 
 ## 参考信息

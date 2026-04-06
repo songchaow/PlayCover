@@ -125,9 +125,7 @@
 - **draw call / Render Encoder / Pipeline State 是独立证据层**：当 shader / trace 侧证据不足时必须补
 - **`module.meta.json` 的统计字段要与真实 artifact diff 分开看**：`captureCount`、`sourceCacheKeys` 等变化不等于本体变化
 - **`throw` + 静默 `catch` 回退是 runtime hook 的危险反模式**
-- **host 侧 stale cleanup 必须同步断链**：否则会制造 split-brain
-- **`session ready` 必须区分"已 registration"与"command bridge 可达"**：该检查已落地（`create_session` 的 ready 判定收紧到 bridge `ping` 成功 + 单测覆盖），session 假 ready 已被排除。后续 `get_capture_status -> Receive timed out` 的排查重点集中在 capture command 路径 / runtime `MetalCaptureService.getStatus()` / 主线程执行
-- **`get_capture_status` 不应在查询路径里触发 lazy `dlopen` 或同步占用主线程**：status probe 的职责是快速回答"当前是否可截帧"，而不是在 probe 路径里完成 capture 库初始化；本轮已把 runtime status query 改成线程安全快照，并在 `diagnostic_summary` 中追加 `gpuToolsCaptureLoaded=`，方便把"capture 库未加载"与"真正的 bridge / capture timeout"分开看
+- **host 侧 session / capture 基础设施修复已全部落地**：stale cleanup 同步断链、`create_session` 收紧到 bridge `ping`（+ 单测覆盖）、`get_capture_status` 去 lazy-load 与主线程耦合（线程安全快照 + `gpuToolsCaptureLoaded=` 诊断字段）——详见 `00-Dashboard-Archive.md` 最新条目
 - **更早的 lowering 细节与已收敛 compile blocker 不再由本文档维护**：见 `E-004-MetallibSourceExtraction.md`、`E-006d-RenderingPathDiffReference.md` 与 archive
 
 ## 与其他文档的关系

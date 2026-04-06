@@ -121,6 +121,8 @@ def is_current_gputrace_summary(payload: dict[str, Any] | None) -> bool:
         "referencedNonMSLHashes",
         "missingReferencedHashes",
         "nonMSLTypeCounts",
+        "rawIndexHashLengthCounts",
+        "rawIndexNonCanonicalHashes",
     )
     return all(field in payload for field in required_fields)
 
@@ -373,6 +375,25 @@ def compare_values(name: str, left: Any, right: Any, differences: list[dict[str,
         differences.append({"field": name, "runA": left, "runB": right})
 
 
+def build_hash_set_breakdown(run_a_hashes: list[str], run_b_hashes: list[str]) -> dict[str, Any]:
+    hashes_a = set(run_a_hashes)
+    hashes_b = set(run_b_hashes)
+    shared_hashes = sorted(hashes_a & hashes_b)
+    only_a_hashes = sorted(hashes_a - hashes_b)
+    only_b_hashes = sorted(hashes_b - hashes_a)
+    return {
+        "runACount": len(hashes_a),
+        "runBCount": len(hashes_b),
+        "sharedCount": len(shared_hashes),
+        "onlyRunACount": len(only_a_hashes),
+        "onlyRunBCount": len(only_b_hashes),
+        "netCountDelta": len(hashes_b) - len(hashes_a),
+        "sharedHashes": shared_hashes,
+        "onlyRunAHashes": only_a_hashes,
+        "onlyRunBHashes": only_b_hashes,
+    }
+
+
 def compare_shared_modules(
     modules_a: dict[str, dict[str, Any]],
     modules_b: dict[str, dict[str, Any]],
@@ -499,6 +520,10 @@ def build_snapshot_context(run_input: RunInput, meta: dict[str, Any] | None) -> 
             "referencedValidMSLHashes": [],
             "referencedNonMSLHashes": [],
             "missingReferencedHashes": [],
+            "nonCanonicalVisibleHashes": [],
+            "nonCanonicalVisibleHashesMentionedInIndex": [],
+            "rawIndexNonCanonicalHashes": [],
+            "rawIndexHashLengthCounts": {},
             "attributedVisibleMSLHashes": [],
             "unattributedVisibleMSLHashes": [],
             "attributedReferencedMSLHashes": [],
@@ -544,6 +569,10 @@ def build_snapshot_context(run_input: RunInput, meta: dict[str, Any] | None) -> 
         "referencedValidMSLHashes": (gputrace_summary or {}).get("referencedValidMSLHashes", []) if isinstance(gputrace_summary, dict) else [],
         "referencedNonMSLHashes": (gputrace_summary or {}).get("referencedNonMSLHashes", []) if isinstance(gputrace_summary, dict) else [],
         "missingReferencedHashes": (gputrace_summary or {}).get("missingReferencedHashes", []) if isinstance(gputrace_summary, dict) else [],
+        "nonCanonicalVisibleHashes": (gputrace_summary or {}).get("nonCanonicalVisibleHashes", []) if isinstance(gputrace_summary, dict) else [],
+        "nonCanonicalVisibleHashesMentionedInIndex": (gputrace_summary or {}).get("nonCanonicalVisibleHashesMentionedInIndex", []) if isinstance(gputrace_summary, dict) else [],
+        "rawIndexNonCanonicalHashes": (gputrace_summary or {}).get("rawIndexNonCanonicalHashes", []) if isinstance(gputrace_summary, dict) else [],
+        "rawIndexHashLengthCounts": (gputrace_summary or {}).get("rawIndexHashLengthCounts", {}) if isinstance(gputrace_summary, dict) else {},
         "attributedVisibleMSLHashes": gputrace_attribution.get("attributedVisibleMSLHashes", []) if gputrace_attribution else [],
         "unattributedVisibleMSLHashes": gputrace_attribution.get("unattributedVisibleMSLHashes", []) if gputrace_attribution else [],
         "attributedReferencedMSLHashes": gputrace_attribution.get("attributedReferencedMSLHashes", []) if gputrace_attribution else [],
@@ -609,6 +638,30 @@ def compare_snapshot_context(run_a: RunInput, meta_a: dict[str, Any] | None, run
         differences,
     )
     compare_values(
+        "gputraceSummary.nonCanonicalVisibleHashes",
+        context_a.get("nonCanonicalVisibleHashes"),
+        context_b.get("nonCanonicalVisibleHashes"),
+        differences,
+    )
+    compare_values(
+        "gputraceSummary.nonCanonicalVisibleHashesMentionedInIndex",
+        context_a.get("nonCanonicalVisibleHashesMentionedInIndex"),
+        context_b.get("nonCanonicalVisibleHashesMentionedInIndex"),
+        differences,
+    )
+    compare_values(
+        "gputraceSummary.rawIndexNonCanonicalHashes",
+        context_a.get("rawIndexNonCanonicalHashes"),
+        context_b.get("rawIndexNonCanonicalHashes"),
+        differences,
+    )
+    compare_values(
+        "gputraceSummary.rawIndexHashLengthCounts",
+        context_a.get("rawIndexHashLengthCounts"),
+        context_b.get("rawIndexHashLengthCounts"),
+        differences,
+    )
+    compare_values(
         "gputraceAttribution.attributedVisibleMSLHashes",
         context_a.get("attributedVisibleMSLHashes"),
         context_b.get("attributedVisibleMSLHashes"),
@@ -651,6 +704,15 @@ def compare_snapshot_context(run_a: RunInput, meta_a: dict[str, Any] | None, run
         differences,
     )
 
+    missing_breakdown = build_hash_set_breakdown(
+        context_a.get("missingReferencedHashes", []),
+        context_b.get("missingReferencedHashes", []),
+    )
+    raw_index_noncanonical_breakdown = build_hash_set_breakdown(
+        context_a.get("rawIndexNonCanonicalHashes", []),
+        context_b.get("rawIndexNonCanonicalHashes", []),
+    )
+
     return {
         "hasComparableSnapshots": True,
         "missingRunA": False,
@@ -658,6 +720,8 @@ def compare_snapshot_context(run_a: RunInput, meta_a: dict[str, Any] | None, run
         "runA": context_a,
         "runB": context_b,
         "differences": differences,
+        "missingReferencedHashBreakdown": missing_breakdown,
+        "rawIndexNonCanonicalHashBreakdown": raw_index_noncanonical_breakdown,
     }
 
 
@@ -848,6 +912,27 @@ def print_summary(report: dict[str, Any]) -> None:
                 "gputrace attribution: "
                 f"runA={len(attributed_a)} visible-attributed / {len(referenced_a)} referenced-valid / {len(missing_a)} missing, "
                 f"runB={len(attributed_b)} visible-attributed / {len(referenced_b)} referenced-valid / {len(missing_b)} missing"
+            )
+
+        missing_breakdown = snapshot_comparison.get("missingReferencedHashBreakdown") or {}
+        if missing_breakdown:
+            print(
+                "gputrace missing delta: "
+                f"shared={missing_breakdown.get('sharedCount', 0)} "
+                f"onlyA={missing_breakdown.get('onlyRunACount', 0)} "
+                f"onlyB={missing_breakdown.get('onlyRunBCount', 0)} "
+                f"net={missing_breakdown.get('netCountDelta', 0):+d}"
+            )
+
+        raw_index_noncanonical_breakdown = snapshot_comparison.get("rawIndexNonCanonicalHashBreakdown") or {}
+        if raw_index_noncanonical_breakdown.get("runACount", 0) or raw_index_noncanonical_breakdown.get("runBCount", 0):
+            print(
+                "gputrace raw short-hash tokens: "
+                f"runA={raw_index_noncanonical_breakdown.get('runACount', 0)} "
+                f"runB={raw_index_noncanonical_breakdown.get('runBCount', 0)} "
+                f"shared={raw_index_noncanonical_breakdown.get('sharedCount', 0)} "
+                f"onlyA={raw_index_noncanonical_breakdown.get('onlyRunACount', 0)} "
+                f"onlyB={raw_index_noncanonical_breakdown.get('onlyRunBCount', 0)}"
             )
 
 

@@ -112,11 +112,21 @@ def make_container_run(
         plistlib.dump({"shaderSourceReplacementEnabled": True}, handle)
 
 
-def make_gputrace(trace_dir: Path, visible_files: dict[str, str]) -> None:
+def make_gputrace(
+    trace_dir: Path,
+    visible_files: dict[str, str | bytes],
+    *,
+    index_entries: list[str] | None = None,
+) -> None:
     trace_dir.mkdir(parents=True, exist_ok=True)
     for name, content in visible_files.items():
-        (trace_dir / name).write_text(content, encoding="utf-8")
-    (trace_dir / "index").write_bytes(b"0123456789ABCDEF FEDCBA9876543210")
+        path = trace_dir / name
+        if isinstance(content, bytes):
+            path.write_bytes(content)
+        else:
+            path.write_text(content, encoding="utf-8")
+    entries = index_entries or ["0123456789ABCDEF", "FEDCBA9876543210"]
+    (trace_dir / "index").write_bytes(" ".join(entries).encode("ascii"))
 
 
 class CompareCaptureRunsTests(unittest.TestCase):
@@ -250,6 +260,135 @@ class CompareCaptureRunsTests(unittest.TestCase):
             self.assertEqual(
                 report["runB"]["snapshotContext"]["attributedReplacementDirectories"],
                 ["replacements/20260405_selector_cache"],
+            )
+
+    def test_compare_capture_runs_reports_missing_breakdown_and_raw_short_hashes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            runs_root = root / "runs"
+            run_a = runs_root / "run-a" / "com.example.demo"
+            run_b = runs_root / "run-b" / "com.example.demo"
+
+            aggregate_text = "// Auto-generated aggregated MSL source by PlayTools LibrarySourceInjection\n#include <metal_stdlib>\n"
+            module_text = "#include <metal_stdlib>\nfragment float4 main0() { return float4(1.0); }\n"
+
+            container_a = root / "container-run-a"
+            make_container_run(container_a, aggregate_text, module_text)
+            trace_a = root / "trace-run-a.gputrace"
+            make_gputrace(
+                trace_a,
+                {"0123456789ABCDEF": aggregate_text},
+                index_entries=["0123456789ABCDEF", "AAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBB"],
+            )
+            subprocess.run(
+                [
+                    "python3",
+                    str(SNAPSHOT_SCRIPT),
+                    "--bundle-id",
+                    "com.example.demo",
+                    "--label",
+                    "run-a",
+                    "--container",
+                    str(container_a),
+                    "--output-root",
+                    str(runs_root),
+                    "--gputrace",
+                    str(trace_a),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            container_b = root / "container-run-b"
+            make_container_run(container_b, aggregate_text, module_text)
+            trace_b = root / "trace-run-b.gputrace"
+            make_gputrace(
+                trace_b,
+                {
+                    "FEDCBA9876543210": aggregate_text,
+                    "A123456789ABCD": b"bplist00\x00\x01\x02",
+                },
+                index_entries=["FEDCBA9876543210", "BBBBBBBBBBBBBBBB", "CCCCCCCCCCCCCCCC", "A123456789ABCD"],
+            )
+            subprocess.run(
+                [
+                    "python3",
+                    str(SNAPSHOT_SCRIPT),
+                    "--bundle-id",
+                    "com.example.demo",
+                    "--label",
+                    "run-b",
+                    "--container",
+                    str(container_b),
+                    "--output-root",
+                    str(runs_root),
+                    "--gputrace",
+                    str(trace_b),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            output_path = root / "compare-missing-breakdown.json"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(COMPARE_SCRIPT),
+                    "--run-a",
+                    str(run_a),
+                    "--run-b",
+                    str(run_b),
+                    "--output",
+                    str(output_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("gputrace missing delta: shared=1 onlyA=1 onlyB=1 net=+0", completed.stdout)
+            self.assertIn("gputrace raw short-hash tokens: runA=0 runB=1 shared=0 onlyA=0 onlyB=1", completed.stdout)
+
+            report = json.loads(output_path.read_text(encoding="utf-8"))
+            snapshot_comparison = report["comparison"]["snapshotComparison"]
+            self.assertEqual(
+                snapshot_comparison["missingReferencedHashBreakdown"],
+                {
+                    "runACount": 2,
+                    "runBCount": 2,
+                    "sharedCount": 1,
+                    "onlyRunACount": 1,
+                    "onlyRunBCount": 1,
+                    "netCountDelta": 0,
+                    "sharedHashes": ["BBBBBBBBBBBBBBBB"],
+                    "onlyRunAHashes": ["AAAAAAAAAAAAAAAA"],
+                    "onlyRunBHashes": ["CCCCCCCCCCCCCCCC"],
+                },
+            )
+            self.assertEqual(
+                snapshot_comparison["rawIndexNonCanonicalHashBreakdown"],
+                {
+                    "runACount": 0,
+                    "runBCount": 1,
+                    "sharedCount": 0,
+                    "onlyRunACount": 0,
+                    "onlyRunBCount": 1,
+                    "netCountDelta": 1,
+                    "sharedHashes": [],
+                    "onlyRunAHashes": [],
+                    "onlyRunBHashes": ["A123456789ABCD"],
+                },
+            )
+            self.assertEqual(report["runA"]["snapshotContext"]["rawIndexNonCanonicalHashes"], [])
+            self.assertEqual(report["runB"]["snapshotContext"]["rawIndexNonCanonicalHashes"], ["A123456789ABCD"])
+            self.assertEqual(
+                report["runB"]["snapshotContext"]["nonCanonicalVisibleHashesMentionedInIndex"],
+                ["A123456789ABCD"],
             )
 
     def test_compare_capture_runs_recomputes_attribution_for_older_snapshot_without_index(self) -> None:

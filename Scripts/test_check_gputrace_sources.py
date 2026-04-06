@@ -248,11 +248,13 @@ class CheckGputraceSourcesTests(unittest.TestCase):
             self.assertEqual(result["missing_referenced_hashes"], ["AAAAAAAAAAAAAAAA"])
             self.assertEqual(result["source_hash_length_counts"], {"14": 1, "15": 1, "16": 1})
             self.assertEqual(result["index_hash_length_counts"], {"16": 2})
+            self.assertEqual(result["raw_index_hash_length_counts"], {"14": 1, "15": 1, "16": 2})
             self.assertEqual(result["noncanonical_visible_hashes"], ["A123456789ABCD", "B123456789ABCDE"])
             self.assertEqual(
                 result["noncanonical_visible_hashes_mentioned_in_index"],
                 ["A123456789ABCD", "B123456789ABCDE"],
             )
+            self.assertEqual(result["raw_index_noncanonical_hashes"], ["A123456789ABCD", "B123456789ABCDE"])
             self.assertEqual(result["non_msl_type_counts"], {"bplist": 2})
             self.assertEqual(result["files"]["A123456789ABCD"]["content_type"], "bplist")
             self.assertEqual(result["files"]["A123456789ABCD"]["hash_length"], 14)
@@ -312,6 +314,8 @@ class CheckGputraceSourcesTests(unittest.TestCase):
             self.assertEqual(summary["missingReferencedHashes"], ["AAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBB"])
             self.assertEqual(summary["sourceHashLengthCounts"], {"16": 2})
             self.assertEqual(summary["indexHashLengthCounts"], {"16": 4})
+            self.assertEqual(summary["rawIndexHashLengthCounts"], {"16": 4})
+            self.assertEqual(summary["rawIndexNonCanonicalHashes"], [])
             self.assertEqual(summary["nonMSLTypeCounts"], {"bplist": 1})
             self.assertEqual(summary["coveragePct"], 25.0)
 

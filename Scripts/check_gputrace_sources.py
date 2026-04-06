@@ -67,6 +67,7 @@ def build_result(gputrace_path: Path, summary: dict[str, Any], attribution: dict
         "index_hash_references": summary.get("indexHashReferences", -1),
         "coverage_pct": summary.get("coveragePct", 0.0),
         "index_hashes": summary.get("indexHashes", []),
+        "raw_index_hex_tokens": summary.get("rawIndexHexTokens", []),
         "valid_msl_hashes": summary.get("validMSLHashes", []),
         "non_msl_hashes": summary.get("nonMSLHashes", []),
         "referenced_valid_msl_hashes": summary.get("referencedValidMSLHashes", []),
@@ -76,8 +77,10 @@ def build_result(gputrace_path: Path, summary: dict[str, Any], attribution: dict
         "unreferenced_non_msl_hashes": summary.get("unreferencedNonMSLHashes", []),
         "source_hash_length_counts": summary.get("sourceHashLengthCounts", {}),
         "index_hash_length_counts": summary.get("indexHashLengthCounts", {}),
+        "raw_index_hash_length_counts": summary.get("rawIndexHashLengthCounts", {}),
         "noncanonical_visible_hashes": summary.get("nonCanonicalVisibleHashes", []),
         "noncanonical_visible_hashes_mentioned_in_index": summary.get("nonCanonicalVisibleHashesMentionedInIndex", []),
+        "raw_index_noncanonical_hashes": summary.get("rawIndexNonCanonicalHashes", []),
         "non_msl_type_counts": summary.get("nonMSLTypeCounts", {}),
         "files": files,
     }
@@ -115,12 +118,16 @@ def print_human_readable(result: dict[str, Any]) -> None:
     print(f"覆盖率(referenced_valid_msl/index): {float(result['coverage_pct']):.1f}%")
     print(f"可见 hash 长度分布: {format_count_map(result.get('source_hash_length_counts'))}")
     print(f"index hash 长度分布: {format_count_map(result.get('index_hash_length_counts'))}")
+    print(f"raw index hex token 长度分布: {format_count_map(result.get('raw_index_hash_length_counts'))}")
     noncanonical_visible_hashes = result.get("noncanonical_visible_hashes") or []
     noncanonical_visible_hashes_mentioned = result.get("noncanonical_visible_hashes_mentioned_in_index") or []
+    raw_index_noncanonical_hashes = result.get("raw_index_noncanonical_hashes") or []
     if noncanonical_visible_hashes:
         print(f"额外短 hash 可见文件: {preview_hashes(noncanonical_visible_hashes)}")
+    if raw_index_noncanonical_hashes:
+        print(f"raw index 中的短 hash token: {preview_hashes(raw_index_noncanonical_hashes)}")
     if noncanonical_visible_hashes_mentioned:
-        print(f"raw index 中也出现的短 hash: {preview_hashes(noncanonical_visible_hashes_mentioned)}")
+        print(f"raw index 中也出现的可见短 hash: {preview_hashes(noncanonical_visible_hashes_mentioned)}")
     print()
 
     print("=== 覆盖率拆解 ===")

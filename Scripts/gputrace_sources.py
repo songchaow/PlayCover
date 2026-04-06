@@ -7,6 +7,7 @@ from typing import Any
 
 
 HEX_SOURCE_NAME = re.compile(r"^[0-9A-F]{14,16}$")
+RAW_INDEX_HEX_TOKEN_PATTERN = re.compile(rb"(?<![0-9A-F])[0-9A-F]{14,16}(?![0-9A-F])")
 INDEX_HASH_PATTERN = re.compile(rb"(?<![0-9A-F])[0-9A-F]{16}(?![0-9A-F])")
 BPLIST_HEADER = b"bplist00"
 
@@ -57,8 +58,21 @@ def inspect_gputrace_file(path: Path) -> dict[str, Any]:
 
 
 
+def extract_raw_index_hex_tokens_from_bytes(index_data: bytes) -> list[str]:
+    return sorted({match.decode("ascii") for match in RAW_INDEX_HEX_TOKEN_PATTERN.findall(index_data)})
+
+
+
 def extract_index_hashes_from_bytes(index_data: bytes) -> list[str]:
     return sorted({match.decode("ascii") for match in INDEX_HASH_PATTERN.findall(index_data)})
+
+
+
+def extract_raw_index_hex_tokens(gputrace_dir: Path) -> list[str]:
+    index_path = gputrace_dir / "index"
+    if not index_path.is_file():
+        return []
+    return extract_raw_index_hex_tokens_from_bytes(index_path.read_bytes())
 
 
 
@@ -87,6 +101,8 @@ def inspect_gputrace_dir(gputrace_dir: Path) -> dict[str, Any]:
 
     index_path = gputrace_dir / "index"
     index_data = index_path.read_bytes() if index_path.is_file() else b""
+    raw_index_hex_tokens = extract_raw_index_hex_tokens_from_bytes(index_data)
+    raw_index_hex_token_set = set(raw_index_hex_tokens)
     index_hashes = extract_index_hashes_from_bytes(index_data)
     referenced_hashes = set(index_hashes)
     valid_msl_hashes = sorted(name for name, file_info in files.items() if file_info["isMSL"])
@@ -98,8 +114,9 @@ def inspect_gputrace_dir(gputrace_dir: Path) -> dict[str, Any]:
     unreferenced_non_msl_hashes = sorted(name for name in non_msl_hashes if name not in referenced_hashes)
     noncanonical_visible_hashes = sorted(name for name in files if len(name) != 16)
     noncanonical_visible_hashes_mentioned_in_index = sorted(
-        name for name in noncanonical_visible_hashes if name.encode("ascii") in index_data
+        name for name in noncanonical_visible_hashes if name in raw_index_hex_token_set
     )
+    raw_index_noncanonical_hashes = sorted(token for token in raw_index_hex_tokens if len(token) != 16)
     index_hash_references = len(index_hashes)
     valid_msl_files = len(valid_msl_hashes)
     source_files = len(files)
@@ -118,6 +135,7 @@ def inspect_gputrace_dir(gputrace_dir: Path) -> dict[str, Any]:
         "nonMSLFiles": non_msl_files,
         "indexHashReferences": index_hash_references,
         "indexHashes": index_hashes,
+        "rawIndexHexTokens": raw_index_hex_tokens,
         "validMSLHashes": valid_msl_hashes,
         "nonMSLHashes": non_msl_hashes,
         "referencedValidMSLHashes": referenced_valid_msl_hashes,
@@ -127,8 +145,10 @@ def inspect_gputrace_dir(gputrace_dir: Path) -> dict[str, Any]:
         "unreferencedNonMSLHashes": unreferenced_non_msl_hashes,
         "sourceHashLengthCounts": count_hash_lengths(sorted(files)),
         "indexHashLengthCounts": count_hash_lengths(index_hashes),
+        "rawIndexHashLengthCounts": count_hash_lengths(raw_index_hex_tokens),
         "nonCanonicalVisibleHashes": noncanonical_visible_hashes,
         "nonCanonicalVisibleHashesMentionedInIndex": noncanonical_visible_hashes_mentioned_in_index,
+        "rawIndexNonCanonicalHashes": raw_index_noncanonical_hashes,
         "nonMSLTypeCounts": {kind: non_msl_type_counts[kind] for kind in sorted(non_msl_type_counts)},
         "coveragePct": coverage_pct,
         "files": files,

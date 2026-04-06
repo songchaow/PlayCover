@@ -98,6 +98,11 @@ class CheckGputraceSourcesTests(unittest.TestCase):
             self.assertEqual(result["non_msl_files"], 1)
             self.assertEqual(result["index_hash_references"], 4)
             self.assertEqual(result["coverage_pct"], 25.0)
+            self.assertEqual(result["referenced_valid_msl_hashes"], ["0123456789ABCDEF"])
+            self.assertEqual(result["referenced_non_msl_hashes"], ["FEDCBA9876543210"])
+            self.assertEqual(result["missing_referenced_hashes"], ["AAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBB"])
+            self.assertEqual(result["unreferenced_valid_msl_hashes"], [])
+            self.assertEqual(result["unreferenced_non_msl_hashes"], [])
             self.assertEqual(result["files"]["FEDCBA9876543210"]["is_msl"], False)
 
     def test_bundle_dir_enables_visible_msl_attribution(self) -> None:
@@ -143,8 +148,13 @@ class CheckGputraceSourcesTests(unittest.TestCase):
             self.assertEqual(attribution["visibleMSLFileCount"], 2)
             self.assertEqual(attribution["attributedVisibleMSLFileCount"], 1)
             self.assertEqual(attribution["unattributedVisibleMSLFileCount"], 1)
+            self.assertEqual(attribution["referencedVisibleMSLFileCount"], 2)
+            self.assertEqual(attribution["attributedReferencedMSLFileCount"], 1)
+            self.assertEqual(attribution["unattributedReferencedMSLFileCount"], 1)
             self.assertEqual(attribution["attributedVisibleMSLHashes"], ["0123456789ABCDEF"])
             self.assertEqual(attribution["unattributedVisibleMSLHashes"], ["FEDCBA9876543210"])
+            self.assertEqual(attribution["attributedReferencedMSLHashes"], ["0123456789ABCDEF"])
+            self.assertEqual(attribution["unattributedReferencedMSLHashes"], ["FEDCBA9876543210"])
             self.assertEqual(attribution["attributedModuleKeys"], ["module-key-1"])
             self.assertEqual(
                 attribution["attributedReplacementDirectories"],
@@ -200,6 +210,9 @@ class CheckGputraceSourcesTests(unittest.TestCase):
             self.assertEqual(summary["validMSLFiles"], 1)
             self.assertEqual(summary["nonMSLFiles"], 1)
             self.assertEqual(summary["indexHashReferences"], 4)
+            self.assertEqual(summary["referencedValidMSLHashes"], ["0123456789ABCDEF"])
+            self.assertEqual(summary["referencedNonMSLHashes"], ["FEDCBA9876543210"])
+            self.assertEqual(summary["missingReferencedHashes"], ["AAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBB"])
             self.assertEqual(summary["coveragePct"], 25.0)
 
 

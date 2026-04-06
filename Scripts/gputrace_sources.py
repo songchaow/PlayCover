@@ -6,6 +6,7 @@ from typing import Any
 
 
 HEX_SOURCE_NAME = re.compile(r"^[0-9A-F]{16}$")
+INDEX_HASH_PATTERN = re.compile(rb"[0-9A-F]{16}")
 
 
 def inspect_gputrace_file(path: Path) -> dict[str, Any]:
@@ -39,12 +40,17 @@ def inspect_gputrace_file(path: Path) -> dict[str, Any]:
 
 
 
-def count_index_hashes(gputrace_dir: Path) -> int:
+def extract_index_hashes(gputrace_dir: Path) -> list[str]:
     index_path = gputrace_dir / "index"
     if not index_path.is_file():
-        return -1
+        return []
     index_data = index_path.read_bytes()
-    return len(set(re.findall(rb"[0-9A-F]{16}", index_data)))
+    return sorted({match.decode("ascii") for match in INDEX_HASH_PATTERN.findall(index_data)})
+
+
+
+def count_index_hashes(gputrace_dir: Path) -> int:
+    return len(extract_index_hashes(gputrace_dir))
 
 
 
@@ -58,11 +64,20 @@ def inspect_gputrace_dir(gputrace_dir: Path) -> dict[str, Any]:
             continue
         files[child.name] = inspect_gputrace_file(child)
 
-    index_hash_references = count_index_hashes(gputrace_dir)
-    valid_msl_files = sum(1 for file_info in files.values() if file_info["isMSL"])
+    index_hashes = extract_index_hashes(gputrace_dir)
+    referenced_hashes = set(index_hashes)
+    valid_msl_hashes = sorted(name for name, file_info in files.items() if file_info["isMSL"])
+    non_msl_hashes = sorted(name for name, file_info in files.items() if file_info["isMSL"] is not True)
+    referenced_valid_msl_hashes = sorted(name for name in valid_msl_hashes if name in referenced_hashes)
+    referenced_non_msl_hashes = sorted(name for name in non_msl_hashes if name in referenced_hashes)
+    missing_referenced_hashes = sorted(hash_name for hash_name in index_hashes if hash_name not in files)
+    unreferenced_valid_msl_hashes = sorted(name for name in valid_msl_hashes if name not in referenced_hashes)
+    unreferenced_non_msl_hashes = sorted(name for name in non_msl_hashes if name not in referenced_hashes)
+    index_hash_references = len(index_hashes)
+    valid_msl_files = len(valid_msl_hashes)
     source_files = len(files)
     non_msl_files = source_files - valid_msl_files
-    coverage_pct = round(valid_msl_files / index_hash_references * 100, 2) if index_hash_references > 0 else 0.0
+    coverage_pct = round(len(referenced_valid_msl_hashes) / index_hash_references * 100, 2) if index_hash_references > 0 else 0.0
 
     return {
         "gputraceName": gputrace_dir.name,
@@ -70,6 +85,14 @@ def inspect_gputrace_dir(gputrace_dir: Path) -> dict[str, Any]:
         "validMSLFiles": valid_msl_files,
         "nonMSLFiles": non_msl_files,
         "indexHashReferences": index_hash_references,
+        "indexHashes": index_hashes,
+        "validMSLHashes": valid_msl_hashes,
+        "nonMSLHashes": non_msl_hashes,
+        "referencedValidMSLHashes": referenced_valid_msl_hashes,
+        "referencedNonMSLHashes": referenced_non_msl_hashes,
+        "missingReferencedHashes": missing_referenced_hashes,
+        "unreferencedValidMSLHashes": unreferenced_valid_msl_hashes,
+        "unreferencedNonMSLHashes": unreferenced_non_msl_hashes,
         "coveragePct": coverage_pct,
         "files": files,
     }

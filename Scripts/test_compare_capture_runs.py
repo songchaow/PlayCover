@@ -164,6 +164,8 @@ class CompareCaptureRunsTests(unittest.TestCase):
 
             attribution = json.loads((bundle_dir / "gputrace-attribution-index.json").read_text(encoding="utf-8"))
             self.assertEqual(sorted(attribution["attributedVisibleMSLHashes"]), ["0123456789ABCDEF", "FEDCBA9876543210"])
+            self.assertEqual(sorted(attribution["attributedReferencedMSLHashes"]), ["0123456789ABCDEF", "FEDCBA9876543210"])
+            self.assertEqual(attribution["unattributedReferencedMSLHashes"], [])
             self.assertEqual(attribution["attributedModuleKeys"], ["module-key-1"])
             self.assertEqual(
                 attribution["attributedReplacementDirectories"],
@@ -228,12 +230,18 @@ class CompareCaptureRunsTests(unittest.TestCase):
                 text=True,
             )
 
-            self.assertIn("gputrace attribution: runA=1 visible hashes, runB=1 visible hashes", completed.stdout)
+            self.assertIn(
+                "gputrace attribution: runA=1 visible-attributed / 1 referenced-valid / 1 missing, "
+                "runB=1 visible-attributed / 1 referenced-valid / 1 missing",
+                completed.stdout,
+            )
             report = json.loads(output_path.read_text(encoding="utf-8"))
             differences = report["comparison"]["snapshotComparison"]["differences"]
             difference_fields = {item["field"] for item in differences}
             self.assertIn("gputraceSummary.visibleMSLHashes", difference_fields)
+            self.assertIn("gputraceSummary.referencedValidMSLHashes", difference_fields)
             self.assertIn("gputraceAttribution.attributedVisibleMSLHashes", difference_fields)
+            self.assertIn("gputraceAttribution.attributedReferencedMSLHashes", difference_fields)
             self.assertIn("gputraceAttribution.visibleMSLContentSHA256", difference_fields)
             self.assertEqual(
                 report["runA"]["snapshotContext"]["attributedReplacementDirectories"],
@@ -325,6 +333,22 @@ class CompareCaptureRunsTests(unittest.TestCase):
             self.assertEqual(
                 report["runB"]["snapshotContext"]["attributedVisibleMSLHashes"],
                 ["FEDCBA9876543210"],
+            )
+            self.assertEqual(
+                report["runA"]["snapshotContext"]["attributedReferencedMSLHashes"],
+                ["0123456789ABCDEF"],
+            )
+            self.assertEqual(
+                report["runB"]["snapshotContext"]["attributedReferencedMSLHashes"],
+                ["FEDCBA9876543210"],
+            )
+            self.assertEqual(
+                report["runA"]["snapshotContext"]["missingReferencedHashes"],
+                ["FEDCBA9876543210"],
+            )
+            self.assertEqual(
+                report["runB"]["snapshotContext"]["missingReferencedHashes"],
+                ["0123456789ABCDEF"],
             )
 
     def test_compare_capture_runs_reports_latest_replacement_attempt_difference(self) -> None:

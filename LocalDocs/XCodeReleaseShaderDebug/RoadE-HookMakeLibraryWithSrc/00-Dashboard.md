@@ -237,7 +237,7 @@ PlayTools.framework (注入到 iOS app)
 - **源码可见 / compile green 都不等于渲染语义正确**：`E-006d` 关注的是相同输入下最终视觉结果、trace 与 replacement 证据是否稳定一致
 - **当前最低风险的比较基线仍是"替换 vs 不替换"**：统一通过 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py` 控制
 - **`E-006d` 的归因顺序必须固定**：先"替换 vs 不替换"对照 → 再对齐"输入是否相同" → 再比较"输出是否相同" → 最后看 runtime / render pipeline / post-processing 行为
-- **当前 trace 合法 MSL 覆盖率是最大瓶颈**：`on-run10` fresh trace `valid_msl = 0/9`，覆盖率 `1.1%`；下一步应优先解释已有 / 缺失合法 MSL 对应的 replacement / draw call 归属
+- **当前 trace 合法 MSL 覆盖率是最大瓶颈**：`on-run10` fresh trace `valid_msl = 0/9`，覆盖率 `1.1%`；离线工具现已先把覆盖率拆成 `referenced valid MSL / referenced non-MSL / missing referenced hash` 三类，并能单独归因“被 index 引用的合法 MSL”；下一步应基于这条拆解继续解释已有 / 缺失合法 MSL 对应的 replacement / draw call 归属
 - **更细的 lowering 经验、历史 live blocker 链路与已完成轮次已下沉到独立参考文档**：见 `E-004-MetallibSourceExtraction-Archive.md`、`E-006d-RenderingPathDiffReference.md` 与 `00-Dashboard-Archive.md`
 
 ## 参考信息

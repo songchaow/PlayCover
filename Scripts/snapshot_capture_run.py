@@ -202,8 +202,11 @@ def main() -> int:
         "gputraceSummary": gputrace_summary,
         "gputraceAttribution": {
             "visibleMSLFileCount": gputrace_attribution.get("visibleMSLFileCount") if gputrace_attribution is not None else None,
+            "referencedVisibleMSLFileCount": gputrace_attribution.get("referencedVisibleMSLFileCount") if gputrace_attribution is not None else None,
             "attributedVisibleMSLHashes": gputrace_attribution.get("attributedVisibleMSLHashes") if gputrace_attribution is not None else [],
             "unattributedVisibleMSLHashes": gputrace_attribution.get("unattributedVisibleMSLHashes") if gputrace_attribution is not None else [],
+            "attributedReferencedMSLHashes": gputrace_attribution.get("attributedReferencedMSLHashes") if gputrace_attribution is not None else [],
+            "unattributedReferencedMSLHashes": gputrace_attribution.get("unattributedReferencedMSLHashes") if gputrace_attribution is not None else [],
             "attributedModuleKeys": gputrace_attribution.get("attributedModuleKeys") if gputrace_attribution is not None else [],
             "attributedReplacementDirectories": gputrace_attribution.get("attributedReplacementDirectories") if gputrace_attribution is not None else [],
         },

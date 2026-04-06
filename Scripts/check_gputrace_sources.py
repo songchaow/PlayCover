@@ -10,9 +10,10 @@ check_gputrace_sources.py — 检查 `.gputrace` 中 shader 源码覆盖率，�
 
 输出:
     - hex hash 文件数量、合法 MSL 数量、非 MSL 数量
-    - `index` 引用总数，以及基于 `valid_msl_files` 的覆盖率
+    - `index` 引用总数，以及基于“被 index 引用的合法 MSL”的覆盖率
+    - 覆盖率拆解：被引用的合法 MSL / 被引用但非 MSL / 引用缺失文件 / 仅落盘未被引用
     - 每个可见 hash 文件的首行特征
-    - 可选：把可见 MSL 归因到 `module.generated.metal` / `aggregate.generated.metal`
+    - 可选：把可见 MSL 以及“被 index 引用的可见 MSL”归因到 `module.generated.metal` / `aggregate.generated.metal`
 """
 
 from __future__ import annotations
@@ -63,11 +64,29 @@ def build_result(gputrace_path: Path, summary: dict[str, Any], attribution: dict
         "non_msl_files": summary.get("nonMSLFiles", 0),
         "index_hash_references": summary.get("indexHashReferences", -1),
         "coverage_pct": summary.get("coveragePct", 0.0),
+        "index_hashes": summary.get("indexHashes", []),
+        "valid_msl_hashes": summary.get("validMSLHashes", []),
+        "non_msl_hashes": summary.get("nonMSLHashes", []),
+        "referenced_valid_msl_hashes": summary.get("referencedValidMSLHashes", []),
+        "referenced_non_msl_hashes": summary.get("referencedNonMSLHashes", []),
+        "missing_referenced_hashes": summary.get("missingReferencedHashes", []),
+        "unreferenced_valid_msl_hashes": summary.get("unreferencedValidMSLHashes", []),
+        "unreferenced_non_msl_hashes": summary.get("unreferencedNonMSLHashes", []),
         "files": files,
     }
     if attribution is not None:
         result["attribution"] = attribution
     return result
+
+
+
+def preview_hashes(items: list[str], *, limit: int = 8) -> str:
+    if not items:
+        return "<none>"
+    preview = ", ".join(items[:limit])
+    if len(items) > limit:
+        preview += ", ..."
+    return preview
 
 
 
@@ -79,7 +98,30 @@ def print_human_readable(result: dict[str, Any]) -> None:
         f"(合法 MSL: {result['valid_msl_files']} / 非 MSL: {result['non_msl_files']})"
     )
     print(f"index 引用: {result['index_hash_references']} 个")
-    print(f"覆盖率(valid_msl/index): {float(result['coverage_pct']):.1f}%")
+    print(f"覆盖率(referenced_valid_msl/index): {float(result['coverage_pct']):.1f}%")
+    print()
+
+    print("=== 覆盖率拆解 ===")
+    referenced_valid = result.get("referenced_valid_msl_hashes") or []
+    referenced_non_msl = result.get("referenced_non_msl_hashes") or []
+    missing_referenced = result.get("missing_referenced_hashes") or []
+    unreferenced_valid = result.get("unreferenced_valid_msl_hashes") or []
+    unreferenced_non_msl = result.get("unreferenced_non_msl_hashes") or []
+    print(f"被 index 引用的合法 MSL: {len(referenced_valid)}")
+    print(f"被 index 引用但不是 MSL: {len(referenced_non_msl)}")
+    print(f"index 引用缺少对应文件: {len(missing_referenced)}")
+    if unreferenced_valid or unreferenced_non_msl:
+        print(f"仅落盘未被 index 引用的合法 MSL: {len(unreferenced_valid)}")
+        print(f"仅落盘未被 index 引用的非 MSL: {len(unreferenced_non_msl)}")
+    print(f"引用到的合法 MSL hash: {preview_hashes(referenced_valid)}")
+    if referenced_non_msl:
+        print(f"引用到的非 MSL hash: {preview_hashes(referenced_non_msl)}")
+    if missing_referenced:
+        print(f"缺失引用 hash: {preview_hashes(missing_referenced)}")
+    if unreferenced_valid:
+        print(f"未引用但可见的合法 MSL hash: {preview_hashes(unreferenced_valid)}")
+    if unreferenced_non_msl:
+        print(f"未引用但可见的非 MSL hash: {preview_hashes(unreferenced_non_msl)}")
     print()
 
     files = result.get("files") if isinstance(result.get("files"), dict) else {}
@@ -104,9 +146,15 @@ def print_human_readable(result: dict[str, Any]) -> None:
             f"已归因: {attribution.get('attributedVisibleMSLFileCount', 0)}，"
             f"未归因: {attribution.get('unattributedVisibleMSLFileCount', 0)}"
         )
+        print(
+            f"其中被 index 引用的合法 MSL: {attribution.get('referencedVisibleMSLFileCount', 0)}，"
+            f"已归因: {attribution.get('attributedReferencedMSLFileCount', 0)}，"
+            f"未归因: {attribution.get('unattributedReferencedMSLFileCount', 0)}"
+        )
         module_keys = attribution.get("attributedModuleKeys") or []
         replacement_dirs = attribution.get("attributedReplacementDirectories") or []
         unattributed_hashes = attribution.get("unattributedVisibleMSLHashes") or []
+        unattributed_referenced_hashes = attribution.get("unattributedReferencedMSLHashes") or []
         print(
             "匹配到的 moduleKey: "
             + (", ".join(module_keys) if module_keys else "<none>")
@@ -117,6 +165,8 @@ def print_human_readable(result: dict[str, Any]) -> None:
         )
         if unattributed_hashes:
             print("未归因可见 MSL hash: " + ", ".join(unattributed_hashes))
+        if unattributed_referenced_hashes:
+            print("未归因且被 index 引用的合法 MSL hash: " + ", ".join(unattributed_referenced_hashes))
 
 
 

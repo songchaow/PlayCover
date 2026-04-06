@@ -6,14 +6,17 @@ from pathlib import Path
 from typing import Any
 
 
+
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
 
 
 def normalize_text_bytes(data: bytes) -> bytes:
     text = data.decode("utf-8", errors="replace")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     return text.encode("utf-8")
+
 
 
 def fingerprint_file(path: Path) -> dict[str, Any]:
@@ -26,12 +29,14 @@ def fingerprint_file(path: Path) -> dict[str, Any]:
     }
 
 
+
 def load_json(path: Path) -> dict[str, Any] | None:
     if not path.is_file():
         return None
     with path.open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
     return payload if isinstance(payload, dict) else None
+
 
 
 def build_generated_source_index(bundle_dir: Path) -> dict[str, Any]:
@@ -87,6 +92,7 @@ def build_generated_source_index(bundle_dir: Path) -> dict[str, Any]:
     }
 
 
+
 def dedupe_matches(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
     deduped: dict[tuple[str, str], dict[str, Any]] = {}
     for match in matches:
@@ -99,6 +105,7 @@ def dedupe_matches(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         existing["matchKinds"] = sorted(set(existing.get("matchKinds", [])) | set(match.get("matchKinds", [])))
     return sorted(deduped.values(), key=lambda item: (str(item.get("kind")), str(item.get("relativePath"))))
+
 
 
 def build_gputrace_attribution_for_paths(
@@ -114,6 +121,7 @@ def build_gputrace_attribution_for_paths(
         return None
 
     source_index = build_generated_source_index(bundle_dir)
+    referenced_valid_msl_hashes = set(gputrace_summary.get("referencedValidMSLHashes") or [])
     files = gputrace_summary.get("files") if isinstance(gputrace_summary.get("files"), dict) else {}
     visible_files: dict[str, dict[str, Any]] = {}
     attributed_module_keys: set[str] = set()
@@ -156,6 +164,7 @@ def build_gputrace_attribution_for_paths(
             "firstLine": file_info.get("firstLine"),
             "size": file_info.get("size"),
             "lines": file_info.get("lines"),
+            "referencedByIndex": file_name in referenced_valid_msl_hashes,
             **fingerprints,
             "attributed": bool(matches),
             "moduleMatches": module_matches,
@@ -168,16 +177,26 @@ def build_gputrace_attribution_for_paths(
     unattributed_hashes = sorted(
         file_name for file_name, payload in visible_files.items() if payload.get("attributed") is not True
     )
+    attributed_referenced_hashes = sorted(hash_name for hash_name in attributed_hashes if hash_name in referenced_valid_msl_hashes)
+    unattributed_referenced_hashes = sorted(hash_name for hash_name in unattributed_hashes if hash_name in referenced_valid_msl_hashes)
+    unreferenced_visible_hashes = sorted(hash_name for hash_name in visible_files if hash_name not in referenced_valid_msl_hashes)
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "gputraceRelativePath": gputrace_relative_path,
         "gputracePath": str(gputrace_dir),
         "sourceIndexSummary": source_index["summary"],
         "visibleMSLFileCount": len(visible_files),
         "attributedVisibleMSLFileCount": len(attributed_hashes),
         "unattributedVisibleMSLFileCount": len(unattributed_hashes),
+        "referencedVisibleMSLFileCount": len(referenced_valid_msl_hashes),
+        "attributedReferencedMSLFileCount": len(attributed_referenced_hashes),
+        "unattributedReferencedMSLFileCount": len(unattributed_referenced_hashes),
+        "unreferencedVisibleMSLFileCount": len(unreferenced_visible_hashes),
         "attributedVisibleMSLHashes": attributed_hashes,
         "unattributedVisibleMSLHashes": unattributed_hashes,
+        "attributedReferencedMSLHashes": attributed_referenced_hashes,
+        "unattributedReferencedMSLHashes": unattributed_referenced_hashes,
+        "unreferencedVisibleMSLHashes": unreferenced_visible_hashes,
         "attributedModuleKeys": sorted(attributed_module_keys),
         "attributedReplacementDirectories": sorted(attributed_replacement_directories),
         "visibleMSLContentSHA256": sorted(visible_content_sha256),

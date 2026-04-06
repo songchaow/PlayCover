@@ -457,8 +457,13 @@ def build_snapshot_context(run_input: RunInput, meta: dict[str, Any] | None) -> 
             "gputraceSummary": None,
             "gputraceAttribution": None,
             "visibleMSLHashes": [],
+            "referencedValidMSLHashes": [],
+            "referencedNonMSLHashes": [],
+            "missingReferencedHashes": [],
             "attributedVisibleMSLHashes": [],
             "unattributedVisibleMSLHashes": [],
+            "attributedReferencedMSLHashes": [],
+            "unattributedReferencedMSLHashes": [],
             "attributedModuleKeys": [],
             "attributedReplacementDirectories": [],
             "visibleMSLContentSHA256": [],
@@ -491,8 +496,13 @@ def build_snapshot_context(run_input: RunInput, meta: dict[str, Any] | None) -> 
         "gputraceSummary": gputrace_summary,
         "gputraceAttribution": gputrace_attribution,
         "visibleMSLHashes": visible_msl_hashes,
+        "referencedValidMSLHashes": (gputrace_summary or {}).get("referencedValidMSLHashes", []) if isinstance(gputrace_summary, dict) else [],
+        "referencedNonMSLHashes": (gputrace_summary or {}).get("referencedNonMSLHashes", []) if isinstance(gputrace_summary, dict) else [],
+        "missingReferencedHashes": (gputrace_summary or {}).get("missingReferencedHashes", []) if isinstance(gputrace_summary, dict) else [],
         "attributedVisibleMSLHashes": gputrace_attribution.get("attributedVisibleMSLHashes", []) if gputrace_attribution else [],
         "unattributedVisibleMSLHashes": gputrace_attribution.get("unattributedVisibleMSLHashes", []) if gputrace_attribution else [],
+        "attributedReferencedMSLHashes": gputrace_attribution.get("attributedReferencedMSLHashes", []) if gputrace_attribution else [],
+        "unattributedReferencedMSLHashes": gputrace_attribution.get("unattributedReferencedMSLHashes", []) if gputrace_attribution else [],
         "attributedModuleKeys": gputrace_attribution.get("attributedModuleKeys", []) if gputrace_attribution else [],
         "attributedReplacementDirectories": gputrace_attribution.get("attributedReplacementDirectories", []) if gputrace_attribution else [],
         "visibleMSLContentSHA256": gputrace_attribution.get("visibleMSLContentSHA256", []) if gputrace_attribution else [],
@@ -536,15 +546,45 @@ def compare_snapshot_context(run_a: RunInput, meta_a: dict[str, Any] | None, run
         differences,
     )
     compare_values(
+        "gputraceSummary.referencedValidMSLHashes",
+        context_a.get("referencedValidMSLHashes"),
+        context_b.get("referencedValidMSLHashes"),
+        differences,
+    )
+    compare_values(
+        "gputraceSummary.referencedNonMSLHashes",
+        context_a.get("referencedNonMSLHashes"),
+        context_b.get("referencedNonMSLHashes"),
+        differences,
+    )
+    compare_values(
+        "gputraceSummary.missingReferencedHashes",
+        context_a.get("missingReferencedHashes"),
+        context_b.get("missingReferencedHashes"),
+        differences,
+    )
+    compare_values(
         "gputraceAttribution.attributedVisibleMSLHashes",
         context_a.get("attributedVisibleMSLHashes"),
         context_b.get("attributedVisibleMSLHashes"),
         differences,
     )
     compare_values(
+        "gputraceAttribution.attributedReferencedMSLHashes",
+        context_a.get("attributedReferencedMSLHashes"),
+        context_b.get("attributedReferencedMSLHashes"),
+        differences,
+    )
+    compare_values(
         "gputraceAttribution.unattributedVisibleMSLHashes",
         context_a.get("unattributedVisibleMSLHashes"),
         context_b.get("unattributedVisibleMSLHashes"),
+        differences,
+    )
+    compare_values(
+        "gputraceAttribution.unattributedReferencedMSLHashes",
+        context_a.get("unattributedReferencedMSLHashes"),
+        context_b.get("unattributedReferencedMSLHashes"),
         differences,
     )
     compare_values(
@@ -750,13 +790,19 @@ def print_summary(report: dict[str, Any]) -> None:
         preview = ", ".join(item["field"] for item in snapshot_comparison["differences"][:5])
         print(f"snapshot context differs ({len(snapshot_comparison['differences'])} fields): {preview}")
     if snapshot_comparison.get("runA") and snapshot_comparison.get("runB"):
-        attributed_a = snapshot_comparison["runA"].get("attributedVisibleMSLHashes", [])
-        attributed_b = snapshot_comparison["runB"].get("attributedVisibleMSLHashes", [])
-        if attributed_a or attributed_b:
+        context_a = snapshot_comparison["runA"]
+        context_b = snapshot_comparison["runB"]
+        attributed_a = context_a.get("attributedVisibleMSLHashes", [])
+        attributed_b = context_b.get("attributedVisibleMSLHashes", [])
+        referenced_a = context_a.get("referencedValidMSLHashes", [])
+        referenced_b = context_b.get("referencedValidMSLHashes", [])
+        missing_a = context_a.get("missingReferencedHashes", [])
+        missing_b = context_b.get("missingReferencedHashes", [])
+        if attributed_a or attributed_b or referenced_a or referenced_b or missing_a or missing_b:
             print(
                 "gputrace attribution: "
-                f"runA={len(attributed_a)} visible hashes, "
-                f"runB={len(attributed_b)} visible hashes"
+                f"runA={len(attributed_a)} visible-attributed / {len(referenced_a)} referenced-valid / {len(missing_a)} missing, "
+                f"runB={len(attributed_b)} visible-attributed / {len(referenced_b)} referenced-valid / {len(missing_b)} missing"
             )
 
 

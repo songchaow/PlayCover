@@ -31,7 +31,7 @@
 |---|---|---|---|---|
 | 1 | **capture bridge reachability** | `on-run10` 确认：`create_session(bundleId)` 首次即返回 ready session，`get_capture_status` 进入 `available=true`，容器内 `capture_metal_frame` 成功；bundle 级 `bridge not reachable` 未复现。一次短暂 `list_sessions` 空窗更像 registry 可见性抖动。详细演进见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | 继续观察 session 可见性偶发不一致，主排查面已下移到 trace 覆盖 | ✅ 是 |
 | 2 | **capture 输出路径** | 容器内 custom path 已验证可用；容器外权限边界未明。短期可继续用默认容器路径 + `--latest-gputrace` | 长期再单独验证容器外路径沙盒权限 | ✅ 是（`--latest-gputrace` 已自动化） |
-| 3 | **trace 合法 MSL 覆盖偏低** | preload 修复后 `on-run11`：`922 refs = 3 valid + 9 non-MSL + 910 missing`、`visibleMSL=3`。`b3b` 校正确认 `off-run1` 同有大量 missing（`shared=583/888`），preload 净增量仅 `+1 referenced valid`。两边 raw index 均含 `54` 个 `14/15` 位 short token，现象非 replacement 独有 | ①解释 raw short token → bundle 可见文件的写入条件；②确认与 canonical missing（`shared=583 / only off=305 / only on=327`）的关系 | ✅ 是 |
+| 3 | **trace 合法 MSL 覆盖偏低** | preload 修复后 `on-run11`：`922 refs = 3 valid + 9 non-MSL + 910 missing`、`visibleMSL=3`。`b3b` 已收敛：两边 raw index 均含 `54` 个 `14/15` 位 short token，但真正额外落盘成 bundle 可见文件的只有 `off-run1=3/54`、`on-run11=2/54`；共享的 2 个 short 文件均为 `bplist`，only-off 额外 1 个是未被 canonical index 引用的 short MSL | 当前转向 `device` vs `scope` capture 对源码写入规模的影响；short token 可见性保留为旁路证据，不再作为 missing 主解释 | ✅ 是 |
 | 4 | **绘制内容差异未正式产出** | `e006d_render_diff.py` 入口就绪，GUI 自动化环境未验证 | 在 Xcode GUI / Accessibility / `cliclick` 可用时，跑 `off-run1` vs `on-run5` 结构化 diff | ⚠️ 需 GUI 自动化环境 |
 
 **本轮推进标准**：至少把当前问题明确收敛到以下之一：
@@ -45,14 +45,14 @@
 
 **`b3a` 归因**：修正 `gputrace` 归因指纹（忽略尾部 `NUL` 终止符）后，确认 3 个 visible MSL 全部对应当前快照中的 replacement 聚合源码（3 个 `moduleKey` 已确认，详见 `b3a` 产出）。
 
-**`b3b` 基线校正**：修复 `compare_capture_runs.py` 对旧 snapshot 的 fallback 后，重新按 canonical 口径对比。`off-run1` 也有大量 missing（`shared=583`），preload 净增量仅 `+23 refs / +1 referenced valid MSL / +22 missing`。raw index `14/15` 位 short token 在 `off-run1` / `on-run11` 均各含 `54` 个（`shared=37`），**现象非 replacement 独有**。
+**`b3b` 收敛（2026-04-06 深夜）**：在 `compare_capture_runs.py` / `check_gputrace_sources.py` 中补上 raw short-hash file writes 摘要后，重新按 canonical 口径对比。`off-run1` 与 `on-run11` 的 raw index 都有 `54` 个 `14/15` 位 short token（`shared=37`），但真正额外落盘成 bundle 可见文件的只有 `off-run1=3/54`、`on-run11=2/54`：共享可见 short 文件为 `53EEDD95681D340`、`76E05038E17F34`（均为 `bplist`），only-off 额外 1 个 `B91673E5592A2B8` 为 short MSL。**这些 short 文件都不进入 canonical 16 位 index 引用集合；即便 `B91673E5592A2B8` 是 MSL，也只是“可见但未被 canonical 引用”的旁路文件，不会减少 `missingReferencedHashes` 或增加 `referencedValidMSLHashes`。**因此，short token 可见性与 canonical missing 基本正交，不能再作为 `910 missing` 的主解释。
 
 > ⚠️ **历史中间口径（已被 `b3b` 校正取代）**：早期曾误认为 `on-run11` 带来 `0 → 910` missing 的变化，或把 `14/15` 位 short token 视为 replacement 独有问题。这些结论已被 `b3b` 基线校正推翻；详情与演进时间线见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
 
 后续排查面：
 1. **✅ `b3a` 已完成：3 个可见 MSL 已归因**
-2. **继续推进 `b3b`（当前最高优先级）**：解释 raw short token → bundle 可见文件的写入条件，并确认与 canonical missing（`shared=583 / only off=305 / only on=327`）的关系
-3. **补充 capture 策略差异**：`device` vs `scope` 对源码写入规模的影响
+2. **✅ `b3b` 已完成：raw short token 的落盘条件与 canonical missing 的关系已澄清**
+3. **当前最高优先级：补充 capture 策略差异**：`device` vs `scope` 对源码写入规模的影响
 4. **session 可见性抖动**：继续观察，确认只影响 registry 而不影响实际 bridge reachability
 
 ## 已完成的子项
@@ -71,6 +71,7 @@
 | host session / capture 基础设施修复 | split-brain、bridge ping、ready-session probe、capture status 去 lazy-load、默认容器回收、GPUToolsCapture 预加载 | ✅ DONE + 测试覆盖 |
 | E-006d8-b3-fix1 | GPUToolsCapture 预加载（`PlayCover.launch()` 早期，replacement 前加载 capture 库） | ✅ DONE（`on-run11` 验证生效） |
 | E-006d8-b3-fix2 | `compare_capture_runs.py` 对旧 snapshot 的 `gputraceSummary` / `gputraceAttribution` 自动重算，避免旧基线把 `off-run1` 误判为 `0 missing` | ✅ DONE + 测试覆盖 |
+| E-006d8-b3b | raw short token 可见性摘要：输出 `raw short-hash file writes`，确认 `off-run1=3/54`、`on-run11=2/54`，且这些 short 文件与 canonical missing 基本正交 | ✅ DONE + 测试覆盖 |
 
 ## 优先排查顺序
 
@@ -137,7 +138,7 @@
 - **成功路径也要落盘聚合产物**：只保留单模块 `.bc/.ll/.metal` 不足以覆盖聚合顺序、重名去重
 - **draw call / Render Encoder / Pipeline State 是独立证据层**：当 shader / trace 侧证据不足时必须补
 - **`module.meta.json` 的统计字段要与真实 artifact diff 分开看**：`captureCount`、`sourceCacheKeys` 等变化不等于本体变化
-- **GPUToolsCapture 预加载时序直接影响 trace 覆盖率**：但 `b3b` 已确认 `14/15` 位 short token 现象非 replacement 独有，应优先分析写入条件而非归因到 replacement
+- **GPUToolsCapture 预加载时序直接影响 trace 覆盖率**：但 `b3b` 已确认 `14/15` 位 short token 现象非 replacement 独有；在 `off-run1` / `on-run11` 中它们大多只停留在 raw index，真正额外落盘的只有 `3/54` 与 `2/54`，且这些 short 文件不进入 canonical 16 位引用集合，因此不能拿它们直接解释 `missingReferencedHashes`
 - **旧 snapshot 的 `gputraceSummary` / `gputraceAttribution` 不可直接信任**：`compare_capture_runs.py` 已改为优先对原始 `.gputrace` 现算，避免 schema 演进导致误判
 - **host 侧 session / capture 基础设施已全部修复**：详细修复历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)
 - **更早的 lowering 细节与已收敛 compile blocker 不再由本文档维护**：见 `E-004-MetallibSourceExtraction.md`、`E-006d-RenderingPathDiffReference.md` 与 archive

@@ -146,7 +146,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 |---|---|---|---|
 | 1 | capture bridge reachability | ✅ 已收敛 | `on-run10` / `on-run11` 均确认首次 `create_session(bundleId)` 即返回 ready session |
 | 2 | capture 输出路径 | ✅ 短期绕过 | 继续用默认容器路径 + `--latest-gputrace` |
-| 3 | **trace 合法 MSL 覆盖偏低** | **进行中（当前最高优先级）** | `b3b` 校正后：`off-run1` 也有大量 missing（`shared=583/888`），preload 净增量仅 `+1 referenced valid`。当前排查面：哪些 raw short token 额外落盘成 bundle 可见文件，以及与 canonical missing 的关系。详见 `E-006d-GenshinRenderingNondeterminism.md` |
+| 3 | **trace 合法 MSL 覆盖偏低** | **进行中（当前最高优先级）** | `b3b` 已收敛：`off-run1` / `on-run11` 的 `54` 个 raw short token 中，真正额外落盘成 bundle 可见文件的只有 `3/54` 与 `2/54`，且这些 short 文件与 canonical missing 基本正交。当前排查面已转向 `device` vs `scope` capture 对源码写入规模的影响。详见 `E-006d-GenshinRenderingNondeterminism.md` |
 | 4 | 绘制内容差异未正式产出 | 工具就绪，需 GUI 环境 | `e006d_render_diff.py` 已就绪，需 Xcode GUI / Accessibility / `cliclick`；**重要专项但非日常 gate** |
 
 - **绘制内容差异分支**：这条线依赖 Xcode GUI 环境、Accessibility 权限与 `cliclick`。**它是重要专项分析分支，不是默认日常 gate**。详细方法见 `E-006d-RenderingPathDiffReference.md`。
@@ -172,7 +172,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 |---|---|
 | 落盘与闭环能力 | 成功路径 → `ShaderCorpus/<bundleId>/modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`；replacement → `replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal`；失败路径 → `ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`。三条路径均已进入离线 replay / diff / 归因主回路。详见 `E-004-CorpusClosureAndRecapturePolicy.md` |
 | corpus 编译基线（2026-04-05） | `test-data/*.ll`（19 个）replay + compile **全绿**；`ShaderCorpus/com.miHoYo.Yuanshen/modules/` **91/91** replay + compile **全绿**，preflight rejected `0`，regression `0` |
-| E-006d8 b3b 当前口径（2026-04-06 夜，当前最高优先级参考） | `off-run1`：`899 refs = 2 referenced valid + 9 non-MSL + 888 missing`；`on-run11`：`922 refs = 3 referenced valid + 9 non-MSL + 910 missing`。missing 拆解为 `shared=583 / only off=305 / only on=327 / net=+22`。两边 raw short token 均 `54` 个（`14/15` 位），现象非 replacement 独有。待解释：哪些 raw short token 额外落盘成 bundle 可见文件 |
+| E-006d8 b3b 收敛口径（2026-04-06 深夜） | `off-run1`：`899 refs = 2 referenced valid + 9 non-MSL + 888 missing`；`on-run11`：`922 refs = 3 referenced valid + 9 non-MSL + 910 missing`。missing 拆解为 `shared=583 / only off=305 / only on=327 / net=+22`。两边 raw short token 均 `54` 个，但真正额外落盘成 bundle 可见文件的只有 `off-run1=3/54`、`on-run11=2/54`；共享 short 文件 `53EEDD95681D340` / `76E05038E17F34` 均为 `bplist`，only-off 多出的 `B91673E5592A2B8` 虽为 short MSL，但同样未进入 canonical 16 位引用集合。结论：short token 可见性与 canonical missing 基本正交 |
 | `.gputrace` 里程碑 | `capture_20260404_roadE_e006c3_final.gputrace` Xcode 人工确认 shader 面板源码可见（`E-006c` 已关闭）。详细历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
 
 ### 已完成的 session / capture 基础设施修复（2026-04-06）
@@ -227,7 +227,8 @@ PlayTools.framework (注入到 iOS app)
 | E-006d8 | ↳ 四条 blocker 收敛 | **TODO（当前推进焦点）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
 | E-006d8-b3 | ↳ trace 合法 MSL 覆盖偏低归因 | **TODO（当前最高优先级 blocker）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
 | E-006d8-b3a | ↳ 归因 3 个可见 MSL 到 ShaderCorpus | **✅ DONE** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006d8-b3b | ↳ 对照 E-006c / `off-run1` 可见 trace 排查 missing 的 bundle 写入条件 | **TODO（当前最高优先级）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
+| E-006d8-b3b | ↳ 对照 E-006c / `off-run1` 可见 trace 排查 missing 的 bundle 写入条件 | **✅ DONE** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
+| E-006d8-b3c | ↳ 比较 `device` vs `scope` capture 对源码写入规模的影响 | **TODO（当前最高优先级）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
 | E-006d8-b4 | ↳ 绘制内容差异结构对比 | **TODO**（需 GUI 环境，非日常 gate） | [E-006d8b 参考](E-006d-RenderingPathDiffReference.md) |
 | E-006a | 扩展真实 corpus 覆盖面 | TODO（已降级） | |
 | E-007 | PlayCover settings / MCP / 工具暴露 | TODO（已降级） | |
@@ -239,8 +240,8 @@ PlayTools.framework (注入到 iOS app)
 - **`build_and_install.sh` 是更新运行时 framework 的唯一可靠路径**：`sync_playtools_xcframework.sh` 只更新构建产物；涉及 live 时必须走 `BuildScripts/build_and_install.sh`
 - **源码可见 / compile green 都不等于渲染语义正确**：`E-006d` 关注的是相同输入下最终视觉结果、trace 与 replacement 证据是否稳定一致
 - **当前最低风险的比较基线仍是"替换 vs 不替换"**：统一通过 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py` 控制
-- **GPUToolsCapture 预加载时序是 trace 覆盖率的关键**：`makeLibrary(source:)` replacement 必须在 capture 库已加载后才发生，否则替换后的 library 会错过观测窗口；但 `b3b` 新口径已确认：`14/15` 位 short token 在 `off-run1` / `on-run11` 的 raw index 中都大量存在，不能把它们直接视为 replacement 新引入问题，应优先分析"哪些 raw short token 会额外落盘成 bundle 可见文件"
-- **旧 snapshot 的 `gputraceSummary` / `gputraceAttribution` 可能过时**：早期快照既可能缺少 `missingReferencedHashes` 等字段，也可能 schema 已新但 attribution 内容仍是旧值；后续对比应优先使用 `compare_capture_runs.py` 对原始 `.gputrace` 的现算结果。该脚本现已直接输出 missing 的 `shared / onlyA / onlyB / netDelta`，以及 raw short-hash token 的对比摘要
+- **GPUToolsCapture 预加载时序是 trace 覆盖率的关键**：`makeLibrary(source:)` replacement 必须在 capture 库已加载后才发生，否则替换后的 library 会错过观测窗口；但 `b3b` 已进一步确认：`14/15` 位 short token 在 `off-run1` / `on-run11` 的 raw index 中都大量存在，真正落盘成文件的只有 `3/54` 与 `2/54`，且这些 short 文件不进入 canonical 16 位引用集合，因此不能把它们当成 `missingReferencedHashes` 的直接解释
+- **旧 snapshot 的 `gputraceSummary` / `gputraceAttribution` 可能过时**：早期快照既可能缺少 `missingReferencedHashes` 等字段，也可能 schema 已新但 attribution 内容仍是旧值；后续对比应优先使用 `compare_capture_runs.py` 对原始 `.gputrace` 的现算结果。该脚本现已直接输出 missing 的 `shared / onlyA / onlyB / netDelta`、raw short-hash token 的对比摘要，以及 `raw short-hash file writes` 的落盘可见性摘要
 - **`.gputrace` 可见 MSL 可能带尾部 `NUL` 终止符**：做 attribution / diff / 指纹匹配时不能只比原始字节；至少要按文本归一化并去掉尾部 `\0`，否则会把内容完全相同的 `aggregate.generated.metal` 误判为未归因
 - **更细的 lowering 经验、历史 live blocker 链路与已完成轮次已下沉到独立参考文档**：见 `E-004-MetallibSourceExtraction-Archive.md`、`E-006d-RenderingPathDiffReference.md` 与 `00-Dashboard-Archive.md`
 

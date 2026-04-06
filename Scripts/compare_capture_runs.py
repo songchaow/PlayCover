@@ -123,6 +123,8 @@ def is_current_gputrace_summary(payload: dict[str, Any] | None) -> bool:
         "nonMSLTypeCounts",
         "rawIndexHashLengthCounts",
         "rawIndexNonCanonicalHashes",
+        "rawIndexNonCanonicalVisibleHashes",
+        "rawIndexNonCanonicalVisibility",
     )
     return all(field in payload for field in required_fields)
 
@@ -523,6 +525,10 @@ def build_snapshot_context(run_input: RunInput, meta: dict[str, Any] | None) -> 
             "nonCanonicalVisibleHashes": [],
             "nonCanonicalVisibleHashesMentionedInIndex": [],
             "rawIndexNonCanonicalHashes": [],
+            "rawIndexNonCanonicalVisibleHashes": [],
+            "rawIndexNonCanonicalOnlyHashes": [],
+            "rawIndexNonCanonicalVisibleTypeCounts": {},
+            "rawIndexNonCanonicalVisibility": {},
             "rawIndexHashLengthCounts": {},
             "attributedVisibleMSLHashes": [],
             "unattributedVisibleMSLHashes": [],
@@ -572,6 +578,10 @@ def build_snapshot_context(run_input: RunInput, meta: dict[str, Any] | None) -> 
         "nonCanonicalVisibleHashes": (gputrace_summary or {}).get("nonCanonicalVisibleHashes", []) if isinstance(gputrace_summary, dict) else [],
         "nonCanonicalVisibleHashesMentionedInIndex": (gputrace_summary or {}).get("nonCanonicalVisibleHashesMentionedInIndex", []) if isinstance(gputrace_summary, dict) else [],
         "rawIndexNonCanonicalHashes": (gputrace_summary or {}).get("rawIndexNonCanonicalHashes", []) if isinstance(gputrace_summary, dict) else [],
+        "rawIndexNonCanonicalVisibleHashes": (gputrace_summary or {}).get("rawIndexNonCanonicalVisibleHashes", []) if isinstance(gputrace_summary, dict) else [],
+        "rawIndexNonCanonicalOnlyHashes": (gputrace_summary or {}).get("rawIndexNonCanonicalOnlyHashes", []) if isinstance(gputrace_summary, dict) else [],
+        "rawIndexNonCanonicalVisibleTypeCounts": (gputrace_summary or {}).get("rawIndexNonCanonicalVisibleTypeCounts", {}) if isinstance(gputrace_summary, dict) else {},
+        "rawIndexNonCanonicalVisibility": (gputrace_summary or {}).get("rawIndexNonCanonicalVisibility", {}) if isinstance(gputrace_summary, dict) else {},
         "rawIndexHashLengthCounts": (gputrace_summary or {}).get("rawIndexHashLengthCounts", {}) if isinstance(gputrace_summary, dict) else {},
         "attributedVisibleMSLHashes": gputrace_attribution.get("attributedVisibleMSLHashes", []) if gputrace_attribution else [],
         "unattributedVisibleMSLHashes": gputrace_attribution.get("unattributedVisibleMSLHashes", []) if gputrace_attribution else [],
@@ -656,6 +666,30 @@ def compare_snapshot_context(run_a: RunInput, meta_a: dict[str, Any] | None, run
         differences,
     )
     compare_values(
+        "gputraceSummary.rawIndexNonCanonicalVisibleHashes",
+        context_a.get("rawIndexNonCanonicalVisibleHashes"),
+        context_b.get("rawIndexNonCanonicalVisibleHashes"),
+        differences,
+    )
+    compare_values(
+        "gputraceSummary.rawIndexNonCanonicalOnlyHashes",
+        context_a.get("rawIndexNonCanonicalOnlyHashes"),
+        context_b.get("rawIndexNonCanonicalOnlyHashes"),
+        differences,
+    )
+    compare_values(
+        "gputraceSummary.rawIndexNonCanonicalVisibleTypeCounts",
+        context_a.get("rawIndexNonCanonicalVisibleTypeCounts"),
+        context_b.get("rawIndexNonCanonicalVisibleTypeCounts"),
+        differences,
+    )
+    compare_values(
+        "gputraceSummary.rawIndexNonCanonicalVisibility",
+        context_a.get("rawIndexNonCanonicalVisibility"),
+        context_b.get("rawIndexNonCanonicalVisibility"),
+        differences,
+    )
+    compare_values(
         "gputraceSummary.rawIndexHashLengthCounts",
         context_a.get("rawIndexHashLengthCounts"),
         context_b.get("rawIndexHashLengthCounts"),
@@ -712,6 +746,10 @@ def compare_snapshot_context(run_a: RunInput, meta_a: dict[str, Any] | None, run
         context_a.get("rawIndexNonCanonicalHashes", []),
         context_b.get("rawIndexNonCanonicalHashes", []),
     )
+    raw_index_noncanonical_visible_breakdown = build_hash_set_breakdown(
+        context_a.get("rawIndexNonCanonicalVisibleHashes", []),
+        context_b.get("rawIndexNonCanonicalVisibleHashes", []),
+    )
 
     return {
         "hasComparableSnapshots": True,
@@ -722,6 +760,7 @@ def compare_snapshot_context(run_a: RunInput, meta_a: dict[str, Any] | None, run
         "differences": differences,
         "missingReferencedHashBreakdown": missing_breakdown,
         "rawIndexNonCanonicalHashBreakdown": raw_index_noncanonical_breakdown,
+        "rawIndexNonCanonicalVisibleHashBreakdown": raw_index_noncanonical_visible_breakdown,
     }
 
 
@@ -933,6 +972,30 @@ def print_summary(report: dict[str, Any]) -> None:
                 f"shared={raw_index_noncanonical_breakdown.get('sharedCount', 0)} "
                 f"onlyA={raw_index_noncanonical_breakdown.get('onlyRunACount', 0)} "
                 f"onlyB={raw_index_noncanonical_breakdown.get('onlyRunBCount', 0)}"
+            )
+
+        raw_index_noncanonical_visibility_a = context_a.get("rawIndexNonCanonicalVisibility") or {}
+        raw_index_noncanonical_visibility_b = context_b.get("rawIndexNonCanonicalVisibility") or {}
+        raw_index_noncanonical_visible_breakdown = snapshot_comparison.get("rawIndexNonCanonicalVisibleHashBreakdown") or {}
+        if (
+            raw_index_noncanonical_visibility_a.get("rawTokenCount", 0)
+            or raw_index_noncanonical_visibility_b.get("rawTokenCount", 0)
+            or raw_index_noncanonical_visibility_a.get("visibleFileCount", 0)
+            or raw_index_noncanonical_visibility_b.get("visibleFileCount", 0)
+        ):
+            print(
+                "gputrace raw short-hash file writes: "
+                f"runA={raw_index_noncanonical_visibility_a.get('visibleFileCount', 0)}"
+                f"/{raw_index_noncanonical_visibility_a.get('rawTokenCount', 0)} visible "
+                f"(msl={raw_index_noncanonical_visibility_a.get('visibleMSLCount', 0)} "
+                f"nonMSL={raw_index_noncanonical_visibility_a.get('visibleNonMSLCount', 0)}), "
+                f"runB={raw_index_noncanonical_visibility_b.get('visibleFileCount', 0)}"
+                f"/{raw_index_noncanonical_visibility_b.get('rawTokenCount', 0)} visible "
+                f"(msl={raw_index_noncanonical_visibility_b.get('visibleMSLCount', 0)} "
+                f"nonMSL={raw_index_noncanonical_visibility_b.get('visibleNonMSLCount', 0)}), "
+                f"sharedVisible={raw_index_noncanonical_visible_breakdown.get('sharedCount', 0)} "
+                f"onlyAVisible={raw_index_noncanonical_visible_breakdown.get('onlyRunACount', 0)} "
+                f"onlyBVisible={raw_index_noncanonical_visible_breakdown.get('onlyRunBCount', 0)}"
             )
 
 

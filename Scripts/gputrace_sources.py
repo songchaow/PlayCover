@@ -38,6 +38,33 @@ def count_hash_lengths(items: list[str]) -> dict[str, int]:
 
 
 
+def build_raw_index_noncanonical_visibility(
+    raw_index_noncanonical_hashes: list[str],
+    files: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    visible_hashes = sorted(hash_name for hash_name in raw_index_noncanonical_hashes if hash_name in files)
+    only_in_index_hashes = sorted(hash_name for hash_name in raw_index_noncanonical_hashes if hash_name not in files)
+    visible_msl_hashes = sorted(hash_name for hash_name in visible_hashes if files[hash_name].get("isMSL") is True)
+    visible_non_msl_hashes = sorted(hash_name for hash_name in visible_hashes if files[hash_name].get("isMSL") is not True)
+    visible_type_counts = Counter(
+        str(files[hash_name].get("contentType") or "unknown")
+        for hash_name in visible_hashes
+    )
+    return {
+        "rawTokenCount": len(raw_index_noncanonical_hashes),
+        "visibleFileCount": len(visible_hashes),
+        "onlyInIndexCount": len(only_in_index_hashes),
+        "visibleMSLCount": len(visible_msl_hashes),
+        "visibleNonMSLCount": len(visible_non_msl_hashes),
+        "visibleHashes": visible_hashes,
+        "onlyInIndexHashes": only_in_index_hashes,
+        "visibleMSLHashes": visible_msl_hashes,
+        "visibleNonMSLHashes": visible_non_msl_hashes,
+        "visibleTypeCounts": {kind: visible_type_counts[kind] for kind in sorted(visible_type_counts)},
+    }
+
+
+
 def inspect_gputrace_file(path: Path) -> dict[str, Any]:
     data = path.read_bytes()
     size = len(data)
@@ -117,6 +144,7 @@ def inspect_gputrace_dir(gputrace_dir: Path) -> dict[str, Any]:
         name for name in noncanonical_visible_hashes if name in raw_index_hex_token_set
     )
     raw_index_noncanonical_hashes = sorted(token for token in raw_index_hex_tokens if len(token) != 16)
+    raw_index_noncanonical_visibility = build_raw_index_noncanonical_visibility(raw_index_noncanonical_hashes, files)
     index_hash_references = len(index_hashes)
     valid_msl_files = len(valid_msl_hashes)
     source_files = len(files)
@@ -149,6 +177,18 @@ def inspect_gputrace_dir(gputrace_dir: Path) -> dict[str, Any]:
         "nonCanonicalVisibleHashes": noncanonical_visible_hashes,
         "nonCanonicalVisibleHashesMentionedInIndex": noncanonical_visible_hashes_mentioned_in_index,
         "rawIndexNonCanonicalHashes": raw_index_noncanonical_hashes,
+        "rawIndexNonCanonicalVisibleHashes": raw_index_noncanonical_visibility["visibleHashes"],
+        "rawIndexNonCanonicalOnlyHashes": raw_index_noncanonical_visibility["onlyInIndexHashes"],
+        "rawIndexNonCanonicalVisibleMSLHashes": raw_index_noncanonical_visibility["visibleMSLHashes"],
+        "rawIndexNonCanonicalVisibleNonMSLHashes": raw_index_noncanonical_visibility["visibleNonMSLHashes"],
+        "rawIndexNonCanonicalVisibleTypeCounts": raw_index_noncanonical_visibility["visibleTypeCounts"],
+        "rawIndexNonCanonicalVisibility": {
+            "rawTokenCount": raw_index_noncanonical_visibility["rawTokenCount"],
+            "visibleFileCount": raw_index_noncanonical_visibility["visibleFileCount"],
+            "onlyInIndexCount": raw_index_noncanonical_visibility["onlyInIndexCount"],
+            "visibleMSLCount": raw_index_noncanonical_visibility["visibleMSLCount"],
+            "visibleNonMSLCount": raw_index_noncanonical_visibility["visibleNonMSLCount"],
+        },
         "nonMSLTypeCounts": {kind: non_msl_type_counts[kind] for kind in sorted(non_msl_type_counts)},
         "coveragePct": coverage_pct,
         "files": files,

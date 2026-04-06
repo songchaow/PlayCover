@@ -81,6 +81,12 @@ def build_result(gputrace_path: Path, summary: dict[str, Any], attribution: dict
         "noncanonical_visible_hashes": summary.get("nonCanonicalVisibleHashes", []),
         "noncanonical_visible_hashes_mentioned_in_index": summary.get("nonCanonicalVisibleHashesMentionedInIndex", []),
         "raw_index_noncanonical_hashes": summary.get("rawIndexNonCanonicalHashes", []),
+        "raw_index_noncanonical_visible_hashes": summary.get("rawIndexNonCanonicalVisibleHashes", []),
+        "raw_index_noncanonical_only_hashes": summary.get("rawIndexNonCanonicalOnlyHashes", []),
+        "raw_index_noncanonical_visible_msl_hashes": summary.get("rawIndexNonCanonicalVisibleMSLHashes", []),
+        "raw_index_noncanonical_visible_non_msl_hashes": summary.get("rawIndexNonCanonicalVisibleNonMSLHashes", []),
+        "raw_index_noncanonical_visible_type_counts": summary.get("rawIndexNonCanonicalVisibleTypeCounts", {}),
+        "raw_index_noncanonical_visibility": summary.get("rawIndexNonCanonicalVisibility", {}),
         "non_msl_type_counts": summary.get("nonMSLTypeCounts", {}),
         "files": files,
     }
@@ -122,12 +128,31 @@ def print_human_readable(result: dict[str, Any]) -> None:
     noncanonical_visible_hashes = result.get("noncanonical_visible_hashes") or []
     noncanonical_visible_hashes_mentioned = result.get("noncanonical_visible_hashes_mentioned_in_index") or []
     raw_index_noncanonical_hashes = result.get("raw_index_noncanonical_hashes") or []
+    raw_index_noncanonical_visible_hashes = result.get("raw_index_noncanonical_visible_hashes") or []
+    raw_index_noncanonical_only_hashes = result.get("raw_index_noncanonical_only_hashes") or []
+    raw_index_noncanonical_visible_type_counts = result.get("raw_index_noncanonical_visible_type_counts") or {}
+    raw_index_noncanonical_visibility = result.get("raw_index_noncanonical_visibility") or {}
     if noncanonical_visible_hashes:
         print(f"额外短 hash 可见文件: {preview_hashes(noncanonical_visible_hashes)}")
     if raw_index_noncanonical_hashes:
         print(f"raw index 中的短 hash token: {preview_hashes(raw_index_noncanonical_hashes)}")
     if noncanonical_visible_hashes_mentioned:
         print(f"raw index 中也出现的可见短 hash: {preview_hashes(noncanonical_visible_hashes_mentioned)}")
+    if raw_index_noncanonical_hashes or raw_index_noncanonical_visible_hashes:
+        print(
+            "raw short token 落盘可见性: "
+            f"{raw_index_noncanonical_visibility.get('visibleFileCount', len(raw_index_noncanonical_visible_hashes))}"
+            f"/{raw_index_noncanonical_visibility.get('rawTokenCount', len(raw_index_noncanonical_hashes))} 可见，"
+            f"仅在 index 中出现 {raw_index_noncanonical_visibility.get('onlyInIndexCount', len(raw_index_noncanonical_only_hashes))}，"
+            f"可见 MSL {raw_index_noncanonical_visibility.get('visibleMSLCount', 0)} / "
+            f"可见非 MSL {raw_index_noncanonical_visibility.get('visibleNonMSLCount', 0)}"
+        )
+        if raw_index_noncanonical_visible_hashes:
+            print(f"落盘可见的 raw short token: {preview_hashes(raw_index_noncanonical_visible_hashes)}")
+        if raw_index_noncanonical_only_hashes:
+            print(f"仅 raw index 出现、未落盘的 short token: {preview_hashes(raw_index_noncanonical_only_hashes)}")
+        if raw_index_noncanonical_visible_type_counts:
+            print(f"落盘 short token 类型分布: {format_count_map(raw_index_noncanonical_visible_type_counts)}")
     print()
 
     print("=== 覆盖率拆解 ===")

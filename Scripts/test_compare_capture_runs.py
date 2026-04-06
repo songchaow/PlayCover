@@ -353,6 +353,10 @@ class CompareCaptureRunsTests(unittest.TestCase):
 
             self.assertIn("gputrace missing delta: shared=1 onlyA=1 onlyB=1 net=+0", completed.stdout)
             self.assertIn("gputrace raw short-hash tokens: runA=0 runB=1 shared=0 onlyA=0 onlyB=1", completed.stdout)
+            self.assertIn(
+                "gputrace raw short-hash file writes: runA=0/0 visible (msl=0 nonMSL=0), runB=1/1 visible (msl=0 nonMSL=1), sharedVisible=0 onlyAVisible=0 onlyBVisible=1",
+                completed.stdout,
+            )
 
             report = json.loads(output_path.read_text(encoding="utf-8"))
             snapshot_comparison = report["comparison"]["snapshotComparison"]
@@ -384,8 +388,36 @@ class CompareCaptureRunsTests(unittest.TestCase):
                     "onlyRunBHashes": ["A123456789ABCD"],
                 },
             )
+            self.assertEqual(
+                snapshot_comparison["rawIndexNonCanonicalVisibleHashBreakdown"],
+                {
+                    "runACount": 0,
+                    "runBCount": 1,
+                    "sharedCount": 0,
+                    "onlyRunACount": 0,
+                    "onlyRunBCount": 1,
+                    "netCountDelta": 1,
+                    "sharedHashes": [],
+                    "onlyRunAHashes": [],
+                    "onlyRunBHashes": ["A123456789ABCD"],
+                },
+            )
             self.assertEqual(report["runA"]["snapshotContext"]["rawIndexNonCanonicalHashes"], [])
             self.assertEqual(report["runB"]["snapshotContext"]["rawIndexNonCanonicalHashes"], ["A123456789ABCD"])
+            self.assertEqual(report["runA"]["snapshotContext"]["rawIndexNonCanonicalVisibleHashes"], [])
+            self.assertEqual(report["runB"]["snapshotContext"]["rawIndexNonCanonicalVisibleHashes"], ["A123456789ABCD"])
+            self.assertEqual(report["runB"]["snapshotContext"]["rawIndexNonCanonicalOnlyHashes"], [])
+            self.assertEqual(report["runB"]["snapshotContext"]["rawIndexNonCanonicalVisibleTypeCounts"], {"bplist": 1})
+            self.assertEqual(
+                report["runB"]["snapshotContext"]["rawIndexNonCanonicalVisibility"],
+                {
+                    "rawTokenCount": 1,
+                    "visibleFileCount": 1,
+                    "onlyInIndexCount": 0,
+                    "visibleMSLCount": 0,
+                    "visibleNonMSLCount": 1,
+                },
+            )
             self.assertEqual(
                 report["runB"]["snapshotContext"]["nonCanonicalVisibleHashesMentionedInIndex"],
                 ["A123456789ABCD"],

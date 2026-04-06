@@ -77,7 +77,7 @@ makeLibrary(source:)
 
 1. 读取本文档，先理解 **当前主线** 与 **TODO** 的最新状态
 2. 严格按优先级选取最高优先级的 **一个** 未完成任务执行
-3. 若最高优先级任务处于阻塞状态（如需人工/外部协助），**必须先穷尽自身能力**：把该任务内所有 agent 可独立完成的子步骤全部做完，仅将最小的、确实无法自动完成的子步骤委托给人工汇报；**严禁以此为借口跳过该任务去做低优先级任务**
+3. 若最高优先级任务处于阻塞状态（如需人工/外部协助，且无法通过先做其他任务来解除该阻塞），**必须停下来汇报**，禁止跳过阻塞去执行低优先级任务
 4. 若任务过大，先拆分到 TODO，再只完成其中一个
 5. **优先做离线测试**：若本轮涉及 `IRToMSLConverter` / corpus / replay，先补最小样本与离线回放；仅在确有必要时做 live
 6. 若本轮实现了新功能，执行相应验证：
@@ -144,9 +144,9 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 | # | blocker | 状态 | 推进方式 |
 |---|---|---|---|
-| 1 | capture bridge reachability：`create_session(bundleId)` 仍可能超时，但已有 ready session 可直接执行 capture | 进行中（host 侧新增 fallback 预算保护，待 live 复测） | 对照 `list_sessions` 现成 session 与 `create_session` 的选取 / probe 行为差异 |
+| 1 | capture bridge reachability：`create_session(bundleId)` 与 ready session 的 reachability 误报 | 基本收敛（`on-run10` live 复测通过；`create_session(bundleId)`、`get_capture_status` 与容器内显式 `output_path` capture 均成功，待继续观察偶发 session 可见性抖动） | 继续记录 `list_sessions` / `create_session` 是否出现短暂不一致，但主排查面已转向 trace 覆盖与归因 |
 | 2 | capture 输出路径：容器外自定义路径权限边界未明 | 短期绕过 | 继续用默认容器路径 + `--latest-gputrace` |
-| 3 | trace 合法 MSL 覆盖偏低（`~3/12`） | 进行中 | 归因已有合法 MSL 对应的 draw call / replacement 路径 |
+| 3 | trace 合法 MSL 覆盖偏低（`on-run10: 0/9`，覆盖率 `1.1%`） | 进行中（当前最高优先级 blocker） | 归因已有 / 缺失合法 MSL 对应的 draw call / replacement 路径 |
 | 4 | 绘制内容差异未正式产出 | 工具就绪，需 GUI 环境 | `e006d_render_diff.py` 已就绪，需 Xcode GUI / Accessibility / `cliclick` |
 
 - **绘制内容差异分支**：这条线依赖 Xcode GUI 环境、Accessibility 权限与 `cliclick`。**它是重要专项分析分支，不是默认日常 gate**。详细方法见 `E-006d-RenderingPathDiffReference.md`。
@@ -174,14 +174,14 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 落盘与闭环能力 | 成功路径 → `ShaderCorpus/<bundleId>/modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`；replacement → `replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal`；失败路径 → `ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`。三条路径均已进入离线 replay / diff / 归因主回路。详见 `E-004-CorpusClosureAndRecapturePolicy.md` |
 | corpus 编译基线（2026-04-05） | `test-data/*.ll`（19 个）replay + compile **全绿**；`ShaderCorpus/com.miHoYo.Yuanshen/modules/` **91/91** replay + compile **全绿**，preflight rejected `0`，regression `0` |
 | `.gputrace` 里程碑（2026-04-04） | `capture_20260404_roadE_e006c3_final.gputrace` Xcode 人工确认 shader 面板源码可见（`E-006c` 已关闭） |
-| E-006d8 第一层矩阵（2026-04-06） | `off1/off2/on1~on9` 十一轮快照：**同模式输入稳定**、共享 `moduleKey=91/91`、单模块本体未漂移；`mode=on missingAttemptWhileEnabledPairs=13`；**尚未形成"跨模式稳定不同"证据** |
+| E-006d8 第一层矩阵（2026-04-06） | `off1/off2/on1~on10` 十二轮快照：**同模式输入稳定**、共享 `moduleKey=91/91`、单模块本体未漂移；`mode=on missingAttemptWhileEnabledPairs=17`；`off-vs-on allPairsDifferent=False`，**尚未形成"跨模式稳定不同"证据** |
+| E-006d8 blocker 1 live 复测（2026-04-06） | `replacement-on-run10`：`create_session(bundleId)` 首次即返回 ready session，`get_capture_status` 最终为 `available=true`，容器内显式 `output_path` 的 `capture_metal_frame` 成功并经 `finalize-run --latest-gputrace` 固化；fresh trace 自动检查 `valid MSL = 0/9`、覆盖率 `1.1%`，主瓶颈转向 trace 归因而非 bundle 级 reachability |
 
 ### 已完成的 session / capture 基础设施修复（2026-04-06，全部已落地 + 测试覆盖）
 
 - host split-brain 修复（stale cleanup 同步断链）
 - `create_session` 收紧到 bridge `ping` 成功
 - `create_session` ready-session 选取改为优先最新 heartbeat，并将单候选 probe 超时对齐到真实 bridge 命令量级（最多 5s；剩余 deadline 不足最小 probe 窗口时不再强行探测）
-- `create_session` 多候选 probe 追加 fallback 预算保护：最新 session 若慢失败，不再独占整个 bundle 级 deadline；补充 `PlayCoverMCPTests` 覆盖"慢失败新 session → 回退旧 session" 场景
 - `get_capture_status` 去 lazy-load + 去 `valueOnMainSync`
 - 默认容器 `Captures/` 回收闭环（`--latest-gputrace`）
 - 绘制内容差异 runner（`e006d_render_diff.py`，需 GUI 环境）

@@ -29,9 +29,9 @@
 
 | # | blocker | 现状 | 推进方式 | agent 可独立完成？ |
 |---|---|---|---|---|
-| 1 | **capture bridge reachability** | `on-run9` 后已明确：针对 `list_sessions` 中的 ready session，`get_capture_status` / `capture_metal_frame` 可立即成功；但 `create_session(bundleId)` 仍可能超时。runtime launch diagnostics 继续显示 registration 主链完整。当前已在 host 侧补一轮 probe 预算保护：当最新 ready session 慢失败时，bundle 级 deadline 会为更旧候选保留最小 fallback probe 窗口，避免首个候选独占整个等待时间。详细演进见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | 对照 `list_sessions` 现成 session 与 `create_session(bundleId)` 的选取 / probe 行为差异，并用 live 验证预算保护是否消除 bundle 级误报 | ✅ 是（构建 + 安装 + 注入 + launch + session） |
+| 1 | **capture bridge reachability** | `on-run10` live 复测已确认：`create_session(bundleId)` 首次即返回 ready session，随后 `get_capture_status` 进入 `available=true`，容器内显式 `output_path` 的 `capture_metal_frame` 成功；bundle 级 `bridge not reachable` 误报本轮未复现。期间出现过一次短暂 `list_sessions` 空窗，但再次 `create_session(bundleId)` 仍可立即拉回同一 runtime，会话可见性抖动仍值得继续观察。详细演进见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | 继续记录 `list_sessions` / `create_session(bundleId)` 是否有短暂不一致，但主排查面已从 bundle 级 reachability 下移到 trace 覆盖 / 归因 | ✅ 是（构建 + 安装 + 注入 + launch + session） |
 | 2 | **capture 输出路径** | 容器内 custom path 已验证可用；容器外权限边界未明。短期可继续用默认容器路径 + `--latest-gputrace` | 长期再单独验证容器外路径沙盒权限 | ✅ 是（`--latest-gputrace` 已自动化） |
-| 3 | **trace 合法 MSL 覆盖偏低** | 最近 fresh trace 自动检查为 `~3/12` 合法 MSL，覆盖率 `~1.4%`。详细数据见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | 新 fresh capture 后继续用 `check_gputrace_sources.py` 检查并归因 | ✅ 是（fresh trace 已可获得，但仍需继续提高覆盖） |
+| 3 | **trace 合法 MSL 覆盖偏低** | `on-run10` fresh trace 自动检查为 `0/9` 合法 MSL，覆盖率 `1.1%`；本轮 fresh trace 已成功产出，但源码可见性仍未覆盖到可归因 draw call。详细数据见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | 新 fresh capture 后继续用 `check_gputrace_sources.py` 检查并归因 | ✅ 是（fresh trace 已可获得，但仍需继续提高覆盖） |
 | 4 | **绘制内容差异未正式产出** | `e006d_render_diff.py` 入口就绪，GUI 自动化环境未验证 | 在 Xcode GUI / Accessibility / `cliclick` 可用时，跑 `off-run1` vs `on-run5` 结构化 diff | ⚠️ 需 GUI 自动化环境 |
 
 **本轮推进标准**：至少把当前问题明确收敛到以下之一：
@@ -41,9 +41,9 @@
 4. capture 导出 / trace 可见性仍不稳定
 5. 替换链路稳定，但差异落在更后续 render pipeline / post-processing
 
-**当前最新收敛（2026-04-06）**：host 侧 session / capture 基础设施修复已全部落地 + 测试覆盖。`on-run8` / `on-run9` 确认：直接命中已有 ready session 时，status / capture 命令可立即成功，但 bundle 级 `create_session` 仍可能误报 bridge not reachable。custom `output_path` 在 app 默认容器内可成功。详细演进见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。后续排查面：
-1. **host 侧 ready-session 复用 / reachability probe 路径**：为什么 `create_session(bundleId)` 仍会失败，而 `list_sessions` 返回的同一 ready session 却可以直接执行命令
-2. **trace 覆盖与归因路径**：fresh trace 已能稳定产出，但 `valid_msl` 仍偏低，下一步应优先解释已有合法 MSL 对应的 replacement / draw call 归属
+**当前最新收敛（2026-04-06）**：host 侧相关 session / capture 修复已完成，本轮 live 复测继续支持其有效性。`on-run10` 确认：`create_session(bundleId)` 首次即返回 ready session，`get_capture_status` 最终进入 `available=true`，容器内显式 `output_path` 的 `capture_metal_frame` 成功，bundle 级 `bridge not reachable` 误报本轮未复现；一次短暂 `list_sessions` 空窗后，再次 `create_session(bundleId)` 仍可立即命中同一 runtime，更像 session 可见性抖动而非 bundle 级 reachability 失败。与此同时，`replacement-on-run10` 的 fresh trace 自动检查为 `valid_msl = 0/9`、覆盖率 `1.1%`。详细演进见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。后续排查面：
+1. **trace 覆盖与归因路径**：fresh trace 已能稳定产出，但 `valid_msl` 仍偏低，下一步应优先解释已有 / 缺失合法 MSL 对应的 replacement / draw call 归属
+2. **session 可见性抖动**：继续观察 `list_sessions` 与 `create_session(bundleId)` 是否偶发短暂不一致，确认它是否只影响 registry 可见性而不影响实际 bridge reachability
 
 ## 已完成的子项
 
@@ -75,7 +75,7 @@
 
 ### 2. 先确认"替换 vs 不替换"差异是否稳定
 
-- 当前矩阵结论：`off-vs-on allPairsDifferent=False`，**尚未形成跨模式稳定不同证据**；`replacement-on-run8` 纳入后，`mode=on missingAttemptWhileEnabledPairs=13`
+- 当前矩阵结论：`off-vs-on allPairsDifferent=False`，**尚未形成跨模式稳定不同证据**；`replacement-on-run10` 纳入后，`mode=on missingAttemptWhileEnabledPairs=17`
 - 只有当"同模式稳定、跨模式稳定不同"成立后，才继续往更细的 stage / pipeline 归因下钻
 
 ### 3. 再比较"输入是否相同"
@@ -87,7 +87,7 @@
 
 - 对相同 `moduleKey` 比较 `module.generated.metal`、聚合 MSL、compile 结果
 - 当前已证明：单模块本体未出现语义级随机漂移
-- 但 `mode=on allReplacementAttemptStable=False`、`missingAttemptWhileEnabledPairs=13`
+- 但 `mode=on allReplacementAttemptStable=False`、`missingAttemptWhileEnabledPairs=17`
 
 ### 5. 最后比较"替换与实际使用"
 
@@ -103,7 +103,7 @@
 - **假设 D：问题出在更后续的着色 / 后处理 / render pipeline 阶段**（待验证）
 - **假设 E：MSL 只是"可编译"而非"语义等价"**（待验证）
 - **假设 F：host 把 registration ready 误判成 command-ready**（❌ 已否定：`create_session` 已要求 bridge `ping` 成功 + 单测覆盖；`on-run7` 未再复现 split-brain）
-- **假设 G：host 侧 `create_session(bundleId)` 的 ready-session 选择 / reachability probe 仍与 `list_sessions` 暴露出的真实可用 session 不一致**（`on-run9` 新证据：同一轮里 bundle 级 `create_session` 超时，但直接对 ready session 发 `get_capture_status` / `capture_metal_frame` 成功）
+- **假设 G：host 侧 `create_session(bundleId)` 的 ready-session 选择 / reachability probe 仍与 `list_sessions` 暴露出的真实可用 session 不一致**（⚠️ 已明显收窄：`on-run10` 未再复现 bundle 级 timeout，但出现过一次短暂 `list_sessions` 空窗；当前更像 session registry 可见性抖动而非 bridge probe 路径整体失效）
 
 ## 完成标准
 
@@ -128,7 +128,7 @@
 - **draw call / Render Encoder / Pipeline State 是独立证据层**：当 shader / trace 侧证据不足时必须补
 - **`module.meta.json` 的统计字段要与真实 artifact diff 分开看**：`captureCount`、`sourceCacheKeys` 等变化不等于本体变化
 - **`throw` + 静默 `catch` 回退是 runtime hook 的危险反模式**
-- **host 侧 session / capture 基础设施修复已全部落地 + 测试覆盖**：stale cleanup 同步断链、`create_session` 收紧到 bridge `ping`、`get_capture_status` 去 lazy-load + 去 valueOnMainSync——这些都已被 `on-run8`/`on-run9` 验证。剩余问题更像 host 侧 reachability probe / session 选取，而不是 runtime capture 命令整体失效。详细修复历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)
+- **host 侧 session / capture 基础设施修复已完成，本轮 live 复测继续支持其有效性**：stale cleanup 同步断链、`create_session` 收紧到 bridge `ping`、`get_capture_status` 去 lazy-load + 去 valueOnMainSync——当前 bundle 级 reachability 误报未再出现，剩余风险更像 session registry 可见性抖动，而非 runtime capture 命令整体失效。详细修复历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)
 - **`create_session` 当前 probe 行为已进一步对齐真实命令路径**：ready-session 现在按 heartbeat / 创建时间优先最新会话；多候选场景会为 fallback 候选预留最小 probe 窗口，避免首个慢失败候选吞掉整个 bundle 级 deadline；单候选 probe 不再硬性截断在 1s，且当剩余 deadline 已不足最小 probe 窗口时不会再额外透支时间。若后续 live 仍复现 bundle 级 timeout，就应继续把焦点收敛到 runtime 侧命令端口时序，而不是 host registry 排序本身
 - **更早的 lowering 细节与已收敛 compile blocker 不再由本文档维护**：见 `E-004-MetallibSourceExtraction.md`、`E-006d-RenderingPathDiffReference.md` 与 archive
 

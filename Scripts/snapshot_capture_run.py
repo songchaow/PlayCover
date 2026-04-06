@@ -68,6 +68,11 @@ def parse_args() -> argparse.Namespace:
         "--gputrace",
         help="optional .gputrace directory to preserve alongside the run snapshot",
     )
+    parser.add_argument(
+        "--capture-target",
+        choices=("device", "scope", "queue", "queue_scope"),
+        help="optional capture target metadata for this run snapshot",
+    )
     return parser.parse_args()
 
 
@@ -171,10 +176,11 @@ def main() -> int:
             )
 
     snapshot_meta = {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "capturedAt": datetime.now(timezone.utc).isoformat(),
         "bundleId": args.bundle_id,
         "label": args.label,
+        "captureTarget": args.capture_target,
         "containerRoot": str(container),
         "snapshotBundleDir": str(snapshot_bundle_dir),
         "replacementMode": {
@@ -222,6 +228,7 @@ def main() -> int:
         f"replacements={snapshot_meta['sourceSummary']['replacementDirectoryCount']} "
         f"diagnostics={snapshot_meta['sourceSummary']['diagnosticEntryCount']} "
         f"replacementEnabled={snapshot_meta['replacementMode']['enabled']} "
+        f"captureTarget={snapshot_meta['captureTarget'] or 'unspecified'} "
         f"gputraceMSL={snapshot_meta['gputraceSummary']['validMSLFiles'] if snapshot_meta['gputraceSummary'] else 'n/a'}"
     )
     if args.print_compare_path:

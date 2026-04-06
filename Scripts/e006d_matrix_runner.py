@@ -138,6 +138,11 @@ def add_common_run_args(parser: argparse.ArgumentParser, *, include_gputrace: bo
         required=True,
         help="1-based index used to generate replacement-<mode>-runN labels",
     )
+    parser.add_argument(
+        "--capture-target",
+        choices=("device", "scope", "queue", "queue_scope"),
+        help="optional capture target metadata for this run; use the same target in the actual capture command",
+    )
     if include_gputrace:
         parser.add_argument("--gputrace", help="optional .gputrace directory for this run")
 
@@ -175,7 +180,10 @@ def prepare_run(args: argparse.Namespace) -> int:
     print(f"prepared {label}")
     print("next:")
     print("1. Launch the app and reproduce the same scene once.")
-    print(f"2. If you capture a trace, prefer the target app default Captures directory: {capture_root}")
+    if args.capture_target:
+        print(f"2. Capture with target '{args.capture_target}' and prefer the target app default Captures directory: {capture_root}")
+    else:
+        print(f"2. If you capture a trace, prefer the target app default Captures directory: {capture_root}")
     print("3. Finalize the run with:")
     finalize_command = [
         "python3",
@@ -190,6 +198,8 @@ def prepare_run(args: argparse.Namespace) -> int:
         "--latest-gputrace",
         "--print-compare-path",
     ]
+    if args.capture_target:
+        finalize_command.extend(["--capture-target", args.capture_target])
     print("   " + " ".join(finalize_command))
     print("   # Or replace --latest-gputrace with --gputrace /path/to/trace.gputrace if needed")
     return 0
@@ -224,6 +234,8 @@ def finalize_run(args: argparse.Namespace) -> int:
     ]
     if args.container:
         command.extend(["--container", args.container])
+    if args.capture_target:
+        command.extend(["--capture-target", args.capture_target])
     if gputrace_path is not None:
         print(f"using gputrace: {gputrace_path}")
         command.extend(["--gputrace", str(gputrace_path)])

@@ -568,6 +568,7 @@ def build_snapshot_context(run_input: RunInput, meta: dict[str, Any] | None) -> 
     return {
         "hasSnapshotMeta": True,
         "label": meta.get("label"),
+        "captureTarget": meta.get("captureTarget"),
         "replacementMode": meta.get("replacementMode"),
         "gputraceSummary": gputrace_summary,
         "gputraceAttribution": gputrace_attribution,
@@ -940,6 +941,10 @@ def print_summary(report: dict[str, Any]) -> None:
     if snapshot_comparison.get("runA") and snapshot_comparison.get("runB"):
         context_a = snapshot_comparison["runA"]
         context_b = snapshot_comparison["runB"]
+        capture_target_a = context_a.get("captureTarget") or "unspecified"
+        capture_target_b = context_b.get("captureTarget") or "unspecified"
+        if capture_target_a != "unspecified" or capture_target_b != "unspecified":
+            print(f"capture target: runA={capture_target_a} runB={capture_target_b}")
         attributed_a = context_a.get("attributedVisibleMSLHashes", [])
         attributed_b = context_b.get("attributedVisibleMSLHashes", [])
         referenced_a = context_a.get("referencedValidMSLHashes", [])

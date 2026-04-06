@@ -288,6 +288,7 @@ def build_report_matrix(run_paths: list[Path]) -> dict[str, Any]:
                 "path": str(run_path),
                 "label": (meta or {}).get("label") if isinstance(meta, dict) else None,
                 "mode": mode,
+                "captureTarget": (meta or {}).get("captureTarget") if isinstance(meta, dict) else None,
                 "hasSnapshotMeta": meta is not None,
             }
         )

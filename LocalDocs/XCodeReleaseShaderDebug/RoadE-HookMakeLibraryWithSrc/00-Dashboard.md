@@ -146,7 +146,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 |---|---|---|---|
 | 1 | capture bridge reachability | ✅ 已收敛 | `on-run10` / `on-run11` 均确认首次 `create_session(bundleId)` 即返回 ready session |
 | 2 | capture 输出路径 | ✅ 短期绕过 | 继续用默认容器路径 + `--latest-gputrace` |
-| 3 | **trace 合法 MSL 覆盖偏低** | **进行中（当前最高优先级）** | `b3b` 已收敛：`off-run1` / `on-run11` 的 `54` 个 raw short token 中，真正额外落盘成 bundle 可见文件的只有 `3/54` 与 `2/54`，且这些 short 文件与 canonical missing 基本正交。当前排查面已转向 `device` vs `scope` capture 对源码写入规模的影响。详见 `E-006d-GenshinRenderingNondeterminism.md` |
+| 3 | **trace 合法 MSL 覆盖偏低** | **进行中（当前最高优先级）** | `b3c` 已收敛：同轮 live 的 `replacement-on-run12(device)` / `replacement-on-run13(scope)` 均只有 `3 referenced valid + 9 non-MSL`，missing 仅从 `1115` 降到 `1105`，raw short-hash 可见文件也都只有 `2` 个且同为 `bplist`。结论：`device` vs `scope` 不是当前源码写入规模的主瓶颈；排查面已转回 canonical 16 位 referenced hash 的 bundle 写入条件。详见 `E-006d-GenshinRenderingNondeterminism.md` |
 | 4 | 绘制内容差异未正式产出 | 工具就绪，需 GUI 环境 | `e006d_render_diff.py` 已就绪，需 Xcode GUI / Accessibility / `cliclick`；**重要专项但非日常 gate** |
 
 - **绘制内容差异分支**：这条线依赖 Xcode GUI 环境、Accessibility 权限与 `cliclick`。**它是重要专项分析分支，不是默认日常 gate**。详细方法见 `E-006d-RenderingPathDiffReference.md`。
@@ -162,7 +162,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 运行时部署 | `./BuildScripts/build_and_install.sh` → `inject_playtools` / `launch_app` |
 | 离线 replay + compile + baseline diff | `Scripts/corpus_replay_runner.py --compile --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus` |
 | replacement 模式切换 | `Scripts/set_shader_replacement_mode.py --mode off/on` |
-| live run 快照固化 | `Scripts/e006d_matrix_runner.py prepare-run / finalize-run --latest-gputrace` |
+| live run 快照固化 | `Scripts/e006d_matrix_runner.py prepare-run / finalize-run --latest-gputrace [--capture-target device|scope]` |
 | `.gputrace` 自动检查 / 归因 | `Scripts/check_gputrace_sources.py /path/to/xxx.gputrace [--bundle-dir /path/to/ShaderCorpus/<bundleId>]` |
 | runtime launch 诊断 | `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl` + `Scripts/runtime_launch_diagnostics_summary.py` |
 
@@ -173,6 +173,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 落盘与闭环能力 | 成功路径 → `ShaderCorpus/<bundleId>/modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`；replacement → `replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal`；失败路径 → `ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`。三条路径均已进入离线 replay / diff / 归因主回路。详见 `E-004-CorpusClosureAndRecapturePolicy.md` |
 | corpus 编译基线（2026-04-05） | `test-data/*.ll`（19 个）replay + compile **全绿**；`ShaderCorpus/com.miHoYo.Yuanshen/modules/` **91/91** replay + compile **全绿**，preflight rejected `0`，regression `0` |
 | E-006d8 b3b 收敛口径（2026-04-06 深夜） | `off-run1`：`899 refs = 2 referenced valid + 9 non-MSL + 888 missing`；`on-run11`：`922 refs = 3 referenced valid + 9 non-MSL + 910 missing`。missing 拆解为 `shared=583 / only off=305 / only on=327 / net=+22`。两边 raw short token 均 `54` 个，但真正额外落盘成 bundle 可见文件的只有 `off-run1=3/54`、`on-run11=2/54`；共享 short 文件 `53EEDD95681D340` / `76E05038E17F34` 均为 `bplist`，only-off 多出的 `B91673E5592A2B8` 虽为 short MSL，但同样未进入 canonical 16 位引用集合。结论：short token 可见性与 canonical missing 基本正交 |
+| E-006d8 b3c live 对照（2026-04-06 深夜） | 同轮 `replacement-on-run12(device)` / `replacement-on-run13(scope)` 均为 `14 files = 3 referenced valid + 9 referenced non-MSL + 2 unreferenced short bplist`；`index refs` 为 `1127` vs `1117`，`missingReferencedHashes` 为 `1115` vs `1105`，`raw short-hash file writes` 为 `2/72` vs `2/69`。结论：`scope` 只带来 `-10 missing` 的轻微波动，没有新增 visible / referenced valid MSL，`device` vs `scope` 不是当前源码写入规模的主瓶颈 |
 | `.gputrace` 里程碑 | `capture_20260404_roadE_e006c3_final.gputrace` Xcode 人工确认 shader 面板源码可见（`E-006c` 已关闭）。详细历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
 
 ### 已完成的 session / capture 基础设施修复（2026-04-06）

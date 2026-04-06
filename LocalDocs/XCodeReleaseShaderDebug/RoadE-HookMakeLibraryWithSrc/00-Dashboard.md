@@ -146,7 +146,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 |---|---|---|---|
 | 1 | capture bridge reachability | ✅ 基本收敛 | `on-run10` 确认 `create_session(bundleId)` 首次即返回 ready session；仅偶发 session 可见性抖动，不影响主排查面 |
 | 2 | capture 输出路径 | ✅ 短期绕过 | 继续用默认容器路径 + `--latest-gputrace` |
-| 3 | **trace 合法 MSL 覆盖偏低** | **进行中（当前最高优先级）** | `on-run10: valid_msl=0/9, 覆盖率 1.1%`；需归因已有/缺失合法 MSL 对应的 draw call / replacement 路径 |
+| 3 | **trace 合法 MSL 覆盖偏低** | **进行中（当前最高优先级）** | `on-run10` 用当前 v3 离线归因重跑后确认：`807 index refs = 0 referenced-valid + 9 referenced-non-MSL + 798 missing`，`visibleMSL=0`；当前更像 trace 导出 / 源码可见性未闭环，而不是“可见 MSL 已落盘但未归因” |
 | 4 | 绘制内容差异未正式产出 | 工具就绪，需 GUI 环境 | `e006d_render_diff.py` 已就绪，需 Xcode GUI / Accessibility / `cliclick`；**重要专项但非日常 gate** |
 
 - **绘制内容差异分支**：这条线依赖 Xcode GUI 环境、Accessibility 权限与 `cliclick`。**它是重要专项分析分支，不是默认日常 gate**。详细方法见 `E-006d-RenderingPathDiffReference.md`。
@@ -174,7 +174,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | corpus 编译基线（2026-04-05） | `test-data/*.ll`（19 个）replay + compile **全绿**；`ShaderCorpus/com.miHoYo.Yuanshen/modules/` **91/91** replay + compile **全绿**，preflight rejected `0`，regression `0` |
 | `.gputrace` 里程碑（2026-04-04） | `capture_20260404_roadE_e006c3_final.gputrace` Xcode 人工确认 shader 面板源码可见（`E-006c` 已关闭） |
 | E-006d8 第一层矩阵（2026-04-06） | `off1/off2/on1~on10` 十二轮快照：**同模式输入稳定**、共享 `moduleKey=91/91`、单模块本体未漂移；`mode=on missingAttemptWhileEnabledPairs=17`；`off-vs-on allPairsDifferent=False`，**尚未形成"跨模式稳定不同"证据** |
-| E-006d8 blocker 1 live 复测（2026-04-06） | `replacement-on-run10`：`create_session(bundleId)` 首次即返回 ready session，`get_capture_status` 最终为 `available=true`，容器内显式 `output_path` 的 `capture_metal_frame` 成功并经 `finalize-run --latest-gputrace` 固化；fresh trace 自动检查 `valid MSL = 0/9`、覆盖率 `1.1%`，主瓶颈转向 trace 归因而非 bundle 级 reachability |
+| E-006d8 blocker 1 live 复测（2026-04-06） | `replacement-on-run10`：`create_session(bundleId)` 首次即返回 ready session，`get_capture_status` 最终为 `available=true`，容器内显式 `output_path` 的 `capture_metal_frame` 成功并经 `finalize-run --latest-gputrace` 固化；随后用当前 v3 离线归因重跑确认 `807 index refs = 0 referenced-valid + 9 referenced-non-MSL + 798 missing`、`visibleMSL=0`，主瓶颈收敛为 trace 导出 / 源码可见性，而非 bundle 级 reachability |
 
 ### 已完成的 session / capture 基础设施修复（2026-04-06）
 
@@ -237,7 +237,7 @@ PlayTools.framework (注入到 iOS app)
 - **源码可见 / compile green 都不等于渲染语义正确**：`E-006d` 关注的是相同输入下最终视觉结果、trace 与 replacement 证据是否稳定一致
 - **当前最低风险的比较基线仍是"替换 vs 不替换"**：统一通过 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py` 控制
 - **`E-006d` 的归因顺序必须固定**：先"替换 vs 不替换"对照 → 再对齐"输入是否相同" → 再比较"输出是否相同" → 最后看 runtime / render pipeline / post-processing 行为
-- **当前 trace 合法 MSL 覆盖率是最大瓶颈**：`on-run10` fresh trace `valid_msl = 0/9`，覆盖率 `1.1%`；离线工具现已先把覆盖率拆成 `referenced valid MSL / referenced non-MSL / missing referenced hash` 三类，并能单独归因“被 index 引用的合法 MSL”；下一步应基于这条拆解继续解释已有 / 缺失合法 MSL 对应的 replacement / draw call 归属
+- **当前 trace 合法 MSL 覆盖率是最大瓶颈**：`on-run10` 现已用当前 v3 离线归因重跑并确认 `807 index refs = 0 referenced-valid + 9 referenced-non-MSL + 798 missing`，`visibleMSL=0`；说明当前主要矛盾先落在 trace 导出 / 源码可见性未闭环，而不是“已有可见 MSL 但未归因”。同时 `compare_capture_runs.py` 现会对旧快照中的过期 attribution index 自动重建，避免继续读到 stale `schemaVersion=1` 结果；下一步应优先解释 `missingReferencedHashes` 与 9 个 bplist-only 文件的来源，再决定是否进入 draw call 级专项
 - **更细的 lowering 经验、历史 live blocker 链路与已完成轮次已下沉到独立参考文档**：见 `E-004-MetallibSourceExtraction-Archive.md`、`E-006d-RenderingPathDiffReference.md` 与 `00-Dashboard-Archive.md`
 
 ## 参考信息

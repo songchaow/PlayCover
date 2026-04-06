@@ -31,7 +31,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from gputrace_attribution import build_gputrace_attribution
+from gputrace_attribution import (
+    CURRENT_GPUTRACE_ATTRIBUTION_SCHEMA_VERSION,
+    build_gputrace_attribution,
+)
 
 
 ARTIFACT_FILENAMES = (
@@ -99,6 +102,13 @@ def load_snapshot_artifact_json(run_input: RunInput, relative_path: str | None) 
         return None
     payload = load_json(artifact_path)
     return payload if isinstance(payload, dict) else None
+
+
+def is_current_gputrace_attribution(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    schema_version = payload.get("schemaVersion")
+    return isinstance(schema_version, int) and schema_version >= CURRENT_GPUTRACE_ATTRIBUTION_SCHEMA_VERSION
 
 
 def resolve_run_input(raw_path: str, modules_override: str | None, label: str) -> RunInput:
@@ -471,13 +481,17 @@ def build_snapshot_context(run_input: RunInput, meta: dict[str, Any] | None) -> 
 
     gputrace_summary = meta.get("gputraceSummary")
     copied_artifacts = meta.get("copiedArtifacts") if isinstance(meta.get("copiedArtifacts"), dict) else {}
+    gputrace_relative_path = copied_artifacts.get("gputracePath") if isinstance(copied_artifacts, dict) else None
     gputrace_attribution = load_snapshot_artifact_json(
         run_input,
         copied_artifacts.get("gputraceAttributionIndexPath") if isinstance(copied_artifacts, dict) else None,
     )
-    if gputrace_attribution is None:
-        gputrace_relative_path = copied_artifacts.get("gputracePath") if isinstance(copied_artifacts, dict) else None
-        gputrace_attribution = build_gputrace_attribution(run_input.manifest_path.parent, gputrace_relative_path, gputrace_summary)
+    if not is_current_gputrace_attribution(gputrace_attribution):
+        gputrace_attribution = build_gputrace_attribution(
+            run_input.manifest_path.parent,
+            gputrace_relative_path,
+            gputrace_summary,
+        ) or gputrace_attribution
 
     visible_msl_hashes: list[str] = []
     if isinstance(gputrace_summary, dict):

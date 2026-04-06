@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 
+CURRENT_GPUTRACE_ATTRIBUTION_SCHEMA_VERSION = 3
+
 
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -181,7 +183,7 @@ def build_gputrace_attribution_for_paths(
     unattributed_referenced_hashes = sorted(hash_name for hash_name in unattributed_hashes if hash_name in referenced_valid_msl_hashes)
     unreferenced_visible_hashes = sorted(hash_name for hash_name in visible_files if hash_name not in referenced_valid_msl_hashes)
     return {
-        "schemaVersion": 3,
+        "schemaVersion": CURRENT_GPUTRACE_ATTRIBUTION_SCHEMA_VERSION,
         "gputraceRelativePath": gputrace_relative_path,
         "gputracePath": str(gputrace_dir),
         "sourceIndexSummary": source_index["summary"],

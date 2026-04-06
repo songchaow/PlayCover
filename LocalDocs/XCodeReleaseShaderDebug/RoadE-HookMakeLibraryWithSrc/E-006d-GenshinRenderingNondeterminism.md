@@ -31,7 +31,7 @@
 |---|---|---|---|---|
 | 1 | **capture bridge reachability** | `on-run10` live 复测已确认：`create_session(bundleId)` 首次即返回 ready session，随后 `get_capture_status` 进入 `available=true`，容器内显式 `output_path` 的 `capture_metal_frame` 成功；bundle 级 `bridge not reachable` 误报本轮未复现。期间出现过一次短暂 `list_sessions` 空窗，但再次 `create_session(bundleId)` 仍可立即拉回同一 runtime，会话可见性抖动仍值得继续观察。详细演进见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | 继续记录 `list_sessions` / `create_session(bundleId)` 是否有短暂不一致，但主排查面已从 bundle 级 reachability 下移到 trace 覆盖 / 归因 | ✅ 是（构建 + 安装 + 注入 + launch + session） |
 | 2 | **capture 输出路径** | 容器内 custom path 已验证可用；容器外权限边界未明。短期可继续用默认容器路径 + `--latest-gputrace` | 长期再单独验证容器外路径沙盒权限 | ✅ 是（`--latest-gputrace` 已自动化） |
-| 3 | **trace 合法 MSL 覆盖偏低** | `on-run10` fresh trace 自动检查为 `0/9` 合法 MSL，覆盖率 `1.1%`；本轮已补齐离线归因工具：`check_gputrace_sources.py` 现可拆出 `referenced-valid` / `referenced-non-MSL` / `missing-referenced-hash`，并单独归因“被 index 引用的合法 MSL”。但 fresh trace 的源码可见性仍未覆盖到可归因 draw call。详细数据见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | 新 fresh capture 后继续用 `check_gputrace_sources.py [--bundle-dir <ShaderCorpus/<bundleId>>]`，优先解释 coverage breakdown 与 referenced MSL 的 `moduleKey` / replacement 归属，再决定是否需要进入 draw call 级专项 | ✅ 是（fresh trace 已可获得，离线拆解已就绪） |
+| 3 | **trace 合法 MSL 覆盖偏低** | `on-run10` 现已用当前 v3 离线归因重跑确认：`807 index refs = 0 referenced-valid + 9 referenced-non-MSL + 798 missing`，`visibleMSL=0`；结论先收敛为 trace 导出 / 源码可见性未闭环，而不是“可见 MSL 已落盘但未归因”。`check_gputrace_sources.py` 已可拆出 `referenced-valid` / `referenced-non-MSL` / `missing-referenced-hash`，`compare_capture_runs.py` 也会对旧快照中的过期 attribution index 自动重建 | 新 fresh capture 后继续用 `check_gputrace_sources.py [--bundle-dir <ShaderCorpus/<bundleId>>]`，优先解释 `missingReferencedHashes` 与 9 个 bplist-only 文件的来源，再决定是否需要进入 draw call 级专项 | ✅ 是（fresh trace 已可获得，离线拆解已就绪） |
 | 4 | **绘制内容差异未正式产出** | `e006d_render_diff.py` 入口就绪，GUI 自动化环境未验证 | 在 Xcode GUI / Accessibility / `cliclick` 可用时，跑 `off-run1` vs `on-run5` 结构化 diff | ⚠️ 需 GUI 自动化环境 |
 
 **本轮推进标准**：至少把当前问题明确收敛到以下之一：
@@ -41,8 +41,8 @@
 4. capture 导出 / trace 可见性仍不稳定
 5. 替换链路稳定，但差异落在更后续 render pipeline / post-processing
 
-**当前最新收敛（2026-04-06）**：host 侧相关 session / capture 修复已完成，本轮 live 复测继续支持其有效性。`on-run10` 确认：`create_session(bundleId)` 首次即返回 ready session，`get_capture_status` 最终进入 `available=true`，容器内显式 `output_path` 的 `capture_metal_frame` 成功，bundle 级 `bridge not reachable` 误报本轮未复现；一次短暂 `list_sessions` 空窗后，再次 `create_session(bundleId)` 仍可立即命中同一 runtime，更像 session 可见性抖动而非 bundle 级 reachability 失败。与此同时，`replacement-on-run10` 的 fresh trace 自动检查为 `valid_msl = 0/9`、覆盖率 `1.1%`。详细演进见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。后续排查面：
-1. **trace 覆盖与归因路径**：fresh trace 已能稳定产出，但 `valid_msl` 仍偏低；本轮已补齐 coverage breakdown（`referenced valid MSL / referenced non-MSL / missing referenced hash`）与 referenced MSL 归因，下一步应把它直接应用到 fresh trace，优先解释已有 / 缺失合法 MSL 对应的 replacement / draw call 归属
+**当前最新收敛（2026-04-06）**：host 侧相关 session / capture 修复已完成，本轮 live 复测继续支持其有效性。`on-run10` 确认：`create_session(bundleId)` 首次即返回 ready session，`get_capture_status` 最终进入 `available=true`，容器内显式 `output_path` 的 `capture_metal_frame` 成功，bundle 级 `bridge not reachable` 误报本轮未复现；一次短暂 `list_sessions` 空窗后，再次 `create_session(bundleId)` 仍可立即命中同一 runtime，更像 session 可见性抖动而非 bundle 级 reachability 失败。与此同时，本轮已修复离线对比脚本读取旧快照时沿用过期 attribution index 的问题；对 `replacement-on-run10` 用当前 v3 归因重跑后确认：`807 index refs = 0 referenced-valid + 9 referenced-non-MSL + 798 missing`，`visibleMSL=0`。这说明当前主瓶颈先落在 **trace 导出 / 源码可见性未闭环**，而不是“可见 MSL 已落盘但未归因”。详细演进见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。后续排查面：
+1. **trace 覆盖与归因路径**：fresh trace 已能稳定产出，但当前 v3 拆解表明没有任何可见 MSL 可供继续做 `moduleKey` / replacement 匹配；下一步应优先解释 `missingReferencedHashes` 与 9 个 bplist-only 文件的来源，确认问题落在 trace 导出、hash 引用语义，还是源码文件未被写入 bundle
 2. **session 可见性抖动**：继续观察 `list_sessions` 与 `create_session(bundleId)` 是否偶发短暂不一致，确认它是否只影响 registry 可见性而不影响实际 bridge reachability
 
 ## 已完成的子项

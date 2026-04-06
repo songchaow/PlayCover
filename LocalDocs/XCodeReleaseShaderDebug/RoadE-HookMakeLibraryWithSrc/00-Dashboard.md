@@ -146,7 +146,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 |---|---|---|---|
 | 1 | capture bridge reachability | ✅ 基本收敛 | `on-run10` 确认 `create_session(bundleId)` 首次即返回 ready session；仅偶发 session 可见性抖动，不影响主排查面 |
 | 2 | capture 输出路径 | ✅ 短期绕过 | 继续用默认容器路径 + `--latest-gputrace` |
-| 3 | **trace 合法 MSL 覆盖偏低** | **进行中（当前最高优先级）** | `on-run10` v4 归因：canonical `index` 仍是 `807 refs = 0 valid + 9 referenced non-MSL + 798 missing`，`visibleMSL=0`；另确认 trace 目录里还有 2 个 **14/15 位短 hash** 可见文件，也都是 compiler telemetry/remarks 的 bplist。11/11 可见 hash 文件均非 MSL，主瓶颈已收敛为 **trace 导出 / 源码未写入 bundle**，而非 attribution 未命中 |
+| 3 | **trace 合法 MSL 覆盖偏低** | **进行中（当前最高优先级）** | `on-run10` v4 归因：canonical `index` 为 `807 refs = 0 valid + 9 referenced non-MSL + 798 missing`，`visibleMSL=0`，主瓶颈收敛为 **trace 导出 / 源码未写入 bundle**。**2026-04-06 已落地 runtime 早期预加载 GPUToolsCapture 的修复，并完成 `replacement-on-run11` fresh live 验证：runtime status 显示 `gpuToolsCaptureLoaded=true`、latest queue class=`CaptureMTLCommandQueue`；新的 scope trace 已提升到 `922 refs = 3 valid + 9 referenced non-MSL + 910 missing`、`visibleMSL=3`。说明源码写入已部分恢复，但覆盖率仍仅 `0.3%`，且 3 个可见 MSL 暂未归因到当前 `ShaderCorpus`。** |
 | 4 | 绘制内容差异未正式产出 | 工具就绪，需 GUI 环境 | `e006d_render_diff.py` 已就绪，需 Xcode GUI / Accessibility / `cliclick`；**重要专项但非日常 gate** |
 
 - **绘制内容差异分支**：这条线依赖 Xcode GUI 环境、Accessibility 权限与 `cliclick`。**它是重要专项分析分支，不是默认日常 gate**。详细方法见 `E-006d-RenderingPathDiffReference.md`。
@@ -175,6 +175,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | `.gputrace` 里程碑（2026-04-04） | `capture_20260404_roadE_e006c3_final.gputrace` Xcode 人工确认 shader 面板源码可见（`E-006c` 已关闭） |
 | E-006d8 第一层矩阵（2026-04-06） | `off1/off2/on1~on10` 十二轮快照：**同模式输入稳定**、共享 `moduleKey=91/91`、单模块本体未漂移；`mode=on missingAttemptWhileEnabledPairs=17`；`off-vs-on allPairsDifferent=False`，**尚未形成"跨模式稳定不同"证据** |
 | E-006d8 blocker 1 live 复测（2026-04-06） | `replacement-on-run10`：`create_session` 首次即返回 ready session，`get_capture_status` 最终 `available=true`，容器内 `capture_metal_frame` 成功并经 `finalize-run --latest-gputrace` 固化；随后用 v4 工具复盘确认：canonical `index` 为 `807 refs = 0 valid + 9 referenced non-MSL + 798 missing`，trace 目录另含 2 个 raw-index 可见短 hash bplist，`visibleMSL=0`。主瓶颈确认收敛为 **trace 导出 / 源码未写入 bundle** |
+| E-006d8 blocker 3 preload live 验证（2026-04-06） | 本轮先按标准脚本完成 `sync_playtools_xcframework.sh` + `build_and_install.sh`，再对原神做 fresh live。runtime `get_capture_status` 显示 `gpuToolsCaptureLoaded=true`、latest queue class=`CaptureMTLCommandQueue`。第一次 `device` capture 仅落盘瘦 trace（`index/metadata/store0`，`14` 个 hash 全缺失）；第二次改用 `scope` 并等待稳定后，`capture_20260406_sourcepreload_validation.gputrace` / `replacement-on-run11` 提升为 **`922 refs = 3 valid + 9 referenced non-MSL + 910 missing`、`visibleMSL=3`**。说明源码写入已重新进入 trace，但覆盖率仍偏低，且 3 个可见 MSL 尚未归因到当前 `ShaderCorpus` |
 
 ### 已完成的 session / capture 基础设施修复（2026-04-06）
 

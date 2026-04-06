@@ -41,9 +41,16 @@
 4. capture 导出 / trace 可见性仍不稳定
 5. 替换链路稳定，但差异落在更后续 render pipeline / post-processing
 
-**当前最新收敛（2026-04-06）**：host 侧 session / capture 修复已全部落地（详见 [00-Dashboard-Archive](00-Dashboard-Archive.md)）。`on-run10` 确认 `create_session(bundleId)` 首次即返回 ready session，`get_capture_status` 最终 `available=true`，容器内 `capture_metal_frame` 成功，bundle 级 `bridge not reachable` 未复现；一次短暂 `list_sessions` 空窗更像 registry 可见性抖动。v4 归因进一步确认：canonical `index` 仍是 `807 refs = 0 valid + 9 referenced non-MSL + 798 missing`，`visibleMSL=0`；trace 目录里额外可见的 2 个 14/15 位短 hash 文件也都是 compiler telemetry/remarks 的 bplist。也就是说，**11/11 可见 hash 文件全部不是 MSL**，当前问题已明确收敛到第 4 类：**capture 导出 / trace 可见性仍不稳定，源码文件没有被写入 bundle**，而不是 attribution 未命中。后续排查面：
-1. **trace 导出 / bundle 差异**：以 `E-006c` 那份已确认可见源码的 `.gputrace` 为对照，比对 `index` / 可见 hash 文件集 / bundle 元数据 / 导出目录差异，确认源码文件为何未写入 `on-run10` trace
-2. **session 可见性抖动**：继续观察 `list_sessions` 与 `create_session(bundleId)` 是否偶发短暂不一致，确认它是否只影响 registry 可见性而不影响实际 bridge reachability
+**当前最新收敛（2026-04-06）**：host 侧 session / capture 修复已全部落地（详见 [00-Dashboard-Archive](00-Dashboard-Archive.md)）。`on-run10` 确认 `create_session(bundleId)` 首次即返回 ready session，`get_capture_status` 最终 `available=true`，容器内 `capture_metal_frame` 成功，bundle 级 `bridge not reachable` 未复现；一次短暂 `list_sessions` 空窗更像 registry 可见性抖动。v4 归因进一步确认：canonical `index` 为 `807 refs = 0 valid + 9 referenced non-MSL + 798 missing`，`visibleMSL=0`，当时问题已收敛为 **trace 导出 / 源码未写入 bundle**，而不是 attribution 未命中。
+
+**本轮已落地的优先验证修复**：根据当前代码链路，runtime 此前只在 `captureFrame()` / `getStatus()` 阶段才 `dlopen(/usr/lib/libmtlcapture.dylib)`，而 shader replacement 的 `makeLibrary(source:)` 可能早已发生；这会让 replacement library 错过 GPUToolsCapture 对源码库的观测窗口。现已改为：当 `metalCaptureEnabled && shaderSourceReplacementEnabled` 同时开启时，在 `PlayCover.launch()` 早期、`LibrarySourceInjectionService.installIfNeeded()` 之前预加载 GPUToolsCapture，并记录 `playcover_capture_library_preload_checked` runtime breadcrumb，作为 `E-006d8-b3` 的第一条代码级验证修复。
+
+**fresh live 验证结果**：本轮按标准脚本完成 `sync_playtools_xcframework.sh` + `build_and_install.sh` 后，对原神执行 fresh live。runtime `get_capture_status` 显示 `gpuToolsCaptureLoaded=true`、latest queue class=`CaptureMTLCommandQueue`，说明 capture 库已在 replacement 前进入运行态。第一次 `device` capture 仍只落盘一份瘦 trace（仅 `index/metadata/store0`，`14` 个 hash 全缺失）；第二次在更稳定界面下改用 `scope` 后，`capture_20260406_sourcepreload_validation.gputrace` / `replacement-on-run11` 已出现 **14 个可见 hash 文件，其中 3 个是被 `index` 引用的合法 MSL**，canonical `index` 提升为 **`922 refs = 3 valid + 9 referenced non-MSL + 910 missing`**，`visibleMSL=3`。这说明当前问题已经从“源码完全没有写入 bundle”收窄为 **“源码写入已部分恢复，但覆盖率仍极低”**；同时这 3 个 visible MSL 还**未归因**到当前 `ShaderCorpus` 的 `module.generated.metal / aggregate.generated.metal`。
+
+后续排查面：
+1. **优先解释为什么只恢复到 `3/922`**：继续对照 `E-006c` 可见源码 trace、排查其余 `910 missing` 的 bundle 写入条件，并核对这 3 个 visible MSL 与当前 replacement aggregate / `module.generated.metal` 的指纹差异
+2. **补充 capture 策略差异**：本轮 `device` 仍可能产出瘦 trace，而 `scope` 已得到部分恢复结果；后续需明确这是否只是稳定性差异，还是直接影响源码文件写入规模
+3. **session 可见性抖动**：继续观察 `list_sessions` 与 `create_session(bundleId)` 是否偶发短暂不一致，确认它是否只影响 registry 可见性而不影响实际 bridge reachability
 
 ## 已完成的子项
 

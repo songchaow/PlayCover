@@ -325,12 +325,35 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         }
 
         // NOTE: captureManager is NOT acquired here. It will be lazily initialized
-        // when ensureGPUToolsCaptureLoaded() is called during captureFrame() or getStatus().
+        // when ensureGPUToolsCaptureLoaded() is called during captureFrame(),
+        // prepareForLibrarySourceAttributionIfNeeded(), or getStatus().
         // This avoids the MTLCaptureManager singleton caching supportsDestination=false
         // before libmtlcapture.dylib is loaded via dlopen (RC-009).
         installQueueDiscoveryIfNeeded()
 
         print("[PlayTools] MetalCaptureService initialized (delayed capture library loading enabled)")
+    }
+
+    /// 在 `shaderSourceReplacementEnabled + metalCaptureEnabled` 同时开启时，
+    /// 需要在 runtime 早期就加载 GPUToolsCapture，确保后续 `makeLibrary(source:)`
+    /// 产生的 replacement library 能被 trace 导出链路观测到并写入 `.gputrace` bundle。
+    @objc @discardableResult public func prepareForLibrarySourceAttributionIfNeeded() -> Bool {
+        guard PlaySettings.shared.metalCaptureEnabled else {
+            logStatusProbe("prepareForLibrarySourceAttributionIfNeeded: skipped — metal capture disabled")
+            return false
+        }
+        guard PlaySettings.shared.shaderSourceReplacementEnabled else {
+            logStatusProbe("prepareForLibrarySourceAttributionIfNeeded: skipped — shader source replacement disabled")
+            return false
+        }
+
+        let loaded = ensureGPUToolsCaptureLoaded()
+        let manager = currentCaptureManager()
+        let supportsGPUTrace = manager?.supportsDestination(.gpuTraceDocument) ?? false
+        logStatusProbe(
+            "prepareForLibrarySourceAttributionIfNeeded: loaded=\(loaded), captureManagerAvailable=\(manager != nil), supportsGPUTrace=\(supportsGPUTrace)"
+        )
+        return loaded
     }
 
     /// 执行一次帧截取，输出 .gputrace 到指定路径

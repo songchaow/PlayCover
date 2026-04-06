@@ -35,7 +35,21 @@ public class PlayCover: NSObject {
         MetalCaptureService.shared.initialize()
         RuntimeLaunchDiagnostics.record(event: "playcover_metal_capture_initialized", bundleId: runtimeBundleId)
 
+        let shouldPreloadCaptureForSourceAttribution =
+            PlaySettings.shared.metalCaptureEnabled && PlaySettings.shared.shaderSourceReplacementEnabled
+        let capturePreloadedForSourceAttribution =
+            MetalCaptureService.shared.prepareForLibrarySourceAttributionIfNeeded()
+        RuntimeLaunchDiagnostics.record(
+            event: "playcover_capture_library_preload_checked",
+            bundleId: runtimeBundleId,
+            details: [
+                "needed": shouldPreloadCaptureForSourceAttribution ? "true" : "false",
+                "loaded": capturePreloadedForSourceAttribution ? "true" : "false",
+            ]
+        )
+
         // E-003 / E-004f3: 安装 makeLibrary swizzle（运行时 shader corpus 导出 + 源码替换入口）
+        // 若启用了 capture + replacement，上面的 preload 必须先于 swizzle / replacement 发生。
         LibrarySourceInjectionService.shared.installIfNeeded()
         RuntimeLaunchDiagnostics.record(event: "playcover_library_injection_installed", bundleId: runtimeBundleId)
 

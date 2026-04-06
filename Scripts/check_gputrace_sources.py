@@ -1,154 +1,182 @@
 #!/usr/bin/env python3
 """
-check_gputrace_sources.py — 检查 .gputrace 中 shader 源码覆盖率
+check_gputrace_sources.py — 检查 `.gputrace` 中 shader 源码覆盖率，并可选归因到当前 `ShaderCorpus` / run snapshot。
 
 用法:
     python3 check_gputrace_sources.py /path/to/xxx.gputrace
+    python3 check_gputrace_sources.py /path/to/xxx.gputrace --bundle-dir /path/to/ShaderCorpus/<bundleId>
     python3 check_gputrace_sources.py /path/to/xxx.gputrace --diff /path/to/baseline.json
     python3 check_gputrace_sources.py /path/to/xxx.gputrace --save-baseline baseline.json
 
 输出:
-    - 源码文件数量、index 引用总数、覆盖率
-    - 每个源码文件的行数和首行特征
-    - --diff 模式下显示新增/删除的源码文件
+    - hex hash 文件数量、合法 MSL 数量、非 MSL 数量
+    - `index` 引用总数，以及基于 `valid_msl_files` 的覆盖率
+    - 每个可见 hash 文件的首行特征
+    - 可选：把可见 MSL 归因到 `module.generated.metal` / `aggregate.generated.metal`
 """
+
+from __future__ import annotations
 
 import argparse
 import json
-import os
-import re
 import sys
+from pathlib import Path
+from typing import Any
+
+from gputrace_attribution import build_gputrace_attribution_for_paths
+from gputrace_sources import inspect_gputrace_dir
 
 
-def find_source_files(gputrace_dir: str) -> dict[str, dict]:
-    """扫描 gputrace 目录，找到所有 16 字符 hex 命名的源码文件。"""
-    sources = {}
-    for name in os.listdir(gputrace_dir):
-        if not re.match(r'^[0-9A-F]{16}$', name):
-            continue
-        path = os.path.join(gputrace_dir, name)
-        if not os.path.isfile(path):
-            continue
-        size = os.path.getsize(path)
-        try:
-            with open(path, 'r', errors='replace') as f:
-                first_line = f.readline().strip()
-                line_count = 1 + sum(1 for _ in f)
-        except Exception:
-            first_line = "<binary>"
-            line_count = 0
-        # 检查文件是否为合法 MSL：
-        # 1. 直接以 #include 或 using 开头
-        # 2. 以 // 注释开头但内容包含 metal_stdlib（PlayTools 生成格式）
-        if first_line.startswith('#include') or first_line.startswith('using '):
-            is_msl = True
-        elif first_line.startswith('//'):
-            try:
-                with open(path, 'r', errors='replace') as fcheck:
-                    content_sample = fcheck.read(2048)
-                is_msl = 'metal_stdlib' in content_sample or 'PlayTools' in content_sample
-            except Exception:
-                is_msl = False
-        else:
-            is_msl = False
-        sources[name] = {
-            "size": size,
-            "lines": line_count,
-            "first_line": first_line[:80],
-            "is_msl": is_msl,
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="检查 gputrace shader 源码覆盖率")
+    parser.add_argument("gputrace", help=".gputrace 目录路径")
+    parser.add_argument("--bundle-dir", help="可选：用于归因的 bundle 目录（如 ShaderCorpus/<bundleId> 或快照 bundle 目录）")
+    parser.add_argument("--diff", metavar="BASELINE", help="与基线 JSON 对比，显示变化")
+    parser.add_argument("--save-baseline", metavar="OUTPUT", help="保存当前结果为基线 JSON")
+    parser.add_argument("--json", action="store_true", help="输出 JSON 格式")
+    return parser.parse_args()
+
+
+
+def convert_files_for_cli(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    files = summary.get("files") if isinstance(summary.get("files"), dict) else {}
+    return {
+        name: {
+            "size": file_info.get("size"),
+            "lines": file_info.get("lines"),
+            "first_line": file_info.get("firstLine"),
+            "is_msl": file_info.get("isMSL"),
         }
-    return sources
-
-
-def count_index_hashes(gputrace_dir: str) -> int:
-    """统计 index 文件中引用的 16 字符 hex hash 数量。"""
-    index_path = os.path.join(gputrace_dir, 'index')
-    if not os.path.isfile(index_path):
-        return -1
-    data = open(index_path, 'rb').read()
-    hashes = set(re.findall(rb'[0-9A-F]{16}', data))
-    return len(hashes)
-
-
-def main():
-    parser = argparse.ArgumentParser(description='检查 gputrace shader 源码覆盖率')
-    parser.add_argument('gputrace', help='.gputrace 目录路径')
-    parser.add_argument('--diff', metavar='BASELINE', help='与基线 JSON 对比，显示变化')
-    parser.add_argument('--save-baseline', metavar='OUTPUT', help='保存当前结果为基线 JSON')
-    parser.add_argument('--json', action='store_true', help='输出 JSON 格式')
-    args = parser.parse_args()
-
-    gputrace = args.gputrace
-    if not os.path.isdir(gputrace):
-        print(f"ERROR: {gputrace} 不是目录", file=sys.stderr)
-        sys.exit(1)
-
-    sources = find_source_files(gputrace)
-    index_count = count_index_hashes(gputrace)
-    msl_count = sum(1 for s in sources.values() if s['is_msl'])
-    coverage = (len(sources) / index_count * 100) if index_count > 0 else 0
-
-    result = {
-        "gputrace": os.path.basename(gputrace),
-        "source_files": len(sources),
-        "valid_msl_files": msl_count,
-        "index_hash_references": index_count,
-        "coverage_pct": round(coverage, 2),
-        "files": sources,
+        for name, file_info in sorted(files.items())
+        if isinstance(file_info, dict)
     }
 
-    # Diff 模式
+
+
+def build_result(gputrace_path: Path, summary: dict[str, Any], attribution: dict[str, Any] | None) -> dict[str, Any]:
+    files = convert_files_for_cli(summary)
+    result = {
+        "gputrace": gputrace_path.name,
+        "source_files": summary.get("sourceFiles", 0),
+        "valid_msl_files": summary.get("validMSLFiles", 0),
+        "non_msl_files": summary.get("nonMSLFiles", 0),
+        "index_hash_references": summary.get("indexHashReferences", -1),
+        "coverage_pct": summary.get("coveragePct", 0.0),
+        "files": files,
+    }
+    if attribution is not None:
+        result["attribution"] = attribution
+    return result
+
+
+
+def print_human_readable(result: dict[str, Any]) -> None:
+    print("=== gputrace shader 源码检查 ===")
+    print(f"路径: {result['gputrace']}")
+    print(
+        f"hex 文件: {result['source_files']} 个 "
+        f"(合法 MSL: {result['valid_msl_files']} / 非 MSL: {result['non_msl_files']})"
+    )
+    print(f"index 引用: {result['index_hash_references']} 个")
+    print(f"覆盖率(valid_msl/index): {float(result['coverage_pct']):.1f}%")
+    print()
+
+    files = result.get("files") if isinstance(result.get("files"), dict) else {}
+    if files:
+        print(f"{'Hash':<20} {'Lines':>6} {'Size':>8} {'MSL':>4}  First Line")
+        print("-" * 90)
+        for name, file_info in sorted(files.items()):
+            print(
+                f"{name:<20} {int(file_info.get('lines') or 0):>6} "
+                f"{int(file_info.get('size') or 0):>7}B "
+                f"{'✅' if file_info.get('is_msl') else '❌':>4}  "
+                f"{str(file_info.get('first_line') or '')}"
+            )
+    else:
+        print("⚠️  没有找到任何 shader 源码文件")
+
+    attribution = result.get("attribution") if isinstance(result.get("attribution"), dict) else None
+    if attribution is not None:
+        print("\n=== 可见 MSL 归因 ===")
+        print(
+            f"可见 MSL: {attribution.get('visibleMSLFileCount', 0)}，"
+            f"已归因: {attribution.get('attributedVisibleMSLFileCount', 0)}，"
+            f"未归因: {attribution.get('unattributedVisibleMSLFileCount', 0)}"
+        )
+        module_keys = attribution.get("attributedModuleKeys") or []
+        replacement_dirs = attribution.get("attributedReplacementDirectories") or []
+        unattributed_hashes = attribution.get("unattributedVisibleMSLHashes") or []
+        print(
+            "匹配到的 moduleKey: "
+            + (", ".join(module_keys) if module_keys else "<none>")
+        )
+        print(
+            "匹配到的 replacement 目录: "
+            + (", ".join(replacement_dirs) if replacement_dirs else "<none>")
+        )
+        if unattributed_hashes:
+            print("未归因可见 MSL hash: " + ", ".join(unattributed_hashes))
+
+
+
+def main() -> int:
+    args = parse_args()
+
+    gputrace_path = Path(args.gputrace).expanduser().resolve()
+    if not gputrace_path.is_dir():
+        print(f"ERROR: {gputrace_path} 不是目录", file=sys.stderr)
+        return 1
+
+    summary = inspect_gputrace_dir(gputrace_path)
+    attribution = None
+    if args.bundle_dir:
+        bundle_dir = Path(args.bundle_dir).expanduser().resolve()
+        if not bundle_dir.is_dir():
+            print(f"ERROR: bundle 目录不存在: {bundle_dir}", file=sys.stderr)
+            return 1
+        attribution = build_gputrace_attribution_for_paths(bundle_dir, gputrace_path, summary)
+
+    result = build_result(gputrace_path, summary, attribution)
+
     if args.diff:
-        with open(args.diff) as f:
-            baseline = json.load(f)
-        baseline_names = set(baseline.get("files", {}).keys())
-        current_names = set(sources.keys())
-        added = sorted(current_names - baseline_names)
-        removed = sorted(baseline_names - current_names)
+        baseline_path = Path(args.diff).expanduser().resolve()
+        with baseline_path.open("r", encoding="utf-8") as handle:
+            baseline = json.load(handle)
+        baseline_names = set((baseline.get("files") or {}).keys()) if isinstance(baseline, dict) else set()
+        current_names = set((result.get("files") or {}).keys()) if isinstance(result, dict) else set()
         result["diff"] = {
             "baseline_count": len(baseline_names),
             "current_count": len(current_names),
-            "added": added,
-            "removed": removed,
+            "added": sorted(current_names - baseline_names),
+            "removed": sorted(baseline_names - current_names),
         }
 
-    # JSON 输出
     if args.json:
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
-        print(f"=== gputrace shader 源码检查 ===")
-        print(f"路径: {gputrace}")
-        print(f"源码文件: {len(sources)} 个 (合法 MSL: {msl_count})")
-        print(f"index 引用: {index_count} 个")
-        print(f"覆盖率: {coverage:.1f}%")
-        print()
-        if sources:
-            print(f"{'Hash':<20} {'Lines':>6} {'Size':>8} {'MSL':>4}  First Line")
-            print("-" * 90)
-            for name in sorted(sources.keys()):
-                s = sources[name]
-                print(f"{name:<20} {s['lines']:>6} {s['size']:>7}B {'✅' if s['is_msl'] else '❌':>4}  {s['first_line']}")
-        else:
-            print("⚠️  没有找到任何 shader 源码文件")
-
+        print_human_readable(result)
         if "diff" in result:
-            d = result["diff"]
-            print(f"\n=== 与基线对比 ===")
-            print(f"基线: {d['baseline_count']} → 当前: {d['current_count']}")
-            if d["added"]:
-                print(f"新增 ({len(d['added'])}): {', '.join(d['added'][:10])}{'...' if len(d['added']) > 10 else ''}")
-            if d["removed"]:
-                print(f"删除 ({len(d['removed'])}): {', '.join(d['removed'][:10])}{'...' if len(d['removed']) > 10 else ''}")
-            if not d["added"] and not d["removed"]:
+            diff = result["diff"]
+            print("\n=== 与基线对比 ===")
+            print(f"基线: {diff['baseline_count']} → 当前: {diff['current_count']}")
+            if diff["added"]:
+                print(f"新增 ({len(diff['added'])}): {', '.join(diff['added'][:10])}{'...' if len(diff['added']) > 10 else ''}")
+            if diff["removed"]:
+                print(f"删除 ({len(diff['removed'])}): {', '.join(diff['removed'][:10])}{'...' if len(diff['removed']) > 10 else ''}")
+            if not diff["added"] and not diff["removed"]:
                 print("无变化")
 
-    # 保存基线
     if args.save_baseline:
-        with open(args.save_baseline, 'w') as f:
-            json.dump(result, f, indent=2, ensure_ascii=False)
+        output_path = Path(args.save_baseline).expanduser().resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", encoding="utf-8") as handle:
+            json.dump(result, handle, indent=2, ensure_ascii=False)
         if not args.json:
-            print(f"\n基线已保存: {args.save_baseline}")
+            print(f"\n基线已保存: {output_path}")
+
+    return 0
 
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    raise SystemExit(main())

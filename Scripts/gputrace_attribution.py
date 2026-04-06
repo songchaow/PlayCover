@@ -101,15 +101,15 @@ def dedupe_matches(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(deduped.values(), key=lambda item: (str(item.get("kind")), str(item.get("relativePath"))))
 
 
-def build_gputrace_attribution(
+def build_gputrace_attribution_for_paths(
     bundle_dir: Path,
-    gputrace_relative_path: str | None,
+    gputrace_dir: Path,
     gputrace_summary: dict[str, Any] | None,
+    *,
+    gputrace_relative_path: str | None = None,
 ) -> dict[str, Any] | None:
-    if not gputrace_relative_path or not isinstance(gputrace_summary, dict):
+    if not isinstance(gputrace_summary, dict):
         return None
-
-    gputrace_dir = bundle_dir / gputrace_relative_path
     if not gputrace_dir.is_dir():
         return None
 
@@ -148,6 +148,9 @@ def build_gputrace_attribution(
             corpus_relative_directory = match.get("corpusRelativeDirectory")
             if isinstance(corpus_relative_directory, str) and corpus_relative_directory:
                 attributed_replacement_directories.add(corpus_relative_directory)
+            for module_key in match.get("moduleKeys", []) or []:
+                if isinstance(module_key, str) and module_key:
+                    attributed_module_keys.add(module_key)
 
         visible_files[file_name] = {
             "firstLine": file_info.get("firstLine"),
@@ -166,10 +169,13 @@ def build_gputrace_attribution(
         file_name for file_name, payload in visible_files.items() if payload.get("attributed") is not True
     )
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "gputraceRelativePath": gputrace_relative_path,
+        "gputracePath": str(gputrace_dir),
         "sourceIndexSummary": source_index["summary"],
         "visibleMSLFileCount": len(visible_files),
+        "attributedVisibleMSLFileCount": len(attributed_hashes),
+        "unattributedVisibleMSLFileCount": len(unattributed_hashes),
         "attributedVisibleMSLHashes": attributed_hashes,
         "unattributedVisibleMSLHashes": unattributed_hashes,
         "attributedModuleKeys": sorted(attributed_module_keys),
@@ -177,3 +183,21 @@ def build_gputrace_attribution(
         "visibleMSLContentSHA256": sorted(visible_content_sha256),
         "visibleMSLFiles": visible_files,
     }
+
+
+
+def build_gputrace_attribution(
+    bundle_dir: Path,
+    gputrace_relative_path: str | None,
+    gputrace_summary: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not gputrace_relative_path:
+        return None
+
+    gputrace_dir = bundle_dir / gputrace_relative_path
+    return build_gputrace_attribution_for_paths(
+        bundle_dir,
+        gputrace_dir,
+        gputrace_summary,
+        gputrace_relative_path=gputrace_relative_path,
+    )

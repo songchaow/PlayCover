@@ -31,7 +31,7 @@
 |---|---|---|---|---|
 | 1 | **capture bridge reachability** | `on-run10` live 复测已确认：`create_session(bundleId)` 首次即返回 ready session，随后 `get_capture_status` 进入 `available=true`，容器内显式 `output_path` 的 `capture_metal_frame` 成功；bundle 级 `bridge not reachable` 误报本轮未复现。期间出现过一次短暂 `list_sessions` 空窗，但再次 `create_session(bundleId)` 仍可立即拉回同一 runtime，会话可见性抖动仍值得继续观察。详细演进见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | 继续记录 `list_sessions` / `create_session(bundleId)` 是否有短暂不一致，但主排查面已从 bundle 级 reachability 下移到 trace 覆盖 / 归因 | ✅ 是（构建 + 安装 + 注入 + launch + session） |
 | 2 | **capture 输出路径** | 容器内 custom path 已验证可用；容器外权限边界未明。短期可继续用默认容器路径 + `--latest-gputrace` | 长期再单独验证容器外路径沙盒权限 | ✅ 是（`--latest-gputrace` 已自动化） |
-| 3 | **trace 合法 MSL 覆盖偏低** | `on-run10` fresh trace 自动检查为 `0/9` 合法 MSL，覆盖率 `1.1%`；本轮 fresh trace 已成功产出，但源码可见性仍未覆盖到可归因 draw call。详细数据见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | 新 fresh capture 后继续用 `check_gputrace_sources.py` 检查并归因 | ✅ 是（fresh trace 已可获得，但仍需继续提高覆盖） |
+| 3 | **trace 合法 MSL 覆盖偏低** | `on-run10` fresh trace 自动检查为 `0/9` 合法 MSL，覆盖率 `1.1%`；本轮 fresh trace 已成功产出，但源码可见性仍未覆盖到可归因 draw call。详细数据见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | 新 fresh capture 后继续用 `check_gputrace_sources.py [--bundle-dir <ShaderCorpus/<bundleId>>]` 按 `valid_msl_files` 口径检查并把可见 MSL 归因到 `moduleKey` / replacement | ✅ 是（fresh trace 已可获得，但仍需继续提高覆盖） |
 | 4 | **绘制内容差异未正式产出** | `e006d_render_diff.py` 入口就绪，GUI 自动化环境未验证 | 在 Xcode GUI / Accessibility / `cliclick` 可用时，跑 `off-run1` vs `on-run5` 结构化 diff | ⚠️ 需 GUI 自动化环境 |
 
 **本轮推进标准**：至少把当前问题明确收敛到以下之一：

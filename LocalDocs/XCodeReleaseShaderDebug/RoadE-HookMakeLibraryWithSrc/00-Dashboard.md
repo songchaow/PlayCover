@@ -164,7 +164,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 离线 replay + compile + baseline diff | `Scripts/corpus_replay_runner.py --compile --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus` |
 | replacement 模式切换 | `Scripts/set_shader_replacement_mode.py --mode off/on` |
 | live run 快照固化 | `Scripts/e006d_matrix_runner.py prepare-run / finalize-run --latest-gputrace` |
-| `.gputrace` 自动检查 | `Scripts/check_gputrace_sources.py /path/to/xxx.gputrace` |
+| `.gputrace` 自动检查 / 归因 | `Scripts/check_gputrace_sources.py /path/to/xxx.gputrace [--bundle-dir /path/to/ShaderCorpus/<bundleId>]` |
 | runtime launch 诊断 | `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl` + `Scripts/runtime_launch_diagnostics_summary.py` |
 
 ### 关键数据基线

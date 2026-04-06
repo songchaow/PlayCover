@@ -35,6 +35,7 @@ from gputrace_attribution import (
     CURRENT_GPUTRACE_ATTRIBUTION_SCHEMA_VERSION,
     build_gputrace_attribution,
 )
+from gputrace_sources import inspect_gputrace_dir
 
 
 ARTIFACT_FILENAMES = (
@@ -109,6 +110,34 @@ def is_current_gputrace_attribution(payload: dict[str, Any] | None) -> bool:
         return False
     schema_version = payload.get("schemaVersion")
     return isinstance(schema_version, int) and schema_version >= CURRENT_GPUTRACE_ATTRIBUTION_SCHEMA_VERSION
+
+
+def is_current_gputrace_summary(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    required_fields = (
+        "files",
+        "referencedValidMSLHashes",
+        "referencedNonMSLHashes",
+        "missingReferencedHashes",
+        "nonMSLTypeCounts",
+    )
+    return all(field in payload for field in required_fields)
+
+
+def maybe_recompute_gputrace_summary(
+    run_input: RunInput,
+    gputrace_relative_path: str | None,
+    gputrace_summary: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if is_current_gputrace_summary(gputrace_summary):
+        return gputrace_summary
+    if not gputrace_relative_path:
+        return gputrace_summary
+    gputrace_dir = run_input.manifest_path.parent / gputrace_relative_path
+    if not gputrace_dir.is_dir():
+        return gputrace_summary
+    return inspect_gputrace_dir(gputrace_dir)
 
 
 def resolve_run_input(raw_path: str, modules_override: str | None, label: str) -> RunInput:
@@ -482,16 +511,18 @@ def build_snapshot_context(run_input: RunInput, meta: dict[str, Any] | None) -> 
     gputrace_summary = meta.get("gputraceSummary")
     copied_artifacts = meta.get("copiedArtifacts") if isinstance(meta.get("copiedArtifacts"), dict) else {}
     gputrace_relative_path = copied_artifacts.get("gputracePath") if isinstance(copied_artifacts, dict) else None
-    gputrace_attribution = load_snapshot_artifact_json(
+    gputrace_summary = maybe_recompute_gputrace_summary(run_input, gputrace_relative_path, gputrace_summary)
+    saved_gputrace_attribution = load_snapshot_artifact_json(
         run_input,
         copied_artifacts.get("gputraceAttributionIndexPath") if isinstance(copied_artifacts, dict) else None,
     )
-    if not is_current_gputrace_attribution(gputrace_attribution):
-        gputrace_attribution = build_gputrace_attribution(
-            run_input.manifest_path.parent,
-            gputrace_relative_path,
-            gputrace_summary,
-        ) or gputrace_attribution
+    gputrace_attribution = build_gputrace_attribution(
+        run_input.manifest_path.parent,
+        gputrace_relative_path,
+        gputrace_summary,
+    )
+    if gputrace_attribution is None:
+        gputrace_attribution = saved_gputrace_attribution
 
     visible_msl_hashes: list[str] = []
     if isinstance(gputrace_summary, dict):

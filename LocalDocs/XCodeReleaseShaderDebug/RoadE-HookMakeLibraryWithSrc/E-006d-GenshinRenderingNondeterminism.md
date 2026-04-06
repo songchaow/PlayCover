@@ -31,7 +31,7 @@
 |---|---|---|---|---|
 | 1 | **capture bridge reachability** | `on-run10` 确认：`create_session(bundleId)` 首次即返回 ready session，`get_capture_status` 进入 `available=true`，容器内 `capture_metal_frame` 成功；bundle 级 `bridge not reachable` 未复现。一次短暂 `list_sessions` 空窗更像 registry 可见性抖动。详细演进见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | 继续观察 session 可见性偶发不一致，主排查面已下移到 trace 覆盖 | ✅ 是 |
 | 2 | **capture 输出路径** | 容器内 custom path 已验证可用；容器外权限边界未明。短期可继续用默认容器路径 + `--latest-gputrace` | 长期再单独验证容器外路径沙盒权限 | ✅ 是（`--latest-gputrace` 已自动化） |
-| 3 | **trace 合法 MSL 覆盖偏低** | preload 修复后 `on-run11`：`922 refs = 3 valid + 9 non-MSL + 910 missing`、`visibleMSL=3`。源码写入已部分恢复（从 `on-run10` 的 `0` 到 `3`），但覆盖率仍极低（`0.3%`）。3 个可见 MSL 尚未归因到 `ShaderCorpus` | ①归因 3 个可见 MSL 到 `ShaderCorpus` 的 `module.generated.metal` / `aggregate.generated.metal`；②对照 `E-006c` 可见 trace 排查其余 910 missing 的 bundle 写入条件 | ✅ 是 |
+| 3 | **trace 合法 MSL 覆盖偏低** | preload 修复后 `on-run11`：`922 refs = 3 valid + 9 non-MSL + 910 missing`、`visibleMSL=3`。3 个可见 MSL 已归因；按当前 canonical 口径重算，`off-run1` 也有 `899 refs = 2 referenced valid + 9 non-MSL + 888 missing`，因此 `on-run11` 相比基线的净变化是 `+23 refs / +1 referenced valid MSL / +22 missing`，而不是旧口径里的 `0 → 910` | ①以修正后的 `off-run1 vs on-run11` 基线继续拆解 `888` 个 base missing 与 `22` 个 incremental missing；②解释 `14/15` 位短 hash 可见文件与 `16` 位 canonical index 的映射 / bundle 写入条件 | ✅ 是 |
 | 4 | **绘制内容差异未正式产出** | `e006d_render_diff.py` 入口就绪，GUI 自动化环境未验证 | 在 Xcode GUI / Accessibility / `cliclick` 可用时，跑 `off-run1` vs `on-run5` 结构化 diff | ⚠️ 需 GUI 自动化环境 |
 
 **本轮推进标准**：至少把当前问题明确收敛到以下之一：
@@ -50,9 +50,14 @@
 - `BA4DCBC544C3032F` → `replacements/2026-04-06T07_52_27Z_newLibraryWithData_error__EB43EED3823F29C4_21837/aggregate.generated.metal` → `moduleKey=94d08d40f46279c2ecd81522e7b2a2bd27cddd03bc2452458043034ae03d1936`
 - `F184B789D1F6CEF4` → `replacements/2026-04-06T07_52_27Z_newLibraryWithData_error__3D7324EDF8B2830A_19165/aggregate.generated.metal` → `moduleKey=91c46448ca24983b29716a9fe2c28a7930c10b81802758ded6977907bf01ae9b`
 
+**本轮 `b3b` 基线校正（2026-04-06 夜）**：修复 `compare_capture_runs.py` 对旧 snapshot `gputraceSummary` / `gputraceAttribution` 的 fallback 后，重新按当前 canonical 口径对比 `replacement-off-run1` 与 `replacement-on-run11`：
+- `off-run1`：`899 refs = 2 referenced valid MSL + 9 referenced non-MSL + 888 missing`，另有 `1` 个未被 canonical index 引用的短 hash 可见 MSL（`B91673E5592A2B8`）
+- `on-run11`：`922 refs = 3 referenced valid MSL + 9 referenced non-MSL + 910 missing`，且 3 个 referenced valid MSL 已全部归因到 replacement 聚合源码
+- **因此 preload 修复带来的净增量是**：`+23 refs / +1 referenced valid MSL / +22 missing`；当前不能再把 `910 missing` 全部解释为 replacement 新引入的问题
+
 后续排查面：
 1. **✅ `b3a` 已完成：3 个可见 MSL 已归因**
-2. **排查 910 missing 的 bundle 写入条件（当前最高优先级）**：对照 `E-006c` 可见源码 trace，找出差异；关注 replacement 时序、module 大小、compile 成功率等因素
+2. **继续拆解 `888` 个 base missing 与 `22` 个 incremental missing（当前最高优先级）**：重点解释 `14/15` 位短 hash 可见文件与 `16` 位 canonical index 的映射，以及 bundle 写入条件
 3. **补充 capture 策略差异**：`device` 仍可能产出瘦 trace，`scope` 得到部分恢复；需明确这是否直接影响源码写入规模
 4. **session 可见性抖动**：继续观察，确认只影响 registry 而不影响实际 bridge reachability
 
@@ -71,6 +76,7 @@
 | E-006d8b1 | 标准化 render-diff runner（`e006d_render_diff.py`） | ✅ DONE |
 | host session / capture 基础设施修复 | split-brain 修复、bridge ping 收紧、ready-session probe 对齐、multi-candidate 预算保护、capture status 去 lazy-load、默认容器回收闭环 | ✅ DONE + 测试覆盖 |
 | E-006d8-b3-fix1 | GPUToolsCapture 预加载（`PlayCover.launch()` 早期，replacement 前加载 capture 库） | ✅ DONE（`on-run11` 验证生效） |
+| E-006d8-b3-fix2 | `compare_capture_runs.py` 对旧 snapshot 的 `gputraceSummary` / `gputraceAttribution` 自动重算，避免旧基线把 `off-run1` 误判为 `0 missing` | ✅ DONE + 测试覆盖 |
 
 ## 优先排查顺序
 
@@ -137,7 +143,8 @@
 - **成功路径也要落盘聚合产物**：只保留单模块 `.bc/.ll/.metal` 不足以覆盖聚合顺序、重名去重
 - **draw call / Render Encoder / Pipeline State 是独立证据层**：当 shader / trace 侧证据不足时必须补
 - **`module.meta.json` 的统计字段要与真实 artifact diff 分开看**：`captureCount`、`sourceCacheKeys` 等变化不等于本体变化
-- **GPUToolsCapture 预加载时序直接影响 trace 覆盖率**：`makeLibrary(source:)` 发生在 `dlopen(libmtlcapture.dylib)` 之前会导致 replacement library 不被观测；preload 修复已将 `visibleMSL` 从 `0` 提升到 `3`，但仍有 910 missing 待归因
+- **GPUToolsCapture 预加载时序直接影响 trace 覆盖率**：`makeLibrary(source:)` 发生在 `dlopen(libmtlcapture.dylib)` 之前会导致 replacement library 不被观测；preload 修复已将 `visibleMSL` 从 `0` 提升到 `3`，但按当前 canonical 口径仍需继续解释 `888` 个 base missing 与 `22` 个新增 missing
+- **旧 snapshot 里的 `gputraceSummary` / `gputraceAttribution` 不能直接信任**：早期快照可能缺少 `missingReferencedHashes` 等字段，甚至 schema 已新但 attribution 内容仍是旧值；`compare_capture_runs.py` 现已改为优先对原始 `.gputrace` 现算 summary / attribution
 - **host 侧 session / capture 基础设施已全部修复**：详细修复历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)
 - **更早的 lowering 细节与已收敛 compile blocker 不再由本文档维护**：见 `E-004-MetallibSourceExtraction.md`、`E-006d-RenderingPathDiffReference.md` 与 archive
 

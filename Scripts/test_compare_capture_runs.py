@@ -455,6 +455,179 @@ class CompareCaptureRunsTests(unittest.TestCase):
                 ["0123456789ABCDEF"],
             )
 
+    def test_compare_capture_runs_recomputes_gputrace_summary_for_older_snapshot_meta(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            runs_root = root / "runs"
+            run_a = runs_root / "run-a" / "com.example.demo"
+            run_b = runs_root / "run-b" / "com.example.demo"
+
+            aggregate_text = "// Auto-generated aggregated MSL source by PlayTools LibrarySourceInjection\n#include <metal_stdlib>\n"
+            module_text = "#include <metal_stdlib>\nfragment float4 main0() { return float4(1.0); }\n"
+
+            for bundle_dir, visible_hash, missing_hash in (
+                (run_a, "0123456789ABCDEF", "FEDCBA9876543210"),
+                (run_b, "FEDCBA9876543210", "0123456789ABCDEF"),
+            ):
+                container_root = root / f"container-{bundle_dir.parent.name}"
+                make_container_run(container_root, aggregate_text, module_text)
+                trace_dir = root / f"trace-{bundle_dir.parent.name}.gputrace"
+                make_gputrace(trace_dir, {visible_hash: aggregate_text})
+                (trace_dir / "index").write_bytes(f"{visible_hash} {missing_hash}".encode("ascii"))
+                subprocess.run(
+                    [
+                        "python3",
+                        str(SNAPSHOT_SCRIPT),
+                        "--bundle-id",
+                        "com.example.demo",
+                        "--label",
+                        bundle_dir.parent.name,
+                        "--container",
+                        str(container_root),
+                        "--output-root",
+                        str(runs_root),
+                        "--gputrace",
+                        str(trace_dir),
+                    ],
+                    cwd=REPO_ROOT,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                meta_path = bundle_dir / "snapshot.meta.json"
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                meta["gputraceSummary"] = {
+                    "indexHashReferences": 2,
+                    "sourceFiles": 1,
+                    "validMSLFiles": 1,
+                }
+                meta_path.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            output_path = root / "compare-stale-summary.json"
+            subprocess.run(
+                [
+                    "python3",
+                    str(COMPARE_SCRIPT),
+                    "--run-a",
+                    str(run_a),
+                    "--run-b",
+                    str(run_b),
+                    "--output",
+                    str(output_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            report = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                report["runA"]["snapshotContext"]["referencedValidMSLHashes"],
+                ["0123456789ABCDEF"],
+            )
+            self.assertEqual(
+                report["runB"]["snapshotContext"]["referencedValidMSLHashes"],
+                ["FEDCBA9876543210"],
+            )
+            self.assertEqual(
+                report["runA"]["snapshotContext"]["missingReferencedHashes"],
+                ["FEDCBA9876543210"],
+            )
+            self.assertEqual(
+                report["runB"]["snapshotContext"]["missingReferencedHashes"],
+                ["0123456789ABCDEF"],
+            )
+
+    def test_compare_capture_runs_recomputes_attribution_even_when_saved_index_has_current_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            runs_root = root / "runs"
+            run_a = runs_root / "run-a" / "com.example.demo"
+            run_b = runs_root / "run-b" / "com.example.demo"
+
+            aggregate_text = "// Auto-generated aggregated MSL source by PlayTools LibrarySourceInjection\n#include <metal_stdlib>\n"
+            module_text = "#include <metal_stdlib>\nfragment float4 main0() { return float4(1.0); }\n"
+
+            for bundle_dir, visible_hash in (
+                (run_a, "0123456789ABCDEF"),
+                (run_b, "FEDCBA9876543210"),
+            ):
+                container_root = root / f"container-{bundle_dir.parent.name}"
+                make_container_run(container_root, aggregate_text, module_text)
+                trace_dir = root / f"trace-{bundle_dir.parent.name}.gputrace"
+                make_gputrace(trace_dir, {visible_hash: aggregate_text})
+                subprocess.run(
+                    [
+                        "python3",
+                        str(SNAPSHOT_SCRIPT),
+                        "--bundle-id",
+                        "com.example.demo",
+                        "--label",
+                        bundle_dir.parent.name,
+                        "--container",
+                        str(container_root),
+                        "--output-root",
+                        str(runs_root),
+                        "--gputrace",
+                        str(trace_dir),
+                    ],
+                    cwd=REPO_ROOT,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                write_json(
+                    bundle_dir / "gputrace-attribution-index.json",
+                    {
+                        "schemaVersion": 999,
+                        "visibleMSLFileCount": 1,
+                        "attributedVisibleMSLHashes": [],
+                        "unattributedVisibleMSLHashes": [visible_hash],
+                        "attributedReferencedMSLHashes": [],
+                        "unattributedReferencedMSLHashes": [visible_hash],
+                        "attributedModuleKeys": [],
+                        "attributedReplacementDirectories": [],
+                        "visibleMSLContentSHA256": [],
+                    },
+                )
+
+            output_path = root / "compare-current-schema-stale-index.json"
+            subprocess.run(
+                [
+                    "python3",
+                    str(COMPARE_SCRIPT),
+                    "--run-a",
+                    str(run_a),
+                    "--run-b",
+                    str(run_b),
+                    "--output",
+                    str(output_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            report = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                report["runA"]["snapshotContext"]["attributedVisibleMSLHashes"],
+                ["0123456789ABCDEF"],
+            )
+            self.assertEqual(
+                report["runB"]["snapshotContext"]["attributedVisibleMSLHashes"],
+                ["FEDCBA9876543210"],
+            )
+            self.assertEqual(
+                report["runA"]["snapshotContext"]["attributedReplacementDirectories"],
+                ["replacements/20260405_selector_cache"],
+            )
+            self.assertEqual(
+                report["runB"]["snapshotContext"]["attributedReplacementDirectories"],
+                ["replacements/20260405_selector_cache"],
+            )
+
     def test_compare_capture_runs_reports_latest_replacement_attempt_difference(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -146,7 +146,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 |---|---|---|---|
 | 1 | capture bridge reachability | ✅ 已收敛 | `on-run10` / `on-run11` 均确认首次 `create_session(bundleId)` 即返回 ready session；偶发 session 可见性抖动不影响主排查面 |
 | 2 | capture 输出路径 | ✅ 短期绕过 | 继续用默认容器路径 + `--latest-gputrace` |
-| 3 | **trace 合法 MSL 覆盖偏低** | **进行中（当前最高优先级）** | preload 修复已生效：`on-run11` 从 `visibleMSL=0` 提升到 `visibleMSL=3`（`922 refs = 3 valid + 9 non-MSL + 910 missing`）。下一步：归因 3 个可见 MSL 到 `ShaderCorpus`、对照 `E-006c` 可见 trace 排查其余 910 missing 的 bundle 写入条件 |
+| 3 | **trace 合法 MSL 覆盖偏低** | **进行中（当前最高优先级）** | preload 修复已生效：`on-run11` 从 `visibleMSL=0` 提升到 `visibleMSL=3`（`922 refs = 3 valid + 9 non-MSL + 910 missing`），且 3 个可见 MSL 已归因到 replacement 聚合源码。经当前 canonical 口径重算，`off-run1` 基线为 `899 refs = 2 referenced valid + 9 non-MSL + 888 missing`；下一步：继续拆解 `888` 个 base missing 与 `22` 个新增 missing，并解释 `14/15` 位短 hash 可见文件与 `16` 位 canonical index 的映射 / bundle 写入条件 |
 | 4 | 绘制内容差异未正式产出 | 工具就绪，需 GUI 环境 | `e006d_render_diff.py` 已就绪，需 Xcode GUI / Accessibility / `cliclick`；**重要专项但非日常 gate** |
 
 - **绘制内容差异分支**：这条线依赖 Xcode GUI 环境、Accessibility 权限与 `cliclick`。**它是重要专项分析分支，不是默认日常 gate**。详细方法见 `E-006d-RenderingPathDiffReference.md`。
@@ -174,6 +174,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | corpus 编译基线（2026-04-05） | `test-data/*.ll`（19 个）replay + compile **全绿**；`ShaderCorpus/com.miHoYo.Yuanshen/modules/` **91/91** replay + compile **全绿**，preflight rejected `0`，regression `0` |
 | `.gputrace` 里程碑（2026-04-04） | `capture_20260404_roadE_e006c3_final.gputrace` Xcode 人工确认 shader 面板源码可见（`E-006c` 已关闭） |
 | E-006d8 preload 验证（2026-04-06） | `replacement-on-run11`：preload 修复生效，`gpuToolsCaptureLoaded=true`、queue class=`CaptureMTLCommandQueue`；scope capture 提升到 `922 refs = 3 valid + 9 non-MSL + 910 missing`、`visibleMSL=3`。源码写入已部分恢复，但覆盖率仍极低 |
+| E-006d8 b3 基线校正（2026-04-06 夜） | 修复 `compare_capture_runs.py` 对旧 snapshot `gputraceSummary` / `gputraceAttribution` 的 fallback 后，`replacement-off-run1` 重算为 `899 refs = 2 referenced valid + 9 non-MSL + 888 missing`，`replacement-on-run11` 为 `922 refs = 3 referenced valid + 9 non-MSL + 910 missing`；因此本轮 preload 修复带来的净增量是 `+23 refs / +1 referenced valid MSL / +22 missing`，不是旧口径里的 `0 → 910` |
 
 ### 已完成的 session / capture 基础设施修复（2026-04-06）
 
@@ -226,8 +227,8 @@ PlayTools.framework (注入到 iOS app)
 | E-006d | ↳ **原神同一界面重复启动时的随机渲染异常归因** | **TODO（当前主线）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
 | E-006d8 | ↳ 四条 blocker 收敛 | **TODO（当前推进焦点）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
 | E-006d8-b3 | ↳ trace 合法 MSL 覆盖偏低归因 | **TODO（当前最高优先级 blocker）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006d8-b3a | ↳ 归因 3 个可见 MSL 到 ShaderCorpus | **TODO（b3 下一步）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006d8-b3b | ↳ 对照 E-006c 可见 trace 排查 910 missing | **TODO（b3 下一步）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
+| E-006d8-b3a | ↳ 归因 3 个可见 MSL 到 ShaderCorpus | **✅ DONE** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
+| E-006d8-b3b | ↳ 对照 E-006c / `off-run1` 可见 trace 排查 missing 的 bundle 写入条件 | **TODO（当前最高优先级；已完成基线校正）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
 | E-006d8-b4 | ↳ 绘制内容差异结构对比 | **TODO**（需 GUI 环境，非日常 gate） | [E-006d8b 参考](E-006d-RenderingPathDiffReference.md) |
 | E-006a | 扩展真实 corpus 覆盖面 | TODO（已降级） | |
 | E-007 | PlayCover settings / MCP / 工具暴露 | TODO（已降级） | |
@@ -239,7 +240,8 @@ PlayTools.framework (注入到 iOS app)
 - **`build_and_install.sh` 是更新运行时 framework 的唯一可靠路径**：`sync_playtools_xcframework.sh` 只更新构建产物；涉及 live 时必须走 `BuildScripts/build_and_install.sh`
 - **源码可见 / compile green 都不等于渲染语义正确**：`E-006d` 关注的是相同输入下最终视觉结果、trace 与 replacement 证据是否稳定一致
 - **当前最低风险的比较基线仍是"替换 vs 不替换"**：统一通过 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py` 控制
-- **GPUToolsCapture 预加载时序是 trace 覆盖率的关键**：`makeLibrary(source:)` replacement 必须在 capture 库已加载后才发生，否则替换后的 library 会错过观测窗口
+- **GPUToolsCapture 预加载时序是 trace 覆盖率的关键**：`makeLibrary(source:)` replacement 必须在 capture 库已加载后才发生，否则替换后的 library 会错过观测窗口；但按当前 canonical 口径，仍需把 `888` 个 base missing 与 `22` 个新增 missing 分开分析
+- **旧 snapshot 的 `gputraceSummary` / `gputraceAttribution` 可能过时**：早期快照既可能缺少 `missingReferencedHashes` 等字段，也可能 schema 已新但 attribution 内容仍是旧值；后续对比应优先使用 `compare_capture_runs.py` 对原始 `.gputrace` 的现算结果
 - **`.gputrace` 可见 MSL 可能带尾部 `NUL` 终止符**：做 attribution / diff / 指纹匹配时不能只比原始字节；至少要按文本归一化并去掉尾部 `\0`，否则会把内容完全相同的 `aggregate.generated.metal` 误判为未归因
 - **更细的 lowering 经验、历史 live blocker 链路与已完成轮次已下沉到独立参考文档**：见 `E-004-MetallibSourceExtraction-Archive.md`、`E-006d-RenderingPathDiffReference.md` 与 `00-Dashboard-Archive.md`
 

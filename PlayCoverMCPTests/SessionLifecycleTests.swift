@@ -311,6 +311,48 @@ final class SessionServiceTests: XCTestCase {
         XCTAssertEqual(probedSessionIds, ["runtime-freshest-unreachable", "runtime-older-reachable"])
     }
 
+    func testCreateSessionReservesProbeBudgetForOlderFallbackSessions() throws {
+        let olderReachableRuntime = SessionInfo(
+            sessionId: "runtime-older-reachable",
+            bundleId: "com.bridge.fallback-slow",
+            pid: 500,
+            runtimePort: 53000,
+            createdAt: Date().addingTimeInterval(-20),
+            lastHeartbeat: Date().addingTimeInterval(-10),
+            status: .ready
+        )
+        let freshestSlowUnreachableRuntime = SessionInfo(
+            sessionId: "runtime-freshest-slow-unreachable",
+            bundleId: "com.bridge.fallback-slow",
+            pid: 501,
+            runtimePort: 53001,
+            createdAt: Date().addingTimeInterval(-2),
+            lastHeartbeat: Date().addingTimeInterval(-1),
+            status: .ready
+        )
+        try registry.register(olderReachableRuntime)
+        try registry.register(freshestSlowUnreachableRuntime)
+
+        let recorder = ProbeRecorder()
+        service = SessionService(registry: registry, bridgeReadinessProbe: { session, timeout in
+            recorder.record(sessionId: session.sessionId, timeout: timeout)
+            if session.sessionId == "runtime-freshest-slow-unreachable" {
+                Thread.sleep(forTimeInterval: min(0.2, timeout))
+                return false
+            }
+            return session.sessionId == "runtime-older-reachable"
+        })
+
+        let result = try service.createSession(bundleId: "com.bridge.fallback-slow", timeout: 0.35)
+        let recordedTimeouts = recorder.recordedTimeouts()
+
+        XCTAssertEqual(result.sessionId, "runtime-older-reachable")
+        XCTAssertEqual(recorder.recordedSessionIds(), ["runtime-freshest-slow-unreachable", "runtime-older-reachable"])
+        XCTAssertEqual(recordedTimeouts.count, 2)
+        XCTAssertEqual(recordedTimeouts[0], 0.175, accuracy: 0.03)
+        XCTAssertGreaterThan(recordedTimeouts[1], 0.1)
+    }
+
     func testCreateSessionSkipsProbeWhenRemainingDeadlineBelowMinimumProbeTimeout() throws {
         let readyRuntime = SessionInfo(
             sessionId: "runtime-sess-1",

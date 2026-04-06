@@ -144,7 +144,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 | # | blocker | 状态 | 推进方式 |
 |---|---|---|---|
-| 1 | capture bridge reachability：`create_session(bundleId)` 仍可能超时，但已有 ready session 可直接执行 capture | 进行中 | 对照 `list_sessions` 现成 session 与 `create_session` 的选取 / probe 行为差异 |
+| 1 | capture bridge reachability：`create_session(bundleId)` 仍可能超时，但已有 ready session 可直接执行 capture | 进行中（host 侧新增 fallback 预算保护，待 live 复测） | 对照 `list_sessions` 现成 session 与 `create_session` 的选取 / probe 行为差异 |
 | 2 | capture 输出路径：容器外自定义路径权限边界未明 | 短期绕过 | 继续用默认容器路径 + `--latest-gputrace` |
 | 3 | trace 合法 MSL 覆盖偏低（`~3/12`） | 进行中 | 归因已有合法 MSL 对应的 draw call / replacement 路径 |
 | 4 | 绘制内容差异未正式产出 | 工具就绪，需 GUI 环境 | `e006d_render_diff.py` 已就绪，需 Xcode GUI / Accessibility / `cliclick` |
@@ -181,6 +181,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 - host split-brain 修复（stale cleanup 同步断链）
 - `create_session` 收紧到 bridge `ping` 成功
 - `create_session` ready-session 选取改为优先最新 heartbeat，并将单候选 probe 超时对齐到真实 bridge 命令量级（最多 5s；剩余 deadline 不足最小 probe 窗口时不再强行探测）
+- `create_session` 多候选 probe 追加 fallback 预算保护：最新 session 若慢失败，不再独占整个 bundle 级 deadline；补充 `PlayCoverMCPTests` 覆盖"慢失败新 session → 回退旧 session" 场景
 - `get_capture_status` 去 lazy-load + 去 `valueOnMainSync`
 - 默认容器 `Captures/` 回收闭环（`--latest-gputrace`）
 - 绘制内容差异 runner（`e006d_render_diff.py`，需 GUI 环境）

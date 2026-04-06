@@ -29,7 +29,7 @@
 
 | # | blocker | 现状 | 推进方式 | agent 可独立完成？ |
 |---|---|---|---|---|
-| 1 | **capture bridge reachability** | `on-run9` 后已明确：针对 `list_sessions` 中的 ready session，`get_capture_status` / `capture_metal_frame` 可立即成功；但 `create_session(bundleId)` 仍可能超时。runtime launch diagnostics 继续显示 registration 主链完整。详细演进见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | 对照 `list_sessions` 现成 session 与 `create_session(bundleId)` 的选取 / probe 行为差异 | ✅ 是（构建 + 安装 + 注入 + launch + session） |
+| 1 | **capture bridge reachability** | `on-run9` 后已明确：针对 `list_sessions` 中的 ready session，`get_capture_status` / `capture_metal_frame` 可立即成功；但 `create_session(bundleId)` 仍可能超时。runtime launch diagnostics 继续显示 registration 主链完整。当前已在 host 侧补一轮 probe 预算保护：当最新 ready session 慢失败时，bundle 级 deadline 会为更旧候选保留最小 fallback probe 窗口，避免首个候选独占整个等待时间。详细演进见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | 对照 `list_sessions` 现成 session 与 `create_session(bundleId)` 的选取 / probe 行为差异，并用 live 验证预算保护是否消除 bundle 级误报 | ✅ 是（构建 + 安装 + 注入 + launch + session） |
 | 2 | **capture 输出路径** | 容器内 custom path 已验证可用；容器外权限边界未明。短期可继续用默认容器路径 + `--latest-gputrace` | 长期再单独验证容器外路径沙盒权限 | ✅ 是（`--latest-gputrace` 已自动化） |
 | 3 | **trace 合法 MSL 覆盖偏低** | 最近 fresh trace 自动检查为 `~3/12` 合法 MSL，覆盖率 `~1.4%`。详细数据见 [00-Dashboard-Archive](00-Dashboard-Archive.md) | 新 fresh capture 后继续用 `check_gputrace_sources.py` 检查并归因 | ✅ 是（fresh trace 已可获得，但仍需继续提高覆盖） |
 | 4 | **绘制内容差异未正式产出** | `e006d_render_diff.py` 入口就绪，GUI 自动化环境未验证 | 在 Xcode GUI / Accessibility / `cliclick` 可用时，跑 `off-run1` vs `on-run5` 结构化 diff | ⚠️ 需 GUI 自动化环境 |
@@ -61,6 +61,7 @@
 | host split-brain 修复 | stale cleanup 时主动断开 registration channel | ✅ DONE + 测试覆盖 |
 | host session ready 收口 | `SessionService.createSession(...)` 改为返回前额外要求 command bridge `ping` 成功；补充 `PlayCoverMCPTests` 覆盖"bridge 延迟可达 / 已注册但不可达" | ✅ DONE + 测试覆盖 |
 | host ready-session probe 对齐 | `create_session(bundleId)` 改为优先探测最新 heartbeat 的 ready session，并把单候选 bridge probe 超时放宽到与真实 bridge 命令同量级（最多 5s；若剩余 deadline 已低于最小 probe 窗口则不再强行探测）；补充 `PlayCoverMCPTests` 覆盖最新 session 优先、旧 session fallback 与 probe timeout | ✅ DONE + 测试覆盖，待下一轮 live 验证 |
+| host multi-candidate probe 预算保护 | `create_session(bundleId)` 在同 bundle 存在多个 ready session 时，会为后续候选预留最小 probe 窗口，避免"最新 session 慢失败 → 旧 session 来不及探测"；补充 `PlayCoverMCPTests` 覆盖慢失败 fallback 场景 | ✅ DONE + 测试覆盖，待下一轮 live 验证 |
 
 ## 优先排查顺序
 
@@ -128,7 +129,7 @@
 - **`module.meta.json` 的统计字段要与真实 artifact diff 分开看**：`captureCount`、`sourceCacheKeys` 等变化不等于本体变化
 - **`throw` + 静默 `catch` 回退是 runtime hook 的危险反模式**
 - **host 侧 session / capture 基础设施修复已全部落地 + 测试覆盖**：stale cleanup 同步断链、`create_session` 收紧到 bridge `ping`、`get_capture_status` 去 lazy-load + 去 valueOnMainSync——这些都已被 `on-run8`/`on-run9` 验证。剩余问题更像 host 侧 reachability probe / session 选取，而不是 runtime capture 命令整体失效。详细修复历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)
-- **`create_session` 当前 probe 行为已进一步对齐真实命令路径**：ready-session 现在按 heartbeat / 创建时间优先最新会话，单候选 probe 不再硬性截断在 1s，且当剩余 deadline 已不足最小 probe 窗口时不会再额外透支时间；如果后续 live 仍复现 bundle 级 timeout，就应继续把焦点收敛到 runtime 侧命令端口时序，而不是 host registry 排序本身
+- **`create_session` 当前 probe 行为已进一步对齐真实命令路径**：ready-session 现在按 heartbeat / 创建时间优先最新会话；多候选场景会为 fallback 候选预留最小 probe 窗口，避免首个慢失败候选吞掉整个 bundle 级 deadline；单候选 probe 不再硬性截断在 1s，且当剩余 deadline 已不足最小 probe 窗口时不会再额外透支时间。若后续 live 仍复现 bundle 级 timeout，就应继续把焦点收敛到 runtime 侧命令端口时序，而不是 host registry 排序本身
 - **更早的 lowering 细节与已收敛 compile blocker 不再由本文档维护**：见 `E-004-MetallibSourceExtraction.md`、`E-006d-RenderingPathDiffReference.md` 与 archive
 
 ## 与其他文档的关系

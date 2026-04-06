@@ -221,18 +221,28 @@ public final class SessionService: Sendable {
             return nil
         }
 
-        for candidate in candidates {
+        for (index, candidate) in candidates.enumerated() {
             let remaining = deadline.timeIntervalSinceNow
             guard remaining > 0 else {
                 return nil
             }
 
+            let remainingCandidates = candidates.count - index - 1
+            let probeSlots = Double(remainingCandidates + 1)
+            let maxTimeoutForCandidate = remainingCandidates > 0
+                ? remaining / probeSlots
+                : remaining
             let probeTimeout = min(
                 Self.maximumBridgeProbeTimeout,
-                remaining
+                maxTimeoutForCandidate
             )
 
-            guard probeTimeout >= Self.minimumBridgeProbeTimeout else {
+            let isOnlyCandidate = index == 0 && remainingCandidates == 0
+            guard probeTimeout > 0 else {
+                return nil
+            }
+
+            guard !isOnlyCandidate || probeTimeout >= Self.minimumBridgeProbeTimeout else {
                 return nil
             }
 

@@ -138,33 +138,52 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 ## 当前主线
 
-- **E-006d（当前最高优先级）**：调查"用 PlayCover 打开原神，在同一界面重复启动时，画面表现每次都不完全一样；mesh 不变，但局部渲染结果异常"的现象。当前**仍不能实锤是 shader 改坏**：原神是延迟管线，异常也可能来自后处理、着色阶段，或更上层的 render pipeline 顺序 / 配置差异。
-- **当前最该做的事**：`E-006d8` 已从"缺工具、缺证据"前移为"四条具体 blocker 收敛"。agent 可独立推进的四条线：
-  1. **capture bridge reachability**：`replacement-on-run9` 复测进一步说明：runtime 侧并非彻底不可达——针对已列出的 ready session，`get_capture_status` 立即返回 `available=true / supportsGPUTrace=true`，`capture_metal_frame` 也能成功启动；但同一时刻重新走 `create_session(bundleId)` 仍可能报 *"Runtime registered ... but command bridge was not reachable within 20s"*。因此 blocker #1 继续收敛为**host 侧 ready-session 复用 / reachability probe 与真实可发命令 session 之间仍存在时序或判定分歧**，而不是“capture/status 命令本身稳定超时”。
-  2. **capture 输出路径**：`replacement-on-run9` 表明，`capture_metal_frame` 并非对所有自定义 `output_path` 都拒绝；当路径落在 app 默认容器 `Captures/` 内时，可显式写入并成功产出 fresh `.gputrace`。当前真正未收口的是**容器外自定义路径权限边界**；短期仍可优先使用默认容器路径 + `finalize-run --latest-gputrace`
-  3. **trace 合法 MSL 覆盖**：`replacement-on-run9` fresh `.gputrace` 自动检查为 `3/12` 个源码文件是合法 MSL，`index` 引用 `855`，覆盖率 `1.4%`；说明 blocker #1 新证据已补齐，但 blocker #3 仍未实质改善
-  4. **绘制内容差异**：对 `replacement-off-run1` vs `replacement-on-run5` 做正式 draw call / Render Encoder / Pipeline State 结构化 diff
-- **绘制内容差异分支的执行边界**：现有 `LocalDocs/XCodeOperation/` 已具备 `xcode_gpu_ops.py`、`collect_cbs.py`、`collect_re_details.py` 等脚本；`Scripts/e006d_render_diff.py` 已把标准 run 快照接到统一入口。但这条线依赖 Xcode GUI 环境、Accessibility 权限，以及部分 `cliclick` 操作。**因此它现在是重要专项分析分支，不是默认日常 gate；只有在已验证 agent 能独立跑通时，才可升级为标准验证步骤。**
-- **当前执行口径**：dashboard 只保留"现在最该做什么、做到什么算推进、有哪些基线已经可直接复用"；`E-006d-GenshinRenderingNondeterminism.md` 负责承载当前主线的详细判断路径、归因顺序与技术细节，`E-006d-RenderingPathDiffReference.md` 负责承载 draw call / render pass / pipeline 级别的专项对比方法。
-- **E-006c（✅ 已关闭，但仅作为里程碑基线）**：Xcode 人工确认 `capture_20260404_roadE_e006c3_final.gputrace` 中 Draw Call shader 面板可见 MSL 源码，说明"源码可见"链路已打通；但后续仍需对"渲染是否稳定正确"继续验证。
-- **E-006a（扩展真实 corpus 覆盖面）** / **E-007（UI/MCP 工具暴露）**：仍保留，但在 `E-006d` 完成根因归因前暂不作为最高优先级。
+- **E-006d（当前最高优先级）**：调查"用 PlayCover 打开原神，在同一界面重复启动时，画面表现每次都不完全一样；mesh 不变，但局部渲染结果异常"的现象。详细判断路径、归因顺序与技术备注见 `E-006d-GenshinRenderingNondeterminism.md`。
+- **E-006d8 四条 blocker（agent 可独立推进三条，一条需 GUI 环境）**：
+
+| # | blocker | 状态 | 推进方式 |
+|---|---|---|---|
+| 1 | capture bridge reachability：`create_session(bundleId)` 仍可能超时，但已有 ready session 可直接执行 capture | 进行中 | 对照 `list_sessions` 现成 session 与 `create_session` 的选取 / probe 行为差异 |
+| 2 | capture 输出路径：容器外自定义路径权限边界未明 | 短期绕过 | 继续用默认容器路径 + `--latest-gputrace` |
+| 3 | trace 合法 MSL 覆盖偏低（`~3/12`） | 进行中 | 归因已有合法 MSL 对应的 draw call / replacement 路径 |
+| 4 | 绘制内容差异未正式产出 | 工具就绪，需 GUI 环境 | `e006d_render_diff.py` 已就绪，需 Xcode GUI / Accessibility / `cliclick` |
+
+- **绘制内容差异分支**：这条线依赖 Xcode GUI 环境、Accessibility 权限与 `cliclick`。**它是重要专项分析分支，不是默认日常 gate**。详细方法见 `E-006d-RenderingPathDiffReference.md`。
+- **E-006c（✅ 已关闭）**：Xcode 人工确认 shader 面板源码可见，"源码可见"链路已打通。
+- **E-006a / E-007**：在 `E-006d` 明确根因前暂不作为最高优先级。
 
 ## 最新基线
 
-| 样本 / 基线 | 结论 |
+### 当前可复用的自动化能力（agent 全链路独立完成）
+
+| 能力 | 工具 / 路径 |
 |---|---|
-| 流程与验收口径（当前默认） | Road E 的日常主回路已经稳定为 **采集 corpus → 离线 replay / compile / diff → 最小 live 复测 → `.gputrace` 最终确认**；除最终 Xcode 验收外，前置 build / test / live 采集 / 快照固化 / 自动检查都默认由 agent 独立完成 |
-| 当前日常自动化验证基线（2026-04-05） | `test-data/*.ll`（19 个）replay + compile **全部成功**；`ShaderCorpus/com.miHoYo.Yuanshen/modules/` 全部 **91/91** replay + compile **成功**，preflight rejected `0`，regression `0`；`FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 与 `./BuildScripts/build_and_install.sh` 都已形成可复用的标准构建验证路径 |
-| 当前落盘 / 闭环能力（2026-04-05） | 成功路径按 `ShaderCorpus/<bundleId>/modules/<moduleKey>/` 落盘单模块 `.bc/.ll/.metal/.meta.json`；成功 replacement 额外落盘 `ShaderCorpus/<bundleId>/replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal + replacement.meta.json`；失败路径在 `ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/` 落盘 `.bc/.ll/.metal/.meta.json`。三条路径都已能进入离线 replay / diff / 归因主回路 |
-| 当前控制面与统一工作流（2026-04-06） | 已统一使用 `shaderSourceReplacementEnabled` + `Scripts/set_shader_replacement_mode.py` 控制 `replacement=off/on`；使用 `Scripts/snapshot_capture_run.py` / `Scripts/e006d_matrix_runner.py` 统一固化单轮 run 与矩阵分析；使用 `Scripts/check_gputrace_sources.py` 做 `.gputrace` 自动检查；`RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl` 与 `Scripts/runtime_launch_diagnostics_summary.py` 用于判断 fresh 注入后是否真的进入主链路。`replacement-on-run8` 已再次说明这组日常方法可由 agent 独立完成。 |
-| `create_session` reachability 收口（2026-04-06） | host 侧 `SessionService.createSession(...)` 不再把"runtime 已 registration"等同于"session ready"，而是额外要求 command bridge `ping` 成功后才返回；已新增 `PlayCoverMCPTests` 覆盖"bridge 延迟可达 / 已注册但不可达"两类场景。**后续若 fresh run 仍出现 `get_capture_status -> Receive timed out`，blocker 已收敛到 capture command 路径 / runtime `MetalCaptureService.getStatus()` / 主线程执行，而不是 session 注册或 bridge ping 层。** |
-| `get_capture_status` 去主线程 / 去 lazy-load（2026-04-06） | runtime 侧 `BridgeListener` 不再为 `get_capture_status` 强制 `valueOnMainSync`，同时 `MetalCaptureService.getStatus(allowLazyLoad: false)` 不再在 status probe 中触发 `ensureGPUToolsCaptureLoaded()` / `dlopen`。状态查询现在返回线程安全快照，并在 `diagnostic_summary` 中显式带出 `gpuToolsCaptureLoaded=`，便于区分"capture 库尚未加载"与"真正的 bridge/capture 超时"。这一步的目标不是直接宣告 blocker 关闭，而是把剩余排查面进一步收窄到 capture command 本身。 |
-| `replacement-on-run9` blocker #1 复测（2026-04-06） | 直接对已列出的 ready session 执行 `get_capture_status`，立即返回 `available=true / supportsGPUTrace=true / trackedCommandQueues=2`；随后把 `capture_metal_frame` 输出路径显式指向 `~/Library/Containers/com.miHoYo.Yuanshen/Data/Documents/Captures/capture_20260406_roadE_e006d8_onrun9_custom.gputrace`，成功启动 capture，并固化为 `build/e006d-run-snapshots/replacement-on-run9/com.miHoYo.Yuanshen`。同轮里，重新走 `create_session(bundleId, timeout=20)` 仍报 *bridge not reachable*，而 runtime launch diagnostics 继续显示 launch / registration 主链完整。 | blocker #1 从"capture/status 命令是否能用"进一步收窄到**host 侧 `create_session` reachability probe / ready-session 复用判定**；blocker #2 则从"自定义路径全部被拒"修正为"容器外路径权限边界未明" |
-| 默认 `Captures/` 回收闭环（2026-04-06） | `Scripts/e006d_matrix_runner.py finalize-run` 已支持 `--latest-gputrace`；传入该参数时，会默认从 `~/Library/Containers/<bundleId>/Data/Documents/Captures/` 选取最新 `.gputrace` 并纳入 run 快照。agent 不需要手工拷路径 |
-| 绘制内容差异分析能力（2026-04-06） | `Scripts/e006d_render_diff.py` 已可作为统一入口，从 `build/e006d-run-snapshots/<label>/<bundle-id>` 解析快照内 `.gputrace`，导出 `frame_dump/`、`cb_data.json`、可选 `key_pass_details.json`，生成 `comparison.json + summary.txt`。当前缺的不是工具，而是**尚未对 `replacement-off-run1` vs `replacement-on-run5` 正式产出结构化 diff**（依赖 GUI 自动化环境） |
-| `.gputrace` 里程碑基线（2026-04-04） | `capture_20260404_roadE_e006c3_final.gputrace` 已被 Xcode 人工确认可在 Draw Call shader 面板中看到 MSL 源码（`E-006c` 已关闭） |
-| `E-006d8` 第一层矩阵结论（2026-04-06） | `off1/off2/on1~on8` 十轮快照证明：**同模式输入稳定**、共享 `moduleKey` 为 **91/91**、单模块 `.bc/.ll/.metal` 本体未出现语义级随机漂移；`mode=on missingAttemptWhileEnabledPairs=13`，且 **仍未形成"跨模式稳定不同"的 corpus / trace 级证据** |
-| 历史 live blocker 时间线 | 见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
+| 日常构建验证 | `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`（PlayTools 编译） |
+| 运行时部署 | `./BuildScripts/build_and_install.sh` → `inject_playtools` / `launch_app` |
+| 离线 replay + compile + baseline diff | `Scripts/corpus_replay_runner.py --compile --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus` |
+| replacement 模式切换 | `Scripts/set_shader_replacement_mode.py --mode off/on` |
+| live run 快照固化 | `Scripts/e006d_matrix_runner.py prepare-run / finalize-run --latest-gputrace` |
+| `.gputrace` 自动检查 | `Scripts/check_gputrace_sources.py /path/to/xxx.gputrace` |
+| runtime launch 诊断 | `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl` + `Scripts/runtime_launch_diagnostics_summary.py` |
+
+### 关键数据基线
+
+| 基线 | 结论 |
+|---|---|
+| 落盘与闭环能力 | 成功路径 → `ShaderCorpus/<bundleId>/modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`；replacement → `replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal`；失败路径 → `ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`。三条路径均已进入离线 replay / diff / 归因主回路。详见 `E-004-CorpusClosureAndRecapturePolicy.md` |
+| corpus 编译基线（2026-04-05） | `test-data/*.ll`（19 个）replay + compile **全绿**；`ShaderCorpus/com.miHoYo.Yuanshen/modules/` **91/91** replay + compile **全绿**，preflight rejected `0`，regression `0` |
+| `.gputrace` 里程碑（2026-04-04） | `capture_20260404_roadE_e006c3_final.gputrace` Xcode 人工确认 shader 面板源码可见（`E-006c` 已关闭） |
+| E-006d8 第一层矩阵（2026-04-06） | `off1/off2/on1~on9` 十一轮快照：**同模式输入稳定**、共享 `moduleKey=91/91`、单模块本体未漂移；`mode=on missingAttemptWhileEnabledPairs=13`；**尚未形成"跨模式稳定不同"证据** |
+
+### 已完成的 session / capture 基础设施修复（2026-04-06，全部已落地 + 测试覆盖）
+
+- host split-brain 修复（stale cleanup 同步断链）
+- `create_session` 收紧到 bridge `ping` 成功
+- `get_capture_status` 去 lazy-load + 去 `valueOnMainSync`
+- 默认容器 `Captures/` 回收闭环（`--latest-gputrace`）
+- 绘制内容差异 runner（`e006d_render_diff.py`，需 GUI 环境）
+
+> 更细的修复历史见 `E-006d-GenshinRenderingNondeterminism.md` 技术备注与 [00-Dashboard-Archive](00-Dashboard-Archive.md)
 
 ## 整体架构
 
@@ -197,11 +216,7 @@ PlayTools.framework (注入到 iOS app)
 
 ## TODO
 
-> **E-006c 已关闭（2026-04-04）**：Xcode 人工确认 `capture_20260404_roadE_e006c3_final.gputrace` shader 面板源码可见，**Road E 的"源码可见"目标已经达成**。
-
-> **优先级更新（2026-04-05）**：当前主线已切换到 **`E-006d`：原神重复启动时的随机渲染异常归因**。在 `E-006d` 明确根因前，`E-006a` / `E-007` 均下调一级优先级。
-
-> **当前 TODO 口径**：这里只保留"现在最该做什么"和"各已完成阶段目前产出了什么能力"；已完成但不再直接影响当前决策的细项统一下沉到子文档与 archive。
+> **优先级更新（2026-04-06）**：当前主线为 **`E-006d`：原神重复启动时的随机渲染异常归因**。在 `E-006d` 明确根因前，`E-006a` / `E-007` 均下调一级。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -210,36 +225,25 @@ PlayTools.framework (注入到 iOS app)
 | E-003 | **makeLibrary swizzle 骨架** | ✅ DONE | [E-003-Swizzle](E-003-LibrarySwizzleSkeleton.md) |
 | E-004 | **metallib → bitcode / IR / MSL 采集与导出** | ✅ DONE | [E-004](E-004-MetallibSourceExtraction.md) |
 | E-005 | **离线 replay / batch compile / diff 工具链** | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
-| E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | ✅ DONE（`E-006c` 里程碑已关闭） | [Archive](00-Dashboard-Archive.md) |
+| E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | ✅ DONE | [Archive](00-Dashboard-Archive.md) |
 | E-006d | **原神同一界面重复启动时的随机渲染异常归因** | **TODO（当前主线）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006d1~d7 | ↳ 对照工具链（输入 diff / aggregate diff / 开关 / 快照 / `.gputrace` / matrix / trace 归因） | ✅ DONE | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006d8 | ↳ 第一层归因收敛：四条 blocker | **TODO** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006d8a | ↳ runtime 启动 / registration breadcrumb 持久化 | ✅ DONE | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006d8b | ↳ 绘制内容差异结构对比 | **TODO** | [E-006d8b 参考](E-006d-RenderingPathDiffReference.md) |
+| E-006d1~d8a | ↳ 对照工具链 + 基础设施修复（全部已落地） | ✅ DONE | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
+| E-006d8 | ↳ 四条 blocker 收敛 | **TODO** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
 | E-006d8b1 | ↳ 标准化 render-diff runner | ✅ DONE | [E-006d8b 参考](E-006d-RenderingPathDiffReference.md) |
+| E-006d8b | ↳ 绘制内容差异结构对比 | **TODO**（需 GUI 环境） | [E-006d8b 参考](E-006d-RenderingPathDiffReference.md) |
 | E-006a | ↳ 扩展真实 corpus 覆盖面 | TODO（已降级） | |
 | E-007 | **PlayCover settings / MCP / 工具暴露** | TODO（已降级） | |
-
-**E-006d8 当前四条 blocker（agent 可独立推进）**：
-
-| # | blocker | 当前状态 | 推进方式 |
-|---|---|---|---|
-| 1 | capture bridge reachability：ready-session 复用 / reachability probe 判定仍有分歧 | `on-run9` 复测表明：针对 `list_sessions` 中现成的 ready session，`get_capture_status` 与 `capture_metal_frame` 都已可直接成功；但重新走 `create_session(bundleId)` 仍会报 *bridge not reachable within 20s*，同时 runtime launch diagnostics 继续显示 registration 主链完整 | 后续把 blocker #1 从"加载后 status probe 是否恢复"进一步切换为：①对照 `list_sessions` 现成 session 与 `create_session(bundleId)` 的选取 / probe 行为；②记录同一 runtimePort / sessionId 下直接命令成功、但 bundle 级 reachability probe 失败的条件；③确认 host 侧 probe 是否命中了旧 session、错误端口或过严 timeout |
-| 2 | capture 输出路径权限：容器外边界未明 | `on-run9` 说明：当 `output_path` 显式落在 app 默认容器 `Captures/` 内时，custom path capture 可成功启动并产出 `capture_20260406_roadE_e006d8_onrun9_custom.gputrace`；因此之前的 blocker 更准确应是"容器外路径权限仍未收口" | 短期继续优先用默认容器路径 / `--latest-gputrace`；后续若要支持容器外导出，再单独验证权限边界 |
-| 3 | trace 合法 MSL 覆盖偏低 | `on-run9` fresh trace 自动检查为 `valid_msl=3/12`、`indexHashReferences=855`、覆盖率 `1.4%`，与 `on-run8` 相比未形成新的覆盖突破 | 继续对 fresh capture 跑 `check_gputrace_sources.py`，并优先归因这 3 个合法 MSL 对应的 draw call / replacement 路径 |
-| 4 | 绘制内容差异未正式产出 | `e006d_render_diff.py` 入口已就绪 | 需 GUI 自动化环境跑通 `off-run1` vs `on-run5` |
 
 ## 踩坑与经验
 
 - **核心原则：优先沉淀成功样本，再去扩 lowering**：后续应优先围绕 `ShaderCorpus/`、`manifest.jsonl`、`replacements/` 与失败路径导出样本做 replay、diff 和回归，而不是重新回到高成本 live 试错
 - **`test-data/` 和 `ShaderCorpus/` 不能混用**：`test-data/` 用于验证单个 lowering；`ShaderCorpus/` 用于真实样本的批量 replay、diff 与回归基线
 - **`build_and_install.sh` 是更新运行时 framework 的唯一可靠路径**：`sync_playtools_xcframework.sh` 只更新构建产物；涉及 live 时必须走 `BuildScripts/build_and_install.sh`
-- **源码可见 / compile green 都不等于渲染语义正确**：`.gputrace` 中能看到 MSL 只证明"源码可见"链路已通；`E-006d` 关注的是相同输入下最终视觉结果、trace 与 replacement 证据是否稳定一致
+- **源码可见 / compile green 都不等于渲染语义正确**：`E-006d` 关注的是相同输入下最终视觉结果、trace 与 replacement 证据是否稳定一致
 - **当前最低风险的比较基线仍是"替换 vs 不替换"**：统一通过 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py` 控制
-- **不能只看 shader 文本差异**：在延迟管线场景里，draw call / Render Encoder / Pipeline State / post-processing 结构本身就是一层独立证据
-- **`E-006d` 的归因顺序必须固定**：先做"替换 vs 不替换"对照，再对齐"输入是否相同"，再比较"输出是否相同"，最后才看 runtime 是否真的使用了替换后的 library 以及更后续的 pass / pipeline 行为
-- **session / capture 基础设施修复已全部落地并测试覆盖**：stale cleanup 同步断链、`create_session` 收紧到 bridge `ping` 成功、`get_capture_status` 去 lazy-load 与主线程耦合——均已落地 + 单测覆盖，详见 `E-006d-GenshinRenderingNondeterminism.md` 技术备注与 archive
-- **更细的 lowering 经验、历史 live blocker 链路与已完成轮次已下沉到独立参考文档**：见 `E-006d-GenshinRenderingNondeterminism.md`、`E-006d-RenderingPathDiffReference.md`、`00-Dashboard-Archive.md` 与 `E-004-MetallibSourceExtraction-Archive.md`
+- **`E-006d` 的归因顺序必须固定**：先"替换 vs 不替换"对照 → 再对齐"输入是否相同" → 再比较"输出是否相同" → 最后看 runtime / render pipeline / post-processing 行为
+- **session / capture 基础设施修复已全部落地 + 测试覆盖**：stale cleanup、`create_session` bridge ping、`get_capture_status` 去 lazy-load——详见 `E-006d-GenshinRenderingNondeterminism.md`
+- **更细的 lowering 经验、历史 live blocker 链路与已完成轮次已下沉到独立参考文档**：见 `E-004-MetallibSourceExtraction-Archive.md`、`E-006d-RenderingPathDiffReference.md` 与 `00-Dashboard-Archive.md`
 
 ## 参考信息
 

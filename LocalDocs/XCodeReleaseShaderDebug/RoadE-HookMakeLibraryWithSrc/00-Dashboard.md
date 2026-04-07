@@ -156,7 +156,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 ## 当前主线
 
-- **`E-006g`（当前最高优先级）**：解决 `恋与深空` 在同时启用 `metal capture + startup injection + shader replacement` 时的启动崩溃。**`791A306ED1B6648B_4577 / ec0c6f...` 已在本轮通过 `select fast` lowering 修复退出 fresh blocker；当前默认入口仍是 `E-006g3`，但焦点已前移到 `mtl_BaseVertex` 缺失这一组 vertex builtin lowering 问题，重点关注 `F474C54E8C5214F4_4689 / bbb32d...`（cross-run hotspot）与 `A101E8447FA32563_5169 / 82d1...`（latest surfaced）。** 详细路径见 `E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md`。
+- **`E-006g`（当前最高优先级）**：解决 `恋与深空` 在同时启用 `metal capture + startup injection + shader replacement` 时的启动崩溃。**`791A306ED1B6648B_4577 / ec0c6f...` 已在本轮通过 `select fast` lowering 修复退出 fresh blocker；当前默认入口仍是 `E-006g3`，但焦点已前移到 `mtl_BaseVertex` 缺失这一组 vertex builtin lowering 问题，重点关注 `F474C54E8C5214F4_4689 / bbb32d...`（cross-run hotspot）与 `A101E8447FA32563_5169 / 82d1...`（latest surfaced）。同日晚已落 `air.base_vertex/base_instance` attribute mapping 与最小回归样本，当前状态更新为“代码已落、待 replay / build / fresh case E 验证”。** 详细路径见 `E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md`。
 - **`E-006f`（当前第二优先级）**：解决 `原神` 在“进入游戏”后出现的 `31-4302` 完整性异常。**当前最该做的是先把 `launch_app -> create_session -> tap` 的最小触发路径稳定下来，再做 replacement `off/on` 对照；只有当这两步仍不足以定位时，才升级到工作区外静态分析，且仍需用户确认。** 详细路径见 `E-006f-GenshinIntegrityCheck-314302.md`。
 - **`E-006e`（当前第三优先级）**：继续保留 `QQ飞车` 在同时启用 `metal capture + shader replacement` 时的启动兼容性问题，但由于最新四象限未稳定复现，当前不再作为默认工作入口。**若后续恢复优先级，首要任务不是盲修，而是解释历史 crash 与当前未复现基线之间的差异。** 详细记录见 `E-006e-QQSpeedCaptureReplacementStartupCrash.md`。
 - **`E-006d`（暂时搁置）**：随机画面异常已确认是偶现问题，现阶段仅保留已有调查进度；主文档不再继续展开，也不再要求默认读取其子文档跟进细节。仅在 `E-006g` / `E-006f` / `E-006e` 收敛后，才考虑是否恢复优先级。
@@ -242,7 +242,7 @@ PlayTools.framework (注入到 iOS app)
 | E-006g | ↳ **`恋与深空`：`metal capture + startup injection + shader replacement` 同开启动崩溃** | **IN PROGRESS（当前最高优先级，已完成 `E-006g1`）** | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
 | E-006g1 | ↳ 三开关最小五象限启动矩阵 + diagnostics / crash 证据固化 | ✅ DONE（2026-04-07） | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
 | E-006g2 | ↳ 系统性汇总 startup 期 `replacement_compile_failed` / fallback failure clusters，确认 late crash 是否由 compile failure 集合触发 | ✅ DONE（2026-04-07，结论已收敛） | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
-| E-006g3 | ↳ 把 `compile_failed` 命中面收缩到最小 `cacheKey` / selector / module 集合，为 `E-006g4` 准备最小修复 / 旁路面 | IN PROGRESS（当前唯一默认入口） | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
+| E-006g3 | ↳ 把 `compile_failed` 命中面收缩到最小 `cacheKey` / selector / module 集合，为 `E-006g4` 准备最小修复 / 旁路面 | IN PROGRESS（当前唯一默认入口；`air.base_vertex/base_instance` 已完成 replay / build / fresh case E 验证，默认 blocker 前移到 `45AE... / 1cdc...`） | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
 | E-006g4 | ↳ 设计并验证“不牺牲源码可见性目标”的修复方案 | TODO | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
 | E-006f | ↳ **`原神`：进入游戏后出现 `31-4302` 完整性异常** | **TODO（当前第二优先级）** | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
 | E-006f1 | ↳ 自动化“进入游戏”最小触发路径（`launch_app -> create_session -> tap`） | TODO（先做） | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
@@ -260,7 +260,7 @@ PlayTools.framework (注入到 iOS app)
 ## 踩坑与经验
 
 - **源码可见 / compile green 都不等于最终可用**：当前阶段真正阻塞落地的是**启动兼容性**与**进入游戏后的完整性检查副作用**，不能只看 `.gputrace` 或 compile 指标就宣告完成
-- **`恋与深空` 当前默认入口仍是 `E-006g3`，但热点已前移**：不要再把“补矩阵脚本 / 补埋点”当作默认任务；`791A306ED1B6648B_4577 / ec0c6f...` 现已转为回归样本，当前更该围绕 `mtl_BaseVertex` 缺失这一组 `F474... / bbb32d...` 与 `A101... / 82d1...` 继续收缩命中面
+- **`恋与深空` 当前默认入口仍是 `E-006g3`，但 latest blocker 已再次前移**：不要再把“补矩阵脚本 / 补埋点”当作默认任务；`791A306ED1B6648B_4577 / ec0c6f...` 与 `mtl_BaseVertex` 这一组 `F474... / bbb32d...`、`A101... / 82d1...` 现都应转为回归样本。fresh `case E` 的最新 failure surface 已前移到 `45AE... / 1cdc...`，且它同时暴露了 `bool3 select`、`GEP error` 与 `air.gather_texture_2d` placeholder 三类 lowering 缺口
 - **`31-4302` 更像完整性 / 反篡改问题，不宜只靠人工看弹窗推进**：默认应先做最小自动 `tap` 触发与 replacement `off/on` 对照；只有当这两步仍不足以定位时，才升级到工作区外分析，且仍需用户明确确认
 - **`launch_app -> create_session -> tap` 可以视为 agent 可独立完成的轻量 UI 输入**：但直接对已安装 app bundle 做工作区外静态反汇编 / 二进制 patch 分析，不属于默认日常流程，执行前需要用户明确确认
 - **`E-006d` 现阶段只保留进度，不再占据 dashboard 控制面**：它的调查结果仍有参考价值，但在优先级恢复前，不应继续消耗主文档篇幅或默认工作流注意力

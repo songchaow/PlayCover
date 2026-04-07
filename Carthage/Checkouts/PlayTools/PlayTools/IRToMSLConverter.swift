@@ -1293,7 +1293,7 @@ struct IRToMSLConverter {
         let argIndex: Int
         /// 参数种类: "air.buffer", "air.texture", "air.sampler",
         /// "air.vertex_input", "air.fragment_input", "air.vertex_id",
-        /// "air.thread_position_in_grid" 等
+        /// "air.base_vertex", "air.base_instance", "air.thread_position_in_grid" 等
         let kind: String
         /// MSL 类型名 (来自 "air.arg_type_name"): "float4", "uint", "Uniforms" 等
         let typeName: String
@@ -2489,6 +2489,12 @@ struct IRToMSLConverter {
                 ptrInfo = nil
             case "air.instance_id":
                 attribute = "[[instance_id]]"
+                ptrInfo = nil
+            case "air.base_vertex":
+                attribute = "[[base_vertex]]"
+                ptrInfo = nil
+            case "air.base_instance":
+                attribute = "[[base_instance]]"
                 ptrInfo = nil
             case "air.thread_position_in_grid":
                 attribute = "[[thread_position_in_grid]]"

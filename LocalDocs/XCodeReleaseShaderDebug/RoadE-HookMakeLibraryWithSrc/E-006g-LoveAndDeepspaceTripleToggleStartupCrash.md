@@ -167,7 +167,7 @@
 |---|---|---|---|
 | E-006g1 | 三开关最小五象限启动矩阵 + diagnostics / crash 证据固化 | ✅ DONE（2026-04-07） | 已新增 `Scripts/e006g_launch_matrix_runner.py`，并对 `com.papegames.lysk` 执行 `A/B/C/D/E` 五象限 fresh launch；五组 settings 均与预期一致，`launch_app -> create_session` 全部成功进入 `ready`，`launch-events.jsonl` 最新 run 全部到达 `playcover_launch_complete` |
 | E-006g2 | 系统性汇总 startup 期 `replacement_compile_failed` / fallback failure clusters，确认 late crash 是否由 compile failure 集合触发 | ✅ DONE（2026-04-07，结论已收敛） | 已确认崩溃并不发生在 runtime 注册前；最新 fresh `case E` 已把主 blocker 收敛到 **`cacheKey=791A306ED1B6648B_4577` / `moduleKey=ec0c6f0e72d6fc64daf4d5955cd1ea2cc5e729b0f988b1e857d13bfb54c7f6c3`**，且 `analyze` 已按 compile_failed 优先显示热点 |
-| E-006g3 | 把 `compile_failed` 命中面收缩到最小 `cacheKey` / selector / module 集合，为 `E-006g4` 准备最小修复 / 旁路面 | IN PROGRESS（下一步默认入口） | `791A306ED1B6648B_4577 / ec0c6f...` 已在本轮通过 `select fast` lowering 修复退出 fresh blocker；当前默认入口前移到 **`mtl_BaseVertex` 缺失** 这一组 vertex builtin lowering 缺口，重点观察 `F474... / bbb32d...`（cross-run hotspot）与 `A101... / 82d1...`（latest surfaced） |
+| E-006g3 | 把 `compile_failed` 命中面收缩到最小 `cacheKey` / selector / module 集合，为 `E-006g4` 准备最小修复 / 旁路面 | IN PROGRESS（当前默认入口已前移到 `45AE... / 1cdc...`；`air.base_vertex/base_instance` 修复已完成 replay / build / fresh case E 验证） | `791A306ED1B6648B_4577 / ec0c6f...` 已在本轮通过 `select fast` lowering 修复退出 fresh blocker；随后 `air.base_vertex/base_instance` attribute mapping 也已让 `F474... / bbb32d...` 与 `A101... / 82d1...` 退出 latest fresh `case E` failure surface，当前 default/actionable blocker 前移到 `45AE24662B56C487_14497 / 1cdc9318994d8476d7aba3f917f50630418ed80f749a056ede19285b3e8ca94e` |
 | E-006g4 | 设计并验证“不牺牲源码可见性目标”的修复方案 | TODO | 最终方案不能退化为“永久关 startup injection”或“永久关 replacement” |
 
 ## `E-006g1` / `E-006g2` 当前结论（2026-04-07）
@@ -254,12 +254,32 @@
 - cross-run hotspot 现已前移：`Scripts/e006g_launch_matrix_runner.py analyze` 的 `hotspotSurface` 已不再是 `791A...`，而是 `F474... / bbb32d...`；`A101... / 82d1...` 则是本轮 latest newly surfaced blocker
 - 因此，`791A... / ec0c6f...` 现应下调为**已修复、需保回归**的历史 blocker，而不再是 `E-006g3` 的默认工作入口
 
+### 2026-04-07 同日晚补充：vertex draw-offset builtin 映射已完成验证，latest blocker 前移
+
+- 已在 `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift` 的 metadata builtin 映射中补齐：
+  - `air.base_vertex` → `[[base_vertex]]`
+  - `air.base_instance` → `[[base_instance]]`
+- 已新增最小回归样本：
+  - `test-data/test_vertex_draw_builtins.ll`
+  - `test-data/test_vertex_draw_builtins.metal`
+- 离线验证已完成并通过：
+  - `test_vertex_draw_builtins.ll` → replay 成功，`xcrun metal -c` 成功
+  - 历史 failure modules `bbb32d...` 与 `82d1...` → replay 成功，`xcrun metal -c` 成功
+- 运行时验证已完成并通过既定脚本闭环：
+  - `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 成功
+  - `./BuildScripts/build_and_install.sh` 成功
+  - fresh `case E` 已重新 `prepare-case -> launch_app -> finalize-case --replace-existing`
+- **结论更新**：`F474... / bbb32d...` 与 `A101... / 82d1...` 已退出 latest fresh `case E` failure surface；最新一轮 `processLaunchId=launch-74202-a5fd16bc-18f3-447f-a472-452c316110e9` 的唯一 compile blocker 已前移到：
+  - `cacheKey=45AE24662B56C487_14497`
+  - `moduleKey=1cdc9318994d8476d7aba3f917f50630418ed80f749a056ede19285b3e8ca94e`
+  - 当前 compiler message 主体为 `bool3 select` 类型不匹配、`GEP error` 与多处 `air.gather_texture_2d` placeholder
+- **注意区分 latest 与 aggregate**：`Scripts/e006g_launch_matrix_runner.py analyze` 的 `hotspotSurface` 仍显示 `F474...`，是因为它按保留 runs 做 cross-run 聚合；但 `case.meta.json` / `launch-summary.txt` 的 `latestReplacementFailureSurfaces` 已不再包含 `F474...` 或 `A101...`
+
 ### 下一步（仅记录，不在本轮展开）
 
-1. 把 `E-006g3` 的默认入口前移到 **vertex builtin lowering**：围绕 `mtl_BaseVertex` 缺失继续收缩 `F474... / bbb32d...` 与 `A101... / 82d1...` 的最小修复面
-2. 判断 `F474...` 与 `A101...` 是否共享同一处 builtin 参数/签名还原缺口，尽量避免按 cacheKey 分别补丁
-3. `cacheKey=791A306ED1B6648B_4577` / `moduleKey=ec0c6f0e72d6fc64daf4d5955cd1ea2cc5e729b0f988b1e857d13bfb54c7f6c3` 保留为 `select fast` 回归样本；后续若再次回退，优先用离线 replay 先报警
-4. `cacheKey=6BECB97B0B4BCBFD_7123` 的 targeted bypass 继续保留，直到 `mtl_BaseVertex` 这一组 compile blocker 收敛后再评估是否缩回
+1. 把 `E-006g3` 的默认入口从 `mtl_BaseVertex` 组前移到 `45AE... / 1cdc...`，优先拆开 `bool3 select`、`GEP error`、`air.gather_texture_2d` placeholder 这三个 lowering 缺口是否属于同一模块内的独立问题
+2. `cacheKey=791A306ED1B6648B_4577` / `moduleKey=ec0c6f0e72d6fc64daf4d5955cd1ea2cc5e729b0f988b1e857d13bfb54c7f6c3` 与 `F474... / A101...` 继续保留为回归样本；后续若再次回退，优先用离线 replay + fresh case E 先报警
+3. `cacheKey=6BECB97B0B4BCBFD_7123` 的 targeted bypass 继续保留，直到新的 latest compile blocker 收敛后再评估是否缩回
 
 ### 2026-04-07 工具补强
 

@@ -323,6 +323,16 @@ struct IRToMSLConverter {
         let resultSSA: String?
     }
 
+    /// 从 IR 顶层全局常量声明中提取的常量定义。
+    struct IRGlobalConstant {
+        /// IR 符号名（包含前缀 `@`）
+        let irName: String
+        /// 该常量的 IR 类型（如 `[4 x <4 x float>]`）
+        let irType: String
+        /// 初始化表达式（如 `[<4 x float> <...>, ...]`）
+        let initializer: String
+    }
+
     // swiftlint:disable function_body_length
     /// 完整的 air.* → MSL 映射表。
     ///
@@ -655,6 +665,14 @@ struct IRToMSLConverter {
             paramCount: -1,
             isMethodCall: true,
             description: "depth2d.sample_compare(sampler, coord, compare_value)"
+        ))
+        m.append(AirBuiltinMapping(
+            airPattern: "air.gather_texture_2d",
+            mslFunction: "gather",
+            category: .texture,
+            paramCount: -1,
+            isMethodCall: true,
+            description: "texture2d.gather(sampler, coord, [offset], [component])"
         ))
         // read: air.read_texture_{dim}.{type} → texture.read(coord)
         m.append(AirBuiltinMapping(
@@ -1911,6 +1929,32 @@ struct IRToMSLConverter {
         return result
     }
 
+    /// 从 IR 顶层解析简单的 `constant` 全局定义，供 GEP/load 访问全局常量数组时发射到 MSL。
+    private static func parseIRGlobalConstants(_ irText: String) -> [IRGlobalConstant] {
+        var result: [IRGlobalConstant] = []
+
+        for line in irText.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("@"), let eqRange = trimmed.range(of: " = ") else { continue }
+            guard trimmed.contains(" constant ") else { continue }
+
+            let irName = String(trimmed[trimmed.startIndex..<eqRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+            let rhs = String(trimmed[eqRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+            guard let constantRange = rhs.range(of: " constant ") else { continue }
+
+            let afterConstant = String(rhs[constantRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+            let (irType, afterType) = parseIRType(afterConstant)
+            guard !irType.isEmpty else { continue }
+
+            let (initializer, _) = parseIRValue(afterType)
+            guard !initializer.isEmpty else { continue }
+
+            result.append(IRGlobalConstant(irName: irName, irType: irType, initializer: initializer))
+        }
+
+        return result
+    }
+
     // MARK: - Public API
 
     /// 将 LLVM IR 文本转换为 MSL 源码。
@@ -1939,6 +1983,8 @@ struct IRToMSLConverter {
         let structTypeDefs = parseIRStructTypes(irText)
         // 1c. 解析 metadata 中的结构体字段信息 (E-004e4c)
         let structFieldInfo = parseStructFieldInfoFromMetadata(irText, metadataFuncs: metadataFuncs)
+        // 1d. 解析顶层全局常量（供 GEP/load 命中 `@const_array[...]` 场景复用）
+        let globalConstants = parseIRGlobalConstants(irText)
 
         // 2. 解析 IR 中的函数定义
         let (irFunctions, totalCount) = parseIRFunctions(irText)
@@ -1960,7 +2006,8 @@ struct IRToMSLConverter {
         let mslSource = generateMSL(
             functions: shaderFunctions,
             structTypeDefs: structTypeDefs,
-            structFieldInfo: structFieldInfo
+            structFieldInfo: structFieldInfo,
+            globalConstants: globalConstants
         )
 
         let elapsed = CFAbsoluteTimeGetCurrent() - startTime
@@ -2910,8 +2957,8 @@ struct IRToMSLConverter {
         var depth = 0
 
         for char in paramList {
-            if char == "<" || char == "{" || char == "(" { depth += 1 }
-            else if char == ">" || char == "}" || char == ")" { depth -= 1 }
+            if char == "<" || char == "{" || char == "(" || char == "[" { depth += 1 }
+            else if char == ">" || char == "}" || char == ")" || char == "]" { depth -= 1 }
 
             if char == "," && depth == 0 {
                 parts.append(current)
@@ -4088,6 +4135,19 @@ struct IRToMSLConverter {
         let valTrue = resolveIROperand(selectParts[1].value, ctx: ctx)
         let valFalse = resolveIROperand(selectParts[2].value, ctx: ctx)
         let resultType = irScalarTypeToMSL(selectParts[1].type)
+        let condDim = extractVectorDim(selectParts[0].type)
+
+        if condDim > 1 {
+            let swizzles = (0..<condDim).map { vectorIndexToSwizzle($0) }
+            let trueVector = "\(resultType)(\(valTrue))"
+            let falseVector = "\(resultType)(\(valFalse))"
+            let components = swizzles.map { swizzle in
+                "(\(cond)).\(swizzle) ? (\(trueVector)).\(swizzle) : (\(falseVector)).\(swizzle)"
+            }
+            ctx.emitAutoAssign(lhs, expr: "\(resultType)(\(components.joined(separator: ", ")))", knownType: resultType)
+            return
+        }
+
         ctx.emitAutoAssign(lhs, expr: "\(cond) ? \(valTrue) : \(valFalse)", knownType: resultType)
     }
 
@@ -5140,6 +5200,11 @@ struct IRToMSLConverter {
                 let obj = args[0]
                 let methodArgs = Array(args.dropFirst())
                 let methodArgTypes = Array(argTypes.dropFirst())
+
+                if mapping.mslFunction == "gather" {
+                    return generateTextureGatherMSL(texture: obj, methodArgs: methodArgs, methodArgTypes: methodArgTypes)
+                }
+
                 let filtered = filterTextureArgs(methodArgs, argTypes: methodArgTypes, airName: airName)
                 var finalArgs = filtered.args
 
@@ -5261,6 +5326,51 @@ struct IRToMSLConverter {
         }
 
         return "\(mapping.mslFunction)(\(callArgs.joined(separator: ", ")))"
+    }
+
+    private static func generateTextureGatherMSL(
+        texture: String,
+        methodArgs: [String],
+        methodArgTypes: [String]
+    ) -> String {
+        guard methodArgs.count >= 2 else {
+            return "\(texture).gather(/* args */)"
+        }
+
+        let sampler = methodArgs[0]
+        let coord = methodArgs[1]
+        var offsetExpr: String?
+        var componentExpr: String?
+
+        for index in 2..<min(methodArgs.count, methodArgTypes.count) {
+            let arg = methodArgs[index]
+            let type = methodArgTypes[index]
+
+            if offsetExpr == nil && type.contains("x i32") && arg != "0" && !arg.isEmpty {
+                offsetExpr = arg
+                continue
+            }
+
+            if componentExpr == nil && type == "i32", let componentIndex = Int(arg), (0...3).contains(componentIndex) {
+                let componentNames = ["x", "y", "z", "w"]
+                if componentIndex != 0 {
+                    componentExpr = "component::\(componentNames[componentIndex])"
+                }
+            }
+        }
+
+        var callArgs = [sampler, coord]
+        if let offsetExpr {
+            callArgs.append(offsetExpr)
+        }
+        if let componentExpr {
+            if offsetExpr == nil {
+                callArgs.append("int2(0)")
+            }
+            callArgs.append(componentExpr)
+        }
+
+        return "\(texture).gather(\(callArgs.joined(separator: ", ")))"
     }
 
     /// 翻译 phi 节点（E-004e4b）
@@ -5503,6 +5613,21 @@ struct IRToMSLConverter {
             return (type, rest)
         }
 
+        // 数组类型: [N x T]
+        if s.hasPrefix("[") {
+            var depth = 0
+            var i = s.startIndex
+            while i < s.endIndex {
+                if s[i] == "[" { depth += 1 }
+                else if s[i] == "]" { depth -= 1 }
+                i = s.index(after: i)
+                if depth == 0 { break }
+            }
+            let type = String(s[s.startIndex..<i])
+            let rest = String(s[i...])
+            return (type, rest)
+        }
+
         // 结构体类型: { <4 x float>, i8 }
         if s.hasPrefix("{") {
             var depth = 0
@@ -5684,26 +5809,25 @@ struct IRToMSLConverter {
     private static func resolveIROperand(_ operand: String, ctx: SSAContext) -> String {
         let s = operand.trimmingCharacters(in: .whitespaces)
 
-        // E-006a2e10 → E-006a2e13: 全局 IR symbols (@...) 不应出现在 MSL 中
-        // @__air_sampler_state 等 AIR 内部 symbol 需映射到对应的 MSL sampler 参数
+        // E-006a2e10 → E-006g3: 处理全局 IR symbols (@...)
+        // - `@__air_sampler_state` 等 AIR 内部 symbol 仍映射到对应 sampler 参数
+        // - 其他顶层全局常量（如 `@_ZL7ImmCB_0`）则保留为已发射到 MSL 的全局符号名
         if s.hasPrefix("@") {
-            // 尝试映射到 sampler 参数
-            // 优先匹配 addrspace(2)（typed pointer 模式），
-            // fallback 匹配 MSL 属性为 [[sampler(N)]] 的参数（opaque pointer 模式）
-            for (irParam, mslName) in ctx.paramNames {
-                if let irType = ctx.paramTypes[irParam],
-                   irType.contains("addrspace(2)") {
+            if s.contains("sampler") {
+                // 优先匹配 addrspace(2)（typed pointer 模式），fallback 再按 sampler 名称匹配
+                for (irParam, mslName) in ctx.paramNames {
+                    if let irType = ctx.paramTypes[irParam],
+                       irType.contains("addrspace(2)") {
+                        return mslName
+                    }
+                }
+                for (_, mslName) in ctx.paramNames where mslName.contains("sampler") {
                     return mslName
                 }
             }
-            // Opaque pointer fallback：查找 MSL 属性包含 sampler 的参数
-            for (irParam, mslName) in ctx.paramNames {
-                if mslName.contains("sampler") {
-                    return mslName
-                }
-            }
-            // 未识别的全局 symbol — 不应泄漏到 MSL，返回空由调用方过滤
-            return ""
+            let symbolName = String(s.dropFirst())
+                .replacingOccurrences(of: "\"", with: "")
+            return sanitizeIdentifier(symbolName, fallback: "globalSymbol", uppercaseFirst: false)
         }
 
         // SSA 名 / SSA 名后缀访问（如 `%1.xyz`、`%0.field3[0]`）
@@ -6199,7 +6323,8 @@ struct IRToMSLConverter {
     private static func generateMSL(
         functions: [ParsedShaderFunction],
         structTypeDefs: [String: IRStructTypeDef] = [:],
-        structFieldInfo: [String: [StructFieldInfo]] = [:]
+        structFieldInfo: [String: [StructFieldInfo]] = [:],
+        globalConstants: [IRGlobalConstant] = []
     ) -> String {
         var lines: [String] = []
 
@@ -6215,6 +6340,61 @@ struct IRToMSLConverter {
         lines.append("using namespace metal;")
         lines.append("")
 
+        func parseIRArrayType(_ irType: String) -> (count: Int, elementType: String)? {
+            let trimmed = irType.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("["), trimmed.hasSuffix("]"), let xRange = trimmed.range(of: " x ") else {
+                return nil
+            }
+            let countStr = String(trimmed[trimmed.index(after: trimmed.startIndex)..<xRange.lowerBound])
+                .trimmingCharacters(in: .whitespaces)
+            guard let count = Int(countStr) else { return nil }
+            let afterX = trimmed[xRange.upperBound...]
+            let elementType = String(afterX[..<afterX.index(before: afterX.endIndex)])
+                .trimmingCharacters(in: .whitespaces)
+            return (count, elementType)
+        }
+
+        func globalConstantDeclaration(irType: String, name: String) -> String {
+            if let array = parseIRArrayType(irType) {
+                return "\(globalConstantDeclaration(irType: array.elementType, name: name))[\(array.count)]"
+            }
+            return "\(irScalarTypeToMSL(irType)) \(name)"
+        }
+
+        func renderGlobalConstantInitializer(irType: String, initializer: String) -> String {
+            let trimmedType = irType.trimmingCharacters(in: .whitespaces)
+            let trimmedInit = initializer.trimmingCharacters(in: .whitespaces)
+
+            if let array = parseIRArrayType(trimmedType) {
+                if trimmedInit == "zeroinitializer" || trimmedInit == "undef" || trimmedInit == "poison" {
+                    let zeroValue = renderGlobalConstantInitializer(irType: array.elementType, initializer: "zeroinitializer")
+                    return "{ \(Array(repeating: zeroValue, count: array.count).joined(separator: ", ")) }"
+                }
+                guard trimmedInit.hasPrefix("["), trimmedInit.hasSuffix("]") else {
+                    return trimmedInit
+                }
+                let inner = String(trimmedInit.dropFirst().dropLast())
+                let rawElements = splitIRParameters(inner).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                let renderedElements = rawElements.map { rawElement -> String in
+                    let (elementType, afterType) = parseIRType(rawElement)
+                    if !elementType.isEmpty {
+                        let (elementValue, _) = parseIRValue(afterType)
+                        return renderGlobalConstantInitializer(irType: elementType, initializer: elementValue)
+                    }
+                    return renderGlobalConstantInitializer(irType: array.elementType, initializer: rawElement)
+                }
+                return "{ \(renderedElements.joined(separator: ", ")) }"
+            }
+
+            if trimmedInit == "zeroinitializer" || trimmedInit == "undef" || trimmedInit == "poison" {
+                return "\(irScalarTypeToMSL(trimmedType))(0)"
+            }
+            if trimmedType.hasPrefix("<") {
+                return parseVectorLiteral(trimmedInit)
+            }
+            return resolveIROperand(trimmedInit, ctx: SSAContext())
+        }
+
         if functions.isEmpty {
             lines.append("// No shader functions found in IR")
             return lines.joined(separator: "\n")
@@ -6223,6 +6403,20 @@ struct IRToMSLConverter {
         let userStructDefinitions = generateUserStructDefinitions(structFieldInfo, structTypeDefs: structTypeDefs)
         if !userStructDefinitions.isEmpty {
             lines.append(contentsOf: userStructDefinitions)
+            lines.append("")
+        }
+
+        if !globalConstants.isEmpty {
+            for global in globalConstants {
+                let symbolName = sanitizeIdentifier(
+                    String(global.irName.dropFirst()).replacingOccurrences(of: "\"", with: ""),
+                    fallback: "globalConstant",
+                    uppercaseFirst: false
+                )
+                let declaration = globalConstantDeclaration(irType: global.irType, name: symbolName)
+                let initializer = renderGlobalConstantInitializer(irType: global.irType, initializer: global.initializer)
+                lines.append("constant \(declaration) = \(initializer);")
+            }
             lines.append("")
         }
 

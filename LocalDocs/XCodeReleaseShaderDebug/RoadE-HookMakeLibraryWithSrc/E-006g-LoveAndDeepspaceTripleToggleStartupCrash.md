@@ -275,10 +275,28 @@
   - 当前 compiler message 主体为 `bool3 select` 类型不匹配、`GEP error` 与多处 `air.gather_texture_2d` placeholder
 - **注意区分 latest 与 aggregate**：`Scripts/e006g_launch_matrix_runner.py analyze` 的 `hotspotSurface` 仍显示 `F474...`，是因为它按保留 runs 做 cross-run 聚合；但 `case.meta.json` / `launch-summary.txt` 的 `latestReplacementFailureSurfaces` 已不再包含 `F474...` 或 `A101...`
 
+### 2026-04-07 深夜补充：`45AE... / 1cdc...` 已完成离线修复，待 fresh `case E` 复测
+
+- 已在 `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift` 落下三类修复：
+  - `translateSelect()`：`<N x i1>` 条件的 `select` 改为**逐分量 lowering**，不再直接发射 `boolN ? vecN : vecN`
+  - `parseIRType()` / `generateMSL()` / `resolveIROperand()`：补齐**顶层 `[N x T]` 数组类型解析**、**全局常量定义发射**与**非 sampler 全局符号保留**，使 `@_ZL7ImmCB_0` 这类 constant array 的 `GEP + load` 可编译
+  - `airBuiltinMappings` / `generateMSLForAirCall()`：补齐 `air.gather_texture_2d -> texture.gather(...)` lowering，默认覆盖当前 `offset=0` / `component=x` 命中面
+- 已新增最小回归样本：
+  - `test-data/test_vector_select_global_gep.ll`
+  - `test-data/test_vector_select_global_gep.metal`
+  - `test-data/test_gather_texture_2d.ll`
+  - `test-data/test_gather_texture_2d.metal`
+- 离线验证已完成并通过：
+  - `moduleKey=1cdc9318994d8476d7aba3f917f50630418ed80f749a056ede19285b3e8ca94e` → replay 成功，`xcrun metal -c` 成功
+  - `test_vector_select_global_gep.ll` → replay 成功，`xcrun metal -c` 成功
+  - `test_gather_texture_2d.ll` → replay 成功，`xcrun metal -c` 成功
+  - `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 成功
+- **状态更新**：`45AE... / 1cdc...` 已从“latest actionable compile blocker”下调为**已修复、待运行时 fresh `case E` 验证**的样本；由于本轮尚未执行 `build_and_install + fresh case E`，failure-path 样本到 fresh capture / latest surface 的闭环仍未完成
+
 ### 下一步（仅记录，不在本轮展开）
 
-1. 把 `E-006g3` 的默认入口从 `mtl_BaseVertex` 组前移到 `45AE... / 1cdc...`，优先拆开 `bool3 select`、`GEP error`、`air.gather_texture_2d` placeholder 这三个 lowering 缺口是否属于同一模块内的独立问题
-2. `cacheKey=791A306ED1B6648B_4577` / `moduleKey=ec0c6f0e72d6fc64daf4d5955cd1ea2cc5e729b0f988b1e857d13bfb54c7f6c3` 与 `F474... / A101...` 继续保留为回归样本；后续若再次回退，优先用离线 replay + fresh case E 先报警
+1. 按标准脚本执行 `./BuildScripts/build_and_install.sh`，随后对 `com.papegames.lysk` 重新做 fresh `case E`（`prepare-case -> launch_app -> finalize-case --replace-existing`），确认 `45AE... / 1cdc...` 已退出 latest failure surface，并观察新的 latest blocker 是否前移
+2. `cacheKey=45AE24662B56C487_14497` / `moduleKey=1cdc9318994d8476d7aba3f917f50630418ed80f749a056ede19285b3e8ca94e`、`791A... / ec0c6f...` 与 `F474... / A101...` 全部保留为回归样本；后续若再次回退，优先用离线 replay + fresh case E 先报警
 3. `cacheKey=6BECB97B0B4BCBFD_7123` 的 targeted bypass 继续保留，直到新的 latest compile blocker 收敛后再评估是否缩回
 
 ### 2026-04-07 工具补强

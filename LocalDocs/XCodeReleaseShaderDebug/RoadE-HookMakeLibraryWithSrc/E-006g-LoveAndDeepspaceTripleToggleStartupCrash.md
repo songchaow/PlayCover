@@ -161,6 +161,8 @@
 
 **新增约束（2026-04-07）**：`E-006g` 的 gate 不能只截到 `playcover_launch_complete`。`launch_app -> create_session` 成功后，必须继续保留 app 至少 **10 秒**，再执行 `python3 Scripts/e006g_launch_matrix_runner.py finalize-case ...`，以便把 startup replacement 的 late `replacement_compile_failed` / failure surfaces 一并固化。`finalize-case` 现默认内建 `--settle-seconds 10`；这个窗口来自当前已知 late crash / replacement compile failure 多发生在 launch 后约 **7~8 秒** 的经验基线，日常复测默认直接使用脚本默认值，**不要让 agent 自行改动 settle window**；只有离线测试才应显式传 `--settle-seconds 0`。
 
+**补充工作法（2026-04-07）**：若当前 blocker 的 compiler message / AIR 行为本身仍不明确，**优先自己写简单 shader 或最小 `.ll` 样本**，让 `metal` / `llvm-dis` / replay 工具链直接给出实际行为，再把确认后的模式固化到 `test-data/`；不要先在真实 failure-path 大样本上凭感觉猜 sampler / texture / builtin 编码。
+
 ## 当前 TODO 拆分
 
 | # | 子任务 | 状态 | 说明 |

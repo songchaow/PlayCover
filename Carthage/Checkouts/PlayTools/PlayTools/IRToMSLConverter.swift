@@ -2655,6 +2655,11 @@ struct IRToMSLConverter {
                 // 若存在 fragment_input，则会在签名生成阶段并入合成的 stage_in struct。
                 attribute = "[[position]]"
                 ptrInfo = nil
+            case "air.front_facing":
+                // E-006g3a: front-facing 不是 stage_in varying，而是 fragment entry builtin。
+                // 必须生成为显式 `[[front_facing]]` 形参，否则函数体里引用 mtl_FrontFace 会未声明。
+                attribute = "[[front_facing]]"
+                ptrInfo = nil
             case "air.vertex_output":
                 continue
             case "air.render_target":

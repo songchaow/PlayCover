@@ -322,6 +322,114 @@ def summarize_group(
     }
 
 
+def aggregate_replacement_hotspots(summaries: list[dict[str, Any]]) -> dict[str, Any]:
+    cluster_aggregates: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    surface_aggregates: dict[tuple[str, str, str, str, tuple[str, ...]], dict[str, Any]] = {}
+
+    for summary in summaries:
+        process_launch_id = str(summary.get("processLaunchId") or "")
+
+        for cluster in (summary.get("replacement") or {}).get("failureClusters") or []:
+            key = (
+                str(cluster.get("event") or ""),
+                str(cluster.get("selector") or ""),
+                str(cluster.get("cacheKey") or ""),
+                str(cluster.get("reason") or ""),
+                str(cluster.get("compilerMessage") or ""),
+            )
+            aggregate = cluster_aggregates.get(key)
+            if aggregate is None:
+                aggregate = {
+                    "event": key[0],
+                    "selector": key[1],
+                    "cacheKey": key[2],
+                    "reason": key[3],
+                    "compilerMessage": key[4],
+                    "occurrenceCount": 0,
+                    "runCount": 0,
+                    "processLaunchIds": [],
+                    "firstTimestamp": cluster.get("firstTimestamp"),
+                    "lastTimestamp": cluster.get("lastTimestamp"),
+                }
+                cluster_aggregates[key] = aggregate
+            aggregate["occurrenceCount"] += int(cluster.get("count") or 0)
+            aggregate["runCount"] += 1
+            if process_launch_id:
+                aggregate["processLaunchIds"].append(process_launch_id)
+            first_timestamp = str(cluster.get("firstTimestamp") or "")
+            last_timestamp = str(cluster.get("lastTimestamp") or "")
+            existing_first = str(aggregate.get("firstTimestamp") or "")
+            existing_last = str(aggregate.get("lastTimestamp") or "")
+            if first_timestamp and (not existing_first or first_timestamp < existing_first):
+                aggregate["firstTimestamp"] = first_timestamp
+            if last_timestamp and (not existing_last or last_timestamp > existing_last):
+                aggregate["lastTimestamp"] = last_timestamp
+
+        for surface in (summary.get("replacementFailureSurfaces") or {}).get("failureSurfaces") or []:
+            module_keys = tuple(str(value) for value in (surface.get("moduleKeys") or []) if value)
+            key = (
+                str(surface.get("selector") or ""),
+                str(surface.get("cacheKey") or ""),
+                str(surface.get("reasonCode") or ""),
+                str(surface.get("detail") or ""),
+                module_keys,
+            )
+            aggregate = surface_aggregates.get(key)
+            if aggregate is None:
+                aggregate = {
+                    "selector": key[0],
+                    "cacheKey": key[1],
+                    "reasonCode": key[2],
+                    "detail": key[3],
+                    "moduleKeys": list(module_keys),
+                    "moduleKeyCount": len(module_keys),
+                    "occurrenceCount": 0,
+                    "runCount": 0,
+                    "processLaunchIds": [],
+                    "firstTimestamp": surface.get("firstTimestamp"),
+                    "lastTimestamp": surface.get("lastTimestamp"),
+                }
+                surface_aggregates[key] = aggregate
+            aggregate["occurrenceCount"] += int(surface.get("count") or 0)
+            aggregate["runCount"] += 1
+            if process_launch_id:
+                aggregate["processLaunchIds"].append(process_launch_id)
+            first_timestamp = str(surface.get("firstTimestamp") or "")
+            last_timestamp = str(surface.get("lastTimestamp") or "")
+            existing_first = str(aggregate.get("firstTimestamp") or "")
+            existing_last = str(aggregate.get("lastTimestamp") or "")
+            if first_timestamp and (not existing_first or first_timestamp < existing_first):
+                aggregate["firstTimestamp"] = first_timestamp
+            if last_timestamp and (not existing_last or last_timestamp > existing_last):
+                aggregate["lastTimestamp"] = last_timestamp
+
+    ordered_clusters = sorted(
+        cluster_aggregates.values(),
+        key=lambda item: (
+            -int(item.get("runCount", 0)),
+            -int(item.get("occurrenceCount", 0)),
+            str(item.get("lastTimestamp", "")),
+            str(item.get("cacheKey", "")),
+        ),
+    )
+    ordered_surfaces = sorted(
+        surface_aggregates.values(),
+        key=lambda item: (
+            -int(item.get("runCount", 0)),
+            -int(item.get("occurrenceCount", 0)),
+            str(item.get("lastTimestamp", "")),
+            str(item.get("cacheKey", "")),
+            ",".join(item.get("moduleKeys") or []),
+        ),
+    )
+    return {
+        "failureClusters": ordered_clusters[:10],
+        "failureClusterCount": len(ordered_clusters),
+        "failureSurfaces": ordered_surfaces[:10],
+        "failureSurfaceCount": len(ordered_surfaces),
+    }
+
+
 def build_summary(
     events: list[dict[str, Any]],
     limit: int,
@@ -406,6 +514,30 @@ def print_human_summary(bundle_id: str, summaries: list[dict[str, Any]]) -> None
                 )
                 print(f"    - {rendered}")
 
+    hotspots = aggregate_replacement_hotspots(summaries)
+    cluster_hotspots = hotspots.get("failureClusters") or []
+    if cluster_hotspots:
+        print("")
+        print("crossRunReplacementFailureClusters:")
+        for hotspot in cluster_hotspots[:5]:
+            rendered = ", ".join(
+                f"{key}={value}"
+                for key, value in hotspot.items()
+                if key != "processLaunchIds" and value not in (None, "", 0, [])
+            )
+            print(f"  - {rendered}")
+
+    surface_hotspots = hotspots.get("failureSurfaces") or []
+    if surface_hotspots:
+        print("crossRunReplacementFailureSurfaces:")
+        for hotspot in surface_hotspots[:5]:
+            rendered = ", ".join(
+                f"{key}={value}"
+                for key, value in hotspot.items()
+                if key != "processLaunchIds" and value not in (None, "", 0, [])
+            )
+            print(f"  - {rendered}")
+
 
 def main() -> int:
     args = parse_args()
@@ -440,6 +572,7 @@ def main() -> int:
         "file": str(file_path),
         "manifestFile": str(manifest_path),
         "summaryCount": len(summaries),
+        "replacementHotspots": aggregate_replacement_hotspots(summaries),
         "runs": summaries,
     }
 

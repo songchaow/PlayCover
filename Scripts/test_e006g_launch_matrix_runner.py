@@ -150,8 +150,12 @@ class E006GLaunchMatrixRunnerTests(unittest.TestCase):
                     {
                         "event": "replacement_attempt",
                         "timestamp": "2026-04-07T01:00:05Z",
+                        "selector": "newLibraryWithData:error:",
+                        "cacheKey": "CACHE-A",
                         "moduleKeys": ["module-a"],
                         "outcome": "failed",
+                        "reasonCode": "compile_failed",
+                        "detail": "expected expression",
                     },
                     {
                         "event": "replacement",
@@ -214,6 +218,22 @@ class E006GLaunchMatrixRunnerTests(unittest.TestCase):
                 case_meta["launchDiagnostics"]["latestReplacementFailureSurfaces"][0]["moduleKeys"],
                 ["module-a"],
             )
+            self.assertEqual(
+                case_meta["launchDiagnostics"]["aggregatedReplacementFailureClusterCount"],
+                1,
+            )
+            self.assertEqual(
+                case_meta["launchDiagnostics"]["aggregatedReplacementFailureClusters"][0]["cacheKey"],
+                "CACHE-A",
+            )
+            self.assertEqual(
+                case_meta["launchDiagnostics"]["aggregatedReplacementFailureSurfaceCount"],
+                1,
+            )
+            self.assertEqual(
+                case_meta["launchDiagnostics"]["aggregatedReplacementFailureSurfaces"][0]["cacheKey"],
+                "CACHE-A",
+            )
 
             manifest_tail = json.loads((case_dir / "manifest-tail.json").read_text(encoding="utf-8"))
             self.assertEqual(len(manifest_tail), 3)
@@ -267,6 +287,30 @@ class E006GLaunchMatrixRunnerTests(unittest.TestCase):
                                     "count": 2,
                                 }
                             ],
+                            "aggregatedReplacementFailureClusterCount": 1,
+                            "aggregatedReplacementFailureClusters": [
+                                {
+                                    "event": "replacement_compile_failed",
+                                    "selector": "newLibraryWithData:error:",
+                                    "cacheKey": "CACHE-A",
+                                    "compilerMessage": "expected expression",
+                                    "runCount": 2,
+                                    "occurrenceCount": 3,
+                                }
+                            ],
+                            "aggregatedReplacementFailureSurfaceCount": 1,
+                            "aggregatedReplacementFailureSurfaces": [
+                                {
+                                    "selector": "newLibraryWithData:error:",
+                                    "cacheKey": "CACHE-A",
+                                    "reasonCode": "compile_failed",
+                                    "detail": "expected expression",
+                                    "moduleKeys": ["module-a"],
+                                    "moduleKeyCount": 1,
+                                    "runCount": 2,
+                                    "occurrenceCount": 3,
+                                }
+                            ],
                         },
                         "recentManifestEventCount": 0,
                     },
@@ -298,6 +342,9 @@ class E006GLaunchMatrixRunnerTests(unittest.TestCase):
             self.assertIn("case=C: matched=True lastEvent=playcover_library_injection_installed", completed.stdout)
             self.assertIn("replacementCompileFailed=2", completed.stdout)
             self.assertIn("failureSurfaces=1", completed.stdout)
+            self.assertIn("aggregateFailureSurfaces=1", completed.stdout)
+            self.assertIn("hotspotSurface: cacheKey=CACHE-A reasonCode=compile_failed runs=2 occurrences=3", completed.stdout)
+            self.assertIn("hotspotCluster: event=replacement_compile_failed cacheKey=CACHE-A runs=2 occurrences=3", completed.stdout)
             self.assertIn("case=E: missing", completed.stdout)
 
 

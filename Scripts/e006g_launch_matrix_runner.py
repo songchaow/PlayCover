@@ -33,6 +33,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from runtime_launch_diagnostics_summary import (  # noqa: E402
     DEFAULT_ROOT as DEFAULT_DIAGNOSTICS_ROOT,
+    aggregate_replacement_hotspots,
     build_summary,
     read_events,
     read_manifest_entries,
@@ -355,6 +356,7 @@ def finalize_case(args: argparse.Namespace) -> int:
     events = read_events(launch_events_path)
     manifest_entries = read_manifest_entries(manifest_path)
     summaries = build_summary(events, args.summary_limit, manifest_entries)
+    replacement_hotspots = aggregate_replacement_hotspots(summaries)
     if launch_events_path.is_file():
         shutil.copy2(launch_events_path, case_bundle_dir / "launch-events.jsonl")
 
@@ -432,6 +434,10 @@ def finalize_case(args: argparse.Namespace) -> int:
                 (latest_summary.get("replacementFailureSurfaces") or {}).get("failureSurfaces", [])
                 if latest_summary else []
             ),
+            "aggregatedReplacementFailureClusterCount": replacement_hotspots.get("failureClusterCount", 0),
+            "aggregatedReplacementFailureClusters": replacement_hotspots.get("failureClusters", []),
+            "aggregatedReplacementFailureSurfaceCount": replacement_hotspots.get("failureSurfaceCount", 0),
+            "aggregatedReplacementFailureSurfaces": replacement_hotspots.get("failureSurfaces", []),
         },
         "recentManifestEventCount": len(manifest_events),
     }
@@ -481,6 +487,18 @@ def analyze_cases(args: argparse.Namespace) -> int:
             "latestReplacementFailureSurfaces": payload.get("launchDiagnostics", {}).get(
                 "latestReplacementFailureSurfaces", []
             ),
+            "aggregatedReplacementFailureClusterCount": payload.get("launchDiagnostics", {}).get(
+                "aggregatedReplacementFailureClusterCount", 0
+            ),
+            "aggregatedReplacementFailureClusters": payload.get("launchDiagnostics", {}).get(
+                "aggregatedReplacementFailureClusters", []
+            ),
+            "aggregatedReplacementFailureSurfaceCount": payload.get("launchDiagnostics", {}).get(
+                "aggregatedReplacementFailureSurfaceCount", 0
+            ),
+            "aggregatedReplacementFailureSurfaces": payload.get("launchDiagnostics", {}).get(
+                "aggregatedReplacementFailureSurfaces", []
+            ),
             "recentManifestEventCount": payload.get("recentManifestEventCount"),
         }
 
@@ -502,8 +520,27 @@ def analyze_cases(args: argparse.Namespace) -> int:
             f"failures={case_report['latestFailureCount']} "
             f"replacementCompileFailed={case_report['latestReplacementCounts'].get('replacement_compile_failed', 0)} "
             f"failureSurfaces={case_report['latestReplacementFailureSurfaceCount']} "
+            f"aggregateFailureSurfaces={case_report['aggregatedReplacementFailureSurfaceCount']} "
             f"manifestEvents={case_report['recentManifestEventCount']}"
         )
+
+        top_surface = (case_report.get("aggregatedReplacementFailureSurfaces") or [None])[0]
+        if top_surface:
+            print(
+                f"  hotspotSurface: cacheKey={top_surface.get('cacheKey') or 'n/a'} "
+                f"reasonCode={top_surface.get('reasonCode') or 'n/a'} "
+                f"runs={top_surface.get('runCount', 0)} "
+                f"occurrences={top_surface.get('occurrenceCount', 0)}"
+            )
+
+        top_cluster = (case_report.get("aggregatedReplacementFailureClusters") or [None])[0]
+        if top_cluster:
+            print(
+                f"  hotspotCluster: event={top_cluster.get('event') or 'n/a'} "
+                f"cacheKey={top_cluster.get('cacheKey') or 'n/a'} "
+                f"runs={top_cluster.get('runCount', 0)} "
+                f"occurrences={top_cluster.get('occurrenceCount', 0)}"
+            )
 
     if args.output:
         output_path = Path(args.output).expanduser().resolve()

@@ -12,7 +12,7 @@ import sys
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from runtime_launch_diagnostics_summary import build_summary
+from runtime_launch_diagnostics_summary import aggregate_replacement_hotspots, build_summary
 
 
 class RuntimeLaunchDiagnosticsSummaryTests(unittest.TestCase):
@@ -137,6 +137,81 @@ class RuntimeLaunchDiagnosticsSummaryTests(unittest.TestCase):
         self.assertEqual(surfaces["failureSurfaces"][0]["cacheKey"], "CACHE-A")
         self.assertEqual(surfaces["failureSurfaces"][0]["reasonCode"], "compile_failed")
         self.assertEqual(surfaces["failureSurfaces"][0]["moduleKeys"], ["module-a", "module-b"])
+
+    def test_aggregate_replacement_hotspots_merges_repeated_failures_across_runs(self) -> None:
+        summaries = [
+            {
+                "processLaunchId": "launch-1",
+                "replacement": {
+                    "failureClusters": [
+                        {
+                            "event": "replacement_compile_failed",
+                            "selector": "newLibraryWithData:error:",
+                            "cacheKey": "CACHE-A",
+                            "compilerMessage": "expected expression",
+                            "count": 2,
+                            "firstTimestamp": "2026-04-07T01:00:01Z",
+                            "lastTimestamp": "2026-04-07T01:00:02Z",
+                        }
+                    ]
+                },
+                "replacementFailureSurfaces": {
+                    "failureSurfaces": [
+                        {
+                            "selector": "newLibraryWithData:error:",
+                            "cacheKey": "CACHE-A",
+                            "reasonCode": "compile_failed",
+                            "detail": "expected expression",
+                            "moduleKeys": ["module-a"],
+                            "count": 1,
+                            "firstTimestamp": "2026-04-07T01:00:02Z",
+                            "lastTimestamp": "2026-04-07T01:00:02Z",
+                        }
+                    ]
+                },
+            },
+            {
+                "processLaunchId": "launch-2",
+                "replacement": {
+                    "failureClusters": [
+                        {
+                            "event": "replacement_compile_failed",
+                            "selector": "newLibraryWithData:error:",
+                            "cacheKey": "CACHE-A",
+                            "compilerMessage": "expected expression",
+                            "count": 1,
+                            "firstTimestamp": "2026-04-07T01:05:01Z",
+                            "lastTimestamp": "2026-04-07T01:05:01Z",
+                        }
+                    ]
+                },
+                "replacementFailureSurfaces": {
+                    "failureSurfaces": [
+                        {
+                            "selector": "newLibraryWithData:error:",
+                            "cacheKey": "CACHE-A",
+                            "reasonCode": "compile_failed",
+                            "detail": "expected expression",
+                            "moduleKeys": ["module-a"],
+                            "count": 2,
+                            "firstTimestamp": "2026-04-07T01:05:01Z",
+                            "lastTimestamp": "2026-04-07T01:05:02Z",
+                        }
+                    ]
+                },
+            },
+        ]
+
+        hotspots = aggregate_replacement_hotspots(summaries)
+
+        self.assertEqual(hotspots["failureClusterCount"], 1)
+        self.assertEqual(hotspots["failureClusters"][0]["cacheKey"], "CACHE-A")
+        self.assertEqual(hotspots["failureClusters"][0]["runCount"], 2)
+        self.assertEqual(hotspots["failureClusters"][0]["occurrenceCount"], 3)
+        self.assertEqual(hotspots["failureSurfaceCount"], 1)
+        self.assertEqual(hotspots["failureSurfaces"][0]["cacheKey"], "CACHE-A")
+        self.assertEqual(hotspots["failureSurfaces"][0]["runCount"], 2)
+        self.assertEqual(hotspots["failureSurfaces"][0]["occurrenceCount"], 3)
 
 
 if __name__ == "__main__":

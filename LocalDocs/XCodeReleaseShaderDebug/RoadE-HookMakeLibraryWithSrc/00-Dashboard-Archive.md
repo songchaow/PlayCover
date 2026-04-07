@@ -28,6 +28,12 @@
 | 2026-04-06，`E-006d8-b3` source attribution preload 验证 + `replacement-on-run11` | 在 `PlayCover.launch()` 早期预加载 GPUToolsCapture 后，`on-run11` scope capture 提升到 `922 refs = 3 valid + 9 non-MSL + 910 missing`、`visibleMSL=3`。主 blocker 从"完全未写入 bundle"收窄为"只部分写入、覆盖率仍极低"。后续 `b3a` 归因确认 3 个可见 MSL 全部对应 replacement 聚合源码；`b3b` 基线校正后确认 `off-run1` 同有大量 missing（`shared=583`），preload 净增量仅 `+1 referenced valid MSL` | 源码写入已部分恢复，preload 时序是因素之一但不是唯一瓶颈；当前排查面收窄为 raw short token → bundle 可见文件的写入条件 |
 | 2026-04-06，`E-006d8-b3c` `device` vs `scope` live 对照 + `replacement-on-run12/13` | 在同一轮 replacement-on、同一 ready session 中顺序执行 `device` 与 `scope` capture，并分别固化为 `replacement-on-run12(device)` / `replacement-on-run13(scope)`。两边都只有 `3 referenced valid + 9 referenced non-MSL`，missing 为 `1115` vs `1105`，raw short file writes 为 `2/72` vs `2/69`，都没有新增 visible / referenced valid MSL | 说明 `device` vs `scope` 不是当前源码写入规模的主瓶颈；后续应回到 canonical 16 位 referenced hash 的 bundle 写入条件，而不是继续围绕 capture target 本身打转 |
 
+## 从 dashboard 主体下沉的阶段性基线
+
+- **较旧的离线回归统计**：`2026-04-05` 时点的 `test-data/*.ll`（19 个）与 `ShaderCorpus/com.miHoYo.Yuanshen/modules/`（91/91）compile baseline 已稳定全绿；该类样本数量型统计已不再保留在 dashboard 主体，当前只要求日常继续执行自动 replay + compile gate。
+- **`.gputrace` 里程碑样本名**：`capture_20260404_roadE_e006c3_final.gputrace` 对应 `E-006c` 的阶段性源码可见 milestone；该类历史样本名与里程碑现统一归档，不再占据当前控制面。
+- **已完成的 session / capture 基础设施修复摘要**：host split-brain 修复、`create_session` bridge ping 收紧、ready-session probe 对齐、`get_capture_status` 去 lazy-load、默认容器 `Captures/` 回收闭环、runtime 早期预加载 GPUToolsCapture 等基础设施项均已落地并完成测试覆盖；当前主文档只保留“这些修复已完成”的结论。
+
 ## 已完成子任务归档
 
 ### E-005：payload 恢复与 runtime library 替换
@@ -60,6 +66,7 @@
   - 早期 live 中 `session ready` / crash / diagnostics 三者之间的时间线关系
   - `IR metadata`、缺失值参数 fallback、`air.struct_type_info`、结构体类型名一致性等 lowering 细节
   - 注入 MSL 注释识别、重复函数名、多模块聚合失败等已知 compile blocker 的历史演进
+  - `test-data/` 与 `ShaderCorpus/` 的分工边界、`build_and_install.sh` 的唯一可靠部署地位、`injectMetalCaptureEnvironment` 与 delayed capture 的区别、以及 `QQ飞车` 历史 capture 成功并不等于“capture + replacement + preload”并存稳定
 - 当前 dashboard 只保留仍直接影响"下一步做什么"的规则；这些历史技术备注如果再次影响判断，应优先回看 `E-004-MetallibSourceExtraction.md`、`E-006d-GenshinRenderingNondeterminism.md` 与本归档。
 
 ### Payload / wrapper 恢复

@@ -1,6 +1,6 @@
 ## E-006g：`恋与深空` 在 `metal capture + startup injection + shader replacement` 同开时启动崩溃
 
-## 状态：IN PROGRESS（`E-006g1` 已完成，当前推进 `E-006g2`）
+## 状态：IN PROGRESS（`E-006g1` / `E-006g2` 已收敛，当前推进 `E-006g3`）
 
 > ⚠️ **这是当前最优先收敛的确定性 blocker。** `E-006c` 已经证明“.gputrace 中源码可见”链路本身可以打通；当前更接近最终落地的阻塞，是 **`恋与深空` 在同时启用 `metalCaptureEnabled=true`、`injectMetalCaptureEnvironment=true` 与 `shaderSourceReplacementEnabled=true` 时的启动兼容性**。这条线若不收敛，Road E 仍无法在真实 app 上稳定保住“截帧 + 最早阶段 inject + shader replacement”三者并存。
 
@@ -34,20 +34,20 @@
 | A | false | false | false | `launch_app -> create_session` 成功，`lastEvent=playcover_launch_complete` |
 | B | true | false | false | 成功，`lastEvent=playcover_launch_complete` |
 | C | true | true | false | 成功，`lastEvent=playcover_launch_complete` |
-| D | true | false | true | 成功，`lastEvent=playcover_launch_complete` |
-| E | true | true | true | 成功，`lastEvent=playcover_launch_complete` |
+| D | true | false | true | `launch_app -> create_session` 可到 `ready`，但后续 settle window 内会出现 late crash |
+| E | true | true | true | `launch_app -> create_session` 可到 `ready`，但后续 settle window 内会出现 late crash |
 
 固化产物位于：
 
 - `build/e006g-launch-matrix/`
 
-当前 fresh baseline 下：
+当前 fresh baseline 最初回答的是：
 
 - **五个 case 均成功进入 `ready` session**
 - `RuntimeLaunchDiagnostics/com.papegames.lysk/launch-events.jsonl` 最新五轮均完整到达 `playcover_launch_complete`
-- 当前 fresh run 中**未复现**“三开关同开启动崩溃”
+- 也即：fresh launch 本身并不会在 `create_session` 前就稳定失败
 
-因此 `E-006g1` 已回答“当前环境 fresh launch 下哪一个组合稳定触发崩溃？”——**答案是：这轮五象限里没有任何一个组合触发崩溃**。主线随之切换到 `E-006g2`：解释**为什么历史上存在 blocker 报告，而当前 fresh baseline 不再复现**。
+因此 `E-006g1` 真正回答的是“当前环境 fresh launch 下哪一个组合会在 runtime 注册前就稳定触发崩溃？”——**答案是：没有任何一个组合在 `create_session` 前稳定失败**。随后 `E-006g2` 通过 settle window 进一步确认：`D/E` 仍会在 launch 完成后数秒内出现 late crash，主线因此继续前移到 `E-006g3` 的命中面收缩。
 
 ### 1. 这三个开关都已经是仓库中的正式控制面
 
@@ -166,8 +166,8 @@
 | # | 子任务 | 状态 | 说明 |
 |---|---|---|---|
 | E-006g1 | 三开关最小五象限启动矩阵 + diagnostics / crash 证据固化 | ✅ DONE（2026-04-07） | 已新增 `Scripts/e006g_launch_matrix_runner.py`，并对 `com.papegames.lysk` 执行 `A/B/C/D/E` 五象限 fresh launch；五组 settings 均与预期一致，`launch_app -> create_session` 全部成功进入 `ready`，`launch-events.jsonl` 最新 run 全部到达 `playcover_launch_complete` |
-| E-006g2 | 系统性汇总 startup 期 `replacement_compile_failed` / fallback failure clusters，确认 late crash 是否由 compile failure 集合触发 | IN PROGRESS（2026-04-07：fresh rebuild + rerun 后结论已明显收敛） | 已确认崩溃并不发生在 runtime 注册前；最新 fresh `case E` 已把主 blocker 收敛到 **`cacheKey=791A306ED1B6648B_4577` / `moduleKey=ec0c6f0e72d6fc64daf4d5955cd1ea2cc5e729b0f988b1e857d13bfb54c7f6c3`**，且 `analyze` 已按 compile_failed 优先显示热点 |
-| E-006g3 | 把 `compile_failed` 命中面收缩到最小 `cacheKey` / selector / module 集合，为 `E-006g4` 准备最小修复 / 旁路面 | TODO（下一步默认入口） | 当前默认先围绕 `791A306ED1B6648B_4577 / ec0c6f...` 收缩最小旁路面；`F474... / bbb32d...` 保留为历史次级样本 |
+| E-006g2 | 系统性汇总 startup 期 `replacement_compile_failed` / fallback failure clusters，确认 late crash 是否由 compile failure 集合触发 | ✅ DONE（2026-04-07，结论已收敛） | 已确认崩溃并不发生在 runtime 注册前；最新 fresh `case E` 已把主 blocker 收敛到 **`cacheKey=791A306ED1B6648B_4577` / `moduleKey=ec0c6f0e72d6fc64daf4d5955cd1ea2cc5e729b0f988b1e857d13bfb54c7f6c3`**，且 `analyze` 已按 compile_failed 优先显示热点 |
+| E-006g3 | 把 `compile_failed` 命中面收缩到最小 `cacheKey` / selector / module 集合，为 `E-006g4` 准备最小修复 / 旁路面 | IN PROGRESS（下一步默认入口） | 当前默认先围绕 `791A306ED1B6648B_4577 / ec0c6f...` 收缩最小旁路面；`F474... / bbb32d...` 保留为历史次级样本 |
 | E-006g4 | 设计并验证“不牺牲源码可见性目标”的修复方案 | TODO | 最终方案不能退化为“永久关 startup injection”或“永久关 replacement” |
 
 ## `E-006g1` / `E-006g2` 当前结论（2026-04-07）

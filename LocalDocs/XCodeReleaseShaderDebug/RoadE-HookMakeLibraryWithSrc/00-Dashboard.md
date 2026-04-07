@@ -31,14 +31,16 @@ live 采集一次或少量几次真实 shader
 最终真实截帧确认源码可见
 ```
 
-**补充约束（当前最高优先级）**：`E-006c` 证明".gputrace 中源码可见"已经打通，但这**不等于**"替换后的渲染结果已经稳定正确"。如果同一 app、同一界面、同一 mesh 布局下，多次启动仍出现随机渲染差异或局部异常，必须优先进入 `E-006d` 做**渲染一致性 / 非确定性归因**，不能再以"compile green"或"Xcode 能看到源码"作为阶段完成标准。当前最保守、最稳定的对照，不是直接认定"shader 改坏了"，而是比较**进行了反编译/重编译替换**与**完全不做替换**时的最终画面、draw call 行为与渲染链路差异。
+**补充约束（当前最高优先级）**：`E-006c` 已证明“.gputrace 中源码可见”链路本身已经打通，但当前阶段不再把 `E-006d`“同一界面重复启动出现随机画面异常”作为日常最高优先级主线继续深挖。该问题已确认是**偶现问题**，现阶段**暂时搁置**；其已有进度保留在 `E-006d-GenshinRenderingNondeterminism.md`，但主文档不再展开其细节，且在优先级恢复前，**不要求继续读取其子文档作为默认工作入口**。当前更需要优先收敛的，是两个更接近最终落地阻塞的确定性问题：
+1. **`QQ飞车` 在同时启用 `metal capture + shader replacement` 时启动崩溃**
+2. **`原神` 在“进入游戏”后出现 `31-4302` 完整性异常，怀疑与 hook / replacement 副作用有关**
 
 **分工原则**：
 - **live 的职责**：采集 corpus、扩覆盖、做最终真实验证
 - **离线的职责**：日常回归、归因分析、批量编译验证、diff 与收敛 blocker
 - **`test-data/` 的职责**：承载手工构造的最小样本，用于单点 lowering 验证
 - **`ShaderCorpus/` 的职责**：承载真实运行时采集的样本，用于批量 replay、diff 和回归基线
-- **最终目标不变**：真实 `.gputrace` 可见源码；只是把实现过程从"高成本 live 试错"改成"低成本离线迭代"
+- **最终目标不变**：真实 `.gputrace` 可见源码；只是把实现过程从“高成本 live 试错”改成“低成本离线迭代”
 
 ## 技术路线
 
@@ -72,6 +74,8 @@ makeLibrary(source:)
 3. **真实验证层（minimal live）**
    - 对已通过离线批量验证的一组改动做最小次数 live 复测
    - 最终用 `.gputrace` 做人工确认
+
+当前阶段在这三层之上额外增加一条约束：**优先收敛“capture / replacement 并存时的启动兼容性”和“进入游戏后的完整性检测副作用”**，而不是继续把主文档的控制面放在偶发性的随机画面异常上。
 
 ## Agent 工作流
 
@@ -111,6 +115,8 @@ makeLibrary(source:)
 仅在修改以下内容时执行：
 - makeLibrary hook / 导出目录 / host bridge / corpus 持久化
 - `build_and_install.sh` 部署相关逻辑
+- `metal capture + shader replacement` 并存时的启动兼容性
+- 需要进入登录后 UI 才能触发的完整性 / 反篡改问题
 - 需要扩充真实 shader 覆盖面
 
 执行方式：
@@ -118,10 +124,14 @@ makeLibrary(source:)
 ```bash
 ./BuildScripts/build_and_install.sh
 open ~/Applications/PlayCover.app
-remove_playtools / inject_playtools / launch_app
+remove_playtools / inject_playtools / launch_app / create_session
 ```
 
-若本轮目标是 `E-006d`（重复启动画面不一致 / 随机渲染异常），除常规部署外，还应尽量保持**同一 app 版本、同一停留界面、相同画质设置**，至少做 2~3 轮对照启动；并增加一组**不做替换**的稳定对照。对原神当前链路，默认可把"启动后数十秒自动停在登录界面"视为稳定复现面：agent 可以独立完成 `launch_app`、等待进入该界面、执行 Metal capture / `.gputrace` 固化、保存 `manifest.jsonl` 增量、`ShaderCorpus/` 新增模块、`ShaderSourceDiagnostics/` 新文件与聚合 MSL；**不要求人工登录、选场景或手动把界面摆到指定位置**。只有当本轮问题明确依赖登录后场景、账号态或其它人工交互条件时，才需要额外人工介入并在文档中单独说明。
+补充约束：
+
+- **`E-006e`（`QQ飞车` 启动崩溃）**：默认走**全自动四象限对照**（`metalCaptureEnabled` / `shaderSourceReplacementEnabled` 的开关组合）+ `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl` 汇总，不引入人工 gate。推荐使用 `python3 Scripts/runtime_launch_diagnostics_summary.py --bundle-id com.tencent.tmgp.speedmobile --limit 5` 先判断崩溃发生在 preload、bridge 注册、还是首个 replacement 尝试附近。
+- **`E-006f`（`原神 31-4302`）**：允许把 `launch_app -> create_session -> tap` 视为 agent 可独立完成的**轻量 UI 触发**。默认最小路径是：等待进入登录/开始界面稳定后，点击屏幕中心一次或两次以触发“进入游戏”。但**直接对已安装 app bundle 做 `strings` / `otool` / 反汇编等工作区外二进制分析，不属于日常 gate**；若要正式执行这条路径，需要用户明确确认。
+- **`E-006d`（随机画面异常）**：当前已下调为搁置问题；除非优先级恢复，不再要求把“同一界面重复启动 2~3 轮对照”作为默认运行时 gate。
 
 ### 最终验证（保留）
 
@@ -135,22 +145,18 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 **注意**：hash 文件不全是源码——原神样本中的 hash 文件是 bplist，必须以 `valid_msl_files` 而非 `source_files` 为准。
 
-**人工确认（最终）**：Xcode 打开 `.gputrace` → 选 Draw Call → 查看 Shader 面板是否显示源码而非 `Shader source not found`。若当前处理的是 `E-006d`，还需补充确认：在同一界面重复启动时，相关 Draw Call 的 shader 来源、render pass 行为与视觉结果是否保持一致；并对照**替换**与**不替换**两种运行方式的最终效果差异。除这一步外，前置的 live 启动、等待、截帧、快照固化与自动脚本分析都默认由 agent 独立完成。
+**人工确认（最终）**：Xcode 打开 `.gputrace` → 选 Draw Call → 查看 Shader 面板是否显示源码而非 `Shader source not found`。若当前处理的是 `E-006e` / `E-006f`，还需补充确认：
+- **`E-006e`**：在 `QQ飞车` 上同时启用 `metal capture + shader replacement` 后，应用可稳定启动，且不会为了绕过崩溃而牺牲最终的源码可见性目标
+- **`E-006f`**：在 `原神` 上完成“进入游戏”触发后，不再出现 `31-4302`，且截帧/源码链路仍保持有效；若最终方案依赖 patch / selective bypass，也必须明确确认不会把 Road E 退化成“只能关替换才能进游戏”
+
+除这一步外，前置的 live 启动、等待、截帧、快照固化与自动脚本分析都默认由 agent 独立完成。
 
 ## 当前主线
 
-- **E-006d（当前最高优先级）**：调查"用 PlayCover 打开原神，在同一界面重复启动时，画面表现每次都不完全一样；mesh 不变，但局部渲染结果异常"的现象。详细判断路径、归因顺序与技术备注见 `E-006d-GenshinRenderingNondeterminism.md`。
-- **E-006d8 剩余 blocker**：
-
-| # | blocker | 状态 | 推进方式 |
-|---|---|---|---|
-| 1 | capture bridge reachability | ✅ 已收敛 | `on-run10` / `on-run11` 均确认首次 `create_session(bundleId)` 即返回 ready session |
-| 2 | capture 输出路径 | ✅ 短期绕过 | 继续用默认容器路径 + `--latest-gputrace` |
-| 3 | **trace 合法 MSL 覆盖偏低** | **进行中（当前最高优先级）** | `b3c` 已收敛：同轮 live 的 `replacement-on-run12(device)` / `replacement-on-run13(scope)` 均只有 `3 referenced valid + 9 non-MSL`，missing 仅从 `1115` 降到 `1105`，raw short-hash 可见文件也都只有 `2` 个且同为 `bplist`。结论：`device` vs `scope` 不是当前源码写入规模的主瓶颈；排查面已转回 canonical 16 位 referenced hash 的 bundle 写入条件。详见 `E-006d-GenshinRenderingNondeterminism.md` |
-| 4 | 绘制内容差异未正式产出 | 工具就绪，需 GUI 环境 | `e006d_render_diff.py` 已就绪，需 Xcode GUI / Accessibility / `cliclick`；**重要专项但非日常 gate** |
-
-- **绘制内容差异分支**：这条线依赖 Xcode GUI 环境、Accessibility 权限与 `cliclick`。**它是重要专项分析分支，不是默认日常 gate**。详细方法见 `E-006d-RenderingPathDiffReference.md`。
-- **E-006a / E-007**：在 `E-006d` 明确根因前暂不作为最高优先级。
+- **`E-006e`（当前最高优先级）**：解决 `QQ飞车` 在同时启用 `metal capture + shader replacement` 时的启动崩溃。详细假设、自动化验证和候选修复路径见 `E-006e-QQSpeedCaptureReplacementStartupCrash.md`。
+- **`E-006f`（当前第二优先级）**：解决 `原神` 在“进入游戏”后出现的 `31-4302` 完整性异常。详细路径见 `E-006f-GenshinIntegrityCheck-314302.md`。
+- **`E-006d`（暂时搁置）**：随机画面异常已确认是偶现问题，现阶段仅保留已有调查进度；主文档不再继续展开，也不再要求默认读取其子文档跟进细节。仅在 `E-006e` / `E-006f` 收敛后，才考虑是否恢复优先级。
+- **`E-006a / E-007`**：继续维持降级状态，不抢占当前主线。
 
 ## 最新基线
 
@@ -165,6 +171,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | live run 快照固化 | `Scripts/e006d_matrix_runner.py prepare-run / finalize-run --latest-gputrace [--capture-target device|scope]` |
 | `.gputrace` 自动检查 / 归因 | `Scripts/check_gputrace_sources.py /path/to/xxx.gputrace [--bundle-dir /path/to/ShaderCorpus/<bundleId>]` |
 | runtime launch 诊断 | `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl` + `Scripts/runtime_launch_diagnostics_summary.py` |
+| 运行时输入自动化 | `launch_app` → `create_session` → `tap / swipe / press_key`（适用于“进入游戏”这类轻量 UI 触发） |
 
 ### 关键数据基线
 
@@ -172,15 +179,13 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 |---|---|
 | 落盘与闭环能力 | 成功路径 → `ShaderCorpus/<bundleId>/modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`；replacement → `replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal`；失败路径 → `ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`。三条路径均已进入离线 replay / diff / 归因主回路。详见 `E-004-CorpusClosureAndRecapturePolicy.md` |
 | corpus 编译基线（2026-04-05） | `test-data/*.ll`（19 个）replay + compile **全绿**；`ShaderCorpus/com.miHoYo.Yuanshen/modules/` **91/91** replay + compile **全绿**，preflight rejected `0`，regression `0` |
-| E-006d8 b3b 收敛口径（2026-04-06 深夜） | `off-run1`：`899 refs = 2 referenced valid + 9 non-MSL + 888 missing`；`on-run11`：`922 refs = 3 referenced valid + 9 non-MSL + 910 missing`。missing 拆解为 `shared=583 / only off=305 / only on=327 / net=+22`。两边 raw short token 均 `54` 个，但真正额外落盘成 bundle 可见文件的只有 `off-run1=3/54`、`on-run11=2/54`；共享 short 文件 `53EEDD95681D340` / `76E05038E17F34` 均为 `bplist`，only-off 多出的 `B91673E5592A2B8` 虽为 short MSL，但同样未进入 canonical 16 位引用集合。结论：short token 可见性与 canonical missing 基本正交 |
-| E-006d8 b3c live 对照（2026-04-06 深夜） | 同轮 `replacement-on-run12(device)` / `replacement-on-run13(scope)` 均为 `14 files = 3 referenced valid + 9 referenced non-MSL + 2 unreferenced short bplist`；`index refs` 为 `1127` vs `1117`，`missingReferencedHashes` 为 `1115` vs `1105`，`raw short-hash file writes` 为 `2/72` vs `2/69`。结论：`scope` 只带来 `-10 missing` 的轻微波动，没有新增 visible / referenced valid MSL，`device` vs `scope` 不是当前源码写入规模的主瓶颈 |
+| `QQ飞车` 启动兼容性 blocker | Render Capture 历史文档已经证明 `QQ飞车` 纯截帧路径可走通；当前新增 blocker 专门指向 **`metalCaptureEnabled + shaderSourceReplacementEnabled` 同开**后的启动期崩溃，因此应优先检查 `PlayCover.launch()` 中 capture 预加载、makeLibrary swizzle 安装、以及首次 replacement 尝试三者并存时序 |
+| `原神` 完整性 blocker | 当前仓库内尚无 `31-4302` 的既有定位记录；但 `launch_app -> create_session -> tap` 已具备自动化条件，因此本阶段的默认推进路径应是 **自动进入游戏触发 + replacement on/off 对照 + 静态字符串 / xref 定位**，而不是继续沿 `E-006d` 做画面偶现归因 |
 | `.gputrace` 里程碑 | `capture_20260404_roadE_e006c3_final.gputrace` Xcode 人工确认 shader 面板源码可见（`E-006c` 已关闭）。详细历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
 
 ### 已完成的 session / capture 基础设施修复（2026-04-06）
 
-host split-brain 修复、`create_session` bridge ping 收紧、ready-session probe 对齐、`get_capture_status` 去 lazy-load、默认容器 `Captures/` 回收闭环、runtime 早期预加载 GPUToolsCapture——全部已落地 + 测试覆盖。绘制内容差异 runner（`e006d_render_diff.py`）已就绪，需 GUI 环境。
-
-详细修复历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
+host split-brain 修复、`create_session` bridge ping 收紧、ready-session probe 对齐、`get_capture_status` 去 lazy-load、默认容器 `Captures/` 回收闭环、runtime 早期预加载 GPUToolsCapture——全部已落地 + 测试覆盖。更细的收敛过程与旧 blocker 时间线已下沉到 [00-Dashboard-Archive](00-Dashboard-Archive.md)。
 
 ## 整体架构
 
@@ -213,7 +218,7 @@ PlayTools.framework (注入到 iOS app)
 
 ## TODO
 
-> **优先级更新（2026-04-06）**：当前主线为 **`E-006d`：原神重复启动时的随机渲染异常归因**。在 `E-006d` 明确根因前，`E-006a` / `E-007` 均下调一级。
+> **优先级更新（2026-04-07）**：当前主线从 `E-006d` 切换为 **`E-006e` → `E-006f`**。`E-006d` 因确认为偶现问题，暂时搁置并保留进度；`E-006a` / `E-007` 继续下调一级。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -224,13 +229,16 @@ PlayTools.framework (注入到 iOS app)
 | E-005 | **离线 replay / batch compile / diff 工具链** | ✅ DONE | [E-005](E-005-OfflineReplayBatchCompileDiff.md) |
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | ✅ DONE | [Archive](00-Dashboard-Archive.md) |
 | E-006c | ↳ `.gputrace` shader 源码可见性确认 | ✅ DONE | [Archive](00-Dashboard-Archive.md) |
-| E-006d | ↳ **原神同一界面重复启动时的随机渲染异常归因** | **TODO（当前主线）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006d8 | ↳ 四条 blocker 收敛 | **TODO（当前推进焦点）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006d8-b3 | ↳ trace 合法 MSL 覆盖偏低归因 | **TODO（当前最高优先级 blocker）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006d8-b3a | ↳ 归因 3 个可见 MSL 到 ShaderCorpus | **✅ DONE** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006d8-b3b | ↳ 对照 E-006c / `off-run1` 可见 trace 排查 missing 的 bundle 写入条件 | **✅ DONE** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006d8-b3c | ↳ 比较 `device` vs `scope` capture 对源码写入规模的影响 | **TODO（当前最高优先级）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006d8-b4 | ↳ 绘制内容差异结构对比 | **TODO**（需 GUI 环境，非日常 gate） | [E-006d8b 参考](E-006d-RenderingPathDiffReference.md) |
+| E-006d | ↳ 原神同一界面重复启动时的随机渲染异常归因 | **搁置（偶现，保留进度）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
+| E-006e | ↳ **`QQ飞车`：`metal capture + shader replacement` 同开启动崩溃** | **TODO（当前最高优先级）** | [E-006e](E-006e-QQSpeedCaptureReplacementStartupCrash.md) |
+| E-006e1 | ↳ 四象限启动矩阵 + launch diagnostics 固化 | TODO（先做） | [E-006e](E-006e-QQSpeedCaptureReplacementStartupCrash.md) |
+| E-006e2 | ↳ 定位崩溃发生在 preload / swizzle / first replacement 的哪一段 | TODO | [E-006e](E-006e-QQSpeedCaptureReplacementStartupCrash.md) |
+| E-006e3 | ↳ 设计并验证“不牺牲源码可见性目标”的修复方案 | TODO | [E-006e](E-006e-QQSpeedCaptureReplacementStartupCrash.md) |
+| E-006f | ↳ **`原神`：进入游戏后出现 `31-4302` 完整性异常** | **TODO（当前第二优先级）** | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
+| E-006f1 | ↳ 自动化“进入游戏”最小触发路径（`launch_app -> create_session -> tap`） | TODO（先做） | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
+| E-006f2 | ↳ 在原神二进制 / 资源中定位 `31-4302` / 对应字符串与引用链 | TODO（专项，执行前需用户确认工作区外分析） | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
+| E-006f3 | ↳ 对照 replacement `off/on`，判断触发点更接近 hook、副作用还是替换产物 | TODO | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
+| E-006f4 | ↳ 设计并验证绕过方案：检测点 patch / selective bypass / 保持截帧有效的替代方案 | TODO | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
 | E-006a | 扩展真实 corpus 覆盖面 | TODO（已降级） | |
 | E-007 | PlayCover settings / MCP / 工具暴露 | TODO（已降级） | |
 
@@ -239,12 +247,12 @@ PlayTools.framework (注入到 iOS app)
 - **核心原则：优先沉淀成功样本，再去扩 lowering**：后续应优先围绕 `ShaderCorpus/`、`manifest.jsonl`、`replacements/` 与失败路径导出样本做 replay、diff 和回归，而不是重新回到高成本 live 试错
 - **`test-data/` 和 `ShaderCorpus/` 不能混用**：`test-data/` 用于验证单个 lowering；`ShaderCorpus/` 用于真实样本的批量 replay、diff 与回归基线
 - **`build_and_install.sh` 是更新运行时 framework 的唯一可靠路径**：`sync_playtools_xcframework.sh` 只更新构建产物；涉及 live 时必须走 `BuildScripts/build_and_install.sh`
-- **源码可见 / compile green 都不等于渲染语义正确**：`E-006d` 关注的是相同输入下最终视觉结果、trace 与 replacement 证据是否稳定一致
-- **当前最低风险的比较基线仍是"替换 vs 不替换"**：统一通过 `shaderSourceReplacementEnabled` / `Scripts/set_shader_replacement_mode.py` 控制
-- **GPUToolsCapture 预加载时序是 trace 覆盖率的关键**：`makeLibrary(source:)` replacement 必须在 capture 库已加载后才发生，否则替换后的 library 会错过观测窗口；但 `b3b` 已进一步确认：`14/15` 位 short token 在 `off-run1` / `on-run11` 的 raw index 中都大量存在，真正落盘成文件的只有 `3/54` 与 `2/54`，且这些 short 文件不进入 canonical 16 位引用集合，因此不能把它们当成 `missingReferencedHashes` 的直接解释
-- **旧 snapshot 的 `gputraceSummary` / `gputraceAttribution` 可能过时**：早期快照既可能缺少 `missingReferencedHashes` 等字段，也可能 schema 已新但 attribution 内容仍是旧值；后续对比应优先使用 `compare_capture_runs.py` 对原始 `.gputrace` 的现算结果。该脚本现已直接输出 missing 的 `shared / onlyA / onlyB / netDelta`、raw short-hash token 的对比摘要，以及 `raw short-hash file writes` 的落盘可见性摘要
-- **`.gputrace` 可见 MSL 可能带尾部 `NUL` 终止符**：做 attribution / diff / 指纹匹配时不能只比原始字节；至少要按文本归一化并去掉尾部 `\0`，否则会把内容完全相同的 `aggregate.generated.metal` 误判为未归因
-- **更细的 lowering 经验、历史 live blocker 链路与已完成轮次已下沉到独立参考文档**：见 `E-004-MetallibSourceExtraction-Archive.md`、`E-006d-RenderingPathDiffReference.md` 与 `00-Dashboard-Archive.md`
+- **源码可见 / compile green 都不等于最终可用**：当前阶段真正阻塞落地的是**启动兼容性**与**进入游戏后的完整性检查副作用**，不能只看 `.gputrace` 或 compile 指标就宣告完成
+- **`QQ飞车` 历史上可稳定截帧，不等于“capture + replacement + preload”三者并存也稳定**：对这类问题应优先做四象限设置矩阵和启动期 breadcrumb 对照，而不是直接把锅推给某一个 shader lowering
+- **`31-4302` 更像完整性 / 反篡改问题，不宜只靠人工看弹窗推进**：默认应先做 replacement `off/on` 对照、最小自动 `tap` 触发，以及字符串 / xref / 调用链定位；视觉确认只能作为专项补充，不应成为日常 gate
+- **`launch_app -> create_session -> tap` 可以视为 agent 可独立完成的轻量 UI 输入**：但直接对已安装 app bundle 做工作区外静态反汇编 / 二进制 patch 分析，不属于默认日常流程，执行前需要用户明确确认
+- **`E-006d` 现阶段只保留进度，不再占据 dashboard 控制面**：它的调查结果仍有参考价值，但在优先级恢复前，不应继续消耗主文档篇幅或默认工作流注意力
+- **更细的 lowering 经验、历史 live blocker 链路与已完成轮次已下沉到独立参考文档**：见 `E-004-MetallibSourceExtraction-Archive.md`、`00-Dashboard-Archive.md`、`E-006e-QQSpeedCaptureReplacementStartupCrash.md` 与 `E-006f-GenshinIntegrityCheck-314302.md`
 
 ## 参考信息
 
@@ -252,9 +260,9 @@ PlayTools.framework (注入到 iOS app)
 |---|---|
 | dashboard 历史归档：live blocker 时间线 / 已完成轮次 | `00-Dashboard-Archive.md` |
 | 失败样本闭环 / re-capture 策略参考 | `E-004-CorpusClosureAndRecapturePolicy.md` |
-| `E-006d` 随机渲染异常调查 / 技术细节参考 | `E-006d-GenshinRenderingNondeterminism.md` |
-| 绘制内容差异（draw call / render pass / pipeline）专项参考 | `E-006d-RenderingPathDiffReference.md` |
-| Xcode GPU GUI 自动化工具说明 | `../../XCodeOperation/README.md` |
+| `E-006d` 随机渲染异常调查（已搁置，保留进度） | `E-006d-GenshinRenderingNondeterminism.md` |
+| `E-006e`：`QQ飞车` 启动崩溃专项 | `E-006e-QQSpeedCaptureReplacementStartupCrash.md` |
+| `E-006f`：`原神 31-4302` 完整性异常专项 | `E-006f-GenshinIntegrityCheck-314302.md` |
 | `-frecord-sources` PoC 与关键否定结论 | `E-001-PoC-frecord-sources.md` |
 | metallib / bitcode / llvm-dis / IR→MSL / corpus 主实现记录 | `E-004-MetallibSourceExtraction.md` |
 | 离线 replay / batch compile / diff 工具链 | `E-005-OfflineReplayBatchCompileDiff.md` |

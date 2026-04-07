@@ -74,6 +74,70 @@ class RuntimeLaunchDiagnosticsSummaryTests(unittest.TestCase):
             "expected expression",
         )
 
+    def test_build_summary_correlates_failure_surfaces_with_manifest_module_keys(self) -> None:
+        events = [
+            {
+                "timestamp": "2026-04-07T01:00:00Z",
+                "event": "playcover_launch_enter",
+                "bundleId": "com.example.lysk",
+                "pid": 101,
+                "processLaunchId": "launch-1",
+                "isMainThread": True,
+            },
+            {
+                "timestamp": "2026-04-07T01:00:04Z",
+                "event": "replacement_compile_failed",
+                "bundleId": "com.example.lysk",
+                "pid": 101,
+                "processLaunchId": "launch-1",
+                "selector": "newLibraryWithData:error:",
+                "cacheKey": "CACHE-A",
+                "compilerMessage": "expected expression",
+                "isMainThread": True,
+            },
+            {
+                "timestamp": "2026-04-07T01:00:05Z",
+                "event": "playcover_launch_complete",
+                "bundleId": "com.example.lysk",
+                "pid": 101,
+                "processLaunchId": "launch-1",
+                "isMainThread": True,
+            },
+        ]
+        manifest_entries = [
+            {
+                "event": "replacement_attempt",
+                "timestamp": "2026-04-07T01:00:04Z",
+                "bundleId": "com.example.lysk",
+                "selector": "newLibraryWithData:error:",
+                "cacheKey": "CACHE-A",
+                "outcome": "failed",
+                "reasonCode": "compile_failed",
+                "detail": "expected expression",
+                "moduleKeys": ["module-b", "module-a"],
+            },
+            {
+                "event": "replacement_attempt",
+                "timestamp": "2026-04-07T01:05:04Z",
+                "bundleId": "com.example.lysk",
+                "selector": "newLibraryWithData:error:",
+                "cacheKey": "CACHE-Z",
+                "outcome": "failed",
+                "reasonCode": "compile_failed",
+                "detail": "out-of-window",
+                "moduleKeys": ["module-z"],
+            },
+        ]
+
+        summary = build_summary(events, limit=1, manifest_entries=manifest_entries)[0]
+
+        surfaces = summary["replacementFailureSurfaces"]
+        self.assertEqual(surfaces["matchedAttemptCount"], 1)
+        self.assertEqual(surfaces["failureSurfaceCount"], 1)
+        self.assertEqual(surfaces["failureSurfaces"][0]["cacheKey"], "CACHE-A")
+        self.assertEqual(surfaces["failureSurfaces"][0]["reasonCode"], "compile_failed")
+        self.assertEqual(surfaces["failureSurfaces"][0]["moduleKeys"], ["module-a", "module-b"])
+
 
 if __name__ == "__main__":
     unittest.main()

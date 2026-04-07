@@ -206,12 +206,21 @@ class E006GLaunchMatrixRunnerTests(unittest.TestCase):
                 case_meta["launchDiagnostics"]["latestReplacementFailureClusters"][0]["cacheKey"],
                 "CACHE-A",
             )
+            self.assertEqual(
+                case_meta["launchDiagnostics"]["latestReplacementFailureSurfaceCount"],
+                1,
+            )
+            self.assertEqual(
+                case_meta["launchDiagnostics"]["latestReplacementFailureSurfaces"][0]["moduleKeys"],
+                ["module-a"],
+            )
 
             manifest_tail = json.loads((case_dir / "manifest-tail.json").read_text(encoding="utf-8"))
             self.assertEqual(len(manifest_tail), 3)
             launch_summary_text = (case_dir / "launch-summary.txt").read_text(encoding="utf-8")
             self.assertIn("replacementCounts=replacement_compile_failed=1", launch_summary_text)
             self.assertIn("replacementFailureClusters:", launch_summary_text)
+            self.assertIn("replacementFailureSurfaces:", launch_summary_text)
             self.assertIn("case snapshot created", completed.stdout)
 
     def test_analyze_reports_present_and_missing_cases(self) -> None:
@@ -246,6 +255,18 @@ class E006GLaunchMatrixRunnerTests(unittest.TestCase):
                                     "count": 2,
                                 }
                             ],
+                            "latestReplacementFailureSurfaceCount": 1,
+                            "latestReplacementFailureSurfaces": [
+                                {
+                                    "selector": "newLibraryWithData:error:",
+                                    "cacheKey": "CACHE-A",
+                                    "reasonCode": "compile_failed",
+                                    "detail": "expected expression",
+                                    "moduleKeys": ["module-a"],
+                                    "moduleKeyCount": 1,
+                                    "count": 2,
+                                }
+                            ],
                         },
                         "recentManifestEventCount": 0,
                     },
@@ -276,6 +297,7 @@ class E006GLaunchMatrixRunnerTests(unittest.TestCase):
             self.assertIn("case=A: missing", completed.stdout)
             self.assertIn("case=C: matched=True lastEvent=playcover_library_injection_installed", completed.stdout)
             self.assertIn("replacementCompileFailed=2", completed.stdout)
+            self.assertIn("failureSurfaces=1", completed.stdout)
             self.assertIn("case=E: missing", completed.stdout)
 
 

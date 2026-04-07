@@ -35,6 +35,7 @@ from runtime_launch_diagnostics_summary import (  # noqa: E402
     DEFAULT_ROOT as DEFAULT_DIAGNOSTICS_ROOT,
     build_summary,
     read_events,
+    read_manifest_entries,
 )
 
 
@@ -286,6 +287,15 @@ def write_text_summary(path: Path, *, bundle_id: str, case_key: str, summaries: 
                     f"{key}={value}" for key, value in cluster.items() if value not in (None, "", 0)
                 )
                 lines.append(f"    - {rendered}")
+
+        failure_surfaces = (summary.get("replacementFailureSurfaces") or {}).get("failureSurfaces") or []
+        if failure_surfaces:
+            lines.append("  replacementFailureSurfaces:")
+            for surface in failure_surfaces[:5]:
+                rendered = ", ".join(
+                    f"{key}={value}" for key, value in surface.items() if value not in (None, "", 0, [])
+                )
+                lines.append(f"    - {rendered}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -341,8 +351,10 @@ def finalize_case(args: argparse.Namespace) -> int:
     shutil.copy2(settings_path, case_bundle_dir / settings_path.name)
 
     launch_events_path = diagnostics_root / args.bundle_id / "launch-events.jsonl"
+    manifest_path = container_root / "ShaderCorpus" / args.bundle_id / "manifest.jsonl"
     events = read_events(launch_events_path)
-    summaries = build_summary(events, args.summary_limit)
+    manifest_entries = read_manifest_entries(manifest_path)
+    summaries = build_summary(events, args.summary_limit, manifest_entries)
     if launch_events_path.is_file():
         shutil.copy2(launch_events_path, case_bundle_dir / "launch-events.jsonl")
 
@@ -412,6 +424,14 @@ def finalize_case(args: argparse.Namespace) -> int:
             "latestReplacementFailureClusters": (
                 (latest_summary.get("replacement") or {}).get("failureClusters", []) if latest_summary else []
             ),
+            "latestReplacementFailureSurfaceCount": (
+                (latest_summary.get("replacementFailureSurfaces") or {}).get("failureSurfaceCount", 0)
+                if latest_summary else 0
+            ),
+            "latestReplacementFailureSurfaces": (
+                (latest_summary.get("replacementFailureSurfaces") or {}).get("failureSurfaces", [])
+                if latest_summary else []
+            ),
         },
         "recentManifestEventCount": len(manifest_events),
     }
@@ -455,6 +475,12 @@ def analyze_cases(args: argparse.Namespace) -> int:
             "latestReplacementFailureClusters": payload.get("launchDiagnostics", {}).get(
                 "latestReplacementFailureClusters", []
             ),
+            "latestReplacementFailureSurfaceCount": payload.get("launchDiagnostics", {}).get(
+                "latestReplacementFailureSurfaceCount", 0
+            ),
+            "latestReplacementFailureSurfaces": payload.get("launchDiagnostics", {}).get(
+                "latestReplacementFailureSurfaces", []
+            ),
             "recentManifestEventCount": payload.get("recentManifestEventCount"),
         }
 
@@ -475,6 +501,7 @@ def analyze_cases(args: argparse.Namespace) -> int:
             f"missingStages={len(case_report['latestMissingStages'])} "
             f"failures={case_report['latestFailureCount']} "
             f"replacementCompileFailed={case_report['latestReplacementCounts'].get('replacement_compile_failed', 0)} "
+            f"failureSurfaces={case_report['latestReplacementFailureSurfaceCount']} "
             f"manifestEvents={case_report['recentManifestEventCount']}"
         )
 

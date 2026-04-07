@@ -18,11 +18,14 @@ import argparse
 import json
 import sys
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 
 DEFAULT_ROOT = Path.home() / "Library/Containers/io.playcover.PlayCover/RuntimeLaunchDiagnostics"
+DEFAULT_CONTAINER_ROOT = Path.home() / "Library/Containers/io.playcover.PlayCover"
+MANIFEST_CORRELATION_GRACE = timedelta(seconds=5)
 
 KEY_STAGE_ORDER = [
     "playcover_launch_enter",
@@ -57,6 +60,12 @@ REPLACEMENT_FAILURE_EVENT_NAMES = {
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="汇总 runtime launch diagnostics JSONL")
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT, help="diagnostics 根目录")
+    parser.add_argument(
+        "--container-root",
+        type=Path,
+        default=DEFAULT_CONTAINER_ROOT,
+        help="PlayCover container 根目录（用于读取 ShaderCorpus manifest）",
+    )
     parser.add_argument("--bundle-id", help="目标 bundleId；省略时需配合 --list-bundles")
     parser.add_argument("--limit", type=int, default=3, help="输出最近多少个 processLaunchId")
     parser.add_argument("--json", action="store_true", help="输出 JSON 摘要")
@@ -95,6 +104,36 @@ def read_events(file_path: Path) -> list[dict[str, Any]]:
             payload.setdefault("lineNumber", line_number)
             events.append(payload)
     return events
+
+
+def read_manifest_entries(file_path: Path) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    if not file_path.is_file():
+        return entries
+
+    for raw_line in file_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            entries.append(payload)
+    return entries
+
+
+def parse_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value)
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
 def summarize_replacement_activity(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -152,12 +191,94 @@ def summarize_replacement_activity(events: list[dict[str, Any]]) -> dict[str, An
     }
 
 
-def summarize_group(process_launch_id: str, events: list[dict[str, Any]]) -> dict[str, Any]:
+def summarize_replacement_failure_surfaces(
+    *,
+    bundle_id: str | None,
+    first_timestamp: Any,
+    last_timestamp: Any,
+    manifest_entries: list[dict[str, Any]],
+) -> dict[str, Any]:
+    start = parse_timestamp(first_timestamp)
+    end = parse_timestamp(last_timestamp)
+    if start is None or end is None:
+        return {
+            "matchedAttemptCount": 0,
+            "failureSurfaces": [],
+            "failureSurfaceCount": 0,
+        }
+
+    failure_surfaces: dict[tuple[str, str, str, str, tuple[str, ...]], dict[str, Any]] = {}
+    matched_attempt_count = 0
+
+    for entry in manifest_entries:
+        if entry.get("event") != "replacement_attempt":
+            continue
+        if bundle_id and entry.get("bundleId") not in (None, bundle_id):
+            continue
+        if str(entry.get("outcome") or "") not in {"failed", "skipped"}:
+            continue
+
+        timestamp = parse_timestamp(entry.get("timestamp"))
+        if timestamp is None or timestamp < (start - MANIFEST_CORRELATION_GRACE) or timestamp > (end + MANIFEST_CORRELATION_GRACE):
+            continue
+
+        module_keys = sorted(str(value) for value in (entry.get("moduleKeys") or []) if value)
+        cluster_key = (
+            str(entry.get("selector") or ""),
+            str(entry.get("cacheKey") or ""),
+            str(entry.get("reasonCode") or ""),
+            str(entry.get("detail") or ""),
+            tuple(module_keys),
+        )
+
+        cluster = failure_surfaces.get(cluster_key)
+        matched_attempt_count += 1
+        timestamp_text = str(entry.get("timestamp") or "")
+        if cluster is None:
+            failure_surfaces[cluster_key] = {
+                "selector": cluster_key[0],
+                "cacheKey": cluster_key[1],
+                "reasonCode": cluster_key[2],
+                "detail": cluster_key[3],
+                "moduleKeys": module_keys,
+                "moduleKeyCount": len(module_keys),
+                "count": 1,
+                "firstTimestamp": timestamp_text,
+                "lastTimestamp": timestamp_text,
+            }
+            continue
+
+        cluster["count"] += 1
+        cluster["lastTimestamp"] = timestamp_text
+
+    ordered_surfaces = sorted(
+        failure_surfaces.values(),
+        key=lambda item: (
+            -int(item.get("count", 0)),
+            str(item.get("lastTimestamp", "")),
+            str(item.get("selector", "")),
+            str(item.get("cacheKey", "")),
+            ",".join(item.get("moduleKeys") or []),
+        ),
+    )
+    return {
+        "matchedAttemptCount": matched_attempt_count,
+        "failureSurfaces": ordered_surfaces[:10],
+        "failureSurfaceCount": len(ordered_surfaces),
+    }
+
+
+def summarize_group(
+    process_launch_id: str,
+    events: list[dict[str, Any]],
+    manifest_entries: list[dict[str, Any]],
+) -> dict[str, Any]:
     ordered = sorted(events, key=lambda item: (str(item.get("timestamp", "")), int(item.get("lineNumber", 0))))
     event_names = [str(item.get("event", "")) for item in ordered]
     stages = {stage: stage in event_names for stage in KEY_STAGE_ORDER}
     last_event = ordered[-1] if ordered else {}
     first_event = ordered[0] if ordered else {}
+    bundle_id = first_event.get("bundleId") or last_event.get("bundleId")
 
     noteworthy_failures = [
         {
@@ -174,10 +295,16 @@ def summarize_group(process_launch_id: str, events: list[dict[str, Any]]) -> dic
         )
     ]
     replacement_activity = summarize_replacement_activity(ordered)
+    replacement_surfaces = summarize_replacement_failure_surfaces(
+        bundle_id=bundle_id if isinstance(bundle_id, str) else None,
+        first_timestamp=first_event.get("timestamp"),
+        last_timestamp=last_event.get("timestamp"),
+        manifest_entries=manifest_entries,
+    )
 
     return {
         "processLaunchId": process_launch_id,
-        "bundleId": first_event.get("bundleId") or last_event.get("bundleId"),
+        "bundleId": bundle_id,
         "pid": first_event.get("pid") or last_event.get("pid"),
         "eventCount": len(ordered),
         "firstTimestamp": first_event.get("timestamp"),
@@ -191,16 +318,24 @@ def summarize_group(process_launch_id: str, events: list[dict[str, Any]]) -> dic
         "stages": stages,
         "noteworthyFailures": noteworthy_failures[-5:],
         "replacement": replacement_activity,
+        "replacementFailureSurfaces": replacement_surfaces,
     }
 
 
-def build_summary(events: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+def build_summary(
+    events: list[dict[str, Any]],
+    limit: int,
+    manifest_entries: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for event in events:
         process_launch_id = str(event.get("processLaunchId") or "unknown-process-launch")
         grouped[process_launch_id].append(event)
 
-    summaries = [summarize_group(process_launch_id, grouped_events) for process_launch_id, grouped_events in grouped.items()]
+    summaries = [
+        summarize_group(process_launch_id, grouped_events, manifest_entries or [])
+        for process_launch_id, grouped_events in grouped.items()
+    ]
     summaries.sort(key=lambda item: str(item.get("lastTimestamp", "")), reverse=True)
     return summaries[: max(limit, 1)]
 
@@ -249,6 +384,17 @@ def print_human_summary(bundle_id: str, summaries: list[dict[str, Any]]) -> None
                 )
                 print(f"    - {rendered}")
 
+        failure_surfaces = (summary.get("replacementFailureSurfaces") or {}).get("failureSurfaces") or []
+        if failure_surfaces:
+            print("  replacementFailureSurfaces:")
+            for surface in failure_surfaces[:5]:
+                rendered = ", ".join(
+                    f"{key}={value}"
+                    for key, value in surface.items()
+                    if value not in (None, "", 0, [])
+                )
+                print(f"    - {rendered}")
+
         failures = summary.get("noteworthyFailures") or []
         if failures:
             print("  recentFailures:")
@@ -282,13 +428,17 @@ def main() -> int:
         return 2
 
     file_path = args.root / args.bundle_id / "launch-events.jsonl"
+    manifest_path = args.container_root / "ShaderCorpus" / args.bundle_id / "manifest.jsonl"
     events = read_events(file_path)
-    summaries = build_summary(events, args.limit)
+    manifest_entries = read_manifest_entries(manifest_path)
+    summaries = build_summary(events, args.limit, manifest_entries)
 
     payload = {
         "root": str(args.root),
+        "containerRoot": str(args.container_root),
         "bundleId": args.bundle_id,
         "file": str(file_path),
+        "manifestFile": str(manifest_path),
         "summaryCount": len(summaries),
         "runs": summaries,
     }

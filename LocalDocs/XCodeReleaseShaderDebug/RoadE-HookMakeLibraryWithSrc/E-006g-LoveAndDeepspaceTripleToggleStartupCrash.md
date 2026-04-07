@@ -240,8 +240,10 @@
 
 - `Scripts/runtime_launch_diagnostics_summary.py` 现已在每个 `processLaunchId` 摘要里直接输出 replacement 事件计数与 failure clusters
 - failure cluster 的聚合键为 `event + selector + cacheKey + compilerMessage`，并保留 `count / firstTimestamp / lastTimestamp`
+- `Scripts/runtime_launch_diagnostics_summary.py` 现已额外读取 `ShaderCorpus/<bundleId>/manifest.jsonl` 中的 `replacement_attempt`，把同一启动窗口内的失败尝试相关联为 **failure surfaces**（`selector + cacheKey + reasonCode + moduleKeys`），用于把 `E-006g3` 的命中面直接收缩到最小模块集合
 - `Scripts/e006g_launch_matrix_runner.py finalize-case` 会把 replacement counts / failure clusters 一并写入 `launch-summary.json`、`launch-summary.txt` 与 `case.meta.json`
-- `Scripts/e006g_launch_matrix_runner.py analyze` 会直接打印每个 case 最新一轮的 `replacementCompileFailed` 次数，便于快速比较 `C / D / E`
+- `Scripts/e006g_launch_matrix_runner.py finalize-case` 现会同时固化 `latestReplacementFailureSurfaces` / `latestReplacementFailureSurfaceCount`
+- `Scripts/e006g_launch_matrix_runner.py analyze` 会直接打印每个 case 最新一轮的 `replacementCompileFailed` 与 `failureSurfaces` 次数，便于快速比较 `C / D / E` 并识别 startup 期最小旁路面
 
 ## 候选解决方向
 

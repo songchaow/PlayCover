@@ -176,7 +176,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | live run 快照固化 | `Scripts/e006d_matrix_runner.py prepare-run / finalize-run --latest-gputrace [--capture-target device|scope]` |
 | `E-006g1` 五象限启动矩阵 | `Scripts/e006g_launch_matrix_runner.py prepare-case / finalize-case / analyze --bundle-id com.papegames.lysk`（`finalize-case` / `analyze` 已内建 replacement failure cluster 摘要） |
 | `.gputrace` 自动检查 / 归因 | `Scripts/check_gputrace_sources.py /path/to/xxx.gputrace [--bundle-dir /path/to/ShaderCorpus/<bundleId>]` |
-| runtime launch 诊断 | `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl` + `Scripts/runtime_launch_diagnostics_summary.py`（按 `processLaunchId` 聚合 replacement counts / failure clusters） |
+| runtime launch 诊断 | `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl` + `Scripts/runtime_launch_diagnostics_summary.py`（按 `processLaunchId` 聚合 replacement counts / failure clusters，并结合 `ShaderCorpus/<bundleId>/manifest.jsonl` 输出带 `moduleKeys` 的 failure surfaces） |
 | 运行时输入自动化 | `launch_app` → `create_session` → `tap / swipe / press_key`（适用于“进入游戏”这类轻量 UI 触发） |
 
 ### 关键数据基线
@@ -185,7 +185,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 |---|---|
 | 落盘与闭环能力 | 成功路径 → `ShaderCorpus/<bundleId>/modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`；replacement → `replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal`；失败路径 → `ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`。三条路径均已进入离线 replay / diff / 归因主回路。详见 `E-004-CorpusClosureAndRecapturePolicy.md` |
 | corpus 编译基线（2026-04-05） | `test-data/*.ll`（19 个）replay + compile **全绿**；`ShaderCorpus/com.miHoYo.Yuanshen/modules/` **91/91** replay + compile **全绿**，preflight rejected `0`，regression `0` |
-| `恋与深空` 三开关启动兼容性 blocker（2026-04-07） | 最近几轮提交已依次完成 **五象限 fresh baseline → late crash 归因 → replacement failure summary**。最新结论：`B/C` 可在 launch 后继续存活，`D/E` 会在 `playcover_launch_complete` 之后约 7~8 秒内 late crash。新增 runtime breadcrumbs 后，证据已收敛到 **`newLibraryWithData:error:` 的 startup replacement compile / fallback 邻域**；当前已观测到多个 `replacement_compile_failed` cacheKey，且单个 cacheKey bypass 不足以消除崩溃，因此下一步重点是**系统性汇总 failure clusters，并把 `compile_failed` 命中面收缩到最小修复 / 旁路集合**。 |
+| `恋与深空` 三开关启动兼容性 blocker（2026-04-07） | 最近几轮提交已依次完成 **五象限 fresh baseline → late crash 归因 → replacement failure summary**。最新结论：`B/C` 可在 launch 后继续存活，`D/E` 会在 `playcover_launch_complete` 之后约 7~8 秒内 late crash。新增 runtime breadcrumbs 后，证据已收敛到 **`newLibraryWithData:error:` 的 startup replacement compile / fallback 邻域**；当前已观测到多个 `replacement_compile_failed` cacheKey，且单个 cacheKey bypass 不足以消除崩溃。当前工具链已能把 runtime failure clusters 进一步关联到 `manifest.jsonl` 中的 `moduleKeys` failure surfaces，所以下一步重点是**系统性汇总 failure clusters，并把 `compile_failed` 命中面收缩到最小修复 / 旁路集合**。 |
 | `E-006e1` 四象限基线（2026-04-07） | 已新增 `Scripts/e006e_launch_matrix_runner.py` 并对 `QQ飞车` 执行 `A/B/C/D` 四象限 fresh launch；四组 settings 均与预期一致，`launch_app -> create_session` 均成功进入 `ready`，`launch-events.jsonl` 最新 run 均到达 `playcover_launch_complete`。本轮**未复现**“capture + replacement 同开启动崩溃”，后续主线转为 `E-006e2`：解释“为何历史上出现过崩溃、而当前基线未复现”，重点比对 preload / injection / first replacement 的时序与环境差异。 |
 | `原神` 完整性 blocker | 当前仓库内尚无 `31-4302` 的既有定位记录；但 `launch_app -> create_session -> tap` 已具备自动化条件，因此本阶段的默认推进路径应是 **自动进入游戏触发 + replacement on/off 对照 + 静态字符串 / xref 定位**，而不是继续沿 `E-006d` 做画面偶现归因 |
 | `.gputrace` 里程碑 | `capture_20260404_roadE_e006c3_final.gputrace` Xcode 人工确认 shader 面板源码可见（`E-006c` 已关闭）。详细历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |

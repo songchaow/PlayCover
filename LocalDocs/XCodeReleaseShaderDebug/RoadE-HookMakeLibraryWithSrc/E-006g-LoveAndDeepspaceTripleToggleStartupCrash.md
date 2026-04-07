@@ -169,7 +169,7 @@
 |---|---|---|---|
 | E-006g1 | 三开关最小五象限启动矩阵 + diagnostics / crash 证据固化 | ✅ DONE（2026-04-07） | 已新增 `Scripts/e006g_launch_matrix_runner.py`，并对 `com.papegames.lysk` 执行 `A/B/C/D/E` 五象限 fresh launch；五组 settings 均与预期一致，`launch_app -> create_session` 全部成功进入 `ready`，`launch-events.jsonl` 最新 run 全部到达 `playcover_launch_complete` |
 | E-006g2 | 系统性汇总 startup 期 `replacement_compile_failed` / fallback failure clusters，确认 late crash 是否由 compile failure 集合触发 | ✅ DONE（2026-04-07，结论已收敛） | 已确认崩溃并不发生在 runtime 注册前；最新 fresh `case E` 已把主 blocker 收敛到 **`cacheKey=791A306ED1B6648B_4577` / `moduleKey=ec0c6f0e72d6fc64daf4d5955cd1ea2cc5e729b0f988b1e857d13bfb54c7f6c3`**，且 `analyze` 已按 compile_failed 优先显示热点 |
-| E-006g3 | 把 `compile_failed` 命中面收缩到最小 `cacheKey` / selector / module 集合，为 `E-006g4` 准备最小修复 / 旁路面 | IN PROGRESS（fresh `case E` 已完成；`8ABA... / 29b821...` 已退出 latest failure surface，当前默认入口前移到 `D4CA... / f567...`） | `791A306ED1B6648B_4577 / ec0c6f...`、`F474... / bbb32d...`、`A101... / 82d1...`、`45AE24662B56C487_14497 / 1cdc9318994d8476d7aba3f917f50630418ed80f749a056ede19285b3e8ca94e` 与 `8ABA7F7B315002A3_11361 / 29b821c6fdea52c3c2e573e94577c93f527cfcf7806dc2f5bfe0b2bf8ad83d2f` 已先后退出 latest fresh `case E` failure surface；当前 default/actionable compile blocker 前移到 `cacheKey=D4CAEB2BF7815C4F_6353 / moduleKey=f567fbc294842c90d744cbfd74789dde2c40b4d8735cf098d519884e5eb240a2`，compiler message 主体为 `InputTexture.read(t8)` 触发 `no matching member function for call to 'read'`；同轮还伴随 `A101... / 82d1...` 的 `Host llvm-dis timed out after 30 seconds` 异常噪声 |
+| E-006g3 | 把 `compile_failed` 命中面收缩到最小 `cacheKey` / selector / module 集合，为 `E-006g4` 准备最小修复 / 旁路面 | IN PROGRESS（fresh `case E` 已完成；`D4CA... / f567...` 已退出 latest failure surface，当前默认入口前移到 `4010578... / e3c089...`） | `791A306ED1B6648B_4577 / ec0c6f...`、`F474... / bbb32d...`、`A101... / 82d1...`、`45AE24662B56C487_14497 / 1cdc9318994d8476d7aba3f917f50630418ed80f749a056ede19285b3e8ca94e` 、`8ABA7F7B315002A3_11361 / 29b821c6fdea52c3c2e573e94577c93f527cfcf7806dc2f5bfe0b2bf8ad83d2f` 与 `D4CAEB2BF7815C4F_6353 / f567fbc294842c90d744cbfd74789dde2c40b4d8735cf098d519884e5eb240a2` 已先后退出 latest fresh `case E` failure surface；当前 default/actionable compile blocker 前移到 `cacheKey=4010578BBE3B30E1_4673 / moduleKey=e3c0894b45454fb3dbdb7d07523ed6fd2645c3e6b8939b11c02d3709f70df905`，compiler message 主体为 `mtl_FrontFace` 未声明，显示新的缺口已前移到 `air.front_facing` builtin lowering 邻域 |
 | E-006g4 | 设计并验证“不牺牲源码可见性目标”的修复方案 | TODO | 最终方案不能退化为“永久关 startup injection”或“永久关 replacement” |
 
 ## `E-006g1` / `E-006g2` 当前结论（2026-04-07）
@@ -250,30 +250,29 @@
   - 当前 compiler message 主体为 `_CameraDepthTexture.sample(__air_sampler_state, t0)` / `_CameraDepthTexture.sample(__air_sampler_state, t3)` 触发 `no matching member function for call to 'sample'`
 - 默认下一步已切换为：先消费该 failure-path `module.ll` 做离线 replay / 最小样本化 / `xcrun metal -c`，再回到 fresh `case E`
 
-### 2026-04-07 深夜第三轮补充：`8ABA... / 29b821...` 已退出 latest blocker，新的 latest blocker 前移到 `D4CA... / f567...`
+### 2026-04-08 凌晨补充：`D4CA... / f567...` 已退出 latest blocker，新的 latest blocker 前移到 `4010578... / e3c089...`
 
-- 本轮先对 `8ABA... / 29b821...` failure-path 样本补齐 `__air_sampler_state -> constexpr sampler` lowering，并把 `air.fast_rint` 映射到 `rint`；新增最小回归样本：
-  - `test-data/test_sampler_state_globals.ll`
-  - `test-data/test_sampler_state_globals.metal`
+- 本轮先对 `D4CA... / f567...` failure-path 样本补齐 `read_texture_2d` 坐标规范化：当 AIR 提供 `<N x i32>` / `i32` 坐标时，生成 `texture.read(uintN(...))` / `uint(...)`；新增最小回归样本：
+  - `test-data/test_read_texture_2d_int_coords.ll`
+  - `test-data/test_read_texture_2d_int_coords.metal`
 - 随后已完成离线闭环：
-  - `29b821...` failure-path `module.ll` replay + `xcrun metal -c` 成功
-  - 额外抽样验证一个真实 `sample_compare_depth_2d` corpus 样本也可 replay + compile 通过
+  - `f567...` failure-path `module.ll` replay + `xcrun metal -c` 成功
+  - `test_read_texture_2d_int_coords.ll` replay + `xcrun metal -c` 成功
 - 随后已按标准脚本完成 fresh `case E` 复测：
   - `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 成功
   - `./BuildScripts/build_and_install.sh` 成功
   - `prepare-case(E) -> launch_app -> create_session -> finalize-case --replace-existing` 成功，`create_session` 进入 `ready`
-  - 最新 `processLaunchId=launch-66000-bfe079fc-b5fa-4cd0-96a7-850a44cf0e7a` 的 settle-window 快照中，`29b821...` 已不再出现在 latest failure surface
+  - 最新 `processLaunchId=launch-15751-41e75001-ec5e-4b60-be84-659e600fe989` 的 settle-window 快照中，`f567...` 已不再出现在 latest failure surface
 - 本轮 fresh `case E` 的 latest surfaces 更新为：
-  - **actionable compile blocker**：`cacheKey=D4CAEB2BF7815C4F_6353` / `moduleKey=f567fbc294842c90d744cbfd74789dde2c40b4d8735cf098d519884e5eb240a2`
-  - **compiler message 主体**：`InputTexture.read(t8)` 触发 `no matching member function for call to 'read'`，细节显示当前更接近 `read_texture_2d` 的 coord / access lowering 缺口
-  - **次级噪声**：`cacheKey=A101E8447FA32563_5169` / `moduleKey=82d1...` 以 `replacement_exception` 形式出现，detail 为 `Host llvm-dis timed out after 30 seconds`；该项当前暂记为并行噪声，不覆盖 `D4CA...` 作为默认修复入口的优先级
+  - **actionable compile blocker**：`cacheKey=4010578BBE3B30E1_4673` / `moduleKey=e3c0894b45454fb3dbdb7d07523ed6fd2645c3e6b8939b11c02d3709f70df905`
+  - **compiler message 主体**：`program_source:46:17: error: use of undeclared identifier 'mtl_FrontFace'`，细节显示当前更接近 `air.front_facing` builtin lowering 缺口
   - `cacheKey=6BECB97B0B4BCBFD_7123` 的 targeted bypass 仍在 latest surface 中，但形态仍是预期中的 `replacement_attempt_skipped(reason=bundle_cachekey_bypass)`
-- 默认下一步已切换为：先消费 `D4CA... / f567...` failure-path `module.ll` 做离线 replay / 最小样本化 / `xcrun metal -c`，再回到 fresh `case E`
+- 默认下一步已切换为：先消费 `4010578... / e3c089...` failure-path `module.ll` 做离线 replay / 最小样本化 / `air.front_facing` builtin lowering，再回到 fresh `case E`
 
 ### 下一步（仅记录，不在本轮展开）
 
-1. 以 `cacheKey=D4CAEB2BF7815C4F_6353` / `moduleKey=f567fbc294842c90d744cbfd74789dde2c40b4d8735cf098d519884e5eb240a2` 为默认入口，先对 failure-path `module.ll` 做离线 replay / `xcrun metal -c`，并把 `InputTexture.read(t8)` 邻域缩成可最小复现的 `test-data` 样本
-2. `8ABA... / 29b821...`、`45AE... / 1cdc...`、`791A... / ec0c6f...`、`F474... / bbb32d...` 与 `A101... / 82d1...` 全部继续保留为回归样本 / 历史噪声参考；后续若 fresh `case E` 再次回退，优先用离线 replay + fresh case E 联合报警
+1. 以 `cacheKey=4010578BBE3B30E1_4673` / `moduleKey=e3c0894b45454fb3dbdb7d07523ed6fd2645c3e6b8939b11c02d3709f70df905` 为默认入口，先对 failure-path `module.ll` 做离线 replay / `xcrun metal -c`，并把 `mtl_FrontFace` / `air.front_facing` 邻域缩成可最小复现的 `test-data` 样本
+2. `D4CA... / f567...`、`8ABA... / 29b821...`、`45AE... / 1cdc...`、`791A... / ec0c6f...`、`F474... / bbb32d...` 与 `A101... / 82d1...` 全部继续保留为回归样本 / 历史噪声参考；后续若 fresh `case E` 再次回退，优先用离线 replay + fresh case E 联合报警
 3. `cacheKey=6BECB97B0B4BCBFD_7123` 的 targeted bypass 继续保留，直到新的 latest compile blocker 收敛后再评估是否缩回
 
 ### 2026-04-07 工具补强

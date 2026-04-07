@@ -5397,6 +5397,13 @@ struct IRToMSLConverter {
                     }
                 }
 
+                // read: AIR 使用有符号整型坐标（常见为 <2 x i32> / <3 x i32>），
+                // 但 Metal 的 texture.read(...) 需要 uintN / ushortN 坐标。
+                // 若直接输出 intN，会触发 `no matching member function for call to 'read'`。
+                if mapping.mslFunction == "read", !finalArgs.isEmpty, let coordType = filtered.types.first {
+                    finalArgs[0] = normalizeTextureReadCoordinate(finalArgs[0], irType: coordType)
+                }
+
                 // write: AIR 参数顺序是 (texture, coord, color, ...)，
                 // Metal 的 write 方法签名是 write(color, coord)，需要交换前两个参数
                 if mapping.mslFunction == "write" && finalArgs.count >= 2 {
@@ -5499,6 +5506,28 @@ struct IRToMSLConverter {
         }
 
         return "\(texture).gather(\(callArgs.joined(separator: ", ")))"
+    }
+
+    private static func normalizeTextureReadCoordinate(_ expr: String, irType: String) -> String {
+        let trimmedType = irType.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedType.isEmpty, !expr.isEmpty else { return expr }
+
+        if trimmedType == "i32" {
+            return "uint(\(expr))"
+        }
+        if trimmedType == "i16" {
+            return "ushort(\(expr))"
+        }
+        if trimmedType.contains("x i32") {
+            let dim = max(extractVectorDim(trimmedType), 2)
+            return "uint\(dim)(\(expr))"
+        }
+        if trimmedType.contains("x i16") {
+            let dim = max(extractVectorDim(trimmedType), 2)
+            return "ushort\(dim)(\(expr))"
+        }
+
+        return expr
     }
 
     /// 翻译 phi 节点（E-004e4b）

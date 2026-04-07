@@ -31,9 +31,10 @@ live 采集一次或少量几次真实 shader
 最终真实截帧确认源码可见
 ```
 
-**补充约束（当前最高优先级）**：`E-006c` 已证明“.gputrace 中源码可见”链路本身已经打通，但当前阶段不再把 `E-006d`“同一界面重复启动出现随机画面异常”作为日常最高优先级主线继续深挖。该问题已确认是**偶现问题**，现阶段**暂时搁置**；其已有进度保留在 `E-006d-GenshinRenderingNondeterminism.md`，但主文档不再展开其细节，且在优先级恢复前，**不要求继续读取其子文档作为默认工作入口**。当前更需要优先收敛的，是两个更接近最终落地阻塞的确定性问题：
-1. **`QQ飞车` 在同时启用 `metal capture + shader replacement` 时启动崩溃**
+**补充约束（当前最高优先级）**：`E-006c` 已证明“.gputrace 中源码可见”链路本身已经打通，但当前阶段不再把 `E-006d`“同一界面重复启动出现随机画面异常”作为日常最高优先级主线继续深挖。该问题已确认是**偶现问题**，现阶段**暂时搁置**；其已有进度保留在 `E-006d-GenshinRenderingNondeterminism.md`，但主文档不再展开其细节，且在优先级恢复前，**不要求继续读取其子文档作为默认工作入口**。当前更需要优先收敛的，是三个更接近最终落地阻塞的确定性问题：
+1. **`恋与深空` 在同时启用 `metal capture + startup injection + shader replacement` 时启动崩溃**
 2. **`原神` 在“进入游戏”后出现 `31-4302` 完整性异常，怀疑与 hook / replacement 副作用有关**
+3. **`QQ飞车` 在同时启用 `metal capture + shader replacement` 时启动崩溃，但当前最新矩阵未稳定复现**
 
 **分工原则**：
 - **live 的职责**：采集 corpus、扩覆盖、做最终真实验证
@@ -75,7 +76,7 @@ makeLibrary(source:)
    - 对已通过离线批量验证的一组改动做最小次数 live 复测
    - 最终用 `.gputrace` 做人工确认
 
-当前阶段在这三层之上额外增加一条约束：**优先收敛“capture / replacement 并存时的启动兼容性”和“进入游戏后的完整性检测副作用”**，而不是继续把主文档的控制面放在偶发性的随机画面异常上。
+当前阶段在这三层之上额外增加一条约束：**优先收敛“startup injection / capture / replacement 并存时的启动兼容性”和“进入游戏后的完整性检测副作用”**，而不是继续把主文档的控制面放在偶发性的随机画面异常上。
 
 ## Agent 工作流
 
@@ -115,7 +116,7 @@ makeLibrary(source:)
 仅在修改以下内容时执行：
 - makeLibrary hook / 导出目录 / host bridge / corpus 持久化
 - `build_and_install.sh` 部署相关逻辑
-- `metal capture + shader replacement` 并存时的启动兼容性
+- `metal capture + startup injection + shader replacement` 并存时的启动兼容性
 - 需要进入登录后 UI 才能触发的完整性 / 反篡改问题
 - 需要扩充真实 shader 覆盖面
 
@@ -129,8 +130,9 @@ remove_playtools / inject_playtools / launch_app / create_session
 
 补充约束：
 
-- **`E-006e`（`QQ飞车` 启动崩溃）**：默认走**全自动四象限对照**（`metalCaptureEnabled` / `shaderSourceReplacementEnabled` 的开关组合）+ `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl` 汇总，不引入人工 gate。推荐使用 `python3 Scripts/runtime_launch_diagnostics_summary.py --bundle-id com.tencent.tmgp.speedmobile --limit 5` 先判断崩溃发生在 preload、bridge 注册、还是首个 replacement 尝试附近。
+- **`E-006g`（`恋与深空` 三开关启动崩溃）**：默认走**全自动最小五象限对照**（`metalCaptureEnabled` / `injectMetalCaptureEnvironment` / `shaderSourceReplacementEnabled`）+ `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl` + crash 证据汇总，不引入人工 gate。推荐优先比较 `C=true/true/false` 与 `E=true/true/true`，先判断是 startup injection 本身、还是 startup injection + replacement 并存触发。
 - **`E-006f`（`原神 31-4302`）**：允许把 `launch_app -> create_session -> tap` 视为 agent 可独立完成的**轻量 UI 触发**。默认最小路径是：等待进入登录/开始界面稳定后，点击屏幕中心一次或两次以触发“进入游戏”。但**直接对已安装 app bundle 做 `strings` / `otool` / 反汇编等工作区外二进制分析，不属于日常 gate**；若要正式执行这条路径，需要用户明确确认。
+- **`E-006e`（`QQ飞车` 启动崩溃）**：保留为自动化四象限对照参考线；在优先级恢复前，不再作为默认运行时 gate 入口。
 - **`E-006d`（随机画面异常）**：当前已下调为搁置问题；除非优先级恢复，不再要求把“同一界面重复启动 2~3 轮对照”作为默认运行时 gate。
 
 ### 最终验证（保留）
@@ -145,17 +147,19 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 **注意**：hash 文件不全是源码——原神样本中的 hash 文件是 bplist，必须以 `valid_msl_files` 而非 `source_files` 为准。
 
-**人工确认（最终）**：Xcode 打开 `.gputrace` → 选 Draw Call → 查看 Shader 面板是否显示源码而非 `Shader source not found`。若当前处理的是 `E-006e` / `E-006f`，还需补充确认：
-- **`E-006e`**：在 `QQ飞车` 上同时启用 `metal capture + shader replacement` 后，应用可稳定启动，且不会为了绕过崩溃而牺牲最终的源码可见性目标
+**人工确认（最终）**：Xcode 打开 `.gputrace` → 选 Draw Call → 查看 Shader 面板是否显示源码而非 `Shader source not found`。若当前处理的是 `E-006g` / `E-006f` / `E-006e`，还需补充确认：
+- **`E-006g`**：在 `恋与深空` 上同时启用 `metal capture + startup injection + shader replacement` 后，应用可稳定启动，且不会为了绕过崩溃而牺牲最终的源码可见性目标
 - **`E-006f`**：在 `原神` 上完成“进入游戏”触发后，不再出现 `31-4302`，且截帧/源码链路仍保持有效；若最终方案依赖 patch / selective bypass，也必须明确确认不会把 Road E 退化成“只能关替换才能进游戏”
+- **`E-006e`**：在 `QQ飞车` 上同时启用 `metal capture + shader replacement` 后，应用可稳定启动，且不会为了绕过崩溃而牺牲最终的源码可见性目标
 
 除这一步外，前置的 live 启动、等待、截帧、快照固化与自动脚本分析都默认由 agent 独立完成。
 
 ## 当前主线
 
-- **`E-006e`（当前最高优先级）**：解决 `QQ飞车` 在同时启用 `metal capture + shader replacement` 时的启动崩溃。详细假设、自动化验证和候选修复路径见 `E-006e-QQSpeedCaptureReplacementStartupCrash.md`。
+- **`E-006g`（当前最高优先级）**：解决 `恋与深空` 在同时启用 `metal capture + startup injection + shader replacement` 时的启动崩溃。详细路径见 `E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md`。
 - **`E-006f`（当前第二优先级）**：解决 `原神` 在“进入游戏”后出现的 `31-4302` 完整性异常。详细路径见 `E-006f-GenshinIntegrityCheck-314302.md`。
-- **`E-006d`（暂时搁置）**：随机画面异常已确认是偶现问题，现阶段仅保留已有调查进度；主文档不再继续展开，也不再要求默认读取其子文档跟进细节。仅在 `E-006e` / `E-006f` 收敛后，才考虑是否恢复优先级。
+- **`E-006e`（当前第三优先级）**：继续保留 `QQ飞车` 在同时启用 `metal capture + shader replacement` 时的启动兼容性问题，但由于最新四象限未稳定复现，当前不再作为默认工作入口。详细记录见 `E-006e-QQSpeedCaptureReplacementStartupCrash.md`。
+- **`E-006d`（暂时搁置）**：随机画面异常已确认是偶现问题，现阶段仅保留已有调查进度；主文档不再继续展开，也不再要求默认读取其子文档跟进细节。仅在 `E-006g` / `E-006f` / `E-006e` 收敛后，才考虑是否恢复优先级。
 - **`E-006a / E-007`**：继续维持降级状态，不抢占当前主线。
 
 ## 最新基线
@@ -166,9 +170,11 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 |---|---|
 | 日常构建验证 | `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh`（PlayTools 编译） |
 | 运行时部署 | `./BuildScripts/build_and_install.sh` → `inject_playtools` / `launch_app` |
+| 运行时三开关切换 | `get_app_settings` / `update_app_settings`（`metalCaptureEnabled` / `injectMetalCaptureEnvironment` / `shaderSourceReplacementEnabled`） |
 | 离线 replay + compile + baseline diff | `Scripts/corpus_replay_runner.py --compile --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus` |
 | replacement 模式切换 | `Scripts/set_shader_replacement_mode.py --mode off/on` |
 | live run 快照固化 | `Scripts/e006d_matrix_runner.py prepare-run / finalize-run --latest-gputrace [--capture-target device|scope]` |
+| `E-006g1` 五象限启动矩阵 | `Scripts/e006g_launch_matrix_runner.py prepare-case / finalize-case / analyze --bundle-id com.papegames.lysk` |
 | `.gputrace` 自动检查 / 归因 | `Scripts/check_gputrace_sources.py /path/to/xxx.gputrace [--bundle-dir /path/to/ShaderCorpus/<bundleId>]` |
 | runtime launch 诊断 | `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl` + `Scripts/runtime_launch_diagnostics_summary.py` |
 | 运行时输入自动化 | `launch_app` → `create_session` → `tap / swipe / press_key`（适用于“进入游戏”这类轻量 UI 触发） |
@@ -179,7 +185,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 |---|---|
 | 落盘与闭环能力 | 成功路径 → `ShaderCorpus/<bundleId>/modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`；replacement → `replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal`；失败路径 → `ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`。三条路径均已进入离线 replay / diff / 归因主回路。详见 `E-004-CorpusClosureAndRecapturePolicy.md` |
 | corpus 编译基线（2026-04-05） | `test-data/*.ll`（19 个）replay + compile **全绿**；`ShaderCorpus/com.miHoYo.Yuanshen/modules/` **91/91** replay + compile **全绿**，preflight rejected `0`，regression `0` |
-| `QQ飞车` 启动兼容性 blocker | Render Capture 历史文档已经证明 `QQ飞车` 纯截帧路径可走通；当前新增 blocker 专门指向 **`metalCaptureEnabled + shaderSourceReplacementEnabled` 同开**后的启动期崩溃，因此应优先检查 `PlayCover.launch()` 中 capture 预加载、makeLibrary swizzle 安装、以及首次 replacement 尝试三者并存时序 |
+| `恋与深空` 三开关启动兼容性 blocker（2026-04-07） | 已新增 `Scripts/e006g_launch_matrix_runner.py` 并对 `恋与深空` 执行 `A/B/C/D/E` 五象限 fresh launch；五组 settings 均与预期一致，`launch_app -> create_session` 全部成功进入 `ready`，`launch-events.jsonl` 最新 run 全部到达 `playcover_launch_complete`。本轮**未复现**“capture + startup injection + replacement 同开启动崩溃”，后续主线转为 `E-006g2`：解释“为何历史上出现过崩溃、而当前基线未复现”，重点比对 host launch env / preload / injection / first replacement 的时序与环境差异。 |
 | `E-006e1` 四象限基线（2026-04-07） | 已新增 `Scripts/e006e_launch_matrix_runner.py` 并对 `QQ飞车` 执行 `A/B/C/D` 四象限 fresh launch；四组 settings 均与预期一致，`launch_app -> create_session` 均成功进入 `ready`，`launch-events.jsonl` 最新 run 均到达 `playcover_launch_complete`。本轮**未复现**“capture + replacement 同开启动崩溃”，后续主线转为 `E-006e2`：解释“为何历史上出现过崩溃、而当前基线未复现”，重点比对 preload / injection / first replacement 的时序与环境差异。 |
 | `原神` 完整性 blocker | 当前仓库内尚无 `31-4302` 的既有定位记录；但 `launch_app -> create_session -> tap` 已具备自动化条件，因此本阶段的默认推进路径应是 **自动进入游戏触发 + replacement on/off 对照 + 静态字符串 / xref 定位**，而不是继续沿 `E-006d` 做画面偶现归因 |
 | `.gputrace` 里程碑 | `capture_20260404_roadE_e006c3_final.gputrace` Xcode 人工确认 shader 面板源码可见（`E-006c` 已关闭）。详细历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
@@ -219,7 +225,7 @@ PlayTools.framework (注入到 iOS app)
 
 ## TODO
 
-> **优先级更新（2026-04-07）**：当前主线从 `E-006d` 切换为 **`E-006e` → `E-006f`**。`E-006d` 因确认为偶现问题，暂时搁置并保留进度；`E-006a` / `E-007` 继续下调一级。
+> **优先级更新（2026-04-07）**：当前主线已切换为 **`E-006g` → `E-006f` → `E-006e`**。`E-006d` 因确认为偶现问题，暂时搁置并保留进度；`E-006a` / `E-007` 继续下调一级。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -231,15 +237,20 @@ PlayTools.framework (注入到 iOS app)
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | ✅ DONE | [Archive](00-Dashboard-Archive.md) |
 | E-006c | ↳ `.gputrace` shader 源码可见性确认 | ✅ DONE | [Archive](00-Dashboard-Archive.md) |
 | E-006d | ↳ 原神同一界面重复启动时的随机渲染异常归因 | **搁置（偶现，保留进度）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006e | ↳ **`QQ飞车`：`metal capture + shader replacement` 同开启动崩溃** | **TODO（当前最高优先级）** | [E-006e](E-006e-QQSpeedCaptureReplacementStartupCrash.md) |
-| E-006e1 | ↳ 四象限启动矩阵 + launch diagnostics 固化 | ✅ DONE（2026-04-07） | [E-006e](E-006e-QQSpeedCaptureReplacementStartupCrash.md) |
-| E-006e2 | ↳ 定位崩溃发生在 preload / swizzle / first replacement 的哪一段 | TODO（当前入口） | [E-006e](E-006e-QQSpeedCaptureReplacementStartupCrash.md) |
-| E-006e3 | ↳ 设计并验证“不牺牲源码可见性目标”的修复方案 | TODO | [E-006e](E-006e-QQSpeedCaptureReplacementStartupCrash.md) |
+| E-006g | ↳ **`恋与深空`：`metal capture + startup injection + shader replacement` 同开启动崩溃** | **TODO（当前最高优先级，已完成 `E-006g1`）** | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
+| E-006g1 | ↳ 三开关最小五象限启动矩阵 + diagnostics / crash 证据固化 | ✅ DONE（2026-04-07） | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
+| E-006g2 | ↳ 定位崩溃发生在 host launch env / startup injection / `PlayCover.launch()` / first replacement 的哪一段 | TODO（当前先做） | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
+| E-006g3 | ↳ 在可进入 runtime 的 case 下，用 preload / swizzle / replacement 事件缩小最小阶段差异 | TODO | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
+| E-006g4 | ↳ 设计并验证“不牺牲源码可见性目标”的修复方案 | TODO | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
 | E-006f | ↳ **`原神`：进入游戏后出现 `31-4302` 完整性异常** | **TODO（当前第二优先级）** | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
 | E-006f1 | ↳ 自动化“进入游戏”最小触发路径（`launch_app -> create_session -> tap`） | TODO（先做） | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
 | E-006f2 | ↳ 在原神二进制 / 资源中定位 `31-4302` / 对应字符串与引用链 | TODO（专项，执行前需用户确认工作区外分析） | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
 | E-006f3 | ↳ 对照 replacement `off/on`，判断触发点更接近 hook、副作用还是替换产物 | TODO | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
 | E-006f4 | ↳ 设计并验证绕过方案：检测点 patch / selective bypass / 保持截帧有效的替代方案 | TODO | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
+| E-006e | ↳ **`QQ飞车`：`metal capture + shader replacement` 同开启动崩溃** | **TODO（当前第三优先级）** | [E-006e](E-006e-QQSpeedCaptureReplacementStartupCrash.md) |
+| E-006e1 | ↳ 四象限启动矩阵 + launch diagnostics 固化 | ✅ DONE（2026-04-07） | [E-006e](E-006e-QQSpeedCaptureReplacementStartupCrash.md) |
+| E-006e2 | ↳ 定位崩溃发生在 preload / swizzle / first replacement 的哪一段 | TODO（保留，待优先级恢复） | [E-006e](E-006e-QQSpeedCaptureReplacementStartupCrash.md) |
+| E-006e3 | ↳ 设计并验证“不牺牲源码可见性目标”的修复方案 | TODO（保留，待优先级恢复） | [E-006e](E-006e-QQSpeedCaptureReplacementStartupCrash.md) |
 | E-006a | 扩展真实 corpus 覆盖面 | TODO（已降级） | |
 | E-007 | PlayCover settings / MCP / 工具暴露 | TODO（已降级） | |
 
@@ -249,11 +260,13 @@ PlayTools.framework (注入到 iOS app)
 - **`test-data/` 和 `ShaderCorpus/` 不能混用**：`test-data/` 用于验证单个 lowering；`ShaderCorpus/` 用于真实样本的批量 replay、diff 与回归基线
 - **`build_and_install.sh` 是更新运行时 framework 的唯一可靠路径**：`sync_playtools_xcframework.sh` 只更新构建产物；涉及 live 时必须走 `BuildScripts/build_and_install.sh`
 - **源码可见 / compile green 都不等于最终可用**：当前阶段真正阻塞落地的是**启动兼容性**与**进入游戏后的完整性检查副作用**，不能只看 `.gputrace` 或 compile 指标就宣告完成
+- **`injectMetalCaptureEnvironment` 是独立于 `metalCaptureEnabled` 的启动期注入开关**：它会在 host launch 路径里增加额外 Metal capture 环境变量与 `DYLD_INSERT_LIBRARIES`，因此对 startup crash 的判断不能只看“capture 开/关”，必须把“delayed capture”与“startup injection”拆开对照
 - **`QQ飞车` 历史上可稳定截帧，不等于“capture + replacement + preload”三者并存也稳定**：对这类问题应优先做四象限设置矩阵和启动期 breadcrumb 对照，而不是直接把锅推给某一个 shader lowering
+- **`恋与深空` 当前主线要先把“三开关启动崩溃”稳定成全自动矩阵**：默认依赖 settings patch + `launch_app` + `create_session` + `RuntimeLaunchDiagnostics` + crash 证据；若 app 在 runtime 注册前就崩，diagnostics 缺失本身也是有效证据，不应把它误判为流程失败
 - **`31-4302` 更像完整性 / 反篡改问题，不宜只靠人工看弹窗推进**：默认应先做 replacement `off/on` 对照、最小自动 `tap` 触发，以及字符串 / xref / 调用链定位；视觉确认只能作为专项补充，不应成为日常 gate
 - **`launch_app -> create_session -> tap` 可以视为 agent 可独立完成的轻量 UI 输入**：但直接对已安装 app bundle 做工作区外静态反汇编 / 二进制 patch 分析，不属于默认日常流程，执行前需要用户明确确认
 - **`E-006d` 现阶段只保留进度，不再占据 dashboard 控制面**：它的调查结果仍有参考价值，但在优先级恢复前，不应继续消耗主文档篇幅或默认工作流注意力
-- **更细的 lowering 经验、历史 live blocker 链路与已完成轮次已下沉到独立参考文档**：见 `E-004-MetallibSourceExtraction-Archive.md`、`00-Dashboard-Archive.md`、`E-006e-QQSpeedCaptureReplacementStartupCrash.md` 与 `E-006f-GenshinIntegrityCheck-314302.md`
+- **更细的 lowering 经验、历史 live blocker 链路与已完成轮次已下沉到独立参考文档**：见 `E-004-MetallibSourceExtraction-Archive.md`、`00-Dashboard-Archive.md`、`E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md`、`E-006e-QQSpeedCaptureReplacementStartupCrash.md` 与 `E-006f-GenshinIntegrityCheck-314302.md`
 
 ## 参考信息
 
@@ -264,6 +277,7 @@ PlayTools.framework (注入到 iOS app)
 | `E-006d` 随机渲染异常调查（已搁置，保留进度） | `E-006d-GenshinRenderingNondeterminism.md` |
 | `E-006e`：`QQ飞车` 启动崩溃专项 | `E-006e-QQSpeedCaptureReplacementStartupCrash.md` |
 | `E-006f`：`原神 31-4302` 完整性异常专项 | `E-006f-GenshinIntegrityCheck-314302.md` |
+| `E-006g`：`恋与深空` 三开关启动崩溃专项 | `E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md` |
 | `-frecord-sources` PoC 与关键否定结论 | `E-001-PoC-frecord-sources.md` |
 | metallib / bitcode / llvm-dis / IR→MSL / corpus 主实现记录 | `E-004-MetallibSourceExtraction.md` |
 | 离线 replay / batch compile / diff 工具链 | `E-005-OfflineReplayBatchCompileDiff.md` |

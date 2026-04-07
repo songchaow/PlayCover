@@ -22,6 +22,7 @@ import json
 import plistlib
 import shutil
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -141,6 +142,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_MANIFEST_EVENT_LIMIT,
         help="how many recent interesting manifest events to preserve",
+    )
+    finalize_parser.add_argument(
+        "--settle-seconds",
+        type=float,
+        default=10.0,
+        help="how long to wait before snapshotting diagnostics so post-launch replacement failures are captured",
     )
 
     analyze_parser = subparsers.add_parser(
@@ -320,11 +327,12 @@ def prepare_case(args: argparse.Namespace) -> int:
     print("next:")
     print("1. Fresh deploy if runtime code changed: ./BuildScripts/build_and_install.sh")
     print("2. Launch the app once and attempt create_session.")
+    print("3. Keep the app alive for at least 10 seconds after ready so late replacement failures can surface.")
     print(
-        f"3. Summarize launch diagnostics: python3 Scripts/runtime_launch_diagnostics_summary.py --bundle-id {args.bundle_id} --limit 5"
+        f"4. Summarize launch diagnostics: python3 Scripts/runtime_launch_diagnostics_summary.py --bundle-id {args.bundle_id} --limit 5"
     )
     print(
-        f"4. Finalize this case: python3 Scripts/e006g_launch_matrix_runner.py finalize-case --bundle-id {args.bundle_id} --case {args.case}"
+        f"5. Finalize this case: python3 Scripts/e006g_launch_matrix_runner.py finalize-case --bundle-id {args.bundle_id} --case {args.case}"
     )
     return 0
 
@@ -333,6 +341,11 @@ def finalize_case(args: argparse.Namespace) -> int:
     container_root = Path(args.container).expanduser().resolve()
     output_root = Path(args.output_root).expanduser().resolve()
     diagnostics_root = Path(args.diagnostics_root).expanduser().resolve()
+    settle_seconds = max(float(args.settle_seconds), 0.0)
+
+    if settle_seconds > 0:
+        print(f"waiting {settle_seconds:g}s for post-launch replacement activity before snapshot...")
+        time.sleep(settle_seconds)
 
     settings_path = resolve_settings_path(container_root, args.bundle_id)
     settings_payload = load_settings_payload(settings_path)
@@ -412,6 +425,7 @@ def finalize_case(args: argparse.Namespace) -> int:
             "manifestTailPath": "manifest-tail.json",
         },
         "launchDiagnostics": {
+            "settleSeconds": settle_seconds,
             "eventCount": len(events),
             "summaryCount": len(summaries),
             "latestLastEvent": latest_summary.get("lastEvent") if latest_summary else None,

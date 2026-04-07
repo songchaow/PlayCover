@@ -179,6 +179,8 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | runtime launch 诊断 | `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl` + `Scripts/runtime_launch_diagnostics_summary.py`（按 `processLaunchId` 聚合 replacement counts / failure clusters，并结合 `ShaderCorpus/<bundleId>/manifest.jsonl` 输出带 `moduleKeys` 的 failure surfaces；同时支持 cross-run hotspot 聚合，便于识别反复出现的 startup blocker） |
 | 运行时输入自动化 | `launch_app` → `create_session` → `tap / swipe / press_key`（适用于“进入游戏”这类轻量 UI 触发） |
 
+补充说明（2026-04-07）：`E-006g` 的 case 固化不能只看 `create_session` / `playcover_launch_complete`。`Scripts/e006g_launch_matrix_runner.py finalize-case` 现默认带 **10 秒 settle window**，用于把 launch 后数秒内出现的 startup replacement `compile_failed` / failure surfaces 一并写入 `case.meta.json`，避免矩阵快照错误地把 late crash 样本记成“已通过启动兼容性”。
+
 ### 关键数据基线
 
 | 基线 | 结论 |

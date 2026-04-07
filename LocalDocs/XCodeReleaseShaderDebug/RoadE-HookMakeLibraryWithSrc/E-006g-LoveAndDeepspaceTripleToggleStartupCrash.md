@@ -159,6 +159,8 @@
 
 **注意**：若 `injectMetalCaptureEnvironment=true` 时 app 在 runtime 尚未注册前就崩溃，那么“没有 runtime diagnostics 文件 / 只有极短链路”本身也是有效证据，而不是流程失败。
 
+**新增约束（2026-04-07）**：`E-006g` 的 gate 不能只截到 `playcover_launch_complete`。`launch_app -> create_session` 成功后，必须继续保留 app 至少 **10 秒**，再执行 `python3 Scripts/e006g_launch_matrix_runner.py finalize-case ...`，以便把 startup replacement 的 late `replacement_compile_failed` / failure surfaces 一并固化。`finalize-case` 现默认内建 `--settle-seconds 10`；只有在离线测试里才应显式传 `--settle-seconds 0`。
+
 ## 当前 TODO 拆分
 
 | # | 子任务 | 状态 | 说明 |
@@ -242,7 +244,7 @@
 - failure cluster 的聚合键为 `event + selector + cacheKey + compilerMessage`，并保留 `count / firstTimestamp / lastTimestamp`
 - `Scripts/runtime_launch_diagnostics_summary.py` 现已额外读取 `ShaderCorpus/<bundleId>/manifest.jsonl` 中的 `replacement_attempt`，把同一启动窗口内的失败尝试相关联为 **failure surfaces**（`selector + cacheKey + reasonCode + moduleKeys`），用于把 `E-006g3` 的命中面直接收缩到最小模块集合
 - `Scripts/runtime_launch_diagnostics_summary.py` 现已额外输出 **cross-run replacement hotspots**：把最近若干个 `processLaunchId` 的 failure clusters / failure surfaces 再按 `cacheKey` / `reasonCode` / `moduleKeys` 聚合，直接回答“哪些 startup blocker 在多轮 launch 中反复出现”
-- `Scripts/e006g_launch_matrix_runner.py finalize-case` 会把 replacement counts / failure clusters 一并写入 `launch-summary.json`、`launch-summary.txt` 与 `case.meta.json`
+- `Scripts/e006g_launch_matrix_runner.py finalize-case` 现默认先等待 **10 秒 settle window**，再把 replacement counts / failure clusters 一并写入 `launch-summary.json`、`launch-summary.txt` 与 `case.meta.json`，避免 case 快照只停在 `playcover_launch_complete`
 - `Scripts/e006g_launch_matrix_runner.py finalize-case` 现会同时固化 `latestReplacementFailureSurfaces` / `latestReplacementFailureSurfaceCount`
 - `Scripts/e006g_launch_matrix_runner.py finalize-case` 现会额外固化 `aggregatedReplacementFailureClusters` / `aggregatedReplacementFailureSurfaces`，避免只盯住 latest run
 - `Scripts/e006g_launch_matrix_runner.py analyze` 会直接打印每个 case 最新一轮的 `replacementCompileFailed` 与 `failureSurfaces` 次数，以及跨保留 runs 的 hotspot surface / cluster，用于快速比较 `C / D / E` 并识别 startup 期最小旁路面

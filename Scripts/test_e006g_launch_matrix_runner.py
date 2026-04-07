@@ -67,6 +67,10 @@ class E006GLaunchMatrixRunnerTests(unittest.TestCase):
                 completed.stdout,
             )
             self.assertIn(
+                "Keep the app alive for at least 10 seconds after ready",
+                completed.stdout,
+            )
+            self.assertIn(
                 "finalize-case --bundle-id com.example.lysk --case C",
                 completed.stdout,
             )
@@ -174,6 +178,8 @@ class E006GLaunchMatrixRunnerTests(unittest.TestCase):
                     bundle_id,
                     "--case",
                     "E",
+                    "--settle-seconds",
+                    "0",
                     "--container",
                     str(container_root),
                     "--diagnostics-root",
@@ -205,6 +211,10 @@ class E006GLaunchMatrixRunnerTests(unittest.TestCase):
             self.assertEqual(
                 case_meta["launchDiagnostics"]["latestReplacementCounts"]["replacement_compile_failed"],
                 1,
+            )
+            self.assertEqual(
+                case_meta["launchDiagnostics"]["settleSeconds"],
+                0.0,
             )
             self.assertEqual(
                 case_meta["launchDiagnostics"]["latestReplacementFailureClusters"][0]["cacheKey"],

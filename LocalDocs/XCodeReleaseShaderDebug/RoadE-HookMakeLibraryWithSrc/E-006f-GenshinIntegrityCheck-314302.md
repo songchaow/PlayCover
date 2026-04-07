@@ -82,16 +82,18 @@
 
 1. `launch_app(bundleId=com.miHoYo.Yuanshen)`
 2. `create_session(bundleId=com.miHoYo.Yuanshen)`
-3. 等待登录 / 开始界面稳定
-4. 对屏幕中心执行一次或两次 `tap`
-5. 记录当前设置组合（至少区分 replacement `off/on`）
-6. 汇总 `RuntimeLaunchDiagnostics`、session 状态、以及任何新增运行时日志
+3. 在 `create_session` 返回 `ready` 后固定等待数秒，作为“登录 / 开始界面稳定”的默认判定窗口
+4. 对屏幕中心执行 **1 次** `tap`
+5. 若 session 仍存活，且 `RuntimeLaunchDiagnostics` / 运行时日志没有产生新的自动化信号，再在短等待后**最多补第 2 次** `tap`
+6. 记录当前设置组合（至少区分 replacement `off/on`）、`tap` 次数、`processLaunchId`、session 状态与任何新增运行时日志
 
 **注意**：现阶段“是否真的弹出 `31-4302` 文案”的视觉确认，不应成为日常 gate。日常推进应优先依赖：
 
 - replacement `off/on` 对照
-- 进入游戏后是否立即出现异常行为 / 断链 / 退出
+- `tap` 前后 session 是否断开、进程是否退出、`RuntimeLaunchDiagnostics` 是否出现新的异常模式
 - `RuntimeLaunchDiagnostics`、session 状态与运行时日志的自动化结果
+
+若当前一轮执行后**没有形成稳定的自动化信号**，只能把结论记为“进入游戏触发路径尚未稳定 / 尚未建立自动判定能力”，**不得**直接把“没看到弹窗”解释成“没有 `31-4302`”。
 
 二进制 / 字符串静态定位仅属于**升级路径**，不属于当前日常默认 gate；只有在 `E-006f1` + `E-006f3` 仍不足以定位，且用户已确认可以做工作区外分析时，才进入该分支。
 
@@ -147,7 +149,7 @@
 
 | # | 子任务 | 状态 | 说明 |
 |---|---|---|---|
-| E-006f1 | 自动化“进入游戏”最小触发路径（`launch_app -> create_session -> tap`） | TODO（先做） | 先把问题稳定成可重复的最小 live 序列 |
+| E-006f1 | 自动化“进入游戏”最小触发路径（`launch_app -> create_session -> tap`） | TODO（先做） | 先把问题稳定成可重复的最小 live 序列，并建立一个**不依赖人工看弹窗**的自动判定信号；在该信号建立前，不对 `31-4302` 是否触发下最终结论 |
 | E-006f3 | 做 replacement `off/on` 对照，判断触发点更接近 hook 痕迹还是 replacement 副作用 | TODO（默认第二步） | 先用最小设置矩阵缩小问题面，不默认进入工作区外分析 |
 | E-006f2 | 在原神二进制 / 资源中定位 `31-4302` / 对应字符串与引用链 | TODO（专项分支，执行前需用户确认工作区外分析） | 仅在 `E-006f1` + `E-006f3` 仍不足以定位时启用 |
 | E-006f4 | 设计并验证绕过方案：检测点 patch / selective bypass / 保持截帧有效的替代方案 | TODO | 目标是“保住 Road E”，不是简单关功能绕过 |

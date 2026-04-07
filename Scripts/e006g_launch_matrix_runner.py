@@ -269,6 +269,23 @@ def write_text_summary(path: Path, *, bundle_id: str, case_key: str, summaries: 
                     f"{key}={value}" for key, value in failure.items() if value not in (None, "")
                 )
                 lines.append(f"    - {rendered}")
+
+        replacement = summary.get("replacement") or {}
+        replacement_counts = replacement.get("counts") or {}
+        if replacement_counts:
+            rendered_counts = ", ".join(
+                f"{key}={value}" for key, value in sorted(replacement_counts.items())
+            )
+            lines.append(f"  replacementCounts={rendered_counts}")
+
+        failure_clusters = replacement.get("failureClusters") or []
+        if failure_clusters:
+            lines.append("  replacementFailureClusters:")
+            for cluster in failure_clusters[:5]:
+                rendered = ", ".join(
+                    f"{key}={value}" for key, value in cluster.items() if value not in (None, "", 0)
+                )
+                lines.append(f"    - {rendered}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -391,6 +408,10 @@ def finalize_case(args: argparse.Namespace) -> int:
                 stage for stage in KEY_STAGE_ORDER if not latest_summary or not latest_summary.get("stages", {}).get(stage)
             ],
             "latestFailureCount": len(latest_summary.get("noteworthyFailures") or []) if latest_summary else 0,
+            "latestReplacementCounts": (latest_summary.get("replacement") or {}).get("counts", {}) if latest_summary else {},
+            "latestReplacementFailureClusters": (
+                (latest_summary.get("replacement") or {}).get("failureClusters", []) if latest_summary else []
+            ),
         },
         "recentManifestEventCount": len(manifest_events),
     }
@@ -430,6 +451,10 @@ def analyze_cases(args: argparse.Namespace) -> int:
             "latestReachedStages": payload.get("launchDiagnostics", {}).get("latestReachedStages", []),
             "latestMissingStages": payload.get("launchDiagnostics", {}).get("latestMissingStages", []),
             "latestFailureCount": payload.get("launchDiagnostics", {}).get("latestFailureCount"),
+            "latestReplacementCounts": payload.get("launchDiagnostics", {}).get("latestReplacementCounts", {}),
+            "latestReplacementFailureClusters": payload.get("launchDiagnostics", {}).get(
+                "latestReplacementFailureClusters", []
+            ),
             "recentManifestEventCount": payload.get("recentManifestEventCount"),
         }
 
@@ -449,6 +474,7 @@ def analyze_cases(args: argparse.Namespace) -> int:
             f"lastEvent={case_report['latestLastEvent'] or 'n/a'} "
             f"missingStages={len(case_report['latestMissingStages'])} "
             f"failures={case_report['latestFailureCount']} "
+            f"replacementCompileFailed={case_report['latestReplacementCounts'].get('replacement_compile_failed', 0)} "
             f"manifestEvents={case_report['recentManifestEventCount']}"
         )
 

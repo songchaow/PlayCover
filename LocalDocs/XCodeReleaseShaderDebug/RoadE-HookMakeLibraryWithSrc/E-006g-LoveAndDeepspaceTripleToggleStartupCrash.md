@@ -103,6 +103,7 @@
 - **自动切换三开关组合**
 - **自动 launch / create_session**
 - **自动固化 diagnostics / crash 证据**
+- **自动汇总每个 `processLaunchId` 下的 replacement failure clusters（`event` / `selector` / `cacheKey` / `compilerMessage`）**
 
 而不是引入人工登录、手点 UI、手工看窗口是否闪退之类的 gate。
 
@@ -234,6 +235,13 @@
    - 扩大 bundle / selector / cacheKey 级 bypass
    - 优先修复最早一批 compile_failed 的 lowering blocker
    - 或组合策略：先局部 bypass 证明可存活，再逐步恢复 replacement 覆盖面
+
+### 2026-04-07 工具补强
+
+- `Scripts/runtime_launch_diagnostics_summary.py` 现已在每个 `processLaunchId` 摘要里直接输出 replacement 事件计数与 failure clusters
+- failure cluster 的聚合键为 `event + selector + cacheKey + compilerMessage`，并保留 `count / firstTimestamp / lastTimestamp`
+- `Scripts/e006g_launch_matrix_runner.py finalize-case` 会把 replacement counts / failure clusters 一并写入 `launch-summary.json`、`launch-summary.txt` 与 `case.meta.json`
+- `Scripts/e006g_launch_matrix_runner.py analyze` 会直接打印每个 case 最新一轮的 `replacementCompileFailed` 次数，便于快速比较 `C / D / E`
 
 ## 候选解决方向
 

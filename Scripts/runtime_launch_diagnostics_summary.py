@@ -35,6 +35,24 @@ KEY_STAGE_ORDER = [
     "bridge_registration_established",
 ]
 
+REPLACEMENT_EVENT_NAMES = {
+    "replacement_attempt_started",
+    "replacement_attempt_skipped",
+    "replacement_modules_prepared",
+    "replacement_preflight_rejected",
+    "replacement_compile_started",
+    "replacement_compile_failed",
+    "replacement_succeeded",
+    "replacement_exception",
+}
+
+REPLACEMENT_FAILURE_EVENT_NAMES = {
+    "replacement_attempt_skipped",
+    "replacement_preflight_rejected",
+    "replacement_compile_failed",
+    "replacement_exception",
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="汇总 runtime launch diagnostics JSONL")
@@ -79,6 +97,61 @@ def read_events(file_path: Path) -> list[dict[str, Any]]:
     return events
 
 
+def summarize_replacement_activity(events: list[dict[str, Any]]) -> dict[str, Any]:
+    counts: dict[str, int] = defaultdict(int)
+    failure_clusters: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+
+    for event in events:
+        event_name = str(event.get("event", ""))
+        if event_name not in REPLACEMENT_EVENT_NAMES:
+            continue
+        counts[event_name] += 1
+
+        if event_name not in REPLACEMENT_FAILURE_EVENT_NAMES:
+            continue
+
+        selector = str(event.get("selector") or "")
+        cache_key = str(event.get("cacheKey") or "")
+        reason = str(event.get("reason") or "")
+        compiler_message = str(event.get("compilerMessage") or event.get("error") or event.get("issueSummary") or "")
+        cluster_key = (event_name, selector, cache_key, compiler_message)
+        timestamp = str(event.get("timestamp") or "")
+
+        cluster = failure_clusters.get(cluster_key)
+        if cluster is None:
+            failure_clusters[cluster_key] = {
+                "event": event_name,
+                "selector": selector,
+                "cacheKey": cache_key,
+                "reason": reason,
+                "compilerMessage": compiler_message,
+                "count": 1,
+                "firstTimestamp": timestamp,
+                "lastTimestamp": timestamp,
+            }
+            continue
+
+        cluster["count"] += 1
+        cluster["lastTimestamp"] = timestamp
+
+    ordered_failures = sorted(
+        failure_clusters.values(),
+        key=lambda item: (
+            -int(item.get("count", 0)),
+            str(item.get("lastTimestamp", "")),
+            str(item.get("selector", "")),
+            str(item.get("cacheKey", "")),
+        ),
+    )
+
+    return {
+        "counts": dict(sorted(counts.items())),
+        "failureCount": sum(counts.get(name, 0) for name in REPLACEMENT_FAILURE_EVENT_NAMES),
+        "failureClusters": ordered_failures[:10],
+        "failureClusterCount": len(ordered_failures),
+    }
+
+
 def summarize_group(process_launch_id: str, events: list[dict[str, Any]]) -> dict[str, Any]:
     ordered = sorted(events, key=lambda item: (str(item.get("timestamp", "")), int(item.get("lineNumber", 0))))
     event_names = [str(item.get("event", "")) for item in ordered]
@@ -100,6 +173,7 @@ def summarize_group(process_launch_id: str, events: list[dict[str, Any]]) -> dic
             for marker in ("failed", "lost", "incomplete")
         )
     ]
+    replacement_activity = summarize_replacement_activity(ordered)
 
     return {
         "processLaunchId": process_launch_id,
@@ -116,6 +190,7 @@ def summarize_group(process_launch_id: str, events: list[dict[str, Any]]) -> dic
         },
         "stages": stages,
         "noteworthyFailures": noteworthy_failures[-5:],
+        "replacement": replacement_activity,
     }
 
 
@@ -154,6 +229,25 @@ def print_human_summary(bundle_id: str, summaries: list[dict[str, Any]]) -> None
         if last_details:
             rendered = ", ".join(f"{key}={value}" for key, value in sorted(last_details.items()))
             print(f"  lastDetails={rendered}")
+
+        replacement = summary.get("replacement") or {}
+        replacement_counts = replacement.get("counts") or {}
+        if replacement_counts:
+            rendered_counts = ", ".join(
+                f"{key}={value}" for key, value in sorted(replacement_counts.items())
+            )
+            print(f"  replacementCounts={rendered_counts}")
+
+        failure_clusters = replacement.get("failureClusters") or []
+        if failure_clusters:
+            print("  replacementFailureClusters:")
+            for cluster in failure_clusters[:5]:
+                rendered = ", ".join(
+                    f"{key}={value}"
+                    for key, value in cluster.items()
+                    if value not in (None, "", 0)
+                )
+                print(f"    - {rendered}")
 
         failures = summary.get("noteworthyFailures") or []
         if failures:

@@ -174,9 +174,9 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 离线 replay + compile + baseline diff | `Scripts/corpus_replay_runner.py --compile --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus` |
 | replacement 模式切换 | `Scripts/set_shader_replacement_mode.py --mode off/on` |
 | live run 快照固化 | `Scripts/e006d_matrix_runner.py prepare-run / finalize-run --latest-gputrace [--capture-target device|scope]` |
-| `E-006g1` 五象限启动矩阵 | `Scripts/e006g_launch_matrix_runner.py prepare-case / finalize-case / analyze --bundle-id com.papegames.lysk` |
+| `E-006g1` 五象限启动矩阵 | `Scripts/e006g_launch_matrix_runner.py prepare-case / finalize-case / analyze --bundle-id com.papegames.lysk`（`finalize-case` / `analyze` 已内建 replacement failure cluster 摘要） |
 | `.gputrace` 自动检查 / 归因 | `Scripts/check_gputrace_sources.py /path/to/xxx.gputrace [--bundle-dir /path/to/ShaderCorpus/<bundleId>]` |
-| runtime launch 诊断 | `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl` + `Scripts/runtime_launch_diagnostics_summary.py` |
+| runtime launch 诊断 | `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl` + `Scripts/runtime_launch_diagnostics_summary.py`（按 `processLaunchId` 聚合 replacement counts / failure clusters） |
 | 运行时输入自动化 | `launch_app` → `create_session` → `tap / swipe / press_key`（适用于“进入游戏”这类轻量 UI 触发） |
 
 ### 关键数据基线

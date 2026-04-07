@@ -54,18 +54,24 @@ makeLibrary(source:) / metal -c
 
 ### 主线任务
 
-**`SV-001`：先建立离线 `IR -> MSL -> AIR -> IR` round-trip harness，并在 `test-data/` 上产出第一版批量报告。**
+**`SV-002`：在 `SV-001` 已产出的 `original.ll / regenerated.ll` 基础上，实现 canonical compare + 风险分级。**
 
-这是当前最高优先级，因为它：
+`SV-001` 已在本轮完成：
 
-- 成本最低
-- 自动化程度最高
-- 对后续 L2/L3/L4 都是基础设施
-- 最能直接回答“当前到底有没有语义闭环证据”
+- 已新增 `Scripts/ir_semantics_roundtrip_runner.py`
+- 已跑通显式单样本 smoke：`build/semantics-validation/roundtrip/explicit-smoke/`
+- 已对 `test-data/` 产出第一版批量报告：`build/semantics-validation/roundtrip/test-data-batch/roundtrip-summary.json`
+- 当前批量结果为 **27 个样本中 26 个 round-trip 成功，1 个在 compile 阶段失败，llvm-dis 阶段 0 失败**
+
+因此当前最高优先级已经切换到 `SV-002`，因为它：
+
+- 能把 L1 结果变成可读、可分级、可回归的风险报告
+- 是决定哪些样本应进入 L3/L4 的必要中间层
+- 可以完全复用当前已落地的离线产物与报告结构
 
 ### 当前不该抢跑的事
 
-在 `SV-001` 未完成前，默认**不要**把精力放到：
+在 `SV-002` 未完成前，默认**不要**把精力放到：
 
 - 大规模 live `.gputrace` 验证
 - 高成本 GUI/Accessibility 操作
@@ -154,19 +160,19 @@ python3 Scripts/ir_semantics_roundtrip_runner.py ...
 | # | 任务 | 状态 | 优先级 | 说明 | 详细文档 |
 |---|---|---|---|---|---|
 | SV-000 | 现状调研与缺口梳理 | ✅ DONE | - | 已确认当前没有严格语义闭环，已形成总体路线 | `01-现状调研与缺口.md` |
-| SV-001 | 离线 IR round-trip harness | TODO | P0 | 建立 `IR -> MSL -> AIR -> IR` 自动化主链路，先覆盖 `test-data/` | `03-L1-IR-RoundTrip.md` |
-| SV-002 | Canonical compare + 风险分级 | TODO | P1 | 在 round-trip 基础上建立结构化 compare，而非只看文本 diff | `04-L2-CanonicalCompareAndRiskGrading.md` |
-| SV-003 | 把 L1/L2 接入 `test-data/` 与 `ShaderCorpus` | TODO | P1 | 先跑最小样本，再扩到代表性 corpus，形成日常批量报告 | `02-总体技术路线.md` |
+| SV-001 | 离线 IR round-trip harness | ✅ DONE | - | 已新增 `Scripts/ir_semantics_roundtrip_runner.py`，并在 `test-data/` 首轮批量报告中得到 `26 / 27` round-trip 成功 | `03-L1-IR-RoundTrip.md` |
+| SV-002 | Canonical compare + 风险分级 | TODO | P0 | 在 round-trip 基础上建立结构化 compare，而非只看文本 diff | `04-L2-CanonicalCompareAndRiskGrading.md` |
+| SV-003 | 把 L1/L2 接入 `test-data/` 与 `ShaderCorpus` | TODO | P1 | 先消费当前 `test-data/` round-trip 成果，再扩到代表性 corpus，形成日常批量报告 | `02-总体技术路线.md` |
 | SV-004 | 最小行为测试（compute-first） | TODO | P2 | 优先建立 compute 输出对比，再决定是否补离屏 render | `05-L3-最小行为测试.md` |
 | SV-005 | 真实场景验证流程收口 | TODO | P3 | 把 `.gputrace` / render diff / MCP live 验证收口成后置 gate | `06-L4-真实场景验证.md` |
 | SV-006 | 分层 gate 与止损策略 | TODO | P2 | 明确“做到哪一层就可以先停”的预算决策规则 | `02-总体技术路线.md` |
 
 ### 当前关键卡点
 
-- **没有 round-trip runner**：当前没有脚本把 `generated.metal` 再编回 `.air` 并反汇编成 `regenerated.ll`
-- **没有 canonical compare**：现有 replay / baseline diff 主要比较 generated MSL 和 compile 结果
-- **没有行为级 oracle**：最小样本主要覆盖 lowering 与 compile，不覆盖行为输出
-- **真实场景验证成本高**：应当严格后置，不能在 L1/L2 未收敛时抢跑
+- **L1 主链已打通，但还没有 canonical compare**：现有首版 round-trip 报告已经产出 `original.ll / regenerated.ll`，下一步需要把它们变成结构化 compare 与风险等级
+- **`test_struct_array_field` 仍是当前首个 compile-stage blocker**：首轮 `test-data/` 批量 round-trip 中，27 个样本里只有它在 `generated.metal -> generated.air` 阶段失败
+- **没有行为级 oracle**：最小样本主要覆盖 lowering、compile 与 round-trip，不覆盖行为输出
+- **真实场景验证成本高**：应当继续严格后置，不能在 L2/L3 未收敛时抢跑
 
 ## 踩坑与经验
 
@@ -201,6 +207,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py ...
 - `Carthage/Checkouts/PlayTools/PlayTools/LLVMDisassembler.swift`
 - `Carthage/Checkouts/PlayTools/PlayTools/LibrarySourceInjectionSwizzles.swift`
 - `Scripts/corpus_replay_runner.py`
+- `Scripts/ir_semantics_roundtrip_runner.py`
 - `Scripts/check_gputrace_sources.py`
 - `Scripts/compare_capture_runs.py`
 - `Scripts/e006d_render_diff.py`

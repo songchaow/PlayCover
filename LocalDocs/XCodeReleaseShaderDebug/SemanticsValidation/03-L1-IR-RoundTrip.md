@@ -34,22 +34,22 @@ regenerated.ll
 - 可以直接复用 `test-data/` 与 `ShaderCorpus`
 - 是 L2/L3/L4 的输入基础
 
-## 计划新增的工具
+## 已落地的工具
 
-建议新增：
+本轮已新增：
 
 - `Scripts/ir_semantics_roundtrip_runner.py`
 
-职责：
+当前职责：
 
-1. 发现输入样本
-2. 调用现有 `IRToMSLConverter`
-3. 生成 `.metal`
+1. 发现输入样本（显式多 `--ll` / `ShaderCorpus`）
+2. 复用现有 `corpus_replay_runner.py` 与 `IRToMSLConverter`
+3. 生成 `generated.metal`
 4. 调用 `xcrun metal -c`
-5. 生成 `.air`
-6. 调用 `llvm-dis`
+5. 生成 `generated.air`
+6. 按 `LLVMToolManager` 同口径优先解析 PlayCover 容器内的 `llvm-dis`
 7. 生成 `regenerated.ll`
-8. 写结构化报告
+8. 写 `roundtrip-summary.json`，并明确 `replay / compile / llvm-dis` 三段状态
 
 ### 输入模式
 
@@ -193,6 +193,15 @@ round-trip runner 需要稳定解决 `llvm-dis` 路径问题。
 
 L1 只做一件事：**把 round-trip 链路本身做稳定。**
 
+## 当前落地结果
+
+本轮验证结果：
+
+- 显式单样本 smoke：`build/semantics-validation/roundtrip/explicit-smoke/`
+- `test-data/` 首轮批量报告：`build/semantics-validation/roundtrip/test-data-batch/roundtrip-summary.json`
+- 批量统计：`27` 个样本中 `26` 个 round-trip 成功，`1` 个 compile 失败，`0` 个 llvm-dis 失败
+- 当前首个 compile-stage blocker：`test_struct_array_field`
+
 ## 完成标准
 
 满足以下条件后，可认为 `SV-001` 基本完成：
@@ -200,8 +209,10 @@ L1 只做一件事：**把 round-trip 链路本身做稳定。**
 1. 已有脚本可以对显式 `.ll` 做 round-trip
 2. `test-data/` 可以批量执行并产出结构化报告
 3. 报告能明确区分失败阶段（replay / compile / llvm-dis）
-4. 产物会稳定保留 `generated.metal`、`generated.air`、`regenerated.ll`
+4. 产物会稳定保留 `original.ll`、`generated.metal`、`generated.air`、`regenerated.ll`
 5. 至少有一组结果能供 L2 compare 直接消费
+
+> 当前以上 5 条均已满足，因此 `SV-001` 可视为完成，后续重点转入 `SV-002`。
 
 ## 后续衔接
 

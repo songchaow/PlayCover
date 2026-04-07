@@ -185,7 +185,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 |---|---|
 | 落盘与闭环能力 | 成功路径 → `ShaderCorpus/<bundleId>/modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`；replacement → `replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal`；失败路径 → `ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`。三条路径均已进入离线 replay / diff / 归因主回路。详见 `E-004-CorpusClosureAndRecapturePolicy.md` |
 | corpus 编译基线（2026-04-05） | `test-data/*.ll`（19 个）replay + compile **全绿**；`ShaderCorpus/com.miHoYo.Yuanshen/modules/` **91/91** replay + compile **全绿**，preflight rejected `0`，regression `0` |
-| `恋与深空` 三开关启动兼容性 blocker（2026-04-07） | 已新增 `Scripts/e006g_launch_matrix_runner.py` 并对 `恋与深空` 执行 `A/B/C/D/E` 五象限 fresh launch；五组 settings 均与预期一致，`launch_app -> create_session` 全部成功进入 `ready`，`launch-events.jsonl` 最新 run 全部到达 `playcover_launch_complete`。本轮**未复现**“capture + startup injection + replacement 同开启动崩溃”，后续主线转为 `E-006g2`：解释“为何历史上出现过崩溃、而当前基线未复现”，重点比对 host launch env / preload / injection / first replacement 的时序与环境差异。 |
+| `恋与深空` 三开关启动兼容性 blocker（2026-04-07） | 已完成 `E-006g1` 五象限 + `E-006g2` 首轮归因：`B/C` 可在 launch 后继续存活，`D/E` 会在 `playcover_launch_complete` 之后约 7~8 秒内 late crash。新增 runtime breadcrumbs 后，证据已收敛到 **`newLibraryWithData:error:` 的 startup replacement compile / fallback 邻域**；当前已观测到多个 `replacement_compile_failed` cacheKey，且单个 cacheKey bypass 不足以消除崩溃，因此主线不再是“startup injection 是否单独致崩”，而是“startup 期 replacement compile failure 集合如何导致 abort，以及应如何收敛 bypass / lowering 修复面”。 |
 | `E-006e1` 四象限基线（2026-04-07） | 已新增 `Scripts/e006e_launch_matrix_runner.py` 并对 `QQ飞车` 执行 `A/B/C/D` 四象限 fresh launch；四组 settings 均与预期一致，`launch_app -> create_session` 均成功进入 `ready`，`launch-events.jsonl` 最新 run 均到达 `playcover_launch_complete`。本轮**未复现**“capture + replacement 同开启动崩溃”，后续主线转为 `E-006e2`：解释“为何历史上出现过崩溃、而当前基线未复现”，重点比对 preload / injection / first replacement 的时序与环境差异。 |
 | `原神` 完整性 blocker | 当前仓库内尚无 `31-4302` 的既有定位记录；但 `launch_app -> create_session -> tap` 已具备自动化条件，因此本阶段的默认推进路径应是 **自动进入游戏触发 + replacement on/off 对照 + 静态字符串 / xref 定位**，而不是继续沿 `E-006d` 做画面偶现归因 |
 | `.gputrace` 里程碑 | `capture_20260404_roadE_e006c3_final.gputrace` Xcode 人工确认 shader 面板源码可见（`E-006c` 已关闭）。详细历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
@@ -239,8 +239,8 @@ PlayTools.framework (注入到 iOS app)
 | E-006d | ↳ 原神同一界面重复启动时的随机渲染异常归因 | **搁置（偶现，保留进度）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
 | E-006g | ↳ **`恋与深空`：`metal capture + startup injection + shader replacement` 同开启动崩溃** | **TODO（当前最高优先级，已完成 `E-006g1`）** | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
 | E-006g1 | ↳ 三开关最小五象限启动矩阵 + diagnostics / crash 证据固化 | ✅ DONE（2026-04-07） | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
-| E-006g2 | ↳ 定位崩溃发生在 host launch env / startup injection / `PlayCover.launch()` / first replacement 的哪一段 | TODO（当前先做） | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
-| E-006g3 | ↳ 在可进入 runtime 的 case 下，用 preload / swizzle / replacement 事件缩小最小阶段差异 | TODO | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
+| E-006g2 | ↳ 定位崩溃发生在 host launch env / startup injection / `PlayCover.launch()` / first replacement 的哪一段 | IN PROGRESS（2026-04-07） | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
+| E-006g3 | ↳ 在可进入 runtime 的 case 下，用 preload / swizzle / replacement 事件缩小最小阶段差异 | IN PROGRESS | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
 | E-006g4 | ↳ 设计并验证“不牺牲源码可见性目标”的修复方案 | TODO | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
 | E-006f | ↳ **`原神`：进入游戏后出现 `31-4302` 完整性异常** | **TODO（当前第二优先级）** | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
 | E-006f1 | ↳ 自动化“进入游戏”最小触发路径（`launch_app -> create_session -> tap`） | TODO（先做） | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |

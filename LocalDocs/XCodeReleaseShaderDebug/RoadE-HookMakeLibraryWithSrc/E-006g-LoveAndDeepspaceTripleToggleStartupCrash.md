@@ -163,21 +163,77 @@
 | # | 子任务 | 状态 | 说明 |
 |---|---|---|---|
 | E-006g1 | 三开关最小五象限启动矩阵 + diagnostics / crash 证据固化 | ✅ DONE（2026-04-07） | 已新增 `Scripts/e006g_launch_matrix_runner.py`，并对 `com.papegames.lysk` 执行 `A/B/C/D/E` 五象限 fresh launch；五组 settings 均与预期一致，`launch_app -> create_session` 全部成功进入 `ready`，`launch-events.jsonl` 最新 run 全部到达 `playcover_launch_complete` |
-| E-006g2 | 定位崩溃发生在 host launch env / startup injection / `PlayCover.launch()` / first replacement 的哪一段 | TODO（当前先做） | `E-006g1` 当前未复现历史 blocker；下一步应解释“历史上为何会崩、当前为何不崩”，重点比对 host launch env / preload / injection / first replacement 的时序与环境差异 |
-| E-006g3 | 在可进入 runtime 的 case 下，对照 preload / swizzle / first replacement 事件，缩小到最小阶段差异 | TODO | 复用现有 `RuntimeLaunchDiagnostics` 与 `replacement_attempt` 证据链 |
+| E-006g2 | 定位崩溃发生在 host launch env / startup injection / `PlayCover.launch()` / first replacement 的哪一段 | IN PROGRESS（2026-04-07） | 已确认崩溃并不发生在 runtime 注册前；`launch_complete` 之后仍会出现 late crash。当前证据已收敛到 **first replacement compile / fallback 邻域** |
+| E-006g3 | 在可进入 runtime 的 case 下，对照 preload / swizzle / replacement 事件缩小最小阶段差异 | IN PROGRESS | 新增 `replacement_attempt_started` / `replacement_modules_prepared` / `replacement_compile_started` / `replacement_compile_failed` / `replacement_succeeded` runtime breadcrumbs 后，已能定位到多个 `newLibraryWithData:error:` 命中点 |
 | E-006g4 | 设计并验证“不牺牲源码可见性目标”的修复方案 | TODO | 最终方案不能退化为“永久关 startup injection”或“永久关 replacement” |
 
-## `E-006g1` 本轮结论（2026-04-07）
+## `E-006g1` / `E-006g2` 当前结论（2026-04-07）
 
-1. **当前 fresh baseline 不支持“startup injection 单独就会稳定崩”的假设**
-   - `C=true/true/false` 已稳定进入 `ready`
-2. **当前 fresh baseline 也不支持“startup injection + replacement 并存必崩”的假设**
-   - `E=true/true/true` 同样稳定进入 `ready`
-3. **问题已从“复现并分离开关”转为“解释历史 crash 与当前基线之间的环境差异”**
-   - 当前更像是**时序 / 环境 / deploy 状态差异**问题，而不是单纯的三开关逻辑组合必现
-4. **当前证据链仍有一个缺口：runtime diagnostics 的 `lastDetails` 尚未记录 `injectMetalCaptureEnvironment`**
-   - 五象限脚本已把三开关 settings 与 per-case snapshot 固化下来，但 `launch-events.jsonl` 末事件当前仅回显 `metalCaptureEnabled` 与 `shaderSourceReplacementEnabled`
-   - 因此 `E-006g2` 应优先补强“startup injection 是否真的进入 host launch env / runtime breadcrumb”的时序可见性
+1. **“`launch_app -> create_session` 成功”不能等价于“启动兼容性已通过”**
+   - 之前 `E-006g1` 的五象限 fresh launch 只证明了 runtime 可以进入 `ready`
+   - 但用户指出的真实 blocker 是：**session 建立后数秒内 app 仍会崩溃**
+2. **当前证据不支持“startup injection 单独导致 late crash”**
+   - `B=true/false/false` 与 `C=true/true/false` 均可在 launch 后继续存活（至少 8s）
+   - 因此 `injectMetalCaptureEnvironment=true` 不是当前这类 late crash 的充分条件
+3. **当前证据支持“late crash 与 replacement 路径强相关”**
+   - `D=true/false/true` 与 `E=true/true/true` 都会在 `playcover_launch_complete` 之后约 7~8 秒内崩溃
+   - 最新 crash reports：`Unity-iPhone-2026-04-07-165010.ips`（`D`）与 `Unity-iPhone-2026-04-07-165825.ips` / `Unity-iPhone-2026-04-07-170150.ips`（`E`）
+4. **崩溃已收敛到 `first replacement compile / fallback` 邻域，而不是 host launch env / preload / bridge 注册阶段**
+   - 最新 `RuntimeLaunchDiagnostics` 已新增：
+     - `replacement_attempt_started`
+     - `replacement_modules_prepared`
+     - `replacement_compile_started`
+     - `replacement_compile_failed`
+     - `replacement_succeeded`
+   - 在 `E` 的最新 run（`pid=11539`）里，事件链先完整到达 `playcover_launch_complete`，随后立即进入多次 `newLibraryWithData:error:` replacement
+5. **当前已观测到多个 replacement compile blocker，不是单个 cacheKey 即可解释全部崩溃**
+   - 已先对 `cacheKey=6BECB97B0B4BCBFD_7123` 加入 targeted bypass 验证；该命中会被 `replacement_attempt_skipped(reason=bundle_cachekey_bypass)` 跳过
+   - 但 app 仍继续命中其它 replacement，并出现新的 compile failure，例如：
+     - `cacheKey=791A306ED1B6648B_4577`：`expected expression`
+     - `cacheKey=F474C54E8C5214F4_4689`：`use of undeclared identifier 'mtl_BaseVertex'`
+   - 这说明当前 crash **不是单点 shader**，而是 `恋与深空` 启动早期存在**多个会命中 replacement compile failure 的 shader**
+6. **此前关于“`E=true/true/true` 未复现崩溃”的表述需要收窄解释**
+   - 更准确的说法应是：`E` 在 launch 早期可到达 `ready`，但**并未通过后续几秒内的稳定性验证**
+   - Road E 对 `E-006g` 的 gate 不能只看 `create_session`，必须把 launch 后的短时稳定性也纳入结论
+
+## `E-006g2` 当前最小归因（2026-04-07）
+
+### 已确认
+
+- `B=true/false/false`：可存活，未观察到同类 late crash
+- `C=true/true/false`：可存活，未观察到同类 late crash
+- `D=true/false/true`：late crash
+- `E=true/true/true`：late crash
+- 因此当前主因更接近 **replacement enabled**，而不是 startup injection 本身
+
+### 最新 runtime 证据
+
+- `playcover_launch_complete` 现已记录三开关：
+  - `metalCaptureEnabled`
+  - `injectMetalCaptureEnvironment`
+  - `shaderSourceReplacementEnabled`
+- `E` 的最新 run（`pid=11539`）显示：
+  1. `playcover_capture_library_preload_checked(loaded=true, needed=true)`
+  2. `playcover_launch_complete(injectMetalCaptureEnvironment=true, metalCaptureEnabled=true, shaderSourceReplacementEnabled=true)`
+  3. 多次 `replacement_attempt_started -> replacement_modules_prepared -> replacement_compile_started`
+  4. 部分 cacheKey `replacement_compile_failed`，部分 cacheKey `replacement_succeeded`
+  5. 随后 app 仍 crash
+
+### 当前解释
+
+- 当前最合理的解释不是“startup injection 让 app 在 launch 前就崩”，而是：
+  - `恋与深空` 启动早期会命中多条 shader replacement
+  - 其中已有多条生成的 MSL 会在 `makeLibrary(source:)` 编译阶段失败
+  - 单个 compile failure / fallback 或其连锁副作用，足以在 launch 完成后数秒内触发 app abort
+
+### 下一步（仅记录，不在本轮展开）
+
+1. 系统性汇总 `恋与深空` startup 期所有 `replacement_compile_failed` 的 cacheKey / selector / compiler error
+2. 判断 late crash 是否只需要“出现任意 compile_failed”就会触发，还是必须命中某一组关键 startup shader
+3. 决定走哪条修复路径：
+   - 扩大 bundle / selector / cacheKey 级 bypass
+   - 优先修复最早一批 compile_failed 的 lowering blocker
+   - 或组合策略：先局部 bypass 证明可存活，再逐步恢复 replacement 覆盖面
 
 ## 候选解决方向
 

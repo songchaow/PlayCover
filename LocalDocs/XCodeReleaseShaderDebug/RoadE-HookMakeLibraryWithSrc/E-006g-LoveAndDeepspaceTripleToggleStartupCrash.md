@@ -265,6 +265,7 @@
 - failure cluster 的聚合键为 `event + selector + cacheKey + compilerMessage`，并保留 `count / firstTimestamp / lastTimestamp`
 - `Scripts/runtime_launch_diagnostics_summary.py` 现已额外读取 `ShaderCorpus/<bundleId>/manifest.jsonl` 中的 `replacement_attempt`，把同一启动窗口内的失败尝试相关联为 **failure surfaces**（`selector + cacheKey + reasonCode + moduleKeys`），用于把 `E-006g3` 的命中面直接收缩到最小模块集合
 - `Scripts/runtime_launch_diagnostics_summary.py` 现已额外输出 **cross-run replacement hotspots**：把最近若干个 `processLaunchId` 的 failure clusters / failure surfaces 再按 `cacheKey` / `reasonCode` / `moduleKeys` 聚合，直接回答“哪些 startup blocker 在多轮 launch 中反复出现”
+- `Carthage/Checkouts/PlayTools/PlayTools/LibrarySourceInjectionSwizzles.swift` 现会在 `replacement_*` runtime diagnostics 里直接写入 `moduleKeys` / `moduleKeyCount`；`Scripts/runtime_launch_diagnostics_summary.py` 在 manifest 没有落到对应 `replacement_attempt` 时，会回退使用 runtime event 直接生成带 `evidenceSources=[runtime_event]` 的 failure surface，避免 `E-006g3` 因单条 compile_failed 缺少模块关联而停住
 - `Scripts/e006g_launch_matrix_runner.py finalize-case` 现默认先等待 **10 秒 settle window**，再把 replacement counts / failure clusters 一并写入 `launch-summary.json`、`launch-summary.txt` 与 `case.meta.json`，避免 case 快照只停在 `playcover_launch_complete`
 - `Scripts/e006g_launch_matrix_runner.py finalize-case` 现会按 `launchSettings` 过滤 runs，只保留与当前 case 对应的 `processLaunchId`；因此 `case E` 快照不再混入 `C/D` 或更早的 baseline launch
 - `Scripts/e006g_launch_matrix_runner.py finalize-case` 现支持 `--replace-existing`，用于在同一路径刷新既有 case snapshot，而不必手工清理 `build/e006g-launch-matrix/`

@@ -138,7 +138,7 @@ class RuntimeLaunchDiagnosticsSummaryTests(unittest.TestCase):
         self.assertEqual(surfaces["failureSurfaces"][0]["reasonCode"], "compile_failed")
         self.assertEqual(surfaces["failureSurfaces"][0]["moduleKeys"], ["module-a", "module-b"])
 
-    def test_build_summary_preserves_launch_settings_after_late_compile_failure(self) -> None:
+    def test_build_summary_falls_back_to_runtime_module_keys_when_manifest_entry_is_missing(self) -> None:
         events = [
             {
                 "timestamp": "2026-04-07T01:00:00Z",
@@ -168,6 +168,7 @@ class RuntimeLaunchDiagnosticsSummaryTests(unittest.TestCase):
                 "selector": "newLibraryWithData:error:",
                 "cacheKey": "CACHE-A",
                 "compilerMessage": "expected expression",
+                "moduleKeys": "module-b,module-a",
                 "isMainThread": True,
             },
         ]
@@ -182,6 +183,15 @@ class RuntimeLaunchDiagnosticsSummaryTests(unittest.TestCase):
                 "shaderSourceReplacementEnabled": True,
             },
         )
+        surfaces = summary["replacementFailureSurfaces"]
+        self.assertEqual(surfaces["matchedAttemptCount"], 0)
+        self.assertEqual(surfaces["manifestMatchedAttemptCount"], 0)
+        self.assertEqual(surfaces["runtimeFallbackSurfaceCount"], 1)
+        self.assertEqual(surfaces["failureSurfaceCount"], 1)
+        self.assertEqual(surfaces["failureSurfaces"][0]["cacheKey"], "CACHE-A")
+        self.assertEqual(surfaces["failureSurfaces"][0]["reasonCode"], "compile_failed")
+        self.assertEqual(surfaces["failureSurfaces"][0]["moduleKeys"], ["module-a", "module-b"])
+        self.assertEqual(surfaces["failureSurfaces"][0]["evidenceSources"], ["runtime_event"])
 
     def test_aggregate_replacement_hotspots_merges_repeated_failures_across_runs(self) -> None:
         summaries = [

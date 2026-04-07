@@ -298,6 +298,129 @@ class E006GLaunchMatrixRunnerTests(unittest.TestCase):
             self.assertIn("case snapshot created", completed.stdout)
             self.assertIn("matchedRuns=1 ignoredRuns=1", completed.stdout)
 
+    def test_finalize_case_uses_runtime_module_keys_when_manifest_failure_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            container_root = root / "container"
+            diagnostics_root = root / "RuntimeLaunchDiagnostics"
+            output_root = root / "output"
+            bundle_id = "com.example.lysk"
+
+            settings_path = container_root / "App Settings" / f"{bundle_id}.plist"
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            with settings_path.open("wb") as handle:
+                plistlib.dump(
+                    {
+                        "metalCaptureEnabled": True,
+                        "injectMetalCaptureEnvironment": True,
+                        "shaderSourceReplacementEnabled": True,
+                    },
+                    handle,
+                )
+
+            write_jsonl(
+                diagnostics_root / bundle_id / "launch-events.jsonl",
+                [
+                    {
+                        "timestamp": "2026-04-07T02:00:00Z",
+                        "event": "playcover_launch_enter",
+                        "bundleId": bundle_id,
+                        "pid": 303,
+                        "processLaunchId": "launch-runtime-fallback",
+                        "isMainThread": True,
+                    },
+                    {
+                        "timestamp": "2026-04-07T02:00:01Z",
+                        "event": "playcover_capture_library_preload_checked",
+                        "bundleId": bundle_id,
+                        "pid": 303,
+                        "processLaunchId": "launch-runtime-fallback",
+                        "loaded": "true",
+                        "needed": "true",
+                        "isMainThread": True,
+                    },
+                    {
+                        "timestamp": "2026-04-07T02:00:02Z",
+                        "event": "playcover_library_injection_installed",
+                        "bundleId": bundle_id,
+                        "pid": 303,
+                        "processLaunchId": "launch-runtime-fallback",
+                        "isMainThread": True,
+                    },
+                    {
+                        "timestamp": "2026-04-07T02:00:03Z",
+                        "event": "playcover_launch_complete",
+                        "bundleId": bundle_id,
+                        "pid": 303,
+                        "processLaunchId": "launch-runtime-fallback",
+                        "metalCaptureEnabled": True,
+                        "injectMetalCaptureEnvironment": True,
+                        "shaderSourceReplacementEnabled": True,
+                        "isMainThread": True,
+                    },
+                    {
+                        "timestamp": "2026-04-07T02:00:04Z",
+                        "event": "replacement_compile_failed",
+                        "bundleId": bundle_id,
+                        "pid": 303,
+                        "processLaunchId": "launch-runtime-fallback",
+                        "selector": "newLibraryWithData:error:",
+                        "cacheKey": "CACHE-RUNTIME",
+                        "compilerMessage": "use of undeclared identifier 'mtl_BaseVertex'",
+                        "moduleKeys": "module-b,module-a",
+                        "isMainThread": True,
+                    },
+                ],
+            )
+
+            write_jsonl(
+                container_root / "ShaderCorpus" / bundle_id / "manifest.jsonl",
+                [
+                    {"event": "capture", "timestamp": "2026-04-07T02:00:04Z", "moduleKey": "module-a"},
+                    {"event": "replacement", "timestamp": "2026-04-07T02:00:05Z", "moduleKeys": ["module-a", "module-b"]},
+                ],
+            )
+
+            subprocess.run(
+                [
+                    "python3",
+                    str(RUNNER_SCRIPT),
+                    "finalize-case",
+                    "--bundle-id",
+                    bundle_id,
+                    "--case",
+                    "E",
+                    "--settle-seconds",
+                    "0",
+                    "--container",
+                    str(container_root),
+                    "--diagnostics-root",
+                    str(diagnostics_root),
+                    "--output-root",
+                    str(output_root),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            case_dir = output_root / "case-e-capture-on-startup-injection-on-replacement-on" / bundle_id
+            case_meta = json.loads((case_dir / "case.meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(case_meta["launchDiagnostics"]["latestReplacementFailureSurfaceCount"], 1)
+            self.assertEqual(
+                case_meta["launchDiagnostics"]["latestReplacementFailureSurfaces"][0]["cacheKey"],
+                "CACHE-RUNTIME",
+            )
+            self.assertEqual(
+                case_meta["launchDiagnostics"]["latestReplacementFailureSurfaces"][0]["moduleKeys"],
+                ["module-a", "module-b"],
+            )
+            self.assertEqual(
+                case_meta["launchDiagnostics"]["latestReplacementFailureSurfaces"][0]["evidenceSources"],
+                ["runtime_event"],
+            )
+
     def test_analyze_reports_present_and_missing_cases(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

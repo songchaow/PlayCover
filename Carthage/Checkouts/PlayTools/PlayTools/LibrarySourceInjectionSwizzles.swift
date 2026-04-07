@@ -407,10 +407,13 @@ class LibrarySourceInjectionService {
         cacheKey: String,
         compileSource: (_ source: NSString, _ error: UnsafeMutablePointer<NSError?>?) -> AnyObject?
     ) -> AnyObject? {
+        let moduleKeys = modules.map { stableCorpusModuleKey(for: $0) }.sorted()
         let replacementDetails = [
             "selector": selector,
             "cacheKey": cacheKey,
             "moduleCount": String(modules.count),
+            "moduleKeyCount": String(moduleKeys.count),
+            "moduleKeys": moduleKeys.joined(separator: ","),
         ]
         if let bypassReason = bypassReasonForReplacement(selector: selector, cacheKey: cacheKey) {
             RuntimeLaunchDiagnostics.record(

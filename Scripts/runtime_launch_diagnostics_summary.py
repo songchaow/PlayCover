@@ -61,6 +61,12 @@ REPLACEMENT_FAILURE_EVENT_NAMES = {
     "replacement_exception",
 }
 
+RUNTIME_FALLBACK_SURFACE_EVENT_NAMES = {
+    "replacement_preflight_rejected",
+    "replacement_compile_failed",
+    "replacement_exception",
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="汇总 runtime launch diagnostics JSONL")
@@ -153,6 +159,42 @@ def normalize_setting_value(value: Any) -> bool | Any:
     return value
 
 
+def extract_module_keys(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        keys = [str(item).strip() for item in value if str(item).strip()]
+        return sorted(dict.fromkeys(keys))
+    if isinstance(value, str):
+        keys = [part.strip() for part in value.split(",") if part.strip()]
+        return sorted(dict.fromkeys(keys))
+    return []
+
+
+def extract_replacement_failure_detail(event: dict[str, Any]) -> str:
+    return str(
+        event.get("compilerMessage")
+        or event.get("error")
+        or event.get("issueSummary")
+        or event.get("detail")
+        or ""
+    )
+
+
+def infer_replacement_failure_reason_code(event: dict[str, Any]) -> str:
+    event_name = str(event.get("event") or "")
+    explicit_reason = str(event.get("reason") or "").strip()
+    if explicit_reason:
+        return explicit_reason
+    if event_name == "replacement_preflight_rejected":
+        return "preflight_rejected"
+    if event_name == "replacement_compile_failed":
+        return "compile_failed"
+    if event_name == "replacement_exception":
+        return "exception"
+    if event_name == "replacement_attempt_skipped":
+        return "skipped"
+    return event_name.removeprefix("replacement_") or "unknown"
+
+
 def extract_launch_settings(events: list[dict[str, Any]]) -> dict[str, bool | Any]:
     for event in reversed(events):
         event_name = str(event.get("event") or "")
@@ -229,6 +271,7 @@ def summarize_replacement_failure_surfaces(
     bundle_id: str | None,
     first_timestamp: Any,
     last_timestamp: Any,
+    events: list[dict[str, Any]],
     manifest_entries: list[dict[str, Any]],
 ) -> dict[str, Any]:
     start = parse_timestamp(first_timestamp)
@@ -236,12 +279,15 @@ def summarize_replacement_failure_surfaces(
     if start is None or end is None:
         return {
             "matchedAttemptCount": 0,
+            "manifestMatchedAttemptCount": 0,
+            "runtimeFallbackSurfaceCount": 0,
             "failureSurfaces": [],
             "failureSurfaceCount": 0,
         }
 
     failure_surfaces: dict[tuple[str, str, str, str, tuple[str, ...]], dict[str, Any]] = {}
     matched_attempt_count = 0
+    runtime_fallback_surface_count = 0
 
     for entry in manifest_entries:
         if entry.get("event") != "replacement_attempt":
@@ -255,7 +301,7 @@ def summarize_replacement_failure_surfaces(
         if timestamp is None or timestamp < (start - MANIFEST_CORRELATION_GRACE) or timestamp > (end + MANIFEST_CORRELATION_GRACE):
             continue
 
-        module_keys = sorted(str(value) for value in (entry.get("moduleKeys") or []) if value)
+        module_keys = extract_module_keys(entry.get("moduleKeys"))
         cluster_key = (
             str(entry.get("selector") or ""),
             str(entry.get("cacheKey") or ""),
@@ -278,11 +324,62 @@ def summarize_replacement_failure_surfaces(
                 "count": 1,
                 "firstTimestamp": timestamp_text,
                 "lastTimestamp": timestamp_text,
+                "evidenceSources": ["manifest"],
             }
             continue
 
         cluster["count"] += 1
         cluster["lastTimestamp"] = timestamp_text
+        evidence_sources = cluster.setdefault("evidenceSources", [])
+        if "manifest" not in evidence_sources:
+            evidence_sources.append("manifest")
+
+    for event in events:
+        event_name = str(event.get("event") or "")
+        if event_name not in RUNTIME_FALLBACK_SURFACE_EVENT_NAMES:
+            continue
+
+        module_keys = extract_module_keys(event.get("moduleKeys"))
+        if not module_keys:
+            continue
+
+        cluster_key = (
+            str(event.get("selector") or ""),
+            str(event.get("cacheKey") or ""),
+            infer_replacement_failure_reason_code(event),
+            extract_replacement_failure_detail(event),
+            tuple(module_keys),
+        )
+        cluster = failure_surfaces.get(cluster_key)
+        runtime_fallback_surface_count += 1
+        timestamp_text = str(event.get("timestamp") or "")
+        if cluster is None:
+            failure_surfaces[cluster_key] = {
+                "selector": cluster_key[0],
+                "cacheKey": cluster_key[1],
+                "reasonCode": cluster_key[2],
+                "detail": cluster_key[3],
+                "moduleKeys": module_keys,
+                "moduleKeyCount": len(module_keys),
+                "count": 1,
+                "firstTimestamp": timestamp_text,
+                "lastTimestamp": timestamp_text,
+                "evidenceSources": ["runtime_event"],
+            }
+            continue
+
+        evidence_sources = cluster.setdefault("evidenceSources", [])
+        had_manifest_evidence = "manifest" in evidence_sources
+        if "runtime_event" not in evidence_sources:
+            evidence_sources.append("runtime_event")
+        if not had_manifest_evidence:
+            cluster["count"] += 1
+        existing_first = str(cluster.get("firstTimestamp") or "")
+        existing_last = str(cluster.get("lastTimestamp") or "")
+        if timestamp_text and (not existing_first or timestamp_text < existing_first):
+            cluster["firstTimestamp"] = timestamp_text
+        if timestamp_text and (not existing_last or timestamp_text > existing_last):
+            cluster["lastTimestamp"] = timestamp_text
 
     ordered_surfaces = sorted(
         failure_surfaces.values(),
@@ -296,6 +393,8 @@ def summarize_replacement_failure_surfaces(
     )
     return {
         "matchedAttemptCount": matched_attempt_count,
+        "manifestMatchedAttemptCount": matched_attempt_count,
+        "runtimeFallbackSurfaceCount": runtime_fallback_surface_count,
         "failureSurfaces": ordered_surfaces[:10],
         "failureSurfaceCount": len(ordered_surfaces),
     }
@@ -333,6 +432,7 @@ def summarize_group(
         bundle_id=bundle_id if isinstance(bundle_id, str) else None,
         first_timestamp=first_event.get("timestamp"),
         last_timestamp=last_event.get("timestamp"),
+        events=ordered,
         manifest_entries=manifest_entries,
     )
 

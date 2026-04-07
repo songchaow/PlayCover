@@ -23,7 +23,7 @@
 
 当前仓库里已经有的稳定结论包括：
 
-- `.gputrace` 源码可见链路已打通（`E-006c` 已关闭）
+- `.gputrace` 源码可见链路已打通（`E-006c` 已完成阶段性里程碑）
 - `ShaderCorpus` / replay / compile / diff 主回路已建立
 - `launch_app -> create_session` 已具备自动化条件
 
@@ -149,7 +149,7 @@
 
 | # | 子任务 | 状态 | 说明 |
 |---|---|---|---|
-| E-006f1 | 自动化“进入游戏”最小触发路径（`launch_app -> create_session -> tap`） | TODO（先做） | 先把问题稳定成可重复的最小 live 序列，并建立一个**不依赖人工看弹窗**的自动判定信号；在该信号建立前，不对 `31-4302` 是否触发下最终结论 |
+| E-006f1 | 自动化“进入游戏”最小触发路径（`launch_app -> create_session -> tap`） | TODO（先做） | 先把问题稳定成可重复的最小 live 序列，并固化 `processLaunchId / tapCount / sessionAlive / processAlive / runtime diagnostics delta` 这组最小自动化证据；只有建立了至少一种**不依赖人工看弹窗**的自动判定信号后，才进入 `E-006f3` 的 replacement `off/on` 对照 |
 | E-006f3 | 做 replacement `off/on` 对照，判断触发点更接近 hook 痕迹还是 replacement 副作用 | TODO（默认第二步） | 先用最小设置矩阵缩小问题面，不默认进入工作区外分析 |
 | E-006f2 | 在原神二进制 / 资源中定位 `31-4302` / 对应字符串与引用链 | TODO（专项分支，执行前需用户确认工作区外分析） | 仅在 `E-006f1` + `E-006f3` 仍不足以定位时启用 |
 | E-006f4 | 设计并验证绕过方案：检测点 patch / selective bypass / 保持截帧有效的替代方案 | TODO | 目标是“保住 Road E”，不是简单关功能绕过 |

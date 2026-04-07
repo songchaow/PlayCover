@@ -232,15 +232,13 @@ python3 Scripts/corpus_replay_runner.py \
 
 ### 本轮最小验证
 
-当前日常不再依赖早期 `18 / 18` test-data 样本的历史结果；更有价值、也更贴近当前主线的可复用基线已经更新为：
+当前日常不再依赖这类旧的数量型 baseline 来判断 `E-005b` 是否成立；相关历史统计已下沉到 `00-Dashboard-Archive.md`。当前仍有决策价值的是：
 
-- `test-data/*.ll`（19 个）replay + batch compile **全部成功**
-- `ShaderCorpus/com.miHoYo.Yuanshen/modules/` 全部 **91/91** replay + compile **成功**
-- preflight rejected `0`
-- regression `0`
-- `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 通过
+- 已可对 `test-data` 与 `ShaderCorpus` 统一执行 replay + batch compile + preflight / failure clustering
+- `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 继续作为标准构建守门路径
+- 更细的 run 结果、样本数量与阶段性统计，以 dashboard 的“最新基线”或 archive 为准
 
-这说明 **`E-005b` 已经不只是“能批量跑 metal”，而是能稳定作为当前日常自动化 compile / preflight / 聚类守门路径**；更细的 run 结果以 dashboard 的“最新基线”为准。
+这说明 **`E-005b` 已经不只是“能批量跑 metal”，而是能稳定作为当前日常自动化 compile / preflight / 聚类守门路径**。
 
 ## E-005c：新旧转换结果 diff / 回归基线
 
@@ -346,12 +344,12 @@ python3 Scripts/corpus_replay_runner.py \
 
 ### 本轮最小验证
 
-当前更有价值的不是早期 `18 / 18` 的历史 compare 数字，而是：
+当前更有价值的不是早期的 compare 数字，而是：
 
 - 日常已经可以对 `test-data` 与 `ShaderCorpus` 统一执行 replay + compile + baseline compare
-- dashboard 当前基线已确认：`test-data` **19/19**、原神 corpus **91/91**，regression `0`
 - `baseline.json + generated-sources/` 已成为稳定 compare 输入；generated MSL 变化会落到 `baseline-diffs/`，回归会直接反映到非 `0` 退出码
 - `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 继续作为标准构建守门路径
+- 更细的阶段性数量统计已下沉到 dashboard / archive，不再占据 `E-005` 主文档控制面
 
 这说明 **E-005c 已经具备稳定的 baseline snapshot 与自动回归守门能力**；后续重点不再是扩 compare 功能，而是把这套能力持续用于 `E-006g` / `E-006f` / `E-006e` 与日常 lowering 回归。
 

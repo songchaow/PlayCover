@@ -12,6 +12,7 @@
 - 当前还没有完成：对**当前代表性截帧对**做正式的绘制内容结构化 diff。现阶段最适合优先下钻的是：
   - **未替换**：`replacement-off-run1`
   - **替换成功且带 `.gputrace`**：`replacement-on-run5`
+- **注意**：这里的 run 编号以本文撰写时的代表性快照为准；若 `E-006d` 未来恢复优先级，应先回看 `00-Dashboard-Archive.md` 确认最新可用 run，再决定是否继续沿用这组对照
 - `replacement-on-run10` 虽然是最新 live 基线（session/capture 链路已验证），但其 trace 本身 `visibleMSL=0`，不适合拿来做 draw content 结构对比；它更适合承接 session / capture / trace 覆盖率问题
 
 ## 为什么这条线不能漏

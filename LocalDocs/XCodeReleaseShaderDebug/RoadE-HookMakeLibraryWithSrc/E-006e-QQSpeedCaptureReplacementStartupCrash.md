@@ -110,7 +110,7 @@
 | # | 子任务 | 状态 | 说明 |
 |---|---|---|---|
 | E-006e1 | 四象限启动矩阵 + launch diagnostics 固化 | ✅ DONE（2026-04-07） | 新增 `Scripts/e006e_launch_matrix_runner.py`，并已对 `QQ飞车` 执行 `A/B/C/D` 四象限 fresh launch + `create_session` + diagnostics 固化；结果显示四象限均到达 `playcover_launch_complete`，本轮未复现启动崩溃 |
-| E-006e2 | 定位崩溃发生在 preload / swizzle / first replacement 的哪一段 | TODO（若优先级恢复，先做） | 由于 `E-006e1` 本轮未复现，下一步需解释“历史 crash 为何出现、当前为何不复现”，重点看 `playcover_capture_library_preload_checked`、`playcover_library_injection_installed`、以及 replacement 首次日志 / diagnostics |
+| E-006e2 | 定位崩溃发生在 preload / swizzle / first replacement 的哪一段 | TODO（若优先级恢复，先做） | 用 `Scripts/e006e_launch_matrix_runner.py` 与 `Scripts/runtime_launch_diagnostics_summary.py` 对照历史 crash 轮次和当前 no-crash 基线，明确差异首先落在 `playcover_capture_library_preload_checked`、`playcover_library_injection_installed` 还是首个 replacement 事件；只有形成可自动比较的 event 差异后才算完成 |
 | E-006e3 | 验证是否与特定 selector / metallib payload / module 命中有关 | TODO（保留） | 若 `D` 中只在某条 shader 路径崩，应进一步最小化到单次 replacement 尝试 |
 | E-006e4 | 设计“不牺牲源码可见性目标”的修复 | TODO（保留） | 最终方案不能退化为“永久关闭 replacement”或“永久关闭 capture” |
 
@@ -181,6 +181,7 @@
 2. 启动后不会立即 crash，也不会让 session / runtime 注册链路异常退化
 3. 修复方案**不以永久关闭 capture 或 replacement 为代价**
 4. 日常复测流程仍可由 agent 独立完成，不引入人工登录、点按钮或手动 GUI 操作
+5. 若后续必须升级到工作区外静态分析或其它需人工确认的路径，该路径也只能作为专项升级分支，得到用户确认后才能执行，不能写回日常 gate
 
 ## 参考锚点
 
@@ -188,4 +189,4 @@
 - `Carthage/Checkouts/PlayTools/PlayTools/MetalCaptureService.swift`
 - `Carthage/Checkouts/PlayTools/PlayTools/LibrarySourceInjectionSwizzles.swift`
 - `Scripts/runtime_launch_diagnostics_summary.py`
-- `LocalDocs/MCPFinal/Problems/RenderCapture/00-任务Dashboard.md`
+- `00-Dashboard.md`

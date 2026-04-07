@@ -98,6 +98,8 @@ let settings = PlaySettings.shared
 
     @objc lazy var metalCaptureEnabled = settingsData.metalCaptureEnabled
 
+    @objc lazy var injectMetalCaptureEnvironment = settingsData.injectMetalCaptureEnvironment
+
     @objc lazy var shaderSourceReplacementEnabled = settingsData.shaderSourceReplacementEnabled
 }
 
@@ -133,5 +135,6 @@ struct AppSettingsData: Codable {
     var resizableAspectRatioHeight = 0
     var blockSleepSpamming = false
     var metalCaptureEnabled = false
+    var injectMetalCaptureEnvironment = false
     var shaderSourceReplacementEnabled = true
 }

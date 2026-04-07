@@ -407,7 +407,39 @@ class LibrarySourceInjectionService {
         cacheKey: String,
         compileSource: (_ source: NSString, _ error: UnsafeMutablePointer<NSError?>?) -> AnyObject?
     ) -> AnyObject? {
+        let replacementDetails = [
+            "selector": selector,
+            "cacheKey": cacheKey,
+            "moduleCount": String(modules.count),
+        ]
+        if let bypassReason = bypassReasonForReplacement(selector: selector, cacheKey: cacheKey) {
+            RuntimeLaunchDiagnostics.record(
+                event: "replacement_attempt_skipped",
+                bundleId: runtimeBundleIdentifier,
+                details: replacementDetails.merging(["reason": bypassReason]) { _, new in new }
+            )
+            appendReplacementAttemptEvent(
+                selector: selector,
+                cacheKey: cacheKey,
+                modules: modules,
+                outcome: "skipped",
+                reasonCode: bypassReason,
+                detail: "targeted runtime bypass",
+                dumpPath: nil,
+                invalidModuleCount: nil
+            )
+            NSLog("[PlayTools] LibrarySourceInjection: %@ — skip replacement via targeted bypass (bundle=%@, cacheKey=%@)",
+                  selector,
+                  runtimeBundleIdentifier,
+                  cacheKey)
+            return nil
+        }
         guard originalLibrary != nil else {
+            RuntimeLaunchDiagnostics.record(
+                event: "replacement_attempt_skipped",
+                bundleId: runtimeBundleIdentifier,
+                details: replacementDetails.merging(["reason": "original_library_missing"]) { _, new in new }
+            )
             appendReplacementAttemptEvent(
                 selector: selector,
                 cacheKey: cacheKey,
@@ -422,6 +454,11 @@ class LibrarySourceInjectionService {
             return nil
         }
         guard !modules.isEmpty else {
+            RuntimeLaunchDiagnostics.record(
+                event: "replacement_attempt_skipped",
+                bundleId: runtimeBundleIdentifier,
+                details: replacementDetails.merging(["reason": "no_bitcode_modules"]) { _, new in new }
+            )
             appendReplacementAttemptEvent(
                 selector: selector,
                 cacheKey: cacheKey,
@@ -438,6 +475,14 @@ class LibrarySourceInjectionService {
         let invalidModules = modules.filter { !$0.isValidLLVMBitcode }
         guard invalidModules.isEmpty else {
             let invalidSummary = invalidModules.map(\.summary).joined(separator: "; ")
+            RuntimeLaunchDiagnostics.record(
+                event: "replacement_attempt_skipped",
+                bundleId: runtimeBundleIdentifier,
+                details: replacementDetails.merging([
+                    "reason": "invalid_llvm_bitcode",
+                    "invalidModuleCount": String(invalidModules.count),
+                ]) { _, new in new }
+            )
             appendReplacementAttemptEvent(
                 selector: selector,
                 cacheKey: cacheKey,
@@ -455,6 +500,12 @@ class LibrarySourceInjectionService {
                   invalidSummary)
             return nil
         }
+
+        RuntimeLaunchDiagnostics.record(
+            event: "replacement_attempt_started",
+            bundleId: runtimeBundleIdentifier,
+            details: replacementDetails
+        )
 
         var preparedModules: [PreparedModuleReplacement] = []
         do {
@@ -480,10 +531,26 @@ class LibrarySourceInjectionService {
                       module.summary)
             }
 
+            RuntimeLaunchDiagnostics.record(
+                event: "replacement_modules_prepared",
+                bundleId: runtimeBundleIdentifier,
+                details: replacementDetails.merging([
+                    "preparedModuleCount": String(preparedModules.count),
+                ]) { _, new in new }
+            )
+
             let aggregate = try buildAggregateReplacementSource(from: preparedModules)
             let validationIssues = validateAggregateReplacementSource(aggregate.source)
             if !validationIssues.isEmpty {
                 let issueSummary = validationIssues.prefix(3).map(\.summary).joined(separator: " | ")
+                RuntimeLaunchDiagnostics.record(
+                    event: "replacement_preflight_rejected",
+                    bundleId: runtimeBundleIdentifier,
+                    details: replacementDetails.merging([
+                        "issueSummary": issueSummary,
+                        "sourceFunctionCount": String(aggregate.functionCount),
+                    ]) { _, new in new }
+                )
                 let dumpPath = dumpAggregateReplacementSource(
                     aggregate.source,
                     selector: selector,
@@ -513,10 +580,26 @@ class LibrarySourceInjectionService {
                 return nil
             }
 
+            RuntimeLaunchDiagnostics.record(
+                event: "replacement_compile_started",
+                bundleId: runtimeBundleIdentifier,
+                details: replacementDetails.merging([
+                    "sourceFunctionCount": String(aggregate.functionCount),
+                    "sourceLength": String(aggregate.source.utf8.count),
+                ]) { _, new in new }
+            )
+
             var compileError: NSError?
             let replacementLibrary = compileSource(aggregate.source as NSString, &compileError)
             guard let replacementLibrary else {
                 let compilerMessage = compileError?.localizedDescription ?? "unknown error"
+                RuntimeLaunchDiagnostics.record(
+                    event: "replacement_compile_failed",
+                    bundleId: runtimeBundleIdentifier,
+                    details: replacementDetails.merging([
+                        "compilerMessage": compilerMessage,
+                    ]) { _, new in new }
+                )
                 let dumpPath = dumpAggregateReplacementSource(
                     aggregate.source,
                     selector: selector,
@@ -565,6 +648,14 @@ class LibrarySourceInjectionService {
                 dumpPath: nil,
                 invalidModuleCount: nil
             )
+            RuntimeLaunchDiagnostics.record(
+                event: "replacement_succeeded",
+                bundleId: runtimeBundleIdentifier,
+                details: replacementDetails.merging([
+                    "functionCount": String(replacedFunctionCount),
+                    "corpusDumpCount": String(dumpedCorpusPaths.count),
+                ]) { _, new in new }
+            )
             let deviceClassName = NSStringFromClass(object_getClass(device)!)
             NSLog("[PlayTools] LibrarySourceInjection: %@ — replacement success (device=%@, functions=%d, modules=%d, sourceFuncs=%d, irSize=%d, mslSize=%d, corpus=%d, cacheKey=%@, moduleSummaries=%@)",
                   selector,
@@ -580,6 +671,14 @@ class LibrarySourceInjectionService {
             return replacementLibrary
         } catch {
             let moduleSummaries = modules.map(\.summary).joined(separator: "; ")
+            RuntimeLaunchDiagnostics.record(
+                event: "replacement_exception",
+                bundleId: runtimeBundleIdentifier,
+                details: replacementDetails.merging([
+                    "error": error.localizedDescription,
+                    "preparedModuleCount": String(preparedModules.count),
+                ]) { _, new in new }
+            )
             NSLog("[PlayTools] LibrarySourceInjection: %@ — replacement fallback: %@ (modules=%d, %@)",
                   selector,
                   error.localizedDescription,
@@ -1555,6 +1654,15 @@ class LibrarySourceInjectionService {
             }
         }
         return String(format: "%016llX_%d", hashValue, size)
+    }
+
+    private func bypassReasonForReplacement(selector: String, cacheKey: String) -> String? {
+        if runtimeBundleIdentifier == "com.papegames.lysk",
+           selector == "newLibraryWithData:error:",
+           cacheKey == "6BECB97B0B4BCBFD_7123" {
+            return "bundle_cachekey_bypass"
+        }
+        return nil
     }
 
     /// 安装所有 makeLibrary swizzle。

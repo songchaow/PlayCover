@@ -78,6 +78,7 @@ public class PlayCover: NSObject {
             event: "playcover_launch_complete",
             bundleId: runtimeBundleId,
             details: [
+                "injectMetalCaptureEnvironment": PlaySettings.shared.injectMetalCaptureEnvironment ? "true" : "false",
                 "metalCaptureEnabled": PlaySettings.shared.metalCaptureEnabled ? "true" : "false",
                 "shaderSourceReplacementEnabled": PlaySettings.shared.shaderSourceReplacementEnabled ? "true" : "false",
             ]

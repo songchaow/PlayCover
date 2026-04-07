@@ -1,8 +1,8 @@
 ## E-006e：`QQ飞车` 在 `metal capture + shader replacement` 同开时启动崩溃
 
-## 状态：TODO（当前最高优先级）
+## 状态：TODO（已降为第三优先级）
 
-> ⚠️ **这是当前最优先收敛的确定性 blocker。** `QQ飞车` 历史上已经证明“纯截帧路径”可走通，因此现在的问题不是“PlayCover 完全不能在它上面 capture”，而是 **Road E 的 shader replacement 主线与 metal capture 并存后，启动阶段出现了新的兼容性崩溃**。
+> ⚠️ `QQ飞车` 历史上已经证明“纯截帧路径”可走通，因此这里的问题不是“PlayCover 完全不能在它上面 capture”，而是 **Road E 的 shader replacement 主线与 metal capture 并存后，启动阶段出现了新的兼容性崩溃**。该问题仍然有效，但在 `恋与深空` 三开关启动崩溃与 `原神 31-4302` 之前，**不再是默认最高优先级入口**。
 
 ## 问题定义
 
@@ -13,7 +13,7 @@
 - 当前安装版本：`1.56.037138`
 - 现象：当 `metalCaptureEnabled=true` 且 `shaderSourceReplacementEnabled=true` 时，app 在启动阶段崩溃
 
-这条线之所以优先，是因为它直接阻断了“**在真实 app 上同时保留截帧能力与源码替换能力**”的落地。
+这条线仍然重要，因为它直接关系到“**在真实 app 上同时保留截帧能力与源码替换能力**”能否稳定落地。
 
 ## 已知事实
 
@@ -56,7 +56,7 @@
 
 ## 当前优先假设（按排查顺序）
 
-1. **最优先假设：capture preload + replacement 并存时序导致启动期崩溃**
+1. **最优先假设：capture preload + replacement 并存时序导致启动期崩溃**（⚠️ `E-006e1` 当前 fresh 四象限未复现；该假设尚未被证实，后续需重点解释“历史 crash 为何出现、当前为何不复现”）
    - `QQ飞车` 纯 capture 曾正常
    - 当前新增变量是“为保证源码 attribution 而在更早期加载 GPUToolsCapture，再叠加 replacement”
 2. **第二假设：首个 replacement 编译发生得过早，触发 app 启动关键路径不兼容**

@@ -2,7 +2,7 @@
 
 ## 状态：✅ DONE（当前作为参考主文档保留）
 
-> ⚠️ **E-004 已不再是当前最高优先级执行分支。** 相关能力已经成为 Road E 的稳定底座；当前主线与 TODO 以 `00-Dashboard.md` / `E-006d-GenshinRenderingNondeterminism.md` 为准。本文档保留为 corpus / extraction 能力的参考主文档。
+> ⚠️ **E-004 已不再是当前最高优先级执行分支。** 相关能力已经成为 Road E 的稳定底座；当前主线与 TODO 以 `00-Dashboard.md` 为准。本文档保留为 corpus / extraction 能力的参考主文档。
 
 ## 目标
 
@@ -78,7 +78,7 @@ makeLibrary(source:) 重编译替换
 
 ## 当前缺口
 
-> ⚠️ **本节保留的不是"仍待 E-004 继续开发的功能"，而是当前交接时仍必须记住的边界。** E-004 原始缺口已经收敛，真正的当前主线以 `00-Dashboard.md` / `E-006d-GenshinRenderingNondeterminism.md` 为准。
+> ⚠️ **本节保留的不是"仍待 E-004 继续开发的功能"，而是当前交接时仍必须记住的边界。** E-004 原始缺口已经收敛，真正的当前主线以 `00-Dashboard.md` 为准；`E-006d` 仅作为搁置问题保留进度，不再是默认执行入口。
 
 1. **闭环边界**：blocker 首次来自 `ShaderSourceDiagnostics/` 且样本未进入 `ShaderCorpus/` 时，不能只凭"既有 corpus 已绿"宣告闭环。详见 [E-004-CorpusClosureAndRecapturePolicy](E-004-CorpusClosureAndRecapturePolicy.md)
 2. **覆盖边界**：五大 selector 已全部接入统一导出 / 替换链路；剩余边界取决于真实 app 命中情况

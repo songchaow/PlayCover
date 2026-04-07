@@ -2,7 +2,7 @@
 
 ## 状态：✅ DONE
 
-> ⚠️ **E-005 已作为稳定参考能力收敛。** 当前 Road E 的最高优先级不是继续扩离线工具，而是使用这些工具完成 `E-006d` 的稳定对照与归因；本文档保留为 offline replay / compile / diff 能力说明。
+> ⚠️ **E-005 已作为稳定参考能力收敛。** 当前 Road E 的最高优先级不是继续扩离线工具，而是使用这些工具支撑 `E-006g` / `E-006f` / `E-006e` 的归因与 `IRToMSLConverter` 日常回归；本文档保留为 offline replay / compile / diff 能力说明。
 
 当前进度：
 
@@ -353,14 +353,16 @@ python3 Scripts/corpus_replay_runner.py \
 - `baseline.json + generated-sources/` 已成为稳定 compare 输入；generated MSL 变化会落到 `baseline-diffs/`，回归会直接反映到非 `0` 退出码
 - `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 继续作为标准构建守门路径
 
-这说明 **E-005c 已经具备稳定的 baseline snapshot 与自动回归守门能力**；后续重点不再是扩 compare 功能，而是用这套能力支撑 `E-006d` 当前归因主线。
+这说明 **E-005c 已经具备稳定的 baseline snapshot 与自动回归守门能力**；后续重点不再是扩 compare 功能，而是把这套能力持续用于 `E-006g` / `E-006f` / `E-006e` 与日常 lowering 回归。
 
 ## 下一步
 
-`E-005` 主线已完成；后续优先级回到 `E-006d`（详见 `00-Dashboard.md` 与 `E-006d-GenshinRenderingNondeterminism.md`）。
+`E-005` 主线已完成；后续优先级以 `00-Dashboard.md` 为准，不再默认指向单一子任务。
 
 E-005 的能力继续作为以下场景的稳定底座：
-- `E-006d8` 四条 blocker 的 corpus 级归因
+- `E-006g` startup replacement compile failure 集合归因
+- `E-006f` replacement `off/on` 对照与最小复现前后的回归验证
+- `E-006e` 历史 crash 与当前未复现基线的差异排查
 - `IRToMSLConverter` 日常回归守门
 - 新 lowering 修复的 replay + compile + baseline diff
 

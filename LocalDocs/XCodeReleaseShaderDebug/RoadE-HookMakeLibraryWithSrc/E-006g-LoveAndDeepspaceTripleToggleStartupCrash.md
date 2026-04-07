@@ -109,11 +109,11 @@
 
 ## 当前优先假设（按排查顺序）
 
-1. **最优先假设：`injectMetalCaptureEnvironment=true` 带来的启动期注入，与 `恋与深空` 启动链路本身不兼容**
+1. **最优先假设：`injectMetalCaptureEnvironment=true` 带来的启动期注入，与 `恋与深空` 启动链路本身不兼容**（❌ `E-006g2` 当前证据已不支持其作为 late crash 主因；`C=true/true/false` 可在 launch 后继续存活，startup injection 不是当前这类崩溃的充分条件）
    - 这条线最靠前、也最可能在 runtime 尚未完成注册前就触发崩溃
-2. **第二假设：startup injection 可过，但 `PlayCover.launch()` 早期 preload / swizzle 安装与 app 初始化时序冲突**
+2. **第二假设：startup injection 可过，但 `PlayCover.launch()` 早期 preload / swizzle 安装与 app 初始化时序冲突**（⚠️ 目前仍保留为过渡阶段排查项，但优先级已低于 replacement compile / fallback 邻域）
    - 这时通常还能在 `RuntimeLaunchDiagnostics` 中看到部分事件
-3. **第三假设：真正触发问题的是首个 replacement 尝试，而不是更早期的 startup injection / swizzle**
+3. **第三假设：真正触发问题的是首个 replacement 尝试，而不是更早期的 startup injection / swizzle**（✅ `E-006g2` 已部分确认；当前证据更接近“startup 期多个 replacement compile failure / fallback 的集合副作用”）
    - 需要在“startup injection 开启但 replacement 关闭”的对照下才能确认
 
 ## 推荐的最小自动化验证路径
@@ -164,8 +164,8 @@
 | # | 子任务 | 状态 | 说明 |
 |---|---|---|---|
 | E-006g1 | 三开关最小五象限启动矩阵 + diagnostics / crash 证据固化 | ✅ DONE（2026-04-07） | 已新增 `Scripts/e006g_launch_matrix_runner.py`，并对 `com.papegames.lysk` 执行 `A/B/C/D/E` 五象限 fresh launch；五组 settings 均与预期一致，`launch_app -> create_session` 全部成功进入 `ready`，`launch-events.jsonl` 最新 run 全部到达 `playcover_launch_complete` |
-| E-006g2 | 定位崩溃发生在 host launch env / startup injection / `PlayCover.launch()` / first replacement 的哪一段 | IN PROGRESS（2026-04-07） | 已确认崩溃并不发生在 runtime 注册前；`launch_complete` 之后仍会出现 late crash。当前证据已收敛到 **first replacement compile / fallback 邻域** |
-| E-006g3 | 在可进入 runtime 的 case 下，对照 preload / swizzle / replacement 事件缩小最小阶段差异 | IN PROGRESS | 新增 `replacement_attempt_started` / `replacement_modules_prepared` / `replacement_compile_started` / `replacement_compile_failed` / `replacement_succeeded` runtime breadcrumbs 后，已能定位到多个 `newLibraryWithData:error:` 命中点 |
+| E-006g2 | 系统性汇总 startup 期 `replacement_compile_failed` / fallback failure clusters，确认 late crash 是否由 compile failure 集合触发 | IN PROGRESS（2026-04-07） | 已确认崩溃并不发生在 runtime 注册前；当前证据已收敛到 **startup replacement compile / fallback failure 集合** |
+| E-006g3 | 把 `compile_failed` 命中面收缩到最小 `cacheKey` / selector / module 集合，为 `E-006g4` 准备最小修复 / 旁路面 | IN PROGRESS | 新增 `replacement_attempt_started` / `replacement_modules_prepared` / `replacement_compile_started` / `replacement_compile_failed` / `replacement_succeeded` runtime breadcrumbs 后，已能定位到多个 `newLibraryWithData:error:` 命中点 |
 | E-006g4 | 设计并验证“不牺牲源码可见性目标”的修复方案 | TODO | 最终方案不能退化为“永久关 startup injection”或“永久关 replacement” |
 
 ## `E-006g1` / `E-006g2` 当前结论（2026-04-07）
@@ -259,6 +259,8 @@
 风险：
 
 - 需要确认不会因此丢失最终 `.gputrace` attribution 所依赖的能力
+
+> ⚠️ `E-006g2` 已证明 `C` 可在 launch 后继续存活；方向 A 的适用前提（“若 `C` 就崩，而 `B` 不崩”）当前不成立，因此它已不再是默认优先修复路径。
 
 ### 方向 B：保留 startup injection，但让 replacement 在冷启动阶段先保守退让
 

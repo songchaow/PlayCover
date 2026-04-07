@@ -166,8 +166,8 @@
 | # | 子任务 | 状态 | 说明 |
 |---|---|---|---|
 | E-006g1 | 三开关最小五象限启动矩阵 + diagnostics / crash 证据固化 | ✅ DONE（2026-04-07） | 已新增 `Scripts/e006g_launch_matrix_runner.py`，并对 `com.papegames.lysk` 执行 `A/B/C/D/E` 五象限 fresh launch；五组 settings 均与预期一致，`launch_app -> create_session` 全部成功进入 `ready`，`launch-events.jsonl` 最新 run 全部到达 `playcover_launch_complete` |
-| E-006g2 | 系统性汇总 startup 期 `replacement_compile_failed` / fallback failure clusters，确认 late crash 是否由 compile failure 集合触发 | IN PROGRESS（当前唯一默认入口，2026-04-07） | 已确认崩溃并不发生在 runtime 注册前；当前证据已收敛到 **startup replacement compile / fallback failure 集合**，默认先用现有摘要工具稳定产出 cross-run hotspot / failure surface 结论 |
-| E-006g3 | 把 `compile_failed` 命中面收缩到最小 `cacheKey` / selector / module 集合，为 `E-006g4` 准备最小修复 / 旁路面 | TODO（待 `E-006g2` 热点摘要稳定后继续） | 依赖 `E-006g2` 先把跨 run 重复出现的 failure surfaces 收敛到稳定集合 |
+| E-006g2 | 系统性汇总 startup 期 `replacement_compile_failed` / fallback failure clusters，确认 late crash 是否由 compile failure 集合触发 | IN PROGRESS（2026-04-07：fresh rebuild + rerun 后结论已明显收敛） | 已确认崩溃并不发生在 runtime 注册前；最新 fresh `case E` 已把主 blocker 收敛到 **`cacheKey=791A306ED1B6648B_4577` / `moduleKey=ec0c6f0e72d6fc64daf4d5955cd1ea2cc5e729b0f988b1e857d13bfb54c7f6c3`**，且 `analyze` 已按 compile_failed 优先显示热点 |
+| E-006g3 | 把 `compile_failed` 命中面收缩到最小 `cacheKey` / selector / module 集合，为 `E-006g4` 准备最小修复 / 旁路面 | TODO（下一步默认入口） | 当前默认先围绕 `791A306ED1B6648B_4577 / ec0c6f...` 收缩最小旁路面；`F474... / bbb32d...` 保留为历史次级样本 |
 | E-006g4 | 设计并验证“不牺牲源码可见性目标”的修复方案 | TODO | 最终方案不能退化为“永久关 startup injection”或“永久关 replacement” |
 
 ## `E-006g1` / `E-006g2` 当前结论（2026-04-07）
@@ -229,33 +229,34 @@
   - 其中已有多条生成的 MSL 会在 `makeLibrary(source:)` 编译阶段失败
   - 单个 compile failure / fallback 或其连锁副作用，足以在 launch 完成后数秒内触发 app abort
 
-### 2026-04-07 同日补充：按 case 过滤后的 `E` 快照已刷新
+### 2026-04-07 同日补充：按 case 过滤后的 `E` 快照已再次用最新源码 fresh 刷新
 
-- `build/e006g-launch-matrix/case-e-capture-on-startup-injection-on-replacement-on/com.papegames.lysk/case.meta.json` 已用当前脚本重新固化
-- 新快照不再混入 `A/B/C/D` 的 launch；它仅保留 `launchSettings == {metalCaptureEnabled=true, injectMetalCaptureEnvironment=true, shaderSourceReplacementEnabled=true}` 的 runs
-- 当前刷新结果：`matchedRuns=2`、`ignoredRuns=23`、`latestLastEvent=replacement_compile_failed`
-- 当前 `E` 的 latest run（`launch-11539-29911b51-7a3b-4e15-acb6-f854f4a70782`）在 startup replacement 中表现为：
-  - `replacement_attempt_started=6`
-  - `replacement_succeeded=4`
-  - `replacement_compile_failed=2`
+- 已先按标准脚本执行 `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/build_and_install.sh`，随后对 `com.papegames.lysk` 重新执行 fresh `case E`：`launch_app -> create_session -> settle -> finalize-case --replace-existing`
+- 新快照仍只保留 `launchSettings == {metalCaptureEnabled=true, injectMetalCaptureEnvironment=true, shaderSourceReplacementEnabled=true}` 的 runs；当前刷新结果：`matchedRuns=3`、`ignoredRuns=23`、`latestLastEvent=replacement_compile_failed`
+- 当前 latest fresh run（`launch-10531-7d24ddaf-836f-4053-901d-509e31912bdf`）在 startup replacement 中表现为：
   - `replacement_attempt_skipped=1`（`cacheKey=6BECB97B0B4BCBFD_7123`，`reason=bundle_cachekey_bypass`）
-- 刷新后的 case-specific hotspot 说明：
-  - 历史 compile blocker 仍可见于 `cacheKey=6BECB97B0B4BCBFD_7123`
-  - 当前 bypass 生效后，新的 startup compile blocker 已前移到：
-    - `cacheKey=791A306ED1B6648B_4577`：`expected expression`
-    - `cacheKey=F474C54E8C5214F4_4689`：`use of undeclared identifier 'mtl_BaseVertex'`
-  - 当前唯一已完成 manifest 关联、且已收缩到最小模块面的 failure surface 为：
-    - `cacheKey=F474C54E8C5214F4_4689`
-    - `moduleKey=bbb32dc1261c6c5bb2e8d05d0983d7938cfc68cd9556fed2faed2d0852e04854`
-    - `reasonCode=compile_failed`
+  - `replacement_attempt_started=1`
+  - `replacement_compile_started=1`
+  - `replacement_compile_failed=1`
+  - 本轮**未再命中** `F474C54E8C5214F4_4689`
+- 当前刷新后的 case-specific hotspot 说明：
+  - `cacheKey=6BECB97B0B4BCBFD_7123` 仍保留为 targeted bypass，不再应被当作当前首要 blocker
+  - 当前 latest / actionable compile blocker 已收敛到：
+    - `cacheKey=791A306ED1B6648B_4577`
+    - `compilerMessage=expected expression`
+    - `moduleKey=ec0c6f0e72d6fc64daf4d5955cd1ea2cc5e729b0f988b1e857d13bfb54c7f6c3`
+    - `evidenceSources=[manifest, runtime_event]`
+  - `cacheKey=F474C54E8C5214F4_4689 -> moduleKey=bbb32dc1261c6c5bb2e8d05d0983d7938cfc68cd9556fed2faed2d0852e04854` 仍保留为历史 compile_failed surface，但在本轮 fresh rerun 中未再次命中
+- `Scripts/runtime_launch_diagnostics_summary.py` 与 `Scripts/e006g_launch_matrix_runner.py analyze` 已补上 hotspot 排序修正：同权重下优先显示 compile_failed，并优先显示最近一次命中的 surface/cluster；因此当前 `analyze` 输出已直接把 `791A306ED1B6648B_4577` 顶到 `hotspotSurface` / `hotspotCluster` 的首位
 
 ### 下一步（仅记录，不在本轮展开）
 
-1. 系统性汇总 `恋与深空` startup 期所有 `replacement_compile_failed` 的 cacheKey / selector / compiler error
-2. 判断 late crash 是否只需要“出现任意 compile_failed”就会触发，还是必须命中某一组关键 startup shader
-3. 决定走哪条修复路径：
+1. 以 `cacheKey=791A306ED1B6648B_4577` / `moduleKey=ec0c6f0e72d6fc64daf4d5955cd1ea2cc5e729b0f988b1e857d13bfb54c7f6c3` 作为 `E-006g3` 的默认入口，继续把当前 fresh blocker 收缩到最小旁路面或最小 lowering 修复面
+2. 判断 late crash 是否只需要“出现任意 compile_failed”就会触发，还是必须命中 `791A...` 这组 startup shader 才会触发
+3. `cacheKey=F474C54E8C5214F4_4689` / `moduleKey=bbb32dc1261c6c5bb2e8d05d0983d7938cfc68cd9556fed2faed2d0852e04854` 保留为历史次级 blocker；仅在其再次出现在 fresh rerun 中时，再回到并行修复面
+4. 决定走哪条修复路径：
    - 扩大 bundle / selector / cacheKey 级 bypass
-   - 优先修复最早一批 compile_failed 的 lowering blocker
+   - 优先修复 `791A...` 的 lowering blocker
    - 或组合策略：先局部 bypass 证明可存活，再逐步恢复 replacement 覆盖面
 
 ### 2026-04-07 工具补强

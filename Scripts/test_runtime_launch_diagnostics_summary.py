@@ -268,6 +268,112 @@ class RuntimeLaunchDiagnosticsSummaryTests(unittest.TestCase):
         self.assertEqual(hotspots["failureSurfaces"][0]["runCount"], 2)
         self.assertEqual(hotspots["failureSurfaces"][0]["occurrenceCount"], 3)
 
+    def test_aggregate_replacement_hotspots_prioritizes_compile_failed_over_bypass_when_counts_tie(self) -> None:
+        summaries = [
+            {
+                "processLaunchId": "launch-1",
+                "replacement": {
+                    "failureClusters": [
+                        {
+                            "event": "replacement_attempt_skipped",
+                            "selector": "newLibraryWithData:error:",
+                            "cacheKey": "CACHE-BYPASS",
+                            "reason": "bundle_cachekey_bypass",
+                            "compilerMessage": "",
+                            "count": 1,
+                            "firstTimestamp": "2026-04-07T01:00:01Z",
+                            "lastTimestamp": "2026-04-07T01:00:01Z",
+                        },
+                        {
+                            "event": "replacement_compile_failed",
+                            "selector": "newLibraryWithData:error:",
+                            "cacheKey": "CACHE-COMPILE",
+                            "compilerMessage": "expected expression",
+                            "count": 1,
+                            "firstTimestamp": "2026-04-07T01:00:01Z",
+                            "lastTimestamp": "2026-04-07T01:00:01Z",
+                        },
+                    ]
+                },
+                "replacementFailureSurfaces": {
+                    "failureSurfaces": [
+                        {
+                            "selector": "newLibraryWithData:error:",
+                            "cacheKey": "CACHE-BYPASS",
+                            "reasonCode": "bundle_cachekey_bypass",
+                            "detail": "targeted runtime bypass",
+                            "moduleKeys": ["module-bypass"],
+                            "count": 1,
+                            "firstTimestamp": "2026-04-07T01:00:01Z",
+                            "lastTimestamp": "2026-04-07T01:00:01Z",
+                        },
+                        {
+                            "selector": "newLibraryWithData:error:",
+                            "cacheKey": "CACHE-COMPILE",
+                            "reasonCode": "compile_failed",
+                            "detail": "expected expression",
+                            "moduleKeys": ["module-compile"],
+                            "count": 1,
+                            "firstTimestamp": "2026-04-07T01:00:01Z",
+                            "lastTimestamp": "2026-04-07T01:00:01Z",
+                        },
+                    ]
+                },
+            }
+        ]
+
+        hotspots = aggregate_replacement_hotspots(summaries)
+
+        self.assertEqual(hotspots["failureClusters"][0]["event"], "replacement_compile_failed")
+        self.assertEqual(hotspots["failureClusters"][0]["cacheKey"], "CACHE-COMPILE")
+        self.assertEqual(hotspots["failureSurfaces"][0]["reasonCode"], "compile_failed")
+        self.assertEqual(hotspots["failureSurfaces"][0]["cacheKey"], "CACHE-COMPILE")
+
+    def test_aggregate_replacement_hotspots_prefers_more_recent_surface_when_severity_ties(self) -> None:
+        summaries = [
+            {
+                "processLaunchId": "launch-old",
+                "replacement": {"failureClusters": []},
+                "replacementFailureSurfaces": {
+                    "failureSurfaces": [
+                        {
+                            "selector": "newLibraryWithData:error:",
+                            "cacheKey": "CACHE-OLD",
+                            "reasonCode": "compile_failed",
+                            "detail": "older compile blocker",
+                            "moduleKeys": ["module-old"],
+                            "count": 1,
+                            "firstTimestamp": "2026-04-07T01:00:01Z",
+                            "lastTimestamp": "2026-04-07T01:00:01Z",
+                        }
+                    ]
+                },
+            },
+            {
+                "processLaunchId": "launch-new",
+                "replacement": {"failureClusters": []},
+                "replacementFailureSurfaces": {
+                    "failureSurfaces": [
+                        {
+                            "selector": "newLibraryWithData:error:",
+                            "cacheKey": "CACHE-NEW",
+                            "reasonCode": "compile_failed",
+                            "detail": "newer compile blocker",
+                            "moduleKeys": ["module-new"],
+                            "count": 1,
+                            "firstTimestamp": "2026-04-07T02:00:01Z",
+                            "lastTimestamp": "2026-04-07T02:00:01Z",
+                        }
+                    ]
+                },
+            },
+        ]
+
+        hotspots = aggregate_replacement_hotspots(summaries)
+
+        self.assertEqual(hotspots["failureSurfaces"][0]["cacheKey"], "CACHE-NEW")
+        self.assertEqual(hotspots["failureSurfaces"][1]["cacheKey"], "CACHE-OLD")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -526,6 +526,91 @@ class E006GLaunchMatrixRunnerTests(unittest.TestCase):
             self.assertIn("hotspotCluster: event=replacement_compile_failed cacheKey=CACHE-A runs=2 occurrences=3", completed.stdout)
             self.assertIn("case=E: missing", completed.stdout)
 
+    def test_analyze_prefers_compile_failed_hotspots_over_bypass_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_root = root / "output"
+            bundle_id = "com.example.lysk"
+            case_dir = output_root / "case-e-capture-on-startup-injection-on-replacement-on" / bundle_id
+            case_dir.mkdir(parents=True, exist_ok=True)
+            (case_dir / "case.meta.json").write_text(
+                json.dumps(
+                    {
+                        "settingsMatchedExpectation": True,
+                        "launchDiagnostics": {
+                            "latestLastEvent": "replacement_compile_failed",
+                            "latestReachedStages": [],
+                            "latestMissingStages": [],
+                            "latestFailureCount": 1,
+                            "latestReplacementCounts": {
+                                "replacement_attempt_skipped": 1,
+                                "replacement_compile_failed": 1,
+                            },
+                            "latestReplacementFailureClusters": [],
+                            "latestReplacementFailureSurfaceCount": 2,
+                            "latestReplacementFailureSurfaces": [],
+                            "aggregatedReplacementFailureClusterCount": 2,
+                            "aggregatedReplacementFailureClusters": [
+                                {
+                                    "event": "replacement_compile_failed",
+                                    "cacheKey": "CACHE-COMPILE",
+                                    "runCount": 2,
+                                    "occurrenceCount": 2,
+                                },
+                                {
+                                    "event": "replacement_attempt_skipped",
+                                    "cacheKey": "CACHE-BYPASS",
+                                    "reason": "bundle_cachekey_bypass",
+                                    "runCount": 2,
+                                    "occurrenceCount": 2,
+                                },
+                            ],
+                            "aggregatedReplacementFailureSurfaceCount": 2,
+                            "aggregatedReplacementFailureSurfaces": [
+                                {
+                                    "cacheKey": "CACHE-COMPILE",
+                                    "reasonCode": "compile_failed",
+                                    "runCount": 2,
+                                    "occurrenceCount": 2,
+                                },
+                                {
+                                    "cacheKey": "CACHE-BYPASS",
+                                    "reasonCode": "bundle_cachekey_bypass",
+                                    "runCount": 2,
+                                    "occurrenceCount": 2,
+                                },
+                            ],
+                        },
+                        "recentManifestEventCount": 2,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(RUNNER_SCRIPT),
+                    "analyze",
+                    "--bundle-id",
+                    bundle_id,
+                    "--output-root",
+                    str(output_root),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("case=E: matched=True lastEvent=replacement_compile_failed", completed.stdout)
+            self.assertIn("hotspotSurface: cacheKey=CACHE-COMPILE reasonCode=compile_failed runs=2 occurrences=2", completed.stdout)
+            self.assertIn("hotspotCluster: event=replacement_compile_failed cacheKey=CACHE-COMPILE runs=2 occurrences=2", completed.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -67,6 +67,24 @@ RUNTIME_FALLBACK_SURFACE_EVENT_NAMES = {
     "replacement_exception",
 }
 
+REPLACEMENT_FAILURE_EVENT_PRIORITY = {
+    "replacement_compile_failed": 0,
+    "replacement_exception": 1,
+    "replacement_preflight_rejected": 2,
+    "replacement_attempt_skipped": 3,
+}
+
+REPLACEMENT_FAILURE_REASON_PRIORITY = {
+    "compile_failed": 0,
+    "exception": 1,
+    "preflight_rejected": 2,
+    "original_library_missing": 3,
+    "invalid_llvm_bitcode": 4,
+    "no_bitcode_modules": 5,
+    "bundle_cachekey_bypass": 6,
+    "skipped": 7,
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="汇总 runtime launch diagnostics JSONL")
@@ -147,6 +165,13 @@ def parse_timestamp(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
+def descending_timestamp_sort_key(value: Any) -> float:
+    parsed = parse_timestamp(value)
+    if parsed is None:
+        return float("inf")
+    return -parsed.timestamp()
+
+
 def normalize_setting_value(value: Any) -> bool | Any:
     if isinstance(value, bool):
         return value
@@ -209,6 +234,14 @@ def extract_launch_settings(events: list[dict[str, Any]]) -> dict[str, bool | An
         if settings:
             return settings
     return {}
+
+
+def replacement_failure_event_priority(event_name: Any) -> int:
+    return REPLACEMENT_FAILURE_EVENT_PRIORITY.get(str(event_name or ""), len(REPLACEMENT_FAILURE_EVENT_PRIORITY))
+
+
+def replacement_failure_reason_priority(reason_code: Any) -> int:
+    return REPLACEMENT_FAILURE_REASON_PRIORITY.get(str(reason_code or ""), len(REPLACEMENT_FAILURE_REASON_PRIORITY))
 
 
 def summarize_replacement_activity(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -385,6 +418,7 @@ def summarize_replacement_failure_surfaces(
         failure_surfaces.values(),
         key=lambda item: (
             -int(item.get("count", 0)),
+            replacement_failure_reason_priority(item.get("reasonCode")),
             str(item.get("lastTimestamp", "")),
             str(item.get("selector", "")),
             str(item.get("cacheKey", "")),
@@ -543,6 +577,8 @@ def aggregate_replacement_hotspots(summaries: list[dict[str, Any]]) -> dict[str,
         key=lambda item: (
             -int(item.get("runCount", 0)),
             -int(item.get("occurrenceCount", 0)),
+            replacement_failure_event_priority(item.get("event")),
+            descending_timestamp_sort_key(item.get("lastTimestamp")),
             str(item.get("lastTimestamp", "")),
             str(item.get("cacheKey", "")),
         ),
@@ -552,6 +588,8 @@ def aggregate_replacement_hotspots(summaries: list[dict[str, Any]]) -> dict[str,
         key=lambda item: (
             -int(item.get("runCount", 0)),
             -int(item.get("occurrenceCount", 0)),
+            replacement_failure_reason_priority(item.get("reasonCode")),
+            descending_timestamp_sort_key(item.get("lastTimestamp")),
             str(item.get("lastTimestamp", "")),
             str(item.get("cacheKey", "")),
             ",".join(item.get("moduleKeys") or []),

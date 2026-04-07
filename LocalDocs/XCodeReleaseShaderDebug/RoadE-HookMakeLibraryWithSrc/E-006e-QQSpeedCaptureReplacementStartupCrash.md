@@ -1,8 +1,8 @@
 ## E-006e：`QQ飞车` 在 `metal capture + shader replacement` 同开时启动崩溃
 
-## 状态：TODO（已降为第三优先级；默认在 `E-006g` / `E-006f` 收敛后，或 `QQ飞车` fresh `D=true/true` 再次稳定复现 crash 时恢复优先级，并从 `E-006e2` 继续）
+## 状态：TODO（已降为第三优先级；默认在 `E-006f` 收敛后，或 `QQ飞车` fresh `D=true/true` 再次稳定复现 crash 时恢复优先级，并从 `E-006e2` 继续）
 
-> ⚠️ `QQ飞车` 历史上已经证明“纯截帧路径”可走通，因此这里的问题不是“PlayCover 完全不能在它上面 capture”，而是 **Road E 的 shader replacement 主线与 metal capture 并存后，启动阶段出现了新的兼容性崩溃**。该问题仍然有效，但在 `恋与深空` 三开关启动崩溃与 `原神 31-4302` 之前，**不再是默认最高优先级入口**。
+> ⚠️ `QQ飞车` 历史上已经证明“纯截帧路径”可走通，因此这里的问题不是“PlayCover 完全不能在它上面 capture”，而是 **Road E 的 shader replacement 主线与 metal capture 并存后，启动阶段出现了新的兼容性崩溃**。该问题仍然有效，但在 `原神 31-4302` 收敛前，**不再是默认工作入口**；`恋与深空` 相关 blocker 已完成收口，仅保留回归观察。
 
 ## 问题定义
 

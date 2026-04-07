@@ -2,7 +2,7 @@
 
 ## 状态：✅ DONE
 
-> ⚠️ **E-005 已作为稳定参考能力收敛。** 当前 Road E 的最高优先级不是继续扩离线工具，而是使用这些工具支撑 `E-006g` / `E-006f` / `E-006e` 的归因与 `IRToMSLConverter` 日常回归；本文档保留为 offline replay / compile / diff 能力说明。
+> ⚠️ **E-005 已作为稳定参考能力收敛。** 当前 Road E 的最高优先级不是继续扩离线工具，而是使用这些工具支撑 `E-006f` / `E-006e` 的归因、`E-006g` 的回归观察与 `IRToMSLConverter` 日常回归；本文档保留为 offline replay / compile / diff 能力说明。
 
 当前进度：
 
@@ -351,7 +351,7 @@ python3 Scripts/corpus_replay_runner.py \
 - `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` 继续作为标准构建守门路径
 - 更细的阶段性数量统计已下沉到 dashboard / archive，不再占据 `E-005` 主文档控制面
 
-这说明 **E-005c 已经具备稳定的 baseline snapshot 与自动回归守门能力**；后续重点不再是扩 compare 功能，而是把这套能力持续用于 `E-006g` / `E-006f` / `E-006e` 与日常 lowering 回归。
+这说明 **E-005c 已经具备稳定的 baseline snapshot 与自动回归守门能力**；后续重点不再是扩 compare 功能，而是把这套能力持续用于 `E-006f` / `E-006e` 的主线归因、`E-006g` 的回归观察与日常 lowering 回归。
 
 ## 下一步
 

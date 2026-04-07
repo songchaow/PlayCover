@@ -156,7 +156,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 ## 当前主线
 
 - **`E-006f`（当前最高优先级）**：解决 `原神` 在“进入游戏”后出现的 `31-4302` 完整性异常。**当前最该做的是先把 `launch_app -> create_session -> tap` 的最小触发路径与“非视觉自动判定信号”稳定下来，再做 replacement `off/on` 对照；只有当这两步仍不足以定位时，才升级到工作区外静态分析，且仍需用户确认。** 详细路径见 `E-006f-GenshinIntegrityCheck-314302.md`。
-- **`E-006e`（当前第二优先级）**：继续保留 `QQ飞车` 在同时启用 `metal capture + shader replacement` 时的启动兼容性问题，但由于最新四象限未稳定复现，当前不再作为默认工作入口。**默认仅在 `E-006f` 收敛后，或 `QQ飞车` fresh `D=true/true` 再次稳定复现 crash 时恢复优先级；恢复后首要任务不是盲修，而是解释历史 crash 与当前未复现基线之间的差异。** 详细记录见 `E-006e-QQSpeedCaptureReplacementStartupCrash.md`。
+- **`E-006e`（当前第三优先级）**：继续保留 `QQ飞车` 在同时启用 `metal capture + shader replacement` 时的启动兼容性问题，但由于最新四象限未稳定复现，当前不再作为默认工作入口。**默认仅在 `E-006f` 收敛后，或 `QQ飞车` fresh `D=true/true` 再次稳定复现 crash 时恢复优先级；恢复后首要任务不是盲修，而是解释历史 crash 与当前未复现基线之间的差异。** 详细记录见 `E-006e-QQSpeedCaptureReplacementStartupCrash.md`。
 - **`E-006g`（已完成，保留回归观察）**：`6BECB...` targeted bypass 已移除；历史 failure-path `moduleKey=a6638ee7b4b9f8cc9f19a24bb78b0892cc4b2c098cd97e3eb05833ce2283b28b` replay + `xcrun metal -c` 与 fresh `case E` live 均已通过。最新 `processLaunchId=launch-85332-99130214-8f39-45b7-99c0-4d156a4e65ce` 在默认 10 秒 settle window 下 `replacement_attempt_started=65`、`replacement_compile_started=65`、`replacement_succeeded=65`，latest failure surfaces=0；`analyze` 中残留的 `6BECB...` 仅是旧 runs 的 aggregate historical hotspot，不再代表 active blocker。详细路径见 `E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md`。
 - **`E-006d`（暂时搁置）**：随机画面异常已确认是偶现问题，现阶段仅保留已有调查进度；主文档不再继续展开，也不再要求默认读取其子文档跟进细节。仅在 `E-006f` / `E-006e` 收敛后，才考虑是否恢复优先级。
 - **`E-006a / E-007`**：继续维持降级状态，不抢占当前主线。
@@ -186,7 +186,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 |---|---|
 | 落盘与闭环能力 | 成功路径 → `ShaderCorpus/<bundleId>/modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`；replacement → `replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal`；失败路径 → `ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`。三条路径均已进入离线 replay / diff / 归因主回路。详见 `E-004-CorpusClosureAndRecapturePolicy.md` |
 | corpus 编译基线 | 较旧的离线回归统计与样本数量已下沉到 [00-Dashboard-Archive](00-Dashboard-Archive.md) 与 `E-005-OfflineReplayBatchCompileDiff.md`；当前日常 gate 仍以 `test-data` / `ShaderCorpus` 的 replay + compile 自动回归为准。 |
-| `恋与深空` 三开关启动兼容性 blocker（2026-04-08 夜间） | `air.front_facing` lowering 修复后，`4010578BBE3B30E1_4673 / e3c0894b...` 已退出 latest compile blocker：真实 failure-path 样本与最小样本 `test_fragment_front_facing.{ll,metal}` 均已通过离线 replay + `metal -c`；fresh `case E` 在默认 10 秒 settle window 下 `replacement_attempt_started=23`、`replacement_compile_started=22`、`replacement_succeeded=22`、`replacement_compile_failed=0`，session 仍保持 `ready`。当前 latest / aggregate failure surface 只剩 `cacheKey=6BECB97B0B4BCBFD_7123` 的 `replacement_attempt_skipped(reason=bundle_cachekey_bypass)`，默认下一入口已前移到 `E-006g4`。 |
+| `恋与深空` 三开关启动兼容性收口基线（2026-04-08 夜间） | `air.front_facing` 与历史 `6BECB... / a6638...` failure-path 已完成 replay + `metal -c` + fresh `case E` 三段闭环；`bundle_cachekey_bypass` 已移除。最新 `processLaunchId=launch-85332-99130214-8f39-45b7-99c0-4d156a4e65ce` 在默认 10 秒 settle window 下 `replacement_attempt_started=65`、`replacement_compile_started=65`、`replacement_succeeded=65`，latest failure surfaces=0。当前仅保留回归观察，不再占据默认工作入口。 |
 | `E-006e1` 四象限基线（2026-04-07） | `QQ飞车` 当前 fresh `A/B/C/D` 四象限均能到达 `playcover_launch_complete`；该线保留为自动化参考基线，若优先级恢复则从 `E-006e2` 解释“历史 crash 为何出现、当前为何未复现”继续。 |
 | `原神` 完整性 blocker | 当前默认推进路径仍是 **先稳定最小进入游戏触发，再做 replacement `off/on` 对照**；工作区外字符串 / xref / 反汇编定位仅属于升级路径，执行前需用户确认。 |
 | `.gputrace` 里程碑 | `E-006c` 的样本名、阶段性 milestone 与更早基线已下沉到 [00-Dashboard-Archive](00-Dashboard-Archive.md)；当前主文档只保留“自动检查 + 最终人工确认”的工作流。 |
@@ -226,7 +226,7 @@ PlayTools.framework (注入到 iOS app)
 
 ## TODO
 
-> **优先级更新（2026-04-08）**：当前主线已切换为 **`E-006g` → `E-006f` → `E-006e`**。`E-006d` 因确认为偶现问题，暂时搁置并保留进度；`E-006a` / `E-007` 继续下调一级。`E-006g` 的 compiler-first 入口（`4010578... / e3c089...` 的 `air.front_facing` builtin lowering）已在本轮完成，默认下一入口已前移到 **fresh `case E` live 基线下剩余 `6BECB...` targeted bypass surface 的方案验证（`E-006g4`）**。补充说明：`E-006f2` 虽编号早于 `E-006f3`，但它是需要用户确认的工作区外专项分支；默认执行顺序仍为 **`E-006f1 -> E-006f3 -> E-006f2 -> E-006f4`**。
+> **优先级更新（2026-04-08）**：当前主线已切换为 **`E-006f` → `E-006e`**；`E-006g` 已在本轮收口，保留为回归观察与参考锚点，不再作为默认入口。`E-006d` 因确认为偶现问题，暂时搁置并保留进度；`E-006a` / `E-007` 继续下调一级。补充说明：`E-006f2` 虽编号早于 `E-006f3`，但它是需要用户确认的工作区外专项分支；默认执行顺序仍为 **`E-006f1 -> E-006f3 -> E-006f2 -> E-006f4`**。
 
 | # | 任务 | 状态 | 子文档 |
 |---|---|---|---|
@@ -259,7 +259,7 @@ PlayTools.framework (注入到 iOS app)
 ## 踩坑与经验
 
 - **源码可见 / compile green 都不等于最终可用**：当前阶段真正阻塞落地的是**启动兼容性**与**进入游戏后的完整性检查副作用**，不能只看 `.gputrace` 或 compile 指标就宣告完成
-- **`恋与深空` 当前默认入口已从 `E-006g4` 切换到 `E-006f1`**：`6BECB...` targeted bypass 已通过“failure-path replay + 最小样本 + remove/inject PlayTools + fresh `case E`”闭环收回；最新 `case E` run 已是 `replacement_succeeded`，`latestReplacementFailureSurfaces=0`。`analyze` 中若仍看到 `6BECB...`，那是旧 runs 的 aggregate historical hotspot，不应再当成 active blocker。更早的 `791A...`、`F474...`、`A101...`、`45AE...`、`8ABA...` 与 `D4CA...` **均已退出 latest surface**，其前移脉络统一下沉到 `E-006g-Archive.md`
+- **`恋与深空` 已完成收口，当前默认入口是 `E-006f1`**：`6BECB...` targeted bypass 已通过“failure-path replay + 最小样本 + remove/inject PlayTools + fresh `case E`”闭环收回；最新 `case E` run 为 `replacement_succeeded`，`latestReplacementFailureSurfaces=0`。`analyze` 中若仍看到 `6BECB...`，那是旧 runs 的 aggregate historical hotspot，不应再当成 active blocker；更细的前移脉络统一下沉到 `E-006g-Archive.md`
 - **如果不清楚编译器行为，优先写最小样本去问编译器本身**：先自己写简单 shader、编译成 AIR、再用 `llvm-dis` 看 IR；或直接手写最小 `.ll` 做 replay / `metal -c`。只有把编译器与反编译器的真实输出看清楚后，才进入正式 lowering 修复，避免在真实 failure-path 大样本上盲猜
 - **`31-4302` 更像完整性 / 反篡改问题，不宜只靠人工看弹窗推进**：默认应先做最小自动 `tap` 触发与 replacement `off/on` 对照；只有当这两步仍不足以定位时，才升级到工作区外分析，且仍需用户明确确认
 - **`launch_app -> create_session -> tap` 可以视为 agent 可独立完成的轻量 UI 输入**：但直接对已安装 app bundle 做工作区外静态反汇编 / 二进制 patch 分析，不属于默认日常流程，执行前需要用户明确确认

@@ -1,12 +1,12 @@
 ## E-006g：`恋与深空` 在 `metal capture + startup injection + shader replacement` 同开时启动崩溃
 
-## 状态：IN PROGRESS（`E-006g1` / `E-006g2` 已收敛，当前推进 `E-006g3`）
+## 状态：✅ DONE（2026-04-08 夜间；当前保留回归观察）
 
-> ⚠️ **这是当前最优先收敛的确定性 blocker。** `E-006c` 已经证明“.gputrace 中源码可见”链路本身可以打通；当前更接近最终落地的阻塞，是 **`恋与深空` 在同时启用 `metalCaptureEnabled=true`、`injectMetalCaptureEnvironment=true` 与 `shaderSourceReplacementEnabled=true` 时的启动兼容性**。这条线若不收敛，Road E 仍无法在真实 app 上稳定保住“截帧 + 最早阶段 inject + shader replacement”三者并存。
+> ⚠️ **`E-006g` 已在当前环境完成收口。** `E-006c` 已经证明“.gputrace 中源码可见”链路本身可以打通；`E-006g` 则进一步确认 **`恋与深空` 在同时启用 `metalCaptureEnabled=true`、`injectMetalCaptureEnvironment=true` 与 `shaderSourceReplacementEnabled=true` 时，已经可以在不依赖 runtime targeted bypass 的前提下稳定启动并完成 startup replacement**。本文档当前保留为回归观察与收口摘要；更细的 blocker 前移、工具补强与阶段性假设，统一下沉到 `E-006g-Archive.md`。
 
 ## 问题定义
 
-当前待解问题是：
+本专项最初待解的问题是：
 
 - app：`恋与深空`
 - bundleId：`com.papegames.lysk`
@@ -75,7 +75,7 @@
 - 当前安装实例中 `injectMetalCaptureEnvironment=true`
 - 当前安装实例中 `shaderSourceReplacementEnabled=true`
 
-换句话说，这条线不是纸面风险，而是**当前环境已具备的真实 blocker**。
+换句话说，这条线不是纸面风险，而是**当时在当前环境中真实可复现的 blocker**；现已完成收口并转入回归观察。
 
 ### 3. 这条线现在已有专项文档、自动化脚本与 fresh baseline
 
@@ -109,12 +109,9 @@
 
 ## 当前优先假设（按排查顺序）
 
-1. **最优先假设：`injectMetalCaptureEnvironment=true` 带来的启动期注入，与 `恋与深空` 启动链路本身不兼容**（❌ `E-006g2` 当前证据已不支持其作为 late crash 主因；`C=true/true/false` 可在 launch 后继续存活，startup injection 不是当前这类崩溃的充分条件）
-   - 这条线最靠前、也最可能在 runtime 尚未完成注册前就触发崩溃
-2. **第二假设：startup injection 可过，但 `PlayCover.launch()` 早期 preload / swizzle 安装与 app 初始化时序冲突**（⚠️ 目前仍保留为过渡阶段排查项，但优先级已低于 replacement compile / fallback 邻域）
-   - 这时通常还能在 `RuntimeLaunchDiagnostics` 中看到部分事件
-3. **第三假设：真正触发问题的是首个 replacement 尝试，而不是更早期的 startup injection / swizzle**（✅ `E-006g2` 已部分确认；当前证据更接近“startup 期多个 replacement compile failure / fallback 的集合副作用”）
-   - 需要在“startup injection 开启但 replacement 关闭”的对照下才能确认
+1. **已收敛结论**：startup injection 不是 `E-006g` 历史 late crash 的充分条件；真正的 active blocker 曾位于 startup replacement compile / fallback 邻域。
+2. **当前状态**：`air.front_facing` 与历史 `6BECB... / a6638...` 两个最后命中面都已通过“failure-path replay + 最小样本 + fresh case E”闭环退出 latest surface。
+3. **回归方式**：若 future fresh `case E` 再次出现 late crash、`mtl_FrontFace`、`select parse error` 或 `bundle_cachekey_bypass` 相关信号，再回看 `E-006g-Archive.md` 中的阶段性假设与前移脉络。
 
 ## 推荐的最小自动化验证路径
 
@@ -175,54 +172,18 @@
 
 ## `E-006g1` / `E-006g2` 当前结论（2026-04-07）
 
-1. **“`launch_app -> create_session` 成功”不能等价于“启动兼容性已通过”**
-   - 之前 `E-006g1` 的五象限 fresh launch 只证明了 runtime 可以进入 `ready`
-   - 但用户指出的真实 blocker 是：**session 建立后数秒内 app 仍会崩溃**
-2. **当前证据不支持“startup injection 单独导致 late crash”**
-   - `B=true/false/false` 与 `C=true/true/false` 均可在 launch 后继续存活（至少 8s）
-   - 因此 `injectMetalCaptureEnvironment=true` 不是当前这类 late crash 的充分条件
-3. **当前证据支持“late crash 与 replacement 路径强相关”**
-   - `D=true/false/true` 与 `E=true/true/true` 都会在 `playcover_launch_complete` 之后约 7~8 秒内崩溃
-   - 最新 crash reports：`Unity-iPhone-2026-04-07-165010.ips`（`D`）与 `Unity-iPhone-2026-04-07-165825.ips` / `Unity-iPhone-2026-04-07-170150.ips`（`E`）
-4. **崩溃已收敛到 `first replacement compile / fallback` 邻域，而不是 host launch env / preload / bridge 注册阶段**
-   - 最新 `RuntimeLaunchDiagnostics` 已新增：
-     - `replacement_attempt_started`
-     - `replacement_modules_prepared`
-     - `replacement_compile_started`
-     - `replacement_compile_failed`
-     - `replacement_succeeded`
-   - 在 `E` 的最新 run（`pid=11539`）里，事件链先完整到达 `playcover_launch_complete`，随后立即进入多次 `newLibraryWithData:error:` replacement
-5. **当前已观测到多个 replacement compile blocker，不是单个 cacheKey 即可解释全部崩溃**
-   - 已先对 `cacheKey=6BECB97B0B4BCBFD_7123` 加入 targeted bypass 验证；该命中会被 `replacement_attempt_skipped(reason=bundle_cachekey_bypass)` 跳过
-   - 但 app 仍继续命中其它 replacement，并出现新的 compile failure，例如：
-     - `cacheKey=791A306ED1B6648B_4577`：`expected expression`
-     - `cacheKey=F474C54E8C5214F4_4689`：`use of undeclared identifier 'mtl_BaseVertex'`
-   - 这说明当前 crash **不是单点 shader**，而是 `恋与深空` 启动早期存在**多个会命中 replacement compile failure 的 shader**
-6. **此前关于“`E=true/true/true` 未复现崩溃”的表述需要收窄解释**
-   - 更准确的说法应是：`E` 在 launch 早期可到达 `ready`，但**并未通过后续几秒内的稳定性验证**
-   - Road E 对 `E-006g` 的 gate 不能只看 `create_session`，必须把 launch 后的短时稳定性也纳入结论
+这些阶段性结论已完成使命，当前只保留会影响回归判断的摘要：
+
+1. **`create_session=ready` 不能单独代表启动兼容性已通过**：`E-006g` 的 gate 仍必须包含默认 `10 秒 settle window`。
+2. **startup injection 不是充分条件，replacement 邻域才是历史主因**：历史 `D/E` late crash 的有效证据与 `replacement_compile_failed` / failure surfaces 强相关。
+3. **这些历史归因现在都已退出 active surface**：更细的 crash run、event 链、latest blocker 前移与当时的解释，统一下沉到 `E-006g-Archive.md`。
 
 ## `E-006g2` 当前最小归因（2026-04-07）
 
-### 已确认
+该节保留为历史索引，不再展开原始排查过程。当前对主线仍有价值的结论只有两点：
 
-- `B=true/false/false`：可存活，未观察到同类 late crash
-- `C=true/true/false`：可存活，未观察到同类 late crash
-- `D=true/false/true`：late crash
-- `E=true/true/true`：late crash
-- 因此当前主因更接近 **replacement enabled**，而不是 startup injection 本身
-
-### 最新 runtime 证据
-
-- `playcover_launch_complete` 已稳定记录三开关状态
-- latest `D/E` run 会在 `playcover_launch_complete` 之后进入多次 `replacement_attempt_started -> replacement_compile_started -> replacement_compile_failed / replacement_succeeded`
-- 这说明崩溃已收敛到 startup replacement compile / fallback 邻域，而不是 host launch env / preload / bridge 注册阶段
-
-### 当前解释
-
-- 当前最合理的解释不是“startup injection 让 app 在 launch 前就崩”，而是：`恋与深空` 启动早期会命中多条 shader replacement，其中一部分仍会在 `makeLibrary(source:)` 编译阶段失败
-- 因此 `E-006g3` 的默认任务不再是继续补矩阵或补埋点，而是**围绕 latest actionable compile blocker 做 compiler-first 最小样本化**
-- 历史 blocker 前移、当时的 crash run、event 链与离线闭环细节统一下沉到 `E-006g-Archive.md`
+- **历史最小归因**：`B/C` 可存活而 `D/E` late crash，说明主因更接近 replacement enabled，而不是 startup injection 本身。
+- **当前状态**：相关 compile blocker 已全部退出 latest surface，`E-006g` 不再占据默认入口；若 future run 回归，再回看 `E-006g-Archive.md` 的完整证据链。
 
 ### blocker 前移索引（已归档）
 
@@ -257,38 +218,18 @@
 
 ### 方向 A：缩小 startup injection 的作用面
 
-- **当前状态**：`E-006g2` 已证明 `C=true/true/false` 可在 launch 后继续存活；也即 startup injection 不是当前 late crash 的充分条件，因此这条线**已不再是默认优先修复路径**
-- 历史展开与当时的适用前提已下沉到 `E-006g-Archive.md`；若后续出现新的“`C` 也开始不稳定”的证据，再恢复该方向的详细排查即可
+- **当前结论**：已确认这不是默认修复路径；保留为 future regression 时的备选回看方向。
+- 更早的适用前提与风险分析见 `E-006g-Archive.md`。
 
 ### 方向 B：保留 startup injection，但让 replacement 在冷启动阶段先保守退让
 
-思路：
-
-- 如果 `C` 可过、`E` 崩，则说明 startup injection 本身不一定是问题
-- 此时应优先怀疑首个 replacement 发生过早
-
-适用前提：
-
-- `C` 稳定、`E` 不稳定
-
-风险：
-
-- 可能牺牲一部分启动早期 shader 的源码 attribution，需要明确是否可接受
+- **当前结论**：历史上曾是有效过渡假设，但当前环境无需依赖该折中方案。
+- 若 future run 再次只在冷启动最早期出现 replacement 相关异常，可重新启用这条思路。
 
 ### 方向 C：bundle / selector / module 级选择性旁路
 
-思路：
-
-- 若问题最终集中在少数 startup shader / selector / module
-- 可考虑对 `恋与深空` 做细粒度 bypass，保住大部分 capture + replacement 链路
-
-适用前提：
-
-- 崩溃已能收敛到较小命中面
-
-风险：
-
-- 工程上是折中方案；只能在根因已基本明确后使用
+- **当前结论**：`6BECB...` targeted bypass 已被收回；该方向只保留为回归应急手段，不再是默认方案。
+- 若未来确有新热点重新收敛到极小命中面，再结合 `E-006g-Archive.md` 评估是否需要短期旁路。
 
 ## 关单标准
 

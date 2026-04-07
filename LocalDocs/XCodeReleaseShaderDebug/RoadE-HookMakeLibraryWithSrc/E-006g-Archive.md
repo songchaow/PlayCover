@@ -2,7 +2,7 @@
 
 ## 作用
 
-本文档用于承接从 `E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md` 主体下沉的历史信息：已退出的 startup compile blocker、每轮 fresh `case E` 前移脉络，以及当前不再需要长期占据专项主体的工具补强细节。主文档只保留**当前 latest blocker、当前默认入口、当前 TODO 与仍直接影响决策的约束**。
+本文档用于承接从 `E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md` 主体下沉的历史信息：已退出的 startup compile blocker、每轮 fresh `case E` 前移脉络，以及从主文档下沉的阶段性假设、候选方向与工具补强细节。主文档只保留**收口结论、回归约束与仍直接影响决策的摘要**。
 
 > ⚠️ **本文档是历史归档，不代表当前默认工作入口。** 当前默认入口以 `E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md` 与 `00-Dashboard.md` 为准。
 

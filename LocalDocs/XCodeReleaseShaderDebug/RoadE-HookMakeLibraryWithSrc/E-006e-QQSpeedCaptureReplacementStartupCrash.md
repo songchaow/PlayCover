@@ -109,10 +109,22 @@
 
 | # | 子任务 | 状态 | 说明 |
 |---|---|---|---|
-| E-006e1 | 四象限启动矩阵 + launch diagnostics 固化 | TODO（先做） | 先确认是“只有 `capture + replacement` 同开才崩”，还是更细粒度问题 |
-| E-006e2 | 定位崩溃发生在 preload / swizzle / first replacement 的哪一段 | TODO | 重点看 `playcover_capture_library_preload_checked`、`playcover_library_injection_installed`、以及 replacement 首次日志 / diagnostics |
+| E-006e1 | 四象限启动矩阵 + launch diagnostics 固化 | ✅ DONE（2026-04-07） | 新增 `Scripts/e006e_launch_matrix_runner.py`，并已对 `QQ飞车` 执行 `A/B/C/D` 四象限 fresh launch + `create_session` + diagnostics 固化；结果显示四象限均到达 `playcover_launch_complete`，本轮未复现启动崩溃 |
+| E-006e2 | 定位崩溃发生在 preload / swizzle / first replacement 的哪一段 | TODO（当前入口） | 由于 `E-006e1` 本轮未复现，下一步需解释“历史 crash 为何出现、当前为何不复现”，重点看 `playcover_capture_library_preload_checked`、`playcover_library_injection_installed`、以及 replacement 首次日志 / diagnostics |
 | E-006e3 | 验证是否与特定 selector / metallib payload / module 命中有关 | TODO | 若 `D` 中只在某条 shader 路径崩，应进一步最小化到单次 replacement 尝试 |
 | E-006e4 | 设计“不牺牲源码可见性目标”的修复 | TODO | 最终方案不能退化为“永久关闭 replacement”或“永久关闭 capture” |
+
+## `E-006e1` 当前产物（2026-04-07）
+
+- 新脚本：`Scripts/e006e_launch_matrix_runner.py`
+- 固化目录：`build/e006e-launch-matrix/`
+- 汇总报告：`build/e006e-launch-matrix/report.json`
+- 当前 live 结论：
+  - `A=false/false`：`create_session` 成功，最新 run 到达 `playcover_launch_complete`
+  - `B=true/false`：`create_session` 成功，最新 run 到达 `playcover_launch_complete`
+  - `C=false/true`：`create_session` 成功，最新 run 到达 `playcover_launch_complete`
+  - `D=true/true`：`create_session` 成功，最新 run 到达 `playcover_launch_complete`
+- 因此本轮没有证据支持“当前环境下 `D` 稳定必现崩溃”；更合理的下一步不是盲修，而是进入 `E-006e2`，补齐当初 crash 发生时的 build / settings / diagnostics 差异。
 
 ## 候选解决方向
 

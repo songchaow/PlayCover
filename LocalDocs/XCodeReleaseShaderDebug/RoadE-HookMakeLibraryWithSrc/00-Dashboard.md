@@ -180,6 +180,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | 落盘与闭环能力 | 成功路径 → `ShaderCorpus/<bundleId>/modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`；replacement → `replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal`；失败路径 → `ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`。三条路径均已进入离线 replay / diff / 归因主回路。详见 `E-004-CorpusClosureAndRecapturePolicy.md` |
 | corpus 编译基线（2026-04-05） | `test-data/*.ll`（19 个）replay + compile **全绿**；`ShaderCorpus/com.miHoYo.Yuanshen/modules/` **91/91** replay + compile **全绿**，preflight rejected `0`，regression `0` |
 | `QQ飞车` 启动兼容性 blocker | Render Capture 历史文档已经证明 `QQ飞车` 纯截帧路径可走通；当前新增 blocker 专门指向 **`metalCaptureEnabled + shaderSourceReplacementEnabled` 同开**后的启动期崩溃，因此应优先检查 `PlayCover.launch()` 中 capture 预加载、makeLibrary swizzle 安装、以及首次 replacement 尝试三者并存时序 |
+| `E-006e1` 四象限基线（2026-04-07） | 已新增 `Scripts/e006e_launch_matrix_runner.py` 并对 `QQ飞车` 执行 `A/B/C/D` 四象限 fresh launch；四组 settings 均与预期一致，`launch_app -> create_session` 均成功进入 `ready`，`launch-events.jsonl` 最新 run 均到达 `playcover_launch_complete`。本轮**未复现**“capture + replacement 同开启动崩溃”，后续主线转为 `E-006e2`：解释“为何历史上出现过崩溃、而当前基线未复现”，重点比对 preload / injection / first replacement 的时序与环境差异。 |
 | `原神` 完整性 blocker | 当前仓库内尚无 `31-4302` 的既有定位记录；但 `launch_app -> create_session -> tap` 已具备自动化条件，因此本阶段的默认推进路径应是 **自动进入游戏触发 + replacement on/off 对照 + 静态字符串 / xref 定位**，而不是继续沿 `E-006d` 做画面偶现归因 |
 | `.gputrace` 里程碑 | `capture_20260404_roadE_e006c3_final.gputrace` Xcode 人工确认 shader 面板源码可见（`E-006c` 已关闭）。详细历史见 [00-Dashboard-Archive](00-Dashboard-Archive.md) |
 
@@ -231,8 +232,8 @@ PlayTools.framework (注入到 iOS app)
 | E-006c | ↳ `.gputrace` shader 源码可见性确认 | ✅ DONE | [Archive](00-Dashboard-Archive.md) |
 | E-006d | ↳ 原神同一界面重复启动时的随机渲染异常归因 | **搁置（偶现，保留进度）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
 | E-006e | ↳ **`QQ飞车`：`metal capture + shader replacement` 同开启动崩溃** | **TODO（当前最高优先级）** | [E-006e](E-006e-QQSpeedCaptureReplacementStartupCrash.md) |
-| E-006e1 | ↳ 四象限启动矩阵 + launch diagnostics 固化 | TODO（先做） | [E-006e](E-006e-QQSpeedCaptureReplacementStartupCrash.md) |
-| E-006e2 | ↳ 定位崩溃发生在 preload / swizzle / first replacement 的哪一段 | TODO | [E-006e](E-006e-QQSpeedCaptureReplacementStartupCrash.md) |
+| E-006e1 | ↳ 四象限启动矩阵 + launch diagnostics 固化 | ✅ DONE（2026-04-07） | [E-006e](E-006e-QQSpeedCaptureReplacementStartupCrash.md) |
+| E-006e2 | ↳ 定位崩溃发生在 preload / swizzle / first replacement 的哪一段 | TODO（当前入口） | [E-006e](E-006e-QQSpeedCaptureReplacementStartupCrash.md) |
 | E-006e3 | ↳ 设计并验证“不牺牲源码可见性目标”的修复方案 | TODO | [E-006e](E-006e-QQSpeedCaptureReplacementStartupCrash.md) |
 | E-006f | ↳ **`原神`：进入游戏后出现 `31-4302` 完整性异常** | **TODO（当前第二优先级）** | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
 | E-006f1 | ↳ 自动化“进入游戏”最小触发路径（`launch_app -> create_session -> tap`） | TODO（先做） | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |

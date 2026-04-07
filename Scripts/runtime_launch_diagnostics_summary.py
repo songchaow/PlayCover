@@ -26,6 +26,8 @@ DEFAULT_ROOT = Path.home() / "Library/Containers/io.playcover.PlayCover/RuntimeL
 
 KEY_STAGE_ORDER = [
     "playcover_launch_enter",
+    "playcover_capture_library_preload_checked",
+    "playcover_library_injection_installed",
     "playcover_bridge_listener_start_requested",
     "bridge_listener_starting",
     "bridge_listener_command_listener_ready",

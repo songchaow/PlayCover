@@ -187,7 +187,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 |---|---|
 | 落盘与闭环能力 | 成功路径 → `ShaderCorpus/<bundleId>/modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`；replacement → `replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal`；失败路径 → `ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`。三条路径均已进入离线 replay / diff / 归因主回路。详见 `E-004-CorpusClosureAndRecapturePolicy.md` |
 | corpus 编译基线 | 较旧的离线回归统计与样本数量已下沉到 [00-Dashboard-Archive](00-Dashboard-Archive.md) 与 `E-005-OfflineReplayBatchCompileDiff.md`；当前日常 gate 仍以 `test-data` / `ShaderCorpus` 的 replay + compile 自动回归为准。 |
-| `恋与深空` 三开关启动兼容性 blocker（2026-04-07） | `B/C` 可在 launch 后继续存活，`D/E` 会在 `playcover_launch_complete` 之后约 7~8 秒内 late crash。`791A... / ec0c6f...`、`F474... / bbb32d...`、`A101... / 82d1...` 与 `45AE24662B56C487_14497 / 1cdc9318...` 已先后退出 latest compile blocker；本轮 fresh `case E` 复测确认 `45AE... / 1cdc...` 不再出现在 latest failure surface，新的 latest/actionable blocker 已前移到 `8ABA7F7B315002A3_11361 / 29b821c6...`，compiler message 主体为 `_CameraDepthTexture.sample(__air_sampler_state, t0/t3)` 的 `sample` 调用签名不匹配。**当前默认 gate 已更新为：优先消费该 failure-path 样本做离线 replay / 最小样本化 / lowering 修复，再回到 fresh `case E` 复测。** |
+| `恋与深空` 三开关启动兼容性 blocker（2026-04-07） | `B/C` 可在 launch 后继续存活，`D/E` 会在 `playcover_launch_complete` 之后约 7~8 秒内 late crash。`791A... / ec0c6f...`、`F474... / bbb32d...`、`A101... / 82d1...`、`45AE24662B56C487_14497 / 1cdc9318...` 与 `8ABA7F7B315002A3_11361 / 29b821c6...` 已先后退出 latest compile blocker；本轮先以 failure-path 样本完成 `__air_sampler_state -> constexpr sampler` lowering、`air.fast_rint -> rint` 映射和最小回归样本 `test_sampler_state_globals.{ll,metal}`，随后按标准脚本完成 fresh `case E` 复测，确认 `29b821...` 已退出 latest failure surface。新的 latest/actionable compile blocker 已前移到 `D4CAEB2BF7815C4F_6353 / f567fbc2...`，compiler message 主体为 `InputTexture.read(t8)` 的 `read` 调用签名不匹配；同轮还伴随 `A101... / 82d1...` 的 `Host llvm-dis timed out after 30 seconds` 异常噪声。**当前默认 gate 已更新为：优先消费 `D4CA... / f567...` failure-path 样本做离线 replay / 最小样本化 / read-texture lowering 修复，再回到 fresh `case E` 复测。** |
 | `E-006e1` 四象限基线（2026-04-07） | `QQ飞车` 当前 fresh `A/B/C/D` 四象限均能到达 `playcover_launch_complete`；该线保留为自动化参考基线，若优先级恢复则从 `E-006e2` 解释“历史 crash 为何出现、当前为何未复现”继续。 |
 | `原神` 完整性 blocker | 当前默认推进路径仍是 **先稳定最小进入游戏触发，再做 replacement `off/on` 对照**；工作区外字符串 / xref / 反汇编定位仅属于升级路径，执行前需用户确认。 |
 | `.gputrace` 里程碑 | `E-006c` 的样本名、阶段性 milestone 与更早基线已下沉到 [00-Dashboard-Archive](00-Dashboard-Archive.md)；当前主文档只保留“自动检查 + 最终人工确认”的工作流。 |
@@ -242,7 +242,7 @@ PlayTools.framework (注入到 iOS app)
 | E-006g | ↳ **`恋与深空`：`metal capture + startup injection + shader replacement` 同开启动崩溃** | **IN PROGRESS（当前最高优先级，已完成 `E-006g1`）** | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
 | E-006g1 | ↳ 三开关最小五象限启动矩阵 + diagnostics / crash 证据固化 | ✅ DONE（2026-04-07） | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
 | E-006g2 | ↳ 系统性汇总 startup 期 `replacement_compile_failed` / fallback failure clusters，确认 late crash 是否由 compile failure 集合触发 | ✅ DONE（2026-04-07，结论已收敛） | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
-| E-006g3 | ↳ 把 `compile_failed` 命中面收缩到最小 `cacheKey` / selector / module 集合，为 `E-006g4` 准备最小修复 / 旁路面 | IN PROGRESS（fresh `case E` 已完成，`45AE... / 1cdc...` 已退出 latest surface；当前默认入口前移到 **`8ABA... / 29b821...` 的 `sample` / sampler lowering 问题**） | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
+| E-006g3 | ↳ 把 `compile_failed` 命中面收缩到最小 `cacheKey` / selector / module 集合，为 `E-006g4` 准备最小修复 / 旁路面 | IN PROGRESS（fresh `case E` 已完成，`8ABA... / 29b821...` 已退出 latest surface；当前默认入口前移到 **`D4CA... / f567...` 的 `read` / texture-read lowering 问题**） | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
 | E-006g4 | ↳ 设计并验证“不牺牲源码可见性目标”的修复方案 | TODO | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
 | E-006f | ↳ **`原神`：进入游戏后出现 `31-4302` 完整性异常** | **TODO（当前第二优先级）** | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
 | E-006f1 | ↳ 自动化“进入游戏”最小触发路径（`launch_app -> create_session -> tap`） | TODO（先做） | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
@@ -260,7 +260,7 @@ PlayTools.framework (注入到 iOS app)
 ## 踩坑与经验
 
 - **源码可见 / compile green 都不等于最终可用**：当前阶段真正阻塞落地的是**启动兼容性**与**进入游戏后的完整性检查副作用**，不能只看 `.gputrace` 或 compile 指标就宣告完成
-- **`恋与深空` 当前默认入口仍是 `E-006g3`，但历史 blocker 前移细节已下沉**：不要再把“补矩阵脚本 / 补埋点”当作默认任务；当前只需记住 `8ABA... / 29b821...` 是最新 actionable blocker，默认动作是先用 failure-path 样本做离线 replay / 最小样本化，再回到 fresh `case E`。更早的 `791A...`、`F474...`、`A101...`、`45AE...` 前移脉络统一下沉到 `E-006g-Archive.md`
+- **`恋与深空` 当前默认入口仍是 `E-006g3`，但历史 blocker 前移细节已下沉**：不要再把“补矩阵脚本 / 补埋点”当作默认任务；当前只需记住 `D4CA... / f567...` 是最新 actionable compile blocker，默认动作是先用 failure-path 样本做离线 replay / 最小样本化，再回到 fresh `case E`。更早的 `791A...`、`F474...`、`A101...`、`45AE...` 与 `8ABA...` 前移脉络统一下沉到 `E-006g-Archive.md`
 - **`31-4302` 更像完整性 / 反篡改问题，不宜只靠人工看弹窗推进**：默认应先做最小自动 `tap` 触发与 replacement `off/on` 对照；只有当这两步仍不足以定位时，才升级到工作区外分析，且仍需用户明确确认
 - **`launch_app -> create_session -> tap` 可以视为 agent 可独立完成的轻量 UI 输入**：但直接对已安装 app bundle 做工作区外静态反汇编 / 二进制 patch 分析，不属于默认日常流程，执行前需要用户明确确认
 - **`E-006d` 现阶段只保留进度，不再占据 dashboard 控制面**：它的调查结果仍有参考价值，但在优先级恢复前，不应继续消耗主文档篇幅或默认工作流注意力

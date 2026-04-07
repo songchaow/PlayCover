@@ -351,7 +351,7 @@ struct IRToMSLConverter {
             ("log", "log"), ("log2", "log2"),
             ("sqrt", "sqrt"), ("rsqrt", "rsqrt"),
             ("fabs", "abs"), ("floor", "floor"), ("ceil", "ceil"),
-            ("round", "round"), ("trunc", "trunc"), ("fract", "fract"),
+            ("round", "round"), ("rint", "rint"), ("trunc", "trunc"), ("fract", "fract"),
             ("saturate", "saturate"),
             ("asin", "asin"), ("acos", "acos"), ("atan", "atan"),
             ("sinh", "sinh"), ("cosh", "cosh"), ("tanh", "tanh"),
@@ -1955,6 +1955,133 @@ struct IRToMSLConverter {
         return result
     }
 
+    private static func collectCompareSamplerStateGlobals(_ irText: String) -> Set<String> {
+        let symbolPattern = try? NSRegularExpression(pattern: #"@[^,\s\)]+"#)
+        var globals: Set<String> = []
+
+        for rawLine in irText.components(separatedBy: "\n") where rawLine.contains("@air.sample_compare_depth") {
+            guard let symbolPattern else { continue }
+            let line = rawLine as NSString
+            let matches = symbolPattern.matches(in: rawLine, range: NSRange(location: 0, length: line.length))
+            guard matches.count >= 2 else { continue }
+            let symbol = line.substring(with: matches[1].range)
+            globals.insert(symbol)
+        }
+
+        return globals
+    }
+
+    private static func parseUInt64IRLiteral(_ text: String) -> UInt64? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let signed = Int64(trimmed) {
+            return UInt64(bitPattern: signed)
+        }
+        if let unsigned = UInt64(trimmed) {
+            return unsigned
+        }
+        if trimmed.hasPrefix("0x") || trimmed.hasPrefix("0X") {
+            return UInt64(trimmed.dropFirst(2), radix: 16)
+        }
+        return nil
+    }
+
+    private static func parseSamplerStateRawValue(irType: String, initializer: String) -> UInt64? {
+        let trimmedType = irType.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedInit = initializer.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if trimmedType == "i64" {
+            return parseUInt64IRLiteral(trimmedInit)
+        }
+
+        if trimmedType == "[2 x i64]" {
+            let firstElementPattern = try? NSRegularExpression(pattern: #"i64\s+(-?(?:0x[0-9A-Fa-f]+|\d+))"#)
+            guard let firstElementPattern else { return nil }
+            let nsInit = trimmedInit as NSString
+            guard let match = firstElementPattern.firstMatch(in: trimmedInit, range: NSRange(location: 0, length: nsInit.length)) else {
+                return nil
+            }
+            let token = nsInit.substring(with: match.range(at: 1))
+            return parseUInt64IRLiteral(token)
+        }
+
+        return nil
+    }
+
+    private static func renderSamplerStateDeclaration(
+        irName: String,
+        irType: String,
+        initializer: String,
+        usedBySampleCompare: Bool
+    ) -> String? {
+        guard irName.contains("__air_sampler_state"),
+              let rawValue = parseSamplerStateRawValue(irType: irType, initializer: initializer) else {
+            return nil
+        }
+
+        let symbolName = sanitizeIdentifier(
+            String(irName.dropFirst()).replacingOccurrences(of: "\"", with: ""),
+            fallback: "air_sampler_state",
+            uppercaseFirst: false
+        )
+        let payload = rawValue & 0x000F_FFFF
+
+        let coordMode = (payload & 0x8000) != 0 ? "coord::pixel" : "coord::normalized"
+
+        let addressMode: String
+        switch payload & 0x00FF {
+        case 0x00:
+            addressMode = "clamp_to_zero"
+        case 0x49:
+            addressMode = "clamp_to_edge"
+        case 0x92:
+            addressMode = "repeat"
+        case 0xDB:
+            addressMode = "mirrored_repeat"
+        default:
+            addressMode = "clamp_to_edge"
+        }
+
+        let filterMode = (payload & 0x0A00) != 0 ? "filter::linear" : "filter::nearest"
+        var options = [coordMode, "address::\(addressMode)", filterMode]
+
+        if (payload & 0x4000) != 0 {
+            options.append("mip_filter::linear")
+        } else if (payload & 0x2000) != 0 {
+            options.append("mip_filter::nearest")
+        }
+
+        let compareCode = Int((payload >> 16) & 0xF)
+        let compareFunction: String?
+        switch compareCode {
+        case 1:
+            compareFunction = "less"
+        case 2:
+            compareFunction = "less_equal"
+        case 3:
+            compareFunction = "greater"
+        case 4:
+            compareFunction = "greater_equal"
+        case 5:
+            compareFunction = "equal"
+        case 6:
+            compareFunction = "not_equal"
+        case 7:
+            compareFunction = "always"
+        case 8 where usedBySampleCompare:
+            compareFunction = "never"
+        default:
+            compareFunction = nil
+        }
+
+        if let compareFunction {
+            options.append("compare_func::\(compareFunction)")
+        }
+
+        return "constexpr sampler \(symbolName)(\(options.joined(separator: ", ")));"
+    }
+
     // MARK: - Public API
 
     /// 将 LLVM IR 文本转换为 MSL 源码。
@@ -2007,7 +2134,8 @@ struct IRToMSLConverter {
             functions: shaderFunctions,
             structTypeDefs: structTypeDefs,
             structFieldInfo: structFieldInfo,
-            globalConstants: globalConstants
+            globalConstants: globalConstants,
+            irText: irText
         )
 
         let elapsed = CFAbsoluteTimeGetCurrent() - startTime
@@ -6324,7 +6452,8 @@ struct IRToMSLConverter {
         functions: [ParsedShaderFunction],
         structTypeDefs: [String: IRStructTypeDef] = [:],
         structFieldInfo: [String: [StructFieldInfo]] = [:],
-        globalConstants: [IRGlobalConstant] = []
+        globalConstants: [IRGlobalConstant] = [],
+        irText: String = ""
     ) -> String {
         var lines: [String] = []
 
@@ -6407,7 +6536,18 @@ struct IRToMSLConverter {
         }
 
         if !globalConstants.isEmpty {
+            let compareSamplerStateGlobals = collectCompareSamplerStateGlobals(irText)
             for global in globalConstants {
+                if let samplerDeclaration = renderSamplerStateDeclaration(
+                    irName: global.irName,
+                    irType: global.irType,
+                    initializer: global.initializer,
+                    usedBySampleCompare: compareSamplerStateGlobals.contains(global.irName)
+                ) {
+                    lines.append(samplerDeclaration)
+                    continue
+                }
+
                 let symbolName = sanitizeIdentifier(
                     String(global.irName.dropFirst()).replacingOccurrences(of: "\"", with: ""),
                     fallback: "globalConstant",

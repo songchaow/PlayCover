@@ -16,6 +16,7 @@
 | 2026-04-07 同日晚些时候 | `F474... / bbb32d...` 与 `A101... / 82d1...` | 通过 metadata builtin 映射补齐 `air.base_vertex -> [[base_vertex]]`、`air.base_instance -> [[base_instance]]`；fresh `case E` 后两者退出 latest blocker |
 | 2026-04-07 深夜第一轮 | `45AE24662B56C487_14497 / 1cdc9318...` | 补齐 `bool3 select`、global-const-array `GEP`、`air.gather_texture_2d` lowering；离线 replay / `xcrun metal -c` 已绿 |
 | 2026-04-07 深夜第二轮 | `8ABA7F7B315002A3_11361 / 29b821c6...` | fresh `case E` 复测确认 `45AE... / 1cdc...` 已退出 latest failure surface；主线前移到 `_CameraDepthTexture.sample(__air_sampler_state, t0/t3)` 的 `sample` / sampler lowering 问题 |
+| 2026-04-07 深夜第三轮 | `D4CAEB2BF7815C4F_6353 / f567fbc2...` | 通过 `__air_sampler_state -> constexpr sampler` lowering、`air.fast_rint -> rint` 映射与最小回归样本，fresh `case E` 复测确认 `8ABA... / 29b821...` 已退出 latest failure surface；主线前移到 `InputTexture.read(t8)` 的 `read_texture_2d` lowering 问题 |
 
 ## 详细轮次记录
 

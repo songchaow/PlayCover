@@ -166,8 +166,8 @@
 | # | 子任务 | 状态 | 说明 |
 |---|---|---|---|
 | E-006g1 | 三开关最小五象限启动矩阵 + diagnostics / crash 证据固化 | ✅ DONE（2026-04-07） | 已新增 `Scripts/e006g_launch_matrix_runner.py`，并对 `com.papegames.lysk` 执行 `A/B/C/D/E` 五象限 fresh launch；五组 settings 均与预期一致，`launch_app -> create_session` 全部成功进入 `ready`，`launch-events.jsonl` 最新 run 全部到达 `playcover_launch_complete` |
-| E-006g2 | 系统性汇总 startup 期 `replacement_compile_failed` / fallback failure clusters，确认 late crash 是否由 compile failure 集合触发 | IN PROGRESS（2026-04-07） | 已确认崩溃并不发生在 runtime 注册前；当前证据已收敛到 **startup replacement compile / fallback failure 集合** |
-| E-006g3 | 把 `compile_failed` 命中面收缩到最小 `cacheKey` / selector / module 集合，为 `E-006g4` 准备最小修复 / 旁路面 | IN PROGRESS | 新增 `replacement_attempt_started` / `replacement_modules_prepared` / `replacement_compile_started` / `replacement_compile_failed` / `replacement_succeeded` runtime breadcrumbs 后，已能定位到多个 `newLibraryWithData:error:` 命中点 |
+| E-006g2 | 系统性汇总 startup 期 `replacement_compile_failed` / fallback failure clusters，确认 late crash 是否由 compile failure 集合触发 | IN PROGRESS（当前唯一默认入口，2026-04-07） | 已确认崩溃并不发生在 runtime 注册前；当前证据已收敛到 **startup replacement compile / fallback failure 集合**，默认先用现有摘要工具稳定产出 cross-run hotspot / failure surface 结论 |
+| E-006g3 | 把 `compile_failed` 命中面收缩到最小 `cacheKey` / selector / module 集合，为 `E-006g4` 准备最小修复 / 旁路面 | TODO（待 `E-006g2` 热点摘要稳定后继续） | 依赖 `E-006g2` 先把跨 run 重复出现的 failure surfaces 收敛到稳定集合 |
 | E-006g4 | 设计并验证“不牺牲源码可见性目标”的修复方案 | TODO | 最终方案不能退化为“永久关 startup injection”或“永久关 replacement” |
 
 ## `E-006g1` / `E-006g2` 当前结论（2026-04-07）
@@ -248,6 +248,8 @@
 - `Scripts/e006g_launch_matrix_runner.py finalize-case` 现会同时固化 `latestReplacementFailureSurfaces` / `latestReplacementFailureSurfaceCount`
 - `Scripts/e006g_launch_matrix_runner.py finalize-case` 现会额外固化 `aggregatedReplacementFailureClusters` / `aggregatedReplacementFailureSurfaces`，避免只盯住 latest run
 - `Scripts/e006g_launch_matrix_runner.py analyze` 会直接打印每个 case 最新一轮的 `replacementCompileFailed` 与 `failureSurfaces` 次数，以及跨保留 runs 的 hotspot surface / cluster，用于快速比较 `C / D / E` 并识别 startup 期最小旁路面
+
+因此，`E-006g` 当前默认下一步**不是继续补矩阵脚本或 breadcrumbs**，而是直接消费现有 `finalize-case + analyze + runtime_launch_diagnostics_summary.py` 产出的 cross-run hotspot / failure surface 摘要，并据此推进 `E-006g3` 的最小命中面收缩；除非出现新的证据缺口，否则不再把“补新埋点”当作默认任务。
 
 ## 候选解决方向
 

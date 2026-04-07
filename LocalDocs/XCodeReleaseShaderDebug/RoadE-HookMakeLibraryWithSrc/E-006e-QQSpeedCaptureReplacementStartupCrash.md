@@ -1,6 +1,6 @@
 ## E-006e：`QQ飞车` 在 `metal capture + shader replacement` 同开时启动崩溃
 
-## 状态：TODO（已降为第三优先级）
+## 状态：TODO（已降为第三优先级；待优先级恢复时从 `E-006e2` 继续）
 
 > ⚠️ `QQ飞车` 历史上已经证明“纯截帧路径”可走通，因此这里的问题不是“PlayCover 完全不能在它上面 capture”，而是 **Road E 的 shader replacement 主线与 metal capture 并存后，启动阶段出现了新的兼容性崩溃**。该问题仍然有效，但在 `恋与深空` 三开关启动崩溃与 `原神 31-4302` 之前，**不再是默认最高优先级入口**。
 
@@ -110,9 +110,9 @@
 | # | 子任务 | 状态 | 说明 |
 |---|---|---|---|
 | E-006e1 | 四象限启动矩阵 + launch diagnostics 固化 | ✅ DONE（2026-04-07） | 新增 `Scripts/e006e_launch_matrix_runner.py`，并已对 `QQ飞车` 执行 `A/B/C/D` 四象限 fresh launch + `create_session` + diagnostics 固化；结果显示四象限均到达 `playcover_launch_complete`，本轮未复现启动崩溃 |
-| E-006e2 | 定位崩溃发生在 preload / swizzle / first replacement 的哪一段 | TODO（当前入口） | 由于 `E-006e1` 本轮未复现，下一步需解释“历史 crash 为何出现、当前为何不复现”，重点看 `playcover_capture_library_preload_checked`、`playcover_library_injection_installed`、以及 replacement 首次日志 / diagnostics |
-| E-006e3 | 验证是否与特定 selector / metallib payload / module 命中有关 | TODO | 若 `D` 中只在某条 shader 路径崩，应进一步最小化到单次 replacement 尝试 |
-| E-006e4 | 设计“不牺牲源码可见性目标”的修复 | TODO | 最终方案不能退化为“永久关闭 replacement”或“永久关闭 capture” |
+| E-006e2 | 定位崩溃发生在 preload / swizzle / first replacement 的哪一段 | TODO（若优先级恢复，先做） | 由于 `E-006e1` 本轮未复现，下一步需解释“历史 crash 为何出现、当前为何不复现”，重点看 `playcover_capture_library_preload_checked`、`playcover_library_injection_installed`、以及 replacement 首次日志 / diagnostics |
+| E-006e3 | 验证是否与特定 selector / metallib payload / module 命中有关 | TODO（保留） | 若 `D` 中只在某条 shader 路径崩，应进一步最小化到单次 replacement 尝试 |
+| E-006e4 | 设计“不牺牲源码可见性目标”的修复 | TODO（保留） | 最终方案不能退化为“永久关闭 replacement”或“永久关闭 capture” |
 
 ## `E-006e1` 当前产物（2026-04-07）
 
@@ -124,7 +124,7 @@
   - `B=true/false`：`create_session` 成功，最新 run 到达 `playcover_launch_complete`
   - `C=false/true`：`create_session` 成功，最新 run 到达 `playcover_launch_complete`
   - `D=true/true`：`create_session` 成功，最新 run 到达 `playcover_launch_complete`
-- 因此本轮没有证据支持“当前环境下 `D` 稳定必现崩溃”；更合理的下一步不是盲修，而是进入 `E-006e2`，补齐当初 crash 发生时的 build / settings / diagnostics 差异。
+- 因此本轮没有证据支持“当前环境下 `D` 稳定必现崩溃”；更合理的下一步不是盲修，而是把这条线保留为自动化参考基线，并在优先级恢复时从 `E-006e2` 补齐当初 crash 发生时的 build / settings / diagnostics 差异。
 
 ## 候选解决方向
 

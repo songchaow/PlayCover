@@ -4071,17 +4071,18 @@ struct IRToMSLConverter {
 
     /// 翻译 select
     private static func translateSelect(lhs: String, rhs: String, ctx: SSAContext) {
-        // select <cond_type> <cond>, <type> <val_true>, <type> <val_false>
-        let cleaned = rhs.replacingOccurrences(of: "select ", with: "")
-        let selectParts = splitSelectOperands(cleaned)
+        // select [fast-math-flags] <cond_type> <cond>, <type> <val_true>, <type> <val_false>
+        let cleaned = stripFastMathFlags(rhs.replacingOccurrences(of: "select ", with: ""))
+        let selectParts = splitTypedOperands(cleaned, count: 3)
         guard selectParts.count >= 3 else {
             ctx.define(lhs, expr: "/* select parse error */")
             return
         }
-        let cond = resolveIROperand(selectParts[0], ctx: ctx)
-        let valTrue = resolveIROperand(selectParts[1], ctx: ctx)
-        let valFalse = resolveIROperand(selectParts[2], ctx: ctx)
-        ctx.emitAutoAssign(lhs, expr: "\(cond) ? \(valTrue) : \(valFalse)")
+        let cond = resolveIROperand(selectParts[0].value, ctx: ctx)
+        let valTrue = resolveIROperand(selectParts[1].value, ctx: ctx)
+        let valFalse = resolveIROperand(selectParts[2].value, ctx: ctx)
+        let resultType = irScalarTypeToMSL(selectParts[1].type)
+        ctx.emitAutoAssign(lhs, expr: "\(cond) ? \(valTrue) : \(valFalse)", knownType: resultType)
     }
 
     /// 翻译 shufflevector

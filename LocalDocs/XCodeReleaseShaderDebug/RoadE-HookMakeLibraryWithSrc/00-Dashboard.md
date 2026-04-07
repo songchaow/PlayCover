@@ -156,7 +156,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 ## 当前主线
 
-- **`E-006g`（当前最高优先级）**：解决 `恋与深空` 在同时启用 `metal capture + startup injection + shader replacement` 时的启动崩溃。**当前默认入口已从 `E-006g2` 的热点稳定化切到 `E-006g3`：围绕 `cacheKey=791A306ED1B6648B_4577` / `moduleKey=ec0c6f0e72d6fc64daf4d5955cd1ea2cc5e729b0f988b1e857d13bfb54c7f6c3` 继续收缩最小旁路面或 lowering 修复；更细的 cross-run hotspot / failure surface 结论统一以下沉到专项文档为准。** 详细路径见 `E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md`。
+- **`E-006g`（当前最高优先级）**：解决 `恋与深空` 在同时启用 `metal capture + startup injection + shader replacement` 时的启动崩溃。**`791A306ED1B6648B_4577 / ec0c6f...` 已在本轮通过 `select fast` lowering 修复退出 fresh blocker；当前默认入口仍是 `E-006g3`，但焦点已前移到 `mtl_BaseVertex` 缺失这一组 vertex builtin lowering 问题，重点关注 `F474C54E8C5214F4_4689 / bbb32d...`（cross-run hotspot）与 `A101E8447FA32563_5169 / 82d1...`（latest surfaced）。** 详细路径见 `E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md`。
 - **`E-006f`（当前第二优先级）**：解决 `原神` 在“进入游戏”后出现的 `31-4302` 完整性异常。**当前最该做的是先把 `launch_app -> create_session -> tap` 的最小触发路径稳定下来，再做 replacement `off/on` 对照；只有当这两步仍不足以定位时，才升级到工作区外静态分析，且仍需用户确认。** 详细路径见 `E-006f-GenshinIntegrityCheck-314302.md`。
 - **`E-006e`（当前第三优先级）**：继续保留 `QQ飞车` 在同时启用 `metal capture + shader replacement` 时的启动兼容性问题，但由于最新四象限未稳定复现，当前不再作为默认工作入口。**若后续恢复优先级，首要任务不是盲修，而是解释历史 crash 与当前未复现基线之间的差异。** 详细记录见 `E-006e-QQSpeedCaptureReplacementStartupCrash.md`。
 - **`E-006d`（暂时搁置）**：随机画面异常已确认是偶现问题，现阶段仅保留已有调查进度；主文档不再继续展开，也不再要求默认读取其子文档跟进细节。仅在 `E-006g` / `E-006f` / `E-006e` 收敛后，才考虑是否恢复优先级。
@@ -187,7 +187,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 |---|---|
 | 落盘与闭环能力 | 成功路径 → `ShaderCorpus/<bundleId>/modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`；replacement → `replacements/<timestamp>_<selector>_<cacheKey>/aggregate.generated.metal`；失败路径 → `ShaderSourceDiagnostics/<baseName>_modules/<moduleKey>/{.bc,.ll,.metal,.meta.json}`。三条路径均已进入离线 replay / diff / 归因主回路。详见 `E-004-CorpusClosureAndRecapturePolicy.md` |
 | corpus 编译基线 | 较旧的离线回归统计与样本数量已下沉到 [00-Dashboard-Archive](00-Dashboard-Archive.md) 与 `E-005-OfflineReplayBatchCompileDiff.md`；当前日常 gate 仍以 `test-data` / `ShaderCorpus` 的 replay + compile 自动回归为准。 |
-| `恋与深空` 三开关启动兼容性 blocker（2026-04-07） | `B/C` 可在 launch 后继续存活，`D/E` 会在 `playcover_launch_complete` 之后约 7~8 秒内 late crash。当前 default/actionable 主 blocker 已收敛到 **`cacheKey=791A306ED1B6648B_4577` / `moduleKey=ec0c6f0e72d6fc64daf4d5955cd1ea2cc5e729b0f988b1e857d13bfb54c7f6c3`**；历史 `6BECB...` bypass 与 `F474...` 次级样本已统一下沉到 `E-006g` 专项文档。 |
+| `恋与深空` 三开关启动兼容性 blocker（2026-04-07） | `B/C` 可在 launch 后继续存活，`D/E` 会在 `playcover_launch_complete` 之后约 7~8 秒内 late crash。`791A306ED1B6648B_4577 / ec0c6f...` 已在本轮通过 `select fast` lowering 修复退出 fresh blocker；当前 default/actionable 主 blocker 前移到 **`mtl_BaseVertex` 缺失**：cross-run hotspot 为 `F474C54E8C5214F4_4689 / bbb32d...`，latest surfaced 为 `A101E8447FA32563_5169 / 82d1...`；`6BECB...` bypass 仍保留。 |
 | `E-006e1` 四象限基线（2026-04-07） | `QQ飞车` 当前 fresh `A/B/C/D` 四象限均能到达 `playcover_launch_complete`；该线保留为自动化参考基线，若优先级恢复则从 `E-006e2` 解释“历史 crash 为何出现、当前为何未复现”继续。 |
 | `原神` 完整性 blocker | 当前默认推进路径仍是 **先稳定最小进入游戏触发，再做 replacement `off/on` 对照**；工作区外字符串 / xref / 反汇编定位仅属于升级路径，执行前需用户确认。 |
 | `.gputrace` 里程碑 | `E-006c` 的样本名、阶段性 milestone 与更早基线已下沉到 [00-Dashboard-Archive](00-Dashboard-Archive.md)；当前主文档只保留“自动检查 + 最终人工确认”的工作流。 |
@@ -260,7 +260,7 @@ PlayTools.framework (注入到 iOS app)
 ## 踩坑与经验
 
 - **源码可见 / compile green 都不等于最终可用**：当前阶段真正阻塞落地的是**启动兼容性**与**进入游戏后的完整性检查副作用**，不能只看 `.gputrace` 或 compile 指标就宣告完成
-- **`恋与深空` 当前默认入口已切到 `E-006g3`**：不要再把“补矩阵脚本 / 补埋点”当作默认任务；现有 `failure surface / hotspot` 摘要已足够支撑围绕 `791A306ED1B6648B_4577 / ec0c6f...` 收缩命中面
+- **`恋与深空` 当前默认入口仍是 `E-006g3`，但热点已前移**：不要再把“补矩阵脚本 / 补埋点”当作默认任务；`791A306ED1B6648B_4577 / ec0c6f...` 现已转为回归样本，当前更该围绕 `mtl_BaseVertex` 缺失这一组 `F474... / bbb32d...` 与 `A101... / 82d1...` 继续收缩命中面
 - **`31-4302` 更像完整性 / 反篡改问题，不宜只靠人工看弹窗推进**：默认应先做最小自动 `tap` 触发与 replacement `off/on` 对照；只有当这两步仍不足以定位时，才升级到工作区外分析，且仍需用户明确确认
 - **`launch_app -> create_session -> tap` 可以视为 agent 可独立完成的轻量 UI 输入**：但直接对已安装 app bundle 做工作区外静态反汇编 / 二进制 patch 分析，不属于默认日常流程，执行前需要用户明确确认
 - **`E-006d` 现阶段只保留进度，不再占据 dashboard 控制面**：它的调查结果仍有参考价值，但在优先级恢复前，不应继续消耗主文档篇幅或默认工作流注意力

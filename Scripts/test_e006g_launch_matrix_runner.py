@@ -135,6 +135,17 @@ class E006GLaunchMatrixRunnerTests(unittest.TestCase):
                     },
                     {
                         "timestamp": "2026-04-07T01:00:04Z",
+                        "event": "playcover_launch_complete",
+                        "bundleId": bundle_id,
+                        "pid": 101,
+                        "processLaunchId": "launch-1",
+                        "metalCaptureEnabled": True,
+                        "injectMetalCaptureEnvironment": True,
+                        "shaderSourceReplacementEnabled": True,
+                        "isMainThread": True,
+                    },
+                    {
+                        "timestamp": "2026-04-07T01:00:05Z",
                         "event": "replacement_compile_failed",
                         "bundleId": bundle_id,
                         "pid": 101,
@@ -142,6 +153,25 @@ class E006GLaunchMatrixRunnerTests(unittest.TestCase):
                         "selector": "newLibraryWithData:error:",
                         "cacheKey": "CACHE-A",
                         "compilerMessage": "expected expression",
+                        "isMainThread": True,
+                    },
+                    {
+                        "timestamp": "2026-04-07T01:10:00Z",
+                        "event": "playcover_launch_enter",
+                        "bundleId": bundle_id,
+                        "pid": 202,
+                        "processLaunchId": "launch-2",
+                        "isMainThread": True,
+                    },
+                    {
+                        "timestamp": "2026-04-07T01:10:01Z",
+                        "event": "playcover_launch_complete",
+                        "bundleId": bundle_id,
+                        "pid": 202,
+                        "processLaunchId": "launch-2",
+                        "metalCaptureEnabled": True,
+                        "injectMetalCaptureEnvironment": False,
+                        "shaderSourceReplacementEnabled": False,
                         "isMainThread": True,
                     },
                 ],
@@ -206,8 +236,18 @@ class E006GLaunchMatrixRunnerTests(unittest.TestCase):
                 case_meta["launchDiagnostics"]["latestLastEvent"],
                 "replacement_compile_failed",
             )
+            self.assertEqual(case_meta["launchDiagnostics"]["matchedSummaryCount"], 1)
+            self.assertEqual(case_meta["launchDiagnostics"]["ignoredSummaryCount"], 1)
             self.assertEqual(case_meta["settingsMatchedExpectation"], True)
             self.assertEqual(case_meta["actualSettings"]["injectMetalCaptureEnvironment"], True)
+            self.assertEqual(
+                case_meta["launchDiagnostics"]["latestLaunchSettings"],
+                {
+                    "metalCaptureEnabled": True,
+                    "injectMetalCaptureEnvironment": True,
+                    "shaderSourceReplacementEnabled": True,
+                },
+            )
             self.assertEqual(
                 case_meta["launchDiagnostics"]["latestReplacementCounts"]["replacement_compile_failed"],
                 1,
@@ -244,6 +284,9 @@ class E006GLaunchMatrixRunnerTests(unittest.TestCase):
                 case_meta["launchDiagnostics"]["aggregatedReplacementFailureSurfaces"][0]["cacheKey"],
                 "CACHE-A",
             )
+            launch_summary_json = json.loads((case_dir / "launch-summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(launch_summary_json["summaryCount"], 1)
+            self.assertEqual(launch_summary_json["runs"][0]["processLaunchId"], "launch-1")
 
             manifest_tail = json.loads((case_dir / "manifest-tail.json").read_text(encoding="utf-8"))
             self.assertEqual(len(manifest_tail), 3)
@@ -251,7 +294,9 @@ class E006GLaunchMatrixRunnerTests(unittest.TestCase):
             self.assertIn("replacementCounts=replacement_compile_failed=1", launch_summary_text)
             self.assertIn("replacementFailureClusters:", launch_summary_text)
             self.assertIn("replacementFailureSurfaces:", launch_summary_text)
+            self.assertIn("launchSettings=injectMetalCaptureEnvironment=True", launch_summary_text)
             self.assertIn("case snapshot created", completed.stdout)
+            self.assertIn("matchedRuns=1 ignoredRuns=1", completed.stdout)
 
     def test_analyze_reports_present_and_missing_cases(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -350,6 +395,7 @@ class E006GLaunchMatrixRunnerTests(unittest.TestCase):
 
             self.assertIn("case=A: missing", completed.stdout)
             self.assertIn("case=C: matched=True lastEvent=playcover_library_injection_installed", completed.stdout)
+            self.assertIn("matchedRuns=0", completed.stdout)
             self.assertIn("replacementCompileFailed=2", completed.stdout)
             self.assertIn("failureSurfaces=1", completed.stdout)
             self.assertIn("aggregateFailureSurfaces=1", completed.stdout)

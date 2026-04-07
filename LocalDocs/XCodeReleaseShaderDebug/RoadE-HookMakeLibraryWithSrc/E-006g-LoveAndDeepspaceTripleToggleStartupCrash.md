@@ -229,6 +229,26 @@
   - 其中已有多条生成的 MSL 会在 `makeLibrary(source:)` 编译阶段失败
   - 单个 compile failure / fallback 或其连锁副作用，足以在 launch 完成后数秒内触发 app abort
 
+### 2026-04-07 同日补充：按 case 过滤后的 `E` 快照已刷新
+
+- `build/e006g-launch-matrix/case-e-capture-on-startup-injection-on-replacement-on/com.papegames.lysk/case.meta.json` 已用当前脚本重新固化
+- 新快照不再混入 `A/B/C/D` 的 launch；它仅保留 `launchSettings == {metalCaptureEnabled=true, injectMetalCaptureEnvironment=true, shaderSourceReplacementEnabled=true}` 的 runs
+- 当前刷新结果：`matchedRuns=2`、`ignoredRuns=23`、`latestLastEvent=replacement_compile_failed`
+- 当前 `E` 的 latest run（`launch-11539-29911b51-7a3b-4e15-acb6-f854f4a70782`）在 startup replacement 中表现为：
+  - `replacement_attempt_started=6`
+  - `replacement_succeeded=4`
+  - `replacement_compile_failed=2`
+  - `replacement_attempt_skipped=1`（`cacheKey=6BECB97B0B4BCBFD_7123`，`reason=bundle_cachekey_bypass`）
+- 刷新后的 case-specific hotspot 说明：
+  - 历史 compile blocker 仍可见于 `cacheKey=6BECB97B0B4BCBFD_7123`
+  - 当前 bypass 生效后，新的 startup compile blocker 已前移到：
+    - `cacheKey=791A306ED1B6648B_4577`：`expected expression`
+    - `cacheKey=F474C54E8C5214F4_4689`：`use of undeclared identifier 'mtl_BaseVertex'`
+  - 当前唯一已完成 manifest 关联、且已收缩到最小模块面的 failure surface 为：
+    - `cacheKey=F474C54E8C5214F4_4689`
+    - `moduleKey=bbb32dc1261c6c5bb2e8d05d0983d7938cfc68cd9556fed2faed2d0852e04854`
+    - `reasonCode=compile_failed`
+
 ### 下一步（仅记录，不在本轮展开）
 
 1. 系统性汇总 `恋与深空` startup 期所有 `replacement_compile_failed` 的 cacheKey / selector / compiler error
@@ -241,10 +261,13 @@
 ### 2026-04-07 工具补强
 
 - `Scripts/runtime_launch_diagnostics_summary.py` 现已在每个 `processLaunchId` 摘要里直接输出 replacement 事件计数与 failure clusters
+- `Scripts/runtime_launch_diagnostics_summary.py` 现会从 `playcover_launch_complete` 提取并保留 `launchSettings`（三开关状态），即使最后一个事件已变成 late `replacement_compile_failed` 也不会丢失 case 身份
 - failure cluster 的聚合键为 `event + selector + cacheKey + compilerMessage`，并保留 `count / firstTimestamp / lastTimestamp`
 - `Scripts/runtime_launch_diagnostics_summary.py` 现已额外读取 `ShaderCorpus/<bundleId>/manifest.jsonl` 中的 `replacement_attempt`，把同一启动窗口内的失败尝试相关联为 **failure surfaces**（`selector + cacheKey + reasonCode + moduleKeys`），用于把 `E-006g3` 的命中面直接收缩到最小模块集合
 - `Scripts/runtime_launch_diagnostics_summary.py` 现已额外输出 **cross-run replacement hotspots**：把最近若干个 `processLaunchId` 的 failure clusters / failure surfaces 再按 `cacheKey` / `reasonCode` / `moduleKeys` 聚合，直接回答“哪些 startup blocker 在多轮 launch 中反复出现”
 - `Scripts/e006g_launch_matrix_runner.py finalize-case` 现默认先等待 **10 秒 settle window**，再把 replacement counts / failure clusters 一并写入 `launch-summary.json`、`launch-summary.txt` 与 `case.meta.json`，避免 case 快照只停在 `playcover_launch_complete`
+- `Scripts/e006g_launch_matrix_runner.py finalize-case` 现会按 `launchSettings` 过滤 runs，只保留与当前 case 对应的 `processLaunchId`；因此 `case E` 快照不再混入 `C/D` 或更早的 baseline launch
+- `Scripts/e006g_launch_matrix_runner.py finalize-case` 现支持 `--replace-existing`，用于在同一路径刷新既有 case snapshot，而不必手工清理 `build/e006g-launch-matrix/`
 - `Scripts/e006g_launch_matrix_runner.py finalize-case` 现会同时固化 `latestReplacementFailureSurfaces` / `latestReplacementFailureSurfaceCount`
 - `Scripts/e006g_launch_matrix_runner.py finalize-case` 现会额外固化 `aggregatedReplacementFailureClusters` / `aggregatedReplacementFailureSurfaces`，避免只盯住 latest run
 - `Scripts/e006g_launch_matrix_runner.py analyze` 会直接打印每个 case 最新一轮的 `replacementCompileFailed` 与 `failureSurfaces` 次数，以及跨保留 runs 的 hotspot surface / cluster，用于快速比较 `C / D / E` 并识别 startup 期最小旁路面

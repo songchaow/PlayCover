@@ -138,6 +138,51 @@ class RuntimeLaunchDiagnosticsSummaryTests(unittest.TestCase):
         self.assertEqual(surfaces["failureSurfaces"][0]["reasonCode"], "compile_failed")
         self.assertEqual(surfaces["failureSurfaces"][0]["moduleKeys"], ["module-a", "module-b"])
 
+    def test_build_summary_preserves_launch_settings_after_late_compile_failure(self) -> None:
+        events = [
+            {
+                "timestamp": "2026-04-07T01:00:00Z",
+                "event": "playcover_launch_enter",
+                "bundleId": "com.example.lysk",
+                "pid": 101,
+                "processLaunchId": "launch-1",
+                "isMainThread": True,
+            },
+            {
+                "timestamp": "2026-04-07T01:00:03Z",
+                "event": "playcover_launch_complete",
+                "bundleId": "com.example.lysk",
+                "pid": 101,
+                "processLaunchId": "launch-1",
+                "metalCaptureEnabled": "true",
+                "injectMetalCaptureEnvironment": "true",
+                "shaderSourceReplacementEnabled": "true",
+                "isMainThread": True,
+            },
+            {
+                "timestamp": "2026-04-07T01:00:04Z",
+                "event": "replacement_compile_failed",
+                "bundleId": "com.example.lysk",
+                "pid": 101,
+                "processLaunchId": "launch-1",
+                "selector": "newLibraryWithData:error:",
+                "cacheKey": "CACHE-A",
+                "compilerMessage": "expected expression",
+                "isMainThread": True,
+            },
+        ]
+
+        summary = build_summary(events, limit=1)[0]
+
+        self.assertEqual(
+            summary["launchSettings"],
+            {
+                "metalCaptureEnabled": True,
+                "injectMetalCaptureEnvironment": True,
+                "shaderSourceReplacementEnabled": True,
+            },
+        )
+
     def test_aggregate_replacement_hotspots_merges_repeated_failures_across_runs(self) -> None:
         summaries = [
             {

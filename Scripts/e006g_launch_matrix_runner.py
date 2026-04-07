@@ -36,6 +36,7 @@ from runtime_launch_diagnostics_summary import (  # noqa: E402
     DEFAULT_ROOT as DEFAULT_DIAGNOSTICS_ROOT,
     aggregate_replacement_hotspots,
     build_summary,
+    normalize_setting_value,
     read_events,
     read_manifest_entries,
 )
@@ -149,6 +150,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=10.0,
         help="how long to wait before snapshotting diagnostics so post-launch replacement failures are captured",
     )
+    finalize_parser.add_argument(
+        "--replace-existing",
+        action="store_true",
+        help="replace an existing case snapshot directory instead of failing",
+    )
 
     analyze_parser = subparsers.add_parser(
         "analyze",
@@ -243,6 +249,24 @@ def load_recent_manifest_events(container_root: Path, bundle_id: str, limit: int
     return rows[-max(limit, 1) :]
 
 
+def summarize_all_runs(
+    events: list[dict[str, Any]],
+    manifest_entries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return build_summary(events, max(len(events), 1), manifest_entries)
+
+
+def launch_settings_match(summary: dict[str, Any], expected_settings: dict[str, bool]) -> bool:
+    actual_settings = summary.get("launchSettings") or {}
+    if not actual_settings:
+        return False
+
+    for key, expected_value in expected_settings.items():
+        if normalize_setting_value(actual_settings.get(key)) != expected_value:
+            return False
+    return True
+
+
 def write_text_summary(path: Path, *, bundle_id: str, case_key: str, summaries: list[dict[str, Any]]) -> None:
     lines = [
         f"bundleId: {bundle_id}",
@@ -270,6 +294,12 @@ def write_text_summary(path: Path, *, bundle_id: str, case_key: str, summaries: 
         if last_details:
             rendered = ", ".join(f"{key}={value}" for key, value in sorted(last_details.items()))
             lines.append(f"  lastDetails={rendered}")
+        launch_settings = summary.get("launchSettings") or {}
+        if launch_settings:
+            rendered_settings = ", ".join(
+                f"{key}={value}" for key, value in sorted(launch_settings.items())
+            )
+            lines.append(f"  launchSettings={rendered_settings}")
         failures = summary.get("noteworthyFailures") or []
         if failures:
             lines.append("  recentFailures:")
@@ -359,7 +389,9 @@ def finalize_case(args: argparse.Namespace) -> int:
     label = expected["label"]
     case_bundle_dir = output_root / label / args.bundle_id
     if case_bundle_dir.exists():
-        raise SystemExit(f"case snapshot destination already exists: {case_bundle_dir}")
+        if not args.replace_existing:
+            raise SystemExit(f"case snapshot destination already exists: {case_bundle_dir}")
+        shutil.rmtree(case_bundle_dir)
     case_bundle_dir.mkdir(parents=True, exist_ok=False)
 
     shutil.copy2(settings_path, case_bundle_dir / settings_path.name)
@@ -368,7 +400,16 @@ def finalize_case(args: argparse.Namespace) -> int:
     manifest_path = container_root / "ShaderCorpus" / args.bundle_id / "manifest.jsonl"
     events = read_events(launch_events_path)
     manifest_entries = read_manifest_entries(manifest_path)
-    summaries = build_summary(events, args.summary_limit, manifest_entries)
+    expected_settings = {
+        METAL_CAPTURE_KEY: expected[METAL_CAPTURE_KEY],
+        INJECT_CAPTURE_ENVIRONMENT_KEY: expected[INJECT_CAPTURE_ENVIRONMENT_KEY],
+        SHADER_REPLACEMENT_KEY: expected[SHADER_REPLACEMENT_KEY],
+    }
+    all_summaries = summarize_all_runs(events, manifest_entries)
+    matching_summaries = [
+        summary for summary in all_summaries if launch_settings_match(summary, expected_settings)
+    ]
+    summaries = matching_summaries[: max(args.summary_limit, 1)]
     replacement_hotspots = aggregate_replacement_hotspots(summaries)
     if launch_events_path.is_file():
         shutil.copy2(launch_events_path, case_bundle_dir / "launch-events.jsonl")
@@ -402,11 +443,6 @@ def finalize_case(args: argparse.Namespace) -> int:
     )
 
     latest_summary = summaries[0] if summaries else None
-    expected_settings = {
-        METAL_CAPTURE_KEY: expected[METAL_CAPTURE_KEY],
-        INJECT_CAPTURE_ENVIRONMENT_KEY: expected[INJECT_CAPTURE_ENVIRONMENT_KEY],
-        SHADER_REPLACEMENT_KEY: expected[SHADER_REPLACEMENT_KEY],
-    }
     case_meta = {
         "schemaVersion": 1,
         "capturedAt": datetime.now(timezone.utc).isoformat(),
@@ -427,8 +463,14 @@ def finalize_case(args: argparse.Namespace) -> int:
         "launchDiagnostics": {
             "settleSeconds": settle_seconds,
             "eventCount": len(events),
+            "matchedSummaryCount": len(summaries),
+            "ignoredSummaryCount": max(len(all_summaries) - len(summaries), 0),
+            "matchingProcessLaunchIds": [
+                summary.get("processLaunchId") for summary in summaries if summary.get("processLaunchId")
+            ],
             "summaryCount": len(summaries),
             "latestLastEvent": latest_summary.get("lastEvent") if latest_summary else None,
+            "latestLaunchSettings": latest_summary.get("launchSettings") if latest_summary else {},
             "latestReachedStages": [
                 stage for stage in KEY_STAGE_ORDER if latest_summary and latest_summary.get("stages", {}).get(stage)
             ],
@@ -464,6 +506,8 @@ def finalize_case(args: argparse.Namespace) -> int:
     print(
         f"summary: case={args.case} expected=({format_case_settings(args.case)}) "
         f"matched={case_meta['settingsMatchedExpectation']} lastEvent={case_meta['launchDiagnostics']['latestLastEvent'] or 'n/a'} "
+        f"matchedRuns={case_meta['launchDiagnostics']['matchedSummaryCount']} "
+        f"ignoredRuns={case_meta['launchDiagnostics']['ignoredSummaryCount']} "
         f"missingStages={len(case_meta['launchDiagnostics']['latestMissingStages'])} manifestEvents={len(manifest_events)}"
     )
     return 0
@@ -488,9 +532,12 @@ def analyze_cases(args: argparse.Namespace) -> int:
             "present": True,
             "settingsMatchedExpectation": payload.get("settingsMatchedExpectation"),
             "latestLastEvent": payload.get("launchDiagnostics", {}).get("latestLastEvent"),
+            "latestLaunchSettings": payload.get("launchDiagnostics", {}).get("latestLaunchSettings", {}),
             "latestReachedStages": payload.get("launchDiagnostics", {}).get("latestReachedStages", []),
             "latestMissingStages": payload.get("launchDiagnostics", {}).get("latestMissingStages", []),
             "latestFailureCount": payload.get("launchDiagnostics", {}).get("latestFailureCount"),
+            "matchedSummaryCount": payload.get("launchDiagnostics", {}).get("matchedSummaryCount", 0),
+            "ignoredSummaryCount": payload.get("launchDiagnostics", {}).get("ignoredSummaryCount", 0),
             "latestReplacementCounts": payload.get("launchDiagnostics", {}).get("latestReplacementCounts", {}),
             "latestReplacementFailureClusters": payload.get("launchDiagnostics", {}).get(
                 "latestReplacementFailureClusters", []
@@ -530,6 +577,8 @@ def analyze_cases(args: argparse.Namespace) -> int:
         print(
             f"case={case_key}: matched={case_report['settingsMatchedExpectation']} "
             f"lastEvent={case_report['latestLastEvent'] or 'n/a'} "
+            f"matchedRuns={case_report['matchedSummaryCount']} "
+            f"ignoredRuns={case_report['ignoredSummaryCount']} "
             f"missingStages={len(case_report['latestMissingStages'])} "
             f"failures={case_report['latestFailureCount']} "
             f"replacementCompileFailed={case_report['latestReplacementCounts'].get('replacement_compile_failed', 0)} "

@@ -26,6 +26,11 @@ from typing import Any
 DEFAULT_ROOT = Path.home() / "Library/Containers/io.playcover.PlayCover/RuntimeLaunchDiagnostics"
 DEFAULT_CONTAINER_ROOT = Path.home() / "Library/Containers/io.playcover.PlayCover"
 MANIFEST_CORRELATION_GRACE = timedelta(seconds=5)
+LAUNCH_SETTING_KEYS = (
+    "metalCaptureEnabled",
+    "injectMetalCaptureEnvironment",
+    "shaderSourceReplacementEnabled",
+)
 
 KEY_STAGE_ORDER = [
     "playcover_launch_enter",
@@ -134,6 +139,34 @@ def parse_timestamp(value: Any) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def normalize_setting_value(value: Any) -> bool | Any:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+    return value
+
+
+def extract_launch_settings(events: list[dict[str, Any]]) -> dict[str, bool | Any]:
+    for event in reversed(events):
+        event_name = str(event.get("event") or "")
+        if event_name != "playcover_launch_complete":
+            continue
+
+        settings = {
+            key: normalize_setting_value(event[key])
+            for key in LAUNCH_SETTING_KEYS
+            if key in event
+        }
+        if settings:
+            return settings
+    return {}
 
 
 def summarize_replacement_activity(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -279,6 +312,7 @@ def summarize_group(
     last_event = ordered[-1] if ordered else {}
     first_event = ordered[0] if ordered else {}
     bundle_id = first_event.get("bundleId") or last_event.get("bundleId")
+    launch_settings = extract_launch_settings(ordered)
 
     noteworthy_failures = [
         {
@@ -315,6 +349,7 @@ def summarize_group(
             for key, value in last_event.items()
             if key not in {"schemaVersion", "timestamp", "event", "bundleId", "pid", "processLaunchId", "lineNumber", "isMainThread"}
         },
+        "launchSettings": launch_settings,
         "stages": stages,
         "noteworthyFailures": noteworthy_failures[-5:],
         "replacement": replacement_activity,
@@ -472,6 +507,13 @@ def print_human_summary(bundle_id: str, summaries: list[dict[str, Any]]) -> None
         if last_details:
             rendered = ", ".join(f"{key}={value}" for key, value in sorted(last_details.items()))
             print(f"  lastDetails={rendered}")
+
+        launch_settings = summary.get("launchSettings") or {}
+        if launch_settings:
+            rendered_settings = ", ".join(
+                f"{key}={value}" for key, value in sorted(launch_settings.items())
+            )
+            print(f"  launchSettings={rendered_settings}")
 
         replacement = summary.get("replacement") or {}
         replacement_counts = replacement.get("counts") or {}

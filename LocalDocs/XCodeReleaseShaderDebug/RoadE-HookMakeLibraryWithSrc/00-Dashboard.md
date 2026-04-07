@@ -176,7 +176,7 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 | live run 快照固化 | `Scripts/e006d_matrix_runner.py prepare-run / finalize-run --latest-gputrace [--capture-target device|scope]` |
 | `E-006g1` 五象限启动矩阵 | `Scripts/e006g_launch_matrix_runner.py prepare-case / finalize-case / analyze --bundle-id com.papegames.lysk`（`finalize-case` / `analyze` 已内建 replacement failure cluster 摘要） |
 | `.gputrace` 自动检查 / 归因 | `Scripts/check_gputrace_sources.py /path/to/xxx.gputrace [--bundle-dir /path/to/ShaderCorpus/<bundleId>]` |
-| runtime launch 诊断 | `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl` + `Scripts/runtime_launch_diagnostics_summary.py`（按 `processLaunchId` 聚合 replacement counts / failure clusters，并结合 `ShaderCorpus/<bundleId>/manifest.jsonl` 输出带 `moduleKeys` 的 failure surfaces） |
+| runtime launch 诊断 | `RuntimeLaunchDiagnostics/<bundleId>/launch-events.jsonl` + `Scripts/runtime_launch_diagnostics_summary.py`（按 `processLaunchId` 聚合 replacement counts / failure clusters，并结合 `ShaderCorpus/<bundleId>/manifest.jsonl` 输出带 `moduleKeys` 的 failure surfaces；同时支持 cross-run hotspot 聚合，便于识别反复出现的 startup blocker） |
 | 运行时输入自动化 | `launch_app` → `create_session` → `tap / swipe / press_key`（适用于“进入游戏”这类轻量 UI 触发） |
 
 ### 关键数据基线

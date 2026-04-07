@@ -31,10 +31,9 @@ live 采集一次或少量几次真实 shader
 最终真实截帧确认源码可见
 ```
 
-**补充约束（当前最高优先级）**：`E-006c` 已证明“.gputrace 中源码可见”链路本身已经打通，但当前阶段不再把 `E-006d`“同一界面重复启动出现随机画面异常”作为日常最高优先级主线继续深挖。该问题已确认是**偶现问题**，现阶段**暂时搁置**；其已有进度保留在 `E-006d-GenshinRenderingNondeterminism.md`，但主文档不再展开其细节，且在优先级恢复前，**不要求继续读取其子文档作为默认工作入口**。当前更需要优先收敛的，是三个更接近最终落地阻塞的确定性问题：
-1. **`恋与深空` 在同时启用 `metal capture + startup injection + shader replacement` 时启动崩溃**
-2. **`原神` 在“进入游戏”后出现 `31-4302` 完整性异常，怀疑与 hook / replacement 副作用有关**
-3. **`QQ飞车` 在同时启用 `metal capture + shader replacement` 时启动崩溃，但当前最新矩阵未稳定复现**
+**补充约束（当前最高优先级）**：`E-006c` 已证明“.gputrace 中源码可见”链路本身已经打通，但当前阶段不再把 `E-006d`“同一界面重复启动出现随机画面异常”作为日常最高优先级主线继续深挖。该问题已确认是**偶现问题**，现阶段**暂时搁置**；其已有进度保留在 `E-006d-GenshinRenderingNondeterminism.md`，但主文档不再展开其细节，且在优先级恢复前，**不要求继续读取其子文档作为默认工作入口**。`E-006g` 已在 2026-04-08 夜间完成收口：`6BECB...` targeted bypass 已移除，fresh `case E` latest run 达到 `replacement_attempt_started=65 / replacement_compile_started=65 / replacement_succeeded=65`，latest failure surfaces=0。当前更需要优先收敛的，是两个仍未收口的确定性问题：
+1. **`原神` 在“进入游戏”后出现 `31-4302` 完整性异常，怀疑与 hook / replacement 副作用有关**
+2. **`QQ飞车` 在同时启用 `metal capture + shader replacement` 时启动崩溃，但当前最新矩阵未稳定复现**
 
 **分工原则**：
 - **live 的职责**：采集 corpus、扩覆盖、做最终真实验证
@@ -156,10 +155,10 @@ Scripts/check_gputrace_sources.py /path/to/xxx.gputrace
 
 ## 当前主线
 
-- **`E-006g`（当前最高优先级）**：解决 `恋与深空` 在同时启用 `metal capture + startup injection + shader replacement` 时的启动崩溃。**`4010578... / e3c089...` 这一轮 compiler-first 入口已完成**：`air.front_facing` lowering 已修复，真实 failure-path 样本与最小样本均已通过离线 replay / `xcrun metal -c`，fresh `case E` 在默认 10 秒 settle window 内 `replacement_compile_failed=0` 且 session 仍保持 `ready`。**当前下一入口前移到 `E-006g4`**：评估剩余 `cacheKey=6BECB97B0B4BCBFD_7123` targeted bypass 是否还能缩回或细化，同时保持源码可见性目标。详细路径见 `E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md`。
-- **`E-006f`（当前第二优先级）**：解决 `原神` 在“进入游戏”后出现的 `31-4302` 完整性异常。**当前最该做的是先把 `launch_app -> create_session -> tap` 的最小触发路径与“非视觉自动判定信号”稳定下来，再做 replacement `off/on` 对照；只有当这两步仍不足以定位时，才升级到工作区外静态分析，且仍需用户确认。** 详细路径见 `E-006f-GenshinIntegrityCheck-314302.md`。
-- **`E-006e`（当前第三优先级）**：继续保留 `QQ飞车` 在同时启用 `metal capture + shader replacement` 时的启动兼容性问题，但由于最新四象限未稳定复现，当前不再作为默认工作入口。**默认仅在 `E-006g` / `E-006f` 收敛后，或 `QQ飞车` fresh `D=true/true` 再次稳定复现 crash 时恢复优先级；恢复后首要任务不是盲修，而是解释历史 crash 与当前未复现基线之间的差异。** 详细记录见 `E-006e-QQSpeedCaptureReplacementStartupCrash.md`。
-- **`E-006d`（暂时搁置）**：随机画面异常已确认是偶现问题，现阶段仅保留已有调查进度；主文档不再继续展开，也不再要求默认读取其子文档跟进细节。仅在 `E-006g` / `E-006f` / `E-006e` 收敛后，才考虑是否恢复优先级。
+- **`E-006f`（当前最高优先级）**：解决 `原神` 在“进入游戏”后出现的 `31-4302` 完整性异常。**当前最该做的是先把 `launch_app -> create_session -> tap` 的最小触发路径与“非视觉自动判定信号”稳定下来，再做 replacement `off/on` 对照；只有当这两步仍不足以定位时，才升级到工作区外静态分析，且仍需用户确认。** 详细路径见 `E-006f-GenshinIntegrityCheck-314302.md`。
+- **`E-006e`（当前第二优先级）**：继续保留 `QQ飞车` 在同时启用 `metal capture + shader replacement` 时的启动兼容性问题，但由于最新四象限未稳定复现，当前不再作为默认工作入口。**默认仅在 `E-006f` 收敛后，或 `QQ飞车` fresh `D=true/true` 再次稳定复现 crash 时恢复优先级；恢复后首要任务不是盲修，而是解释历史 crash 与当前未复现基线之间的差异。** 详细记录见 `E-006e-QQSpeedCaptureReplacementStartupCrash.md`。
+- **`E-006g`（已完成，保留回归观察）**：`6BECB...` targeted bypass 已移除；历史 failure-path `moduleKey=a6638ee7b4b9f8cc9f19a24bb78b0892cc4b2c098cd97e3eb05833ce2283b28b` replay + `xcrun metal -c` 与 fresh `case E` live 均已通过。最新 `processLaunchId=launch-85332-99130214-8f39-45b7-99c0-4d156a4e65ce` 在默认 10 秒 settle window 下 `replacement_attempt_started=65`、`replacement_compile_started=65`、`replacement_succeeded=65`，latest failure surfaces=0；`analyze` 中残留的 `6BECB...` 仅是旧 runs 的 aggregate historical hotspot，不再代表 active blocker。详细路径见 `E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md`。
+- **`E-006d`（暂时搁置）**：随机画面异常已确认是偶现问题，现阶段仅保留已有调查进度；主文档不再继续展开，也不再要求默认读取其子文档跟进细节。仅在 `E-006f` / `E-006e` 收敛后，才考虑是否恢复优先级。
 - **`E-006a / E-007`**：继续维持降级状态，不抢占当前主线。
 
 ## 最新基线
@@ -239,12 +238,12 @@ PlayTools.framework (注入到 iOS app)
 | E-006 | **端到端验证：语义等价 + 可编译 + 截帧可见** | ✅ DONE | [Archive](00-Dashboard-Archive.md) |
 | E-006c | ↳ `.gputrace` shader 源码可见性确认 | ✅ DONE | [Archive](00-Dashboard-Archive.md) |
 | E-006d | ↳ 原神同一界面重复启动时的随机渲染异常归因 | **搁置（偶现，保留进度）** | [E-006d](E-006d-GenshinRenderingNondeterminism.md) |
-| E-006g | ↳ **`恋与深空`：`metal capture + startup injection + shader replacement` 同开启动崩溃** | **IN PROGRESS（当前最高优先级，已完成 `E-006g1`）** | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
+| E-006g | ↳ **`恋与深空`：`metal capture + startup injection + shader replacement` 同开启动崩溃** | ✅ DONE（2026-04-08 夜间，当前环境已收口） | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
 | E-006g1 | ↳ 三开关最小五象限启动矩阵 + diagnostics / crash 证据固化 | ✅ DONE（2026-04-07） | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
 | E-006g2 | ↳ 系统性汇总 startup 期 `replacement_compile_failed` / fallback failure clusters，确认 late crash 是否由 compile failure 集合触发 | ✅ DONE（2026-04-07，结论已收敛） | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
-| E-006g3 | ↳ 把 `compile_failed` 命中面收缩到最小 `cacheKey` / selector / module 集合，为 `E-006g4` 准备最小修复 / 旁路面 | IN PROGRESS（`4010578... / e3c089...` 的 `air.front_facing` lowering 已完成；fresh `case E` 已无 `replacement_compile_failed`，当前默认入口前移到剩余 bypass surface 的方案验证） | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
-| E-006g4 | ↳ 设计并验证“不牺牲源码可见性目标”的修复方案 | TODO（当前下一入口） | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
-| E-006f | ↳ **`原神`：进入游戏后出现 `31-4302` 完整性异常** | **TODO（当前第二优先级）** | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
+| E-006g3 | ↳ 把 `compile_failed` 命中面收缩到最小 `cacheKey` / selector / module 集合，为 `E-006g4` 准备最小修复 / 旁路面 | ✅ DONE（2026-04-08） | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
+| E-006g4 | ↳ 设计并验证“不牺牲源码可见性目标”的修复方案 | ✅ DONE（2026-04-08 夜间） | [E-006g](E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md) |
+| E-006f | ↳ **`原神`：进入游戏后出现 `31-4302` 完整性异常** | **TODO（当前最高优先级）** | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
 | E-006f1 | ↳ 自动化“进入游戏”最小触发路径（`launch_app -> create_session -> tap`） | TODO（先做） | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
 | E-006f3 | ↳ 对照 replacement `off/on`，判断触发点更接近 hook、副作用还是替换产物 | TODO（默认第二步） | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
 | E-006f2 | ↳ 在原神二进制 / 资源中定位 `31-4302` / 对应字符串与引用链 | TODO（专项分支，执行前需用户确认工作区外分析） | [E-006f](E-006f-GenshinIntegrityCheck-314302.md) |
@@ -260,7 +259,7 @@ PlayTools.framework (注入到 iOS app)
 ## 踩坑与经验
 
 - **源码可见 / compile green 都不等于最终可用**：当前阶段真正阻塞落地的是**启动兼容性**与**进入游戏后的完整性检查副作用**，不能只看 `.gputrace` 或 compile 指标就宣告完成
-- **`恋与深空` 当前默认入口已从 `E-006g3a` 前移到 `E-006g4`**：`4010578... / e3c089...` 的 `air.front_facing` compile blocker 已通过“failure-path replay + 最小样本 + fresh `case E`”闭环清掉；当前默认任务不再是继续追这个已退出 latest surface 的编译错误，而是评估剩余 `6BECB...` targeted bypass 是否还能缩回或细化。更早的 `791A...`、`F474...`、`A101...`、`45AE...`、`8ABA...` 与 `D4CA...` **均已退出 latest surface**，其前移脉络统一下沉到 `E-006g-Archive.md`
+- **`恋与深空` 当前默认入口已从 `E-006g4` 切换到 `E-006f1`**：`6BECB...` targeted bypass 已通过“failure-path replay + 最小样本 + remove/inject PlayTools + fresh `case E`”闭环收回；最新 `case E` run 已是 `replacement_succeeded`，`latestReplacementFailureSurfaces=0`。`analyze` 中若仍看到 `6BECB...`，那是旧 runs 的 aggregate historical hotspot，不应再当成 active blocker。更早的 `791A...`、`F474...`、`A101...`、`45AE...`、`8ABA...` 与 `D4CA...` **均已退出 latest surface**，其前移脉络统一下沉到 `E-006g-Archive.md`
 - **如果不清楚编译器行为，优先写最小样本去问编译器本身**：先自己写简单 shader、编译成 AIR、再用 `llvm-dis` 看 IR；或直接手写最小 `.ll` 做 replay / `metal -c`。只有把编译器与反编译器的真实输出看清楚后，才进入正式 lowering 修复，避免在真实 failure-path 大样本上盲猜
 - **`31-4302` 更像完整性 / 反篡改问题，不宜只靠人工看弹窗推进**：默认应先做最小自动 `tap` 触发与 replacement `off/on` 对照；只有当这两步仍不足以定位时，才升级到工作区外分析，且仍需用户明确确认
 - **`launch_app -> create_session -> tap` 可以视为 agent 可独立完成的轻量 UI 输入**：但直接对已安装 app bundle 做工作区外静态反汇编 / 二进制 patch 分析，不属于默认日常流程，执行前需要用户明确确认

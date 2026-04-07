@@ -1660,11 +1660,8 @@ class LibrarySourceInjectionService {
     }
 
     private func bypassReasonForReplacement(selector: String, cacheKey: String) -> String? {
-        if runtimeBundleIdentifier == "com.papegames.lysk",
-           selector == "newLibraryWithData:error:",
-           cacheKey == "6BECB97B0B4BCBFD_7123" {
-            return "bundle_cachekey_bypass"
-        }
+        _ = selector
+        _ = cacheKey
         return nil
     }
 

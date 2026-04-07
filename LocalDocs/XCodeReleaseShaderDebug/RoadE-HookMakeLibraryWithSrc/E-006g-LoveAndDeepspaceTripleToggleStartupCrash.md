@@ -169,9 +169,9 @@
 |---|---|---|---|
 | E-006g1 | 三开关最小五象限启动矩阵 + diagnostics / crash 证据固化 | ✅ DONE（2026-04-07） | 已新增 `Scripts/e006g_launch_matrix_runner.py`，并对 `com.papegames.lysk` 执行 `A/B/C/D/E` 五象限 fresh launch；五组 settings 均与预期一致，`launch_app -> create_session` 全部成功进入 `ready`，`launch-events.jsonl` 最新 run 全部到达 `playcover_launch_complete` |
 | E-006g2 | 系统性汇总 startup 期 `replacement_compile_failed` / fallback failure clusters，确认 late crash 是否由 compile failure 集合触发 | ✅ DONE（2026-04-07，结论已收敛） | 已确认 late crash 与 startup replacement compile failure / fallback 集合强相关，startup injection 不是当前这类崩溃的充分条件；细节与当时的 latest blocker 已下沉到 `E-006g-Archive.md` |
-| E-006g3 | 把 `compile_failed` 命中面收缩到最小 `cacheKey` / selector / module 集合，为 `E-006g4` 准备最小修复 / 旁路面 | IN PROGRESS（`E-006g3a` 已完成；当前默认入口前移到剩余 bypass surface 的方案验证） | 已退出的历史 blocker 与前移脉络统一下沉到 `E-006g-Archive.md`；`2026-04-08` 已完成 `cacheKey=4010578BBE3B30E1_4673 / moduleKey=e3c0894b45454fb3dbdb7d07523ed6fd2645c3e6b8939b11c02d3709f70df905` 的 `air.front_facing` lowering 修复，fresh `case E` 10 秒 settle window 下 `replacement_compile_failed=0`，当前 latest live surface 只剩 `cacheKey=6BECB97B0B4BCBFD_7123` 的 targeted bypass |
+| E-006g3 | 把 `compile_failed` 命中面收缩到最小 `cacheKey` / selector / module 集合，为 `E-006g4` 准备最小修复 / 旁路面 | ✅ DONE（2026-04-08） | `4010578... / e3c089...` 的 `air.front_facing` lowering 已完成，fresh `case E` 已无 `replacement_compile_failed`，为后续收回 `6BECB...` targeted bypass 清空 compile blocker |
 | E-006g3a | ↳ 围绕 `4010578... / e3c089...` 做 compiler-first 最小样本化与 `air.front_facing` builtin lowering | ✅ DONE（2026-04-08） | 已对 failure-path `module.ll` 完成 replay / `xcrun metal -c`，新增最小回归样本 `test_fragment_front_facing.{ll,metal}`；fresh `case E` live 下 22 次 replacement compile 全部成功，session 在 settle window 后仍保持 `ready` |
-| E-006g4 | 设计并验证“不牺牲源码可见性目标”的修复方案 | TODO（当前下一入口） | 当前要验证剩余 `cacheKey=6BECB97B0B4BCBFD_7123` targeted bypass 是否还能缩回或细化，而不牺牲源码可见性目标 |
+| E-006g4 | 设计并验证“不牺牲源码可见性目标”的修复方案 | ✅ DONE（2026-04-08 夜间） | 已对历史 failure-path `moduleKey=a6638ee7b4b9f8cc9f19a24bb78b0892cc4b2c098cd97e3eb05833ce2283b28b` 做 replay + `xcrun metal -c` 复核，新增最小回归样本 `test_scalar_select_vector.{ll,metal}`，移除 `bundle+cacheKey` runtime bypass 后 fresh `case E` latest run 达到 `replacement_attempt_started=65`、`replacement_compile_started=65`、`replacement_succeeded=65`，latest failure surfaces=0 |
 
 ## `E-006g1` / `E-006g2` 当前结论（2026-04-07）
 
@@ -232,22 +232,21 @@
 - `8ABA... / 29b821...` 与 `D4CA... / f567...`：sampler-state lowering 与 `read_texture_2d` 坐标规范化修复后退出 latest blocker
 - 更细的 repair / replay / fresh `case E` 闭环记录见 `E-006g-Archive.md`
 
-### 2026-04-08 夜间补充：`4010578... / e3c089...` 已退出 latest compile blocker
+### 2026-04-08 夜间补充：`6BECB... / a6638...` targeted bypass 已退出 active surface
 
 - 当前只保留对主线仍有决策价值的结论：
-  - 已在 `IRToMSLConverter` 中为 `air.front_facing` 增加显式 `[[front_facing]]` 形参映射；真实 failure-path `module.ll` replay 后已生成 `fragment XlatMtlMain_Out xlatMtlMain(XlatMtlMain_StageIn stageIn [[stage_in]], bool mtl_FrontFace [[front_facing]])`
-  - 已新增最小回归样本 `test_fragment_front_facing.{ll,metal}`，覆盖 `air.fragment_input + air.front_facing` 并存的 fragment entry 场景
-  - 离线 replay + `xcrun metal -c`：真实样本 `4010578... / e3c089...` 与最小样本均已编译通过
-  - fresh `case E` live（`build_and_install.sh` → `launch_app` → `create_session` → `finalize-case` 默认 10 秒 settle window）下，session 在窗口后仍保持 `ready`，`latestReplacementCounts` 为 `replacement_attempt_started=23`、`replacement_compile_started=22`、`replacement_succeeded=22`、`replacement_compile_failed=0`
-  - 当前 latest / aggregate failure surface 只剩 `cacheKey=6BECB97B0B4BCBFD_7123` 的 `replacement_attempt_skipped(reason=bundle_cachekey_bypass)`；它是既有 targeted bypass，而不再是新的 compile blocker
+  - `cacheKey=6BECB97B0B4BCBFD_7123` 对应的历史 failure-path `moduleKey=a6638ee7b4b9f8cc9f19a24bb78b0892cc4b2c098cd97e3eb05833ce2283b28b` 已重新离线 replay；当前生成源码不再出现 `/* select parse error */`，而是得到合法的 `float3 selected = cond ? ... : ...` 形态，`xcrun metal -c` 通过
+  - 已新增最小回归样本 `test_scalar_select_vector.{ll,metal}`，专门覆盖 `select fast i1 ... -> <3 x float>` 这一类标量条件 / 向量结果选择
+  - 已从 `LibrarySourceInjectionSwizzles` 移除 `runtimeBundleIdentifier + selector + cacheKey` 的 targeted bypass；当前运行时不再依赖 `bundle_cachekey_bypass`
+  - 为让新 runtime 真正生效，本轮按标准脚本完成 `sync_playtools_xcframework.sh`、`build_and_install.sh`，随后对目标 app 执行 `remove_playtools -> inject_playtools -> fresh launch_app -> create_session -> finalize-case --replace-existing`
+  - 最新 fresh `case E` live（`pid=85332`、`sessionId=runtime-85332-701e3768-3d3b-4f22-8723-7778eb0ec520`）在默认 10 秒 settle window 下，`latestLastEvent=replacement_succeeded`，`latestReplacementCounts` 为 `replacement_attempt_started=65`、`replacement_compile_started=65`、`replacement_modules_prepared=65`、`replacement_succeeded=65`，且 `latestFailureCount=0`、`latestReplacementFailureSurfaceCount=0`
+  - `Scripts/e006g_launch_matrix_runner.py analyze` 中仍可看到 `6BECB...` 的 aggregate hotspot，仅因为 case snapshot 默认保留旧 matching runs；**latest run 已不再命中该 bypass，也没有新的 compile / exception surface**
 
-### 下一步（仅记录，不在本轮展开）
+### 下一步（默认主线已切换）
 
-> 下述内容就是后续 agent 的**当前默认入口**；这里的“本轮”仅指当前文档同步，不影响后续默认执行顺序。
-
-1. 默认入口前移到 `E-006g4`：基于 fresh `case E` 已无 `replacement_compile_failed` 的基线，评估剩余 `cacheKey=6BECB97B0B4BCBFD_7123` targeted bypass 是否还能缩回或细化，而不牺牲源码可见性目标
-2. `4010578... / e3c089...` 与 `test_fragment_front_facing` 继续保留为回归样本；若 fresh `case E` 再次出现 `mtl_FrontFace` / `air.front_facing` 相关编译报错，优先用离线 replay + fresh case E 联合报警
-3. `D4CA... / f567...`、`8ABA... / 29b821...`、`45AE... / 1cdc...`、`791A... / ec0c6f...`、`F474... / bbb32d...` 与 `A101... / 82d1...` 继续保留为历史噪声参考；除非 fresh `case E` 明确回退，否则不要把这些已退出 latest surface 的旧 blocker 拉回默认主线
+1. `E-006g` 在当前环境已满足关单标准，默认主线切换到 `E-006f1`
+2. `4010578... / e3c089...`、`a6638... / 6BECB...` 与 `test_fragment_front_facing`、`test_scalar_select_vector` 继续保留为回归锚点；若 future fresh `case E` 再次出现 `mtl_FrontFace`、`select parse error` 或 `bundle_cachekey_bypass`，优先用 failure-path replay + fresh case E 联合报警
+3. `analyze` 输出里的 aggregate hotspot 需要结合 `latestReplacementFailureSurfaces` 解读；**旧 runs 残留的 historical hotspot 不能重新抬升为 active blocker**
 
 ### 2026-04-07 工具补强
 

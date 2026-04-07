@@ -18,6 +18,7 @@
 | 2026-04-07 深夜第二轮 | `8ABA7F7B315002A3_11361 / 29b821c6...` | fresh `case E` 复测确认 `45AE... / 1cdc...` 已退出 latest failure surface；主线前移到 `_CameraDepthTexture.sample(__air_sampler_state, t0/t3)` 的 `sample` / sampler lowering 问题 |
 | 2026-04-07 深夜第三轮 | `D4CAEB2BF7815C4F_6353 / f567fbc2...` | 通过 `__air_sampler_state -> constexpr sampler` lowering、`air.fast_rint -> rint` 映射与最小回归样本，fresh `case E` 复测确认 `8ABA... / 29b821...` 已退出 latest failure surface；主线前移到 `InputTexture.read(t8)` 的 `read_texture_2d` lowering 问题 |
 | 2026-04-08 凌晨 | `4010578BBE3B30E1_4673 / e3c0894b...` | 通过 `read_texture_2d` 坐标规范化，把 `<N x i32>` read 坐标 lowering 为 `uintN(...)`，并新增最小回归样本 `test_read_texture_2d_int_coords.{ll,metal}`；fresh `case E` 复测确认 `D4CA... / f567...` 已退出 latest failure surface，主线前移到 `mtl_FrontFace` / `air.front_facing` builtin lowering 问题 |
+| 2026-04-08 夜间 | `6BECB97B0B4BCBFD_7123 / a6638...`（历史 targeted bypass） | 对 failure-path module 做 replay + `xcrun metal -c` 复核，新增最小回归样本 `test_scalar_select_vector.{ll,metal}`，移除 runtime bypass，并在重新注入 PlayTools 后 fresh `case E` 达到 `replacement_attempt_started=65`、`replacement_compile_started=65`、`replacement_succeeded=65`；`E-006g` 在当前环境完成收口 |
 
 ## 详细轮次记录
 

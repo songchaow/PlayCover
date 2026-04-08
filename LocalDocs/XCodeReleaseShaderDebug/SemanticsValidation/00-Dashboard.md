@@ -2,7 +2,7 @@
 
 ## 问题背景
 
-Road E 当前已经建立了比较完整的工程链路：
+前置任务已经建立了比较完整的工程链路：
 
 ```text
 metallib / wrapper payload
@@ -56,7 +56,7 @@ makeLibrary(source:) / metal -c
 
 ### 主线任务
 
-> **关系校准**：当前整个 Road E 的全局控制面已经切到 `E-006f / E-006e` 这类运行时兼容性问题；**Semantics Validation 不是全局最高优先级入口**。但在“语义验证”这条离线支线内部，当前最值得继续推进的任务仍然是 `SV-003`，因为它能把已落地的 L1/L2 变成真正可复用、可止损、可日常执行的证据链。
+> **背景**：前置任务已经把采集、replay、compile 与运行时验证链路逐步铺开；当前这里最值得继续推进的任务仍然是 `SV-003`，因为它能把已落地的 L1/L2 变成真正可复用、可止损、可日常执行的证据链。
 
 **`SV-003`：把已落地的 L1/L2 能力继续接入更稳定的 `test-data/` 日常 gate，并扩到代表性 `ShaderCorpus` 样本。**
 
@@ -95,7 +95,7 @@ makeLibrary(source:) / metal -c
 - 能把 `test-data/` 从“首轮跑通”推进到“固定代表集 + 固定命令 + 固定报告目录”的低心智负担工作流
 - 是把 `test-data/` 经验扩展到代表性 `ShaderCorpus` 样本的最直接下一步
 - 能帮助区分哪些 `L2/L3` 样本值得进一步聚类、收敛或进入 L3
-- 能为全局 Road E 主线提供更低成本的离线风险筛查，而不去抢占运行时主控面
+- 能把前面已经铺好的能力沉淀成更低成本的离线风险筛查入口
 
 ### 当前不该抢跑的事
 
@@ -235,7 +235,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Contain
 - **不要把“文本完全一样”误当成“语义一样”**；后续比较应以 canonical summary + 风险分级为主
 - **第一版 canonical compare 必须主动降噪**：SSA 名称、metadata 编号、`bufferSize` 缺失、`readonly/readnone` 这类编译器优化后常见变化，不应直接视为 L3
 - **优先把高频手工流程脚本化**；若无法脚本化，也不能默认把用户人工操作写成日常 gate
-- **要区分“Road E 全局主线”和“Semantics Validation 局部主线”**：本目录当前最该做的是把 L1/L2 收口成稳定离线 gate，而不是去抢跑全局运行时兼容性 blocker
+- **要区分“背景问题”和“当前主线”**：本目录当前最该做的是把 L1/L2 收口成稳定离线 gate，而不是过早切到更高成本的运行时验证
 
 ## 参考信息
 
@@ -249,7 +249,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Contain
 - `06-L4-真实场景验证.md`
 - `07-首轮基线与历史进展归档.md`
 
-### 上游 Road E 参考
+### 背景参考
 
 - `../RoadE-HookMakeLibraryWithSrc/00-Dashboard.md`
 - `../RoadE-HookMakeLibraryWithSrc/E-004-MetallibSourceExtraction.md`

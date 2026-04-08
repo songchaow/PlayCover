@@ -80,9 +80,9 @@ regenerated.ll
 
 补充说明：
 
-- `test-data-representatives` 当前固定为 `8` 个样本：`L0 / L1 / 5 个 L2 / compile blocker`
+- `test-data-representatives` 当前固定为 `8` 个样本：覆盖 `L0 / L1 / 活跃 L2 / compile blocker`；其中 `test_int_literal_half_suffix` 与 `test_vector_select_global_gep` 已从历史 `L2` debt 收敛到 `L1`
 - `local-corpus-representatives` 当前固定为本机已存在的 `5` 个 `ShaderCorpus` 代表模块
-- `daily-default` 当前等于：`test-data-representatives + local-corpus-representatives`
+- `daily-default` 当前等于：`test-data-representatives + local-corpus-representatives`；从 runner / preset 视角它是一键日常入口，但从当前控制面口径看仍只应视为“本机已有样本时的增强入口”
 - `SV-003` 当前已不再依赖“每次手工挑文件”，而是优先复用上述固定入口
 
 ### 输出目录
@@ -237,17 +237,22 @@ L1 只做一件事：**把 round-trip 链路本身做稳定。**
 本轮验证结果：
 
 - 显式单样本 smoke：`build/semantics-validation/roundtrip/explicit-smoke/`
-- `test-data/` 首轮批量报告：`build/semantics-validation/roundtrip/test-data-batch/roundtrip-summary.json`
+- `test-data/` 当前批量报告：`build/semantics-validation/roundtrip/test-data-batch/roundtrip-summary.json`
+  - `27` 个样本中 `26` 个 round-trip 成功，`1` 个 compile 失败，`0` 个 llvm-dis 失败
+  - 风险分布：`L0 = 1 / L1 = 3 / L2 = 3 / L3 = 20`
+  - 该入口当前只承担**参考批量基线**角色，默认不附带 gate profile
 - `test-data-representatives` 固定入口：`build/semantics-validation/roundtrip/test-data-representatives/roundtrip-summary.json`
   - `8` 个样本中 `7` 个 round-trip 成功，`1` 个 compile 失败，`0` 个 llvm-dis 失败
   - 风险分布：`L0 = 1 / L1 = 3 / L2 = 3 / L3 = 1`
+- `daily-default` 一键增强入口：`build/semantics-validation/roundtrip/daily-default/roundtrip-summary.json`
+  - `13` 个样本中 `12` 个 round-trip 成功，`1` 个 compile 失败
+  - 风险分布：`L0 = 1 / L1 = 3 / L2 = 4 / L3 = 5`
+  - 若本机缺少部分 `ShaderCorpus` 代表样本，应降级为 `WARN` 而不是要求用户补环境
 - `local-corpus-representatives` 固定入口：`build/semantics-validation/roundtrip/local-corpus-representatives/roundtrip-summary.json`
   - 当前固定 `5` 个本地 `ShaderCorpus` 代表模块全部 round-trip 成功
   - 风险分布：`L0 = 0 / L1 = 0 / L2 = 1 / L3 = 4`
-- `test-data-batch` 批量统计：`27` 个样本中 `26` 个 round-trip 成功，`1` 个 compile 失败，`0` 个 llvm-dis 失败
-  - 风险分布：`L0 = 1 / L1 = 3 / L2 = 3 / L3 = 20`
 - 当前首个 compile-stage blocker：`test_struct_array_field`
-- 更细的样本名单、固定代表集与阶段性提交脉络已下沉到 `07-首轮基线与历史进展归档.md`（历史参考，**不必须读取**）
+- 更细的样本名单、首轮旧分布与阶段性提交脉络已下沉到 `07-首轮基线与历史进展归档.md`（历史参考，**不必须读取**）
 
 ## 完成标准
 

@@ -155,7 +155,7 @@ python3 Scripts/test_ir_semantics_roundtrip_runner.py
 python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representatives --allow-failures --enforce-gate
 ```
 
-- **本机已有 `ShaderCorpus` 样本时的增强入口**（不是硬默认）：
+- **本机已有 `ShaderCorpus` 样本时的一键增强入口**（runner 内建 daily preset，但不是跨机器硬默认）：
 
 ```bash
 python3 Scripts/ir_semantics_roundtrip_runner.py --preset daily-default --allow-failures --enforce-gate
@@ -249,7 +249,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representati
 1. 读取本文档，先理解 **当前主线** 与 **TODO** 的最新状态
 2. 严格按优先级选取最高优先级的 **一个** 未完成任务执行
 3. 若最高优先级任务处于阻塞状态（如需人工/外部协助）。立即停止并汇报。严禁执行任何与解决阻塞本身无关的任务。
-4. 若任务过大，先拆分到 TODO，再只完成其中一个
+4. 若任务过大，先拆分出新子任务到 TODO，再只完成其中一个
 5. 若这次实现了新功能，尽可能靠 skills 或 mcp 做 **实际测试**；若受环境限制，至少做 **模拟性质、离线或最小样本测试**
 6. 执行完毕后整理文档：结合已有内容，**深度整理并同步全局信息**，更新优先级、当前主线、TODO、验证与经验；较旧信息可下沉到独立参考文档，主体保持简洁，**不要只做追加**
 7. 复盘工作流；若本轮新增的测试脚本或辅助脚本对后续仍有价值，也应一并整理并提交。如果当前你手工执行的一些流程在未来预计仍会高频反复用到，考虑使用脚本来完成，并更新到文档参考信息。另外，最重要的：最优方案往往会随着你的探究得到新信息而发生改变。你拥有很大的自主决定权，除了最终目标不能改变，中间的技术路线均可以随时根据实际情况去重新调整。

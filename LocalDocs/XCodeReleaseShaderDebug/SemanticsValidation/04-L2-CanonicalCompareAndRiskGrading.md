@@ -146,6 +146,8 @@
 - 某些声明顺序变化
 - `bufferSize` 缺失这类 metadata 省略
 - `readonly / writeonly / readnone / dereferenceable / align / nocapture / noundef` 这类参数修饰噪声
+- `air.fast_*` 与对应 `air.*` intrinsic alias 的名称差异
+- 仅发生在 instruction-level、且未伴随 compile option / function attr 漂移的 fast-math flag 变化
 
 当前仍然对下面差异保持敏感：
 
@@ -163,22 +165,24 @@
 
 输出目录：`build/semantics-validation/roundtrip/test-data-batch/`
 
-当前结果：
+当前 active 结果：
 
 - `27` 个样本中 `26` 个 round-trip 成功
 - `1` 个样本在 compile 阶段失败：`test_struct_array_field`
 - 风险分布：
   - `L0 = 1`
-  - `L1 = 1`
-  - `L2 = 5`
+  - `L1 = 3`
+  - `L2 = 3`
   - `L3 = 20`
+- 其中 `test_int_literal_half_suffix` 与 `test_vector_select_global_gep` 已因 intrinsic alias 归一化和 fast-math 噪声下调而从历史 `L2` 收敛到 `L1`
 
 ### 当前代表样本
 
-- 当前保留在主文档中的 active 信息只有两点：
+- 当前保留在主文档中的 active 信息只有三点：
   - **首个 compile blocker**：`test_struct_array_field`
   - **当前跨机器硬默认代表集中的活跃 `L2` 已缩到 `3` 个**：`test_casts`、`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`；它们已经足够说明“需要后续 L3 入口”，但还不应直接全量升级到 live
-- 更细的首轮代表样本名单已下沉到 `07-首轮基线与历史进展归档.md`（历史参考，**不必须读取**）
+  - **代表 preset 的当前边界契约已收口到固定输出目录 + gate profile + baseline / manifest**；若代表集继续变化，应一起更新，而不是只改其中一项
+- 更细的首轮代表样本名单与旧分布已下沉到 `07-首轮基线与历史进展归档.md`（历史参考，**不必须读取**）
 
 ## 报告结构
 
@@ -244,8 +248,8 @@
 - 不是形式化语义证明器
 - 不是完整 IR AST / CFG 等价器
 - 还不能回答“行为是否一致”
-- 当前 `L3` 样本较多，说明还需要后续 `SV-003` 做代表集扩展、聚类与日常 gate 收敛
-- 当前已经有第一版机器可执行的升级/止损边界：代表 preset 会通过 `gate-summary.json` / `--enforce-gate` 将“已知 debt”与“新增回归”区分开；但更广义的分层策略（`SV-006`）仍需继续整理与扩展
+- 当前 `L3` 样本仍较多，但主线不应因此直接扩大 live 验证；更合理的顺序仍是先通过 `SV-003` 维护代表集与默认 gate，再让 `SV-006` 把升级边界写清楚
+- 当前已经有第一版机器可执行的升级/止损边界：代表 preset 会通过 `gate-summary.json` / `--enforce-gate` 将“已知 debt”与“新增回归”区分开；更细的历史相位变化已下沉到 `07-首轮基线与历史进展归档.md`（历史参考，**不必须读取**）
 
 ## 对下一步的直接启示
 

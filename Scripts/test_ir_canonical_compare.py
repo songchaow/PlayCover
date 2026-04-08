@@ -296,6 +296,130 @@ class IRCanonicalCompareTests(unittest.TestCase):
         self.assertTrue(summary["shouldBlock"])
         self.assertIn("test_new_regression", summary["regressions"]["unexpectedBlockedSampleKeys"])
 
+    def test_sample_identity_prefers_bundle_and_module_then_input_stem(self) -> None:
+        self.assertEqual(
+            canonical_compare.sample_identity(
+                {
+                    "bundleId": "com.example.game",
+                    "moduleKey": "abc123",
+                }
+            ),
+            "bundle:com.example.game::module:abc123",
+        )
+        self.assertEqual(
+            canonical_compare.sample_identity(
+                {
+                    "moduleKey": "module-only",
+                }
+            ),
+            "module:module-only",
+        )
+        self.assertEqual(
+            canonical_compare.sample_identity(
+                {
+                    "inputPath": "/tmp/test_sample.ll",
+                }
+            ),
+            "test_sample",
+        )
+
+    def test_assess_gate_result_passes_when_all_samples_stay_within_boundary(self) -> None:
+        sample = {
+            "comparisonKey": "explicit_ll:/tmp/test_ok.ll",
+            "inputPath": "/tmp/test_ok.ll",
+            "roundTripStatus": "success",
+            "failureStage": None,
+            "riskLevel": "L0",
+        }
+        roundtrip_report = make_roundtrip_report(job_count=1)
+        risk_report = make_risk_report(samples=[sample], blocked_samples=[], l2_samples=[])
+
+        summary = canonical_compare.assess_gate_result(
+            roundtrip_report,
+            risk_report,
+            gate_profile={
+                "expectedJobCount": 1,
+                "allowedFailureSamples": {},
+                "allowedBlockedSampleKeys": [],
+                "allowedL2SampleKeys": [],
+            },
+            profile_name="test-data-representatives",
+        )
+
+        self.assertEqual(summary["status"], "pass")
+        self.assertFalse(summary["shouldBlock"])
+        self.assertEqual(summary["jobCountStatus"], "match")
+        self.assertEqual(summary["observed"]["sampleKeys"], ["test_ok"])
+
+    def test_assess_gate_result_reports_resolved_known_debt(self) -> None:
+        samples = [
+            {
+                "comparisonKey": "explicit_ll:/tmp/test_struct_array_field.ll",
+                "inputPath": "/tmp/test_struct_array_field.ll",
+                "roundTripStatus": "success",
+                "failureStage": None,
+                "riskLevel": "L0",
+            },
+            {
+                "comparisonKey": "explicit_ll:/tmp/test_casts.ll",
+                "inputPath": "/tmp/test_casts.ll",
+                "roundTripStatus": "success",
+                "failureStage": None,
+                "riskLevel": "L0",
+            },
+        ]
+        roundtrip_report = make_roundtrip_report(job_count=2)
+        risk_report = make_risk_report(samples=samples, blocked_samples=[], l2_samples=[])
+
+        summary = canonical_compare.assess_gate_result(
+            roundtrip_report,
+            risk_report,
+            gate_profile={
+                "expectedJobCount": 2,
+                "allowedFailureSamples": {"test_struct_array_field": "compile"},
+                "allowedBlockedSampleKeys": [],
+                "allowedL2SampleKeys": ["test_casts"],
+            },
+            profile_name="test-data-representatives",
+        )
+
+        self.assertEqual(summary["status"], "pass")
+        self.assertIn("test_struct_array_field", summary["improvements"]["resolvedFailureSampleKeys"])
+        self.assertIn("test_casts", summary["improvements"]["resolvedL2SampleKeys"])
+        self.assertTrue(any("known failure resolved" in note for note in summary["notes"]))
+        self.assertTrue(any("known L2 sample improved" in note for note in summary["notes"]))
+
+    def test_assess_gate_result_fails_when_job_count_exceeds_expected_boundary(self) -> None:
+        samples = [
+            {
+                "comparisonKey": f"explicit_ll:/tmp/sample_{index}.ll",
+                "inputPath": f"/tmp/sample_{index}.ll",
+                "roundTripStatus": "success",
+                "failureStage": None,
+                "riskLevel": "L0",
+            }
+            for index in range(2)
+        ]
+        roundtrip_report = make_roundtrip_report(job_count=2)
+        risk_report = make_risk_report(samples=samples, blocked_samples=[], l2_samples=[])
+
+        summary = canonical_compare.assess_gate_result(
+            roundtrip_report,
+            risk_report,
+            gate_profile={
+                "minimumExpectedJobCount": 1,
+                "expectedJobCount": 1,
+                "allowedFailureSamples": {},
+                "allowedBlockedSampleKeys": [],
+                "allowedL2SampleKeys": [],
+            },
+        )
+
+        self.assertEqual(summary["status"], "fail")
+        self.assertTrue(summary["shouldBlock"])
+        self.assertEqual(summary["jobCountStatus"], "out_of_range")
+        self.assertEqual(summary["regressions"]["jobCountMismatch"]["reason"], "above_expected")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,6 +21,29 @@ if str(SCRIPTS_DIR) not in sys.path:
 import ir_semantics_roundtrip_runner as roundtrip_runner
 
 
+def make_roundtrip_result(
+    *,
+    roundtrip_status: str = "success",
+    failure_stage: str | None = None,
+    error_summary: str | None = None,
+    original_ir_path: str | None = None,
+    regenerated_ir_path: str | None = None,
+) -> dict:
+    return {
+        "jobID": 1,
+        "comparisonKey": f"explicit_ll:{TEST_SAMPLE}",
+        "sourceKind": "explicit_ll",
+        "bundleId": None,
+        "moduleKey": None,
+        "inputPath": str(TEST_SAMPLE),
+        "originalIRPath": original_ir_path,
+        "regeneratedIRPath": regenerated_ir_path,
+        "roundTripStatus": roundtrip_status,
+        "failureStage": failure_stage,
+        "errorSummary": error_summary,
+    }
+
+
 class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
     def test_apply_test_data_representatives_preset(self) -> None:
         parser = roundtrip_runner.build_parser()
@@ -124,6 +147,136 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
         gate_profile_name, gate_profile = roundtrip_runner.resolve_gate_profile(args)
         self.assertIsNone(gate_profile_name)
         self.assertIsNone(gate_profile)
+
+    def test_build_compare_result_returns_l3_for_roundtrip_failure(self) -> None:
+        result = roundtrip_runner.build_compare_result(
+            make_roundtrip_result(
+                roundtrip_status="failed",
+                failure_stage="compile",
+                error_summary="metal compile failed",
+            )
+        )
+
+        self.assertEqual(result["riskLevel"], "L3")
+        self.assertEqual(result["riskReason"], "metal compile failed")
+        self.assertFalse(result["compareAvailable"])
+        self.assertEqual(result["differenceCount"], 0)
+
+    def test_build_compare_result_returns_l3_for_missing_ir_paths(self) -> None:
+        result = roundtrip_runner.build_compare_result(
+            make_roundtrip_result(
+                original_ir_path=str(TEST_SAMPLE),
+                regenerated_ir_path=None,
+            )
+        )
+
+        self.assertEqual(result["riskLevel"], "L3")
+        self.assertEqual(result["riskReason"], "missing original/regenerated IR path")
+        self.assertFalse(result["compareAvailable"])
+
+    def test_build_compare_result_handles_canonical_compare_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_ir_path = Path(temp_dir) / "original.ll"
+            original_ir_path.write_text(TEST_SAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+            regenerated_ir_path = Path(temp_dir) / "missing-regenerated.ll"
+
+            result = roundtrip_runner.build_compare_result(
+                make_roundtrip_result(
+                    original_ir_path=str(original_ir_path),
+                    regenerated_ir_path=str(regenerated_ir_path),
+                )
+            )
+
+        self.assertEqual(result["riskLevel"], "L3")
+        self.assertEqual(result["riskReason"], "canonical compare failed")
+        self.assertFalse(result["compareAvailable"])
+        self.assertTrue(result["compareError"])
+
+    def test_build_compare_result_performs_canonical_compare_on_success(self) -> None:
+        result = roundtrip_runner.build_compare_result(
+            make_roundtrip_result(
+                original_ir_path=str(TEST_SAMPLE),
+                regenerated_ir_path=str(TEST_SAMPLE),
+            )
+        )
+
+        self.assertTrue(result["compareAvailable"])
+        self.assertEqual(result["riskLevel"], "L0")
+        self.assertTrue(result["same"])
+        self.assertEqual(result["differenceCount"], 0)
+        self.assertIsNotNone(result["originalSummary"])
+        self.assertIsNotNone(result["regeneratedSummary"])
+
+    def test_build_preset_manifest_records_gate_profile_and_baseline(self) -> None:
+        parser = roundtrip_runner.build_parser()
+        args = parser.parse_args(
+            [
+                "--preset",
+                "test-data-representatives",
+                "--allow-failures",
+                "--enforce-gate",
+            ]
+        )
+        roundtrip_runner.apply_roundtrip_preset(args, REPO_ROOT)
+
+        output_root = REPO_ROOT / "build" / "semantics-validation" / "roundtrip" / "test-data-representatives"
+        manifest_path = output_root / "preset-manifest.json"
+        baseline_path = output_root / "baseline.json"
+        job = roundtrip_runner.replay_runner.ReplayJob(
+            job_id=1,
+            source_kind="explicit_ll",
+            input_path=TEST_SAMPLE,
+            output_path=output_root / "manual" / "001-test_addrspace" / "generated.metal",
+            function_names=["test_addrspace"],
+            function_types=["kernel"],
+        )
+        baseline_snapshot = {
+            "baselinePath": str(baseline_path),
+            "totalJobs": len(roundtrip_runner.TEST_DATA_REPRESENTATIVE_FILES),
+        }
+        saved_baseline = {
+            "baselinePath": str(baseline_path),
+            "baselineAssetRoot": "generated-sources",
+        }
+
+        manifest = roundtrip_runner.build_preset_manifest(
+            args,
+            output_root,
+            manifest_path,
+            [job],
+            REPO_ROOT,
+            {
+                "roundtripReportPath": str(output_root / "roundtrip-summary.json"),
+                "gateSummaryPath": str(output_root / "gate-summary.json"),
+            },
+            baseline_path,
+            baseline_snapshot,
+            saved_baseline,
+        )
+
+        self.assertEqual(manifest["presetName"], "test-data-representatives")
+        self.assertEqual(manifest["gateProfileName"], "test-data-representatives")
+        self.assertEqual(
+            manifest["gateProfile"]["expectedJobCount"],
+            len(roundtrip_runner.TEST_DATA_REPRESENTATIVE_FILES),
+        )
+        self.assertEqual(manifest["requestedInputs"]["llInputs"], args.ll_inputs)
+        self.assertEqual(manifest["baseline"]["reportPath"], str(baseline_path))
+        self.assertEqual(manifest["baseline"]["activeSnapshot"], baseline_snapshot)
+        self.assertEqual(manifest["baseline"]["savedBaseline"], saved_baseline)
+        self.assertEqual(manifest["discovery"]["jobCount"], 1)
+        self.assertEqual(manifest["discovery"]["sourceKinds"]["explicitLL"], 1)
+        self.assertEqual(manifest["discovery"]["sourceKinds"]["shaderCorpus"], 0)
+        self.assertEqual(manifest["discovery"]["jobs"][0]["functionNames"], ["test_addrspace"])
+        self.assertEqual(
+            manifest["discovery"]["jobs"][0]["comparisonKey"],
+            roundtrip_runner.replay_runner.make_comparison_key(
+                "explicit_ll",
+                None,
+                None,
+                str(TEST_SAMPLE),
+            ),
+        )
 
     @unittest.skipUnless(shutil.which("swiftc") and shutil.which("xcrun"), "requires swiftc and xcrun")
     def test_roundtrip_runner_generates_roundtrip_summary_for_sample(self) -> None:

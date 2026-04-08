@@ -95,7 +95,7 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
             plan = behavior_runner.build_behavior_plan(
                 gate_summary,
                 roundtrip_report,
-                sample_keys=behavior_runner.gate_candidate_keys(gate_summary, []),
+                sample_keys=["test_casts", "test_fast_math_select", "test_intrinsic_vector_icmp_zext"],
                 output_root=temp_root,
             )
 
@@ -108,6 +108,14 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
         fragment_sample = next(item for item in plan["readySamples"] if item["sampleKey"] == "test_intrinsic_vector_icmp_zext")
         self.assertEqual(fragment_sample["executionKind"], "fragment")
         self.assertEqual(fragment_sample["cases"][0]["renderTarget"]["width"], 4)
+
+    def test_gate_candidate_keys_keeps_sv004f_default_boundary_narrowed(self) -> None:
+        gate_summary = self.make_gate_summary()
+
+        self.assertEqual(
+            behavior_runner.gate_candidate_keys(gate_summary, []),
+            ["test_fast_math_select", "test_intrinsic_vector_icmp_zext"],
+        )
 
     def test_build_case_spec_flattens_vector_values(self) -> None:
         case = behavior_runner.L3_BEHAVIOR_SAMPLE_SPECS["test_casts"]["cases"][1]

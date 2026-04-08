@@ -51,6 +51,10 @@ DEFAULT_GATE_SUMMARY = (
 )
 DEFAULT_COMPUTE_SWIFT_RUNNER = SCRIPTS_DIR / "metal_compute_behavior_runner.swift"
 DEFAULT_FRAGMENT_SWIFT_RUNNER = SCRIPTS_DIR / "metal_fragment_behavior_runner.swift"
+DEFAULT_L3_BEHAVIOR_SAMPLE_KEYS = (
+    "test_fast_math_select",
+    "test_intrinsic_vector_icmp_zext",
+)
 EXPECTED_FUNCTION_TYPE_BY_EXECUTION_KIND = {
     "compute": "kernel",
     "fragment": "fragment",
@@ -327,7 +331,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         dest="sample_keys",
         default=[],
-        help="只执行指定 sampleKey（可重复指定）；默认直接复用 layeredDecision.l3Plan.candidateSampleKeys",
+        help="只执行指定 sampleKey（可重复指定）；默认只运行当前 SV-004F 白名单执行面里仍在 layeredDecision.l3Plan.candidateSampleKeys 中的样本",
     )
     parser.add_argument(
         "--swift-runner",
@@ -422,7 +426,8 @@ def gate_candidate_keys(gate_summary: dict[str, Any], explicit_keys: list[str]) 
         return dedupe_preserving_order(explicit_keys)
     layered = gate_summary.get("layeredDecision") or {}
     l3_plan = layered.get("l3Plan") or {}
-    return dedupe_preserving_order(list(l3_plan.get("candidateSampleKeys") or []))
+    gate_candidate_keys = set(dedupe_preserving_order(list(l3_plan.get("candidateSampleKeys") or [])))
+    return [sample_key for sample_key in DEFAULT_L3_BEHAVIOR_SAMPLE_KEYS if sample_key in gate_candidate_keys]
 
 
 def dedupe_preserving_order(values: list[str]) -> list[str]:
@@ -1156,7 +1161,11 @@ def main(argv: list[str] | None = None) -> int:
 
     sample_keys = gate_candidate_keys(gate_summary, args.sample_keys)
     if not sample_keys:
-        raise SystemExit("gate-summary.json 中没有可执行的 L3 candidateSampleKeys")
+        if args.sample_keys:
+            raise SystemExit("指定的 --sample-key 在当前 gate-summary / roundtrip 报告里没有可执行样本")
+        raise SystemExit(
+            "默认 L3 行为 gate 在当前 SV-004F 白名单执行面内没有可执行样本；如需定向复核，请显式传 --sample-key。"
+        )
 
     plan = build_behavior_plan(
         gate_summary,

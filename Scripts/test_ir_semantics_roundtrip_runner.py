@@ -149,9 +149,12 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             if item.get("allowedFailureStage")
         }
 
+        self.assertEqual(expected_l2_keys, ["test_fast_math_select", "test_intrinsic_vector_icmp_zext"])
         self.assertEqual(preset["ll_inputs"], expected_paths)
         self.assertEqual(gate_profile["expectedJobCount"], len(contract_files))
         self.assertEqual(gate_profile["allowedL2SampleKeys"], expected_l2_keys)
+        self.assertNotIn("test_casts", gate_profile["allowedL2SampleKeys"])
+        self.assertIn(f"跟踪 {len(expected_l2_keys)} 个已知 L2 样本", gate_profile["description"])
         self.assertEqual(gate_profile["allowedBlockedSampleKeys"], expected_blocked_keys)
         self.assertEqual(gate_profile["allowedFailureSamples"], expected_failures)
         self.assertEqual([entry["sampleKey"] for entry in contract_jobs], expected_sample_keys)

@@ -67,7 +67,7 @@ def shader_corpus_identity(bundle_id: str, module_key: str) -> str:
 TEST_DATA_REPRESENTATIVE_CONTRACT = [
     {"fileName": "test_fast_math_binary.ll"},
     {"fileName": "test_scalar_select_vector.ll"},
-    {"fileName": "test_casts.ll", "allowedL2": True},
+    {"fileName": "test_casts.ll"},
     {"fileName": "test_fast_math_select.ll", "allowedL2": True},
     {"fileName": "test_int_literal_half_suffix.ll"},
     {"fileName": "test_intrinsic_vector_icmp_zext.ll", "allowedL2": True},

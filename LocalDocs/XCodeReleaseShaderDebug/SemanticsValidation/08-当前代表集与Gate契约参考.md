@@ -32,7 +32,7 @@
 - 当前统一口径应理解为：**`gate-summary.json` > `risk-report.json` > `behavior-summary.json` / `behavior-summary.*.json` > `roundtrip-summary.json` > `preset-manifest.json` 的描述文字**
 - `gate-summary.json` 里的 `status`、`activeKnownDebt`、`improvements`、`layeredDecision` 等结构字段优先级最高
 - `preset-manifest.json` 与 gate profile 仍有契约价值，但其描述文字可能滞后
-- 当前 `test-data-representatives/gate-summary.json` 与 `preset-manifest.json` 里的旧描述若仍残留“compile blocker / 3 个已知 L2”一类文字，不应再直接当成 active debt 口径
+- 当前 `test-data-representatives` 的 gate profile 描述已与结构字段重新对齐；若未来某次较早产物或旁路快照仍残留旧描述（例如历史上的 compile blocker / 旧 L2 计数），也不应再直接当成 active debt 口径
 - 若描述文字与结构字段不一致，**以结构字段为准**
 - 仅有描述文字滞后、而结构字段未变化时，这属于**契约说明漂移**，不应单独把 TODO 拉回旧问题
 

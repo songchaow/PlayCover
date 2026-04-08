@@ -163,24 +163,21 @@
 
 ### `test-data/` 首轮 L2 报告
 
-输出目录：`build/semantics-validation/roundtrip/test-data-batch/`
-
-当前仓库里保留的是一份**较早的批量参考快照**，它仍有失败聚类与历史对照价值，但已经**不是**当前默认 gate 的 active 口径。
+`test-data-batch` 目录继续保留为一份**较早的批量参考快照**，但已经**不是**当前默认 gate 的 active 口径；它当前主要承担失败聚类、历史对照与降噪回看价值。
 
 处理原则：
 
-- 这份快照只用于参考批量基线、失败聚类与历史对照
-- 当前 active 口径应统一回到 `test-data-representatives` 的固定输出目录与 `08-当前代表集与Gate契约参考.md`
+- 当前 active 口径统一回到 `test-data-representatives` 的固定输出目录与 `08-当前代表集与Gate契约参考.md`
 - 更细的旧分布、旧 compile failure 背景与样本名单统一下沉到 `07-首轮基线与历史进展归档.md`（历史参考，当前日常推进**不必须读取**）
 
 ### 当前代表样本
 
-- 当前保留在主文档中的 active 信息只有四点：
+- 当前 L2 只继续向主线暴露四条 active 事实：
   - **当前跨机器硬默认 gate 已没有 compile failure；`test_struct_array_field` 已转为 blocked sample**
   - **当前跨机器硬默认代表集中的活跃 `L2` 已缩到 `2` 个**：`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`；`test_casts` 已退出活跃 debt，仅保留为定向回归样本
   - **`risk-report.json` 已经把 `samplesForL3` 与 `blockedSamples` 分开**：前者应作为 `SV-004F` 的默认入口，后者应继续优先停在离线层
   - **代表 preset 的当前边界契约应以 `gate-summary.json` / `risk-report.json` 为准；`preset-manifest.json` 更适合描述代表集发现与 artifact 锚点，不应单独充当 active debt 事实来源**
-- 更细的旧 fail 解释、当前契约摘要与旧分布已下沉到 `07-首轮基线与历史进展归档.md`、`08-当前代表集与Gate契约参考.md`（参考信息，当前日常推进**不必须读取**)
+- 更细的当前数值、artifact 锚点与契约摘要统一下沉到 `08-当前代表集与Gate契约参考.md`；旧 fail 解释与历史分布统一下沉到 `07-首轮基线与历史进展归档.md`（均为参考，当前主线推进**不必须读取**)
 
 ## 报告结构
 

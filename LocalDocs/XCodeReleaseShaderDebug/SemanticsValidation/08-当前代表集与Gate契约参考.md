@@ -36,6 +36,15 @@
 - 若描述文字与结构字段不一致，**以结构字段为准**
 - 仅有描述文字滞后、而结构字段未变化时，这属于**契约说明漂移**，不应单独把 TODO 拉回旧问题
 
+## 自动化前置条件与失败止损
+
+以下约束只用于保证“日常默认 gate 仍可由 agent 自主执行”；它们属于工作参考，不改变 `00-Dashboard.md` 里的主线优先级。
+
+- 默认 `L1/L2` 离线命令依赖本机可自动使用的 `swiftc` 与 `xcrun`；这属于环境前置条件，不应改写成手工打开 Xcode 或手工拼命令的流程
+- 默认 `L3` 行为命令依赖本机可自动使用的 `swift`，并直接执行仓库内 `metal_compute_behavior_runner.swift` / `metal_fragment_behavior_runner.swift`；默认**不需要**人工手工编译 harness
+- `roundtrip runner` 会按“PlayCover 容器内已安装工具 → PATH → Homebrew → 系统路径”的顺序自动解析 `llvm-dis`；若仍找不到，应停止并汇报，不要把“用户手工找路径”写成日常步骤
+- 若缺少上述工具、固定输出目录产物缺失、或标准脚本失败，正确处理是**停下汇报**；不要手写 `xcodebuild`、手工复制产物、改成 GUI 流程，或把用户协助写回默认验证
+
 ## 当前默认 gate 事实
 
 ### 1. `test-data-representatives`（跨机器硬默认）

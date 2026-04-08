@@ -228,23 +228,13 @@ L1 只做一件事：**把 round-trip 链路本身做稳定。**
 
 ## 当前落地结果
 
-本轮验证结果：
+本页当前只保留 L1 仍需记住的角色划分：
 
-- 显式单样本 smoke：`build/semantics-validation/roundtrip/explicit-smoke/`
-- `test-data-representatives` 固定入口：`build/semantics-validation/roundtrip/test-data-representatives/roundtrip-summary.json`
-  - 当前保持 `8/8` round-trip 成功，`gate-summary.json = WARN`
-  - 当前 active known debt 是 `1` 个 blocked sample + `2` 个活跃 `L2` samples，另有 `test_casts` 已作为 `resolvedL2SampleKeys` 收口
-  - 这是 L1/L2 当前最应优先守住的**跨机器硬默认入口**
-- `daily-default` 一键增强入口：`build/semantics-validation/roundtrip/daily-default/roundtrip-summary.json`
-  - 当前保持 `13/13` round-trip 成功
-  - `minimumExpectedJobCount = 8`、`expectedJobCount = 13`；若本机缺少部分 `ShaderCorpus` 代表样本，应降级为 `WARN` 而不是要求用户补环境
-  - 它的口径仍是**本机增强证据**，不用于替代跨机器默认事实
-- `local-corpus-representatives` 固定入口：`build/semantics-validation/roundtrip/local-corpus-representatives/roundtrip-summary.json`
-  - 当前固定 `5` 个本地 `ShaderCorpus` 代表模块全部 round-trip 成功
-  - 继续承担本地增强证据角色，而不是跨机器硬默认入口
-- `test-data-batch` 当前只保留为**参考批量快照**；详细旧分布、旧 compile failure 口径与历史样本名单统一下沉到 `07-首轮基线与历史进展归档.md`、`08-当前代表集与Gate契约参考.md`（参考信息，当前日常推进**不必须读取**）
-- 当前代表默认 gate 中已不再有 compile-stage blocker：`test_struct_array_field` 已转为 blocked sample
-- 当前 default L3 证据也已复用同一输出目录落盘：`behavior-summary.json` 默认与 `roundtrip-summary.json` 共址，便于 agent 在固定目录里串联 L1 → L2 → L3
+- `test-data-representatives` 继续是 **跨机器硬默认入口**；当前详细事实、active debt 与固定命令统一见 `08-当前代表集与Gate契约参考.md`（工作参考，当前主线推进**不必须读取**）
+- `daily-default` 与 `local-corpus-representatives` 继续只承担 **本机增强证据** / **本地观察** 角色，不替代跨机器控制面
+- `test-data-batch` 继续只保留为 **参考批量快照**；旧分布、旧 compile failure 口径与历史样本名单统一下沉到 `07-首轮基线与历史进展归档.md`（历史参考，当前日常推进**不必须读取**）
+- `test-data-representatives` 的固定输出目录继续被 L3 复用；因此它不仅是 L1/L2 产物目录，也是当前最小 L3 证据的锚点
+- 若缺少 `swiftc` / `xcrun` / 自动可解析的 `llvm-dis`，应视为环境前置条件未满足并停止汇报；不要把用户手工找路径或手工拼命令写回默认流程
 
 ## 完成标准
 

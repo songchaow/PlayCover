@@ -40,7 +40,7 @@
 当前状态需要明确区分两件事：
 
 - **L2 能力是否存在**：已经存在，且已在 `test-data/` 与代表 preset 上跑通
-- **L2 是否已经变成稳定日常入口**：已经完成第一版收口；当前重点不再是“再造 compare”，而是继续维护 `gate-summary.json` / `--gate-profile` / `--enforce-gate` 对应的代表集边界，让 `PASS / WARN / FAIL` 的语义长期稳定
+- **L2 是否已经变成稳定日常入口**：已经完成第一版收口；当前重点不再是“再造 compare”，而是继续维护 `gate-summary.json` / `risk-report.json` / `--gate-profile` / `--enforce-gate` 对应的代表集边界，让 `PASS / WARN / FAIL` 的语义长期稳定；其中应优先看 `gate-summary.json` 的结构字段，而不是沿用 gate profile 的旧描述文字
 
 ## 已实现的 canonical summary
 
@@ -252,7 +252,7 @@
 
 1. 持续守住 `SV-003`，确保 `test-data-representatives` 这个跨机器硬默认入口不回退，并把 `ShaderCorpus` 继续限制为本地增强证据
 2. 继续复用 `SV-006` 已经落地的 `layeredDecision`，只让当前活跃候选进入最小升级链路，而不是重新扩大范围
-3. 把 `SV-004` 的默认执行面继续压缩到最小：`test_fast_math_select` 走 compute-first，`test_intrinsic_vector_icmp_zext` 已进入已准入的最小 render-second 并稳定产出 `fail` evidence；当前更该做的是解释这条 evidence 的根因，而不是重新回到“值不值得升级”的判断阶段
+3. 把 `SV-004` 的默认执行面继续维持在最小边界：`test_fast_math_select` 走 compute-first，`test_intrinsic_vector_icmp_zext` 走已准入的最小 render-second，当前两者都已稳定 `pass`；当前更该做的是继续守住 oracle 与 `.ll` 的同步性、不要为覆盖率重新扩大候选范围，而不是回到“要不要升级更多样本”的阶段
 4. 对 blocked sample `test_struct_array_field` 保持单独跟踪，而不再沿用过时的 compile blocker 口径
 
 ## 完成标准回顾

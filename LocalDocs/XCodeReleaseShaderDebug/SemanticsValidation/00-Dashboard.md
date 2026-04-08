@@ -36,7 +36,7 @@ makeLibrary(source:) / metal -c
 
 > 注：立项初版关于“缺少 L1/L2”的历史表述已经下沉到 `01-现状调研与缺口.md` 与 `07-首轮基线与历史进展归档.md`；当前 dashboard 只保留 active gap 与当前控制面。
 >
-> 当前事实优先级统一为：**`gate-summary.json` / `risk-report.json` / `behavior-summary.json` > `roundtrip-summary.json` > `preset-manifest.json` 的描述文字。** `preset-manifest.json` 仍有契约价值，但若其说明文字滞后，不应再拿它驱动当前主线判断。
+> 当前事实优先级统一为：**`gate-summary.json` / `risk-report.json` / `behavior-summary.json` > `roundtrip-summary.json` > `preset-manifest.json` 的描述文字。** 其中应优先读取 `gate-summary.json` 里的 `status` / `activeKnownDebt` / `improvements` / `layeredDecision` 等结构字段；`preset-manifest.json` 与 `gate profile` 的说明文字仍有契约价值，但若这些描述文字滞后，不应再拿它们驱动当前主线判断。
 
 ## 最终目标
 
@@ -58,9 +58,9 @@ makeLibrary(source:) / metal -c
 
 ### 主线任务
 
-> **背景**：`SV-003` 的第一轮收口与 `SV-006` 的 `layeredDecision` 控制面已经落地后，本目录主线已经不是“继续扩入口”，而是“把升级/止损规则真正驱动成最小行为证据”。当前应把 `SV-003` 继续当作长期守护约束，把 `SV-004` 明确为唯一主线执行面：先用纯离线、agent 可自主完成的方式解释已有 `L2` 候选里的真实信息量；只有当本地最小行为证据仍不足时，才考虑更后置的 `SV-005`。
+> **背景**：`SV-003` 的第一轮收口与 `SV-006` 的 `layeredDecision` 控制面已经落地后，本目录主线已经不是“继续扩入口”，而是“把升级/止损规则真正驱动成最小行为证据”。当前应把 `SV-003` 继续当作长期守护约束，把 `SV-004` 明确为唯一主线执行面；而 `SV-004` 内部的当前实际子任务已经收敛为 `SV-004F`：维持 `pass/pass` 默认行为边界、固定输出目录与 sample oracle ↔ `.ll` 同步护栏。只有当这条纯离线、agent 可自主完成的证据链仍不足以解释风险时，才考虑更后置的 `SV-005`。
 
-**`SV-004`：在 `SV-006` 已明确升级边界的前提下，只围绕跨机器硬默认 gate 里的活跃候选维护最小行为证据；当前默认执行面已经更新为 `test_fast_math_select = pass`、`test_intrinsic_vector_icmp_zext = pass`。本轮已确认此前 fragment `fail` 并不是新的 lowering 回归，而是 `test_intrinsic_vector_icmp_zext.metal` 与 `.ll` 输出语义漂移造成的 sample oracle 噪声；把 `cmp/zext` 真正接回可观察输出并复跑后，这条 render-second 证据已完成收口。**
+**`SV-004`：在 `SV-006` 已明确升级边界的前提下，只围绕跨机器硬默认 gate 里的活跃候选维护最小行为证据；当前默认执行面稳定为 `test_fast_math_select = pass`、`test_intrinsic_vector_icmp_zext = pass`。当前不再以扩样为默认目标，而是以 `SV-004F` 持续守住这条最小默认边界。**
 
 当前最该优先继续推进的事，已经收窄为四条：
 
@@ -68,11 +68,11 @@ makeLibrary(source:) / metal -c
    - 它仍是最稳定、最不依赖外部环境的日常 gate
    - 任何新增命令、样本或行为测试入口，都不应破坏这条默认路径的 agent 自主执行性
    - 当前主线判断一律优先依据同目录下的 `gate-summary.json`、`risk-report.json`、`behavior-summary.json`
-2. **让 `SV-004` 继续围绕收缩后的首批证据推进：不重开 `test_casts`，只维护剩余活跃候选的 compute-first / render-second 边界与已收口的 oracle 契约**
+2. **把 `SV-004F` 作为当前唯一实际执行面：只维护收缩后的 `pass/pass` 默认行为边界、固定输出目录与 oracle 护栏**
    - 当前硬默认 gate 的 `overallDecision` 仍稳定为 `promote_l2_candidates_to_l3`
-   - 首版入口已落地到 `Scripts/ir_semantics_behavior_runner.py` + `Scripts/metal_compute_behavior_runner.swift`；本轮又补上 `Scripts/metal_fragment_behavior_runner.swift`
-   - `test_casts` 已完成收口：根因是 `IRToMSLConverter` 对 `air.convert.u.*` / `air.convert.*.u.*` 的 unsigned 语义恢复不足；修复后它已从活跃 `L2` 候选退出，并通过定向行为复核
-   - 当前默认候选只剩 `test_fast_math_select` 与 `test_intrinsic_vector_icmp_zext`；其中后者已通过最小 offscreen render-second 进入实际执行面，并在修正 sample oracle 漂移后回到稳定 `pass`；`test_struct_array_field` 继续作为 blocked sample 停在离线层，不直接抬进行为测试或 live
+   - 默认执行面只保留 `test_fast_math_select`（compute-first）与 `test_intrinsic_vector_icmp_zext`（render-second）
+   - `test_casts` 已退出活跃 `L2` 候选，只保留为显式定向复核入口；更细的旧 fail 背景已下沉到 `05-L3-最小行为测试.md`、`07-首轮基线与历史进展归档.md` 与 `08-当前代表集与Gate契约参考.md`，当前主线推进不必反复回看
+   - `test_struct_array_field` 继续作为 blocked sample 停在离线层，不直接抬进行为测试或 live
 3. **继续把 `daily-default` / `local-corpus-representatives` 明确为“本机已有样本时的增强入口”，而不是日常强依赖**
    - 这两条入口可以帮助补充本机证据，但不能驱动当前主线优先级
    - 它们的当前结果会随本机样本状态变化，不应被写成跨机器事实来源
@@ -85,15 +85,14 @@ makeLibrary(source:) / metal -c
 
 - `test-data-representatives`：当前最新代表产物保持 `8/8` round-trip 成功，风险分布已收敛为 `L0 = 2 / L1 = 3 / L2 = 2 / L3 = 1`，`gate-summary.json` 继续为 `WARN`
 - 同一份代表产物里，`layeredDecision.overallDecision = promote_l2_candidates_to_l3` 保持不变，`l3Plan.candidateSampleKeys` 当前仍为 `test_fast_math_select`、`test_intrinsic_vector_icmp_zext`
-- `gate-summary.json` 当前已把 `test_casts` 记为 `resolvedL2SampleKeys`，说明它不再属于活跃 `L2` debt，而是本轮已收口的已知改进
-- `behavior-summary.json` 默认直接写回 `build/semantics-validation/roundtrip/test-data-representatives/`：当前会实际执行 `test_fast_math_select`（compute-first）与 `test_intrinsic_vector_icmp_zext`（render-second），最新状态为 `pass`，其中样本结果均为 `pass`
-- `behavior-artifacts/test_intrinsic_vector_icmp_zext.result.json` 当前已显示固定 `4x4` `rgba16Float` 离屏 render 下 `mismatchCount = 0 / 64`、`maxAbsDiff = 0`；这也说明旧 `fail` 来自 sample oracle 漂移，而不是新的 fragment lowering 回归
-- 定向复核产物 `behavior-summary.test-casts-verification.json` 已显示 `test_casts` 的 scalar / vector `2/2` case 全部通过；因此这条证据已从“可复现 fail”收口为“已定位根因并完成最小修复验证”
-- `Scripts/ir_semantics_behavior_runner.py` 与 `Scripts/test_ir_semantics_behavior_runner.py` 已进一步补齐 `SV-004` 的离线护栏：除 candidate 选择、`behavior-summary.json` 汇总、compute / fragment ready path、`registry-missing` defer、`summarize_status()` 汇总语义，以及 `run_sample_behavior()` 的 Python→Swift 桥接成功/失败路径外，本轮还新增了 reference MSL 与 `.ll` 的 oracle 同步校验，覆盖 entry / shader kind / 返回类型 / 参数语义的一致性，进一步降低 sample oracle 漂移伪装成 lowering 回归的风险
+- `gate-summary.json` 当前已把 `test_casts` 记为 `resolvedL2SampleKeys`，说明它不再属于活跃 `L2` debt，而是当前已收口的已知改进
+- `behavior-summary.json` 默认直接写回 `build/semantics-validation/roundtrip/test-data-representatives/`：当前会实际执行 `test_fast_math_select` 与 `test_intrinsic_vector_icmp_zext`，最新状态为 `pass`，其中样本结果均为 `pass`
+- `behavior-artifacts/test_intrinsic_vector_icmp_zext.result.json` 当前已显示固定 `4x4` `rgba16Float` 离屏 render 下 `mismatchCount = 0 / 64`、`maxAbsDiff = 0`；`behavior-summary.test-casts-verification.json` 也已显示 `test_casts` 的 scalar / vector `2/2` case 全部通过
+- `Scripts/ir_semantics_behavior_runner.py` 与 `Scripts/test_ir_semantics_behavior_runner.py` 已继续补齐 `SV-004F` 的离线护栏：当前除了 candidate 选择、`behavior-summary.json` 汇总、compute / fragment ready path、`registry-missing` defer，以及 `run_sample_behavior()` 的 Python→Swift 桥接成功/失败路径外，还把 reference MSL 与 `.ll` 的 entry / shader kind / 返回类型 / 参数语义同步性前移成默认检查，进一步降低 sample oracle 漂移伪装成 lowering 回归的风险
 - `blockedSamples` 当前仍只包含 `test_struct_array_field`，它会继续被 `stopAtL2` / `l4Plan` 明确挡在离线层与后置 gate 之前
 - 本机增强入口、baseline snapshot、preset / gate 细节以及较早的 `test-data-batch` 批量快照，已统一下沉到 `08-当前代表集与Gate契约参考.md` 与 `07-首轮基线与历史进展归档.md`（均为参考，当前主线推进**不必须读取**）
 
-因此当前最高优先级已经进一步收窄为：**继续守住 `test-data-representatives` 的默认 gate 与当前 `pass/pass` 的最小行为边界；只要本地离线证据已经足够，就不要为了覆盖率去抢跑 `SV-005`。**
+因此当前最高优先级已经进一步收窄为：**继续守住 `test-data-representatives` 的默认 gate、`SV-004F` 的 `pass/pass` 最小行为边界，以及 sample oracle 与 `.ll` 的同步性；只要本地离线证据已经足够，就不要为了覆盖率去抢跑 `SV-005` 或盲目扩样。**
 
 ### 当前不该抢跑的事
 
@@ -218,6 +217,8 @@ python3 Scripts/ir_semantics_behavior_runner.py --gate-summary build/semantics-v
 7. 复盘工作流；若本轮新增的测试脚本或辅助脚本对后续仍有价值，也应一并整理并提交。如果当前你手工执行的一些流程在未来预计仍会高频反复用到，考虑使用脚本来完成，并更新到文档参考信息。另外，最重要的：最优方案往往会随着你的探究得到新信息而发生改变。你拥有很大的自主决定权，除了最终目标不能改变，中间的技术路线均可以随时根据实际情况去重新调整。
 8. 收尾完成后执行 `git commit`
 
+> 注：`git commit` 不是日常构建/测试/验证闭环的一部分；若当前会话没有明确要求提交，默认停在“变更已落盘且文档已同步”的状态即可。
+>
 > **每个 agent 默认只完成一个任务，不要并行推进多个主线任务。**
 
 ## TODO 状态
@@ -233,12 +234,13 @@ python3 Scripts/ir_semantics_behavior_runner.py --gate-summary build/semantics-v
 | SV-003C | 收口代表集与 gate 契约的单一来源 | ✅ DONE | - | 已把 `test-data` / `ShaderCorpus` 代表样本及其 `allowed failure / allowed L2 / allowed blocked` 元数据收口到 runner 内的单一契约定义，`preset` / `gate profile` / manifest 期望边界统一从该定义推导，并补充同步性单测 | `00-Dashboard.md` |
 | SV-003D | 收敛 `test_struct_array_field` 并同步 debt 形态 | ✅ DONE | - | 已修复 direct entry metadata / `struct_type_info` 误解析与 buffer addrspace 回退问题，使该样本从 compile blocker 收敛为 round-trip 成功；同步把 `test-data` 代表 gate 合同从 allowed compile failure 切换为 allowed blocked sample，恢复 `test-data-representatives --enforce-gate` 的稳定 `WARN` | `00-Dashboard.md` |
 | SV-006 | 分层 gate 与止损策略 | ✅ DONE | - | 已把 `risk-report.json` 里的 `samplesForL3` / `blockedSamples` 收口为 `gate-summary.json` 内的 `layeredDecision`：明确产出 `overallDecision`、`stopAtL2`、`l3Plan`、`l4Plan`，使“停在 L2 / 升级到 L3 / 延后到 L4”的边界机器可读且默认仍保持 automation-first | `02-总体技术路线.md` |
-| SV-004 | 最小行为测试（compute-first） | ONGOING | P0（主线集合） | **当前主线。** compute-first harness 已能直接复用 `layeredDecision.l3Plan.candidateSampleKeys` 生成 `behavior-summary.json`，并且本轮已补上最小 offscreen render-second；当前默认执行面已收敛为 `test_fast_math_select = pass` 与 `test_intrinsic_vector_icmp_zext = pass`，其中后者的旧 `fail` 已确认为 sample oracle 漂移并完成收口 | `05-L3-最小行为测试.md` |
+| SV-004 | 最小行为测试（compute-first + render-second） | ONGOING | P0（主线集合） | **当前主线集合。** 首版 compute-first 与最小 offscreen render-second 已落地；当前不再把扩样当成默认目标，而是以下面的 `SV-004F` 作为唯一实际执行面，维持收缩后的默认行为证据边界 | `05-L3-最小行为测试.md` |
 | SV-004A | 落地首版 compute-only behavior harness | ✅ DONE | - | 已新增 `Scripts/ir_semantics_behavior_runner.py`、`Scripts/metal_compute_behavior_runner.swift` 与 `Scripts/test_ir_semantics_behavior_runner.py`，让 `SV-004` 可以直接消费 `gate-summary.json` 的活跃 `L2` 候选并产出结构化 `behavior-summary.json` | `05-L3-最小行为测试.md` |
 | SV-004B | 解释并收口 `test_casts` 的 fail evidence | ✅ DONE | - | 已定位根因在 `IRToMSLConverter` 对 `air.convert` 的 unsigned 语义恢复不足；修复后 `test_casts` 已通过定向 `behavior-summary.test-casts-verification.json` 复核，并从 `gate-summary.json` 的活跃 `L2` 候选退出 | `05-L3-最小行为测试.md` |
 | SV-004C | 维持收缩后的 L3 候选边界 | ✅ DONE | - | 已先把默认执行面稳定收口为 compute-first 主入口：`build_behavior_plan()` 会按 `executionKind` / `shape-drift` 护栏只放行 compute 候选，`Scripts/test_ir_semantics_behavior_runner.py` 也已补齐针对该收缩边界的纯逻辑回归测试；`test_casts` 仅保留为显式 `--sample-key` 的定向复核入口。随后 `SV-004D` 再把 `test_intrinsic_vector_icmp_zext` 从 `deferred` 推进为已准入的 render-second 执行面 | `05-L3-最小行为测试.md` |
 | SV-004D | 收口剩余 fragment 候选的 render-second 准入契约 | ✅ DONE | - | 已新增 `Scripts/metal_fragment_behavior_runner.swift`，并让 `Scripts/ir_semantics_behavior_runner.py` / `Scripts/test_ir_semantics_behavior_runner.py` 共同支持最小 offscreen render-second；`test_intrinsic_vector_icmp_zext` 现已通过固定 `4x4` `rgba16Float` 离屏 render 进入实际执行面，随后 `SV-004E` 再把旧 `fail` 收口为 sample oracle 漂移 | `05-L3-最小行为测试.md` |
 | SV-004E | 解释 render-second 下的 fragment fail evidence | ✅ DONE | - | 已确认 `test_intrinsic_vector_icmp_zext` 的旧 `fail` 并不是 `IRToMSLConverter` lowering 偏移，而是 `test-data` reference sample 与 `.ll` 输出语义漂移；把 `cmp/zext` 真正接回可观察输出并复跑后，`behavior-summary.json` 与 artifact 已回到稳定 `pass` | `05-L3-最小行为测试.md` |
+| SV-004F | 维持默认行为边界与 oracle 同步护栏 | ONGOING | P0（当前执行面） | 继续把 `test_fast_math_select = pass`、`test_intrinsic_vector_icmp_zext = pass`、固定输出目录，以及 reference MSL ↔ `.ll` 的同步校验保持为默认 L3 边界；除非新增候选仍满足单命令、本地、无 UI、无工作区外修改，否则不扩样、不抢跑 `SV-005` | `05-L3-最小行为测试.md` |
 | SV-005 | 真实场景验证流程收口 | TODO | P2 | 把 `.gputrace` / render diff / MCP live 验证收口成严格后置 gate；只有在 `SV-004` 证据仍不足或风险只会在 runtime/live 中暴露时才允许升级，且不得回流为日常默认流程 | `06-L4-真实场景验证.md` |
 
 ### 当前关键状态

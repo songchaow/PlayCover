@@ -28,9 +28,10 @@
 
 补充说明：
 
-- `preset-manifest.json` 依然有重要价值，但它的**描述文字**可能落后于当前事实
-- 当前 `test-data-representatives/preset-manifest.json` 仍写着“compile blocker / 3 个已知 L2”，这不应再直接当成 active debt 口径
-- 若出现描述文字与 `gate-summary.json` / `risk-report.json` 不一致，**以 `gate-summary.json` / `risk-report.json` 为准**
+- `gate-summary.json` 里的控制面结构字段（如 `status`、`activeKnownDebt`、`improvements`、`layeredDecision`）优先级最高；但其中沿用 `gate profile` 的描述文字也可能滞后
+- `preset-manifest.json` 依然有重要价值，但它的**描述文字**也可能落后于当前事实
+- 当前 `test-data-representatives/gate-summary.json` 与 `preset-manifest.json` 都仍保留着“compile blocker / 3 个已知 L2”一类旧描述，这不应再直接当成 active debt 口径
+- 若出现描述文字与 `gate-summary.json` / `risk-report.json` 的结构字段不一致，**以结构字段为准**
 
 ## 当前默认 gate 事实
 
@@ -39,7 +40,7 @@
 当前最新代表产物来自：
 
 - `build/semantics-validation/roundtrip/test-data-representatives/`
-- `gate-summary.generatedAt = 2026-04-08T09:49:06Z`
+- `gate-summary.generatedAt = 2026-04-08T12:47:07Z`
 
 当前事实：
 
@@ -67,7 +68,7 @@
 当前默认行为产物来自：
 
 - `build/semantics-validation/roundtrip/test-data-representatives/behavior-summary.json`
-- `generatedAt = 2026-04-08T12:15:38Z`
+- `generatedAt = 2026-04-08T12:47:05Z`
 
 当前事实：
 
@@ -193,11 +194,12 @@
 ### 对 `SV-003` / `SV-004` / `SV-006` 最有用的当前事实
 
 - 当前 `gate-summary.json` / `risk-report.json` 已经能把 **活跃 L2 候选**、**blocked sample**、**已解决 L2 debt** 明确拆开
-- 对硬默认 gate，当前最该优先考虑的活跃 `L3` 候选入口是：
+- 对硬默认 gate，当前最该优先维护的活跃 `L3` 候选入口仍是：
   - `test_fast_math_select`
   - `test_intrinsic_vector_icmp_zext`
-- `behavior-summary.json` 当前已从“compute-only + deferred fragment”切换为“compute-first + 已准入 render-second”组合证据；其当前状态为 `fail`，对应 `test_intrinsic_vector_icmp_zext` 的稳定 mismatch
-- 当前 `SV-004` 的**默认执行边界**已稳定为：`test_fast_math_select` 进入 compute-first；`test_intrinsic_vector_icmp_zext` 进入已准入的最小 render-second，并稳定产出 `fail` evidence
+- `behavior-summary.json` 当前已从“compute-only + deferred fragment”切换为“compute-first + 已准入 render-second”组合证据；其当前状态为 `pass`，默认两条样本结果均为 `pass`
+- 当前 `SV-004` 的**默认执行边界**已稳定为：`test_fast_math_select` 进入 compute-first；`test_intrinsic_vector_icmp_zext` 进入已准入的最小 render-second，并在修正 sample oracle 漂移后回到稳定 `pass`
+- 当前主线应优先守住样本 oracle 与 `.ll` 的同步性；只有新增候选仍满足单命令、本地、无 UI、无工作区外修改时，才适合继续纳入默认 L3
 - `test_casts` 已退出活跃 `L2` debt；它仍可作为定向转换语义回归样本保留，但不再属于默认自动执行面
 - `test_struct_array_field` 当前仍属于 **blocked sample**，默认不应直接进入第一批 `L3` 行为测试
 - `daily-default` / `local-corpus-representatives` 现在更适合回答“本机有没有额外线索”，不适合替代主文档里的跨机器控制面

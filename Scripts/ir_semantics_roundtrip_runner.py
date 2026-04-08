@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 import corpus_replay_runner as replay_runner
+import ir_canonical_compare as canonical_compare
 
 
 def repo_root() -> Path:
@@ -94,6 +95,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="中间 compile 报告输出路径；默认写到 output-root/compile-summary.json",
     )
     parser.add_argument(
+        "--compare-report-file",
+        help="canonical compare 报告输出路径；默认写到 output-root/compare-summary.json",
+    )
+    parser.add_argument(
+        "--risk-report-file",
+        help="风险分级报告输出路径；默认写到 output-root/risk-report.json",
+    )
+    parser.add_argument(
+        "--high-risk-file",
+        help="高风险样本列表输出路径；默认写到 output-root/high-risk-samples.json",
+    )
+    parser.add_argument(
         "--allow-failures",
         action="store_true",
         help="即使存在 replay / compile / llvm-dis 失败也返回 0，便于先收集批量报告",
@@ -133,22 +146,34 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _make_optional_report_path(explicit_path: str | None, output_root: Path, file_name: str) -> Path:
+    if explicit_path:
+        return Path(explicit_path).expanduser().resolve()
+    return (output_root / file_name).resolve()
+
+
 def make_report_path(args: argparse.Namespace, output_root: Path) -> Path:
-    if args.report_file:
-        return Path(args.report_file).expanduser().resolve()
-    return (output_root / "roundtrip-summary.json").resolve()
+    return _make_optional_report_path(args.report_file, output_root, "roundtrip-summary.json")
 
 
 def make_replay_report_path(args: argparse.Namespace, output_root: Path) -> Path:
-    if args.replay_report_file:
-        return Path(args.replay_report_file).expanduser().resolve()
-    return (output_root / "replay-summary.json").resolve()
+    return _make_optional_report_path(args.replay_report_file, output_root, "replay-summary.json")
 
 
 def make_compile_report_path(args: argparse.Namespace, output_root: Path) -> Path:
-    if args.compile_report_file:
-        return Path(args.compile_report_file).expanduser().resolve()
-    return (output_root / "compile-summary.json").resolve()
+    return _make_optional_report_path(args.compile_report_file, output_root, "compile-summary.json")
+
+
+def make_compare_report_path(args: argparse.Namespace, output_root: Path) -> Path:
+    return _make_optional_report_path(args.compare_report_file, output_root, "compare-summary.json")
+
+
+def make_risk_report_path(args: argparse.Namespace, output_root: Path) -> Path:
+    return _make_optional_report_path(args.risk_report_file, output_root, "risk-report.json")
+
+
+def make_high_risk_path(args: argparse.Namespace, output_root: Path) -> Path:
+    return _make_optional_report_path(args.high_risk_file, output_root, "high-risk-samples.json")
 
 
 def candidate_llvm_dis_paths(explicit_path: str | None = None) -> list[Path]:
@@ -478,7 +503,171 @@ def build_roundtrip_report(
     }
 
 
-def print_summary(report: dict[str, Any], args: argparse.Namespace) -> None:
+def build_compare_result(roundtrip_result: dict[str, Any]) -> dict[str, Any]:
+    base_result = {
+        "jobID": roundtrip_result.get("jobID"),
+        "comparisonKey": roundtrip_result.get("comparisonKey"),
+        "sourceKind": roundtrip_result.get("sourceKind"),
+        "bundleId": roundtrip_result.get("bundleId"),
+        "moduleKey": roundtrip_result.get("moduleKey"),
+        "inputPath": roundtrip_result.get("inputPath"),
+        "originalIRPath": roundtrip_result.get("originalIRPath"),
+        "regeneratedIRPath": roundtrip_result.get("regeneratedIRPath"),
+        "roundTripStatus": roundtrip_result.get("roundTripStatus"),
+        "failureStage": roundtrip_result.get("failureStage"),
+        "riskLevel": "L3",
+        "riskReason": "round-trip failed before canonical compare",
+        "recommendedAction": "先修复 round-trip 主链路失败点，再进行 L2 compare。",
+        "differenceCount": 0,
+        "differences": [],
+        "compareAvailable": False,
+        "entryComparison": {"same": False, "severity": "L3", "differenceCount": 0, "differences": []},
+        "addressSpaceComparison": {"same": False, "severity": "L3", "differenceCount": 0, "differences": []},
+        "builtinComparison": {"same": False, "severity": "L3", "differenceCount": 0, "differences": []},
+        "cfgComparison": {"same": False, "severity": "L3", "differenceCount": 0, "differences": []},
+        "instructionFamilyComparison": {"same": False, "severity": "L3", "differenceCount": 0, "differences": []},
+        "fastMathComparison": {"same": False, "severity": "L3", "differenceCount": 0, "differences": []},
+        "moduleMetadataComparison": {"same": False, "severity": "L3", "differenceCount": 0, "differences": []},
+        "originalSummary": None,
+        "regeneratedSummary": None,
+        "compareError": None,
+    }
+
+    if roundtrip_result.get("roundTripStatus") != "success":
+        base_result["riskReason"] = roundtrip_result.get("errorSummary") or base_result["riskReason"]
+        return base_result
+
+    original_ir_path = roundtrip_result.get("originalIRPath")
+    regenerated_ir_path = roundtrip_result.get("regeneratedIRPath")
+    if not original_ir_path or not regenerated_ir_path:
+        base_result["riskReason"] = "missing original/regenerated IR path"
+        return base_result
+
+    try:
+        original_summary = canonical_compare.extract_ir_summary(original_ir_path)
+        regenerated_summary = canonical_compare.extract_ir_summary(regenerated_ir_path)
+        comparison = canonical_compare.compare_ir_summaries(original_summary, regenerated_summary)
+    except Exception as exc:
+        base_result["riskReason"] = "canonical compare failed"
+        base_result["recommendedAction"] = "先修复 L2 compare 解析失败，再继续推进批量回归。"
+        base_result["compareError"] = str(exc)
+        return base_result
+
+    base_result.update(comparison)
+    base_result["compareAvailable"] = True
+    base_result["originalSummary"] = original_summary
+    base_result["regeneratedSummary"] = regenerated_summary
+    return base_result
+
+
+def build_compare_report(roundtrip_report: dict[str, Any], compare_report_path: Path) -> dict[str, Any]:
+    results = [build_compare_result(item) for item in roundtrip_report.get("results", [])]
+    risk_counts: dict[str, int] = {level: 0 for level in ("L0", "L1", "L2", "L3")}
+    for result in results:
+        risk_counts[result["riskLevel"]] = risk_counts.get(result["riskLevel"], 0) + 1
+
+    samples_for_l3 = [
+        {
+            "comparisonKey": item.get("comparisonKey"),
+            "riskLevel": item.get("riskLevel"),
+            "riskReason": item.get("riskReason"),
+            "recommendedAction": item.get("recommendedAction"),
+        }
+        for item in results
+        if item.get("riskLevel") == "L2"
+    ]
+    blocked_samples = [
+        {
+            "comparisonKey": item.get("comparisonKey"),
+            "riskLevel": item.get("riskLevel"),
+            "riskReason": item.get("riskReason"),
+            "failureStage": item.get("failureStage"),
+            "recommendedAction": item.get("recommendedAction"),
+        }
+        for item in results
+        if item.get("riskLevel") == "L3"
+    ]
+
+    return {
+        "schemaVersion": 1,
+        "generatedAt": replay_runner.utc_now_iso(),
+        "tool": "Scripts/ir_semantics_roundtrip_runner.py",
+        "reportPath": str(compare_report_path),
+        "roundtripReportPath": roundtrip_report.get("reportPath"),
+        "outputRoot": roundtrip_report.get("outputRoot"),
+        "jobCount": len(results),
+        "compareAvailableJobs": sum(1 for item in results if item.get("compareAvailable")),
+        "compareUnavailableJobs": sum(1 for item in results if not item.get("compareAvailable")),
+        "riskCounts": risk_counts,
+        "samplesForL3": samples_for_l3,
+        "blockedSamples": blocked_samples,
+        "results": results,
+    }
+
+
+def build_risk_report(compare_report: dict[str, Any], risk_report_path: Path) -> dict[str, Any]:
+    samples = []
+    for item in compare_report.get("results", []):
+        top_differences = [
+            {
+                "category": diff.get("category"),
+                "severity": diff.get("severity"),
+                "reason": diff.get("reason"),
+                "subject": diff.get("subject"),
+            }
+            for diff in (item.get("differences") or [])[:5]
+        ]
+        samples.append(
+            {
+                "comparisonKey": item.get("comparisonKey"),
+                "bundleId": item.get("bundleId"),
+                "moduleKey": item.get("moduleKey"),
+                "inputPath": item.get("inputPath"),
+                "roundTripStatus": item.get("roundTripStatus"),
+                "failureStage": item.get("failureStage"),
+                "riskLevel": item.get("riskLevel"),
+                "riskReason": item.get("riskReason"),
+                "recommendedAction": item.get("recommendedAction"),
+                "compareAvailable": item.get("compareAvailable"),
+                "shouldEnterL3": item.get("riskLevel") == "L2",
+                "blockedBeforeLive": item.get("riskLevel") == "L3",
+                "topDifferences": top_differences,
+            }
+        )
+
+    return {
+        "schemaVersion": 1,
+        "generatedAt": replay_runner.utc_now_iso(),
+        "tool": "Scripts/ir_semantics_roundtrip_runner.py",
+        "reportPath": str(risk_report_path),
+        "compareReportPath": compare_report.get("reportPath"),
+        "outputRoot": compare_report.get("outputRoot"),
+        "jobCount": len(samples),
+        "riskCounts": compare_report.get("riskCounts") or {},
+        "samplesForL3": [sample for sample in samples if sample["shouldEnterL3"]],
+        "blockedSamples": [sample for sample in samples if sample["blockedBeforeLive"]],
+        "samples": samples,
+    }
+
+
+def build_high_risk_samples(compare_report: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "comparisonKey": item.get("comparisonKey"),
+            "bundleId": item.get("bundleId"),
+            "moduleKey": item.get("moduleKey"),
+            "inputPath": item.get("inputPath"),
+            "riskLevel": item.get("riskLevel"),
+            "riskReason": item.get("riskReason"),
+            "recommendedAction": item.get("recommendedAction"),
+            "failureStage": item.get("failureStage"),
+        }
+        for item in compare_report.get("results", [])
+        if item.get("riskLevel") in {"L2", "L3"}
+    ]
+
+
+def print_summary(report: dict[str, Any], compare_report: dict[str, Any], args: argparse.Namespace) -> None:
     if args.quiet:
         return
 
@@ -494,7 +683,8 @@ def print_summary(report: dict[str, Any], args: argparse.Namespace) -> None:
         f"llvm-dis failed {report['llvmDisFailedJobs']}"
     )
     print(f"output root: {report['outputRoot']}")
-    print(f"report: {report['reportPath']}")
+    print(f"roundtrip report: {report['reportPath']}")
+    print(f"compare report: {compare_report['reportPath']}")
 
     llvm_disassembler = report.get("llvmDisassembler") or {}
     if llvm_disassembler.get("resolvedPath"):
@@ -502,12 +692,28 @@ def print_summary(report: dict[str, Any], args: argparse.Namespace) -> None:
     else:
         print("llvm-dis: NOT FOUND")
 
+    risk_counts = compare_report.get("riskCounts") or {}
+    print(
+        "risk levels: "
+        f"L0={risk_counts.get('L0', 0)}, "
+        f"L1={risk_counts.get('L1', 0)}, "
+        f"L2={risk_counts.get('L2', 0)}, "
+        f"L3={risk_counts.get('L3', 0)}"
+    )
+
     failures = [item for item in report.get("results") or [] if item.get("failureStage")]
     if failures:
         print("failed samples:")
         for item in failures[:5]:
             key = item.get("moduleKey") or Path(item.get("inputPath") or "job").stem
             print(f"  - {key}: stage={item['failureStage']} error={item.get('errorSummary')}")
+
+    high_risks = [item for item in compare_report.get("results") or [] if item.get("riskLevel") in {"L2", "L3"}]
+    if high_risks:
+        print("high-risk samples:")
+        for item in high_risks[:5]:
+            key = item.get("moduleKey") or Path(item.get("inputPath") or "job").stem
+            print(f"  - {key}: risk={item['riskLevel']} reason={item.get('riskReason')}")
 
 
 def main() -> int:
@@ -532,6 +738,9 @@ def main() -> int:
     report_path = make_report_path(args, output_root)
     replay_report_path = make_replay_report_path(args, output_root)
     compile_report_path = make_compile_report_path(args, output_root)
+    compare_report_path = make_compare_report_path(args, output_root)
+    risk_report_path = make_risk_report_path(args, output_root)
+    high_risk_path = make_high_risk_path(args, output_root)
 
     warnings: list[replay_runner.DiscoveryWarning] = []
     jobs = replay_runner.discover_jobs(args, output_root, warnings)
@@ -562,10 +771,19 @@ def main() -> int:
         llvm_dis_path,
         llvm_dis_candidates,
     )
+    compare_report = build_compare_report(roundtrip_report, compare_report_path)
+    risk_report = build_risk_report(compare_report, risk_report_path)
+    high_risk_samples = build_high_risk_samples(compare_report)
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(roundtrip_report, indent=2, ensure_ascii=False), encoding="utf-8")
-    print_summary(roundtrip_report, args)
+    compare_report_path.parent.mkdir(parents=True, exist_ok=True)
+    compare_report_path.write_text(json.dumps(compare_report, indent=2, ensure_ascii=False), encoding="utf-8")
+    risk_report_path.parent.mkdir(parents=True, exist_ok=True)
+    risk_report_path.write_text(json.dumps(risk_report, indent=2, ensure_ascii=False), encoding="utf-8")
+    high_risk_path.parent.mkdir(parents=True, exist_ok=True)
+    high_risk_path.write_text(json.dumps(high_risk_samples, indent=2, ensure_ascii=False), encoding="utf-8")
+    print_summary(roundtrip_report, compare_report, args)
 
     if roundtrip_report["roundTripFailedJobs"] and not args.allow_failures:
         return 1

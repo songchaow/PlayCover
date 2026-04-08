@@ -2,199 +2,243 @@
 
 ## 目标
 
-在 L1 的 `original.ll` 与 `regenerated.ll` 基础上，建立一套**结构化 compare**，回答：
+在 L1 已产出的 `original.ll` / `regenerated.ll` 基础上，建立一套**结构化 compare + 风险分级**，回答：
 
-- 哪些差异只是表面形式变化
-- 哪些差异可能影响语义
-- 哪些样本值得继续进入 L3/L4
+- 哪些差异只是编译器 / metadata / 表面形态变化
+- 哪些差异可能影响语义，应优先进入后续复核
+- 哪些样本已经可以继续沉淀到日常 gate，哪些样本暂时不应进入 live
 
-这层的目标不是做形式化证明，而是先做一个**可批量运行、可解释、可分级**的语义风险筛查器。
+这层的目标仍然不是形式化证明，而是先得到一个**可批量运行、可解释、可回归**的语义风险筛查器。
 
-## 为什么不能只做文本 diff
+## 当前实现状态
 
-直接比较 `.ll` 文本会产生很多噪声：
+**`SV-002` 已完成。**
 
-- SSA 名称变化
-- metadata 编号变化
-- 声明顺序变化
-- 某些无关注释或格式差异
+当前已落地：
 
-因此需要比较的是 **canonical summary**，而不是原始文本本身。
+- 新增 `Scripts/ir_canonical_compare.py`
+- 已让 `Scripts/ir_semantics_roundtrip_runner.py` 在完成 `roundtrip` 后自动继续执行 L2
+- 已新增 `Scripts/test_ir_canonical_compare.py`
+- 已更新 `Scripts/test_ir_semantics_roundtrip_runner.py`
 
-## 第一版建议比较项
+当前 `roundtrip runner` 默认会产出：
 
-### 1. Entry 面
+- `roundtrip-summary.json`
+- `compare-summary.json`
+- `risk-report.json`
+- `high-risk-samples.json`
+
+## 已实现的 canonical summary
+
+### Entry 面
+
+当前会提取并比较：
 
 - entry 函数集合
+- shader 类型（`vertex / fragment / kernel`）
 - entry 名称
-- shader 类型（vertex / fragment / kernel）
-- entry 参数个数与顺序
-- entry 返回类型摘要
-
-### 2. 类型与地址空间面
-
+- 返回类型摘要
+- 参数个数
 - 参数类型摘要
-- 指针/聚合类型摘要
-- `addrspace` 分布
-- `thread / device / constant / threadgroup` 等关键地址空间映射
+- entry 参数语义摘要
+- entry 输出语义摘要
 
-### 3. Builtin / Resource 面
+### 类型 / 地址空间面
 
-- `air.*` / intrinsic 使用集合
-- texture / sampler / buffer / stage-in / builtin 参数摘要
-- 关键资源访问模式摘要
+当前会提取并比较：
 
-### 4. 控制流面
+- 参数 `addrspace` 摘要
+- 模块级 `addrspace` 分布
+- entry 资源参数中的关键地址空间信息
+
+### Builtin / Resource 面
+
+当前会提取并比较：
+
+- `!air.vertex / !air.fragment / !air.kernel` 元数据里的参数语义
+- buffer / texture / sampler / stage-in / builtin 摘要
+- 模块级 `air.*` intrinsic 使用统计
+- 函数内 `air.*` intrinsic 调用统计
+
+### 控制流 / 指令族面
+
+当前会提取并比较：
 
 - basic block 数量
-- terminator 分布（ret / br / condbr / switch 等）
-- phi / select 统计
-- CFG 粗摘要
+- terminator 分布（`ret / br / condbr / switch ...`）
+- `phi / select` 统计
+- instruction family 统计：
+  - arithmetic
+  - compare
+  - cast
+  - memory
+  - vector
+  - aggregate
+  - intrinsic / call
 
-### 5. 指令族统计
+### 关键属性面
 
-- arithmetic
-- compare
-- cast
-- memory
-- vector ops
-- aggregate ops
-- intrinsic calls
+当前会提取并比较：
 
-### 6. 关键属性面
+- `fast-math` 相关 compile option
+- function attr 里的 `fast-math` 相关 key
+- 指令级 `fast / nnan / ninf / nsz / arcp / contract / afn / reassoc` 统计
+- `target triple / data layout`（仅记录，默认不单独作为阻断）
 
-- fast-math 标记
-- 关键 function attrs
-- target triple / data layout（只做记录，不必都作为失败条件）
-
-## 风险分级建议
+## 当前风险分级口径
 
 ### L0：低风险 / 近似一致
 
 特征：
 
-- entry / shader type / 参数返回摘要一致
-- 地址空间一致
-- builtin / resource 摘要一致
-- CFG 与 instruction family 仅有轻微无害波动
+- canonical summary 基本一致
+- 没有关键 entry / 地址空间 / builtin / resource 差异
+- 无需立即进入 L3
 
 ### L1：可接受差异
 
 特征：
 
-- 存在一些结构变化，但没有触及关键语义面
-- 需要记录，但默认不阻塞
+- 存在局部结构波动
+- 主要是统计层或优化层差异
+- 默认记录，但不阻塞
 
 ### L2：中风险 / 需复核
 
 特征：
 
-- builtin/resource/CFG/fast-math 中有可疑变化
-- 或 entry 类型一致但关键统计明显偏移
-
-这类样本优先进入 L3。
+- builtin / resource / CFG / fast-math / instruction family 中有可疑变化
+- 默认优先进入 L3 最小行为测试
+- 不建议直接跳到 live
 
 ### L3：高风险 / 结构性不一致
 
 特征：
 
 - entry 集合变化
-- shader type 变化
-- 参数/返回关键类型不一致
-- 地址空间关键项不一致
-- builtin/resource 面明显不匹配
+- 参数 / 返回关键摘要变化
+- 参数 `addrspace` 关键项变化
+- 或 round-trip 主链路本身失败
 
-这类样本默认视为 round-trip 失败样本，不直接进入 live。
+这类样本默认视为**不应直接进入 live**。
 
-## 第一版实现建议
+## 第一版主动降噪策略
 
-### Step 1：先做 summary extractor
+为了让 L2 更像“风险筛查器”而不是“文本 diff 放大器”，当前已明确**弱化或忽略**以下差异：
 
-建议先实现：
+- SSA 名称变化
+- metadata 编号变化
+- 注释 / 空行 / 格式变化
+- 某些声明顺序变化
+- `bufferSize` 缺失这类 metadata 省略
+- `readonly / writeonly / readnone / dereferenceable / align / nocapture / noundef` 这类参数修饰噪声
 
-- `extract_ir_summary(original.ll)`
-- `extract_ir_summary(regenerated.ll)`
+当前仍然对下面差异保持敏感：
 
-输出结构化 JSON，而不是先写复杂 diff。
-
-### Step 2：再做 summary comparator
-
-建议输出：
-
-- `same`
-- `changed`
-- `severity`
-- `reason`
-- `details`
-
-### Step 3：最后生成 risk report
-
-将 compare 结果汇总成：
-
-- 样本级风险
-- 批量统计
-- 高风险样本列表
-- 常见差异类型聚类
-
-## 比较策略建议
-
-### 应忽略或弱化的差异
-
-- SSA 名称
-- metadata 编号
-- 注释/空行/格式
-- 某些非关键声明顺序
-
-### 必须保留敏感性的差异
-
-- entry 函数集合与 shader type
-- 参数与返回关键摘要
-- 地址空间
-- builtin / resource 语义
+- entry 集合与 shader type
+- 参数 / 返回关键摘要
+- 参数 `addrspace`
+- entry 参数语义与输出语义
+- builtin / resource 摘要
 - CFG 粗结构
-- fast-math / 关键 attrs
+- fast-math 相关差异
 
-## 验证样本建议
+## 批量验证结果
 
-### 正向样本
+### `test-data/` 首轮 L2 报告
 
-先用 round-trip 成功、看起来最简单的 `test-data/` 样本，验证：
+输出目录：`build/semantics-validation/roundtrip/test-data-batch/`
 
-- compare 不会误报过多
-- summary 提取逻辑能稳定工作
+当前结果：
 
-### 反向样本
+- `27` 个样本中 `26` 个 round-trip 成功
+- `1` 个样本在 compile 阶段失败：`test_struct_array_field`
+- 风险分布：
+  - `L0 = 1`
+  - `L1 = 1`
+  - `L2 = 5`
+  - `L3 = 20`
 
-建议人工构造几组最小差异对，用于验证 compare 的敏感性：
+### 当前代表样本
 
-- 只改 SSA 名称 → 应为低风险
-- 改 `addrspace` → 应升为高风险
-- 改 entry shader type → 应升为高风险
-- 改 builtin/resource 摘要 → 应升为中高风险
+- **L0**：`test_fast_math_binary`
+- **L1**：`test_scalar_select_vector`
+- **L2**：
+  - `test_casts`
+  - `test_fast_math_select`
+  - `test_int_literal_half_suffix`
+  - `test_intrinsic_vector_icmp_zext`
+  - `test_vector_select_global_gep`
+- **compile blocker**：`test_struct_array_field`
 
-## 报告建议
+## 报告结构
 
-建议产物：
+### `compare-summary.json`
 
-- `compare-summary.json`
-- `risk-report.json`
-- `high-risk-samples.json`
-
-每个样本至少应有：
+每个样本当前至少包含：
 
 - `comparisonKey`
 - `riskLevel`
 - `riskReason`
+- `recommendedAction`
 - `differences`
 - `entryComparison`
 - `addressSpaceComparison`
 - `builtinComparison`
 - `cfgComparison`
 - `instructionFamilyComparison`
+- `fastMathComparison`
+- `moduleMetadataComparison`
+- `originalSummary`
+- `regeneratedSummary`
 
-## 完成标准
+### `risk-report.json`
 
-满足以下条件后，可认为 `SV-002` 基本完成：
+当前用于输出：
+
+- 批量 `riskCounts`
+- `samplesForL3`
+- `blockedSamples`
+- 每个样本的精简风险摘要与建议动作
+
+### `high-risk-samples.json`
+
+当前用于快速列出：
+
+- `L2`
+- `L3`
+
+样本，便于后续聚类或选取代表集。
+
+## 已验证测试
+
+当前已覆盖：
+
+- 真实样本提取测试：`test_vertex_draw_builtins.ll`
+- 合成正向样本：只改 SSA 名称 → 维持低风险
+- 合成反向样本：改 `addrspace` → 升为高风险
+- `roundtrip runner` 集成测试：验证 L1/L2 报告会一起产出
+
+## 当前边界
+
+第一版仍然有明确边界：
+
+- 不是形式化语义证明器
+- 不是完整 IR AST / CFG 等价器
+- 还不能回答“行为是否一致”
+- 当前 `L3` 样本较多，说明还需要后续 `SV-003` 做代表集扩展、聚类与日常 gate 收敛
+
+## 对下一步的直接启示
+
+`SV-002` 完成后，当前最合理的下一步不是直接跳到 live，而是：
+
+1. 继续推进 `SV-003`，把已落地的 L1/L2 扩到更稳定的 `test-data` / `ShaderCorpus` 代表集
+2. 对当前 `L2` 样本优先准备 `L3` 最小行为测试入口
+3. 对 compile blocker `test_struct_array_field` 保持单独跟踪
+
+## 完成标准回顾
+
+原定完成标准为：
 
 1. 对 round-trip 成功样本可自动提取 canonical summary
 2. 能输出结构化 compare，而不是仅有文本 diff
@@ -202,9 +246,4 @@
 4. 至少在 `test-data/` 上跑通并产出批量报告
 5. 能明确给出哪些样本应进入 L3/L4
 
-## 设计边界
-
-- 第一版不追求形式化语义证明
-- 第一版不要求完整 IR AST 等价器
-- 第一版优先做 **summary compare + 风险筛查**
-- 若后续发现 summary compare 不足，再决定是否升级到更细粒度的 AST/CFG compare
+**当前以上 5 条均已满足，因此 `SV-002` 可视为完成。**

@@ -67,11 +67,20 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             report_path = output_root / "roundtrip-summary.json"
             replay_report_path = output_root / "replay-summary.json"
             compile_report_path = output_root / "compile-summary.json"
+            compare_report_path = output_root / "compare-summary.json"
+            risk_report_path = output_root / "risk-report.json"
+            high_risk_path = output_root / "high-risk-samples.json"
             self.assertTrue(report_path.is_file())
             self.assertTrue(replay_report_path.is_file())
             self.assertTrue(compile_report_path.is_file())
+            self.assertTrue(compare_report_path.is_file())
+            self.assertTrue(risk_report_path.is_file())
+            self.assertTrue(high_risk_path.is_file())
 
             report = json.loads(report_path.read_text(encoding="utf-8"))
+            compare_report = json.loads(compare_report_path.read_text(encoding="utf-8"))
+            risk_report = json.loads(risk_report_path.read_text(encoding="utf-8"))
+            high_risk_samples = json.loads(high_risk_path.read_text(encoding="utf-8"))
             self.assertEqual(report["jobCount"], 1)
             self.assertEqual(report["roundTripSucceededJobs"], 1)
             self.assertEqual(report["roundTripFailedJobs"], 0)
@@ -79,6 +88,10 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             self.assertEqual(report["llvmDisFailedJobs"], 0)
             self.assertEqual(report["llvmDisassembler"]["resolvedPath"], str(default_llvm_dis))
             self.assertEqual(len(report["results"]), 1)
+            self.assertEqual(compare_report["jobCount"], 1)
+            self.assertEqual(compare_report["compareAvailableJobs"], 1)
+            self.assertEqual(risk_report["jobCount"], 1)
+            self.assertIsInstance(high_risk_samples, list)
 
             result = report["results"][0]
             self.assertEqual(result["replayStatus"], "success")
@@ -86,6 +99,13 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             self.assertEqual(result["llvmDisStatus"], "success")
             self.assertEqual(result["roundTripStatus"], "success")
             self.assertIsNone(result["failureStage"])
+
+            compare_result = compare_report["results"][0]
+            self.assertTrue(compare_result["compareAvailable"])
+            self.assertIn(compare_result["riskLevel"], {"L0", "L1", "L2", "L3"})
+            self.assertIn("recommendedAction", compare_result)
+            self.assertIn("entryComparison", compare_result)
+            self.assertEqual(risk_report["samples"][0]["comparisonKey"], compare_result["comparisonKey"])
 
             original_ir_path = Path(result["originalIRPath"])
             generated_msl_path = Path(result["generatedMSLPath"])

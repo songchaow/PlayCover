@@ -65,9 +65,10 @@ makeLibrary(source:) / metal -c
 1. **继续把 `test-data-representatives` 视为跨机器硬默认 gate，但把它保持为所有升级动作的稳定前提，而不是下一阶段的唯一交付物**
    - 它仍是最稳定、最不依赖外部环境的日常 gate
    - 任何新增命令、样本或行为测试入口，都不应破坏这条默认路径的 agent 自主执行性
-2. **直接复用 `layeredDecision` 选择 `SV-004` 的第一批样本，而不是重新手工挑选一整批 L2/L3**
+2. **直接复用 `layeredDecision` 选择 `SV-004` 的第一批样本，并把第一阶段严格收窄到 compute-only harness**
    - 当前硬默认 gate 的 `overallDecision` 已稳定为 `promote_l2_candidates_to_l3`
-   - 第一批候选仍是 `test_casts`、`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`
+   - 首版入口已落地到 `Scripts/ir_semantics_behavior_runner.py` + `Scripts/metal_compute_behavior_runner.swift`
+   - 第一批实际执行样本当前收敛为 `test_casts`、`test_fast_math_select`；`test_intrinsic_vector_icmp_zext` 因为是 fragment 样本，继续后置到 render-second
    - `test_struct_array_field` 继续作为 blocked sample 停在离线层，不直接抬进行为测试或 live
 3. **继续把 `daily-default` / `local-corpus-representatives` 明确为“本机已有样本时的增强入口”，而不是日常强依赖**
    - 这两条入口可以帮助分层，但不能倒逼 fresh capture、人工准备环境或用户协助成为默认前提
@@ -80,6 +81,9 @@ makeLibrary(source:) / metal -c
 
 - `test-data-representatives`：当前最新代表产物保持 `8/8` round-trip 成功，风险分布 `L0 = 1 / L1 = 3 / L2 = 3 / L3 = 1`，`gate-summary.json` 继续稳定为 `WARN`
 - 同一份代表产物里，`layeredDecision.overallDecision = promote_l2_candidates_to_l3`，`l3Plan.candidateSampleKeys` 已稳定收敛为 `test_casts`、`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`
+- `behavior-summary.json` 已开始落地：当前首轮 compute-first 行为测试实际执行了 `test_casts` 与 `test_fast_math_select` 两个 compute 样本，并将 `test_intrinsic_vector_icmp_zext` 结构化后置到 render-second
+- 首轮行为结果中，`test_fast_math_select` 已通过 reference-vs-generated 对跑；`test_casts` 在 scalar / vector 两组 case 上均出现行为差异，因此当前 L3 证据已从“缺失”升级为“已发现可复现实质分歧”
+- `Scripts/test_ir_semantics_behavior_runner.py` 已为 candidate 选择、defer 边界与 `behavior-summary.json` 汇总补齐纯逻辑单测，降低 `SV-004` 后续维护时的静默漂移风险
 - `blockedSamples` 当前仍只包含 `test_struct_array_field`，它会继续被 `stopAtL2` / `l4Plan` 明确挡在离线层与后置 gate 之前
 - `daily-default`：当前最新增强产物是 `13/13` round-trip 成功，风险分布 `L0 = 1 / L1 = 3 / L2 = 5 / L3 = 4`，`gate-summary.json` 为稳定 `WARN`
 - `local-corpus-representatives`：当前固定 `5` 个本地 `ShaderCorpus` 代表样本全部 round-trip 成功，风险分布 `L0 = 0 / L1 = 0 / L2 = 1 / L3 = 4`，`gate-summary.json` 为稳定 `WARN`
@@ -95,7 +99,7 @@ makeLibrary(source:) / metal -c
 
 ### 当前不该抢跑的事
 
-在 `SV-004` 的最小 behavior harness 尚未形成、且 `SV-003 / SV-006` 的默认控制面仍需继续守住前，默认**不要**把精力放到：
+在 `SV-004` 的首版 compute-only behavior harness 已落地、但 render-second / live 后置链路仍未形成前，默认**不要**把精力放到：
 
 - 大规模 live `.gputrace` 验证
 - 高成本 GUI/Accessibility 操作
@@ -158,6 +162,22 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representati
 ```
 
 - 后续对同一固定输出目录再次执行时，若目录下已存在 `baseline.json`，runner 会默认自动复用它做 replay baseline diff；也可用 `--baseline-report <path>` 显式指定其他 baseline
+
+### `SV-004` 首版 compute-first 行为验证
+
+适用于：需要把 `layeredDecision.l3Plan.candidateSampleKeys` 里的活跃 `L2` 候选推进到第一批本地行为证据时。
+
+```bash
+python3 Scripts/test_ir_semantics_behavior_runner.py
+python3 Scripts/ir_semantics_behavior_runner.py --gate-summary build/semantics-validation/roundtrip/test-data-representatives/gate-summary.json
+```
+
+当前首轮口径：
+
+- 默认直接复用固定输出目录里的 `gate-summary.json` / `roundtrip-summary.json`
+- 当前首批实际执行样本是 `test_casts`、`test_fast_math_select`
+- `test_intrinsic_vector_icmp_zext` 因为是 fragment 样本，会被结构化记为 deferred，而不会误抬进 compute-only harness
+- 当前观测结果为：`test_fast_math_select = pass`、`test_casts = fail`、`test_intrinsic_vector_icmp_zext = deferred`
 
 默认会继续产出：
 
@@ -250,12 +270,13 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representati
 | SV-003C | 收口代表集与 gate 契约的单一来源 | ✅ DONE | - | 已把 `test-data` / `ShaderCorpus` 代表样本及其 `allowed failure / allowed L2 / allowed blocked` 元数据收口到 runner 内的单一契约定义，`preset` / `gate profile` / manifest 期望边界统一从该定义推导，并补充同步性单测 | `00-Dashboard.md` |
 | SV-003D | 收敛 `test_struct_array_field` 并同步 debt 形态 | ✅ DONE | - | 已修复 direct entry metadata / `struct_type_info` 误解析与 buffer addrspace 回退问题，使该样本从 compile blocker 收敛为 round-trip 成功；同步把 `test-data` 代表 gate 合同从 allowed compile failure 切换为 allowed blocked sample，恢复 `test-data-representatives --enforce-gate` 的稳定 `WARN` | `00-Dashboard.md` |
 | SV-006 | 分层 gate 与止损策略 | ✅ DONE | - | 已把 `risk-report.json` 里的 `samplesForL3` / `blockedSamples` 收口为 `gate-summary.json` 内的 `layeredDecision`：明确产出 `overallDecision`、`stopAtL2`、`l3Plan`、`l4Plan`，使“停在 L2 / 升级到 L3 / 延后到 L4”的边界机器可读且默认仍保持 automation-first | `02-总体技术路线.md` |
-| SV-004 | 最小行为测试（compute-first） | TODO | P0（主线） | **当前主线。** 直接复用 `layeredDecision.l3Plan.candidateSampleKeys`，只从活跃 `L2` 候选集中挑极少量高价值样本进入 compute-first 行为测试，不直接扩大到全量样本 | `05-L3-最小行为测试.md` |
+| SV-004 | 最小行为测试（compute-first） | ONGOING | P0（主线） | **当前主线。** 首版 compute-only harness 已能直接复用 `layeredDecision.l3Plan.candidateSampleKeys` 生成 `behavior-summary.json`，并稳定执行 `test_casts` / `test_fast_math_select`；下一步聚焦解释并收敛 `test_casts` 的 fail evidence，同时继续把 fragment 候选留在 render-second | `05-L3-最小行为测试.md` |
+| SV-004A | 落地首版 compute-only behavior harness | ✅ DONE | - | 已新增 `Scripts/ir_semantics_behavior_runner.py`、`Scripts/metal_compute_behavior_runner.swift` 与 `Scripts/test_ir_semantics_behavior_runner.py`，让 `SV-004` 可以直接消费 `gate-summary.json` 的活跃 `L2` 候选并产出结构化 `behavior-summary.json` | `05-L3-最小行为测试.md` |
 | SV-005 | 真实场景验证流程收口 | TODO | P2 | 把 `.gputrace` / render diff / MCP live 验证收口成严格后置 gate；只有在 `SV-004` 证据仍不足或风险只会在 runtime/live 中暴露时才允许升级，且不得回流为日常默认流程 | `06-L4-真实场景验证.md` |
 
 ### 当前关键卡点
 
-- **缺少行为级 oracle**：`SV-006` 已给出 machine-actionable 的升级边界，但当前仍没有 compute-first harness 去判断这 3 个活跃 `L2` 候选样本的行为是否一致；`SV-004` 必须小步起步，而不是被整批 `L3` 样本牵着走
+- **首版行为级 oracle 已落地，但当前证据只覆盖 compute-first 子集**：`test_fast_math_select` 已通过 reference-vs-generated 对跑，`test_casts` 已暴露可复现实质行为差异，而 `test_intrinsic_vector_icmp_zext` 仍因 fragment 形态后置到 render-second；`SV-004` 当前已进入“解释 fail evidence + 决定下一个最小修复面”的阶段
 - **`SV-003` 现在更像长期守护约束，而不是新的功能建设任务**：必须持续保证 `test-data-representatives` 是跨机器硬默认，`daily-default / local-corpus-representatives` 只是本地增强入口，避免把人工准备环境重新写回日常 gate
 - **`test_struct_array_field` 的当前口径必须和较早批量快照分开**：在硬默认 gate 中它已是 blocked sample，但仓库里保留的 `test-data-batch` 参考快照仍把它记成 compile failure；若不分层表述，文档就会继续自相矛盾
 - **真实场景验证成本高且可能引入人工步骤**：`SV-006` 已把 L4 明确收口为后置 gate，但若未来确实需要用户介入，仍必须先压缩到最小步骤并征得确认
@@ -270,6 +291,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representati
 - **要把 `air.fast_*` intrinsic alias 与纯 instruction-level fast-math flag 漂移视为降噪对象**：若 compile option 与 function attr 没变，这类差异更接近 `L1` 噪声，而不应继续把代表集里的默认 debt 放大成 `L2`
 - **对环境相关代表集，job count 不能只用单点值判定**：要区分“跨机器都必须成立的硬下界”和“本机样本齐备时的完整代表集”，否则容易把缺样本误报成回归
 - **优先把高频手工流程脚本化**；若无法脚本化，也不能默认把用户人工操作写成日常 gate
+- **L3 第一版优先复用 reference MSL vs generated MSL 对跑，比一上来就建立完整 CPU oracle 更容易在低人力预算下落地**
 - **要区分“背景问题”和“当前主线”**：本目录当前最该做的是守住稳定离线 gate，并把升级/止损边界写清楚，而不是过早切到更高成本的运行时验证
 
 ## 参考信息

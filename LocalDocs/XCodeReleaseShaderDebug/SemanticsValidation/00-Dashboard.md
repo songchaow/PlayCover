@@ -87,7 +87,7 @@ makeLibrary(source:) / metal -c
    - 这是最稳定、最不依赖外部环境的日常 gate
    - 任何新增命令、样本或边界，都不应破坏这条默认路径的 agent 自主执行性
 2. **把 `daily-default` / `local-corpus-representatives` 明确为“本机已有样本时的增强入口”，而不是日常强依赖**
-   - 当前脚本语义已经允许本地 `ShaderCorpus` 缺样本时降级为 warning
+   - 当前脚本语义已通过 `minimumExpectedJobCount + expectedJobCount` 把“硬下界”和“完整代表集”分开：缺少部分本地 `ShaderCorpus` 代表样本时只降级为 `WARN`，不会误判为 `FAIL`
    - 因此不应把 fresh capture、人工准备环境或用户协助补样本写进默认 gate
 3. **把代表集维护、gate profile、baseline snapshot 与 manifest 当成同一份边界契约来维护**
    - 代表集有意变化时，应同步更新对应 profile / baseline / manifest 语义
@@ -200,6 +200,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representati
 - `ShaderCorpus` 日常 gate 默认只复用**当前机器上已经存在**的本地样本
 - 若当前机器上没有合适样本，不应自动升级成需要用户介入的 fresh capture 流程；这时应优先退回 `test-data-representatives` 或停在离线层汇报
 - `daily-default` / `local-corpus-representatives` 的定位是“增强证据”，不是把人工准备环境重新引回默认 gate
+- 对这两个 preset，`gate profile` 应区分 `minimumExpectedJobCount`（硬下界）与 `expectedJobCount`（完整代表集）；低于下界或超出代表集边界才记为 `FAIL`，仅缺少部分本地代表样本时记为 `WARN`
 - `SV-003` 当前已完成“固定样本集 + 固定命令 + 固定输出目录 + `gate-summary.json` / `--enforce-gate`”的首轮收口；剩余工作已收窄到继续维护代表集，并按后续经验继续细化升级边界
 
 ### 运行时链路验证（只在必要时）
@@ -281,6 +282,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representati
 - **先做离线，再做 live**；live 只用于阶段性确认，不做默认主战场
 - **不要把“文本完全一样”误当成“语义一样”**；后续比较应以 canonical summary + 风险分级为主
 - **第一版 canonical compare 必须主动降噪**：SSA 名称、metadata 编号、`bufferSize` 缺失、`readonly/readnone` 这类编译器优化后常见变化，不应直接视为 L3
+- **对环境相关代表集，job count 不能只用单点值判定**：要区分“跨机器都必须成立的硬下界”和“本机样本齐备时的完整代表集”，否则容易把缺样本误报成回归
 - **优先把高频手工流程脚本化**；若无法脚本化，也不能默认把用户人工操作写成日常 gate
 - **要区分“背景问题”和“当前主线”**：本目录当前最该做的是把 L1/L2 收口成稳定离线 gate，而不是过早切到更高成本的运行时验证
 

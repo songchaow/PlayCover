@@ -204,7 +204,8 @@ def build_gate_profiles() -> dict[str, dict[str, Any]]:
         "allowedL2SampleKeys": list(TEST_DATA_REPRESENTATIVE_L2_KEYS),
     }
     local_corpus_profile = {
-        "description": "本机 ShaderCorpus 代表集的首版 gate 基线：当前保留 4 个已知 L3 结构阻断样本和 1 个已知 L2 样本。",
+        "description": "本机 ShaderCorpus 代表集的首版 gate 基线：当前保留 4 个已知 L3 结构阻断样本和 1 个已知 L2 样本；若本机缺少部分代表样本，仅降级为 warning。",
+        "minimumExpectedJobCount": 0,
         "expectedJobCount": len(LOCAL_SHADERCORPUS_REPRESENTATIVES),
         "allowedFailureSamples": {},
         "allowedBlockedSampleKeys": list(LOCAL_SHADERCORPUS_ALLOWED_BLOCKED_KEYS),
@@ -214,7 +215,8 @@ def build_gate_profiles() -> dict[str, dict[str, Any]]:
         "test-data-representatives": test_data_profile,
         "local-corpus-representatives": local_corpus_profile,
         "daily-default": {
-            "description": "默认日常 gate：合并 test-data 代表集与本机 ShaderCorpus 代表集，只在出现新增 round-trip/L3 回归时阻断。",
+            "description": "默认日常 gate：合并 test-data 代表集与本机 ShaderCorpus 代表集，只在出现新增 round-trip/L3 回归时阻断；若本机缺少部分 ShaderCorpus 代表样本，仅降级为 warning。",
+            "minimumExpectedJobCount": int(test_data_profile["expectedJobCount"]),
             "expectedJobCount": int(test_data_profile["expectedJobCount"]) + int(local_corpus_profile["expectedJobCount"]),
             "allowedFailureSamples": {
                 **dict(test_data_profile["allowedFailureSamples"]),
@@ -228,6 +230,18 @@ def build_gate_profiles() -> dict[str, dict[str, Any]]:
             ),
         },
     }
+
+
+def format_expected_job_count(profile: dict[str, Any]) -> str:
+    minimum = profile.get("minimumExpectedJobCount")
+    maximum = profile.get("expectedJobCount")
+    if minimum is None and maximum is None:
+        return "unbounded"
+    if maximum is None:
+        return f">= {int(minimum)}"
+    if minimum is None or int(minimum) == int(maximum):
+        return str(int(maximum))
+    return f"{int(minimum)}..{int(maximum)} (preferred={int(maximum)})"
 
 
 def print_available_presets(root: Path) -> None:
@@ -245,7 +259,7 @@ def print_available_gate_profiles() -> None:
     for name, profile in profiles.items():
         print(f"- {name}")
         print(f"  description: {profile['description']}")
-        print(f"  expected job count: {profile['expectedJobCount']}")
+        print(f"  expected job count: {format_expected_job_count(profile)}")
 
 
 def resolve_gate_profile(args: argparse.Namespace) -> tuple[str | None, dict[str, Any] | None]:

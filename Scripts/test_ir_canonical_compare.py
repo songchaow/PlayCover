@@ -135,6 +135,71 @@ class IRCanonicalCompareTests(unittest.TestCase):
         self.assertIn("test_struct_array_field", summary["activeKnownDebt"]["failureSampleKeys"])
         self.assertIn("test_casts", summary["activeKnownDebt"]["l2SampleKeys"])
 
+    def test_assess_gate_result_warns_when_job_count_is_below_preferred_but_within_allowed_range(self) -> None:
+        samples = [
+            {
+                "comparisonKey": f"explicit_ll:/tmp/sample_{index}.ll",
+                "inputPath": f"/tmp/sample_{index}.ll",
+                "roundTripStatus": "success",
+                "failureStage": None,
+                "riskLevel": "L0",
+            }
+            for index in range(8)
+        ]
+        roundtrip_report = make_roundtrip_report(job_count=8)
+        risk_report = make_risk_report(samples=samples, blocked_samples=[], l2_samples=[])
+
+        summary = canonical_compare.assess_gate_result(
+            roundtrip_report,
+            risk_report,
+            gate_profile={
+                "minimumExpectedJobCount": 8,
+                "expectedJobCount": 13,
+                "allowedFailureSamples": {},
+                "allowedBlockedSampleKeys": [],
+                "allowedL2SampleKeys": [],
+            },
+            profile_name="daily-default",
+        )
+
+        self.assertEqual(summary["status"], "warn")
+        self.assertFalse(summary["shouldBlock"])
+        self.assertEqual(summary["jobCountStatus"], "below_preferred")
+        self.assertIsNone(summary["regressions"]["jobCountMismatch"])
+        self.assertEqual(summary["jobCountWarning"]["actualJobCount"], 8)
+
+    def test_assess_gate_result_fails_when_job_count_drops_below_minimum_boundary(self) -> None:
+        samples = [
+            {
+                "comparisonKey": f"explicit_ll:/tmp/sample_{index}.ll",
+                "inputPath": f"/tmp/sample_{index}.ll",
+                "roundTripStatus": "success",
+                "failureStage": None,
+                "riskLevel": "L0",
+            }
+            for index in range(7)
+        ]
+        roundtrip_report = make_roundtrip_report(job_count=7)
+        risk_report = make_risk_report(samples=samples, blocked_samples=[], l2_samples=[])
+
+        summary = canonical_compare.assess_gate_result(
+            roundtrip_report,
+            risk_report,
+            gate_profile={
+                "minimumExpectedJobCount": 8,
+                "expectedJobCount": 13,
+                "allowedFailureSamples": {},
+                "allowedBlockedSampleKeys": [],
+                "allowedL2SampleKeys": [],
+            },
+            profile_name="daily-default",
+        )
+
+        self.assertEqual(summary["status"], "fail")
+        self.assertTrue(summary["shouldBlock"])
+        self.assertEqual(summary["jobCountStatus"], "out_of_range")
+        self.assertEqual(summary["regressions"]["jobCountMismatch"]["reason"], "below_minimum")
+
     def test_assess_gate_result_fails_for_unexpected_blocked_sample(self) -> None:
         blocked_sample = {
             "comparisonKey": "explicit_ll:/tmp/test_new_regression.ll",

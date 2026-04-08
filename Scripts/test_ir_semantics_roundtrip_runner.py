@@ -64,6 +64,25 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
         )
         self.assertEqual(len(args.ll_inputs), len(roundtrip_runner.TEST_DATA_REPRESENTATIVE_FILES))
 
+        gate_profile_name, gate_profile = roundtrip_runner.resolve_gate_profile(args)
+        self.assertEqual(gate_profile_name, "daily-default")
+        self.assertEqual(gate_profile["minimumExpectedJobCount"], len(roundtrip_runner.TEST_DATA_REPRESENTATIVE_FILES))
+        self.assertEqual(
+            gate_profile["expectedJobCount"],
+            len(roundtrip_runner.TEST_DATA_REPRESENTATIVE_FILES) + len(roundtrip_runner.LOCAL_SHADERCORPUS_REPRESENTATIVES),
+        )
+
+    def test_local_corpus_gate_profile_allows_missing_local_samples(self) -> None:
+        parser = roundtrip_runner.build_parser()
+        args = parser.parse_args(["--preset", "local-corpus-representatives"])
+
+        roundtrip_runner.apply_roundtrip_preset(args, REPO_ROOT)
+
+        gate_profile_name, gate_profile = roundtrip_runner.resolve_gate_profile(args)
+        self.assertEqual(gate_profile_name, "local-corpus-representatives")
+        self.assertEqual(gate_profile["minimumExpectedJobCount"], 0)
+        self.assertEqual(gate_profile["expectedJobCount"], len(roundtrip_runner.LOCAL_SHADERCORPUS_REPRESENTATIVES))
+
     def test_resolve_llvm_dis_path_prefers_explicit_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

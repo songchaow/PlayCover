@@ -949,9 +949,88 @@ def _normalize_gate_profile(gate_profile: dict[str, Any] | None) -> dict[str, An
     }
     profile["allowedBlockedSampleKeys"] = sorted({str(item) for item in (profile.get("allowedBlockedSampleKeys") or [])})
     profile["allowedL2SampleKeys"] = sorted({str(item) for item in (profile.get("allowedL2SampleKeys") or [])})
+    minimum_expected_job_count = profile.get("minimumExpectedJobCount")
+    if minimum_expected_job_count is None:
+        minimum_expected_job_count = profile.get("expectedJobCount")
+    profile["minimumExpectedJobCount"] = minimum_expected_job_count
     profile.setdefault("expectedJobCount", None)
     profile.setdefault("description", None)
     return profile
+
+
+def _evaluate_job_count_expectation(normalized_profile: dict[str, Any], actual_job_count: int) -> dict[str, Any]:
+    expected_job_count_raw = normalized_profile.get("expectedJobCount")
+    minimum_job_count_raw = normalized_profile.get("minimumExpectedJobCount")
+    expected_job_count = int(expected_job_count_raw) if expected_job_count_raw is not None else None
+    minimum_expected_job_count = int(minimum_job_count_raw) if minimum_job_count_raw is not None else expected_job_count
+
+    if expected_job_count is None and minimum_expected_job_count is None:
+        return {
+            "expectedJobCount": None,
+            "minimumExpectedJobCount": None,
+            "status": "unbounded",
+            "mismatch": None,
+            "warning": None,
+        }
+
+    if minimum_expected_job_count is not None and actual_job_count < minimum_expected_job_count:
+        return {
+            "expectedJobCount": expected_job_count,
+            "minimumExpectedJobCount": minimum_expected_job_count,
+            "status": "out_of_range",
+            "mismatch": {
+                "reason": "below_minimum",
+                "minimumExpectedJobCount": minimum_expected_job_count,
+                "expectedJobCount": expected_job_count,
+                "actualJobCount": actual_job_count,
+                "message": (
+                    f"job count dropped below minimum boundary: expected >= {minimum_expected_job_count}"
+                    f", got {actual_job_count}"
+                ),
+            },
+            "warning": None,
+        }
+
+    if expected_job_count is not None and actual_job_count > expected_job_count:
+        return {
+            "expectedJobCount": expected_job_count,
+            "minimumExpectedJobCount": minimum_expected_job_count,
+            "status": "out_of_range",
+            "mismatch": {
+                "reason": "above_expected",
+                "minimumExpectedJobCount": minimum_expected_job_count,
+                "expectedJobCount": expected_job_count,
+                "actualJobCount": actual_job_count,
+                "message": f"job count grew beyond configured representative set: expected <= {expected_job_count}, got {actual_job_count}",
+            },
+            "warning": None,
+        }
+
+    if expected_job_count is not None and actual_job_count < expected_job_count:
+        return {
+            "expectedJobCount": expected_job_count,
+            "minimumExpectedJobCount": minimum_expected_job_count,
+            "status": "below_preferred",
+            "mismatch": None,
+            "warning": {
+                "reason": "below_preferred",
+                "minimumExpectedJobCount": minimum_expected_job_count,
+                "expectedJobCount": expected_job_count,
+                "actualJobCount": actual_job_count,
+                "message": (
+                    f"job count below preferred representative set: expected {expected_job_count}, got {actual_job_count}"
+                    f" (minimum {minimum_expected_job_count})"
+                ),
+            },
+        }
+
+    return {
+        "expectedJobCount": expected_job_count,
+        "minimumExpectedJobCount": minimum_expected_job_count,
+        "status": "match",
+        "mismatch": None,
+        "warning": None,
+    }
 
 
 def assess_gate_result(
@@ -1004,37 +1083,40 @@ def assess_gate_result(
                 }
             )
 
-    missing_expected_failures = sorted(set(allowed_failures) - set(failure_by_key))
-    unexpected_blocked_keys = sorted(set(blocked_by_key) - allowed_blocked_keys)
-    missing_expected_blocked = sorted(allowed_blocked_keys - set(blocked_by_key))
-    unexpected_l2_keys = sorted(set(l2_by_key) - allowed_l2_keys)
-    missing_expected_l2 = sorted(allowed_l2_keys - set(l2_by_key))
+    observed_by_key = _identity_map(samples)
+    observed_sample_keys = set(observed_by_key)
 
-    expected_job_count = normalized_profile.get("expectedJobCount")
-    job_count_mismatch = None
-    if expected_job_count is not None and int(risk_report.get("jobCount") or 0) != int(expected_job_count):
-        job_count_mismatch = {
-            "expectedJobCount": int(expected_job_count),
-            "actualJobCount": int(risk_report.get("jobCount") or 0),
-        }
+    resolved_expected_failures = sorted((set(allowed_failures) - set(failure_by_key)) & observed_sample_keys)
+    unobserved_expected_failures = sorted(set(allowed_failures) - observed_sample_keys)
+    unexpected_blocked_keys = sorted(set(blocked_by_key) - allowed_blocked_keys)
+    resolved_expected_blocked = sorted((allowed_blocked_keys - set(blocked_by_key)) & observed_sample_keys)
+    unobserved_expected_blocked = sorted(allowed_blocked_keys - observed_sample_keys)
+    unexpected_l2_keys = sorted(set(l2_by_key) - allowed_l2_keys)
+    resolved_expected_l2 = sorted((allowed_l2_keys - set(l2_by_key)) & observed_sample_keys)
+    unobserved_expected_l2 = sorted(allowed_l2_keys - observed_sample_keys)
+
+    actual_job_count = int(risk_report.get("jobCount") or 0)
+    job_count_evaluation = _evaluate_job_count_expectation(normalized_profile, actual_job_count)
+    expected_job_count = job_count_evaluation["expectedJobCount"]
+    minimum_expected_job_count = job_count_evaluation["minimumExpectedJobCount"]
+    job_count_mismatch = job_count_evaluation["mismatch"]
+    job_count_warning = job_count_evaluation["warning"]
 
     active_allowed_failures = sorted(set(failure_by_key) & set(allowed_failures))
     active_allowed_blocked = sorted(set(blocked_by_key) & allowed_blocked_keys)
     active_allowed_l2 = sorted(set(l2_by_key) & allowed_l2_keys)
 
     notes: list[str] = []
-    if missing_expected_failures:
-        notes.append(f"known failure resolved: {', '.join(missing_expected_failures)}")
-    if missing_expected_blocked:
-        notes.append(f"known blocked sample improved: {', '.join(missing_expected_blocked)}")
-    if missing_expected_l2:
-        notes.append(f"known L2 sample improved: {', '.join(missing_expected_l2)}")
+    if resolved_expected_failures:
+        notes.append(f"known failure resolved: {', '.join(resolved_expected_failures)}")
+    if resolved_expected_blocked:
+        notes.append(f"known blocked sample improved: {', '.join(resolved_expected_blocked)}")
+    if resolved_expected_l2:
+        notes.append(f"known L2 sample improved: {', '.join(resolved_expected_l2)}")
 
     failure_reasons: list[str] = []
     if job_count_mismatch:
-        failure_reasons.append(
-            f"job count changed: expected {job_count_mismatch['expectedJobCount']}, got {job_count_mismatch['actualJobCount']}"
-        )
+        failure_reasons.append(job_count_mismatch["message"])
     if unexpected_failures:
         failure_reasons.extend(
             f"unexpected failure {item['sampleKey']}@{item.get('failureStage') or 'unknown'}" for item in unexpected_failures
@@ -1043,6 +1125,8 @@ def assess_gate_result(
         failure_reasons.extend(f"unexpected blocked sample {sample_key}" for sample_key in unexpected_blocked_keys)
 
     warning_reasons: list[str] = []
+    if job_count_warning:
+        warning_reasons.append(job_count_warning["message"])
     if unexpected_l2_keys:
         warning_reasons.extend(f"new L2 sample {sample_key}" for sample_key in unexpected_l2_keys)
     if active_allowed_failures:
@@ -1074,8 +1158,11 @@ def assess_gate_result(
         "shouldBlock": status == "fail",
         "summary": summary,
         "recommendedAction": recommended_action,
+        "minimumExpectedJobCount": minimum_expected_job_count,
         "expectedJobCount": expected_job_count,
-        "jobCount": risk_report.get("jobCount"),
+        "jobCount": actual_job_count,
+        "jobCountStatus": job_count_evaluation["status"],
+        "jobCountWarning": job_count_warning,
         "riskCounts": risk_report.get("riskCounts") or {},
         "activeKnownDebt": {
             "failureSampleKeys": active_allowed_failures,
@@ -1083,9 +1170,14 @@ def assess_gate_result(
             "l2SampleKeys": active_allowed_l2,
         },
         "improvements": {
-            "resolvedFailureSampleKeys": missing_expected_failures,
-            "resolvedBlockedSampleKeys": missing_expected_blocked,
-            "resolvedL2SampleKeys": missing_expected_l2,
+            "resolvedFailureSampleKeys": resolved_expected_failures,
+            "resolvedBlockedSampleKeys": resolved_expected_blocked,
+            "resolvedL2SampleKeys": resolved_expected_l2,
+        },
+        "unobservedExpectedDebt": {
+            "failureSampleKeys": unobserved_expected_failures,
+            "blockedSampleKeys": unobserved_expected_blocked,
+            "l2SampleKeys": unobserved_expected_l2,
         },
         "regressions": {
             "jobCountMismatch": job_count_mismatch,
@@ -1094,6 +1186,7 @@ def assess_gate_result(
             "unexpectedL2SampleKeys": unexpected_l2_keys,
         },
         "observed": {
+            "sampleKeys": sorted(observed_sample_keys),
             "failureSampleKeys": sorted(failure_by_key),
             "blockedSampleKeys": sorted(blocked_by_key),
             "l2SampleKeys": sorted(l2_by_key),

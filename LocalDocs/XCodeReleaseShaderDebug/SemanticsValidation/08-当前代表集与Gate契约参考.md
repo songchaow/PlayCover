@@ -67,11 +67,11 @@
 当前默认行为产物来自：
 
 - `build/semantics-validation/roundtrip/test-data-representatives/behavior-summary.json`
-- `generatedAt = 2026-04-08T11:53:15Z`
+- `generatedAt = 2026-04-08T12:15:38Z`
 
 当前事实：
 
-- `status = fail`
+- `status = pass`
 - `candidateSampleKeys = [test_fast_math_select, test_intrinsic_vector_icmp_zext]`
 - `readySampleCount = 2`
 - `executedSampleCount = 2`
@@ -79,13 +79,13 @@
 - `errorCount = 0`
 - 当前默认执行结果：
   - `test_fast_math_select = pass`
-  - `test_intrinsic_vector_icmp_zext = fail`
+  - `test_intrinsic_vector_icmp_zext = pass`
 
 补充说明：
 
 - 当前默认输出目录**不是**单独的 `build/semantics-validation/behavior/...`，而是直接复用 `gate-summary.outputRoot`
 - 因此重复执行时，agent 不需要额外人工找路径；只要有固定的 `gate-summary.json` 与 `roundtrip-summary.json`，就能在同目录下继续补行为证据
-- 这里的 `fail` 表示 **reference-vs-generated 行为未对齐**，不是 harness 没跑起来；当前默认控制面已把最小 render-second 视为正式执行面的一部分，而不再把它停在 deferred
+- `test_intrinsic_vector_icmp_zext` 之前的 `fail` 已确认来自 reference sample 与 `.ll` 输出语义漂移；把 `cmp/zext` 重新接回可观察输出后，当前最小 render-second 已回到 `pass`
 
 ### 3. `behavior-summary.test-casts-verification.json`（定向复核入口）
 

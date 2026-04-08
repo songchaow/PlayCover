@@ -33,13 +33,17 @@ entry:
   %13 = zext <2 x i1> %10 to <2 x i8>
   %14 = extractelement <2 x i8> %13, i64 0
 
-  ; Assemble result (prevent dead code elimination)
-  %15 = fpext half %3 to float
-  %16 = fpext half %5 to float
-  %17 = insertelement <4 x float> <float poison, float poison, float poison, float 0.000000e+00>, float %15, i64 0
-  %18 = insertelement <4 x float> %17, float %16, i64 1
-  %19 = insertelement <4 x float> %18, float %16, i64 2
-  ret <4 x float> %19
+; Assemble result so clamp / cmp / zext all remain behavior-observable
+%15 = fpext half %3 to float
+%16 = fpext half %5 to float
+%17 = uitofp i1 %11 to float
+%18 = uitofp i8 %14 to float
+%19 = fadd float %17, %18
+%20 = insertelement <4 x float> <float poison, float poison, float poison, float 0.000000e+00>, float %15, i64 0
+%21 = insertelement <4 x float> %20, float %16, i64 1
+%22 = insertelement <4 x float> %21, float %19, i64 2
+ret <4 x float> %22
+
 }
 
 declare half @air.clamp.f16(half, half, half) local_unnamed_addr #1

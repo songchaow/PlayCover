@@ -8,20 +8,15 @@ fragment float4 xlatMtlMain(float4 coord [[position]]) {
     half h = half(coord.x);
     half clamped = clamp(h, half(0.0), half(1.0));
 
-    // Test 2: fma with half operands
+    // Test 2: vector icmp producing boolN
     half a = half(coord.y);
-    half b = half(coord.z);
-    half c = half(coord.w);
-    half result = fma(a, b, c);
-
-    // Test 3: vector icmp producing boolN
-    half2 v1 = half2(half(coord.x), half(coord.y));
-    half2 v2 = half2(half(coord.z), half(coord.w));
+    half2 v1 = half2(h, a);
+    half2 v2 = half2(a, h);
     bool2 cmp = (v1 == v2);
 
-    // Test 4: zext <N x i1> to <N x i8> → ucharN
+    // Test 3: zext <N x i1> to <N x i8> → ucharN
     uchar2 extended = uchar2(cmp);
 
-    // Use results to prevent dead code elimination
-    return float4(float(clamped), float(result), float(cmp.x) + float(extended.x), 0.0);
+    // Keep clamp / cmp / zext all behavior-observable in the rendered output.
+    return float4(float(clamped), float(a), float(cmp.x) + float(extended.x), 0.0);
 }

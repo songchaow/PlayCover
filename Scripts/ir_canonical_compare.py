@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 import re
 from collections import Counter
 from pathlib import Path
@@ -1010,6 +1011,115 @@ def _layered_sample_entry(sample: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _resolve_optional_path(value: Any) -> Path | None:
+    if value in {None, ""}:
+        return None
+    return Path(str(value)).expanduser().resolve()
+
+
+def _load_optional_json(path: Path | None) -> dict[str, Any] | None:
+    if path is None or not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _behavior_sample_key(sample: dict[str, Any]) -> str:
+    explicit_sample_key = sample.get("sampleKey")
+    if explicit_sample_key:
+        return str(explicit_sample_key)
+    return sample_identity(sample)
+
+
+def _collect_l3_behavior_evidence(gate_summary: dict[str, Any], l3_sample_keys: list[str]) -> dict[str, Any]:
+    if not l3_sample_keys:
+        return {
+            "behaviorSummaryPath": None,
+            "coveredSampleKeys": [],
+            "missingSampleKeys": [],
+        }
+
+    output_root = _resolve_optional_path(gate_summary.get("outputRoot"))
+    if output_root is None:
+        return {
+            "behaviorSummaryPath": None,
+            "coveredSampleKeys": [],
+            "missingSampleKeys": list(l3_sample_keys),
+        }
+
+    behavior_summary_path = output_root / "behavior-summary.json"
+    behavior_summary = _load_optional_json(behavior_summary_path)
+    if behavior_summary is None:
+        return {
+            "behaviorSummaryPath": str(behavior_summary_path),
+            "coveredSampleKeys": [],
+            "missingSampleKeys": list(l3_sample_keys),
+        }
+
+    behavior_output_root = _resolve_optional_path(behavior_summary.get("outputRoot"))
+    if behavior_output_root is not None and behavior_output_root != output_root:
+        return {
+            "behaviorSummaryPath": str(behavior_summary_path),
+            "coveredSampleKeys": [],
+            "missingSampleKeys": list(l3_sample_keys),
+        }
+
+    gate_roundtrip_report_path = _resolve_optional_path(gate_summary.get("roundtripReportPath"))
+    behavior_roundtrip_report_path = _resolve_optional_path(behavior_summary.get("roundtripReportPath"))
+    if (
+        gate_roundtrip_report_path is not None
+        and behavior_roundtrip_report_path is not None
+        and behavior_roundtrip_report_path != gate_roundtrip_report_path
+    ):
+        return {
+            "behaviorSummaryPath": str(behavior_summary_path),
+            "coveredSampleKeys": [],
+            "missingSampleKeys": list(l3_sample_keys),
+        }
+
+    roundtrip_report = _load_optional_json(gate_roundtrip_report_path)
+    current_candidate_source_by_key: dict[str, Path] = {}
+    if roundtrip_report is not None:
+        for item in roundtrip_report.get("results") or []:
+            candidate_source_path = _resolve_optional_path(item.get("generatedMSLPath"))
+            if candidate_source_path is None:
+                continue
+            current_candidate_source_by_key[sample_identity(item)] = candidate_source_path
+
+    passed_sample_keys: set[str] = set()
+    executed_status_by_key = {
+        _behavior_sample_key(item): str(item.get("status") or "")
+        for item in (behavior_summary.get("executedSamples") or [])
+    }
+    ready_source_by_key = {
+        _behavior_sample_key(item): _resolve_optional_path(item.get("candidateSourcePath"))
+        for item in (behavior_summary.get("readySamples") or [])
+    }
+
+    for sample_key in l3_sample_keys:
+        if executed_status_by_key.get(sample_key) != "pass":
+            continue
+        current_candidate_source = current_candidate_source_by_key.get(sample_key)
+        ready_candidate_source = ready_source_by_key.get(sample_key)
+        if (
+            current_candidate_source is not None
+            and ready_candidate_source is not None
+            and ready_candidate_source != current_candidate_source
+        ):
+            continue
+        passed_sample_keys.add(sample_key)
+
+    covered_sample_keys = [sample_key for sample_key in l3_sample_keys if sample_key in passed_sample_keys]
+    return {
+        "behaviorSummaryPath": str(behavior_summary_path),
+        "coveredSampleKeys": covered_sample_keys,
+        "missingSampleKeys": [sample_key for sample_key in l3_sample_keys if sample_key not in passed_sample_keys],
+    }
+
+
 def assess_layered_validation_decision(gate_summary: dict[str, Any], risk_report: dict[str, Any]) -> dict[str, Any]:
     regressions = gate_summary.get("regressions") or {}
     roundtrip_stats = gate_summary.get("roundtripStats") or {}
@@ -1080,6 +1190,8 @@ def assess_layered_validation_decision(gate_summary: dict[str, Any], risk_report
         deferred_l3_candidates = []
         deferred_l3_reason = None
 
+    l3_candidate_sample_keys = [item["sampleKey"] for item in l3_candidates]
+    behavior_evidence = _collect_l3_behavior_evidence(gate_summary, l3_candidate_sample_keys)
     l4_blocking_reasons: list[str] = []
     if should_block:
         l4_decision = "blocked"
@@ -1088,9 +1200,11 @@ def assess_layered_validation_decision(gate_summary: dict[str, Any], risk_report
     else:
         l4_decision = "defer"
         l4_reason = "L4 仍是严格后置 gate：只有在 L3 证据不足或风险只会在 runtime/live 中暴露时，才允许升级。"
-        if l3_candidates:
+        missing_behavior_sample_keys = list(behavior_evidence["missingSampleKeys"])
+        if missing_behavior_sample_keys:
             l4_blocking_reasons.append(
-                f"L3 behavior evidence is still missing for active L2 candidates: {', '.join(item['sampleKey'] for item in l3_candidates)}"
+                "L3 behavior evidence is still missing for active L2 candidates: "
+                + ", ".join(missing_behavior_sample_keys)
             )
         if blocked_sample_keys:
             l4_blocking_reasons.append(
@@ -1130,6 +1244,9 @@ def assess_layered_validation_decision(gate_summary: dict[str, Any], risk_report
             "decision": l4_decision,
             "eligible": False,
             "reason": l4_reason,
+            "behaviorSummaryPath": behavior_evidence["behaviorSummaryPath"],
+            "behaviorEvidenceSampleKeys": behavior_evidence["coveredSampleKeys"],
+            "missingBehaviorEvidenceSampleKeys": behavior_evidence["missingSampleKeys"],
             "blockingReasons": l4_blocking_reasons,
             "allowedWhen": [
                 "L2/L3 证据仍不足以解释剩余风险",

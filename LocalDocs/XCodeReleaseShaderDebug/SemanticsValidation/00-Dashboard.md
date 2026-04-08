@@ -87,6 +87,7 @@ makeLibrary(source:) / metal -c
 - 同一份代表产物里，`layeredDecision.overallDecision = promote_l2_candidates_to_l3` 保持不变，`l3Plan.candidateSampleKeys` 当前仍为 `test_fast_math_select`、`test_intrinsic_vector_icmp_zext`
 - `gate-summary.json` 当前已把 `test_casts` 记为 `resolvedL2SampleKeys`，说明它不再属于活跃 `L2` debt，而是当前已收口的已知改进
 - `behavior-summary.json` 默认直接写回 `build/semantics-validation/roundtrip/test-data-representatives/`：当前会实际执行 `test_fast_math_select` 与 `test_intrinsic_vector_icmp_zext`，最新状态为 `pass`，其中样本结果均为 `pass`
+- `gate-summary.json` 的 `layeredDecision.l4Plan` 现已同步消费同目录 `behavior-summary.json`：当前 `behaviorEvidenceSampleKeys` 会记录这两个 `pass` 样本、`missingBehaviorEvidenceSampleKeys` 为空，`blockingReasons` 不再误报 “L3 behavior evidence is still missing ...”，而只保留真实仍未解除的后置阻塞（当前仍是 `test_struct_array_field`）
 - `behavior-artifacts/test_intrinsic_vector_icmp_zext.result.json` 当前已显示固定 `4x4` `rgba16Float` 离屏 render 下 `mismatchCount = 0 / 64`、`maxAbsDiff = 0`；`behavior-summary.test-casts-verification.json` 也已显示 `test_casts` 的 scalar / vector `2/2` case 全部通过
 - `Scripts/ir_semantics_behavior_runner.py` 与 `Scripts/test_ir_semantics_behavior_runner.py` 已继续补齐 `SV-004F` 的离线护栏：当前除了 candidate 选择、`behavior-summary.json` 汇总、compute / fragment ready path、`registry-missing` defer，以及 `run_sample_behavior()` 的 Python→Swift 桥接成功/失败路径外，还把 reference MSL 与 `.ll` 的 entry / shader kind / 返回类型 / 参数语义同步性前移成默认检查，进一步降低 sample oracle 漂移伪装成 lowering 回归的风险
 - `blockedSamples` 当前仍只包含 `test_struct_array_field`，它会继续被 `stopAtL2` / `l4Plan` 明确挡在离线层与后置 gate 之前

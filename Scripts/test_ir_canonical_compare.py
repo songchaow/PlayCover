@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -129,6 +131,11 @@ def make_risk_report(*, samples: list[dict], blocked_samples: list[dict] | None 
         "blockedSamples": blocked_samples or [],
         "samplesForL3": l2_samples or [],
     }
+
+
+def write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
 
 
 class IRCanonicalCompareTests(unittest.TestCase):
@@ -500,6 +507,147 @@ class IRCanonicalCompareTests(unittest.TestCase):
         self.assertEqual(layered["l3Plan"]["candidateSampleKeys"], ["test_casts"])
         self.assertEqual(layered["blockedSampleKeys"], ["test_struct_array_field"])
         self.assertEqual(layered["l4Plan"]["decision"], "defer")
+
+    def test_assess_layered_validation_decision_uses_matching_behavior_summary_as_l3_evidence(self) -> None:
+        l2_sample = {
+            "comparisonKey": "explicit_ll:/tmp/test_casts.ll",
+            "inputPath": "/tmp/test_casts.ll",
+            "roundTripStatus": "success",
+            "failureStage": None,
+            "riskLevel": "L2",
+            "riskReason": "intrinsic usage changed",
+            "recommendedAction": "优先进入 L3 最小行为测试，不建议直接跳到 live 验证。",
+        }
+        risk_report = make_risk_report(samples=[l2_sample], blocked_samples=[], l2_samples=[l2_sample])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir) / "roundtrip" / "test-data-representatives"
+            roundtrip_report_path = output_root / "roundtrip-summary.json"
+            candidate_source_path = output_root / "generated-sources" / "test_casts.generated.metal"
+            write_json(
+                roundtrip_report_path,
+                {
+                    "results": [
+                        {
+                            "comparisonKey": l2_sample["comparisonKey"],
+                            "inputPath": l2_sample["inputPath"],
+                            "generatedMSLPath": str(candidate_source_path),
+                        }
+                    ]
+                },
+            )
+            write_json(
+                output_root / "behavior-summary.json",
+                {
+                    "outputRoot": str(output_root),
+                    "roundtripReportPath": str(roundtrip_report_path),
+                    "readySamples": [
+                        {
+                            "sampleKey": "test_casts",
+                            "candidateSourcePath": str(candidate_source_path),
+                        }
+                    ],
+                    "executedSamples": [
+                        {
+                            "sampleKey": "test_casts",
+                            "status": "pass",
+                        }
+                    ],
+                },
+            )
+            gate_summary = canonical_compare.assess_gate_result(
+                make_roundtrip_report(job_count=1),
+                risk_report,
+                gate_profile={
+                    "expectedJobCount": 1,
+                    "allowedFailureSamples": {},
+                    "allowedBlockedSampleKeys": [],
+                    "allowedL2SampleKeys": ["test_casts"],
+                },
+                profile_name="test-data-representatives",
+            )
+            gate_summary.update(
+                {
+                    "outputRoot": str(output_root),
+                    "roundtripReportPath": str(roundtrip_report_path),
+                }
+            )
+
+            layered = canonical_compare.assess_layered_validation_decision(gate_summary, risk_report)
+
+        self.assertEqual(layered["l4Plan"]["behaviorEvidenceSampleKeys"], ["test_casts"])
+        self.assertEqual(layered["l4Plan"]["missingBehaviorEvidenceSampleKeys"], [])
+        self.assertEqual(layered["l4Plan"]["blockingReasons"], ["no runtime-only trigger is present in the current offline reports"])
+
+    def test_assess_layered_validation_decision_ignores_mismatched_behavior_summary(self) -> None:
+        l2_sample = {
+            "comparisonKey": "explicit_ll:/tmp/test_casts.ll",
+            "inputPath": "/tmp/test_casts.ll",
+            "roundTripStatus": "success",
+            "failureStage": None,
+            "riskLevel": "L2",
+            "riskReason": "intrinsic usage changed",
+        }
+        risk_report = make_risk_report(samples=[l2_sample], blocked_samples=[], l2_samples=[l2_sample])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir) / "roundtrip" / "test-data-representatives"
+            roundtrip_report_path = output_root / "roundtrip-summary.json"
+            candidate_source_path = output_root / "generated-sources" / "test_casts.generated.metal"
+            write_json(
+                roundtrip_report_path,
+                {
+                    "results": [
+                        {
+                            "comparisonKey": l2_sample["comparisonKey"],
+                            "inputPath": l2_sample["inputPath"],
+                            "generatedMSLPath": str(candidate_source_path),
+                        }
+                    ]
+                },
+            )
+            write_json(
+                output_root / "behavior-summary.json",
+                {
+                    "outputRoot": str(output_root),
+                    "roundtripReportPath": str(output_root / "stale-roundtrip-summary.json"),
+                    "readySamples": [
+                        {
+                            "sampleKey": "test_casts",
+                            "candidateSourcePath": str(candidate_source_path),
+                        }
+                    ],
+                    "executedSamples": [
+                        {
+                            "sampleKey": "test_casts",
+                            "status": "pass",
+                        }
+                    ],
+                },
+            )
+            gate_summary = canonical_compare.assess_gate_result(
+                make_roundtrip_report(job_count=1),
+                risk_report,
+                gate_profile={
+                    "expectedJobCount": 1,
+                    "allowedFailureSamples": {},
+                    "allowedBlockedSampleKeys": [],
+                    "allowedL2SampleKeys": ["test_casts"],
+                },
+                profile_name="test-data-representatives",
+            )
+            gate_summary.update(
+                {
+                    "outputRoot": str(output_root),
+                    "roundtripReportPath": str(roundtrip_report_path),
+                }
+            )
+
+            layered = canonical_compare.assess_layered_validation_decision(gate_summary, risk_report)
+
+        self.assertEqual(layered["l4Plan"]["behaviorEvidenceSampleKeys"], [])
+        self.assertEqual(layered["l4Plan"]["missingBehaviorEvidenceSampleKeys"], ["test_casts"])
+        self.assertIn("L3 behavior evidence is still missing for active L2 candidates: test_casts", layered["l4Plan"]["blockingReasons"])
 
     def test_assess_layered_validation_decision_defers_new_l2_samples_for_review(self) -> None:
         l2_sample = {

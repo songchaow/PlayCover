@@ -68,6 +68,7 @@ makeLibrary(source:) / metal -c
    - 默认执行边界只保留 `test_fast_math_select` 与 `test_intrinsic_vector_icmp_zext`
    - 默认期望结果仍是 `pass/pass`
    - 继续把固定输出目录、sample oracle ↔ `.ll` 同步校验作为这条执行面的硬护栏
+   - 默认 `ir_semantics_behavior_runner.py` 已收紧为必须写回 `gate-summary.outputRoot/behavior-summary.json`；若要另存报告，只允许在显式 `--sample-key` 定向复核时使用 `--report-file`
 2. **`SV-003`：守住跨机器硬默认 gate，不让主线被旁路信息带偏**
    - `test-data-representatives` 继续是跨机器硬默认入口
    - `daily-default` / `local-corpus-representatives` / `test-data-batch` 只承担增强证据或历史参考角色，不反向驱动当前主线优先级

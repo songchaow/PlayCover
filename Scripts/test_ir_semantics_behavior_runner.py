@@ -378,6 +378,73 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
         self.assertEqual(summary["deferredSampleCount"], 0)
         self.assertIn("全部通过", summary["summary"])
 
+    def test_validate_default_output_contract_accepts_fixed_default_paths(self) -> None:
+        parser = behavior_runner.build_parser()
+        gate_summary = self.make_gate_summary()
+        args = parser.parse_args([])
+        output_root = behavior_runner.resolve_output_root(args, gate_summary)
+        report_path = behavior_runner.resolve_report_path(args, output_root)
+
+        behavior_runner.validate_default_output_contract(
+            args,
+            gate_summary,
+            output_root=output_root,
+            report_path=report_path,
+        )
+
+    def test_validate_default_output_contract_rejects_custom_output_root_for_default_gate(self) -> None:
+        parser = behavior_runner.build_parser()
+        gate_summary = self.make_gate_summary()
+        custom_output_root = REPO_ROOT / "build" / "semantics-validation" / "behavior" / "manual-probe"
+        args = parser.parse_args(["--output-root", str(custom_output_root)])
+        report_path = behavior_runner.resolve_report_path(args, custom_output_root)
+
+        with self.assertRaises(SystemExit) as exc:
+            behavior_runner.validate_default_output_contract(
+                args,
+                gate_summary,
+                output_root=custom_output_root,
+                report_path=report_path,
+            )
+
+        self.assertIn("默认 L3 行为 gate 必须写回 gate-summary.outputRoot", str(exc.exception))
+
+    def test_validate_default_output_contract_rejects_custom_report_path_for_default_gate(self) -> None:
+        parser = behavior_runner.build_parser()
+        gate_summary = self.make_gate_summary()
+        output_root = behavior_runner.resolve_output_root(parser.parse_args([]), gate_summary)
+        custom_report_path = output_root / "behavior-summary.manual-probe.json"
+        args = parser.parse_args(["--report-file", str(custom_report_path)])
+
+        with self.assertRaises(SystemExit) as exc:
+            behavior_runner.validate_default_output_contract(
+                args,
+                gate_summary,
+                output_root=output_root,
+                report_path=custom_report_path,
+            )
+
+        self.assertIn("默认 L3 行为 gate 必须写回固定 behavior-summary.json", str(exc.exception))
+
+    def test_validate_default_output_contract_allows_custom_report_for_explicit_sample_verification(self) -> None:
+        parser = behavior_runner.build_parser()
+        gate_summary = self.make_gate_summary()
+        output_root = behavior_runner.resolve_output_root(parser.parse_args([]), gate_summary)
+        custom_report_path = output_root / "behavior-summary.test-casts-verification.json"
+        args = parser.parse_args([
+            "--sample-key",
+            "test_casts",
+            "--report-file",
+            str(custom_report_path),
+        ])
+
+        behavior_runner.validate_default_output_contract(
+            args,
+            gate_summary,
+            output_root=output_root,
+            report_path=custom_report_path,
+        )
+
     def test_build_behavior_plan_defers_registry_missing_sample_without_breaking_ready_samples(self) -> None:
         gate_summary = self.make_gate_summary()
         with tempfile.TemporaryDirectory() as temp_dir:

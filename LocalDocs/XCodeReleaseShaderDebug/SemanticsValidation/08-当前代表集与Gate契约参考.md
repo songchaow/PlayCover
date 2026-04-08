@@ -226,6 +226,8 @@ python3 Scripts/ir_semantics_behavior_runner.py \
   --report-file build/semantics-validation/roundtrip/test-data-representatives/behavior-summary.test-casts-verification.json
 ```
 
+> 说明：默认行为 gate 只允许把报告写回 `gate-summary.outputRoot/behavior-summary.json`；只有像上面这样显式 `--sample-key` 的定向复核，才允许通过 `--report-file` 另存报告，而不反向改写默认控制面。
+
 ### 本机增强入口
 
 ```bash

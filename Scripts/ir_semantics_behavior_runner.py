@@ -347,12 +347,19 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def gate_output_root(gate_summary: dict[str, Any]) -> Path | None:
+    raw_output_root = gate_summary.get("outputRoot")
+    if not raw_output_root:
+        return None
+    return Path(str(raw_output_root)).expanduser().resolve()
+
+
 def resolve_output_root(args: argparse.Namespace, gate_summary: dict[str, Any]) -> Path:
     if args.output_root:
         return Path(args.output_root).expanduser().resolve()
-    raw_output_root = gate_summary.get("outputRoot")
-    if raw_output_root:
-        return Path(str(raw_output_root)).expanduser().resolve()
+    resolved_gate_output_root = gate_output_root(gate_summary)
+    if resolved_gate_output_root is not None:
+        return resolved_gate_output_root
     return (REPO_ROOT / "build" / "semantics-validation" / "behavior" / "manual").resolve()
 
 
@@ -360,6 +367,28 @@ def resolve_report_path(args: argparse.Namespace, output_root: Path) -> Path:
     if args.report_file:
         return Path(args.report_file).expanduser().resolve()
     return (output_root / "behavior-summary.json").resolve()
+
+
+def validate_default_output_contract(
+    args: argparse.Namespace,
+    gate_summary: dict[str, Any],
+    *,
+    output_root: Path,
+    report_path: Path,
+) -> None:
+    resolved_gate_output_root = gate_output_root(gate_summary)
+    if resolved_gate_output_root is None or args.sample_keys:
+        return
+
+    expected_report_path = (resolved_gate_output_root / "behavior-summary.json").resolve()
+    if output_root != resolved_gate_output_root:
+        raise SystemExit(
+            "默认 L3 行为 gate 必须写回 gate-summary.outputRoot；如需改写输出目录，请改用 --sample-key 定向复核。"
+        )
+    if report_path != expected_report_path:
+        raise SystemExit(
+            "默认 L3 行为 gate 必须写回固定 behavior-summary.json；如需另存报告，请改用 --sample-key 定向复核。"
+        )
 
 
 def resolve_roundtrip_report_path(args: argparse.Namespace, gate_summary: dict[str, Any]) -> Path:
@@ -1114,6 +1143,12 @@ def main(argv: list[str] | None = None) -> int:
     gate_summary = load_json(gate_summary_path)
     output_root = resolve_output_root(args, gate_summary)
     report_path = resolve_report_path(args, output_root)
+    validate_default_output_contract(
+        args,
+        gate_summary,
+        output_root=output_root,
+        report_path=report_path,
+    )
     roundtrip_report_path = resolve_roundtrip_report_path(args, gate_summary)
     if not roundtrip_report_path.is_file():
         raise SystemExit(f"roundtrip-summary.json 不存在：{roundtrip_report_path}")

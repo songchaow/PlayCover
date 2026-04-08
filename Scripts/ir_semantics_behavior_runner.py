@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,6 +55,34 @@ EXPECTED_FUNCTION_TYPE_BY_EXECUTION_KIND = {
     "compute": "kernel",
     "fragment": "fragment",
     "vertex": "vertex",
+}
+MSL_ENTRY_FUNCTION_RE = re.compile(
+    r'(?P<shader_type>\b(?:kernel|fragment|vertex)\b)\s+'
+    r'(?P<return_type>[^(){};]+?)\s+'
+    r'(?P<function_name>[A-Za-z_][A-Za-z0-9_]*)\s*'
+    r'\((?P<params>.*?)\)\s*\{',
+    re.DOTALL,
+)
+MSL_ATTRIBUTE_RE = re.compile(r'\[\[\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?:\((?P<index>\d+)\))?\s*\]\]')
+MSL_LINE_COMMENT_RE = re.compile(r'//.*?(?=\n|$)')
+MSL_BLOCK_COMMENT_RE = re.compile(r'/\*.*?\*/', re.DOTALL)
+IR_VECTOR_RETURN_TYPE_RE = re.compile(r'^<(?P<width>\d+)\s+x\s+(?P<element>half|float|i1|i8|i16|i32|i64)>$')
+MSL_ATTRIBUTE_KIND_MAP = {
+    "buffer": "air.buffer",
+    "texture": "air.texture",
+    "sampler": "air.sampler",
+    "position": "air.position",
+    "thread_position_in_grid": "air.thread_position_in_grid",
+}
+IR_SCALAR_TYPE_TO_MSL = {
+    "void": "void",
+    "half": "half",
+    "float": "float",
+    "i1": "bool",
+    "i8": "char",
+    "i16": "short",
+    "i32": "int",
+    "i64": "long",
 }
 
 
@@ -395,6 +424,197 @@ def infer_reference_source_path(sample: dict[str, Any]) -> Path | None:
     return path.with_suffix(".metal")
 
 
+def strip_msl_comments(source_text: str) -> str:
+    without_block_comments = MSL_BLOCK_COMMENT_RE.sub("", source_text)
+    return MSL_LINE_COMMENT_RE.sub("", without_block_comments)
+
+
+def normalize_msl_type(type_text: str) -> str:
+    value = canonical_compare._normalize_whitespace(type_text)
+    value = re.sub(r'\b(?:const|device|constant|threadgroup|thread|volatile|restrict)\b', '', value)
+    value = value.replace('*', ' ').replace('&', ' ')
+    return canonical_compare._normalize_whitespace(value)
+
+
+def parse_semantic_signature(signature: str) -> dict[str, Any]:
+    parsed: dict[str, Any] = {}
+    for part in signature.split("|"):
+        if "=" not in part:
+            parsed[part] = True
+            continue
+        key, value = part.split("=", 1)
+        if key in {"index", "location", "addrspace", "typeSize", "align"}:
+            try:
+                parsed[key] = int(value)
+                continue
+            except ValueError:
+                pass
+        parsed[key] = value
+    return parsed
+
+
+def parse_msl_parameter(parameter_text: str) -> dict[str, Any]:
+    cleaned = canonical_compare._normalize_whitespace(parameter_text)
+    attribute_match = MSL_ATTRIBUTE_RE.search(cleaned)
+    attribute_name = attribute_match.group("name") if attribute_match else None
+    attribute_index = int(attribute_match.group("index")) if attribute_match and attribute_match.group("index") else None
+    parameter_without_attribute = canonical_compare._normalize_whitespace(MSL_ATTRIBUTE_RE.sub("", cleaned))
+    name_match = re.match(r'(?P<type>.+?)\s+(?P<arg_name>[A-Za-z_][A-Za-z0-9_]*)$', parameter_without_attribute)
+    if name_match:
+        parameter_type = normalize_msl_type(name_match.group("type"))
+        arg_name = name_match.group("arg_name")
+    else:
+        parameter_type = normalize_msl_type(parameter_without_attribute)
+        arg_name = None
+    semantic_kind = MSL_ATTRIBUTE_KIND_MAP.get(attribute_name or "", f"air.{attribute_name}" if attribute_name else None)
+    return {
+        "kind": semantic_kind,
+        "index": attribute_index,
+        "type": parameter_type,
+        "argName": arg_name,
+        "raw": cleaned,
+    }
+
+
+def extract_msl_entry_signatures(source_text: str) -> list[dict[str, Any]]:
+    cleaned_source = strip_msl_comments(source_text)
+    entries: list[dict[str, Any]] = []
+    for match in MSL_ENTRY_FUNCTION_RE.finditer(cleaned_source):
+        raw_params = canonical_compare._split_top_level(match.group("params"))
+        parameters = [
+            parse_msl_parameter(parameter)
+            for parameter in raw_params
+            if canonical_compare._normalize_whitespace(parameter) not in {"", "void"}
+        ]
+        entries.append(
+            {
+                "shaderType": match.group("shader_type"),
+                "returnType": normalize_msl_type(match.group("return_type")),
+                "functionName": match.group("function_name"),
+                "parameters": parameters,
+            }
+        )
+    return entries
+
+
+def normalize_ir_return_type_to_msl(return_type: str | None) -> str | None:
+    if not return_type:
+        return None
+    normalized = canonical_compare._normalize_whitespace(return_type)
+    if normalized in IR_SCALAR_TYPE_TO_MSL:
+        return IR_SCALAR_TYPE_TO_MSL[normalized]
+    match = IR_VECTOR_RETURN_TYPE_RE.match(normalized)
+    if not match:
+        return None
+    element = IR_SCALAR_TYPE_TO_MSL.get(match.group("element"))
+    if not element:
+        return None
+    return f"{element}{match.group('width')}"
+
+
+def expected_return_type_for_ir_entry(entry: dict[str, Any]) -> str | None:
+    shader_type = str(entry.get("shaderType") or "")
+    if shader_type == "kernel":
+        return "void"
+    for signature in entry.get("outputSemantics") or []:
+        parsed_signature = parse_semantic_signature(str(signature))
+        if parsed_signature.get("kind") == "air.render_target" and parsed_signature.get("type"):
+            return str(parsed_signature["type"])
+    return normalize_ir_return_type_to_msl(entry.get("returnSignature"))
+
+
+def validate_reference_oracle_sync(
+    input_path: Path,
+    reference_source_path: Path,
+    *,
+    execution_kind: str,
+    cases: list[dict[str, Any]],
+) -> list[str]:
+    ir_summary = canonical_compare.extract_ir_summary(input_path)
+    reference_entries = {
+        item["functionName"]: item
+        for item in extract_msl_entry_signatures(reference_source_path.read_text(encoding="utf-8"))
+    }
+    expected_shader_type = EXPECTED_FUNCTION_TYPE_BY_EXECUTION_KIND.get(execution_kind)
+    if expected_shader_type is None:
+        return [f"当前 behavior runner 不支持 executionKind={execution_kind} 的 oracle 同步校验。"]
+
+    issues: list[str] = []
+    source_filename = ir_summary.get("module", {}).get("sourceFilename")
+    if source_filename:
+        source_basename = Path(str(source_filename)).name
+        if source_basename != reference_source_path.name:
+            issues.append(
+                f".ll 的 source_filename 指向 `{source_basename}`，但 reference MSL 是 `{reference_source_path.name}`。"
+            )
+
+    ir_entries_by_key = {
+        (str(item.get("shaderType") or ""), str(item.get("functionName") or "")): item
+        for item in ir_summary.get("entries") or []
+    }
+    for case in cases:
+        entry_point = str(case.get("entryPoint") or "")
+        entry_label = str(case.get("name") or entry_point)
+        expected_entry = ir_entries_by_key.get((expected_shader_type, entry_point))
+        if expected_entry is None:
+            issues.append(f"case `{entry_label}` 在 .ll 中缺少 `{expected_shader_type}` entry `{entry_point}`。")
+            continue
+
+        reference_entry = reference_entries.get(entry_point)
+        if reference_entry is None:
+            issues.append(f"case `{entry_label}` 的 reference MSL 缺少 entry `{entry_point}`。")
+            continue
+
+        actual_shader_type = str(reference_entry.get("shaderType") or "")
+        if actual_shader_type != expected_shader_type:
+            issues.append(
+                f"case `{entry_label}` 的 reference entry `{entry_point}` shader 类型为 `{actual_shader_type}`，预期 `{expected_shader_type}`。"
+            )
+
+        expected_return_type = expected_return_type_for_ir_entry(expected_entry)
+        actual_return_type = str(reference_entry.get("returnType") or "")
+        if expected_return_type and actual_return_type != expected_return_type:
+            issues.append(
+                f"case `{entry_label}` 的 reference 返回类型为 `{actual_return_type}`，但 .ll 契约预期 `{expected_return_type}`。"
+            )
+
+        expected_params = [parse_semantic_signature(str(signature)) for signature in expected_entry.get("argSemantics") or []]
+        actual_params = list(reference_entry.get("parameters") or [])
+        if len(actual_params) != len(expected_params):
+            issues.append(
+                f"case `{entry_label}` 的 reference 参数个数为 {len(actual_params)}，但 .ll 契约预期 {len(expected_params)}。"
+            )
+            continue
+
+        for index, (expected_param, actual_param) in enumerate(zip(expected_params, actual_params), start=1):
+            expected_kind = expected_param.get("kind")
+            actual_kind = actual_param.get("kind")
+            if expected_kind != actual_kind:
+                issues.append(
+                    f"case `{entry_label}` 第 {index} 个参数语义为 `{actual_kind}`，但 .ll 契约预期 `{expected_kind}`。"
+                )
+            expected_binding_index = expected_param.get("location")
+            actual_index = actual_param.get("index")
+            if expected_binding_index is not None and expected_binding_index != actual_index:
+                issues.append(
+                    f"case `{entry_label}` 第 {index} 个参数绑定索引为 `{actual_index}`，但 .ll 契约预期 `{expected_binding_index}`。"
+                )
+            expected_type = expected_param.get("type")
+            actual_type = actual_param.get("type")
+            if expected_type and expected_type != actual_type:
+                issues.append(
+                    f"case `{entry_label}` 第 {index} 个参数类型为 `{actual_type}`，但 .ll 契约预期 `{expected_type}`。"
+                )
+            expected_name = expected_param.get("argName")
+            actual_name = actual_param.get("argName")
+            if expected_name and actual_name and expected_name != actual_name:
+                issues.append(
+                    f"case `{entry_label}` 第 {index} 个参数名为 `{actual_name}`，但 .ll 契约预期 `{expected_name}`。"
+                )
+
+    return issues
+
+
 def flatten_numeric_values(values: list[Any]) -> list[float | int]:
     flattened: list[float | int] = []
     for value in values:
@@ -564,6 +784,44 @@ def build_behavior_plan(
                     "sampleKey": sample_key,
                     "status": "error",
                     "reason": f"找不到 generated MSL：{candidate_source}",
+                }
+            )
+            continue
+
+        input_path = roundtrip_entry.get("inputPath") or gate_entry.get("inputPath")
+        resolved_input_path = Path(str(input_path)).expanduser().resolve() if input_path else None
+        if resolved_input_path is None or not resolved_input_path.is_file():
+            errors.append(
+                {
+                    "sampleKey": sample_key,
+                    "status": "error",
+                    "reason": f"找不到 sample LLVM IR：{input_path}",
+                }
+            )
+            continue
+
+        try:
+            oracle_sync_issues = validate_reference_oracle_sync(
+                resolved_input_path,
+                reference_source,
+                execution_kind=execution_kind,
+                cases=[build_case_spec(case, execution_kind) for case in sample_spec.get("cases") or []],
+            )
+        except Exception as exc:
+            errors.append(
+                {
+                    "sampleKey": sample_key,
+                    "status": "error",
+                    "reason": f"校验 reference MSL 与 .ll 契约时失败：{exc}",
+                }
+            )
+            continue
+        if oracle_sync_issues:
+            errors.append(
+                {
+                    "sampleKey": sample_key,
+                    "status": "error",
+                    "reason": "reference MSL 与 .ll 契约不一致：" + "；".join(oracle_sync_issues),
                 }
             )
             continue

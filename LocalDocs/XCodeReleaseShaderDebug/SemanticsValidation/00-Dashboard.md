@@ -89,7 +89,7 @@ makeLibrary(source:) / metal -c
 - `behavior-summary.json` 默认直接写回 `build/semantics-validation/roundtrip/test-data-representatives/`：当前会实际执行 `test_fast_math_select`（compute-first）与 `test_intrinsic_vector_icmp_zext`（render-second），最新状态为 `pass`，其中样本结果均为 `pass`
 - `behavior-artifacts/test_intrinsic_vector_icmp_zext.result.json` 当前已显示固定 `4x4` `rgba16Float` 离屏 render 下 `mismatchCount = 0 / 64`、`maxAbsDiff = 0`；这也说明旧 `fail` 来自 sample oracle 漂移，而不是新的 fragment lowering 回归
 - 定向复核产物 `behavior-summary.test-casts-verification.json` 已显示 `test_casts` 的 scalar / vector `2/2` case 全部通过；因此这条证据已从“可复现 fail”收口为“已定位根因并完成最小修复验证”
-- `Scripts/test_ir_semantics_behavior_runner.py` 已进一步补齐 `SV-004` 的测试护栏：除 candidate 选择与 `behavior-summary.json` 汇总外，也覆盖了 compute / fragment ready path、`registry-missing` defer、`summarize_status()` 汇总语义，以及 `run_sample_behavior()` 的 Python→Swift 桥接成功/失败路径，进一步降低默认执行边界与结果收口逻辑的静默漂移风险
+- `Scripts/ir_semantics_behavior_runner.py` 与 `Scripts/test_ir_semantics_behavior_runner.py` 已进一步补齐 `SV-004` 的离线护栏：除 candidate 选择、`behavior-summary.json` 汇总、compute / fragment ready path、`registry-missing` defer、`summarize_status()` 汇总语义，以及 `run_sample_behavior()` 的 Python→Swift 桥接成功/失败路径外，本轮还新增了 reference MSL 与 `.ll` 的 oracle 同步校验，覆盖 entry / shader kind / 返回类型 / 参数语义的一致性，进一步降低 sample oracle 漂移伪装成 lowering 回归的风险
 - `blockedSamples` 当前仍只包含 `test_struct_array_field`，它会继续被 `stopAtL2` / `l4Plan` 明确挡在离线层与后置 gate 之前
 - 本机增强入口、baseline snapshot、preset / gate 细节以及较早的 `test-data-batch` 批量快照，已统一下沉到 `08-当前代表集与Gate契约参考.md` 与 `07-首轮基线与历史进展归档.md`（均为参考，当前主线推进**不必须读取**）
 
@@ -243,7 +243,7 @@ python3 Scripts/ir_semantics_behavior_runner.py --gate-summary build/semantics-v
 
 ### 当前关键状态
 
-- **首版行为级 oracle 已落地，且 compute / fragment 默认样本当前均已通过**：`test_fast_math_select` 已通过 reference-vs-generated 对跑，`test_casts` 已通过修复 `IRToMSLConverter` 的 `air.convert` unsigned 语义恢复逻辑完成收敛；`test_intrinsic_vector_icmp_zext` 之前的 fragment `fail` 也已确认为 sample oracle 漂移，而不是新的 lowering 回归，修正 `test-data` 样本并复跑后已回到稳定 `pass`
+- **首版行为级 oracle 已落地，且 compute / fragment 默认样本当前均已通过**：`test_fast_math_select` 已通过 reference-vs-generated 对跑，`test_casts` 已通过修复 `IRToMSLConverter` 的 `air.convert` unsigned 语义恢复逻辑完成收敛；`test_intrinsic_vector_icmp_zext` 之前的 fragment `fail` 也已确认为 sample oracle 漂移，而不是新的 lowering 回归，修正 `test-data` 样本并复跑后已回到稳定 `pass`；本轮又把 reference MSL 与 `.ll` 的同步性前移成离线护栏，避免未来再把 sample 漂移误判成新回归
 - **`SV-003` 现在更像长期守护约束，而不是新的功能建设任务**：必须持续保证 `test-data-representatives` 是跨机器硬默认，`daily-default / local-corpus-representatives` 只是本地增强入口，避免把人工准备环境重新写回日常 gate
 - **当前事实来源必须分层**：`gate-summary.json` / `risk-report.json` / `behavior-summary.json` 负责当前控制面；`preset-manifest.json` 继续负责 preset 契约、发现结果与 artifact 锚点，但其描述文字若滞后，不应再直接当成 active debt 事实来源
 - **真实场景验证成本高且可能引入人工步骤**：`SV-006` 已把 L4 明确收口为后置 gate，但若未来确实需要用户介入，仍必须先压缩到最小步骤并征得确认

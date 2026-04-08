@@ -126,6 +126,107 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
         self.assertEqual(built["renderTarget"]["pixelFormat"], "rgba16Float")
         self.assertEqual(built["comparisons"][0]["attachmentIndex"], 0)
 
+    def test_extract_msl_entry_signatures_reads_multi_entry_compute_source(self) -> None:
+        source = (TEST_DATA_ROOT / "test_casts.metal").read_text(encoding="utf-8")
+        entries = behavior_runner.extract_msl_entry_signatures(source)
+
+        self.assertEqual(
+            [(item["shaderType"], item["functionName"]) for item in entries],
+            [("kernel", "test_scalar_casts"), ("kernel", "test_vector_casts")],
+        )
+        scalar_entry = entries[0]
+        self.assertEqual(scalar_entry["parameters"][0]["kind"], "air.buffer")
+        self.assertEqual(scalar_entry["parameters"][0]["type"], "float")
+        self.assertEqual(scalar_entry["parameters"][0]["argName"], "floatOut")
+        self.assertEqual(scalar_entry["parameters"][-1]["kind"], "air.thread_position_in_grid")
+        self.assertEqual(scalar_entry["parameters"][-1]["type"], "uint")
+
+    def test_validate_reference_oracle_sync_accepts_current_reference_samples(self) -> None:
+        sample_inputs = [
+            (
+                TEST_DATA_ROOT / "test_fast_math_select.ll",
+                TEST_DATA_ROOT / "test_fast_math_select.metal",
+                "compute",
+                behavior_runner.L3_BEHAVIOR_SAMPLE_SPECS["test_fast_math_select"]["cases"],
+            ),
+            (
+                TEST_DATA_ROOT / "test_intrinsic_vector_icmp_zext.ll",
+                TEST_DATA_ROOT / "test_intrinsic_vector_icmp_zext.metal",
+                "fragment",
+                behavior_runner.L3_BEHAVIOR_SAMPLE_SPECS["test_intrinsic_vector_icmp_zext"]["cases"],
+            ),
+        ]
+
+        for input_path, reference_path, execution_kind, cases in sample_inputs:
+            with self.subTest(sample=input_path.name):
+                issues = behavior_runner.validate_reference_oracle_sync(
+                    input_path,
+                    reference_path,
+                    execution_kind=execution_kind,
+                    cases=[behavior_runner.build_case_spec(case, execution_kind) for case in cases],
+                )
+                self.assertEqual(issues, [])
+
+    def test_build_behavior_plan_reports_reference_oracle_drift(self) -> None:
+        gate_summary = {
+            "outputRoot": str(REPO_ROOT / "build" / "semantics-validation" / "roundtrip" / "test-data-representatives"),
+            "layeredDecision": {
+                "l3Plan": {
+                    "candidateSampleKeys": ["test_fast_math_select"],
+                    "candidates": [
+                        {
+                            "sampleKey": "test_fast_math_select",
+                            "inputPath": "<temp>",
+                            "riskLevel": "L2",
+                            "riskReason": "fast-math drift",
+                        }
+                    ],
+                }
+            },
+        }
+        original_ll = (TEST_DATA_ROOT / "test_fast_math_select.ll").read_text(encoding="utf-8")
+        original_metal = (TEST_DATA_ROOT / "test_fast_math_select.metal").read_text(encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            input_path = temp_root / "test_fast_math_select.ll"
+            reference_path = temp_root / "test_fast_math_select.metal"
+            generated_path = temp_root / "generated" / "test_fast_math_select.generated.metal"
+            input_path.write_text(original_ll, encoding="utf-8")
+            reference_path.write_text(
+                original_metal.replace(
+                    "kernel void test_fast_math_select(",
+                    "kernel void test_fast_math_select_drifted(",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            generated_path.parent.mkdir(parents=True, exist_ok=True)
+            generated_path.write_text("#include <metal_stdlib>\nusing namespace metal;\n", encoding="utf-8")
+            gate_summary["layeredDecision"]["l3Plan"]["candidates"][0]["inputPath"] = str(input_path)
+            roundtrip_report = {
+                "results": [
+                    {
+                        "comparisonKey": f"explicit_ll:{input_path}",
+                        "inputPath": str(input_path),
+                        "generatedMSLPath": str(generated_path),
+                        "generatedFunctionNames": ["test_fast_math_select"],
+                        "generatedFunctionTypes": ["kernel"],
+                    }
+                ]
+            }
+            plan = behavior_runner.build_behavior_plan(
+                gate_summary,
+                roundtrip_report,
+                sample_keys=["test_fast_math_select"],
+                output_root=temp_root,
+            )
+
+        self.assertEqual(plan["readySamples"], [])
+        self.assertEqual(len(plan["errors"]), 1)
+        self.assertIn("reference MSL 与 .ll 契约不一致", plan["errors"][0]["reason"])
+        self.assertIn("reference MSL 缺少 entry", plan["errors"][0]["reason"])
+
     def test_build_behavior_plan_keeps_current_default_boundary_narrowed(self) -> None:
         gate_summary = {
             "outputRoot": str(REPO_ROOT / "build" / "semantics-validation" / "roundtrip" / "test-data-representatives"),

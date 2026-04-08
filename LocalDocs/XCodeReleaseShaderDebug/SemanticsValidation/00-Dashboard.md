@@ -80,7 +80,7 @@ makeLibrary(source:) / metal -c
 
 - `test-data-representatives` 当前保持 `8/8` round-trip 成功，风险分布为 `L0 = 2 / L1 = 3 / L2 = 2 / L3 = 1`，`gate-summary.json = WARN`
 - `layeredDecision.overallDecision = promote_l2_candidates_to_l3`；当前默认 `L3` 候选仍是 `test_fast_math_select`、`test_intrinsic_vector_icmp_zext`
-- `behavior-summary.json = pass`，默认实际执行 `2` 个样本且均为 `pass`
+- `behavior-summary.json = pass`，默认实际执行 `2` 个样本且均为 `pass`；`Scripts/ir_semantics_behavior_runner.py` 会在写完该报告后自动刷新同目录 `gate-summary.json` 的 `layeredDecision.l4Plan`，保持当前控制面与行为证据同步
 - `test_casts` 已进入 `resolvedL2SampleKeys`，`test_struct_array_field` 继续作为 blocked sample 停在离线层
 - 其它本机增强入口、baseline / manifest 细节、旧 fail 收口过程与较早批量背景，统一下沉到 `07-首轮基线与历史进展归档.md` 与 `08-当前代表集与Gate契约参考.md`（均为参考，当前主线推进**不必须读取**）
 

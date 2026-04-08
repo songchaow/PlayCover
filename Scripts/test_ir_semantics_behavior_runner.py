@@ -429,6 +429,105 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
         self.assertEqual(status, "pass")
         self.assertIn("全部通过", summary)
 
+    def test_refresh_gate_summary_layered_decision_syncs_behavior_evidence(self) -> None:
+        input_path = TEST_DATA_ROOT / "test_fast_math_select.ll"
+        sample_key = "test_fast_math_select"
+        comparison_key = f"explicit_ll:{input_path}"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir) / "roundtrip" / "test-data-representatives"
+            output_root.mkdir(parents=True, exist_ok=True)
+            roundtrip_report_path = output_root / "roundtrip-summary.json"
+            risk_report_path = output_root / "risk-report.json"
+            gate_summary_path = output_root / "gate-summary.json"
+            candidate_source_path = output_root / "manual" / "003-test_fast_math_select" / "generated.metal"
+            candidate_source_path.parent.mkdir(parents=True, exist_ok=True)
+            candidate_source_path.write_text(
+                (TEST_DATA_ROOT / "test_fast_math_select.metal").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+
+            behavior_runner.write_json(
+                roundtrip_report_path,
+                {
+                    "results": [
+                        {
+                            "comparisonKey": comparison_key,
+                            "inputPath": str(input_path),
+                            "generatedMSLPath": str(candidate_source_path),
+                            "generatedFunctionNames": [sample_key],
+                            "generatedFunctionTypes": ["kernel"],
+                        }
+                    ]
+                },
+            )
+            behavior_runner.write_json(
+                risk_report_path,
+                {
+                    "samples": [],
+                    "blockedSamples": [],
+                    "samplesForL3": [
+                        {
+                            "comparisonKey": comparison_key,
+                            "inputPath": str(input_path),
+                            "roundTripStatus": "success",
+                            "failureStage": None,
+                            "riskLevel": "L2",
+                            "riskReason": "fast-math drift",
+                        }
+                    ],
+                },
+            )
+            behavior_runner.write_json(
+                output_root / "behavior-summary.json",
+                {
+                    "outputRoot": str(output_root),
+                    "roundtripReportPath": str(roundtrip_report_path),
+                    "readySamples": [
+                        {
+                            "sampleKey": sample_key,
+                            "candidateSourcePath": str(candidate_source_path),
+                        }
+                    ],
+                    "executedSamples": [
+                        {
+                            "sampleKey": sample_key,
+                            "status": "pass",
+                        }
+                    ],
+                },
+            )
+            behavior_runner.write_json(
+                gate_summary_path,
+                {
+                    "status": "warn",
+                    "shouldBlock": False,
+                    "summary": "known debt still present",
+                    "outputRoot": str(output_root),
+                    "roundtripReportPath": str(roundtrip_report_path),
+                    "riskReportPath": str(risk_report_path),
+                    "regressions": {
+                        "unexpectedFailures": [],
+                        "unexpectedBlockedSampleKeys": [],
+                        "unexpectedL2SampleKeys": [],
+                    },
+                    "roundtripStats": {
+                        "roundTripFailedJobs": 0,
+                    },
+                },
+            )
+
+            layered_decision = behavior_runner.refresh_gate_summary_layered_decision(gate_summary_path)
+            refreshed_gate_summary = behavior_runner.load_json(gate_summary_path)
+
+        assert layered_decision is not None
+        self.assertEqual(layered_decision["l4Plan"]["behaviorEvidenceSampleKeys"], [sample_key])
+        self.assertEqual(layered_decision["l4Plan"]["missingBehaviorEvidenceSampleKeys"], [])
+        self.assertEqual(
+            refreshed_gate_summary["layeredDecision"]["l4Plan"]["behaviorEvidenceSampleKeys"],
+            [sample_key],
+        )
+
     def test_run_sample_behavior_writes_spec_and_reads_swift_result(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

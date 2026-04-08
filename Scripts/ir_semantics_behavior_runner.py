@@ -1057,6 +1057,26 @@ def build_summary(
     }
 
 
+def refresh_gate_summary_layered_decision(gate_summary_path: Path) -> dict[str, Any] | None:
+    if not gate_summary_path.is_file():
+        return None
+
+    gate_summary = load_json(gate_summary_path)
+    risk_report_path_value = gate_summary.get("riskReportPath")
+    if not risk_report_path_value:
+        return None
+
+    risk_report_path = Path(str(risk_report_path_value)).expanduser().resolve()
+    if not risk_report_path.is_file():
+        return None
+
+    risk_report = load_json(risk_report_path)
+    layered_decision = canonical_compare.assess_layered_validation_decision(gate_summary, risk_report)
+    gate_summary["layeredDecision"] = layered_decision
+    write_json(gate_summary_path, gate_summary)
+    return layered_decision
+
+
 def print_summary(summary: dict[str, Any]) -> None:
     print(f"behavior status: {summary.get('status')}")
     print(f"behavior summary: {summary.get('summary')}")
@@ -1128,6 +1148,7 @@ def main(argv: list[str] | None = None) -> int:
         executed_results=executed_results,
     )
     write_json(report_path, summary)
+    refresh_gate_summary_layered_decision(gate_summary_path)
 
     if not args.quiet:
         print_summary(summary)

@@ -13,8 +13,9 @@
 ## 当前读取建议
 
 - 若只是理解当前主线：优先读 `00-Dashboard.md` 与 `02-总体技术路线.md`
-- 若正在写 `SV-003` / `SV-006`、维护 preset / gate profile / manifest：再回到本文件
+- 若正在写 `SV-003` / `SV-006`、维护 preset / gate profile / manifest，或排查报告口径漂移：再回到本文件
 - 若需要历史样本名单与早期提交脉络：读 `07-首轮基线与历史进展归档.md`
+- 本文件回答的是“契约细节 / 报告锚点 / 入口定位”，**不是**“当前下一步最该做什么”；主线优先级始终以 `00-Dashboard.md` 的 TODO 与 `02-总体技术路线.md` 为准
 
 ## 当前事实来源优先级
 
@@ -33,6 +34,7 @@
 - `preset-manifest.json` 与 gate profile 仍有契约价值，但其描述文字可能滞后
 - 当前 `test-data-representatives/gate-summary.json` 与 `preset-manifest.json` 里的旧描述若仍残留“compile blocker / 3 个已知 L2”一类文字，不应再直接当成 active debt 口径
 - 若描述文字与结构字段不一致，**以结构字段为准**
+- 仅有描述文字滞后、而结构字段未变化时，这属于**契约说明漂移**，不应单独把 TODO 拉回旧问题
 
 ## 当前默认 gate 事实
 

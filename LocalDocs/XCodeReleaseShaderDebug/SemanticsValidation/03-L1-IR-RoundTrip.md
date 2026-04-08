@@ -26,6 +26,8 @@ regenerated.ll
 - 哪些样本卡在生成 MSL、Metal 编译或反汇编阶段
 - 为 L2 compare 提供成对输入
 
+若只是理解当前主线优先级，优先读 `00-Dashboard.md` 与 `02-总体技术路线.md`；本文件更偏向 L1 接口、产物与边界的工作参考。
+
 ## 为什么它必须先做
 
 - 成本最低
@@ -85,69 +87,64 @@ regenerated.ll
 
 ### 输出目录
 
-当前实际形态：
+当前实际形态分成两类：
 
 ```text
-build/semantics-validation/roundtrip/<timestamp>/
-  replay-summary.json
-  compile-summary.json
-  roundtrip-summary.json
-  compare-summary.json
-  risk-report.json
-  high-risk-samples.json
-  preset-manifest.json
-  # 若显式保存 baseline：
-  baseline.json
-  generated-sources/
-  manual/ 或 <bundleId>/modules/<moduleKey>/
-    original.ll
-    generated.metal
-    generated.air
-    regenerated.ll
+build/semantics-validation/roundtrip/
+  test-data-representatives/
+  test-data-batch/
+  local-corpus-representatives/
+  daily-default/
+  <timestamp>/                 # 非 preset / 临时试跑
+    replay-summary.json
+    compile-summary.json
+    roundtrip-summary.json
+    compare-summary.json
+    risk-report.json
+    high-risk-samples.json
+    preset-manifest.json
+    # 若显式保存 baseline：
+    baseline.json
+    generated-sources/
+    manual/ 或 <bundleId>/modules/<moduleKey>/
+      original.ll
+      generated.metal
+      generated.air
+      regenerated.ll
 ```
+
+其中，固定 preset 应优先复用其稳定目录；只有非 preset 或一次性试验运行，才默认落到时间戳目录。
 
 ## 实现路线
 
 ### Phase 1：直接复用现有 replay 能力
 
-优先不要重写 `IR -> MSL` 链路。
+这一阶段已经完成。当前仍应保持的原则是：
 
-建议：
-
-- 复用 `Scripts/corpus_replay_runner.py` 的 Swift harness / 调用方式
-- 让 round-trip runner 只负责“在 replay 成功后继续往后走”
-
-这样能减少重复逻辑与结果漂移。
+- 不重写 `IR -> MSL` 主链路
+- 继续复用 `Scripts/corpus_replay_runner.py` 的既有调用方式
+- 让 L1 只承担“把 replay 之后的 round-trip 链路做稳定”的职责
 
 ### Phase 2：把 Metal 编译物保留下来
 
-当前已有 replay/compile 工具主要关注：
+这一阶段也已经完成。当前仍需要维护的，是固定 preset 运行时稳定保留：
 
-- `.metal`
-- compile 成功/失败
-- 失败聚类
-
-L1 需要额外保留：
-
+- `generated.metal`
 - `generated.air`
 - `regenerated.ll`
+- 对应 summary / compare / risk / gate / manifest 报告
 
-这是后续 compare 的基础产物。
+这样 L1 结果才能继续被 L2/L3/L4 消费，而不是退回一次性试验结果。
 
 ### Phase 3：统一 `llvm-dis` 解析路径
 
-round-trip runner 需要稳定解决 `llvm-dis` 路径问题。
+这一阶段的首版也已完成；当前仍需维持的约束是：
 
-建议优先级：
+1. 默认优先复用 PlayCover 已下载好的 `llvm-dis`
+2. 显式参数允许覆盖路径
+3. 缺工具时可以汇报 warning / failure，但不要把“用户手工找工具路径”写成默认步骤
 
-1. 优先复用 PlayCover 已下载好的 `llvm-dis`
-2. 若有显式参数，允许覆盖路径
-3. 必要时再考虑兼容 fallback
-
-原则：
-
-- 默认路径必须 agent 可自动使用
-- 不要引入需要用户手工找工具路径的流程
+原则仍然不变：默认路径必须 agent 可自动使用。
 
 ## 报告建议
 
@@ -189,38 +186,40 @@ round-trip runner 需要稳定解决 `llvm-dis` 路径问题。
 
 ### 第一轮
 
-先只跑：
+当前默认先跑：
 
-- 显式 `.ll` smoke
+- `python3 Scripts/test_ir_semantics_roundtrip_runner.py`
+- `python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representatives --allow-failures --enforce-gate`
 
 目标：
 
-- 把主链路打通
-- 明确 `llvm-dis` 与目录产物是否正确
+- 保证跨机器硬默认入口仍稳定
+- 先确认 L1 的固定 preset / 固定目录 / 固定报告没有漂移
 
 ### 第二轮
 
-再跑：
+再按需跑：
 
-- 全部 `test-data/`
+- `python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-batch --allow-failures`
 
 目标：
 
-- 形成基础批量能力
-- 找出 round-trip 成功率与主要失败类别
-- 为 `SV-003` 的默认样本集收口提供第一版基线
+- 看完整 `test-data/` 基线
+- 为代表集维护、失败聚类和升级边界提供参考
+- 这一步属于参考批量，不属于每次都要执行的硬默认 gate
 
 ### 第三轮
 
-再试：
+最后再按需跑：
 
-- 少量 `ShaderCorpus` 代表样本
+- `python3 Scripts/ir_semantics_roundtrip_runner.py --preset local-corpus-representatives --allow-failures`
+- 或 `python3 Scripts/ir_semantics_roundtrip_runner.py --preset daily-default --allow-failures --enforce-gate`
 
 目标：
 
-- 验证真实样本是否可进入同一主链路
+- 在本机已有样本时补充真实样本证据
 - 为 L2 compare 提供真实数据
-- 前提是这些样本已在本机存在，不把 fresh capture 写成默认依赖
+- 若当前机器缺样本，应退回前两轮，而不是把 fresh capture 写成默认依赖
 
 ## 当前不建议做的事
 
@@ -247,7 +246,7 @@ L1 只做一件事：**把 round-trip 链路本身做稳定。**
   - 风险分布：`L0 = 0 / L1 = 0 / L2 = 1 / L3 = 4`
 - `test-data-batch` 批量统计：`27` 个样本中 `26` 个 round-trip 成功，`1` 个 compile 失败，`0` 个 llvm-dis 失败
 - 当前首个 compile-stage blocker：`test_struct_array_field`
-- 更细的样本名单、固定代表集与阶段性提交脉络已下沉到 `07-首轮基线与历史进展归档.md`
+- 更细的样本名单、固定代表集与阶段性提交脉络已下沉到 `07-首轮基线与历史进展归档.md`（历史参考，**不必须读取**）
 
 ## 完成标准
 

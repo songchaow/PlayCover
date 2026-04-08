@@ -27,14 +27,14 @@ makeLibrary(source:) / metal -c
 
 当前缺口主要在：
 
-- 没有离线 **IR round-trip** 验证
-- 没有统一的 **canonical compare / 风险分级**
-- 没有稳定的 **最小行为测试体系**
-- 没有把 **真实场景验证** 收敛成自动化优先、低人工依赖的后置 gate
+- 如何把已落地的 **L1/L2** 收口成稳定、低心智负担、跨机器仍可执行的日常 gate
+- 如何把 **代表集 / gate profile / baseline / manifest** 维护成同一份稳定边界契约
+- 如何在不引入人工依赖的前提下，为 **L3 最小行为测试** 提供更小、更有信息量的入口
+- 如何把 **真实场景验证** 继续保持为自动化优先、低人工依赖的严格后置 gate
 
 因此需要在本目录下建立一套**循序渐进、自动化优先、可按人力/上下文预算逐步停下**的语义验证体系。
 
-> 注：以上四条是本专项立项时的原始缺口描述。结合 2026-04-08 最近三次提交回看，前两条（L1/L2）已经完成首版落地；当前 active gap 已切换到“如何把 L1/L2 变成稳定日常 gate，并为 L3/L4 做好入口控制”。
+> 注：立项初版关于“缺少 L1/L2”的历史表述已经下沉到 `01-现状调研与缺口.md` 与 `07-首轮基线与历史进展归档.md`；当前 dashboard 只保留 active gap 与当前控制面。
 
 ## 最终目标
 
@@ -56,71 +56,62 @@ makeLibrary(source:) / metal -c
 
 ### 主线任务
 
-> **背景**：前置任务已经把采集、replay、compile 与运行时验证链路逐步铺开；当前这里最值得继续推进的任务仍然是 `SV-003`，因为它能把已落地的 L1/L2 变成真正可复用、可止损、可日常执行的证据链。
+> **背景**：前置任务已经把采集、replay、compile 与运行时验证链路逐步铺开；当前这里最值得继续推进的任务仍然是 `SV-003`，因为它决定了 L1/L2 是否真的能长期作为 **agent 可自主执行** 的日常 gate 存在，而不是停留在一次性专项结果。
 
-**`SV-003`：把已落地的 L1/L2 能力继续接入更稳定的 `test-data/` 日常 gate，并扩到代表性 `ShaderCorpus` 样本。**
+**`SV-003`：继续维护并收紧已落地的 L1/L2 固定入口、代表集与 gate 边界，使默认离线验证在跨机器场景下仍保持低心智负担、低人工依赖。**
 
-`SV-002` 已在本轮完成，当前已新增/打通：
+`SV-002` 已完成；当前 active work 不再是“继续发明 compare 能力”，而是把现有能力收口成更稳定的默认工作流：
 
-- 已新增 `Scripts/ir_semantics_roundtrip_runner.py`
-- 已新增 `Scripts/ir_canonical_compare.py`
-- 已新增 `Scripts/test_ir_canonical_compare.py`
-- 已更新 `Scripts/test_ir_semantics_roundtrip_runner.py`
-- `roundtrip runner` 当前已支持：
-  - `--ll` 显式样本
-  - `--corpus-root`
-  - `--bundle-id`
-  - `--module-key`
-  - `--limit`
-  - `--allow-failures`
-  - 自动解析 `llvm-dis` 路径（优先 PlayCover 容器，再尝试 PATH / Homebrew / 系统路径）
-- `roundtrip runner` 当前默认会一起产出：
-  - `replay-summary.json`
-  - `compile-summary.json`
-  - `roundtrip-summary.json`
-  - `compare-summary.json`
-  - `risk-report.json`
-  - `high-risk-samples.json`
-  - `gate-summary.json`
-- 已对 `test-data/` 跑通首轮 L1/L2 批量报告：`build/semantics-validation/roundtrip/test-data-batch/`
-- 本轮已为 `SV-003` 落地固定入口：
+- **固定入口已经具备**：
   - `--preset test-data-representatives`
   - `--preset test-data-batch`
   - `--preset local-corpus-representatives`
   - `--preset daily-default`
-- 本轮已新增第一版 stable gate 收口：
-  - `--gate-profile <name>`（可显式指定 gate profile；若 preset 存在同名 profile，则自动复用）
-  - `--enforce-gate`（仅当出现新增 round-trip / L3 回归时阻断退出）
-  - `gate-summary.json`（输出 `pass / warn / fail`、活跃已知 debt 与新增回归样本）
-- 本轮继续为 stable gate 补上维护/追踪入口：
-  - `--baseline-report <path>`（显式指定 replay baseline；若固定输出目录下已有 `baseline.json`，默认自动复用）
-  - `--save-baseline <path>`（把当前 replay + compile 结果保存为 baseline 快照，包含 JSON 与 generated source 资产）
-  - `preset-manifest.json`（记录本次 preset、gate profile、发现到的 jobs 与报告落盘位置）
-  - `replay-summary.json` / `roundtrip-summary.json` 当前会继续带出 replay baseline diff / saved baseline 信息
-- 当前固定输出目录已收口到：
+- **稳定 gate 已经具备**：
+  - `--gate-profile <name>`
+  - `--enforce-gate`
+  - `gate-summary.json`
+- **追踪入口已经具备**：
+  - `--baseline-report <path>`
+  - `--save-baseline <path>`
+  - `preset-manifest.json`
+- **固定输出目录已经收口**：
   - `build/semantics-validation/roundtrip/test-data-representatives/`
   - `build/semantics-validation/roundtrip/test-data-batch/`
   - `build/semantics-validation/roundtrip/local-corpus-representatives/`
   - `build/semantics-validation/roundtrip/daily-default/`
-- 本轮已验证：
-  - `test-data-representatives`：`8` 个样本中 `7` 个 round-trip 成功、`1` 个 compile 失败，风险分布 `L0 = 1 / L1 = 1 / L2 = 5 / L3 = 1`
-  - `local-corpus-representatives`：当前固定 `5` 个本地 `ShaderCorpus` 代表样本全部 round-trip 成功，风险分布 `L0 = 0 / L1 = 0 / L2 = 1 / L3 = 4`
-  - `daily-default`：`13` 个样本中 `12` 个 round-trip 成功、`1` 个 compile 失败，风险分布 `L0 = 1 / L1 = 1 / L2 = 6 / L3 = 5`
-  - 三个代表 preset 在加上 `--enforce-gate` 后，当前都能稳定输出 `WARN`（保留已知 debt），不会把现有基线误判成 `FAIL`
+
+当前 `SV-003` 真正剩余、且最该优先继续推进的事，已经收窄为三条：
+
+1. **把 `test-data-representatives` 继续维护成跨机器都成立的硬默认入口**
+   - 这是最稳定、最不依赖外部环境的日常 gate
+   - 任何新增命令、样本或边界，都不应破坏这条默认路径的 agent 自主执行性
+2. **把 `daily-default` / `local-corpus-representatives` 明确为“本机已有样本时的增强入口”，而不是日常强依赖**
+   - 当前脚本语义已经允许本地 `ShaderCorpus` 缺样本时降级为 warning
+   - 因此不应把 fresh capture、人工准备环境或用户协助补样本写进默认 gate
+3. **把代表集维护、gate profile、baseline snapshot 与 manifest 当成同一份边界契约来维护**
+   - 代表集有意变化时，应同步更新对应 profile / baseline / manifest 语义
+   - `SV-006` 只应基于这份稳定边界继续整理升级规则，而不应抢在 `SV-003` 前面发散
+
+当前已确认的代表结果可概括为：
+
+- `test-data-representatives`：`8` 个样本中 `7` 个 round-trip 成功、`1` 个 compile 失败，风险分布 `L0 = 1 / L1 = 1 / L2 = 5 / L3 = 1`
+- `local-corpus-representatives`：当前固定 `5` 个本地 `ShaderCorpus` 代表样本全部 round-trip 成功，风险分布 `L0 = 0 / L1 = 0 / L2 = 1 / L3 = 4`
+- `daily-default`：`13` 个样本中 `12` 个 round-trip 成功、`1` 个 compile 失败，风险分布 `L0 = 1 / L1 = 1 / L2 = 6 / L3 = 5`
+- 代表 preset 在加上 `--enforce-gate` 后当前都能稳定输出 `WARN`，保留已知 debt 而不会误判成 `FAIL`
 
 当前 `test-data/` 首轮基线可概括为：
 
 - **27 个样本中 26 个 round-trip 成功，1 个在 compile 阶段失败，llvm-dis 阶段 0 失败**
 - **L2 风险分布：L0 = 1，L1 = 1，L2 = 5，L3 = 20**
-- 详细样本名单、首次 smoke 目录和阶段性提交脉络已下沉到 `07-首轮基线与历史进展归档.md`
+- 详细样本名单、首次 smoke 目录和阶段性提交脉络已下沉到 `07-首轮基线与历史进展归档.md`（历史参考，**不必须读取**）
 
-因此当前最高优先级已经切换到 `SV-003`，因为它：
+因此当前最高优先级仍然是 `SV-003`，因为它直接决定：
 
-- 能把已经落地的 L1/L2 从“单轮专项结果”推进到“可持续复用的日常 gate”
-- 能把 `test-data/` 从“首轮跑通”推进到“固定代表集 + 固定命令 + 固定报告目录”的低心智负担工作流
-- 是把 `test-data/` 经验扩展到代表性 `ShaderCorpus` 样本的最直接下一步
-- 能帮助区分哪些 `L2/L3` 样本值得进一步聚类、收敛或进入 L3
-- 能把前面已经铺好的能力沉淀成更低成本的离线风险筛查入口
+- 已落地的 L1/L2 能否继续作为**稳定日常 gate**存在
+- `test-data/` 是否能长期承担“跨机器硬默认入口”角色
+- `ShaderCorpus` 是否只作为**已有本地条件下的增强证据**，而不是把人工准备环境重新带回主线
+- 后续 `SV-006 / SV-004 / SV-005` 是否能建立在一条更清晰、更低成本的升级链路上
 
 ### 当前不该抢跑的事
 
@@ -154,25 +145,30 @@ python3 Scripts/corpus_replay_runner.py --compile --ll <sample.ll>
 FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh
 ```
 
-- 本专项当前默认 gate：
+- **跨机器硬默认 gate**（优先保证这条始终可由 agent 自主执行）：
 
 ```bash
 python3 Scripts/test_ir_canonical_compare.py
 python3 Scripts/test_ir_semantics_roundtrip_runner.py
 python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representatives --allow-failures --enforce-gate
-python3 Scripts/ir_semantics_roundtrip_runner.py --preset daily-default --allow-failures --enforce-gate
 ```
 
-- 若需要完整 `test-data/` 批量基线，使用固定全量入口：
+- **本机已有 `ShaderCorpus` 样本时的增强入口**（不是硬默认）：
 
 ```bash
-python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-batch --allow-failures
+python3 Scripts/ir_semantics_roundtrip_runner.py --preset daily-default --allow-failures --enforce-gate
 ```
 
 - 若只想看本机已存在的本地 `ShaderCorpus` 代表集，使用固定本地入口：
 
 ```bash
 python3 Scripts/ir_semantics_roundtrip_runner.py --preset local-corpus-representatives --allow-failures
+```
+
+- 若需要完整 `test-data/` 批量基线，使用固定全量入口（参考批量，不属于日常默认 gate）：
+
+```bash
+python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-batch --allow-failures
 ```
 
 - 若要把固定 preset 的当前结果固化成可复用 baseline：
@@ -202,7 +198,8 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representati
 补充约束：
 
 - `ShaderCorpus` 日常 gate 默认只复用**当前机器上已经存在**的本地样本
-- 若当前机器上没有合适样本，不应自动升级成需要用户介入的 fresh capture 流程；这时应优先退回 `test-data/` 或停在离线层汇报
+- 若当前机器上没有合适样本，不应自动升级成需要用户介入的 fresh capture 流程；这时应优先退回 `test-data-representatives` 或停在离线层汇报
+- `daily-default` / `local-corpus-representatives` 的定位是“增强证据”，不是把人工准备环境重新引回默认 gate
 - `SV-003` 当前已完成“固定样本集 + 固定命令 + 固定输出目录 + `gate-summary.json` / `--enforce-gate`”的首轮收口；剩余工作已收窄到继续维护代表集，并按后续经验继续细化升级边界
 
 ### 运行时链路验证（只在必要时）
@@ -221,11 +218,14 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representati
 ./BuildScripts/build_and_install.sh
 ```
 
-**禁止**手写 `xcodebuild` 替代标准脚本。
+补充约束：
+
+- 该脚本默认安装到 `~/Applications`，保持 agent 可自动执行；日常验证不要主动切到 `PLAYCOVER_INSTALL_MODE=auto/system`，以免引入 `sudo` / 权限交互
+- **禁止**手写 `xcodebuild` 替代标准脚本
 
 ### 真实场景验证（后置 gate）
 
-仅当 L1/L2 已基本收敛，且需要确认“真实 shader / 真实场景下没有明显退化”时才启用。
+仅当 L1/L2 已基本收敛，且需要确认“真实 shader / 真实场景下没有明显退化”时才启用；它不是日常默认 gate。
 
 优先使用：
 
@@ -258,21 +258,21 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representati
 
 | # | 任务 | 状态 | 优先级 | 说明 | 详细文档 |
 |---|---|---|---|---|---|
-| SV-000 | 现状调研与缺口梳理 | ✅ DONE | - | 已确认当前没有严格语义闭环，已形成总体路线 | `01-现状调研与缺口.md` |
-| SV-001 | 离线 IR round-trip harness | ✅ DONE | - | 已新增 `Scripts/ir_semantics_roundtrip_runner.py`，并在 `test-data/` 首轮批量报告中得到 `26 / 27` round-trip 成功 | `03-L1-IR-RoundTrip.md` |
-| SV-002 | Canonical compare + 风险分级 | ✅ DONE | - | 已新增 `Scripts/ir_canonical_compare.py`，并在 `test-data/` 上产出 `compare-summary.json / risk-report.json / high-risk-samples.json` | `04-L2-CanonicalCompareAndRiskGrading.md` |
-| SV-003 | 把 L1/L2 接入 `test-data/` 与 `ShaderCorpus` | TODO | P0 | 已落地 preset 固定入口、`gate-summary.json` / `--enforce-gate`、`preset-manifest.json` 与 replay baseline snapshot；剩余工作已收窄到继续扩/修代表集，并结合聚类经验细化升级边界 | `02-总体技术路线.md` |
-| SV-004 | 最小行为测试（compute-first） | TODO | P2 | 优先建立 compute 输出对比，再决定是否补离屏 render | `05-L3-最小行为测试.md` |
-| SV-005 | 真实场景验证流程收口 | TODO | P3 | 把 `.gputrace` / render diff / MCP live 验证收口成后置 gate | `06-L4-真实场景验证.md` |
-| SV-006 | 分层 gate 与止损策略 | TODO | P1 | 明确“什么时候可以先停在 L2，什么时候必须升级到 L3/L4”的预算与升级规则 | `02-总体技术路线.md` |
+| SV-000 | 现状调研与缺口梳理 | ✅ DONE | - | 已确认当前没有严格语义闭环，且 active gap 已从“有没有 L1/L2”切换到“怎样把它们稳定纳入默认 gate” | `01-现状调研与缺口.md` |
+| SV-001 | 离线 IR round-trip harness | ✅ DONE | - | 已新增 `Scripts/ir_semantics_roundtrip_runner.py`；L1 当前的剩余价值主要体现在为 `SV-003` 提供固定入口与固定报告目录 | `03-L1-IR-RoundTrip.md` |
+| SV-002 | Canonical compare + 风险分级 | ✅ DONE | - | 已新增 `Scripts/ir_canonical_compare.py`；L2 当前的剩余价值主要体现在为 `SV-003 / SV-006` 提供 `gate-summary.json` 与升级分流依据 | `04-L2-CanonicalCompareAndRiskGrading.md` |
+| SV-003 | 把 L1/L2 接入 `test-data/` 与 `ShaderCorpus` | TODO | P0 | 当前主线。继续维护 `test-data-representatives` 这个跨机器硬默认入口；把 `daily-default / local-corpus-representatives` 保持为“本机已有样本时的增强入口”；代表集变化时同步维护 gate profile / baseline / manifest | `02-总体技术路线.md` |
+| SV-006 | 分层 gate 与止损策略 | TODO | P1 | 基于现有 `gate-summary.json` 语义，把“停在 L2 / 升级到 L3/L4”的边界写清楚；前提是 `SV-003` 的代表集与默认入口已经足够稳定 | `02-总体技术路线.md` |
+| SV-004 | 最小行为测试（compute-first） | TODO | P2 | 只从 `SV-003` 已稳定的代表集里挑少量最有信息量样本进入 compute-first 行为测试，不直接扩大到全量样本 | `05-L3-最小行为测试.md` |
+| SV-005 | 真实场景验证流程收口 | TODO | P3 | 把 `.gputrace` / render diff / MCP live 验证收口成严格后置 gate；不得回流为日常默认流程 | `06-L4-真实场景验证.md` |
 
 ### 当前关键卡点
 
-- **`SV-003` 已完成 preset + gate 第一轮收口，并已补上 manifest / baseline 追踪入口**：当前已经有 `test-data-representatives / test-data-batch / local-corpus-representatives / daily-default` 固定入口，以及 `gate-summary.json` / `--enforce-gate`、`preset-manifest.json`、`--baseline-report` / `--save-baseline`；剩余缺口已收窄到继续扩/修代表集，并在后续经验积累中继续细化升级边界
+- **`SV-003` 的剩余工作已经不是“再造新工具”，而是继续维护默认入口语义**：要把 `test-data-representatives` 保持为跨机器硬默认，把 `daily-default / local-corpus-representatives` 保持为本地增强入口，避免把人工准备环境重新写回日常 gate
 - **`test_struct_array_field` 仍是当前首个 compile-stage blocker**：当前 `test-data/` 批量 round-trip 中，27 个样本里仍只有它在 `generated.metal -> generated.air` 阶段失败
-- **L2 已落地，但 `test-data/` 里仍有较多 `L3` 结构性不一致样本**：当前批量分布为 `L0 = 1 / L1 = 1 / L2 = 5 / L3 = 20`，下一步需要结合 `SV-003` 做样本聚类与代表集扩展
-- **没有行为级 oracle**：当前报告能筛查风险，但还不能判断行为是否一致；`L2` 样本仍需后续 `L3` 最小行为测试承接
-- **真实场景验证成本高**：应当继续严格后置，不能在 `SV-003 / SV-006 / SV-004` 未收敛时抢跑
+- **L2/L3 风险结果还需要进一步缩面**：当前 `test-data/` 批量分布为 `L0 = 1 / L1 = 1 / L2 = 5 / L3 = 20`；`local-corpus-representatives` 也仍以高风险样本为主，因此下一步重点仍是代表集维护、聚类和升级边界，而不是直接扩大 live 验证
+- **没有行为级 oracle**：当前报告能筛查风险，但还不能判断行为是否一致；`SV-004` 仍需等待 `SV-003 / SV-006` 先收敛
+- **真实场景验证成本高且可能引入人工步骤**：应继续严格后置；若确实需要用户介入，必须先压缩到最小步骤并征得确认
 
 ## 踩坑与经验
 
@@ -288,22 +288,22 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representati
 
 ### 本目录主文档
 
-- `01-现状调研与缺口.md`
-- `02-总体技术路线.md`
-- `03-L1-IR-RoundTrip.md`
-- `04-L2-CanonicalCompareAndRiskGrading.md`
-- `05-L3-最小行为测试.md`
-- `06-L4-真实场景验证.md`
-- `07-首轮基线与历史进展归档.md`
+- `01-现状调研与缺口.md`（需要理解“为什么当前主线仍停在离线层”时再读）
+- `02-总体技术路线.md`（**建议读取**；主线任务与升级顺序的核心参考）
+- `03-L1-IR-RoundTrip.md`（做 L1 / runner / preset 维护时再读）
+- `04-L2-CanonicalCompareAndRiskGrading.md`（做 compare / gate / 风险分级时再读）
+- `05-L3-最小行为测试.md`（规划 `SV-004` 时再读，当前**不必须读取**）
+- `06-L4-真实场景验证.md`（规划 live / `.gputrace` 时再读，当前**不必须读取**）
+- `07-首轮基线与历史进展归档.md`（历史归档与样本名单参考，**不必须读取**）
 
 ### 背景参考
 
-- `../RoadE-HookMakeLibraryWithSrc/00-Dashboard.md`
-- `../RoadE-HookMakeLibraryWithSrc/E-004-MetallibSourceExtraction.md`
-- `../RoadE-HookMakeLibraryWithSrc/E-005-OfflineReplayBatchCompileDiff.md`
-- `../RoadE-HookMakeLibraryWithSrc/E-006d-GenshinRenderingNondeterminism.md`
-- `../RoadE-HookMakeLibraryWithSrc/E-006d-RenderingPathDiffReference.md`
-- `../RoadE-HookMakeLibraryWithSrc/E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md`
+- `../RoadE-HookMakeLibraryWithSrc/00-Dashboard.md`（背景参考，**不必须读取**）
+- `../RoadE-HookMakeLibraryWithSrc/E-004-MetallibSourceExtraction.md`（背景参考，**不必须读取**）
+- `../RoadE-HookMakeLibraryWithSrc/E-005-OfflineReplayBatchCompileDiff.md`（背景参考，**不必须读取**）
+- `../RoadE-HookMakeLibraryWithSrc/E-006d-GenshinRenderingNondeterminism.md`（背景参考，**不必须读取**）
+- `../RoadE-HookMakeLibraryWithSrc/E-006d-RenderingPathDiffReference.md`（背景参考，**不必须读取**）
+- `../RoadE-HookMakeLibraryWithSrc/E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md`（背景参考，**不必须读取**）
 
 ### 相关实现与工具
 

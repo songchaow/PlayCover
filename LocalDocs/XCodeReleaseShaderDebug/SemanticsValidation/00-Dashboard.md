@@ -95,16 +95,17 @@ makeLibrary(source:) / metal -c
 
 当前已确认的代表结果可概括为：
 
-- `test-data-representatives`：`8` 个样本中 `7` 个 round-trip 成功、`1` 个 compile 失败，风险分布 `L0 = 1 / L1 = 1 / L2 = 5 / L3 = 1`
+- `test-data-representatives`：`8` 个样本中 `7` 个 round-trip 成功、`1` 个 compile 失败，风险分布 `L0 = 1 / L1 = 3 / L2 = 3 / L3 = 1`
 - `local-corpus-representatives`：当前固定 `5` 个本地 `ShaderCorpus` 代表样本全部 round-trip 成功，风险分布 `L0 = 0 / L1 = 0 / L2 = 1 / L3 = 4`
-- `daily-default`：`13` 个样本中 `12` 个 round-trip 成功、`1` 个 compile 失败，风险分布 `L0 = 1 / L1 = 1 / L2 = 6 / L3 = 5`
+- `daily-default`：`13` 个样本中 `12` 个 round-trip 成功、`1` 个 compile 失败，风险分布 `L0 = 1 / L1 = 3 / L2 = 4 / L3 = 5`
 - 代表 preset 在加上 `--enforce-gate` 后当前都能稳定输出 `WARN`，保留已知 debt 而不会误判成 `FAIL`
 - `test-data-representatives` 固定输出目录当前已保存 `baseline.json` / `generated-sources/`；重复执行时会自动复用该 baseline 做 replay diff，且 `preset-manifest.json` 会稳定记录当前 active baseline 摘要，而不再只在本次显式 `--save-baseline` 时体现
+- 本轮通过把 `air.fast_*` intrinsic alias 归一化、并把 **仅发生在 instruction-level 的 fast-math flag 漂移** 下调为 `L1`，已将 `test_int_literal_half_suffix` 与 `test_vector_select_global_gep` 从已知 `L2` debt 收敛到 `L1`；同步收紧后的 gate profile / manifest 现在只继续跟踪 `3` 个活跃 `L2` 样本
 
-当前 `test-data/` 首轮基线可概括为：
+当前 `test-data/` 最新批量基线可概括为：
 
 - **27 个样本中 26 个 round-trip 成功，1 个在 compile 阶段失败，llvm-dis 阶段 0 失败**
-- **L2 风险分布：L0 = 1，L1 = 1，L2 = 5，L3 = 20**
+- **风险分布：L0 = 1，L1 = 3，L2 = 3，L3 = 20**
 - 详细样本名单、首次 smoke 目录和阶段性提交脉络已下沉到 `07-首轮基线与历史进展归档.md`（历史参考，**不必须读取**）
 
 因此当前最高优先级仍然是 `SV-003`，因为它直接决定：
@@ -272,7 +273,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representati
 
 - **`SV-003` 的剩余工作已经不是“再造新工具”，而是继续维护默认入口语义**：要把 `test-data-representatives` 保持为跨机器硬默认，把 `daily-default / local-corpus-representatives` 保持为本地增强入口，避免把人工准备环境重新写回日常 gate
 - **`test_struct_array_field` 仍是当前首个 compile-stage blocker**：当前 `test-data/` 批量 round-trip 中，27 个样本里仍只有它在 `generated.metal -> generated.air` 阶段失败
-- **L2/L3 风险结果还需要进一步缩面**：当前 `test-data/` 批量分布为 `L0 = 1 / L1 = 1 / L2 = 5 / L3 = 20`；`local-corpus-representatives` 也仍以高风险样本为主，因此下一步重点仍是代表集维护、聚类和升级边界，而不是直接扩大 live 验证
+- **L2/L3 风险结果还需要进一步缩面**：当前 `test-data/` 批量分布已收敛到 `L0 = 1 / L1 = 3 / L2 = 3 / L3 = 20`；本轮已把 `test_int_literal_half_suffix` 与 `test_vector_select_global_gep` 从已知 `L2` debt 降到 `L1`，但 `local-corpus-representatives` 仍以高风险样本为主，因此下一步重点仍是代表集维护、聚类和升级边界，而不是直接扩大 live 验证
 - **没有行为级 oracle**：当前报告能筛查风险，但还不能判断行为是否一致；`SV-004` 仍需等待 `SV-003 / SV-006` 先收敛
 - **真实场景验证成本高且可能引入人工步骤**：应继续严格后置；若确实需要用户介入，必须先压缩到最小步骤并征得确认
 
@@ -283,6 +284,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representati
 - **先做离线，再做 live**；live 只用于阶段性确认，不做默认主战场
 - **不要把“文本完全一样”误当成“语义一样”**；后续比较应以 canonical summary + 风险分级为主
 - **第一版 canonical compare 必须主动降噪**：SSA 名称、metadata 编号、`bufferSize` 缺失、`readonly/readnone` 这类编译器优化后常见变化，不应直接视为 L3
+- **要把 `air.fast_*` intrinsic alias 与纯 instruction-level fast-math flag 漂移视为降噪对象**：若 compile option 与 function attr 没变，这类差异更接近 `L1` 噪声，而不应继续把代表集里的默认 debt 放大成 `L2`
 - **对环境相关代表集，job count 不能只用单点值判定**：要区分“跨机器都必须成立的硬下界”和“本机样本齐备时的完整代表集”，否则容易把缺样本误报成回归
 - **优先把高频手工流程脚本化**；若无法脚本化，也不能默认把用户人工操作写成日常 gate
 - **要区分“背景问题”和“当前主线”**：本目录当前最该做的是把 L1/L2 收口成稳定离线 gate，而不是过早切到更高成本的运行时验证

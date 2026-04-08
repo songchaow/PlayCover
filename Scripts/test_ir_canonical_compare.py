@@ -41,6 +41,53 @@ attributes #0 = {{ nounwind memory(argmem: write) "no-builtins" }}
 '''
 
 
+def make_intrinsic_alias_ir(*, intrinsic_name: str) -> str:
+    return f'''source_filename = "synthetic.metal"
+target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-n8:16:32"
+target triple = "air64-apple-macosx15.0.0"
+
+define void @test_kernel() #0 {{
+entry:
+  %tmp = call <2 x half> @{intrinsic_name}(<2 x half> zeroinitializer, <2 x half> zeroinitializer)
+  ret void
+}}
+
+attributes #0 = {{ nounwind memory(none) "no-builtins" }}
+
+!air.kernel = !{{!0}}
+!air.compile_options = !{{!1}}
+!0 = !{{ptr @test_kernel, !2, !3}}
+!1 = !{{!4}}
+!2 = !{{}}
+!3 = !{{}}
+!4 = !{{!"air.compile.fast_math_enable"}}
+'''
+
+
+def make_fast_math_flag_ir(*, instruction_flags: str) -> str:
+    flag_prefix = f"{instruction_flags} " if instruction_flags else ""
+    return f'''source_filename = "synthetic.metal"
+target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-n8:16:32"
+target triple = "air64-apple-macosx15.0.0"
+
+define void @test_kernel() #0 {{
+entry:
+  %tmp = fadd {flag_prefix}float 1.0, 2.0
+  ret void
+}}
+
+attributes #0 = {{ nounwind memory(none) "no-builtins" }}
+
+!air.kernel = !{{!0}}
+!air.compile_options = !{{!1}}
+!0 = !{{ptr @test_kernel, !2, !3}}
+!1 = !{{!4}}
+!2 = !{{}}
+!3 = !{{}}
+!4 = !{{!"air.compile.fast_math_enable"}}
+'''
+
+
 def make_roundtrip_report(*, job_count: int, roundtrip_failed_jobs: int = 0, compile_failed_jobs: int = 0) -> dict:
     return {
         "jobCount": job_count,
@@ -93,6 +140,25 @@ class IRCanonicalCompareTests(unittest.TestCase):
         self.assertEqual(comparison["riskLevel"], "L3")
         self.assertFalse(comparison["same"])
         self.assertTrue(any(item["category"] in {"entry", "address-space"} for item in comparison["differences"]))
+
+    def test_compare_ignores_fast_intrinsic_alias_names(self) -> None:
+        original = canonical_compare.extract_ir_summary_text(make_intrinsic_alias_ir(intrinsic_name="air.fast_fmax.v2f16"))
+        regenerated = canonical_compare.extract_ir_summary_text(make_intrinsic_alias_ir(intrinsic_name="air.fmax.v2f16"))
+
+        comparison = canonical_compare.compare_ir_summaries(original, regenerated)
+        self.assertEqual(comparison["riskLevel"], "L0")
+        self.assertTrue(comparison["same"])
+
+    def test_compare_treats_instruction_level_fast_math_flag_drift_as_low_risk(self) -> None:
+        original = canonical_compare.extract_ir_summary_text(make_fast_math_flag_ir(instruction_flags="fast"))
+        regenerated = canonical_compare.extract_ir_summary_text(
+            make_fast_math_flag_ir(instruction_flags="reassoc nnan ninf nsz arcp contract afn")
+        )
+
+        comparison = canonical_compare.compare_ir_summaries(original, regenerated)
+        self.assertEqual(comparison["riskLevel"], "L1")
+        self.assertFalse(comparison["same"])
+        self.assertEqual(comparison["fastMathComparison"]["severity"], "L1")
 
     def test_assess_gate_result_warns_for_known_debt(self) -> None:
         samples = [

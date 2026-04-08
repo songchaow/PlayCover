@@ -240,11 +240,12 @@ L1 只做一件事：**把 round-trip 链路本身做稳定。**
 - `test-data/` 首轮批量报告：`build/semantics-validation/roundtrip/test-data-batch/roundtrip-summary.json`
 - `test-data-representatives` 固定入口：`build/semantics-validation/roundtrip/test-data-representatives/roundtrip-summary.json`
   - `8` 个样本中 `7` 个 round-trip 成功，`1` 个 compile 失败，`0` 个 llvm-dis 失败
-  - 风险分布：`L0 = 1 / L1 = 1 / L2 = 5 / L3 = 1`
+  - 风险分布：`L0 = 1 / L1 = 3 / L2 = 3 / L3 = 1`
 - `local-corpus-representatives` 固定入口：`build/semantics-validation/roundtrip/local-corpus-representatives/roundtrip-summary.json`
   - 当前固定 `5` 个本地 `ShaderCorpus` 代表模块全部 round-trip 成功
   - 风险分布：`L0 = 0 / L1 = 0 / L2 = 1 / L3 = 4`
 - `test-data-batch` 批量统计：`27` 个样本中 `26` 个 round-trip 成功，`1` 个 compile 失败，`0` 个 llvm-dis 失败
+  - 风险分布：`L0 = 1 / L1 = 3 / L2 = 3 / L3 = 20`
 - 当前首个 compile-stage blocker：`test_struct_array_field`
 - 更细的样本名单、固定代表集与阶段性提交脉络已下沉到 `07-首轮基线与历史进展归档.md`（历史参考，**不必须读取**）
 

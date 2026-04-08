@@ -177,7 +177,7 @@
 
 - 当前保留在主文档中的 active 信息只有两点：
   - **首个 compile blocker**：`test_struct_array_field`
-  - **当前 `L2` 样本已经足够说明“需要后续 L3 入口”，但还不应直接全量升级到 live**
+  - **当前跨机器硬默认代表集中的活跃 `L2` 已缩到 `3` 个**：`test_casts`、`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`；它们已经足够说明“需要后续 L3 入口”，但还不应直接全量升级到 live
 - 更细的首轮代表样本名单已下沉到 `07-首轮基线与历史进展归档.md`（历史参考，**不必须读取**）
 
 ## 报告结构

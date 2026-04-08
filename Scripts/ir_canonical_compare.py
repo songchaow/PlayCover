@@ -191,6 +191,19 @@ def _counter_to_sorted_dict(counter: Counter[str] | Counter[int]) -> dict[str, i
     return {str(key): int(counter[key]) for key in sorted(counter, key=lambda item: str(item))}
 
 
+def _normalize_air_intrinsic_name(name: str) -> str:
+    if name.startswith("air.fast_"):
+        return "air." + name.removeprefix("air.fast_")
+    return name
+
+
+def _normalize_air_intrinsic_counter(counter_like: dict[str, Any] | None) -> dict[str, int]:
+    normalized: Counter[str] = Counter()
+    for name, value in (counter_like or {}).items():
+        normalized[_normalize_air_intrinsic_name(str(name))] += int(value)
+    return _counter_to_sorted_dict(normalized)
+
+
 def _sanitize_param_signature(param: str) -> str:
     value = _normalize_whitespace(param)
     value = re.sub(r'\s+%(?:"[^"]+"|[-A-Za-z0-9$._]+)$', '', value)
@@ -741,7 +754,11 @@ def _compare_address_spaces(original: dict[str, Any], regenerated: dict[str, Any
 
 def _compare_builtins_and_resources(original: dict[str, Any], regenerated: dict[str, Any]) -> dict[str, Any]:
     differences: list[dict[str, Any]] = []
-    if original.get("moduleAirIntrinsics") != regenerated.get("moduleAirIntrinsics"):
+    original_module_intrinsics = original.get("moduleAirIntrinsics") or {}
+    regenerated_module_intrinsics = regenerated.get("moduleAirIntrinsics") or {}
+    normalized_original_module_intrinsics = _normalize_air_intrinsic_counter(original_module_intrinsics)
+    normalized_regenerated_module_intrinsics = _normalize_air_intrinsic_counter(regenerated_module_intrinsics)
+    if normalized_original_module_intrinsics != normalized_regenerated_module_intrinsics:
         differences.append(
             _make_difference(
                 "builtin-resource",
@@ -749,8 +766,10 @@ def _compare_builtins_and_resources(original: dict[str, Any], regenerated: dict[
                 "module-air-intrinsics",
                 "模块级 air intrinsic 使用变化",
                 {
-                    "original": original.get("moduleAirIntrinsics"),
-                    "regenerated": regenerated.get("moduleAirIntrinsics"),
+                    "original": original_module_intrinsics,
+                    "regenerated": regenerated_module_intrinsics,
+                    "normalizedOriginal": normalized_original_module_intrinsics,
+                    "normalizedRegenerated": normalized_regenerated_module_intrinsics,
                 },
             )
         )
@@ -786,7 +805,11 @@ def _compare_builtins_and_resources(original: dict[str, Any], regenerated: dict[
                     },
                 )
             )
-        if lhs.get("airIntrinsicCalls") != rhs.get("airIntrinsicCalls"):
+        original_intrinsic_calls = lhs.get("airIntrinsicCalls") or {}
+        regenerated_intrinsic_calls = rhs.get("airIntrinsicCalls") or {}
+        normalized_original_intrinsic_calls = _normalize_air_intrinsic_counter(original_intrinsic_calls)
+        normalized_regenerated_intrinsic_calls = _normalize_air_intrinsic_counter(regenerated_intrinsic_calls)
+        if normalized_original_intrinsic_calls != normalized_regenerated_intrinsic_calls:
             differences.append(
                 _make_difference(
                     "builtin-resource",
@@ -794,8 +817,10 @@ def _compare_builtins_and_resources(original: dict[str, Any], regenerated: dict[
                     key,
                     "函数内 air intrinsic 调用统计变化",
                     {
-                        "original": lhs.get("airIntrinsicCalls"),
-                        "regenerated": rhs.get("airIntrinsicCalls"),
+                        "original": original_intrinsic_calls,
+                        "regenerated": regenerated_intrinsic_calls,
+                        "normalizedOriginal": normalized_original_intrinsic_calls,
+                        "normalizedRegenerated": normalized_regenerated_intrinsic_calls,
                     },
                 )
             )
@@ -868,10 +893,19 @@ def _compare_instruction_families(original: dict[str, Any], regenerated: dict[st
 
 def _compare_fast_math(original: dict[str, Any], regenerated: dict[str, Any]) -> dict[str, Any]:
     differences: list[dict[str, Any]] = []
-    if original.get("fastMath") != regenerated.get("fastMath"):
-        severity = "L2"
-        if (original.get("fastMath") or {}).get("compileOptions") != (regenerated.get("fastMath") or {}).get("compileOptions"):
+    original_fast_math = original.get("fastMath") or {}
+    regenerated_fast_math = regenerated.get("fastMath") or {}
+    if original_fast_math != regenerated_fast_math:
+        compile_options_changed = original_fast_math.get("compileOptions") != regenerated_fast_math.get("compileOptions")
+        function_attr_keys_changed = original_fast_math.get("functionAttrKeys") != regenerated_fast_math.get("functionAttrKeys")
+        instruction_flags_changed = original_fast_math.get("instructionFlags") != regenerated_fast_math.get("instructionFlags")
+
+        severity = "L1"
+        if compile_options_changed:
             severity = "L3"
+        elif function_attr_keys_changed:
+            severity = "L2"
+
         differences.append(
             _make_difference(
                 "fast-math",
@@ -879,8 +913,11 @@ def _compare_fast_math(original: dict[str, Any], regenerated: dict[str, Any]) ->
                 "module",
                 "fast-math 相关属性变化",
                 {
-                    "original": original.get("fastMath"),
-                    "regenerated": regenerated.get("fastMath"),
+                    "original": original_fast_math,
+                    "regenerated": regenerated_fast_math,
+                    "compileOptionsChanged": compile_options_changed,
+                    "functionAttrKeysChanged": function_attr_keys_changed,
+                    "instructionFlagsChanged": instruction_flags_changed,
                 },
             )
         )

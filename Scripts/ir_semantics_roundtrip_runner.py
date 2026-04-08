@@ -85,9 +85,7 @@ LOCAL_SHADERCORPUS_REPRESENTATIVES = [
 TEST_DATA_REPRESENTATIVE_L2_KEYS = [
     "test_casts",
     "test_fast_math_select",
-    "test_int_literal_half_suffix",
     "test_intrinsic_vector_icmp_zext",
-    "test_vector_select_global_gep",
 ]
 TEST_DATA_REPRESENTATIVE_ALLOWED_FAILURES = {
     "test_struct_array_field": "compile",
@@ -197,7 +195,11 @@ def build_roundtrip_presets(root: Path) -> dict[str, dict[str, Any]]:
 
 def build_gate_profiles() -> dict[str, dict[str, Any]]:
     test_data_profile = {
-        "description": "固定 test-data 代表集的首版 gate 基线：允许 1 个已知 compile blocker，并继续跟踪 5 个已知 L2 样本。",
+        "description": (
+            "固定 test-data 代表集的首版 gate 基线：允许 "
+            f"{len(TEST_DATA_REPRESENTATIVE_ALLOWED_FAILURES)} 个已知 compile blocker，"
+            f"并继续跟踪 {len(TEST_DATA_REPRESENTATIVE_L2_KEYS)} 个已知 L2 样本。"
+        ),
         "expectedJobCount": len(TEST_DATA_REPRESENTATIVE_FILES),
         "allowedFailureSamples": dict(TEST_DATA_REPRESENTATIVE_ALLOWED_FAILURES),
         "allowedBlockedSampleKeys": [],

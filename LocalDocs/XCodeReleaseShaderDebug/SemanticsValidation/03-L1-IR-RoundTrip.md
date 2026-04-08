@@ -51,6 +51,7 @@ regenerated.ll
 7. 生成 `regenerated.ll`
 8. 写 `replay-summary.json`、`compile-summary.json`、`roundtrip-summary.json`
 9. 继续为 L2 自动产出 `compare-summary.json / risk-report.json / high-risk-samples.json`
+10. 对固定 preset 继续写 `preset-manifest.json`，并支持 replay baseline snapshot 的保存与复用
 
 ### 输入模式
 
@@ -66,6 +67,9 @@ regenerated.ll
 - `--skip-preflight`
 - `--metal-sdk`
 - `--metal-arg`
+- `--baseline-report`
+- `--save-baseline`
+- `--manifest-file`
 - `--quiet`
 - `--preset test-data-representatives`
 - `--preset test-data-batch`
@@ -91,6 +95,10 @@ build/semantics-validation/roundtrip/<timestamp>/
   compare-summary.json
   risk-report.json
   high-risk-samples.json
+  preset-manifest.json
+  # 若显式保存 baseline：
+  baseline.json
+  generated-sources/
   manual/ 或 <bundleId>/modules/<moduleKey>/
     original.ll
     generated.metal

@@ -92,6 +92,11 @@ makeLibrary(source:) / metal -c
   - `--gate-profile <name>`（可显式指定 gate profile；若 preset 存在同名 profile，则自动复用）
   - `--enforce-gate`（仅当出现新增 round-trip / L3 回归时阻断退出）
   - `gate-summary.json`（输出 `pass / warn / fail`、活跃已知 debt 与新增回归样本）
+- 本轮继续为 stable gate 补上维护/追踪入口：
+  - `--baseline-report <path>`（显式指定 replay baseline；若固定输出目录下已有 `baseline.json`，默认自动复用）
+  - `--save-baseline <path>`（把当前 replay + compile 结果保存为 baseline 快照，包含 JSON 与 generated source 资产）
+  - `preset-manifest.json`（记录本次 preset、gate profile、发现到的 jobs 与报告落盘位置）
+  - `replay-summary.json` / `roundtrip-summary.json` 当前会继续带出 replay baseline diff / saved baseline 信息
 - 当前固定输出目录已收口到：
   - `build/semantics-validation/roundtrip/test-data-representatives/`
   - `build/semantics-validation/roundtrip/test-data-batch/`
@@ -170,6 +175,14 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-batch --allo
 python3 Scripts/ir_semantics_roundtrip_runner.py --preset local-corpus-representatives --allow-failures
 ```
 
+- 若要把固定 preset 的当前结果固化成可复用 baseline：
+
+```bash
+python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representatives --allow-failures --enforce-gate --save-baseline build/semantics-validation/roundtrip/test-data-representatives
+```
+
+- 后续对同一固定输出目录再次执行时，若目录下已存在 `baseline.json`，runner 会默认自动复用它做 replay baseline diff；也可用 `--baseline-report <path>` 显式指定其他 baseline
+
 默认会继续产出：
 
 - `replay-summary.json`
@@ -179,6 +192,12 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset local-corpus-represent
 - `risk-report.json`
 - `high-risk-samples.json`
 - `gate-summary.json`
+- `preset-manifest.json`
+
+若显式使用 `--save-baseline`，还会额外保存：
+
+- `baseline.json`
+- `generated-sources/`（baseline asset root）
 
 补充约束：
 
@@ -242,14 +261,14 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset local-corpus-represent
 | SV-000 | 现状调研与缺口梳理 | ✅ DONE | - | 已确认当前没有严格语义闭环，已形成总体路线 | `01-现状调研与缺口.md` |
 | SV-001 | 离线 IR round-trip harness | ✅ DONE | - | 已新增 `Scripts/ir_semantics_roundtrip_runner.py`，并在 `test-data/` 首轮批量报告中得到 `26 / 27` round-trip 成功 | `03-L1-IR-RoundTrip.md` |
 | SV-002 | Canonical compare + 风险分级 | ✅ DONE | - | 已新增 `Scripts/ir_canonical_compare.py`，并在 `test-data/` 上产出 `compare-summary.json / risk-report.json / high-risk-samples.json` | `04-L2-CanonicalCompareAndRiskGrading.md` |
-| SV-003 | 把 L1/L2 接入 `test-data/` 与 `ShaderCorpus` | TODO | P0 | 已落地 preset 化固定入口、首组本地 `ShaderCorpus` 代表样本，以及 `gate-summary.json` / `--enforce-gate`；剩余工作是继续维护代表集 | `02-总体技术路线.md` |
+| SV-003 | 把 L1/L2 接入 `test-data/` 与 `ShaderCorpus` | TODO | P0 | 已落地 preset 固定入口、`gate-summary.json` / `--enforce-gate`、`preset-manifest.json` 与 replay baseline snapshot；剩余工作已收窄到继续扩/修代表集，并结合聚类经验细化升级边界 | `02-总体技术路线.md` |
 | SV-004 | 最小行为测试（compute-first） | TODO | P2 | 优先建立 compute 输出对比，再决定是否补离屏 render | `05-L3-最小行为测试.md` |
 | SV-005 | 真实场景验证流程收口 | TODO | P3 | 把 `.gputrace` / render diff / MCP live 验证收口成后置 gate | `06-L4-真实场景验证.md` |
 | SV-006 | 分层 gate 与止损策略 | TODO | P1 | 明确“什么时候可以先停在 L2，什么时候必须升级到 L3/L4”的预算与升级规则 | `02-总体技术路线.md` |
 
 ### 当前关键卡点
 
-- **`SV-003` 已完成首轮 preset + gate 收口，但还没有完全结束**：当前已经有 `test-data-representatives / test-data-batch / local-corpus-representatives / daily-default` 固定入口，以及 `gate-summary.json` / `--enforce-gate` 第一版 gate profile；剩余缺口是继续维护代表集，并在后续经验积累中继续细化升级边界
+- **`SV-003` 已完成 preset + gate 第一轮收口，并已补上 manifest / baseline 追踪入口**：当前已经有 `test-data-representatives / test-data-batch / local-corpus-representatives / daily-default` 固定入口，以及 `gate-summary.json` / `--enforce-gate`、`preset-manifest.json`、`--baseline-report` / `--save-baseline`；剩余缺口已收窄到继续扩/修代表集，并在后续经验积累中继续细化升级边界
 - **`test_struct_array_field` 仍是当前首个 compile-stage blocker**：当前 `test-data/` 批量 round-trip 中，27 个样本里仍只有它在 `generated.metal -> generated.air` 阶段失败
 - **L2 已落地，但 `test-data/` 里仍有较多 `L3` 结构性不一致样本**：当前批量分布为 `L0 = 1 / L1 = 1 / L2 = 5 / L3 = 20`，下一步需要结合 `SV-003` 做样本聚类与代表集扩展
 - **没有行为级 oracle**：当前报告能筛查风险，但还不能判断行为是否一致；`L2` 样本仍需后续 `L3` 最小行为测试承接

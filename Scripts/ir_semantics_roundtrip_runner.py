@@ -369,6 +369,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="即使存在 replay / compile / llvm-dis 失败也返回 0，便于先收集批量报告",
     )
     parser.add_argument(
+        "--baseline-report",
+        help="历史 replay baseline.json；若未指定且 output-root/baseline.json 已存在，则自动复用它做 baseline diff",
+    )
+    parser.add_argument(
+        "--save-baseline",
+        help="把当前 replay + compile 结果保存为可复用 baseline 快照（JSON + generated sources）",
+    )
+    parser.add_argument(
+        "--manifest-file",
+        help="preset/gate/discovered jobs manifest 输出路径；默认写到 output-root/preset-manifest.json",
+    )
+    parser.add_argument(
         "--metal-sdk",
         default="macosx",
         help="`xcrun --sdk` 使用的 SDK 名称，默认 macosx",
@@ -435,6 +447,94 @@ def make_high_risk_path(args: argparse.Namespace, output_root: Path) -> Path:
 
 def make_gate_summary_path(args: argparse.Namespace, output_root: Path) -> Path:
     return _make_optional_report_path(args.gate_summary_file, output_root, "gate-summary.json")
+
+
+def make_manifest_path(args: argparse.Namespace, output_root: Path) -> Path:
+    return _make_optional_report_path(args.manifest_file, output_root, "preset-manifest.json")
+
+
+def default_replay_baseline_path(output_root: Path) -> Path:
+    return (output_root / "baseline.json").resolve()
+
+
+def resolve_replay_baseline_report_path(args: argparse.Namespace, output_root: Path) -> Path | None:
+    if args.baseline_report:
+        return Path(args.baseline_report).expanduser().resolve()
+    default_path = default_replay_baseline_path(output_root)
+    if default_path.is_file():
+        return default_path
+    return None
+
+
+def build_preset_manifest(
+    args: argparse.Namespace,
+    output_root: Path,
+    manifest_path: Path,
+    jobs: list[replay_runner.ReplayJob],
+    root: Path,
+    report_paths: dict[str, str],
+    baseline_report_path: Path | None,
+    saved_baseline: dict[str, Any] | None,
+) -> dict[str, Any]:
+    presets = build_roundtrip_presets(root)
+    preset = presets.get(args.preset) if args.preset else None
+    profile_name, gate_profile = resolve_gate_profile(args)
+    discovered_jobs = [
+        {
+            "jobID": job.job_id,
+            "comparisonKey": replay_runner.make_comparison_key(
+                job.source_kind,
+                job.bundle_id,
+                job.module_key,
+                str(job.input_path),
+            ),
+            "sourceKind": job.source_kind,
+            "inputPath": str(job.input_path),
+            "bundleId": job.bundle_id,
+            "moduleKey": job.module_key,
+            "metadataPath": str(job.metadata_path) if job.metadata_path else None,
+            "functionNames": list(job.function_names),
+            "functionTypes": list(job.function_types),
+        }
+        for job in jobs
+    ]
+    return {
+        "schemaVersion": 1,
+        "generatedAt": replay_runner.utc_now_iso(),
+        "tool": "Scripts/ir_semantics_roundtrip_runner.py",
+        "reportPath": str(manifest_path),
+        "outputRoot": str(output_root),
+        "presetName": args.preset,
+        "presetDescription": preset.get("description") if preset else None,
+        "gateProfileName": profile_name,
+        "gateProfile": gate_profile,
+        "requestedInputs": {
+            "llInputs": list(args.ll_inputs),
+            "corpusRoots": list(args.corpus_roots),
+            "bundleIds": list(args.bundle_id),
+            "moduleKeys": list(args.module_key),
+            "limit": args.limit,
+            "allowFailures": bool(args.allow_failures),
+            "enforceGate": bool(args.enforce_gate),
+            "metalSDK": args.metal_sdk,
+            "metalArgs": list(args.metal_args),
+            "skipPreflight": bool(args.skip_preflight),
+            "llvmDis": args.llvm_dis,
+        },
+        "baseline": {
+            "reportPath": str(baseline_report_path) if baseline_report_path else None,
+            "savedBaseline": saved_baseline,
+        },
+        "discovery": {
+            "jobCount": len(discovered_jobs),
+            "sourceKinds": {
+                "explicitLL": sum(1 for job in jobs if job.source_kind == "explicit_ll"),
+                "shaderCorpus": sum(1 for job in jobs if job.source_kind == "shader_corpus"),
+            },
+            "jobs": discovered_jobs,
+        },
+        "reportArtifacts": report_paths,
+    }
 
 
 def build_gate_summary(
@@ -732,6 +832,7 @@ def build_roundtrip_results(
                     "mslBytes": replay_result.get("mslBytes"),
                     "stats": replay_result.get("stats"),
                 },
+                "replayBaselineComparison": replay_result.get("baselineComparison"),
                 "compile": compile_result,
                 "llvmDis": llvm_dis_result,
             }
@@ -772,6 +873,8 @@ def build_roundtrip_report(
         "replayReportPath": str(replay_report.get("reportPath") or (output_root / "replay-summary.json")),
         "compileReportPath": str(compile_report.get("reportPath") or (output_root / "compile-summary.json")),
         "converterSwift": replay_report.get("converterSwift"),
+        "replayBaselineComparison": replay_report.get("baselineComparison"),
+        "savedBaseline": replay_report.get("savedBaseline"),
         "llvmDisassembler": {
             "resolvedPath": str(llvm_dis_path) if llvm_dis_path else None,
             "candidates": [str(path) for path in llvm_dis_candidates],
@@ -958,6 +1061,7 @@ def print_summary(
     report: dict[str, Any],
     compare_report: dict[str, Any],
     gate_summary: dict[str, Any],
+    manifest_path: Path,
     args: argparse.Namespace,
 ) -> None:
     if args.quiet:
@@ -978,6 +1082,20 @@ def print_summary(
     print(f"roundtrip report: {report['reportPath']}")
     print(f"compare report: {compare_report['reportPath']}")
     print(f"gate summary: {gate_summary['reportPath']}")
+    print(f"preset manifest: {manifest_path}")
+
+    replay_baseline = report.get("replayBaselineComparison") or {}
+    if replay_baseline:
+        print(
+            "replay baseline: "
+            f"matched={replay_baseline.get('matchedJobs', 0)}, "
+            f"new={replay_baseline.get('newJobs', 0)}, "
+            f"replay regressions={replay_baseline.get('replayRegressions', 0)}, "
+            f"compile regressions={replay_baseline.get('compileRegressions', 0)}"
+        )
+    saved_baseline = report.get("savedBaseline") or {}
+    if saved_baseline.get("baselinePath"):
+        print(f"saved replay baseline: {saved_baseline['baselinePath']}")
 
     llvm_disassembler = report.get("llvmDisassembler") or {}
     if llvm_disassembler.get("resolvedPath"):
@@ -1052,6 +1170,8 @@ def main() -> int:
     risk_report_path = make_risk_report_path(args, output_root)
     high_risk_path = make_high_risk_path(args, output_root)
     gate_summary_path = make_gate_summary_path(args, output_root)
+    manifest_path = make_manifest_path(args, output_root)
+    baseline_report_path = resolve_replay_baseline_report_path(args, output_root)
 
     warnings: list[replay_runner.DiscoveryWarning] = []
     jobs = replay_runner.discover_jobs(args, output_root, warnings)
@@ -1068,6 +1188,28 @@ def main() -> int:
 
     compile_report = replay_runner.run_compile_jobs(replay_report, args, compile_report_path)
     replay_report = replay_runner.attach_compile_report(replay_report, compile_report)
+
+    if baseline_report_path is not None:
+        baseline_payload = replay_runner.load_json(baseline_report_path, warnings)
+        if baseline_payload is None:
+            if args.baseline_report:
+                print(f"error: failed to load baseline report: {baseline_report_path}", file=sys.stderr)
+                return 1
+        else:
+            replay_report = replay_runner.compare_report_to_baseline(
+                replay_report,
+                baseline_payload,
+                baseline_report_path,
+            )
+
+    if args.save_baseline:
+        replay_report["savedBaseline"] = replay_runner.save_baseline_snapshot(
+            replay_report,
+            args.save_baseline,
+            replay_report_path,
+            compile_report_path,
+        )
+
     replay_report_path.parent.mkdir(parents=True, exist_ok=True)
     replay_report_path.write_text(json.dumps(replay_report, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -1086,6 +1228,24 @@ def main() -> int:
     risk_report = build_risk_report(compare_report, risk_report_path)
     high_risk_samples = build_high_risk_samples(compare_report)
     gate_summary = build_gate_summary(roundtrip_report, risk_report, gate_summary_path, args)
+    manifest = build_preset_manifest(
+        args,
+        output_root,
+        manifest_path,
+        jobs,
+        root,
+        {
+            "replayReportPath": str(replay_report_path),
+            "compileReportPath": str(compile_report_path),
+            "roundtripReportPath": str(report_path),
+            "compareReportPath": str(compare_report_path),
+            "riskReportPath": str(risk_report_path),
+            "highRiskFile": str(high_risk_path),
+            "gateSummaryPath": str(gate_summary_path),
+        },
+        baseline_report_path,
+        replay_report.get("savedBaseline"),
+    )
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(roundtrip_report, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -1097,7 +1257,9 @@ def main() -> int:
     high_risk_path.write_text(json.dumps(high_risk_samples, indent=2, ensure_ascii=False), encoding="utf-8")
     gate_summary_path.parent.mkdir(parents=True, exist_ok=True)
     gate_summary_path.write_text(json.dumps(gate_summary, indent=2, ensure_ascii=False), encoding="utf-8")
-    print_summary(roundtrip_report, compare_report, gate_summary, args)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    print_summary(roundtrip_report, compare_report, gate_summary, manifest_path, args)
 
     if args.enforce_gate and gate_summary.get("shouldBlock"):
         return 1

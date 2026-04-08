@@ -28,6 +28,12 @@
 - `risk-report.json`
 - `high-risk-samples.json`
 - `gate-summary.json`
+- `preset-manifest.json`
+
+对固定输出目录，当前还支持：
+
+- 用 `--save-baseline` 保存 replay baseline snapshot
+- 在目录下已有 `baseline.json` 时自动复用它做 replay baseline diff（也可显式用 `--baseline-report` 覆盖）
 
 当前状态需要明确区分两件事：
 

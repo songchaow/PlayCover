@@ -72,7 +72,7 @@ TEST_DATA_REPRESENTATIVE_CONTRACT = [
     {"fileName": "test_int_literal_half_suffix.ll"},
     {"fileName": "test_intrinsic_vector_icmp_zext.ll", "allowedL2": True},
     {"fileName": "test_vector_select_global_gep.ll"},
-    {"fileName": "test_struct_array_field.ll", "allowedFailureStage": "compile"},
+    {"fileName": "test_struct_array_field.ll", "allowedBlocked": True},
 ]
 LOCAL_SHADERCORPUS_DEFAULT_ROOT = Path.home() / "Library/Containers/io.playcover.PlayCover/ShaderCorpus"
 LOCAL_SHADERCORPUS_REPRESENTATIVE_CONTRACT = [
@@ -124,6 +124,11 @@ TEST_DATA_REPRESENTATIVE_ALLOWED_FAILURES = {
     for item in TEST_DATA_REPRESENTATIVE_CONTRACT
     if item.get("allowedFailureStage")
 }
+TEST_DATA_REPRESENTATIVE_ALLOWED_BLOCKED_KEYS = [
+    ll_sample_key(str(item["fileName"]))
+    for item in TEST_DATA_REPRESENTATIVE_CONTRACT
+    if item.get("allowedBlocked")
+]
 LOCAL_SHADERCORPUS_ALLOWED_BLOCKED_KEYS = [
     shader_corpus_identity(str(item["bundleId"]), str(item["moduleKey"]))
     for item in LOCAL_SHADERCORPUS_REPRESENTATIVE_CONTRACT
@@ -382,12 +387,13 @@ def build_gate_profiles() -> dict[str, dict[str, Any]]:
     test_data_profile = {
         "description": (
             "固定 test-data 代表集的首版 gate 基线：允许 "
-            f"{len(TEST_DATA_REPRESENTATIVE_ALLOWED_FAILURES)} 个已知 compile blocker，"
+            f"{len(TEST_DATA_REPRESENTATIVE_ALLOWED_FAILURES)} 个已知 round-trip failure、"
+            f"{len(TEST_DATA_REPRESENTATIVE_ALLOWED_BLOCKED_KEYS)} 个已知 blocked 样本，"
             f"并继续跟踪 {len(TEST_DATA_REPRESENTATIVE_L2_KEYS)} 个已知 L2 样本。"
         ),
         "expectedJobCount": len(TEST_DATA_REPRESENTATIVE_FILES),
         "allowedFailureSamples": dict(TEST_DATA_REPRESENTATIVE_ALLOWED_FAILURES),
-        "allowedBlockedSampleKeys": [],
+        "allowedBlockedSampleKeys": list(TEST_DATA_REPRESENTATIVE_ALLOWED_BLOCKED_KEYS),
         "allowedL2SampleKeys": list(TEST_DATA_REPRESENTATIVE_L2_KEYS),
     }
     local_corpus_profile = {

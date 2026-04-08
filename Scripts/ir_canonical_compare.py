@@ -265,11 +265,14 @@ def _parse_metadata(lines: list[str]) -> tuple[dict[str, str], dict[str, str]]:
     return named, nodes
 
 
-def _parse_output_or_arg_metadata(content: str) -> dict[str, Any]:
+def _parse_output_or_arg_metadata(content: str) -> dict[str, Any] | None:
     strings = STRING_RE.findall(content)
     integers = [int(value) for value in INTEGER_RE.findall(content)]
     semantic_tokens = [token for token in strings if token.startswith("air.") and token not in METADATA_VALUE_KEYS]
-    kind = semantic_tokens[0] if semantic_tokens else None
+    if not semantic_tokens:
+        return None
+
+    kind = semantic_tokens[0]
     qualifiers = [token for token in semantic_tokens[1:] if token != "air.arg_unused"]
     access = next((token for token in semantic_tokens if token in {"air.read", "air.read_write", "air.write", "air.write_only"}), None)
     arg_index = integers[0] if content.startswith("!{i") and integers else None
@@ -281,7 +284,7 @@ def _parse_output_or_arg_metadata(content: str) -> dict[str, Any]:
     type_size = _extract_metadata_int(content, "air.arg_type_size")
     align_size = _extract_metadata_int(content, "air.arg_type_align_size")
 
-    signature_parts = [f"kind={kind or '<none>'}"]
+    signature_parts = [f"kind={kind}"]
     if arg_index is not None:
         signature_parts.append(f"index={arg_index}")
     if location_index is not None:
@@ -316,11 +319,28 @@ def _parse_output_or_arg_metadata(content: str) -> dict[str, Any]:
     }
 
 
+def _parse_metadata_items_from_refs(nodes: dict[str, str], refs: list[str]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for ref in refs:
+        node_content = nodes.get(ref)
+        if not node_content:
+            continue
+
+        current_item = _parse_output_or_arg_metadata(node_content)
+        if current_item is not None:
+            items.append(current_item)
+            continue
+
+        nested_refs = _metadata_refs(node_content)
+        if nested_refs:
+            items.extend(_parse_metadata_items_from_refs(nodes, nested_refs))
+    return items
+
+
 def _parse_metadata_group(nodes: dict[str, str], group_ref: str | None) -> list[dict[str, Any]]:
-    if not group_ref or group_ref not in nodes:
+    if not group_ref:
         return []
-    group_node = nodes[group_ref]
-    return [_parse_output_or_arg_metadata(nodes[ref]) for ref in _metadata_refs(group_node) if ref in nodes]
+    return _parse_metadata_items_from_refs(nodes, [group_ref])
 
 
 def _extract_functions(ir_text: str, attributes: dict[str, dict[str, str | bool]]) -> list[dict[str, Any]]:
@@ -503,8 +523,8 @@ def extract_ir_summary_text(ir_text: str) -> dict[str, Any]:
             if not function_name:
                 continue
             child_refs = _metadata_refs(entry_node)
-            outputs = _parse_metadata_group(metadata_nodes, child_refs[0] if len(child_refs) >= 1 else None)
-            args = _parse_metadata_group(metadata_nodes, child_refs[1] if len(child_refs) >= 2 else None)
+            outputs = _parse_metadata_items_from_refs(metadata_nodes, child_refs[:1])
+            args = _parse_metadata_items_from_refs(metadata_nodes, child_refs[1:])
             function_summary = functions_by_name.get(function_name, {})
             resource_semantics = sorted(item["signature"] for item in args if item.get("isResource"))
             builtin_semantics = sorted(item["signature"] for item in args if not item.get("isResource"))

@@ -26,7 +26,7 @@ regenerated.ll
 - 哪些样本卡在生成 MSL、Metal 编译或反汇编阶段
 - 为 L2 compare 提供成对输入
 
-若只是理解当前主线优先级，优先读 `00-Dashboard.md` 与 `02-总体技术路线.md`；本文件更偏向 L1 接口、产物与边界的工作参考。
+若只是理解当前主线优先级，优先读 `00-Dashboard.md` 与 `02-总体技术路线.md`；本文件更偏向 L1 接口、产物与边界的工作参考，当前日常推进**不必须读取**。
 
 ## 为什么它必须先做
 
@@ -119,22 +119,11 @@ build/semantics-validation/roundtrip/
 
 ### Phase 1：直接复用现有 replay 能力
 
-这一阶段已经完成。当前仍应保持的原则是：
-
-- 不重写 `IR -> MSL` 主链路
-- 继续复用 `Scripts/corpus_replay_runner.py` 的既有调用方式
-- 让 L1 只承担“把 replay 之后的 round-trip 链路做稳定”的职责
+这一阶段已经完成；当前只继续维护一条原则：不重写 `IR -> MSL` 主链路，继续复用 `Scripts/corpus_replay_runner.py` 的既有调用方式，让 L1 只承担“把 replay 之后的 round-trip 链路做稳定”的职责。
 
 ### Phase 2：把 Metal 编译物保留下来
 
-这一阶段也已经完成。当前仍需要维护的，是固定 preset 运行时稳定保留：
-
-- `generated.metal`
-- `generated.air`
-- `regenerated.ll`
-- 对应 summary / compare / risk / gate / manifest 报告
-
-这样 L1 结果才能继续被 L2/L3/L4 消费，而不是退回一次性试验结果。
+这一阶段也已经完成；当前只要求固定 preset 继续稳定保留 `generated.metal`、`generated.air`、`regenerated.ll` 以及对应 summary / compare / risk / gate / manifest 报告，避免结果退回一次性试验。
 
 ### Phase 3：统一 `llvm-dis` 解析路径
 
@@ -142,7 +131,7 @@ build/semantics-validation/roundtrip/
 
 1. 默认优先复用 PlayCover 已下载好的 `llvm-dis`
 2. 显式参数允许覆盖路径
-3. 缺工具时可以汇报 warning / failure，但不要把“用户手工找工具路径”写成默认步骤
+3. 若缺少 `llvm-dis` 等必要工具，agent 应停止并汇报，不应尝试把“用户手工找工具路径”写成默认步骤
 
 原则仍然不变：默认路径必须 agent 可自动使用。
 
@@ -256,15 +245,9 @@ L1 只做一件事：**把 round-trip 链路本身做稳定。**
 
 ## 完成标准
 
-满足以下条件后，可认为 `SV-001` 基本完成：
+`SV-001` 已完成；原定的 5 条完成标准（显式 `.ll` round-trip、`test-data/` 批量执行、失败阶段区分、关键产物保留、L2 可直接消费）当前均已满足。
 
-1. 已有脚本可以对显式 `.ll` 做 round-trip
-2. `test-data/` 可以批量执行并产出结构化报告
-3. 报告能明确区分失败阶段（replay / compile / llvm-dis）
-4. 产物会稳定保留 `original.ll`、`generated.metal`、`generated.air`、`regenerated.ll`
-5. 至少有一组结果能供 L2 compare 直接消费
-
-> 当前以上 5 条均已满足，因此 `SV-001` 可视为完成；L1 当前的工作重心已从“把 runner 做出来”转为“把它接入更稳定的日常 gate”。
+> L1 当前的工作重心已从“把 runner 做出来”转为“把它接入更稳定的日常 gate”；更细的首轮完成过程与历史结果已下沉到 `07-首轮基线与历史进展归档.md`（历史参考，**不必须读取**）。
 
 ## 后续衔接
 

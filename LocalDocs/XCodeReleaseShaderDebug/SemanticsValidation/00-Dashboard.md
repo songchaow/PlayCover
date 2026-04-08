@@ -95,13 +95,14 @@ makeLibrary(source:) / metal -c
 
 当前已确认的代表结果可概括为：
 
-- `test-data-representatives`：`8` 个样本中 `7` 个 round-trip 成功、`1` 个 compile 失败，风险分布 `L0 = 1 / L1 = 3 / L2 = 3 / L3 = 1`
+- `test-data-representatives`：`8` 个样本当前已全部 round-trip 成功，风险分布 `L0 = 1 / L1 = 3 / L2 = 3 / L3 = 1`
 - `local-corpus-representatives`：当前固定 `5` 个本地 `ShaderCorpus` 代表样本全部 round-trip 成功，风险分布 `L0 = 0 / L1 = 0 / L2 = 1 / L3 = 4`
-- `daily-default`：`13` 个样本中 `12` 个 round-trip 成功、`1` 个 compile 失败，风险分布 `L0 = 1 / L1 = 3 / L2 = 4 / L3 = 5`
+- `daily-default`：`13` 个样本当前已全部 round-trip 成功，风险分布 `L0 = 1 / L1 = 3 / L2 = 5 / L3 = 4`
 - 代表 preset 在加上 `--enforce-gate` 后当前都能稳定输出 `WARN`，保留已知 debt 而不会误判成 `FAIL`
 - `test-data-representatives` 固定输出目录当前已保存 `baseline.json` / `generated-sources/`；重复执行时会自动复用该 baseline 做 replay diff，且 `preset-manifest.json` 会稳定记录当前 active baseline 摘要，而不再只在本次显式 `--save-baseline` 时体现
-- 本轮通过把 `air.fast_*` intrinsic alias 归一化、并把 **仅发生在 instruction-level 的 fast-math flag 漂移** 下调为 `L1`，已将 `test_int_literal_half_suffix` 与 `test_vector_select_global_gep` 从已知 `L2` debt 收敛到 `L1`；同步收紧后的 gate profile / manifest 现在只继续跟踪 `3` 个活跃 `L2` 样本
-- 已补齐 `Scripts/test_ir_semantics_roundtrip_runner.py` 与 `Scripts/test_ir_canonical_compare.py` 的关键契约测试，覆盖 `build_compare_result`、`build_preset_manifest`、`sample_identity`、known-debt improvement 以及 `jobCount above_expected` 等边界，降低代表集 / gate profile / baseline / manifest 语义漂移时静默回归的风险
+- 本轮通过把 `test_struct_array_field` 的 direct entry metadata / `struct_type_info` 解析补齐到 `IRToMSLConverter` 与 `ir_canonical_compare`，并让缺失的 buffer addrspace 回退到原始 IR，再把代表集合同从“已知 compile failure”收口为“已知 blocked sample”，使跨机器硬默认 gate 恢复到稳定 `WARN`
+- 本轮通过把 `air.fast_*` intrinsic alias 归一化、并把 **仅发生在 instruction-level 的 fast-math flag 漂移** 下调为 `L1`，已将 `test_int_literal_half_suffix` 与 `test_vector_select_global_gep` 从已知 `L2` debt 收敛到 `L1`；同步收紧后的 gate profile / manifest 现在只继续跟踪 `3` 个活跃 `L2` 样本和 `1` 个活跃 blocked 样本
+- 已补齐 `Scripts/test_ir_semantics_roundtrip_runner.py` 与 `Scripts/test_ir_canonical_compare.py` 的关键契约测试，覆盖 `build_compare_result`、`build_preset_manifest`、`sample_identity`、known-debt improvement、direct entry metadata refs 以及 `jobCount above_expected` 等边界，降低代表集 / gate profile / baseline / manifest 语义漂移时静默回归的风险
 - `preset-manifest.json` 现在会把 preset 期望代表集边界一起结构化写出：除现有 `gateProfile` / baseline 摘要外，还会同步记录 `expected / matched / missing / unexpected` 的 discovered job 合同摘要，便于在 `daily-default / local-corpus-representatives` 中直接看见本机缺失了哪些 `ShaderCorpus` 代表样本，而不把这类缺样本误判成默认 gate 回归
 - `Scripts/ir_semantics_roundtrip_runner.py` 已把 `test-data` / `ShaderCorpus` 代表样本及其 `allowed failure / allowed L2 / allowed blocked` 元数据收口为单一内建契约来源；`preset`、`gate profile` 与 manifest 期望边界都从同一份定义推导，并新增同步性单测来防止后续维护漂移
 
@@ -144,7 +145,7 @@ makeLibrary(source:) / metal -c
 python3 Scripts/corpus_replay_runner.py --compile --ll <sample.ll>
 ```
 
-- 已有 PlayTools 构建守门：
+- 已有 PlayTools 构建守门（**仅在改动涉及 `IRToMSLConverter` / PlayTools 构建产物时执行**；文档整理或纯 compare/gate 调整不必附带重建）：
 
 ```bash
 FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh
@@ -210,6 +211,8 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representati
 
 ### 运行时链路验证（只在必要时）
 
+若当前改动不涉及以下任何内容，**跳过本节**。
+
 仅在修改以下内容时执行：
 
 - `LibrarySourceInjectionSwizzles`
@@ -271,6 +274,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representati
 | SV-003A | 收紧默认 gate 的契约测试护栏 | ✅ DONE | - | 已为 `build_compare_result` / `build_preset_manifest` / `sample_identity` / gate job-count 边界与 known-debt improvement 补齐关键纯逻辑单测，降低默认入口语义漂移时的静默回归风险 | `00-Dashboard.md` |
 | SV-003B | 把代表集边界显式写入 `preset-manifest.json` | ✅ DONE | - | 已让 manifest 同步记录 preset 期望代表集、已匹配样本、缺失本地代表样本与意外新增 discovered jobs，降低 `daily-default / local-corpus-representatives` 在跨机器执行时的心智负担 | `00-Dashboard.md` |
 | SV-003C | 收口代表集与 gate 契约的单一来源 | ✅ DONE | - | 已把 `test-data` / `ShaderCorpus` 代表样本及其 `allowed failure / allowed L2 / allowed blocked` 元数据收口到 runner 内的单一契约定义，`preset` / `gate profile` / manifest 期望边界统一从该定义推导，并补充同步性单测 | `00-Dashboard.md` |
+| SV-003D | 收敛 `test_struct_array_field` 并同步 debt 形态 | ✅ DONE | - | 已修复 direct entry metadata / `struct_type_info` 误解析与 buffer addrspace 回退问题，使该样本从 compile blocker 收敛为 round-trip 成功；同步把 `test-data` 代表 gate 合同从 allowed compile failure 切换为 allowed blocked sample，恢复 `test-data-representatives --enforce-gate` 的稳定 `WARN` | `00-Dashboard.md` |
 | SV-006 | 分层 gate 与止损策略 | TODO | P1 | 基于现有 `gate-summary.json` 语义，把“停在 L2 / 升级到 L3/L4”的边界写清楚；前提是 `SV-003` 的代表集与默认入口已经足够稳定 | `02-总体技术路线.md` |
 | SV-004 | 最小行为测试（compute-first） | TODO | P2 | 只从 `SV-003` 已稳定的代表集里挑少量最有信息量样本进入 compute-first 行为测试，不直接扩大到全量样本 | `05-L3-最小行为测试.md` |
 | SV-005 | 真实场景验证流程收口 | TODO | P3 | 把 `.gputrace` / render diff / MCP live 验证收口成严格后置 gate；不得回流为日常默认流程 | `06-L4-真实场景验证.md` |
@@ -278,8 +282,8 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representati
 ### 当前关键卡点
 
 - **`SV-003` 的剩余工作已经不是“再造新工具”，而是继续维护默认入口语义**：要把 `test-data-representatives` 保持为跨机器硬默认，把 `daily-default / local-corpus-representatives` 保持为本地增强入口，避免把人工准备环境重新写回日常 gate
-- **`test_struct_array_field` 仍是当前首个 compile-stage blocker**：当前 `test-data/` 批量 round-trip 中，27 个样本里仍只有它在 `generated.metal -> generated.air` 阶段失败
-- **L2/L3 风险结果还需要进一步缩面**：当前 `test-data/` 批量分布已收敛到 `L0 = 1 / L1 = 3 / L2 = 3 / L3 = 20`；本轮已把 `test_int_literal_half_suffix` 与 `test_vector_select_global_gep` 从已知 `L2` debt 降到 `L1`，但 `local-corpus-representatives` 仍以高风险样本为主，因此下一步重点仍是代表集维护、聚类和升级边界，而不是直接扩大 live 验证
+- **`test_struct_array_field` 已不再是 compile-stage blocker，而是当前 `test-data-representatives` 中首个已知 blocked sample**：它现在已经能稳定 round-trip，但 compare 仍将其判为 `L3`；当前 gate 合同已同步改为跟踪 blocked debt，而不再继续保留过时的 compile failure 语义
+- **L2/L3 风险结果还需要进一步缩面**：当前 `test-data/` 批量分布已收敛到 `L0 = 1 / L1 = 3 / L2 = 3 / L3 = 20`；本轮已把 `test_int_literal_half_suffix` 与 `test_vector_select_global_gep` 从已知 `L2` debt 降到 `L1`，又把 `test_struct_array_field` 从 compile failure 收敛成已知 blocked debt，但 `local-corpus-representatives` 仍以高风险样本为主，因此下一步重点仍是代表集维护、聚类和升级边界，而不是直接扩大 live 验证
 - **没有行为级 oracle**：当前报告能筛查风险，但还不能判断行为是否一致；`SV-004` 仍需等待 `SV-003 / SV-006` 先收敛
 - **真实场景验证成本高且可能引入人工步骤**：应继续严格后置；若确实需要用户介入，必须先压缩到最小步骤并征得确认
 
@@ -299,10 +303,10 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representati
 
 ### 本目录主文档
 
-- `01-现状调研与缺口.md`（需要理解“为什么当前主线仍停在离线层”时再读）
+- `01-现状调研与缺口.md`（需要理解“为什么当前主线仍停在离线层”时再读，当前日常推进**不必须读取**）
 - `02-总体技术路线.md`（**建议读取**；主线任务与升级顺序的核心参考）
-- `03-L1-IR-RoundTrip.md`（做 L1 / runner / preset 维护时再读）
-- `04-L2-CanonicalCompareAndRiskGrading.md`（做 compare / gate / 风险分级时再读）
+- `03-L1-IR-RoundTrip.md`（做 L1 / runner / preset 维护时再读，当前日常推进**不必须读取**）
+- `04-L2-CanonicalCompareAndRiskGrading.md`（做 compare / gate / 风险分级时再读，当前日常推进**不必须读取**）
 - `05-L3-最小行为测试.md`（规划 `SV-004` 时再读，当前**不必须读取**）
 - `06-L4-真实场景验证.md`（规划 live / `.gputrace` 时再读，当前**不必须读取**）
 - `07-首轮基线与历史进展归档.md`（历史归档与样本名单参考，**不必须读取**）

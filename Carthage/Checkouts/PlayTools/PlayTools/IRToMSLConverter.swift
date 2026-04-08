@@ -1457,10 +1457,9 @@ struct IRToMSLConverter {
 
     /// 解析函数 metadata 节点。
     ///
-    /// 格式: !{ptr @test_vertex, !10, !14}
-    /// - 第一个元素: 函数指针 (ptr @name)
-    /// - 第二个元素: 返回值描述引用
-    /// - 第三个元素: 参数列表引用
+    /// AIR 中常见两种形态都要支持：
+    /// - `!{ptr @test_vertex, !10, !14}`：返回节点 + 参数列表分组节点
+    /// - `!{ptr @xlatMtlMain, !1, !2, !4}`：返回节点 + 多个参数节点直接并列
     private static func parseMetadataFuncNode(
         _ content: String,
         shaderType: ShaderType,
@@ -1490,53 +1489,69 @@ struct IRToMSLConverter {
             return nil
         }
 
-        // 找到返回/参数列表引用。
-        // `parseMetadataRefList(...)` 只会返回 `!N` 引用，不会把开头的 `ptr @func` 算进去；
-        // 因此这里的 refs 实际是 `[返回描述引用, 参数列表引用]`。
+        // `parseMetadataRefList(...)` 会返回函数节点里出现的所有 `!N` 引用。
+        // 除了传统的 `[返回节点, 参数列表节点]`，还要兼容 `[返回节点, 参数节点, 参数节点, ...]`。
         let refs = parseMetadataRefList(content)
-        guard refs.count >= 2 else {
+        guard let firstRef = refs.first else {
             return MetadataFuncInfo(name: funcName, shaderType: shaderType, returns: [], args: [])
         }
 
-        let returns: [MetadataReturnInfo]
-        if let returnsContent = nodes[refs[0]] {
-            returns = parseMetadataReturnListNode(returnsContent, nodes: nodes)
-        } else {
-            returns = []
-        }
-
-        let argsNodeId = refs[1]
-        guard let argsContent = nodes[argsNodeId] else {
-            return MetadataFuncInfo(name: funcName, shaderType: shaderType, returns: returns, args: [])
-        }
-
-        // 解析参数列表: !{!15, !16, !17, !18, !20, !21}
-        let argNodeIds = parseMetadataRefList(argsContent)
-        var args: [MetadataArgInfo] = []
-
-        for argNodeId in argNodeIds {
-            guard let argContent = nodes[argNodeId] else { continue }
-            if let argInfo = parseMetadataArgNode(argContent) {
-                args.append(argInfo)
-            }
-        }
+        let returns = parseMetadataReturnListNode(fromRefs: [firstRef], nodes: nodes)
+        let args = parseMetadataArgListNode(fromRefs: Array(refs.dropFirst()), nodes: nodes)
 
         return MetadataFuncInfo(name: funcName, shaderType: shaderType, returns: returns, args: args)
     }
 
     private static func parseMetadataReturnListNode(
-        _ content: String,
+        fromRefs refs: [String],
         nodes: [String: String]
     ) -> [MetadataReturnInfo] {
-        let returnNodeIds = parseMetadataRefList(content)
         var returns: [MetadataReturnInfo] = []
-        for returnNodeId in returnNodeIds {
-            guard let returnContent = nodes[returnNodeId] else { continue }
-            if let returnInfo = parseMetadataReturnNode(returnContent) {
+
+        for ref in refs {
+            guard let nodeContent = nodes[ref] else { continue }
+
+            let nestedRefs = parseMetadataRefList(nodeContent)
+            if !nestedRefs.isEmpty {
+                let nestedReturns = parseMetadataReturnListNode(fromRefs: nestedRefs, nodes: nodes)
+                if !nestedReturns.isEmpty {
+                    returns.append(contentsOf: nestedReturns)
+                    continue
+                }
+            }
+
+            if let returnInfo = parseMetadataReturnNode(nodeContent) {
                 returns.append(returnInfo)
             }
         }
+
         return returns
+    }
+
+    private static func parseMetadataArgListNode(
+        fromRefs refs: [String],
+        nodes: [String: String]
+    ) -> [MetadataArgInfo] {
+        var args: [MetadataArgInfo] = []
+
+        for ref in refs {
+            guard let nodeContent = nodes[ref] else { continue }
+
+            let nestedRefs = parseMetadataRefList(nodeContent)
+            if !nestedRefs.isEmpty {
+                let nestedArgs = parseMetadataArgListNode(fromRefs: nestedRefs, nodes: nodes)
+                if !nestedArgs.isEmpty {
+                    args.append(contentsOf: nestedArgs)
+                    continue
+                }
+            }
+
+            if let argInfo = parseMetadataArgNode(nodeContent) {
+                args.append(argInfo)
+            }
+        }
+
+        return args.sorted { $0.argIndex < $1.argIndex }
     }
 
     private static func parseMetadataReturnNode(_ content: String) -> MetadataReturnInfo? {
@@ -1634,6 +1649,7 @@ struct IRToMSLConverter {
 
         // 第二个 token: !"air.buffer" 或 !"air.vertex_id" 等（参数种类）
         let kind = unquoteMetadataString(tokens[1])
+        guard kind.hasPrefix("air.") else { return nil }
 
         // 扫描后续 token 提取 key-value 对
         var typeName = ""
@@ -2600,11 +2616,18 @@ struct IRToMSLConverter {
         var mappedArgIndices: Set<Int> = []
 
         for meta in metaArgs {
+            let fallbackIRAddrSpace: AddressSpace?
+            if meta.argIndex >= 0 && meta.argIndex < rawIRParams.count {
+                fallbackIRAddrSpace = extractAddressSpace(from: rawIRParams[meta.argIndex])
+            } else {
+                fallbackIRAddrSpace = nil
+            }
+
             let addrSpace: AddressSpace?
             if let as_ = meta.addressSpace {
                 addrSpace = AddressSpace(rawValue: as_)
             } else {
-                addrSpace = nil
+                addrSpace = fallbackIRAddrSpace
             }
 
             // 根据参数种类确定 attribute 和 pointerInfo
@@ -2614,7 +2637,7 @@ struct IRToMSLConverter {
             switch meta.kind {
             case "air.buffer":
                 attribute = nil
-                let space = addrSpace ?? .device
+                let space = addrSpace ?? (meta.isReadOnly ? .constant : .device)
                 // E-006b9: metal::_atomic → 根据内部字段类型映射为 atomic_int/atomic_uint
                 let resolvedTypeName: String
                 if meta.typeName == "metal::_atomic" {
@@ -6999,13 +7022,15 @@ struct IRToMSLConverter {
             colorInputIdx = 0
         }
 
-        if usesStageIn {
-            let stageInType = stageInStructName(for: safeName)
-            mslParams.append("\(stageInType) \(stageInParamName) [[stage_in]]")
-        }
+        let stageInType = usesStageIn ? stageInStructName(for: safeName) : ""
+        var didEmitStageInParam = false
 
         for param in params {
             if usesStageIn && isStageInParameter(param, shaderType: shaderType) {
+                if !didEmitStageInParam {
+                    mslParams.append("\(stageInType) \(stageInParamName) [[stage_in]]")
+                    didEmitStageInParam = true
+                }
                 continue
             }
 

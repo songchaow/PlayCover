@@ -88,6 +88,25 @@ attributes #0 = {{ nounwind memory(none) "no-builtins" }}
 '''
 
 
+def make_direct_vertex_metadata_ir() -> str:
+    return '''source_filename = "synthetic_vertex.metal"
+target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-n8:16:32"
+target triple = "air64-apple-ios15.0.0"
+
+define <4 x float> @test_vertex(ptr addrspace(2) %0, <2 x float> %1) {
+entry:
+  ret <4 x float> zeroinitializer
+}
+
+!air.vertex = !{!0}
+!0 = !{ptr @test_vertex, !1, !2, !4}
+!1 = !{!"air.position", !"air.arg_type_name", !"float4", !"air.arg_name", !"position"}
+!2 = !{i32 0, !"air.buffer", !"air.location_index", i32 0, i32 1, !"air.read", !"air.address_space", i32 2, !"air.struct_type_info", !3, !"air.arg_type_size", i32 16, !"air.arg_type_align_size", i32 16, !"air.arg_type_name", !"Uniforms", !"air.arg_name", !"uniforms"}
+!3 = !{i32 0, i32 16, i32 0, !"float4", !"baseColor"}
+!4 = !{i32 1, !"air.vertex_input", !"air.arg_type_name", !"float2", !"air.arg_name", !"uv", !"air.location_index", i32 0, i32 1}
+'''
+
+
 def make_roundtrip_report(*, job_count: int, roundtrip_failed_jobs: int = 0, compile_failed_jobs: int = 0) -> dict:
     return {
         "jobCount": job_count,
@@ -123,6 +142,24 @@ class IRCanonicalCompareTests(unittest.TestCase):
         self.assertEqual(vertex_entry["shaderType"], "vertex")
         self.assertTrue(any("kind=air.base_vertex" in item for item in vertex_entry["builtinSemantics"]))
         self.assertEqual(summary["module"]["targetTriple"], "air64_v24-apple-ios15.0.0")
+
+    def test_extract_ir_summary_supports_direct_entry_metadata_refs(self) -> None:
+        summary = canonical_compare.extract_ir_summary_text(make_direct_vertex_metadata_ir())
+
+        self.assertEqual(summary["entryCount"], 1)
+        entry = summary["entries"][0]
+        self.assertEqual(entry["functionName"], "test_vertex")
+        self.assertEqual(len(entry["argSemantics"]), 2)
+        self.assertEqual(entry["outputSemantics"], ["kind=air.position|type=float4"])
+        self.assertIn(
+            "kind=air.buffer|index=0|location=0|addrspace=2|access=read|type=Uniforms|typeSize=16|align=16|qualifiers=air.read",
+            entry["resourceSemantics"],
+        )
+        self.assertIn(
+            "kind=air.vertex_input|index=1|location=0|type=float2",
+            entry["builtinSemantics"],
+        )
+        self.assertFalse(any("kind=<none>" in item for item in entry["argSemantics"]))
 
     def test_compare_ignores_ssa_renames(self) -> None:
         original = canonical_compare.extract_ir_summary_text(make_kernel_ir(ssa_name="%tmp"))

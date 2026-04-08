@@ -96,7 +96,10 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
         )
         self.assertEqual(
             gate_profile["allowedBlockedSampleKeys"],
-            roundtrip_runner.LOCAL_SHADERCORPUS_ALLOWED_BLOCKED_KEYS,
+            roundtrip_runner.dedupe_preserving_order(
+                roundtrip_runner.TEST_DATA_REPRESENTATIVE_ALLOWED_BLOCKED_KEYS
+                + roundtrip_runner.LOCAL_SHADERCORPUS_ALLOWED_BLOCKED_KEYS
+            ),
         )
         self.assertEqual(
             gate_profile["allowedL2SampleKeys"],
@@ -135,6 +138,11 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             for item in roundtrip_runner.TEST_DATA_REPRESENTATIVE_CONTRACT
             if item.get("allowedL2")
         ]
+        expected_blocked_keys = [
+            roundtrip_runner.ll_sample_key(str(item["fileName"]))
+            for item in roundtrip_runner.TEST_DATA_REPRESENTATIVE_CONTRACT
+            if item.get("allowedBlocked")
+        ]
         expected_failures = {
             roundtrip_runner.ll_sample_key(str(item["fileName"])): str(item["allowedFailureStage"])
             for item in roundtrip_runner.TEST_DATA_REPRESENTATIVE_CONTRACT
@@ -144,6 +152,7 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
         self.assertEqual(preset["ll_inputs"], expected_paths)
         self.assertEqual(gate_profile["expectedJobCount"], len(contract_files))
         self.assertEqual(gate_profile["allowedL2SampleKeys"], expected_l2_keys)
+        self.assertEqual(gate_profile["allowedBlockedSampleKeys"], expected_blocked_keys)
         self.assertEqual(gate_profile["allowedFailureSamples"], expected_failures)
         self.assertEqual([entry["sampleKey"] for entry in contract_jobs], expected_sample_keys)
 

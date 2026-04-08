@@ -177,9 +177,9 @@
 
 - 当前保留在主文档中的 active 信息只有四点：
   - **当前跨机器硬默认 gate 已没有 compile failure；`test_struct_array_field` 已转为 blocked sample**
-  - **当前跨机器硬默认代表集中的活跃 `L2` 已缩到 `2` 个**：`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`；`test_casts` 已在本轮通过 `air.convert` unsigned 语义修复退出活跃 debt，但仍值得作为定向回归样本保留
+  - **当前跨机器硬默认代表集中的活跃 `L2` 已缩到 `2` 个**：`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`；`test_casts` 已通过 `air.convert` unsigned 语义修复退出活跃 debt，但仍值得作为定向回归样本保留
   - **`risk-report.json` 已经把 `samplesForL3` 与 `blockedSamples` 分开**：前者应作为 `SV-004` 的候选入口，后者应继续优先停在离线层
-  - **代表 preset 的当前边界契约已收口到固定输出目录 + gate profile + baseline / manifest**；若代表集继续变化，应一起更新，而不是只改其中一项
+  - **代表 preset 的当前边界契约应以 `gate-summary.json` / `risk-report.json` 为准；`preset-manifest.json` 更适合描述代表集发现与 artifact 锚点，不应单独充当 active debt 事实来源**
 - 更细的首轮代表样本名单、当前契约摘要与旧分布已下沉到 `07-首轮基线与历史进展归档.md`、`08-当前代表集与Gate契约参考.md`（参考信息，当前日常推进**不必须读取**）
 
 ## 报告结构
@@ -227,7 +227,9 @@
 
 - 当前这次运行是 `pass / warn / fail`
 - 哪些已知 `L2 / L3 / round-trip failure` 仍然存在
+- 哪些 debt 已被结构化记为 improvement（如 `resolvedL2SampleKeys`）
 - 是否出现了超出当前代表集 profile 的新增 blocker / 新增 `L3`
+- `layeredDecision`：当前应停在 L2、升级到 L3，还是继续推迟到更后置层
 - 在 `--enforce-gate` 模式下是否应阻断退出
 
 ## 已验证测试
@@ -241,7 +243,7 @@
 - 不是形式化语义证明器
 - 不是完整 IR AST / CFG 等价器
 - 还不能回答“行为是否一致”
-- 当前 `L3` 样本仍较多，但主线不应因此直接扩大 live 验证；更合理的顺序仍是先通过 `SV-003` 维护代表集与默认 gate，再让 `SV-006` 把升级边界写清楚
+- 当前批量大盘仍可能很噪，但默认主线不应因此直接扩大 live 验证；更合理的顺序仍是先通过 `SV-003` 维护代表集与默认 gate，再让 `SV-004` 只消费最小、最有信息量的候选
 - 当前已经有第一版机器可执行的升级/止损边界：代表 preset 会通过 `gate-summary.json` / `--enforce-gate` 将“已知 debt”与“新增回归”区分开；更细的历史相位变化已下沉到 `07-首轮基线与历史进展归档.md`（历史参考，**不必须读取**）
 
 ## 对下一步的直接启示
@@ -249,8 +251,8 @@
 `SV-002` 完成后，当前最合理的下一步不是直接跳到 live，而是：
 
 1. 持续守住 `SV-003`，确保 `test-data-representatives` 这个跨机器硬默认入口不回退，并把 `ShaderCorpus` 继续限制为本地增强证据
-2. 推进 `SV-006`，把“停在 L2”与“必须进 L3/L4”的边界写清楚，并让 L2 结果真正成为升级/止损输入
-3. 在 `SV-006` 的口径下，再从稳定代表集里选择少量值得进入 `L3` 的样本，不单独展开新的并行主线
+2. 继续复用 `SV-006` 已经落地的 `layeredDecision`，只让当前活跃候选进入最小升级链路，而不是重新扩大范围
+3. 把 `SV-004` 的默认执行面继续压缩到最小：`test_fast_math_select` 走 compute-first，`test_intrinsic_vector_icmp_zext` 继续保留为 render-second deferred 候选
 4. 对 blocked sample `test_struct_array_field` 保持单独跟踪，而不再沿用过时的 compile blocker 口径
 
 ## 完成标准回顾

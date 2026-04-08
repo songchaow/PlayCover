@@ -64,14 +64,16 @@
   - blocked sample：`test_struct_array_field`
   - `L2` samples：`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`
 - 当前 improvements：
-  - `resolvedL2SampleKeys`：`test_casts`
+  - `resolvedFailureSampleKeys = []`
+  - `resolvedBlockedSampleKeys = []`
+  - `resolvedL2SampleKeys = []`
 - `layeredDecision.overallDecision = promote_l2_candidates_to_l3`
 - `l3Plan.candidateSampleKeys` 当前为：`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`
 
 补充说明：
 
 - `test_struct_array_field` 在当前硬默认 gate 中已经不再是 compile failure，而是 **round-trip 成功但 compare 仍 blocked 的样本**
-- `test_casts` 已退出活跃 `L2` 债务，只保留为定向回归样本
+- `test_casts` 已退出活跃 `L2` 债务，只保留为定向回归样本；它当前仍可视为历史 improvement 的收口结果，但**不是**当前默认 `gate-summary.json.improvements` 里的结构字段事实
 - `baseline.json` 已可被固定目录自动复用；若需要看非回归型变化，应直接回到同目录 `roundtrip-summary.json`
 
 ### 2. `behavior-summary.json`（当前默认 L3 证据）

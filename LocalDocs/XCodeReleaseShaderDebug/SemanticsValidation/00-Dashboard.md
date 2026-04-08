@@ -82,7 +82,7 @@ makeLibrary(source:) / metal -c
 - `test-data-representatives` 当前保持 `8/8` round-trip 成功，风险分布为 `L0 = 2 / L1 = 3 / L2 = 2 / L3 = 1`，`gate-summary.json = WARN`
 - `layeredDecision.overallDecision = promote_l2_candidates_to_l3`；当前默认 `L3` 候选仍是 `test_fast_math_select`、`test_intrinsic_vector_icmp_zext`
 - `behavior-summary.json = pass`，默认实际执行 `2` 个样本且均为 `pass`；`Scripts/ir_semantics_behavior_runner.py` 会在写完该报告后自动刷新同目录 `gate-summary.json` 的 `layeredDecision.l4Plan`，保持当前控制面与行为证据同步
-- `test_casts` 已进入 `resolvedL2SampleKeys`，`test_struct_array_field` 继续作为 blocked sample 停在离线层
+- `test_casts` 当前仍保持“已退出活跃 `L2`、仅保留为显式定向复核入口”的定位；当前 `gate-summary.json.improvements.resolvedL2SampleKeys` 为空，`test_struct_array_field` 继续作为 blocked sample 停在离线层
 - 其它本机增强入口、baseline / manifest 细节、旧 fail 收口过程与较早批量背景，统一下沉到 `07-首轮基线与历史进展归档.md` 与 `08-当前代表集与Gate契约参考.md`（均为参考，当前主线推进**不必须读取**）
 
 因此当前最高优先级可直接概括为：**只继续守住 `SV-004F` 的 `pass/pass` 默认行为边界、`SV-003` 的跨机器硬默认 gate，以及 oracle ↔ `.ll` 的同步性；在这条纯离线证据链还够用时，不为覆盖率扩样，也不抢跑 `SV-005`。**

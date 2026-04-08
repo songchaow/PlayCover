@@ -99,6 +99,7 @@ makeLibrary(source:) / metal -c
 - `local-corpus-representatives`：当前固定 `5` 个本地 `ShaderCorpus` 代表样本全部 round-trip 成功，风险分布 `L0 = 0 / L1 = 0 / L2 = 1 / L3 = 4`
 - `daily-default`：`13` 个样本中 `12` 个 round-trip 成功、`1` 个 compile 失败，风险分布 `L0 = 1 / L1 = 1 / L2 = 6 / L3 = 5`
 - 代表 preset 在加上 `--enforce-gate` 后当前都能稳定输出 `WARN`，保留已知 debt 而不会误判成 `FAIL`
+- `test-data-representatives` 固定输出目录当前已保存 `baseline.json` / `generated-sources/`；重复执行时会自动复用该 baseline 做 replay diff，且 `preset-manifest.json` 会稳定记录当前 active baseline 摘要，而不再只在本次显式 `--save-baseline` 时体现
 
 当前 `test-data/` 首轮基线可概括为：
 
@@ -246,7 +247,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representati
 
 1. 读取本文档，先理解 **当前主线** 与 **TODO** 的最新状态
 2. 严格按优先级选取最高优先级的 **一个** 未完成任务执行
-3. 若最高优先级任务处于阻塞状态（如需人工/外部协助）。确保留给人工手动操作的步骤是最少最简单的状态。如果已达到该状态，则立即停止并汇报。严禁执行任何与解决阻塞本身无关的任务。
+3. 若最高优先级任务处于阻塞状态（如需人工/外部协助）。立即停止并汇报。严禁执行任何与解决阻塞本身无关的任务。
 4. 若任务过大，先拆分到 TODO，再只完成其中一个
 5. 若这次实现了新功能，尽可能靠 skills 或 mcp 做 **实际测试**；若受环境限制，至少做 **模拟性质、离线或最小样本测试**
 6. 执行完毕后整理文档：结合已有内容，**深度整理并同步全局信息**，更新优先级、当前主线、TODO、验证与经验；较旧信息可下沉到独立参考文档，主体保持简洁，**不要只做追加**

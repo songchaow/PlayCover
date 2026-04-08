@@ -480,6 +480,33 @@ def resolve_replay_baseline_report_path(args: argparse.Namespace, output_root: P
     return None
 
 
+def summarize_baseline_snapshot(
+    baseline_report_path: Path | None,
+    baseline_payload: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if baseline_report_path is None:
+        return None
+
+    summary: dict[str, Any] = {
+        "baselinePath": str(baseline_report_path),
+    }
+    if not baseline_payload:
+        return summary
+
+    summary.update(
+        {
+            "generatedAt": baseline_payload.get("generatedAt"),
+            "baselineAssetRoot": baseline_payload.get("baselineAssetRoot"),
+            "sourceReportPath": baseline_payload.get("sourceReportPath"),
+            "sourceCompileReportPath": baseline_payload.get("sourceCompileReportPath"),
+            "totalJobs": baseline_payload.get("totalJobs"),
+            "successfulJobs": baseline_payload.get("successfulJobs"),
+            "failedJobs": baseline_payload.get("failedJobs"),
+        }
+    )
+    return summary
+
+
 def build_preset_manifest(
     args: argparse.Namespace,
     output_root: Path,
@@ -488,6 +515,7 @@ def build_preset_manifest(
     root: Path,
     report_paths: dict[str, str],
     baseline_report_path: Path | None,
+    baseline_snapshot: dict[str, Any] | None,
     saved_baseline: dict[str, Any] | None,
 ) -> dict[str, Any]:
     presets = build_roundtrip_presets(root)
@@ -537,6 +565,7 @@ def build_preset_manifest(
         },
         "baseline": {
             "reportPath": str(baseline_report_path) if baseline_report_path else None,
+            "activeSnapshot": baseline_snapshot,
             "savedBaseline": saved_baseline,
         },
         "discovery": {
@@ -1203,6 +1232,7 @@ def main() -> int:
     compile_report = replay_runner.run_compile_jobs(replay_report, args, compile_report_path)
     replay_report = replay_runner.attach_compile_report(replay_report, compile_report)
 
+    baseline_payload: dict[str, Any] | None = None
     if baseline_report_path is not None:
         baseline_payload = replay_runner.load_json(baseline_report_path, warnings)
         if baseline_payload is None:
@@ -1223,6 +1253,15 @@ def main() -> int:
             replay_report_path,
             compile_report_path,
         )
+
+    active_baseline_path = baseline_report_path
+    saved_baseline = replay_report.get("savedBaseline")
+    if isinstance(saved_baseline, dict) and saved_baseline.get("baselinePath"):
+        active_baseline_path = Path(str(saved_baseline["baselinePath"])).expanduser().resolve()
+    active_baseline_snapshot = summarize_baseline_snapshot(active_baseline_path, None)
+    if active_baseline_path is not None:
+        active_baseline_payload = replay_runner.load_json(active_baseline_path, warnings)
+        active_baseline_snapshot = summarize_baseline_snapshot(active_baseline_path, active_baseline_payload)
 
     replay_report_path.parent.mkdir(parents=True, exist_ok=True)
     replay_report_path.write_text(json.dumps(replay_report, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -1257,7 +1296,8 @@ def main() -> int:
             "highRiskFile": str(high_risk_path),
             "gateSummaryPath": str(gate_summary_path),
         },
-        baseline_report_path,
+        active_baseline_path,
+        active_baseline_snapshot,
         replay_report.get("savedBaseline"),
     )
 

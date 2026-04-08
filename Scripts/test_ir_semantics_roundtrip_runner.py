@@ -211,6 +211,9 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             self.assertEqual(Path(manifest["reportPath"]).resolve(), manifest_path.resolve())
             self.assertEqual(manifest["discovery"]["jobCount"], 1)
             self.assertEqual(manifest["baseline"]["reportPath"], str(baseline_path.resolve()))
+            self.assertEqual(manifest["baseline"]["activeSnapshot"]["baselinePath"], str(baseline_path.resolve()))
+            self.assertEqual(manifest["baseline"]["activeSnapshot"]["baselineAssetRoot"], "generated-sources")
+            self.assertIsNone(manifest["baseline"]["savedBaseline"])
 
             replay_baseline = replay_report.get("baselineComparison") or {}
             self.assertEqual(replay_baseline.get("matchedJobs"), 1)

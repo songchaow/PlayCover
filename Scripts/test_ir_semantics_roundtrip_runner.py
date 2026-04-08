@@ -94,6 +94,16 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             gate_profile["expectedJobCount"],
             len(roundtrip_runner.TEST_DATA_REPRESENTATIVE_FILES) + len(roundtrip_runner.LOCAL_SHADERCORPUS_REPRESENTATIVES),
         )
+        self.assertEqual(
+            gate_profile["allowedBlockedSampleKeys"],
+            roundtrip_runner.LOCAL_SHADERCORPUS_ALLOWED_BLOCKED_KEYS,
+        )
+        self.assertEqual(
+            gate_profile["allowedL2SampleKeys"],
+            roundtrip_runner.dedupe_preserving_order(
+                roundtrip_runner.TEST_DATA_REPRESENTATIVE_L2_KEYS + roundtrip_runner.LOCAL_SHADERCORPUS_ALLOWED_L2_KEYS
+            ),
+        )
 
     def test_local_corpus_gate_profile_allows_missing_local_samples(self) -> None:
         parser = roundtrip_runner.build_parser()
@@ -105,6 +115,73 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
         self.assertEqual(gate_profile_name, "local-corpus-representatives")
         self.assertEqual(gate_profile["minimumExpectedJobCount"], 0)
         self.assertEqual(gate_profile["expectedJobCount"], len(roundtrip_runner.LOCAL_SHADERCORPUS_REPRESENTATIVES))
+
+    def test_test_data_representative_contract_keeps_preset_gate_and_manifest_in_sync(self) -> None:
+        preset = roundtrip_runner.build_roundtrip_presets(REPO_ROOT)["test-data-representatives"]
+        gate_profile = roundtrip_runner.build_gate_profiles()["test-data-representatives"]
+        contract_jobs = roundtrip_runner.build_expected_preset_contract_jobs(
+            "test-data-representatives",
+            REPO_ROOT,
+        )
+
+        contract_files = [
+            str(item["fileName"])
+            for item in roundtrip_runner.TEST_DATA_REPRESENTATIVE_CONTRACT
+        ]
+        expected_paths = roundtrip_runner.make_test_data_paths(REPO_ROOT, contract_files)
+        expected_sample_keys = [roundtrip_runner.ll_sample_key(file_name) for file_name in contract_files]
+        expected_l2_keys = [
+            roundtrip_runner.ll_sample_key(str(item["fileName"]))
+            for item in roundtrip_runner.TEST_DATA_REPRESENTATIVE_CONTRACT
+            if item.get("allowedL2")
+        ]
+        expected_failures = {
+            roundtrip_runner.ll_sample_key(str(item["fileName"])): str(item["allowedFailureStage"])
+            for item in roundtrip_runner.TEST_DATA_REPRESENTATIVE_CONTRACT
+            if item.get("allowedFailureStage")
+        }
+
+        self.assertEqual(preset["ll_inputs"], expected_paths)
+        self.assertEqual(gate_profile["expectedJobCount"], len(contract_files))
+        self.assertEqual(gate_profile["allowedL2SampleKeys"], expected_l2_keys)
+        self.assertEqual(gate_profile["allowedFailureSamples"], expected_failures)
+        self.assertEqual([entry["sampleKey"] for entry in contract_jobs], expected_sample_keys)
+
+    def test_local_shader_corpus_contract_keeps_preset_gate_and_manifest_in_sync(self) -> None:
+        preset = roundtrip_runner.build_roundtrip_presets(REPO_ROOT)["local-corpus-representatives"]
+        gate_profile = roundtrip_runner.build_gate_profiles()["local-corpus-representatives"]
+        contract_jobs = roundtrip_runner.build_expected_preset_contract_jobs(
+            "local-corpus-representatives",
+            REPO_ROOT,
+        )
+
+        contract_entries = roundtrip_runner.LOCAL_SHADERCORPUS_REPRESENTATIVE_CONTRACT
+        expected_bundle_ids = roundtrip_runner.dedupe_preserving_order(
+            [str(item["bundleId"]) for item in contract_entries]
+        )
+        expected_module_keys = [str(item["moduleKey"]) for item in contract_entries]
+        expected_sample_identities = [
+            roundtrip_runner.shader_corpus_identity(str(item["bundleId"]), str(item["moduleKey"]))
+            for item in contract_entries
+        ]
+        expected_blocked_keys = [
+            roundtrip_runner.shader_corpus_identity(str(item["bundleId"]), str(item["moduleKey"]))
+            for item in contract_entries
+            if item.get("allowedBlocked")
+        ]
+        expected_l2_keys = [
+            roundtrip_runner.shader_corpus_identity(str(item["bundleId"]), str(item["moduleKey"]))
+            for item in contract_entries
+            if item.get("allowedL2")
+        ]
+
+        self.assertEqual(preset["corpus_roots"], [str(roundtrip_runner.LOCAL_SHADERCORPUS_DEFAULT_ROOT)])
+        self.assertEqual(preset["bundle_ids"], expected_bundle_ids)
+        self.assertEqual(preset["module_keys"], expected_module_keys)
+        self.assertEqual(gate_profile["expectedJobCount"], len(contract_entries))
+        self.assertEqual(gate_profile["allowedBlockedSampleKeys"], expected_blocked_keys)
+        self.assertEqual(gate_profile["allowedL2SampleKeys"], expected_l2_keys)
+        self.assertEqual([entry["sampleIdentity"] for entry in contract_jobs], expected_sample_identities)
 
     def test_resolve_llvm_dis_path_prefers_explicit_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

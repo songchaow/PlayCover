@@ -103,6 +103,7 @@ makeLibrary(source:) / metal -c
 - 本轮通过把 `air.fast_*` intrinsic alias 归一化、并把 **仅发生在 instruction-level 的 fast-math flag 漂移** 下调为 `L1`，已将 `test_int_literal_half_suffix` 与 `test_vector_select_global_gep` 从已知 `L2` debt 收敛到 `L1`；同步收紧后的 gate profile / manifest 现在只继续跟踪 `3` 个活跃 `L2` 样本
 - 已补齐 `Scripts/test_ir_semantics_roundtrip_runner.py` 与 `Scripts/test_ir_canonical_compare.py` 的关键契约测试，覆盖 `build_compare_result`、`build_preset_manifest`、`sample_identity`、known-debt improvement 以及 `jobCount above_expected` 等边界，降低代表集 / gate profile / baseline / manifest 语义漂移时静默回归的风险
 - `preset-manifest.json` 现在会把 preset 期望代表集边界一起结构化写出：除现有 `gateProfile` / baseline 摘要外，还会同步记录 `expected / matched / missing / unexpected` 的 discovered job 合同摘要，便于在 `daily-default / local-corpus-representatives` 中直接看见本机缺失了哪些 `ShaderCorpus` 代表样本，而不把这类缺样本误判成默认 gate 回归
+- `Scripts/ir_semantics_roundtrip_runner.py` 已把 `test-data` / `ShaderCorpus` 代表样本及其 `allowed failure / allowed L2 / allowed blocked` 元数据收口为单一内建契约来源；`preset`、`gate profile` 与 manifest 期望边界都从同一份定义推导，并新增同步性单测来防止后续维护漂移
 
 当前 `test-data/` 最新批量基线可概括为：
 
@@ -269,6 +270,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representati
 | SV-003 | 把 L1/L2 接入 `test-data/` 与 `ShaderCorpus` | TODO | P0 | 当前主线。继续维护 `test-data-representatives` 这个跨机器硬默认入口；把 `daily-default / local-corpus-representatives` 保持为“本机已有样本时的增强入口”；代表集变化时同步维护 gate profile / baseline / manifest | `02-总体技术路线.md` |
 | SV-003A | 收紧默认 gate 的契约测试护栏 | ✅ DONE | - | 已为 `build_compare_result` / `build_preset_manifest` / `sample_identity` / gate job-count 边界与 known-debt improvement 补齐关键纯逻辑单测，降低默认入口语义漂移时的静默回归风险 | `00-Dashboard.md` |
 | SV-003B | 把代表集边界显式写入 `preset-manifest.json` | ✅ DONE | - | 已让 manifest 同步记录 preset 期望代表集、已匹配样本、缺失本地代表样本与意外新增 discovered jobs，降低 `daily-default / local-corpus-representatives` 在跨机器执行时的心智负担 | `00-Dashboard.md` |
+| SV-003C | 收口代表集与 gate 契约的单一来源 | ✅ DONE | - | 已把 `test-data` / `ShaderCorpus` 代表样本及其 `allowed failure / allowed L2 / allowed blocked` 元数据收口到 runner 内的单一契约定义，`preset` / `gate profile` / manifest 期望边界统一从该定义推导，并补充同步性单测 | `00-Dashboard.md` |
 | SV-006 | 分层 gate 与止损策略 | TODO | P1 | 基于现有 `gate-summary.json` 语义，把“停在 L2 / 升级到 L3/L4”的边界写清楚；前提是 `SV-003` 的代表集与默认入口已经足够稳定 | `02-总体技术路线.md` |
 | SV-004 | 最小行为测试（compute-first） | TODO | P2 | 只从 `SV-003` 已稳定的代表集里挑少量最有信息量样本进入 compute-first 行为测试，不直接扩大到全量样本 | `05-L3-最小行为测试.md` |
 | SV-005 | 真实场景验证流程收口 | TODO | P3 | 把 `.gputrace` / render diff / MCP live 验证收口成严格后置 gate；不得回流为日常默认流程 | `06-L4-真实场景验证.md` |

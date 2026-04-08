@@ -49,75 +49,90 @@ import ir_canonical_compare as canonical_compare
 
 
 TEST_DATA_RELATIVE_DIR = Path("LocalDocs") / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data"
-TEST_DATA_REPRESENTATIVE_FILES = [
-    "test_fast_math_binary.ll",
-    "test_scalar_select_vector.ll",
-    "test_casts.ll",
-    "test_fast_math_select.ll",
-    "test_int_literal_half_suffix.ll",
-    "test_intrinsic_vector_icmp_zext.ll",
-    "test_vector_select_global_gep.ll",
-    "test_struct_array_field.ll",
+
+
+def ll_sample_key(file_name: str) -> str:
+    return Path(file_name).stem
+
+
+def shader_corpus_identity(bundle_id: str, module_key: str) -> str:
+    return canonical_compare.sample_identity(
+        {
+            "bundleId": bundle_id,
+            "moduleKey": module_key,
+        }
+    )
+
+
+TEST_DATA_REPRESENTATIVE_CONTRACT = [
+    {"fileName": "test_fast_math_binary.ll"},
+    {"fileName": "test_scalar_select_vector.ll"},
+    {"fileName": "test_casts.ll", "allowedL2": True},
+    {"fileName": "test_fast_math_select.ll", "allowedL2": True},
+    {"fileName": "test_int_literal_half_suffix.ll"},
+    {"fileName": "test_intrinsic_vector_icmp_zext.ll", "allowedL2": True},
+    {"fileName": "test_vector_select_global_gep.ll"},
+    {"fileName": "test_struct_array_field.ll", "allowedFailureStage": "compile"},
 ]
 LOCAL_SHADERCORPUS_DEFAULT_ROOT = Path.home() / "Library/Containers/io.playcover.PlayCover/ShaderCorpus"
-LOCAL_SHADERCORPUS_REPRESENTATIVES = [
+LOCAL_SHADERCORPUS_REPRESENTATIVE_CONTRACT = [
     {
         "bundleId": "com.miHoYo.Yuanshen",
         "moduleKey": "db41fcfc1517b115d274f867634e00d08301415d450ca94eb04ca95638e41933",
+        "allowedBlocked": True,
     },
     {
         "bundleId": "com.papegames.lysk",
         "moduleKey": "6c08f93015cda305e6c675457bab3acfcf7febab294577d27cbe76317e2b1f45",
+        "allowedBlocked": True,
     },
     {
         "bundleId": "com.papegames.lysk",
         "moduleKey": "2646854687f12045e370b300deefca49e5c1bcd0a22b8755cd4af656bced5348",
+        "allowedBlocked": True,
     },
     {
         "bundleId": "com.papegames.lysk",
         "moduleKey": "ec0c6f0e72d6fc64daf4d5955cd1ea2cc5e729b0f988b1e857d13bfb54c7f6c3",
+        "allowedL2": True,
     },
     {
         "bundleId": "com.tencent.tmgp.speedmobile",
         "moduleKey": "1f5e65cd9f685b3673dd6fac9b81e3af82b5a6d436f8f1824919726483c967ad",
+        "allowedBlocked": True,
     },
 ]
+
+TEST_DATA_REPRESENTATIVE_FILES = [
+    str(item["fileName"])
+    for item in TEST_DATA_REPRESENTATIVE_CONTRACT
+]
+LOCAL_SHADERCORPUS_REPRESENTATIVES = [
+    {
+        "bundleId": str(item["bundleId"]),
+        "moduleKey": str(item["moduleKey"]),
+    }
+    for item in LOCAL_SHADERCORPUS_REPRESENTATIVE_CONTRACT
+]
 TEST_DATA_REPRESENTATIVE_L2_KEYS = [
-    "test_casts",
-    "test_fast_math_select",
-    "test_intrinsic_vector_icmp_zext",
+    ll_sample_key(str(item["fileName"]))
+    for item in TEST_DATA_REPRESENTATIVE_CONTRACT
+    if item.get("allowedL2")
 ]
 TEST_DATA_REPRESENTATIVE_ALLOWED_FAILURES = {
-    "test_struct_array_field": "compile",
+    ll_sample_key(str(item["fileName"])): str(item["allowedFailureStage"])
+    for item in TEST_DATA_REPRESENTATIVE_CONTRACT
+    if item.get("allowedFailureStage")
 }
 LOCAL_SHADERCORPUS_ALLOWED_BLOCKED_KEYS = [
-    canonical_compare.sample_identity(item)
-    for item in [
-        {
-            "bundleId": "com.miHoYo.Yuanshen",
-            "moduleKey": "db41fcfc1517b115d274f867634e00d08301415d450ca94eb04ca95638e41933",
-        },
-        {
-            "bundleId": "com.papegames.lysk",
-            "moduleKey": "6c08f93015cda305e6c675457bab3acfcf7febab294577d27cbe76317e2b1f45",
-        },
-        {
-            "bundleId": "com.papegames.lysk",
-            "moduleKey": "2646854687f12045e370b300deefca49e5c1bcd0a22b8755cd4af656bced5348",
-        },
-        {
-            "bundleId": "com.tencent.tmgp.speedmobile",
-            "moduleKey": "1f5e65cd9f685b3673dd6fac9b81e3af82b5a6d436f8f1824919726483c967ad",
-        },
-    ]
+    shader_corpus_identity(str(item["bundleId"]), str(item["moduleKey"]))
+    for item in LOCAL_SHADERCORPUS_REPRESENTATIVE_CONTRACT
+    if item.get("allowedBlocked")
 ]
 LOCAL_SHADERCORPUS_ALLOWED_L2_KEYS = [
-    canonical_compare.sample_identity(
-        {
-            "bundleId": "com.papegames.lysk",
-            "moduleKey": "ec0c6f0e72d6fc64daf4d5955cd1ea2cc5e729b0f988b1e857d13bfb54c7f6c3",
-        }
-    )
+    shader_corpus_identity(str(item["bundleId"]), str(item["moduleKey"]))
+    for item in LOCAL_SHADERCORPUS_REPRESENTATIVE_CONTRACT
+    if item.get("allowedL2")
 ]
 
 

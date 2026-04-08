@@ -67,25 +67,25 @@
 当前默认行为产物来自：
 
 - `build/semantics-validation/roundtrip/test-data-representatives/behavior-summary.json`
-- `generatedAt = 2026-04-08T10:13:41Z`
+- `generatedAt = 2026-04-08T11:53:15Z`
 
 当前事实：
 
-- `status = warn`
+- `status = fail`
 - `candidateSampleKeys = [test_fast_math_select, test_intrinsic_vector_icmp_zext]`
-- `readySampleCount = 1`
-- `executedSampleCount = 1`
-- `deferredSampleCount = 1`
+- `readySampleCount = 2`
+- `executedSampleCount = 2`
+- `deferredSampleCount = 0`
 - `errorCount = 0`
 - 当前默认执行结果：
   - `test_fast_math_select = pass`
-  - `test_intrinsic_vector_icmp_zext = deferred`
+  - `test_intrinsic_vector_icmp_zext = fail`
 
 补充说明：
 
 - 当前默认输出目录**不是**单独的 `build/semantics-validation/behavior/...`，而是直接复用 `gate-summary.outputRoot`
 - 因此重复执行时，agent 不需要额外人工找路径；只要有固定的 `gate-summary.json` 与 `roundtrip-summary.json`，就能在同目录下继续补行为证据
-- 当前 `deferred` 不是 harness 出错，而是当前 control plane 有意保持的 **compute-first 边界**
+- 这里的 `fail` 表示 **reference-vs-generated 行为未对齐**，不是 harness 没跑起来；当前默认控制面已把最小 render-second 视为正式执行面的一部分，而不再把它停在 deferred
 
 ### 3. `behavior-summary.test-casts-verification.json`（定向复核入口）
 
@@ -196,7 +196,8 @@
 - 对硬默认 gate，当前最该优先考虑的活跃 `L3` 候选入口是：
   - `test_fast_math_select`
   - `test_intrinsic_vector_icmp_zext`
-- 但当前 `SV-004` 的**默认执行边界**仍应保持更窄：`test_fast_math_select` 进入 compute-first；`test_intrinsic_vector_icmp_zext` 继续作为 render-second deferred，而不是今天就必须跑的默认步骤
+- `behavior-summary.json` 当前已从“compute-only + deferred fragment”切换为“compute-first + 已准入 render-second”组合证据；其当前状态为 `fail`，对应 `test_intrinsic_vector_icmp_zext` 的稳定 mismatch
+- 当前 `SV-004` 的**默认执行边界**已稳定为：`test_fast_math_select` 进入 compute-first；`test_intrinsic_vector_icmp_zext` 进入已准入的最小 render-second，并稳定产出 `fail` evidence
 - `test_casts` 已退出活跃 `L2` debt；它仍可作为定向转换语义回归样本保留，但不再属于默认自动执行面
 - `test_struct_array_field` 当前仍属于 **blocked sample**，默认不应直接进入第一批 `L3` 行为测试
 - `daily-default` / `local-corpus-representatives` 现在更适合回答“本机有没有额外线索”，不适合替代主文档里的跨机器控制面

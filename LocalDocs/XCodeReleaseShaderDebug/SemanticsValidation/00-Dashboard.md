@@ -86,20 +86,18 @@ makeLibrary(source:) / metal -c
 - `test-data-representatives`：当前最新代表产物保持 `8/8` round-trip 成功，风险分布已收敛为 `L0 = 2 / L1 = 3 / L2 = 2 / L3 = 1`，`gate-summary.json` 继续为 `WARN`
 - 同一份代表产物里，`layeredDecision.overallDecision = promote_l2_candidates_to_l3` 保持不变，`l3Plan.candidateSampleKeys` 当前仍为 `test_fast_math_select`、`test_intrinsic_vector_icmp_zext`
 - `gate-summary.json` 当前已把 `test_casts` 记为 `resolvedL2SampleKeys`，说明它不再属于活跃 `L2` debt，而是本轮已收口的已知改进
-- `behavior-summary.json` 默认直接写回 `build/semantics-validation/roundtrip/test-data-representatives/`：当前会实际执行 `test_fast_math_select`（compute-first）与 `test_intrinsic_vector_icmp_zext`（render-second），最新结果分别为 `pass` 与 `fail`
-- `behavior-artifacts/test_intrinsic_vector_icmp_zext.result.json` 当前已给出稳定 fragment fail evidence：固定 `4x4` `rgba16Float` 离屏 render 里 `mismatchCount = 32 / 64`、`maxAbsDiff = 3.5`，说明这条样本已值得进入 L3，而不是继续 deferred
+- `behavior-summary.json` 默认直接写回 `build/semantics-validation/roundtrip/test-data-representatives/`：当前会实际执行 `test_fast_math_select`（compute-first）与 `test_intrinsic_vector_icmp_zext`（render-second），最新状态为 `fail`，其中样本结果分别是 `pass` 与 `fail`
+- `behavior-artifacts/test_intrinsic_vector_icmp_zext.result.json` 当前已给出稳定 fragment fail evidence：固定 `4x4` `rgba16Float` 离屏 render 里 `mismatchCount = 32 / 64`、`maxAbsDiff = 3.5`，说明这条样本已从“要不要升级”的判断阶段推进到“如何解释 fail evidence”的主线收口阶段
 - 定向复核产物 `behavior-summary.test-casts-verification.json` 已显示 `test_casts` 的 scalar / vector `2/2` case 全部通过；因此这条证据已从“可复现 fail”收口为“已定位根因并完成最小修复验证”
 - `Scripts/test_ir_semantics_behavior_runner.py` 已进一步补齐 `SV-004` 的测试护栏：除 candidate 选择与 `behavior-summary.json` 汇总外，也覆盖了 compute / fragment ready path、`registry-missing` defer、`summarize_status()` 汇总语义，以及 `run_sample_behavior()` 的 Python→Swift 桥接成功/失败路径，进一步降低默认执行边界与结果收口逻辑的静默漂移风险
 - `blockedSamples` 当前仍只包含 `test_struct_array_field`，它会继续被 `stopAtL2` / `l4Plan` 明确挡在离线层与后置 gate 之前
-- `daily-default` 与 `local-corpus-representatives` 仍可作为本机增强入口，但它们当前反映的是**本机快照**，不应再替代跨机器代表产物驱动主线优先级
-- 仓库里保留的 `test-data-batch` 目录当前仍是一份较早批量参考快照：`27` 个样本中 `26` 个 round-trip 成功、`1` 个 compile 失败，风险分布 `L0 = 1 / L1 = 3 / L2 = 3 / L3 = 20`；它只承担**参考批量基线**角色，不能再用来描述当前默认 gate 的 active 口径
-- 更细的 preset contract、gate profile、baseline snapshot 与本机增强入口说明已下沉到 `08-当前代表集与Gate契约参考.md`（工作参考，当前主线推进**不必须读取**）
+- 本机增强入口、baseline snapshot、preset / gate 细节以及较早的 `test-data-batch` 批量快照，已统一下沉到 `08-当前代表集与Gate契约参考.md` 与 `07-首轮基线与历史进展归档.md`（均为参考，当前主线推进**不必须读取**）
 
 因此当前最高优先级已经进一步收窄为：**在不扩大人工成本、不引入新默认依赖的前提下，解释 `test_intrinsic_vector_icmp_zext` 这条新的 fragment render-second fail evidence：优先继续在本地离线证据里收口根因，而不是因为已经拿到 fragment fail，就为了覆盖率去抢跑 `SV-005`。**
 
 ### 当前不该抢跑的事
 
-在 `SV-004` 的首版 compute-only behavior harness 已落地、且剩余 gap 只剩 render-second / live 的严格后置边界前，默认**不要**把精力放到：
+在 `SV-004` 的首版 behavior harness 已落地、且当前剩余 gap 已收敛到 render-second fail evidence 的根因解释与 live 的严格后置边界前，默认**不要**把精力放到：
 
 - 大规模 live `.gputrace` 验证
 - 高成本 GUI/Accessibility 操作
@@ -124,7 +122,7 @@ makeLibrary(source:) / metal -c
 python3 Scripts/corpus_replay_runner.py --compile --ll <sample.ll>
 ```
 
-- 已有 PlayTools 构建守门（**仅在改动涉及 `IRToMSLConverter` / PlayTools 构建产物时执行**；文档整理或纯 compare/gate 调整不必附带重建）：
+- 已有 PlayTools 构建守门（**仅在改动涉及 `IRToMSLConverter` / PlayTools 构建产物时执行**；文档整理或纯 compare/gate 调整不必附带重建；若脚本失败，应先停下汇报，不要改成手写 `xcodebuild`、手工复制产物或其它需要人工介入的替代流程）：
 
 ```bash
 FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh
@@ -138,31 +136,7 @@ python3 Scripts/test_ir_semantics_roundtrip_runner.py
 python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representatives --allow-failures --enforce-gate
 ```
 
-- **本机已有 `ShaderCorpus` 样本时的一键增强入口**（runner 内建 daily preset，但不是跨机器硬默认）：
-
-```bash
-python3 Scripts/ir_semantics_roundtrip_runner.py --preset daily-default --allow-failures --enforce-gate
-```
-
-- 若只想看本机已存在的本地 `ShaderCorpus` 代表集，使用固定本地入口：
-
-```bash
-python3 Scripts/ir_semantics_roundtrip_runner.py --preset local-corpus-representatives --allow-failures
-```
-
-- 若需要完整 `test-data/` 批量基线，使用固定全量入口（参考批量，不属于日常默认 gate）：
-
-```bash
-python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-batch --allow-failures
-```
-
-- 若要把固定 preset 的当前结果固化成可复用 baseline：
-
-```bash
-python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representatives --allow-failures --enforce-gate --save-baseline build/semantics-validation/roundtrip/test-data-representatives
-```
-
-- 后续对同一固定输出目录再次执行时，若目录下已存在 `baseline.json`，runner 会默认自动复用它做 replay baseline diff；也可用 `--baseline-report <path>` 显式指定其他 baseline
+- 其它 preset 变体（`daily-default` / `local-corpus-representatives` / `test-data-batch`）、baseline snapshot 保存/复用，以及固定输出目录约定，统一下沉到 `08-当前代表集与Gate契约参考.md`（工作参考，当前主线推进**不必须读取**）；主文档只保留日常硬默认入口，避免把本机快照与较早批量口径重新暴露回控制面
 
 ### `SV-004` 当前最小行为验证
 
@@ -177,27 +151,10 @@ python3 Scripts/ir_semantics_behavior_runner.py --gate-summary build/semantics-v
 
 - 默认直接复用固定输出目录里的 `gate-summary.json` / `roundtrip-summary.json`
 - 默认会把 `behavior-summary.json` 与 `behavior-artifacts/` 直接写回同一 `outputRoot`，即 `build/semantics-validation/roundtrip/test-data-representatives/`
-- 当前默认执行样本已收缩为 `test_fast_math_select` 与 `test_intrinsic_vector_icmp_zext`
-- `test_intrinsic_vector_icmp_zext` 当前已通过 `Scripts/metal_fragment_behavior_runner.swift` 进入最小 offscreen render-second，而不是继续停在 deferred
+- 当前默认执行样本已稳定为 `test_fast_math_select` 与 `test_intrinsic_vector_icmp_zext`
 - 当前默认观测结果为：`test_fast_math_select = pass`、`test_intrinsic_vector_icmp_zext = fail`
 - 若需要复核本轮修复是否真正消除了历史 fail evidence，可用 `--sample-key test_casts --report-file build/semantics-validation/roundtrip/test-data-representatives/behavior-summary.test-casts-verification.json` 定向生成复核报告；当前结果已是 `pass`
-
-这条命令的前置依赖是**已存在的** L1/L2 固定产物：
-
-- `replay-summary.json`
-- `compile-summary.json`
-- `roundtrip-summary.json`
-- `compare-summary.json`
-- `risk-report.json`
-- `high-risk-samples.json`
-- `gate-summary.json`
-- `preset-manifest.json`
-
-这条命令本身新增产物：
-
-- `behavior-summary.json`
-- `behavior-artifacts/<sample>.spec.json`
-- `behavior-artifacts/<sample>.result.json`
+- 更细的 artifact 字段、前置产物契约与定向复核入口说明，统一见 `05-L3-最小行为测试.md` 与 `08-当前代表集与Gate契约参考.md`（均为工作参考；当前主线推进前者**建议读取**，后者**不必须读取**）
 
 补充约束：
 
@@ -279,7 +236,7 @@ python3 Scripts/ir_semantics_behavior_runner.py --gate-summary build/semantics-v
 | SV-004 | 最小行为测试（compute-first） | ONGOING | P0（主线集合） | **当前主线。** compute-first harness 已能直接复用 `layeredDecision.l3Plan.candidateSampleKeys` 生成 `behavior-summary.json`，并且本轮已补上最小 offscreen render-second；当前默认执行面已收缩为 `test_fast_math_select = pass` 与 `test_intrinsic_vector_icmp_zext = fail`，说明 fragment 候选已从 deferred 阶段推进到真实行为证据阶段 | `05-L3-最小行为测试.md` |
 | SV-004A | 落地首版 compute-only behavior harness | ✅ DONE | - | 已新增 `Scripts/ir_semantics_behavior_runner.py`、`Scripts/metal_compute_behavior_runner.swift` 与 `Scripts/test_ir_semantics_behavior_runner.py`，让 `SV-004` 可以直接消费 `gate-summary.json` 的活跃 `L2` 候选并产出结构化 `behavior-summary.json` | `05-L3-最小行为测试.md` |
 | SV-004B | 解释并收口 `test_casts` 的 fail evidence | ✅ DONE | - | 已定位根因在 `IRToMSLConverter` 对 `air.convert` 的 unsigned 语义恢复不足；修复后 `test_casts` 已通过定向 `behavior-summary.test-casts-verification.json` 复核，并从 `gate-summary.json` 的活跃 `L2` 候选退出 | `05-L3-最小行为测试.md` |
-| SV-004C | 维持收缩后的 L3 候选边界 | ✅ DONE | - | 已把默认执行面稳定收口为 `test_fast_math_select = pass`、`test_intrinsic_vector_icmp_zext = deferred`：`build_behavior_plan()` 会按 `executionKind` / `shape-drift` 护栏只放行 compute 候选，`Scripts/test_ir_semantics_behavior_runner.py` 也已补齐针对当前收缩边界的纯逻辑回归测试；`test_casts` 仅保留为显式 `--sample-key` 的定向复核入口 | `05-L3-最小行为测试.md` |
+| SV-004C | 维持收缩后的 L3 候选边界 | ✅ DONE | - | 已先把默认执行面稳定收口为 compute-first 主入口：`build_behavior_plan()` 会按 `executionKind` / `shape-drift` 护栏只放行 compute 候选，`Scripts/test_ir_semantics_behavior_runner.py` 也已补齐针对该收缩边界的纯逻辑回归测试；`test_casts` 仅保留为显式 `--sample-key` 的定向复核入口。随后 `SV-004D` 再把 `test_intrinsic_vector_icmp_zext` 从 `deferred` 推进为已准入的 render-second `fail` evidence | `05-L3-最小行为测试.md` |
 | SV-004D | 收口剩余 fragment 候选的 render-second 准入契约 | ✅ DONE | - | 已新增 `Scripts/metal_fragment_behavior_runner.swift`，并让 `Scripts/ir_semantics_behavior_runner.py` / `Scripts/test_ir_semantics_behavior_runner.py` 共同支持最小 offscreen render-second；`test_intrinsic_vector_icmp_zext` 现已通过固定 `4x4` `rgba16Float` 离屏 render 进入实际执行面，并稳定产出 `fail` 证据，说明它不再需要继续 deferred | `05-L3-最小行为测试.md` |
 | SV-004E | 解释 render-second 下的 fragment fail evidence | TODO | P0（当前执行面） | 当前最小 offscreen render-second 已证明 `test_intrinsic_vector_icmp_zext` 存在稳定的 reference-vs-generated 行为偏差；下一步需要结合生成 MSL 与 artifact，判断这是 `IRToMSLConverter` 的 lowering 语义偏移、可接受的形态差异，还是 compare / harness 仍需继续降噪 | `05-L3-最小行为测试.md` |
 | SV-005 | 真实场景验证流程收口 | TODO | P2 | 把 `.gputrace` / render diff / MCP live 验证收口成严格后置 gate；只有在 `SV-004` 证据仍不足或风险只会在 runtime/live 中暴露时才允许升级，且不得回流为日常默认流程 | `06-L4-真实场景验证.md` |
@@ -302,7 +259,7 @@ python3 Scripts/ir_semantics_behavior_runner.py --gate-summary build/semantics-v
 - **对环境相关代表集，job count 不能只用单点值判定**：要区分“跨机器都必须成立的硬下界”和“本机样本齐备时的完整代表集”，否则容易把缺样本误报成回归
 - **优先把高频手工流程脚本化**；若无法脚本化，也不能默认把用户人工操作写成日常 gate
 - **L3 第一版优先复用 reference MSL vs generated MSL 对跑，比一上来就建立完整 CPU oracle 更容易在低人力预算下落地**
-- **要区分“背景问题”和“当前主线”**：本目录当前最该做的是守住稳定离线 gate，并只对剩余 deferred 候选维持最小升级判断，而不是过早切到更高成本的运行时验证
+- **要区分“背景问题”和“当前主线”**：本目录当前最该做的是守住稳定离线 gate，并只对少量高价值候选维持最小升级判断、优先解释已落地的 fragment fail evidence，而不是过早切到更高成本的运行时验证
 - **主文档不要直接暴露会漂移的本机快照**：本机增强入口、历史批量快照、manifest 描述文字等都应下沉到参考文档，主文档只保留当前主线真正依赖的控制面事实
 
 ## 参考信息

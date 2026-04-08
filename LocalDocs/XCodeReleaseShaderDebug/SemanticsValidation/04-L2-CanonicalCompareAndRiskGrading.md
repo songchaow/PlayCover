@@ -252,7 +252,7 @@
 
 1. 持续守住 `SV-003`，确保 `test-data-representatives` 这个跨机器硬默认入口不回退，并把 `ShaderCorpus` 继续限制为本地增强证据
 2. 继续复用 `SV-006` 已经落地的 `layeredDecision`，只让当前活跃候选进入最小升级链路，而不是重新扩大范围
-3. 把 `SV-004` 的默认执行面继续压缩到最小：`test_fast_math_select` 走 compute-first，`test_intrinsic_vector_icmp_zext` 继续保留为 render-second deferred 候选
+3. 把 `SV-004` 的默认执行面继续压缩到最小：`test_fast_math_select` 走 compute-first，`test_intrinsic_vector_icmp_zext` 已进入已准入的最小 render-second 并稳定产出 `fail` evidence；当前更该做的是解释这条 evidence 的根因，而不是重新回到“值不值得升级”的判断阶段
 4. 对 blocked sample `test_struct_array_field` 保持单独跟踪，而不再沿用过时的 compile blocker 口径
 
 ## 完成标准回顾

@@ -165,7 +165,7 @@
 
 输出目录：`build/semantics-validation/roundtrip/test-data-batch/`
 
-当前 active 结果：
+当前仓库里保留的是一份**批量参考快照**：
 
 - `27` 个样本中 `26` 个 round-trip 成功
 - `1` 个样本在 compile 阶段失败：`test_struct_array_field`
@@ -175,14 +175,16 @@
   - `L2 = 3`
   - `L3 = 20`
 - 其中 `test_int_literal_half_suffix` 与 `test_vector_select_global_gep` 已因 intrinsic alias 归一化和 fast-math 噪声下调而从历史 `L2` 收敛到 `L1`
+- 这份批量快照早于当前硬默认 gate 的最新代表产物，因此只适合作为参考批量基线，不应用来描述当前默认 gate 的 active 口径
 
 ### 当前代表样本
 
-- 当前保留在主文档中的 active 信息只有三点：
-  - **首个 compile blocker**：`test_struct_array_field`
+- 当前保留在主文档中的 active 信息只有四点：
+  - **当前跨机器硬默认 gate 已没有 compile failure；`test_struct_array_field` 已转为 blocked sample**
   - **当前跨机器硬默认代表集中的活跃 `L2` 已缩到 `3` 个**：`test_casts`、`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`；它们已经足够说明“需要后续 L3 入口”，但还不应直接全量升级到 live
+  - **`risk-report.json` 已经把 `samplesForL3` 与 `blockedSamples` 分开**：前者应作为 `SV-004` 的候选入口，后者应继续优先停在离线层
   - **代表 preset 的当前边界契约已收口到固定输出目录 + gate profile + baseline / manifest**；若代表集继续变化，应一起更新，而不是只改其中一项
-- 更细的首轮代表样本名单与旧分布已下沉到 `07-首轮基线与历史进展归档.md`（历史参考，**不必须读取**）
+- 更细的首轮代表样本名单、当前契约摘要与旧分布已下沉到 `07-首轮基线与历史进展归档.md`、`08-当前代表集与Gate契约参考.md`（参考信息，当前日常推进**不必须读取**）
 
 ## 报告结构
 
@@ -250,10 +252,10 @@
 
 `SV-002` 完成后，当前最合理的下一步不是直接跳到 live，而是：
 
-1. 继续推进 `SV-003`，优先维护 `test-data-representatives` 这个跨机器硬默认入口，再把 `ShaderCorpus` 作为本地增强证据接入
+1. 持续守住 `SV-003`，确保 `test-data-representatives` 这个跨机器硬默认入口不回退，并把 `ShaderCorpus` 继续限制为本地增强证据
 2. 推进 `SV-006`，把“停在 L2”与“必须进 L3/L4”的边界写清楚，并让 L2 结果真正成为升级/止损输入
 3. 在 `SV-006` 的口径下，再从稳定代表集里选择少量值得进入 `L3` 的样本，不单独展开新的并行主线
-4. 对 compile blocker `test_struct_array_field` 保持单独跟踪
+4. 对 blocked sample `test_struct_array_field` 保持单独跟踪，而不再沿用过时的 compile blocker 口径
 
 ## 完成标准回顾
 

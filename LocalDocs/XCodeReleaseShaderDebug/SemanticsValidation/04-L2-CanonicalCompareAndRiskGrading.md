@@ -177,10 +177,10 @@
 
 - 当前保留在主文档中的 active 信息只有四点：
   - **当前跨机器硬默认 gate 已没有 compile failure；`test_struct_array_field` 已转为 blocked sample**
-  - **当前跨机器硬默认代表集中的活跃 `L2` 已缩到 `2` 个**：`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`；`test_casts` 已通过 `air.convert` unsigned 语义修复退出活跃 debt，但仍值得作为定向回归样本保留
-  - **`risk-report.json` 已经把 `samplesForL3` 与 `blockedSamples` 分开**：前者应作为 `SV-004` 的候选入口，后者应继续优先停在离线层
+  - **当前跨机器硬默认代表集中的活跃 `L2` 已缩到 `2` 个**：`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`；`test_casts` 已退出活跃 debt，仅保留为定向回归样本
+  - **`risk-report.json` 已经把 `samplesForL3` 与 `blockedSamples` 分开**：前者应作为 `SV-004F` 的默认入口，后者应继续优先停在离线层
   - **代表 preset 的当前边界契约应以 `gate-summary.json` / `risk-report.json` 为准；`preset-manifest.json` 更适合描述代表集发现与 artifact 锚点，不应单独充当 active debt 事实来源**
-- 更细的首轮代表样本名单、当前契约摘要与旧分布已下沉到 `07-首轮基线与历史进展归档.md`、`08-当前代表集与Gate契约参考.md`（参考信息，当前日常推进**不必须读取**）
+- 更细的旧 fail 解释、当前契约摘要与旧分布已下沉到 `07-首轮基线与历史进展归档.md`、`08-当前代表集与Gate契约参考.md`（参考信息，当前日常推进**不必须读取**)
 
 ## 报告结构
 

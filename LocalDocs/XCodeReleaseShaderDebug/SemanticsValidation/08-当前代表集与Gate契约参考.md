@@ -20,27 +20,27 @@
 
 当前文档统一按下面顺序理解事实：
 
-1. **`gate-summary.json`**：当前 gate 状态、活跃 debt、已解决 debt、`layeredDecision`
-2. **`risk-report.json`**：当前 `samplesForL3` / `blockedSamples` 与风险分布
-3. **`behavior-summary.json` / `behavior-summary.*.json`**：当前 L3 最小行为证据
-4. **`roundtrip-summary.json` / baseline diff**：round-trip 成功率、改进与回放差异
-5. **`preset-manifest.json`**：preset 期望样本、匹配情况、报告锚点、baseline 锚点
+1. **`gate-summary.json`**
+2. **`risk-report.json`**
+3. **`behavior-summary.json` / `behavior-summary.*.json`**
+4. **`roundtrip-summary.json` / baseline diff**
+5. **`preset-manifest.json` 的描述文字**
 
 补充说明：
 
-- `gate-summary.json` 里的控制面结构字段（如 `status`、`activeKnownDebt`、`improvements`、`layeredDecision`）优先级最高；但其中沿用 `gate profile` 的描述文字也可能滞后
-- `preset-manifest.json` 依然有重要价值，但它的**描述文字**也可能落后于当前事实
-- 当前 `test-data-representatives/gate-summary.json` 与 `preset-manifest.json` 都仍保留着“compile blocker / 3 个已知 L2”一类旧描述，这不应再直接当成 active debt 口径
-- 若出现描述文字与 `gate-summary.json` / `risk-report.json` 的结构字段不一致，**以结构字段为准**
+- 当前统一口径应理解为：**`gate-summary.json` > `risk-report.json` > `behavior-summary.json` / `behavior-summary.*.json` > `roundtrip-summary.json` > `preset-manifest.json` 的描述文字**
+- `gate-summary.json` 里的 `status`、`activeKnownDebt`、`improvements`、`layeredDecision` 等结构字段优先级最高
+- `preset-manifest.json` 与 gate profile 仍有契约价值，但其描述文字可能滞后
+- 当前 `test-data-representatives/gate-summary.json` 与 `preset-manifest.json` 里的旧描述若仍残留“compile blocker / 3 个已知 L2”一类文字，不应再直接当成 active debt 口径
+- 若描述文字与结构字段不一致，**以结构字段为准**
 
 ## 当前默认 gate 事实
 
 ### 1. `test-data-representatives`（跨机器硬默认）
 
-当前最新代表产物来自：
+当前最新代表产物位于：
 
 - `build/semantics-validation/roundtrip/test-data-representatives/`
-- `gate-summary.generatedAt = 2026-04-08T12:47:07Z`
 
 当前事实：
 
@@ -60,15 +60,14 @@
 补充说明：
 
 - `test_struct_array_field` 在当前硬默认 gate 中已经不再是 compile failure，而是 **round-trip 成功但 compare 仍 blocked 的样本**
-- `test_casts` 的收敛是当前默认 gate 中最重要的已知改进之一；它已经退出活跃 `L2` 债务，只保留为定向回归样本
-- `baseline.json` 已可被固定目录自动复用；当前能直接从 `roundtrip-summary.json` 看到 `test_casts` 与 `test_struct_array_field` 的非回归型变化
+- `test_casts` 已退出活跃 `L2` 债务，只保留为定向回归样本
+- `baseline.json` 已可被固定目录自动复用；若需要看非回归型变化，应直接回到同目录 `roundtrip-summary.json`
 
 ### 2. `behavior-summary.json`（当前默认 L3 证据）
 
-当前默认行为产物来自：
+当前默认行为产物位于：
 
 - `build/semantics-validation/roundtrip/test-data-representatives/behavior-summary.json`
-- `generatedAt = 2026-04-08T12:47:05Z`
 
 当前事实：
 
@@ -86,14 +85,13 @@
 
 - 当前默认输出目录**不是**单独的 `build/semantics-validation/behavior/...`，而是直接复用 `gate-summary.outputRoot`
 - 因此重复执行时，agent 不需要额外人工找路径；只要有固定的 `gate-summary.json` 与 `roundtrip-summary.json`，就能在同目录下继续补行为证据
-- `test_intrinsic_vector_icmp_zext` 之前的 `fail` 已确认来自 reference sample 与 `.ll` 输出语义漂移；把 `cmp/zext` 重新接回可观察输出后，当前最小 render-second 已回到 `pass`
+- 更细的 fragment artifact 与旧 fail 收口经过已下沉到 `07-首轮基线与历史进展归档.md`（历史参考，当前主线推进**不必须读取**）
 
 ### 3. `behavior-summary.test-casts-verification.json`（定向复核入口）
 
-当前定向复核产物来自：
+当前定向复核产物位于：
 
 - `build/semantics-validation/roundtrip/test-data-representatives/behavior-summary.test-casts-verification.json`
-- `generatedAt = 2026-04-08T09:49:38Z`
 
 当前事实：
 
@@ -112,10 +110,9 @@
 
 ### 4. `daily-default`（本机已有样本时的一键增强入口）
 
-当前最新增强产物来自：
+当前最新增强产物位于：
 
 - `build/semantics-validation/roundtrip/daily-default/`
-- `generatedAt = 2026-04-08T07:37:53Z`
 
 当前事实：
 
@@ -126,7 +123,6 @@
 - `gate-summary.json` 当前为 `WARN`
 - `minimumExpectedJobCount = 8`
 - `expectedJobCount = 13`
-- 当前 `summary = new L2 sample bundle:com.papegames.lysk::module:6c08f93015cda305e6c675457bab3acfcf7febab294577d27cbe76317e2b1f45`
 
 补充说明：
 
@@ -137,10 +133,9 @@
 
 ### 5. `local-corpus-representatives`（本地观察入口）
 
-当前最新本地产物来自：
+当前最新本地产物位于：
 
 - `build/semantics-validation/roundtrip/local-corpus-representatives/`
-- `generatedAt = 2026-04-08T06:06:52Z`
 
 当前事实：
 
@@ -156,7 +151,7 @@
 
 - 该入口只复用**当前机器上已经存在**的本地 `ShaderCorpus` 样本
 - 它的价值在于补充真实样本证据，而不是把用户准备环境重新带回默认流程
-- 当前产物里包含若干 `manifest.jsonl` 行解析 warning；这些 warning 不应被解释为需要用户介入的默认前置步骤
+- 当前产物里若出现 `manifest.jsonl` 行解析 warning，也不应被解释为需要用户介入的默认前置步骤
 - 它更适合解释“本机真实样本当前长什么样”，不适合驱动当前主线“下一步最该做什么”
 
 ### 6. `test-data-batch`（参考批量，不是当前默认 gate 契约）
@@ -164,7 +159,6 @@
 当前仓库里保留的批量目录：
 
 - `build/semantics-validation/roundtrip/test-data-batch/`
-- `generatedAt = 2026-04-08T06:33:20Z`
 
 当前保留的是一份**较早批量参考快照**：
 
@@ -194,7 +188,7 @@
 ### 对 `SV-003` / `SV-004` / `SV-006` 最有用的当前事实
 
 - 当前 `gate-summary.json` / `risk-report.json` 已经能把 **活跃 L2 候选**、**blocked sample**、**已解决 L2 debt** 明确拆开
-- 对硬默认 gate，当前最该优先维护的活跃 `L3` 候选入口仍是：
+- 对硬默认 gate，当前最该优先维护的活跃 `L2` 候选 / 默认 `L3` 入口仍是：
   - `test_fast_math_select`
   - `test_intrinsic_vector_icmp_zext`
 - `behavior-summary.json` 当前已从“compute-only + deferred fragment”切换为“compute-first + 已准入 render-second”组合证据；其当前状态为 `pass`，默认两条样本结果均为 `pass`

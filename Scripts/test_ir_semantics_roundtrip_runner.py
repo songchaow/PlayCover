@@ -222,12 +222,18 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
         output_root = REPO_ROOT / "build" / "semantics-validation" / "roundtrip" / "test-data-representatives"
         manifest_path = output_root / "preset-manifest.json"
         baseline_path = output_root / "baseline.json"
+        representative_sample = Path(
+            roundtrip_runner.make_test_data_paths(
+                REPO_ROOT,
+                [roundtrip_runner.TEST_DATA_REPRESENTATIVE_FILES[0]],
+            )[0]
+        )
         job = roundtrip_runner.replay_runner.ReplayJob(
             job_id=1,
             source_kind="explicit_ll",
-            input_path=TEST_SAMPLE,
-            output_path=output_root / "manual" / "001-test_addrspace" / "generated.metal",
-            function_names=["test_addrspace"],
+            input_path=representative_sample,
+            output_path=output_root / "manual" / f"001-{representative_sample.stem}" / "generated.metal",
+            function_names=[representative_sample.stem],
             function_types=["kernel"],
         )
         baseline_snapshot = {
@@ -267,16 +273,68 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
         self.assertEqual(manifest["discovery"]["jobCount"], 1)
         self.assertEqual(manifest["discovery"]["sourceKinds"]["explicitLL"], 1)
         self.assertEqual(manifest["discovery"]["sourceKinds"]["shaderCorpus"], 0)
-        self.assertEqual(manifest["discovery"]["jobs"][0]["functionNames"], ["test_addrspace"])
+        self.assertEqual(manifest["discovery"]["jobs"][0]["functionNames"], [representative_sample.stem])
         self.assertEqual(
             manifest["discovery"]["jobs"][0]["comparisonKey"],
             roundtrip_runner.replay_runner.make_comparison_key(
                 "explicit_ll",
                 None,
                 None,
-                str(TEST_SAMPLE),
+                str(representative_sample),
             ),
         )
+        contract = manifest["presetContract"]
+        self.assertEqual(contract["status"], "missing_expected_jobs")
+        self.assertEqual(contract["expectedJobCount"], len(roundtrip_runner.TEST_DATA_REPRESENTATIVE_FILES))
+        self.assertEqual(contract["matchedExpectedJobCount"], 1)
+        self.assertEqual(contract["missingExpectedJobCount"], len(roundtrip_runner.TEST_DATA_REPRESENTATIVE_FILES) - 1)
+        self.assertEqual(contract["unexpectedDiscoveredJobCount"], 0)
+        self.assertEqual(contract["matchedSourceKinds"]["explicitLL"], 1)
+        self.assertEqual(contract["missingSourceKinds"]["explicitLL"], len(roundtrip_runner.TEST_DATA_REPRESENTATIVE_FILES) - 1)
+
+    def test_build_preset_contract_summary_flags_unexpected_discovered_jobs(self) -> None:
+        expected_jobs = roundtrip_runner.build_expected_preset_contract_jobs(
+            "test-data-representatives",
+            REPO_ROOT,
+        )
+        discovered_jobs = [
+            {
+                **entry,
+                "jobID": index,
+                "metadataPath": None,
+                "functionNames": [],
+                "functionTypes": [],
+            }
+            for index, entry in enumerate(expected_jobs)
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            unexpected_path = Path(temp_dir) / "unexpected.ll"
+            unexpected_path.write_text("define void @unexpected() { ret void }\n", encoding="utf-8")
+            unexpected_entry = {
+                **roundtrip_runner.build_expected_ll_contract_entry(unexpected_path),
+                "jobID": len(discovered_jobs),
+                "metadataPath": None,
+                "functionNames": [],
+                "functionTypes": [],
+            }
+            discovered_jobs.append(unexpected_entry)
+
+            contract = roundtrip_runner.build_preset_contract_summary(
+                "test-data-representatives",
+                REPO_ROOT,
+                discovered_jobs,
+            )
+
+        self.assertIsNotNone(contract)
+        assert contract is not None
+        self.assertEqual(contract["status"], "unexpected_discovered_jobs")
+        self.assertEqual(contract["expectedJobCount"], len(roundtrip_runner.TEST_DATA_REPRESENTATIVE_FILES))
+        self.assertEqual(contract["matchedExpectedJobCount"], len(roundtrip_runner.TEST_DATA_REPRESENTATIVE_FILES))
+        self.assertEqual(contract["missingExpectedJobCount"], 0)
+        self.assertEqual(contract["unexpectedDiscoveredJobCount"], 1)
+        self.assertEqual(contract["unexpectedSourceKinds"]["explicitLL"], 1)
+        self.assertEqual(contract["unexpectedDiscoveredJobs"][0]["sampleKey"], "unexpected")
 
     @unittest.skipUnless(shutil.which("swiftc") and shutil.which("xcrun"), "requires swiftc and xcrun")
     def test_roundtrip_runner_generates_roundtrip_summary_for_sample(self) -> None:

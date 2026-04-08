@@ -154,6 +154,176 @@ def make_test_data_paths(root: Path, file_names: list[str]) -> list[str]:
     return [str((directory / file_name).resolve()) for file_name in file_names]
 
 
+def manifest_source_kind(source_kind: str | None) -> str:
+    if source_kind == "shader_corpus":
+        return "shaderCorpus"
+    if source_kind == "explicit_ll":
+        return "explicitLL"
+    return source_kind or "unknown"
+
+
+def empty_manifest_source_kind_counts() -> dict[str, int]:
+    return {
+        "explicitLL": 0,
+        "shaderCorpus": 0,
+        "unknown": 0,
+    }
+
+
+def count_manifest_entries(entries: list[dict[str, Any]]) -> dict[str, int]:
+    counts = empty_manifest_source_kind_counts()
+    for entry in entries:
+        key = manifest_source_kind(entry.get("sourceKind"))
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def build_discovered_job_manifest_entry(job: replay_runner.ReplayJob) -> dict[str, Any]:
+    sample_key = job.module_key or Path(job.input_path).stem
+    return {
+        "jobID": job.job_id,
+        "comparisonKey": replay_runner.make_comparison_key(
+            job.source_kind,
+            job.bundle_id,
+            job.module_key,
+            str(job.input_path),
+        ),
+        "sourceKind": job.source_kind,
+        "inputPath": str(job.input_path),
+        "bundleId": job.bundle_id,
+        "moduleKey": job.module_key,
+        "sampleKey": sample_key,
+        "sampleIdentity": canonical_compare.sample_identity(
+            {
+                "bundleId": job.bundle_id,
+                "moduleKey": job.module_key,
+                "inputPath": str(job.input_path),
+            }
+        ),
+        "metadataPath": str(job.metadata_path) if job.metadata_path else None,
+        "functionNames": list(job.function_names),
+        "functionTypes": list(job.function_types),
+    }
+
+
+def build_expected_ll_contract_entry(input_path: str | Path) -> dict[str, Any]:
+    resolved_path = Path(input_path).expanduser().resolve()
+    return {
+        "comparisonKey": replay_runner.make_comparison_key("explicit_ll", None, None, str(resolved_path)),
+        "sourceKind": "explicit_ll",
+        "inputPath": str(resolved_path),
+        "bundleId": None,
+        "moduleKey": None,
+        "sampleKey": resolved_path.stem,
+        "sampleIdentity": canonical_compare.sample_identity({"inputPath": str(resolved_path)}),
+    }
+
+
+def build_expected_shader_corpus_contract_entry(bundle_id: str, module_key: str) -> dict[str, Any]:
+    return {
+        "comparisonKey": replay_runner.make_comparison_key("shader_corpus", bundle_id, module_key, None),
+        "sourceKind": "shader_corpus",
+        "inputPath": None,
+        "bundleId": bundle_id,
+        "moduleKey": module_key,
+        "sampleKey": module_key,
+        "sampleIdentity": canonical_compare.sample_identity(
+            {
+                "bundleId": bundle_id,
+                "moduleKey": module_key,
+            }
+        ),
+    }
+
+
+def build_expected_preset_contract_jobs(preset_name: str | None, root: Path) -> list[dict[str, Any]]:
+    if not preset_name:
+        return []
+
+    presets = build_roundtrip_presets(root)
+    preset = presets.get(preset_name)
+    if preset is None:
+        return []
+
+    expected_jobs = [
+        build_expected_ll_contract_entry(input_path)
+        for input_path in (preset.get("ll_inputs") or [])
+    ]
+
+    bundle_filters = set(preset.get("bundle_ids") or [])
+    module_filters = set(preset.get("module_keys") or [])
+    if bundle_filters or module_filters:
+        for item in LOCAL_SHADERCORPUS_REPRESENTATIVES:
+            bundle_id = str(item["bundleId"])
+            module_key = str(item["moduleKey"])
+            if bundle_filters and bundle_id not in bundle_filters:
+                continue
+            if module_filters and module_key not in module_filters:
+                continue
+            expected_jobs.append(build_expected_shader_corpus_contract_entry(bundle_id, module_key))
+
+    return expected_jobs
+
+
+def build_preset_contract_summary(
+    preset_name: str | None,
+    root: Path,
+    discovered_jobs: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    expected_jobs = build_expected_preset_contract_jobs(preset_name, root)
+    if not preset_name:
+        return None
+
+    expected_by_key = {entry["comparisonKey"]: entry for entry in expected_jobs}
+    matched_expected_jobs: list[dict[str, Any]] = []
+    missing_expected_jobs: list[dict[str, Any]] = []
+    unexpected_discovered_jobs: list[dict[str, Any]] = []
+
+    discovered_by_key = {entry["comparisonKey"]: entry for entry in discovered_jobs}
+    for entry in expected_jobs:
+        observed = discovered_by_key.get(entry["comparisonKey"])
+        if observed is None:
+            missing_expected_jobs.append(entry)
+            continue
+        matched_expected_jobs.append(
+            {
+                **entry,
+                "jobID": observed.get("jobID"),
+                "observedInputPath": observed.get("inputPath"),
+                "observedMetadataPath": observed.get("metadataPath"),
+            }
+        )
+
+    for entry in discovered_jobs:
+        if entry["comparisonKey"] not in expected_by_key:
+            unexpected_discovered_jobs.append(entry)
+
+    status = "exact_match"
+    if missing_expected_jobs and unexpected_discovered_jobs:
+        status = "boundary_changed"
+    elif missing_expected_jobs:
+        status = "missing_expected_jobs"
+    elif unexpected_discovered_jobs:
+        status = "unexpected_discovered_jobs"
+
+    return {
+        "presetName": preset_name,
+        "status": status,
+        "expectedJobCount": len(expected_jobs),
+        "matchedExpectedJobCount": len(matched_expected_jobs),
+        "missingExpectedJobCount": len(missing_expected_jobs),
+        "unexpectedDiscoveredJobCount": len(unexpected_discovered_jobs),
+        "expectedSourceKinds": count_manifest_entries(expected_jobs),
+        "matchedSourceKinds": count_manifest_entries(matched_expected_jobs),
+        "missingSourceKinds": count_manifest_entries(missing_expected_jobs),
+        "unexpectedSourceKinds": count_manifest_entries(unexpected_discovered_jobs),
+        "expectedJobs": expected_jobs,
+        "matchedExpectedJobs": matched_expected_jobs,
+        "missingExpectedJobs": missing_expected_jobs,
+        "unexpectedDiscoveredJobs": unexpected_discovered_jobs,
+    }
+
+
 def build_roundtrip_presets(root: Path) -> dict[str, dict[str, Any]]:
     test_data_directory = test_data_root(root)
     test_data_batch_inputs = [str(path.resolve()) for path in sorted(test_data_directory.glob("*.ll"))]
@@ -523,25 +693,7 @@ def build_preset_manifest(
     presets = build_roundtrip_presets(root)
     preset = presets.get(args.preset) if args.preset else None
     profile_name, gate_profile = resolve_gate_profile(args)
-    discovered_jobs = [
-        {
-            "jobID": job.job_id,
-            "comparisonKey": replay_runner.make_comparison_key(
-                job.source_kind,
-                job.bundle_id,
-                job.module_key,
-                str(job.input_path),
-            ),
-            "sourceKind": job.source_kind,
-            "inputPath": str(job.input_path),
-            "bundleId": job.bundle_id,
-            "moduleKey": job.module_key,
-            "metadataPath": str(job.metadata_path) if job.metadata_path else None,
-            "functionNames": list(job.function_names),
-            "functionTypes": list(job.function_types),
-        }
-        for job in jobs
-    ]
+    discovered_jobs = [build_discovered_job_manifest_entry(job) for job in jobs]
     return {
         "schemaVersion": 1,
         "generatedAt": replay_runner.utc_now_iso(),
@@ -552,6 +704,7 @@ def build_preset_manifest(
         "presetDescription": preset.get("description") if preset else None,
         "gateProfileName": profile_name,
         "gateProfile": gate_profile,
+        "presetContract": build_preset_contract_summary(args.preset, root, discovered_jobs),
         "requestedInputs": {
             "llInputs": list(args.ll_inputs),
             "corpusRoots": list(args.corpus_roots),
@@ -572,10 +725,7 @@ def build_preset_manifest(
         },
         "discovery": {
             "jobCount": len(discovered_jobs),
-            "sourceKinds": {
-                "explicitLL": sum(1 for job in jobs if job.source_kind == "explicit_ll"),
-                "shaderCorpus": sum(1 for job in jobs if job.source_kind == "shader_corpus"),
-            },
+            "sourceKinds": count_manifest_entries(discovered_jobs),
             "jobs": discovered_jobs,
         },
         "reportArtifacts": report_paths,
@@ -1106,6 +1256,7 @@ def print_summary(
     report: dict[str, Any],
     compare_report: dict[str, Any],
     gate_summary: dict[str, Any],
+    manifest: dict[str, Any],
     manifest_path: Path,
     args: argparse.Namespace,
 ) -> None:
@@ -1179,6 +1330,26 @@ def print_summary(
         print("gate notes:")
         for note in notes[:5]:
             print(f"  - {note}")
+
+    preset_contract = manifest.get("presetContract") or {}
+    if preset_contract:
+        print(
+            "preset contract: "
+            f"{preset_contract.get('status')} "
+            f"(matched {preset_contract.get('matchedExpectedJobCount', 0)} / {preset_contract.get('expectedJobCount', 0)})"
+        )
+        missing_expected = preset_contract.get("missingExpectedJobs") or []
+        if missing_expected:
+            print("missing preset samples:")
+            for item in missing_expected[:5]:
+                key = item.get("sampleIdentity") or item.get("sampleKey") or item.get("comparisonKey")
+                print(f"  - {key}")
+        unexpected_jobs = preset_contract.get("unexpectedDiscoveredJobs") or []
+        if unexpected_jobs:
+            print("unexpected discovered samples:")
+            for item in unexpected_jobs[:5]:
+                key = item.get("sampleIdentity") or item.get("sampleKey") or item.get("comparisonKey")
+                print(f"  - {key}")
 
 
 def main() -> int:
@@ -1315,7 +1486,7 @@ def main() -> int:
     gate_summary_path.write_text(json.dumps(gate_summary, indent=2, ensure_ascii=False), encoding="utf-8")
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
-    print_summary(roundtrip_report, compare_report, gate_summary, manifest_path, args)
+    print_summary(roundtrip_report, compare_report, gate_summary, manifest, manifest_path, args)
 
     if args.enforce_gate and gate_summary.get("shouldBlock"):
         return 1

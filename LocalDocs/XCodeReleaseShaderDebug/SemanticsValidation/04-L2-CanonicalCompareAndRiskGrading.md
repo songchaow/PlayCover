@@ -28,6 +28,11 @@
 - `risk-report.json`
 - `high-risk-samples.json`
 
+当前状态需要明确区分两件事：
+
+- **L2 能力是否存在**：已经存在，且已在 `test-data/` 上跑通
+- **L2 是否已经变成稳定日常入口**：还没有完全收口，这正是 `SV-003` 的工作范围
+
 ## 已实现的 canonical summary
 
 ### Entry 面
@@ -161,15 +166,10 @@
 
 ### 当前代表样本
 
-- **L0**：`test_fast_math_binary`
-- **L1**：`test_scalar_select_vector`
-- **L2**：
-  - `test_casts`
-  - `test_fast_math_select`
-  - `test_int_literal_half_suffix`
-  - `test_intrinsic_vector_icmp_zext`
-  - `test_vector_select_global_gep`
-- **compile blocker**：`test_struct_array_field`
+- 当前保留在主文档中的 active 信息只有两点：
+  - **首个 compile blocker**：`test_struct_array_field`
+  - **当前 `L2` 样本已经足够说明“需要后续 L3 入口”，但还不应直接全量升级到 live**
+- 更细的首轮代表样本名单已下沉到 `07-首轮基线与历史进展归档.md`
 
 ## 报告结构
 
@@ -227,14 +227,16 @@
 - 不是完整 IR AST / CFG 等价器
 - 还不能回答“行为是否一致”
 - 当前 `L3` 样本较多，说明还需要后续 `SV-003` 做代表集扩展、聚类与日常 gate 收敛
+- 当前还缺少明确的升级/止损规则（`SV-006`），因此不能看到 `L2/L3` 就默认继续往更高成本层推进
 
 ## 对下一步的直接启示
 
 `SV-002` 完成后，当前最合理的下一步不是直接跳到 live，而是：
 
 1. 继续推进 `SV-003`，把已落地的 L1/L2 扩到更稳定的 `test-data` / `ShaderCorpus` 代表集
-2. 对当前 `L2` 样本优先准备 `L3` 最小行为测试入口
-3. 对 compile blocker `test_struct_array_field` 保持单独跟踪
+2. 推进 `SV-006`，把“停在 L2”与“必须进 L3/L4”的边界写清楚
+3. 对当前 `L2` 样本先做聚类，再优先准备少量 `L3` 最小行为测试入口
+4. 对 compile blocker `test_struct_array_field` 保持单独跟踪
 
 ## 完成标准回顾
 

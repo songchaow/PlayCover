@@ -34,6 +34,8 @@ makeLibrary(source:) / metal -c
 
 因此需要在本目录下建立一套**循序渐进、自动化优先、可按人力/上下文预算逐步停下**的语义验证体系。
 
+> 注：以上四条是本专项立项时的原始缺口描述。结合 2026-04-08 最近三次提交回看，前两条（L1/L2）已经完成首版落地；当前 active gap 已切换到“如何把 L1/L2 变成稳定日常 gate，并为 L3/L4 做好入口控制”。
+
 ## 最终目标
 
 建立一套尽可能完善的 **Semantics Validation** 测试体系，覆盖四层：
@@ -54,32 +56,46 @@ makeLibrary(source:) / metal -c
 
 ### 主线任务
 
+> **关系校准**：当前整个 Road E 的全局控制面已经切到 `E-006f / E-006e` 这类运行时兼容性问题；**Semantics Validation 不是全局最高优先级入口**。但在“语义验证”这条离线支线内部，当前最值得继续推进的任务仍然是 `SV-003`，因为它能把已落地的 L1/L2 变成真正可复用、可止损、可日常执行的证据链。
+
 **`SV-003`：把已落地的 L1/L2 能力继续接入更稳定的 `test-data/` 日常 gate，并扩到代表性 `ShaderCorpus` 样本。**
 
 `SV-002` 已在本轮完成，当前已新增/打通：
 
+- 已新增 `Scripts/ir_semantics_roundtrip_runner.py`
 - 已新增 `Scripts/ir_canonical_compare.py`
-- 已让 `Scripts/ir_semantics_roundtrip_runner.py` 在 `roundtrip-summary.json` 之外，继续自动产出：
+- 已新增 `Scripts/test_ir_canonical_compare.py`
+- 已更新 `Scripts/test_ir_semantics_roundtrip_runner.py`
+- `roundtrip runner` 当前已支持：
+  - `--ll` 显式样本
+  - `--corpus-root`
+  - `--bundle-id`
+  - `--module-key`
+  - `--limit`
+  - `--allow-failures`
+  - 自动解析 `llvm-dis` 路径（优先 PlayCover 容器，再尝试 PATH / Homebrew / 系统路径）
+- `roundtrip runner` 当前默认会一起产出：
+  - `replay-summary.json`
+  - `compile-summary.json`
+  - `roundtrip-summary.json`
   - `compare-summary.json`
   - `risk-report.json`
   - `high-risk-samples.json`
-- 已新增 `Scripts/test_ir_canonical_compare.py`
-- 已更新 `Scripts/test_ir_semantics_roundtrip_runner.py`
-- 已对 `test-data/` 跑通首轮 L2 批量报告：`build/semantics-validation/roundtrip/test-data-batch/`
+- 已对 `test-data/` 跑通首轮 L1/L2 批量报告：`build/semantics-validation/roundtrip/test-data-batch/`
 
-当前 `test-data/` 批量结果为：
+当前 `test-data/` 首轮基线可概括为：
 
 - **27 个样本中 26 个 round-trip 成功，1 个在 compile 阶段失败，llvm-dis 阶段 0 失败**
 - **L2 风险分布：L0 = 1，L1 = 1，L2 = 5，L3 = 20**
-- 当前 `L0` 样本：`test_fast_math_binary`
-- 当前 `L1` 样本：`test_scalar_select_vector`
-- 当前 `L2` 样本：`test_casts`、`test_fast_math_select`、`test_int_literal_half_suffix`、`test_intrinsic_vector_icmp_zext`、`test_vector_select_global_gep`
+- 详细样本名单、首次 smoke 目录和阶段性提交脉络已下沉到 `07-首轮基线与历史进展归档.md`
 
 因此当前最高优先级已经切换到 `SV-003`，因为它：
 
 - 能把已经落地的 L1/L2 从“单轮专项结果”推进到“可持续复用的日常 gate”
+- 能把 `test-data/` 从“首轮跑通”推进到“固定代表集 + 固定命令 + 固定报告目录”的低心智负担工作流
 - 是把 `test-data/` 经验扩展到代表性 `ShaderCorpus` 样本的最直接下一步
 - 能帮助区分哪些 `L2/L3` 样本值得进一步聚类、收敛或进入 L3
+- 能为全局 Road E 主线提供更低成本的离线风险筛查，而不去抢占运行时主控面
 
 ### 当前不该抢跑的事
 
@@ -89,6 +105,7 @@ makeLibrary(source:) / metal -c
 - 高成本 GUI/Accessibility 操作
 - 需要用户频繁登录/摆场景/点按钮的流程
 - 工作区外静态分析、外部二进制 patch、手动逆向
+- 因为本地暂时没有现成 `ShaderCorpus` 样本，就把“fresh capture / 手工准备环境”硬写进日常 gate
 
 除非它们是为解除当前最高优先级阻塞所**绝对必要**的最小步骤，且已获得用户确认。
 
@@ -115,15 +132,31 @@ FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh
 - 本专项当前默认 gate：
 
 ```bash
-python3 Scripts/ir_semantics_roundtrip_runner.py ...
+python3 Scripts/test_ir_canonical_compare.py
+python3 Scripts/test_ir_semantics_roundtrip_runner.py
+python3 Scripts/ir_semantics_roundtrip_runner.py --ll <sample.ll> --output-root build/semantics-validation/roundtrip/manual-smoke
+```
+
+- 若本机已存在可复用的本地 `ShaderCorpus`，可以继续使用小规模代表集批量报告：
+
+```bash
+python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus --bundle-id <bundleId> --limit <N> --allow-failures
 ```
 
 默认会继续产出：
 
+- `replay-summary.json`
+- `compile-summary.json`
 - `roundtrip-summary.json`
 - `compare-summary.json`
 - `risk-report.json`
 - `high-risk-samples.json`
+
+补充约束：
+
+- `ShaderCorpus` 日常 gate 默认只复用**当前机器上已经存在**的本地样本
+- 若当前机器上没有合适样本，不应自动升级成需要用户介入的 fresh capture 流程；这时应优先退回 `test-data/` 或停在离线层汇报
+- `SV-003` 当前一个明确待补点，就是把 `test-data/` 与代表性 `ShaderCorpus` 样本集固定成更低心智负担的日常入口，而不是依赖每次手工挑文件
 
 ### 运行时链路验证（只在必要时）
 
@@ -181,17 +214,18 @@ python3 Scripts/ir_semantics_roundtrip_runner.py ...
 | SV-000 | 现状调研与缺口梳理 | ✅ DONE | - | 已确认当前没有严格语义闭环，已形成总体路线 | `01-现状调研与缺口.md` |
 | SV-001 | 离线 IR round-trip harness | ✅ DONE | - | 已新增 `Scripts/ir_semantics_roundtrip_runner.py`，并在 `test-data/` 首轮批量报告中得到 `26 / 27` round-trip 成功 | `03-L1-IR-RoundTrip.md` |
 | SV-002 | Canonical compare + 风险分级 | ✅ DONE | - | 已新增 `Scripts/ir_canonical_compare.py`，并在 `test-data/` 上产出 `compare-summary.json / risk-report.json / high-risk-samples.json` | `04-L2-CanonicalCompareAndRiskGrading.md` |
-| SV-003 | 把 L1/L2 接入 `test-data/` 与 `ShaderCorpus` | TODO | P0 | 继续稳定 `test-data` 默认 gate，并扩到代表性 `ShaderCorpus` 样本，形成日常批量报告 | `02-总体技术路线.md` |
+| SV-003 | 把 L1/L2 接入 `test-data/` 与 `ShaderCorpus` | TODO | P0 | 固化 `test-data` 默认 gate，补一组代表性本地 `ShaderCorpus` 样本，形成稳定日常批量报告 | `02-总体技术路线.md` |
 | SV-004 | 最小行为测试（compute-first） | TODO | P2 | 优先建立 compute 输出对比，再决定是否补离屏 render | `05-L3-最小行为测试.md` |
 | SV-005 | 真实场景验证流程收口 | TODO | P3 | 把 `.gputrace` / render diff / MCP live 验证收口成后置 gate | `06-L4-真实场景验证.md` |
-| SV-006 | 分层 gate 与止损策略 | TODO | P2 | 明确“做到哪一层就可以先停”的预算决策规则 | `02-总体技术路线.md` |
+| SV-006 | 分层 gate 与止损策略 | TODO | P1 | 明确“什么时候可以先停在 L2，什么时候必须升级到 L3/L4”的预算与升级规则 | `02-总体技术路线.md` |
 
 ### 当前关键卡点
 
+- **`SV-003` 还没有完全收口成低心智负担的默认入口**：当前脚本能力已经够用，但 `test-data` 与代表性 `ShaderCorpus` 的固定样本集、固定命令和固定输出约定还需要再收紧
 - **`test_struct_array_field` 仍是当前首个 compile-stage blocker**：当前 `test-data/` 批量 round-trip 中，27 个样本里仍只有它在 `generated.metal -> generated.air` 阶段失败
 - **L2 已落地，但 `test-data/` 里仍有较多 `L3` 结构性不一致样本**：当前批量分布为 `L0 = 1 / L1 = 1 / L2 = 5 / L3 = 20`，下一步需要结合 `SV-003` 做样本聚类与代表集扩展
 - **没有行为级 oracle**：当前报告能筛查风险，但还不能判断行为是否一致；`L2` 样本仍需后续 `L3` 最小行为测试承接
-- **真实场景验证成本高**：应当继续严格后置，不能在 `SV-003 / SV-004` 未收敛时抢跑
+- **真实场景验证成本高**：应当继续严格后置，不能在 `SV-003 / SV-006 / SV-004` 未收敛时抢跑
 
 ## 踩坑与经验
 
@@ -201,6 +235,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py ...
 - **不要把“文本完全一样”误当成“语义一样”**；后续比较应以 canonical summary + 风险分级为主
 - **第一版 canonical compare 必须主动降噪**：SSA 名称、metadata 编号、`bufferSize` 缺失、`readonly/readnone` 这类编译器优化后常见变化，不应直接视为 L3
 - **优先把高频手工流程脚本化**；若无法脚本化，也不能默认把用户人工操作写成日常 gate
+- **要区分“Road E 全局主线”和“Semantics Validation 局部主线”**：本目录当前最该做的是把 L1/L2 收口成稳定离线 gate，而不是去抢跑全局运行时兼容性 blocker
 
 ## 参考信息
 
@@ -212,6 +247,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py ...
 - `04-L2-CanonicalCompareAndRiskGrading.md`
 - `05-L3-最小行为测试.md`
 - `06-L4-真实场景验证.md`
+- `07-首轮基线与历史进展归档.md`
 
 ### 上游 Road E 参考
 
@@ -220,6 +256,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py ...
 - `../RoadE-HookMakeLibraryWithSrc/E-005-OfflineReplayBatchCompileDiff.md`
 - `../RoadE-HookMakeLibraryWithSrc/E-006d-GenshinRenderingNondeterminism.md`
 - `../RoadE-HookMakeLibraryWithSrc/E-006d-RenderingPathDiffReference.md`
+- `../RoadE-HookMakeLibraryWithSrc/E-006g-LoveAndDeepspaceTripleToggleStartupCrash.md`
 
 ### 相关实现与工具
 
@@ -230,6 +267,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py ...
 - `Scripts/ir_semantics_roundtrip_runner.py`
 - `Scripts/ir_canonical_compare.py`
 - `Scripts/test_ir_canonical_compare.py`
+- `Scripts/test_ir_semantics_roundtrip_runner.py`
 - `Scripts/check_gputrace_sources.py`
 - `Scripts/compare_capture_runs.py`
 - `Scripts/e006d_render_diff.py`

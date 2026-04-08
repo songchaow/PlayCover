@@ -42,32 +42,49 @@ regenerated.ll
 
 当前职责：
 
-1. 发现输入样本（显式多 `--ll` / `ShaderCorpus`）
+1. 发现输入样本（显式 `.ll` / `ShaderCorpus`）
 2. 复用现有 `corpus_replay_runner.py` 与 `IRToMSLConverter`
 3. 生成 `generated.metal`
 4. 调用 `xcrun metal -c`
 5. 生成 `generated.air`
 6. 按 `LLVMToolManager` 同口径优先解析 PlayCover 容器内的 `llvm-dis`
 7. 生成 `regenerated.ll`
-8. 写 `roundtrip-summary.json`，并明确 `replay / compile / llvm-dis` 三段状态
+8. 写 `replay-summary.json`、`compile-summary.json`、`roundtrip-summary.json`
+9. 继续为 L2 自动产出 `compare-summary.json / risk-report.json / high-risk-samples.json`
 
 ### 输入模式
 
-建议支持：
+当前实际已支持：
 
 - `--ll <path>`：单个或多个显式 `.ll`
 - `--corpus-root <path>`：对 `ShaderCorpus/` 批量发现
 - `--bundle-id`
 - `--module-key`
 - `--limit`
+- `--allow-failures`
+- `--llvm-dis`
+- `--skip-preflight`
+- `--metal-sdk`
+- `--metal-arg`
+- `--quiet`
+
+补充说明：
+
+- 当前**没有**单独的 `--test-data` 快捷选项
+- 因此 `SV-003` 的一个实际工作点，就是把 `test-data/` 代表样本的固定入口进一步收口，避免每次手工挑文件
 
 ### 输出目录
 
-建议：
+当前实际形态：
 
 ```text
 build/semantics-validation/roundtrip/<timestamp>/
+  replay-summary.json
+  compile-summary.json
   roundtrip-summary.json
+  compare-summary.json
+  risk-report.json
+  high-risk-samples.json
   manual/ 或 <bundleId>/modules/<moduleKey>/
     original.ll
     generated.metal
@@ -122,16 +139,22 @@ round-trip runner 需要稳定解决 `llvm-dis` 路径问题。
 
 ### 顶层字段
 
-建议报告包含：
+当前实际重点字段包括：
 
 - `jobCount`
+- `replaySucceededJobs`
+- `compileSucceededJobs`
+- `compileFailedJobs`
+- `llvmDisSucceededJobs`
+- `llvmDisFailedJobs`
 - `roundTripSucceededJobs`
 - `roundTripFailedJobs`
-- `compileFailedJobs`
-- `llvmDisFailedJobs`
+- `warnings`
 - `results`
 
 ### 每个 job 建议字段
+
+当前每个 job 的关键字段包括：
 
 - `inputPath`
 - `bundleId`
@@ -144,6 +167,7 @@ round-trip runner 需要稳定解决 `llvm-dis` 路径问题。
 - `replayStatus`
 - `compileStatus`
 - `llvmDisStatus`
+- `roundTripStatus`
 - `failureStage`
 - `errorSummary`
 
@@ -153,12 +177,12 @@ round-trip runner 需要稳定解决 `llvm-dis` 路径问题。
 
 先只跑：
 
-- `test-data/` 中 5~10 个代表样本
+- 显式 `.ll` smoke
 
 目标：
 
 - 把主链路打通
-- 明确第一批失败样本分类
+- 明确 `llvm-dis` 与目录产物是否正确
 
 ### 第二轮
 
@@ -170,6 +194,7 @@ round-trip runner 需要稳定解决 `llvm-dis` 路径问题。
 
 - 形成基础批量能力
 - 找出 round-trip 成功率与主要失败类别
+- 为 `SV-003` 的默认样本集收口提供第一版基线
 
 ### 第三轮
 
@@ -181,6 +206,7 @@ round-trip runner 需要稳定解决 `llvm-dis` 路径问题。
 
 - 验证真实样本是否可进入同一主链路
 - 为 L2 compare 提供真实数据
+- 前提是这些样本已在本机存在，不把 fresh capture 写成默认依赖
 
 ## 当前不建议做的事
 
@@ -201,6 +227,7 @@ L1 只做一件事：**把 round-trip 链路本身做稳定。**
 - `test-data/` 首轮批量报告：`build/semantics-validation/roundtrip/test-data-batch/roundtrip-summary.json`
 - 批量统计：`27` 个样本中 `26` 个 round-trip 成功，`1` 个 compile 失败，`0` 个 llvm-dis 失败
 - 当前首个 compile-stage blocker：`test_struct_array_field`
+- 更细的样本名单与阶段性提交脉络已下沉到 `07-首轮基线与历史进展归档.md`
 
 ## 完成标准
 
@@ -212,9 +239,10 @@ L1 只做一件事：**把 round-trip 链路本身做稳定。**
 4. 产物会稳定保留 `original.ll`、`generated.metal`、`generated.air`、`regenerated.ll`
 5. 至少有一组结果能供 L2 compare 直接消费
 
-> 当前以上 5 条均已满足，因此 `SV-001` 可视为完成，后续重点转入 `SV-002`。
+> 当前以上 5 条均已满足，因此 `SV-001` 可视为完成；L1 当前的工作重心已从“把 runner 做出来”转为“把它接入更稳定的日常 gate”。
 
 ## 后续衔接
 
 - L1 成功样本 → 进入 `04-L2-CanonicalCompareAndRiskGrading.md`
 - L1 高价值/高风险样本 → 后续可进入 `05-L3-最小行为测试.md`
+- L1 当前最直接的后续任务 → `SV-003`（稳定 `test-data` / `ShaderCorpus` 默认入口）

@@ -65,11 +65,11 @@ makeLibrary(source:) / metal -c
 1. **继续把 `test-data-representatives` 视为跨机器硬默认 gate，但把它保持为所有升级动作的稳定前提，而不是下一阶段的唯一交付物**
    - 它仍是最稳定、最不依赖外部环境的日常 gate
    - 任何新增命令、样本或行为测试入口，都不应破坏这条默认路径的 agent 自主执行性
-2. **让 `SV-004` 的下一步只围绕当前首批证据收口，先解释 `test_casts` 的 fail evidence，再决定是否扩样本或升级验证层级**
-   - 当前硬默认 gate 的 `overallDecision` 已稳定为 `promote_l2_candidates_to_l3`
+2. **让 `SV-004` 继续围绕收缩后的首批证据推进：确认 `test_casts` 已完成收口，并只维护剩余活跃候选的 compute-first / render-second 边界**
+   - 当前硬默认 gate 的 `overallDecision` 仍稳定为 `promote_l2_candidates_to_l3`
    - 首版入口已落地到 `Scripts/ir_semantics_behavior_runner.py` + `Scripts/metal_compute_behavior_runner.swift`
-   - 当前真正的下一步不是继续扩样本或抢跑 render/live，而是把 `test_casts` 的分歧沉淀成 machine-actionable 结论：最小复现、最小修复面、或明确继续停在 `stopAtL2`
-   - `test_intrinsic_vector_icmp_zext` 因为是 fragment 样本，继续后置到 render-second；`test_struct_array_field` 继续作为 blocked sample 停在离线层，不直接抬进行为测试或 live
+   - 本轮已把 `test_casts` 的分歧收口成 machine-actionable 结论：根因是 `IRToMSLConverter` 对 `air.convert.u.*` / `air.convert.*.u.*` 的 unsigned 语义恢复不足；修复后它已从活跃 `L2` 候选退出，并通过定向行为复核
+   - 当前默认候选只剩 `test_fast_math_select` 与 `test_intrinsic_vector_icmp_zext`；其中后者因为是 fragment 样本，继续后置到 render-second；`test_struct_array_field` 继续作为 blocked sample 停在离线层，不直接抬进行为测试或 live
 3. **继续把 `daily-default` / `local-corpus-representatives` 明确为“本机已有样本时的增强入口”，而不是日常强依赖**
    - 这两条入口可以帮助分层，但不能倒逼 fresh capture、人工准备环境或用户协助成为默认前提
    - `minimumExpectedJobCount + expectedJobCount` 的双边界仍应继续保留，防止缺少本地样本时误报回归
@@ -79,10 +79,11 @@ makeLibrary(source:) / metal -c
 
 当前已确认、且和当前控制面直接相关的结果可概括为：
 
-- `test-data-representatives`：当前最新代表产物保持 `8/8` round-trip 成功，风险分布 `L0 = 1 / L1 = 3 / L2 = 3 / L3 = 1`，`gate-summary.json` 继续稳定为 `WARN`
-- 同一份代表产物里，`layeredDecision.overallDecision = promote_l2_candidates_to_l3`，`l3Plan.candidateSampleKeys` 已稳定收敛为 `test_casts`、`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`
-- `behavior-summary.json` 已开始落地：当前首轮 compute-first 行为测试实际执行了 `test_casts` 与 `test_fast_math_select` 两个 compute 样本，并将 `test_intrinsic_vector_icmp_zext` 结构化后置到 render-second
-- 首轮行为结果中，`test_fast_math_select` 已通过 reference-vs-generated 对跑；`test_casts` 在 scalar / vector 两组 case 上均出现行为差异，因此当前 L3 证据已从“缺失”升级为“已发现可复现实质分歧”
+- `test-data-representatives`：当前最新代表产物保持 `8/8` round-trip 成功，风险分布已收敛为 `L0 = 2 / L1 = 3 / L2 = 2 / L3 = 1`，`gate-summary.json` 继续稳定为 `WARN`
+- 同一份代表产物里，`layeredDecision.overallDecision = promote_l2_candidates_to_l3` 保持不变，但 `l3Plan.candidateSampleKeys` 已收缩为 `test_fast_math_select`、`test_intrinsic_vector_icmp_zext`
+- `gate-summary.json` 当前已把 `test_casts` 记为 `resolvedL2SampleKeys`，说明它不再属于活跃 `L2` debt，而是本轮已收口的已知改进
+- `behavior-summary.json` 的当前默认执行面也随之收缩：compute-first 只实际执行 `test_fast_math_select`，并将 `test_intrinsic_vector_icmp_zext` 结构化后置到 render-second
+- 定向复核产物 `behavior-summary.test-casts-verification.json` 已显示 `test_casts` 的 scalar / vector `2/2` case 全部通过；因此这条证据已从“可复现 fail”收口为“已定位根因并完成最小修复验证”
 - `Scripts/test_ir_semantics_behavior_runner.py` 已为 candidate 选择、defer 边界与 `behavior-summary.json` 汇总补齐纯逻辑单测，降低 `SV-004` 后续维护时的静默漂移风险
 - `blockedSamples` 当前仍只包含 `test_struct_array_field`，它会继续被 `stopAtL2` / `l4Plan` 明确挡在离线层与后置 gate 之前
 - `daily-default`：当前最新增强产物是 `13/13` round-trip 成功，风险分布 `L0 = 1 / L1 = 3 / L2 = 5 / L3 = 4`，`gate-summary.json` 为稳定 `WARN`
@@ -175,9 +176,10 @@ python3 Scripts/ir_semantics_behavior_runner.py --gate-summary build/semantics-v
 当前首轮口径：
 
 - 默认直接复用固定输出目录里的 `gate-summary.json` / `roundtrip-summary.json`
-- 当前首批实际执行样本是 `test_casts`、`test_fast_math_select`
+- 当前默认执行样本已收缩为 `test_fast_math_select`
 - `test_intrinsic_vector_icmp_zext` 因为是 fragment 样本，会被结构化记为 deferred，而不会误抬进 compute-only harness
-- 当前观测结果为：`test_fast_math_select = pass`、`test_casts = fail`、`test_intrinsic_vector_icmp_zext = deferred`
+- 当前默认观测结果为：`test_fast_math_select = pass`、`test_intrinsic_vector_icmp_zext = deferred`
+- 若需要复核本轮修复是否真正消除了历史 fail evidence，可用 `--sample-key test_casts` 定向生成 `behavior-summary.test-casts-verification.json`；当前结果已是 `pass`
 
 这条命令的前置依赖是**已存在的** L1/L2 固定产物：
 
@@ -272,14 +274,15 @@ python3 Scripts/ir_semantics_behavior_runner.py --gate-summary build/semantics-v
 | SV-003C | 收口代表集与 gate 契约的单一来源 | ✅ DONE | - | 已把 `test-data` / `ShaderCorpus` 代表样本及其 `allowed failure / allowed L2 / allowed blocked` 元数据收口到 runner 内的单一契约定义，`preset` / `gate profile` / manifest 期望边界统一从该定义推导，并补充同步性单测 | `00-Dashboard.md` |
 | SV-003D | 收敛 `test_struct_array_field` 并同步 debt 形态 | ✅ DONE | - | 已修复 direct entry metadata / `struct_type_info` 误解析与 buffer addrspace 回退问题，使该样本从 compile blocker 收敛为 round-trip 成功；同步把 `test-data` 代表 gate 合同从 allowed compile failure 切换为 allowed blocked sample，恢复 `test-data-representatives --enforce-gate` 的稳定 `WARN` | `00-Dashboard.md` |
 | SV-006 | 分层 gate 与止损策略 | ✅ DONE | - | 已把 `risk-report.json` 里的 `samplesForL3` / `blockedSamples` 收口为 `gate-summary.json` 内的 `layeredDecision`：明确产出 `overallDecision`、`stopAtL2`、`l3Plan`、`l4Plan`，使“停在 L2 / 升级到 L3 / 延后到 L4”的边界机器可读且默认仍保持 automation-first | `02-总体技术路线.md` |
-| SV-004 | 最小行为测试（compute-first） | ONGOING | P0（主线） | **当前主线。** 首版 compute-only harness 已能直接复用 `layeredDecision.l3Plan.candidateSampleKeys` 生成 `behavior-summary.json`，并稳定执行 `test_casts` / `test_fast_math_select`；主线目标已收窄为：先把第一批 evidence 收口成 machine-actionable 结论，再决定是否扩样本或升级层级 | `05-L3-最小行为测试.md` |
+| SV-004 | 最小行为测试（compute-first） | ONGOING | P0（主线） | **当前主线。** 首版 compute-only harness 已能直接复用 `layeredDecision.l3Plan.candidateSampleKeys` 生成 `behavior-summary.json`；本轮已把 `test_casts` 从“行为 fail + 活跃 L2 候选”收口为“已修复并完成定向复核”，当前默认执行面已收缩为 `test_fast_math_select = pass` 与 `test_intrinsic_vector_icmp_zext = deferred` | `05-L3-最小行为测试.md` |
 | SV-004A | 落地首版 compute-only behavior harness | ✅ DONE | - | 已新增 `Scripts/ir_semantics_behavior_runner.py`、`Scripts/metal_compute_behavior_runner.swift` 与 `Scripts/test_ir_semantics_behavior_runner.py`，让 `SV-004` 可以直接消费 `gate-summary.json` 的活跃 `L2` 候选并产出结构化 `behavior-summary.json` | `05-L3-最小行为测试.md` |
-| SV-004B | 解释并收口 `test_casts` 的 fail evidence | TODO | P0（下一步） | **当前最高优先级的单步任务。** 目标是在不引入 render/live/人工步骤的前提下，把 scalar / vector case 的分歧沉淀成 machine-actionable 结论：最小复现、最小修复面、或明确继续停在 `stopAtL2` 的条件 | `05-L3-最小行为测试.md` |
+| SV-004B | 解释并收口 `test_casts` 的 fail evidence | ✅ DONE | - | 已定位根因在 `IRToMSLConverter` 对 `air.convert` 的 unsigned 语义恢复不足；修复后 `test_casts` 已通过定向 `behavior-summary.test-casts-verification.json` 复核，并从 `gate-summary.json` 的活跃 `L2` 候选退出 | `05-L3-最小行为测试.md` |
+| SV-004C | 维持收缩后的 L3 候选边界 | TODO | P1 | 在不抢跑 render/live 的前提下，继续把当前默认执行面收敛为 `test_fast_math_select = pass`、`test_intrinsic_vector_icmp_zext = deferred`；除非出现新的离线证据不足，否则不主动扩大样本或开启 L4 | `05-L3-最小行为测试.md` |
 | SV-005 | 真实场景验证流程收口 | TODO | P2 | 把 `.gputrace` / render diff / MCP live 验证收口成严格后置 gate；只有在 `SV-004` 证据仍不足或风险只会在 runtime/live 中暴露时才允许升级，且不得回流为日常默认流程 | `06-L4-真实场景验证.md` |
 
 ### 当前关键卡点
 
-- **首版行为级 oracle 已落地，但当前证据只覆盖 compute-first 子集**：`test_fast_math_select` 已通过 reference-vs-generated 对跑，`test_casts` 已暴露可复现实质行为差异，而 `test_intrinsic_vector_icmp_zext` 仍因 fragment 形态后置到 render-second；`SV-004` 当前已进入“解释 fail evidence + 决定下一个最小修复面”的阶段
+- **首版行为级 oracle 已落地，且首个 fail evidence 已完成收口**：`test_fast_math_select` 已通过 reference-vs-generated 对跑，`test_casts` 已通过修复 `IRToMSLConverter` 的 `air.convert` unsigned 语义恢复逻辑完成收敛，而 `test_intrinsic_vector_icmp_zext` 仍因 fragment 形态后置到 render-second；`SV-004` 当前已进入“维持收缩后的候选边界、避免抢跑更高成本验证”的阶段
 - **`SV-003` 现在更像长期守护约束，而不是新的功能建设任务**：必须持续保证 `test-data-representatives` 是跨机器硬默认，`daily-default / local-corpus-representatives` 只是本地增强入口，避免把人工准备环境重新写回日常 gate
 - **`test_struct_array_field` 的当前口径必须和较早批量快照分开**：在硬默认 gate 中它已是 blocked sample，但仓库里保留的 `test-data-batch` 参考快照仍把它记成 compile failure；若不分层表述，文档就会继续自相矛盾
 - **真实场景验证成本高且可能引入人工步骤**：`SV-006` 已把 L4 明确收口为后置 gate，但若未来确实需要用户介入，仍必须先压缩到最小步骤并征得确认

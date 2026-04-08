@@ -30,16 +30,18 @@
 - `jobCount = 8`
 - `roundTripSucceededJobs = 8`
 - `compileFailedJobs = 0`
-- 风险分布：`L0 = 1 / L1 = 3 / L2 = 3 / L3 = 1`
+- 风险分布：`L0 = 2 / L1 = 3 / L2 = 2 / L3 = 1`
 - `gate-summary.json` 当前为 `WARN`
 - 当前 active known debt：
   - blocked sample：`test_struct_array_field`
-  - `L2` samples：`test_casts`、`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`
+  - `L2` samples：`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`
+- 当前 improvements：
+  - `resolvedL2SampleKeys`：`test_casts`
 
 补充说明：
 
 - `test_struct_array_field` 在当前硬默认 gate 中已经不再是 compile failure，而是 **round-trip 成功但 compare 仍 blocked 的样本**
-- `baseline.json` 已可被固定目录自动复用；本轮对 baseline 的可见改进主要体现在 `test_struct_array_field` 从 `compile_failed` 收敛为 `success`
+- `baseline.json` 已可被固定目录自动复用；本轮对 baseline 的可见改进除了更早的 `test_struct_array_field` 收敛，还包括 `test_casts` 从活跃 `L2` debt 收敛为已解决样本
 - 当前 `preset-manifest.json` 仍沿用“代表集包含历史 compile blocker”的描述文字；工作口径应以 `gate-summary.json` 与最新产物事实为准
 
 ### 2. `daily-default`（本机已有样本时的一键增强入口）

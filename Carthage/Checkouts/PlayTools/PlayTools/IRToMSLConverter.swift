@@ -1232,6 +1232,27 @@ struct IRToMSLConverter {
         return calls
     }
 
+    private struct AirConvertSignature {
+        let destinationKind: String
+        let destinationTypeSuffix: String
+        let sourceKind: String
+        let sourceTypeSuffix: String
+    }
+
+    /// 解析 `air.convert.<dst_kind>.<dst_type>.<src_kind>.<src_type>` 的语义签名。
+    private static func parseAirConvertSignature(_ airFuncName: String) -> AirConvertSignature? {
+        guard airFuncName.hasPrefix("air.convert.") else { return nil }
+        let rest = String(airFuncName.dropFirst("air.convert.".count))
+        let parts = rest.components(separatedBy: ".")
+        guard parts.count >= 4 else { return nil }
+        return AirConvertSignature(
+            destinationKind: parts[0],
+            destinationTypeSuffix: parts[1],
+            sourceKind: parts[2],
+            sourceTypeSuffix: parts[3]
+        )
+    }
+
     /// 从 air.convert 函数名中解析转换的目标 MSL 类型。
     ///
     /// 命名规则：`air.convert.<dst_kind>.<dst_type>.<src_kind>.<src_type>`
@@ -1241,17 +1262,10 @@ struct IRToMSLConverter {
     /// 示例：
     /// - `air.convert.f.v4f32.s.v4i32` → `float4` (int4 → float4)
     /// - `air.convert.s.v4i32.f.v4f32` → `int4` (float4 → int4)
-    /// - `air.convert.f.v4f16.f.v4f32` → `half4` (float4 → half4)
+    /// - `air.convert.u.v4i32.f.v4f32` → `uint4` (float4 → uint4，保留 unsigned 语义)
     static func parseAirConvertTargetType(_ airFuncName: String) -> String? {
-        // 去掉 "air.convert." 前缀
-        guard airFuncName.hasPrefix("air.convert.") else { return nil }
-        let rest = String(airFuncName.dropFirst("air.convert.".count))
-        let parts = rest.components(separatedBy: ".")
-        // parts[0] = dst_kind (f/s/u), parts[1] = dst_type (v4f32, i32, etc.)
-        guard parts.count >= 2 else { return nil }
-
-        let dstType = parts[1]
-        return airTypeSuffixToMSL(dstType)
+        guard let signature = parseAirConvertSignature(airFuncName) else { return nil }
+        return airTypeSuffixToMSL(signature.destinationTypeSuffix, integerKind: signature.destinationKind)
     }
 
     /// 将 air 类型后缀转换为 MSL 类型名。
@@ -1259,8 +1273,8 @@ struct IRToMSLConverter {
     /// - `v4f32` → `float4`, `v3f32` → `float3`, `v2f32` → `float2`
     /// - `v4f16` → `half4`, `v4i32` → `int4`, `v2i32` → `int2`
     /// - `f32` → `float`, `f16` → `half`, `i32` → `int`, `i16` → `short`
-    /// - `vNi8` → `ucharN` (E-006a2e12: MSL 不支持 uint8_tN)
-    static func airTypeSuffixToMSL(_ suffix: String) -> String {
+    /// - 对 `air.convert.u.*` / `air.convert.s.*` 可通过 `integerKind` 覆盖整数 signedness
+    static func airTypeSuffixToMSL(_ suffix: String, integerKind: String? = nil) -> String {
         // 向量类型：vNtBB → typeN (如 v4f32 → float4)
         if suffix.hasPrefix("v") {
             let chars = Array(suffix.dropFirst())
@@ -1269,34 +1283,84 @@ struct IRToMSLConverter {
             while i < chars.count && chars[i].isNumber { i += 1 }
             let dim = String(chars[0..<i])
             let scalarSuffix = String(chars[i...])
-            // E-006a2e12: i8/u8 向量特殊处理 — MSL 不支持 uint8_tN，必须用 ucharN
-            if scalarSuffix == "i8" || scalarSuffix == "u8" {
+            let scalarMSL = airScalarSuffixToMSL(scalarSuffix, integerKind: integerKind)
+            if scalarMSL == "uint8_t" {
                 return "uchar\(dim)"
             }
-            let scalarMSL = airScalarSuffixToMSL(scalarSuffix)
             return "\(scalarMSL)\(dim)"
         }
         // 标量类型
-        return airScalarSuffixToMSL(suffix)
+        return airScalarSuffixToMSL(suffix, integerKind: integerKind)
     }
 
-    /// 将 air 标量类型后缀转换为 MSL 标量类型
-    private static func airScalarSuffixToMSL(_ suffix: String) -> String {
+    /// 将 air 标量类型后缀转换为 MSL 标量类型。
+    ///
+    /// AIR 的 `air.convert.u.*.i32` / `air.convert.s.*.i32` 会复用同一个 IR 宽度后缀，
+    /// 这里需要结合 `integerKind` 才能恢复真正的 unsigned / signed 目标语义。
+    private static func airScalarSuffixToMSL(_ suffix: String, integerKind: String? = nil) -> String {
         switch suffix {
         case "f32": return "float"
         case "f16": return "half"
         case "f64": return "float"  // MSL 不支持 double
         case "i1": return "bool"
-        case "i8": return "uint8_t"
-        case "i16": return "short"
-        case "i32": return "int"
-        case "i64": return "long"
-        case "u8": return "uint8_t"
-        case "u16": return "ushort"
-        case "u32": return "uint"
-        case "u64": return "ulong"
+        case "i8":
+            if integerKind == "s" { return "char" }
+            return "uint8_t"
+        case "i16":
+            if integerKind == "u" { return "ushort" }
+            return "short"
+        case "i32":
+            if integerKind == "u" { return "uint" }
+            return "int"
+        case "i64":
+            if integerKind == "u" { return "ulong" }
+            return "long"
+        case "u8":
+            if integerKind == "s" { return "char" }
+            return "uint8_t"
+        case "u16":
+            if integerKind == "s" { return "short" }
+            return "ushort"
+        case "u32":
+            if integerKind == "s" { return "int" }
+            return "uint"
+        case "u64":
+            if integerKind == "s" { return "long" }
+            return "ulong"
         default: return suffix
         }
+    }
+
+    /// 生成 air.convert 的 MSL 表达式，并在需要时补回 AIR 的 unsigned 语义。
+    ///
+    /// AIR 中 `air.convert.u.i32.f.f32` 等转换虽然在 IR 里仍然使用 `i32`/`<4 x i32>`，
+    /// 但它们的行为语义是 unsigned。若直接降成 `int(src)`，会把负 float 转成负 int，
+    /// 再在后续 `uitofp` / store 到 `uint*` 时产生可观测行为偏差（`test_casts` 就是此类）。
+    private static func generateAirConvertMSL(airName: String, srcArg: String) -> String {
+        guard let signature = parseAirConvertSignature(airName) else {
+            let fallbackTargetType = parseAirConvertTargetType(airName) ?? "float"
+            return "\(fallbackTargetType)(\(srcArg))"
+        }
+
+        let storageTargetType = airTypeSuffixToMSL(signature.destinationTypeSuffix)
+        let semanticTargetType = airTypeSuffixToMSL(
+            signature.destinationTypeSuffix,
+            integerKind: signature.destinationKind
+        )
+        let storageSourceType = airTypeSuffixToMSL(signature.sourceTypeSuffix)
+        let semanticSourceType = airTypeSuffixToMSL(
+            signature.sourceTypeSuffix,
+            integerKind: signature.sourceKind
+        )
+
+        let normalizedSource = storageSourceType == semanticSourceType
+            ? srcArg
+            : "\(semanticSourceType)(\(srcArg))"
+        let semanticExpr = "\(semanticTargetType)(\(normalizedSource))"
+        if semanticTargetType == storageTargetType {
+            return semanticExpr
+        }
+        return "\(storageTargetType)(\(semanticExpr))"
     }
 
     // MARK: - IR Metadata Types
@@ -5345,9 +5409,8 @@ struct IRToMSLConverter {
     ) -> String {
         // 特殊处理: air.convert
         if airName.hasPrefix("air.convert") {
-            let targetType = parseAirConvertTargetType(airName) ?? "float"
             let srcArg = args.first ?? "0"
-            return "\(targetType)(\(srcArg))"
+            return generateAirConvertMSL(airName: airName, srcArg: srcArg)
         }
 
         // 纹理方法调用: tex.sample(sampler, coord, ...)

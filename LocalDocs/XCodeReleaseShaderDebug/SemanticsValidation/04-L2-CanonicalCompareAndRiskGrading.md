@@ -177,7 +177,7 @@
 
 - 当前保留在主文档中的 active 信息只有四点：
   - **当前跨机器硬默认 gate 已没有 compile failure；`test_struct_array_field` 已转为 blocked sample**
-  - **当前跨机器硬默认代表集中的活跃 `L2` 已缩到 `3` 个**：`test_casts`、`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`；它们已经足够说明“需要后续 L3 入口”，但还不应直接全量升级到 live
+  - **当前跨机器硬默认代表集中的活跃 `L2` 已缩到 `2` 个**：`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`；`test_casts` 已在本轮通过 `air.convert` unsigned 语义修复退出活跃 debt，但仍值得作为定向回归样本保留
   - **`risk-report.json` 已经把 `samplesForL3` 与 `blockedSamples` 分开**：前者应作为 `SV-004` 的候选入口，后者应继续优先停在离线层
   - **代表 preset 的当前边界契约已收口到固定输出目录 + gate profile + baseline / manifest**；若代表集继续变化，应一起更新，而不是只改其中一项
 - 更细的首轮代表样本名单、当前契约摘要与旧分布已下沉到 `07-首轮基线与历史进展归档.md`、`08-当前代表集与Gate契约参考.md`（参考信息，当前日常推进**不必须读取**）

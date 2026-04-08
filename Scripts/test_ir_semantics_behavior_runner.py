@@ -400,6 +400,24 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
             report_path=report_path,
         )
 
+    def test_validate_default_output_contract_rejects_missing_gate_output_root_for_default_gate(self) -> None:
+        parser = behavior_runner.build_parser()
+        gate_summary = self.make_gate_summary()
+        gate_summary.pop("outputRoot")
+        args = parser.parse_args([])
+        output_root = behavior_runner.resolve_output_root(args, gate_summary)
+        report_path = behavior_runner.resolve_report_path(args, output_root)
+
+        with self.assertRaises(SystemExit) as exc:
+            behavior_runner.validate_default_output_contract(
+                args,
+                gate_summary,
+                output_root=output_root,
+                report_path=report_path,
+            )
+
+        self.assertIn("要求 gate-summary.json 提供 outputRoot", str(exc.exception))
+
     def test_validate_default_output_contract_rejects_custom_output_root_for_default_gate(self) -> None:
         parser = behavior_runner.build_parser()
         gate_summary = self.make_gate_summary()

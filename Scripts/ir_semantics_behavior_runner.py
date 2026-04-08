@@ -380,9 +380,14 @@ def validate_default_output_contract(
     output_root: Path,
     report_path: Path,
 ) -> None:
-    resolved_gate_output_root = gate_output_root(gate_summary)
-    if resolved_gate_output_root is None or args.sample_keys:
+    if args.sample_keys:
         return
+
+    resolved_gate_output_root = gate_output_root(gate_summary)
+    if resolved_gate_output_root is None:
+        raise SystemExit(
+            "默认 L3 行为 gate 要求 gate-summary.json 提供 outputRoot；如需脱离固定输出目录做手动复核，请显式传 --sample-key。"
+        )
 
     expected_report_path = (resolved_gate_output_root / "behavior-summary.json").resolve()
     if output_root != resolved_gate_output_root:

@@ -523,29 +523,31 @@ def expected_return_type_for_ir_entry(entry: dict[str, Any]) -> str | None:
     return normalize_ir_return_type_to_msl(entry.get("returnSignature"))
 
 
-def validate_reference_oracle_sync(
+def validate_msl_contract_sync(
     input_path: Path,
-    reference_source_path: Path,
+    msl_source_path: Path,
     *,
     execution_kind: str,
     cases: list[dict[str, Any]],
+    source_label: str,
+    enforce_source_filename: bool,
 ) -> list[str]:
     ir_summary = canonical_compare.extract_ir_summary(input_path)
-    reference_entries = {
+    parsed_entries = {
         item["functionName"]: item
-        for item in extract_msl_entry_signatures(reference_source_path.read_text(encoding="utf-8"))
+        for item in extract_msl_entry_signatures(msl_source_path.read_text(encoding="utf-8"))
     }
     expected_shader_type = EXPECTED_FUNCTION_TYPE_BY_EXECUTION_KIND.get(execution_kind)
     if expected_shader_type is None:
-        return [f"当前 behavior runner 不支持 executionKind={execution_kind} 的 oracle 同步校验。"]
+        return [f"当前 behavior runner 不支持 executionKind={execution_kind} 的 {source_label} 契约同步校验。"]
 
     issues: list[str] = []
     source_filename = ir_summary.get("module", {}).get("sourceFilename")
-    if source_filename:
+    if enforce_source_filename and source_filename:
         source_basename = Path(str(source_filename)).name
-        if source_basename != reference_source_path.name:
+        if source_basename != msl_source_path.name:
             issues.append(
-                f".ll 的 source_filename 指向 `{source_basename}`，但 reference MSL 是 `{reference_source_path.name}`。"
+                f".ll 的 source_filename 指向 `{source_basename}`，但 {source_label} 是 `{msl_source_path.name}`。"
             )
 
     ir_entries_by_key = {
@@ -560,29 +562,29 @@ def validate_reference_oracle_sync(
             issues.append(f"case `{entry_label}` 在 .ll 中缺少 `{expected_shader_type}` entry `{entry_point}`。")
             continue
 
-        reference_entry = reference_entries.get(entry_point)
-        if reference_entry is None:
-            issues.append(f"case `{entry_label}` 的 reference MSL 缺少 entry `{entry_point}`。")
+        parsed_entry = parsed_entries.get(entry_point)
+        if parsed_entry is None:
+            issues.append(f"case `{entry_label}` 的 {source_label} 缺少 entry `{entry_point}`。")
             continue
 
-        actual_shader_type = str(reference_entry.get("shaderType") or "")
+        actual_shader_type = str(parsed_entry.get("shaderType") or "")
         if actual_shader_type != expected_shader_type:
             issues.append(
-                f"case `{entry_label}` 的 reference entry `{entry_point}` shader 类型为 `{actual_shader_type}`，预期 `{expected_shader_type}`。"
+                f"case `{entry_label}` 的 {source_label} entry `{entry_point}` shader 类型为 `{actual_shader_type}`，预期 `{expected_shader_type}`。"
             )
 
         expected_return_type = expected_return_type_for_ir_entry(expected_entry)
-        actual_return_type = str(reference_entry.get("returnType") or "")
+        actual_return_type = str(parsed_entry.get("returnType") or "")
         if expected_return_type and actual_return_type != expected_return_type:
             issues.append(
-                f"case `{entry_label}` 的 reference 返回类型为 `{actual_return_type}`，但 .ll 契约预期 `{expected_return_type}`。"
+                f"case `{entry_label}` 的 {source_label} 返回类型为 `{actual_return_type}`，但 .ll 契约预期 `{expected_return_type}`。"
             )
 
         expected_params = [parse_semantic_signature(str(signature)) for signature in expected_entry.get("argSemantics") or []]
-        actual_params = list(reference_entry.get("parameters") or [])
+        actual_params = list(parsed_entry.get("parameters") or [])
         if len(actual_params) != len(expected_params):
             issues.append(
-                f"case `{entry_label}` 的 reference 参数个数为 {len(actual_params)}，但 .ll 契约预期 {len(expected_params)}。"
+                f"case `{entry_label}` 的 {source_label} 参数个数为 {len(actual_params)}，但 .ll 契约预期 {len(expected_params)}。"
             )
             continue
 
@@ -591,28 +593,62 @@ def validate_reference_oracle_sync(
             actual_kind = actual_param.get("kind")
             if expected_kind != actual_kind:
                 issues.append(
-                    f"case `{entry_label}` 第 {index} 个参数语义为 `{actual_kind}`，但 .ll 契约预期 `{expected_kind}`。"
+                    f"case `{entry_label}` 第 {index} 个参数语义为 `{actual_kind}`，但 {source_label} 的 .ll 契约预期 `{expected_kind}`。"
                 )
             expected_binding_index = expected_param.get("location")
             actual_index = actual_param.get("index")
             if expected_binding_index is not None and expected_binding_index != actual_index:
                 issues.append(
-                    f"case `{entry_label}` 第 {index} 个参数绑定索引为 `{actual_index}`，但 .ll 契约预期 `{expected_binding_index}`。"
+                    f"case `{entry_label}` 第 {index} 个参数绑定索引为 `{actual_index}`，但 {source_label} 的 .ll 契约预期 `{expected_binding_index}`。"
                 )
             expected_type = expected_param.get("type")
             actual_type = actual_param.get("type")
             if expected_type and expected_type != actual_type:
                 issues.append(
-                    f"case `{entry_label}` 第 {index} 个参数类型为 `{actual_type}`，但 .ll 契约预期 `{expected_type}`。"
+                    f"case `{entry_label}` 第 {index} 个参数类型为 `{actual_type}`，但 {source_label} 的 .ll 契约预期 `{expected_type}`。"
                 )
             expected_name = expected_param.get("argName")
             actual_name = actual_param.get("argName")
             if expected_name and actual_name and expected_name != actual_name:
                 issues.append(
-                    f"case `{entry_label}` 第 {index} 个参数名为 `{actual_name}`，但 .ll 契约预期 `{expected_name}`。"
+                    f"case `{entry_label}` 第 {index} 个参数名为 `{actual_name}`，但 {source_label} 的 .ll 契约预期 `{expected_name}`。"
                 )
 
     return issues
+
+
+def validate_reference_oracle_sync(
+    input_path: Path,
+    reference_source_path: Path,
+    *,
+    execution_kind: str,
+    cases: list[dict[str, Any]],
+) -> list[str]:
+    return validate_msl_contract_sync(
+        input_path,
+        reference_source_path,
+        execution_kind=execution_kind,
+        cases=cases,
+        source_label="reference MSL",
+        enforce_source_filename=True,
+    )
+
+
+def validate_generated_msl_sync(
+    input_path: Path,
+    generated_source_path: Path,
+    *,
+    execution_kind: str,
+    cases: list[dict[str, Any]],
+) -> list[str]:
+    return validate_msl_contract_sync(
+        input_path,
+        generated_source_path,
+        execution_kind=execution_kind,
+        cases=cases,
+        source_label="generated MSL",
+        enforce_source_filename=False,
+    )
 
 
 def flatten_numeric_values(values: list[Any]) -> list[float | int]:
@@ -769,6 +805,7 @@ def build_behavior_plan(
 
         reference_source = infer_reference_source_path(gate_entry) or infer_reference_source_path(roundtrip_entry)
         candidate_source = roundtrip_entry.get("generatedMSLPath")
+        resolved_candidate_source = Path(str(candidate_source)).expanduser().resolve() if candidate_source else None
         if reference_source is None or not reference_source.is_file():
             errors.append(
                 {
@@ -778,7 +815,7 @@ def build_behavior_plan(
                 }
             )
             continue
-        if not candidate_source or not Path(str(candidate_source)).expanduser().resolve().is_file():
+        if resolved_candidate_source is None or not resolved_candidate_source.is_file():
             errors.append(
                 {
                     "sampleKey": sample_key,
@@ -800,12 +837,14 @@ def build_behavior_plan(
             )
             continue
 
+        built_cases = [build_case_spec(case, execution_kind) for case in sample_spec.get("cases") or []]
+
         try:
-            oracle_sync_issues = validate_reference_oracle_sync(
+            reference_sync_issues = validate_reference_oracle_sync(
                 resolved_input_path,
                 reference_source,
                 execution_kind=execution_kind,
-                cases=[build_case_spec(case, execution_kind) for case in sample_spec.get("cases") or []],
+                cases=built_cases,
             )
         except Exception as exc:
             errors.append(
@@ -816,12 +855,38 @@ def build_behavior_plan(
                 }
             )
             continue
-        if oracle_sync_issues:
+        if reference_sync_issues:
             errors.append(
                 {
                     "sampleKey": sample_key,
                     "status": "error",
-                    "reason": "reference MSL 与 .ll 契约不一致：" + "；".join(oracle_sync_issues),
+                    "reason": "reference MSL 与 .ll 契约不一致：" + "；".join(reference_sync_issues),
+                }
+            )
+            continue
+
+        try:
+            generated_sync_issues = validate_generated_msl_sync(
+                resolved_input_path,
+                resolved_candidate_source,
+                execution_kind=execution_kind,
+                cases=built_cases,
+            )
+        except Exception as exc:
+            errors.append(
+                {
+                    "sampleKey": sample_key,
+                    "status": "error",
+                    "reason": f"校验 generated MSL 与 .ll 契约时失败：{exc}",
+                }
+            )
+            continue
+        if generated_sync_issues:
+            errors.append(
+                {
+                    "sampleKey": sample_key,
+                    "status": "error",
+                    "reason": "generated MSL 与 .ll 契约不一致：" + "；".join(generated_sync_issues),
                 }
             )
             continue
@@ -839,10 +904,10 @@ def build_behavior_plan(
                 "generatedFunctionNames": generated_function_names,
                 "generatedFunctionTypes": generated_function_types,
                 "referenceSourcePath": str(reference_source),
-                "candidateSourcePath": str(Path(str(candidate_source)).expanduser().resolve()),
+                "candidateSourcePath": str(resolved_candidate_source),
                 "artifactSpecPath": str((output_root / "behavior-artifacts" / f"{sample_key}.spec.json").resolve()),
                 "artifactResultPath": str((output_root / "behavior-artifacts" / f"{sample_key}.result.json").resolve()),
-                "cases": [build_case_spec(case, execution_kind) for case in sample_spec.get("cases") or []],
+                "cases": built_cases,
             }
         )
 

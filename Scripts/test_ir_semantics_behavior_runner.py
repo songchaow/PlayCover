@@ -74,7 +74,7 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
         results = []
         for sample_key, (function_names, function_types) in samples.items():
             generated_path = generated_root / f"{sample_key}.generated.metal"
-            generated_path.write_text("#include <metal_stdlib>\nusing namespace metal;\n", encoding="utf-8")
+            generated_path.write_text((TEST_DATA_ROOT / f"{sample_key}.metal").read_text(encoding="utf-8"), encoding="utf-8")
             results.append(
                 {
                     "comparisonKey": f"explicit_ll:{TEST_DATA_ROOT / (sample_key + '.ll')}",
@@ -202,7 +202,7 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
                 encoding="utf-8",
             )
             generated_path.parent.mkdir(parents=True, exist_ok=True)
-            generated_path.write_text("#include <metal_stdlib>\nusing namespace metal;\n", encoding="utf-8")
+            generated_path.write_text(original_metal, encoding="utf-8")
             gate_summary["layeredDecision"]["l3Plan"]["candidates"][0]["inputPath"] = str(input_path)
             roundtrip_report = {
                 "results": [
@@ -226,6 +226,62 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
         self.assertEqual(len(plan["errors"]), 1)
         self.assertIn("reference MSL 与 .ll 契约不一致", plan["errors"][0]["reason"])
         self.assertIn("reference MSL 缺少 entry", plan["errors"][0]["reason"])
+
+    def test_build_behavior_plan_reports_generated_msl_contract_drift(self) -> None:
+        gate_summary = {
+            "outputRoot": str(REPO_ROOT / "build" / "semantics-validation" / "roundtrip" / "test-data-representatives"),
+            "layeredDecision": {
+                "l3Plan": {
+                    "candidateSampleKeys": ["test_fast_math_select"],
+                    "candidates": [
+                        {
+                            "sampleKey": "test_fast_math_select",
+                            "inputPath": "<temp>",
+                            "riskLevel": "L2",
+                            "riskReason": "fast-math drift",
+                        }
+                    ],
+                }
+            },
+        }
+        original_ll = (TEST_DATA_ROOT / "test_fast_math_select.ll").read_text(encoding="utf-8")
+        original_metal = (TEST_DATA_ROOT / "test_fast_math_select.metal").read_text(encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            input_path = temp_root / "test_fast_math_select.ll"
+            reference_path = temp_root / "test_fast_math_select.metal"
+            generated_path = temp_root / "generated" / "test_fast_math_select.generated.metal"
+            input_path.write_text(original_ll, encoding="utf-8")
+            reference_path.write_text(original_metal, encoding="utf-8")
+            generated_path.parent.mkdir(parents=True, exist_ok=True)
+            generated_path.write_text(
+                original_metal.replace("[[buffer(1)]]", "[[buffer(9)]]", 1),
+                encoding="utf-8",
+            )
+            gate_summary["layeredDecision"]["l3Plan"]["candidates"][0]["inputPath"] = str(input_path)
+            roundtrip_report = {
+                "results": [
+                    {
+                        "comparisonKey": f"explicit_ll:{input_path}",
+                        "inputPath": str(input_path),
+                        "generatedMSLPath": str(generated_path),
+                        "generatedFunctionNames": ["test_fast_math_select"],
+                        "generatedFunctionTypes": ["kernel"],
+                    }
+                ]
+            }
+            plan = behavior_runner.build_behavior_plan(
+                gate_summary,
+                roundtrip_report,
+                sample_keys=["test_fast_math_select"],
+                output_root=temp_root,
+            )
+
+        self.assertEqual(plan["readySamples"], [])
+        self.assertEqual(len(plan["errors"]), 1)
+        self.assertIn("generated MSL 与 .ll 契约不一致", plan["errors"][0]["reason"])
+        self.assertIn("参数绑定索引", plan["errors"][0]["reason"])
 
     def test_build_behavior_plan_keeps_current_default_boundary_narrowed(self) -> None:
         gate_summary = {

@@ -277,7 +277,7 @@ python3 Scripts/ir_semantics_behavior_runner.py --gate-summary build/semantics-v
 | SV-004 | 最小行为测试（compute-first） | ONGOING | P0（主线） | **当前主线。** 首版 compute-only harness 已能直接复用 `layeredDecision.l3Plan.candidateSampleKeys` 生成 `behavior-summary.json`；本轮已把 `test_casts` 从“行为 fail + 活跃 L2 候选”收口为“已修复并完成定向复核”，当前默认执行面已收缩为 `test_fast_math_select = pass` 与 `test_intrinsic_vector_icmp_zext = deferred` | `05-L3-最小行为测试.md` |
 | SV-004A | 落地首版 compute-only behavior harness | ✅ DONE | - | 已新增 `Scripts/ir_semantics_behavior_runner.py`、`Scripts/metal_compute_behavior_runner.swift` 与 `Scripts/test_ir_semantics_behavior_runner.py`，让 `SV-004` 可以直接消费 `gate-summary.json` 的活跃 `L2` 候选并产出结构化 `behavior-summary.json` | `05-L3-最小行为测试.md` |
 | SV-004B | 解释并收口 `test_casts` 的 fail evidence | ✅ DONE | - | 已定位根因在 `IRToMSLConverter` 对 `air.convert` 的 unsigned 语义恢复不足；修复后 `test_casts` 已通过定向 `behavior-summary.test-casts-verification.json` 复核，并从 `gate-summary.json` 的活跃 `L2` 候选退出 | `05-L3-最小行为测试.md` |
-| SV-004C | 维持收缩后的 L3 候选边界 | TODO | P1 | 在不抢跑 render/live 的前提下，继续把当前默认执行面收敛为 `test_fast_math_select = pass`、`test_intrinsic_vector_icmp_zext = deferred`；除非出现新的离线证据不足，否则不主动扩大样本或开启 L4 | `05-L3-最小行为测试.md` |
+| SV-004C | 维持收缩后的 L3 候选边界 | ✅ DONE | - | 已把默认执行面稳定收口为 `test_fast_math_select = pass`、`test_intrinsic_vector_icmp_zext = deferred`：`build_behavior_plan()` 会按 `executionKind` / `shape-drift` 护栏只放行 compute 候选，`Scripts/test_ir_semantics_behavior_runner.py` 也已补齐针对当前收缩边界的纯逻辑回归测试；`test_casts` 仅保留为显式 `--sample-key` 的定向复核入口 | `05-L3-最小行为测试.md` |
 | SV-005 | 真实场景验证流程收口 | TODO | P2 | 把 `.gputrace` / render diff / MCP live 验证收口成严格后置 gate；只有在 `SV-004` 证据仍不足或风险只会在 runtime/live 中暴露时才允许升级，且不得回流为日常默认流程 | `06-L4-真实场景验证.md` |
 
 ### 当前关键卡点

@@ -114,6 +114,52 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
         self.assertEqual(len(vector_input["values"]), 16)
         self.assertEqual(vector_input["values"][:4], [0, 1, 2, 3])
 
+    def test_build_behavior_plan_keeps_current_default_boundary_narrowed(self) -> None:
+        gate_summary = {
+            "outputRoot": str(REPO_ROOT / "build" / "semantics-validation" / "roundtrip" / "test-data-representatives"),
+            "layeredDecision": {
+                "l3Plan": {
+                    "candidateSampleKeys": [
+                        "test_fast_math_select",
+                        "test_intrinsic_vector_icmp_zext",
+                    ],
+                    "candidates": [
+                        {
+                            "sampleKey": "test_fast_math_select",
+                            "inputPath": str(TEST_DATA_ROOT / "test_fast_math_select.ll"),
+                            "riskLevel": "L2",
+                            "riskReason": "fast-math drift",
+                        },
+                        {
+                            "sampleKey": "test_intrinsic_vector_icmp_zext",
+                            "inputPath": str(TEST_DATA_ROOT / "test_intrinsic_vector_icmp_zext.ll"),
+                            "riskLevel": "L2",
+                            "riskReason": "fragment lowering drift",
+                        },
+                    ],
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            roundtrip_report = self.make_roundtrip_report(temp_root)
+            plan = behavior_runner.build_behavior_plan(
+                gate_summary,
+                roundtrip_report,
+                sample_keys=behavior_runner.gate_candidate_keys(gate_summary, []),
+                output_root=temp_root,
+            )
+
+        self.assertEqual(
+            [item["sampleKey"] for item in plan["readySamples"]],
+            ["test_fast_math_select"],
+        )
+        self.assertEqual(len(plan["errors"]), 0)
+        self.assertEqual(
+            [item["sampleKey"] for item in plan["deferredSamples"]],
+            ["test_intrinsic_vector_icmp_zext"],
+        )
+
     def test_build_summary_warns_when_compute_cases_pass_but_fragment_candidate_is_deferred(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

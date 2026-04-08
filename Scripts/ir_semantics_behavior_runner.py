@@ -8,12 +8,13 @@ ir_semantics_behavior_runner.py — 执行 SV-004 的 compute-first 最小行为
 - 使用 `test-data/*.metal` 作为 reference MSL，和 round-trip 生成的 MSL 做真实 Metal compute 对比
 - 输出结构化 `behavior-summary.json`
 
-当前第一阶段只覆盖：
-- `test_casts`
+当前默认执行面只覆盖：
 - `test_fast_math_select`
 
-像 `test_intrinsic_vector_icmp_zext` 这类 fragment/render 样本会被结构化标记为 deferred，
-继续留在 render-second / L4 之前，不会被误抬进第一批 compute-only harness。
+补充说明：
+- `test_casts` 已退出活跃 `L2` 候选；默认不会再随 `gate-summary.json` 自动执行
+- 若需要复核 `air.convert` 相关回归，可显式传 `--sample-key test_casts` 做定向验证
+- 像 `test_intrinsic_vector_icmp_zext` 这类 fragment/render 样本会被结构化标记为 deferred，继续留在 render-second / L4 之前，不会被误抬进第一批 compute-only harness。
 """
 
 from __future__ import annotations

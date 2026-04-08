@@ -997,6 +997,165 @@ def _identity_map(samples: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {sample_identity(item): item for item in samples}
 
 
+def _layered_sample_entry(sample: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "sampleKey": sample_identity(sample),
+        "comparisonKey": sample.get("comparisonKey"),
+        "bundleId": sample.get("bundleId"),
+        "moduleKey": sample.get("moduleKey"),
+        "inputPath": sample.get("inputPath"),
+        "riskLevel": sample.get("riskLevel"),
+        "riskReason": sample.get("riskReason"),
+        "recommendedAction": sample.get("recommendedAction"),
+    }
+
+
+def assess_layered_validation_decision(gate_summary: dict[str, Any], risk_report: dict[str, Any]) -> dict[str, Any]:
+    regressions = gate_summary.get("regressions") or {}
+    roundtrip_stats = gate_summary.get("roundtripStats") or {}
+    l2_samples = list(risk_report.get("samplesForL3") or [])
+    blocked_samples = [
+        sample
+        for sample in (risk_report.get("blockedSamples") or [])
+        if sample.get("roundTripStatus") == "success"
+    ]
+
+    l2_entries = [_layered_sample_entry(sample) for sample in l2_samples]
+    blocked_entries = [_layered_sample_entry(sample) for sample in blocked_samples]
+    l2_sample_keys = [item["sampleKey"] for item in l2_entries]
+    blocked_sample_keys = [item["sampleKey"] for item in blocked_entries]
+
+    unexpected_failures = list(regressions.get("unexpectedFailures") or [])
+    unexpected_failure_keys = sorted(
+        {
+            str(item.get("sampleKey") or item.get("comparisonKey") or "<unknown>")
+            for item in unexpected_failures
+        }
+    )
+    unexpected_blocked_keys = sorted({str(item) for item in (regressions.get("unexpectedBlockedSampleKeys") or [])})
+    unexpected_l2_keys = sorted({str(item) for item in (regressions.get("unexpectedL2SampleKeys") or [])})
+    should_block = bool(gate_summary.get("shouldBlock"))
+
+    l2_stop_decision = "stay_at_l2"
+    l2_stop_reason = "当前离线 gate 仍是默认主入口；在没有新的结构性回归前，先把默认代表集保持稳定。"
+    overall_decision = "stay_at_l2"
+    overall_summary = "当前结果可继续停在 L2 离线层。"
+
+    if should_block:
+        l2_stop_decision = "block_on_regression"
+        l2_stop_reason = "出现新增 round-trip / blocked 回归或 job-count 越界，必须先在离线层修复，再讨论升级。"
+        overall_decision = "stop_at_l2"
+        overall_summary = "当前 gate 已阻断，先修复离线回归。"
+    elif unexpected_l2_keys:
+        l2_stop_decision = "review_new_l2"
+        l2_stop_reason = "出现新的 L2 样本，先确认是代表集有意变化还是新的结构风险，再决定是否升级。"
+        overall_decision = "stay_at_l2"
+        overall_summary = "当前出现新的 L2 风险，先留在 L2 复核边界。"
+    elif l2_entries:
+        overall_decision = "promote_l2_candidates_to_l3"
+        overall_summary = "当前活跃 L2 样本已处于 gate 边界内，可将这些候选样本推进到 L3 最小行为测试。"
+
+    if should_block:
+        l3_decision = "blocked"
+        l3_reason = "当前 gate 已阻断，必须先修复新增回归。"
+        l3_candidates: list[dict[str, Any]] = []
+        deferred_l3_candidates = l2_entries
+        deferred_l3_reason = "gate blocked by regression"
+    elif unexpected_l2_keys:
+        l3_decision = "defer"
+        l3_reason = "新的 L2 样本超出了当前 gate 边界；先在离线层确认风险口径，再决定是否推进 L3。"
+        l3_candidates = []
+        deferred_l3_candidates = l2_entries
+        deferred_l3_reason = "new L2 samples need offline review first"
+    elif l2_entries:
+        l3_decision = "promote_selected_samples"
+        l3_reason = "活跃 L2 候选集仍处于已知 gate 边界内，符合 compute-first 的最小升级入口。"
+        l3_candidates = l2_entries
+        deferred_l3_candidates = []
+        deferred_l3_reason = None
+    else:
+        l3_decision = "not_needed"
+        l3_reason = "当前没有活跃 L2 样本需要继续升级。"
+        l3_candidates = []
+        deferred_l3_candidates = []
+        deferred_l3_reason = None
+
+    l4_blocking_reasons: list[str] = []
+    if should_block:
+        l4_decision = "blocked"
+        l4_reason = "当前存在离线层阻断回归，禁止进入 L4。"
+        l4_blocking_reasons.append("gate is currently blocked by offline regressions")
+    else:
+        l4_decision = "defer"
+        l4_reason = "L4 仍是严格后置 gate：只有在 L3 证据不足或风险只会在 runtime/live 中暴露时，才允许升级。"
+        if l3_candidates:
+            l4_blocking_reasons.append(
+                f"L3 behavior evidence is still missing for active L2 candidates: {', '.join(item['sampleKey'] for item in l3_candidates)}"
+            )
+        if blocked_sample_keys:
+            l4_blocking_reasons.append(
+                f"blocked samples must stay at the offline layer first: {', '.join(blocked_sample_keys)}"
+            )
+        if not l4_blocking_reasons:
+            l4_blocking_reasons.append("no runtime-only trigger is present in the current offline reports")
+
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "currentLayer": "L2",
+        "overallDecision": overall_decision,
+        "summary": overall_summary,
+        "stopAtL2": {
+            "decision": l2_stop_decision,
+            "reason": l2_stop_reason,
+            "gateStatus": gate_summary.get("status"),
+            "gateSummary": gate_summary.get("summary"),
+            "blockedSampleKeys": blocked_sample_keys,
+            "unexpectedFailureSampleKeys": unexpected_failure_keys,
+            "unexpectedBlockedSampleKeys": unexpected_blocked_keys,
+            "unexpectedL2SampleKeys": unexpected_l2_keys,
+            "roundTripFailedJobs": roundtrip_stats.get("roundTripFailedJobs"),
+        },
+        "l3Plan": {
+            "decision": l3_decision,
+            "reason": l3_reason,
+            "candidateCount": len(l3_candidates),
+            "candidateSampleKeys": [item["sampleKey"] for item in l3_candidates],
+            "candidates": l3_candidates,
+            "deferredCandidateCount": len(deferred_l3_candidates),
+            "deferredCandidateSampleKeys": [item["sampleKey"] for item in deferred_l3_candidates],
+            "deferredReason": deferred_l3_reason,
+            "blockedSampleKeys": blocked_sample_keys,
+        },
+        "l4Plan": {
+            "decision": l4_decision,
+            "eligible": False,
+            "reason": l4_reason,
+            "blockingReasons": l4_blocking_reasons,
+            "allowedWhen": [
+                "L2/L3 证据仍不足以解释剩余风险",
+                "风险只会在真实 runtime / .gputrace / render 结构中暴露",
+                "本轮改动直接影响 runtime replacement 主链路",
+            ],
+            "automationFirstTools": [
+                "Scripts/check_gputrace_sources.py",
+                "Scripts/compare_capture_runs.py",
+                "Scripts/e006d_render_diff.py",
+                "Scripts/runtime_launch_diagnostics_summary.py",
+                "PlayCover MCP",
+            ],
+            "userConfirmationRequiredWhen": [
+                "需要人工登录/摆场景/点击 UI",
+                "需要 GUI / Accessibility / cliclick",
+                "需要工作区外静态分析",
+                "需要修改工作区外文件或 app bundle",
+                "需要长时间占用机器做大规模 live 对照",
+            ],
+        },
+        "activeL2SampleKeys": l2_sample_keys,
+        "blockedSampleKeys": blocked_sample_keys,
+    }
+
+
 def _normalize_gate_profile(gate_profile: dict[str, Any] | None) -> dict[str, Any]:
     profile = dict(gate_profile or {})
     allowed_failures = profile.get("allowedFailureSamples") or {}

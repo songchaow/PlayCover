@@ -457,6 +457,123 @@ class IRCanonicalCompareTests(unittest.TestCase):
         self.assertEqual(summary["jobCountStatus"], "out_of_range")
         self.assertEqual(summary["regressions"]["jobCountMismatch"]["reason"], "above_expected")
 
+    def test_assess_layered_validation_decision_promotes_known_l2_candidates(self) -> None:
+        blocked_sample = {
+            "comparisonKey": "explicit_ll:/tmp/test_struct_array_field.ll",
+            "inputPath": "/tmp/test_struct_array_field.ll",
+            "roundTripStatus": "success",
+            "failureStage": None,
+            "riskLevel": "L3",
+            "riskReason": "entry signature changed",
+        }
+        l2_sample = {
+            "comparisonKey": "explicit_ll:/tmp/test_casts.ll",
+            "inputPath": "/tmp/test_casts.ll",
+            "roundTripStatus": "success",
+            "failureStage": None,
+            "riskLevel": "L2",
+            "riskReason": "intrinsic usage changed",
+            "recommendedAction": "优先进入 L3 最小行为测试，不建议直接跳到 live 验证。",
+        }
+        roundtrip_report = make_roundtrip_report(job_count=2)
+        risk_report = make_risk_report(
+            samples=[blocked_sample, l2_sample],
+            blocked_samples=[blocked_sample],
+            l2_samples=[l2_sample],
+        )
+        gate_summary = canonical_compare.assess_gate_result(
+            roundtrip_report,
+            risk_report,
+            gate_profile={
+                "expectedJobCount": 2,
+                "allowedFailureSamples": {},
+                "allowedBlockedSampleKeys": ["test_struct_array_field"],
+                "allowedL2SampleKeys": ["test_casts"],
+            },
+            profile_name="test-data-representatives",
+        )
+
+        layered = canonical_compare.assess_layered_validation_decision(gate_summary, risk_report)
+
+        self.assertEqual(layered["overallDecision"], "promote_l2_candidates_to_l3")
+        self.assertEqual(layered["l3Plan"]["decision"], "promote_selected_samples")
+        self.assertEqual(layered["l3Plan"]["candidateSampleKeys"], ["test_casts"])
+        self.assertEqual(layered["blockedSampleKeys"], ["test_struct_array_field"])
+        self.assertEqual(layered["l4Plan"]["decision"], "defer")
+
+    def test_assess_layered_validation_decision_defers_new_l2_samples_for_review(self) -> None:
+        l2_sample = {
+            "comparisonKey": "explicit_ll:/tmp/test_new_l2.ll",
+            "inputPath": "/tmp/test_new_l2.ll",
+            "roundTripStatus": "success",
+            "failureStage": None,
+            "riskLevel": "L2",
+            "riskReason": "new semantic drift",
+        }
+        roundtrip_report = make_roundtrip_report(job_count=1)
+        risk_report = make_risk_report(samples=[l2_sample], blocked_samples=[], l2_samples=[l2_sample])
+        gate_summary = canonical_compare.assess_gate_result(
+            roundtrip_report,
+            risk_report,
+            gate_profile={
+                "expectedJobCount": 1,
+                "allowedFailureSamples": {},
+                "allowedBlockedSampleKeys": [],
+                "allowedL2SampleKeys": [],
+            },
+            profile_name="test-data-representatives",
+        )
+
+        layered = canonical_compare.assess_layered_validation_decision(gate_summary, risk_report)
+
+        self.assertEqual(layered["overallDecision"], "stay_at_l2")
+        self.assertEqual(layered["stopAtL2"]["decision"], "review_new_l2")
+        self.assertEqual(layered["l3Plan"]["decision"], "defer")
+        self.assertEqual(layered["l3Plan"]["deferredCandidateSampleKeys"], ["test_new_l2"])
+        self.assertEqual(layered["stopAtL2"]["unexpectedL2SampleKeys"], ["test_new_l2"])
+
+    def test_assess_layered_validation_decision_blocks_l3_and_l4_when_gate_fails(self) -> None:
+        blocked_sample = {
+            "comparisonKey": "explicit_ll:/tmp/test_new_regression.ll",
+            "inputPath": "/tmp/test_new_regression.ll",
+            "roundTripStatus": "success",
+            "failureStage": None,
+            "riskLevel": "L3",
+            "riskReason": "entry set changed",
+        }
+        l2_sample = {
+            "comparisonKey": "explicit_ll:/tmp/test_casts.ll",
+            "inputPath": "/tmp/test_casts.ll",
+            "roundTripStatus": "success",
+            "failureStage": None,
+            "riskLevel": "L2",
+            "riskReason": "intrinsic usage changed",
+        }
+        roundtrip_report = make_roundtrip_report(job_count=2)
+        risk_report = make_risk_report(
+            samples=[blocked_sample, l2_sample],
+            blocked_samples=[blocked_sample],
+            l2_samples=[l2_sample],
+        )
+        gate_summary = canonical_compare.assess_gate_result(
+            roundtrip_report,
+            risk_report,
+            gate_profile={
+                "expectedJobCount": 2,
+                "allowedFailureSamples": {},
+                "allowedBlockedSampleKeys": [],
+                "allowedL2SampleKeys": ["test_casts"],
+            },
+        )
+
+        layered = canonical_compare.assess_layered_validation_decision(gate_summary, risk_report)
+
+        self.assertEqual(layered["overallDecision"], "stop_at_l2")
+        self.assertEqual(layered["l3Plan"]["decision"], "blocked")
+        self.assertEqual(layered["l3Plan"]["deferredCandidateSampleKeys"], ["test_casts"])
+        self.assertEqual(layered["l4Plan"]["decision"], "blocked")
+        self.assertIn("test_new_regression", layered["stopAtL2"]["unexpectedBlockedSampleKeys"])
+
 
 if __name__ == "__main__":
     unittest.main()

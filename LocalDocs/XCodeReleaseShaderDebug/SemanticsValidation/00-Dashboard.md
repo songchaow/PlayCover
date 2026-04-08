@@ -56,44 +56,46 @@ makeLibrary(source:) / metal -c
 
 ### 主线任务
 
-> **背景**：`SV-003` 的第一轮收口已经到位：固定 preset、固定输出目录、`gate-summary.json`、`preset-manifest.json`、baseline snapshot 与 `--enforce-gate` 都已形成可执行控制面。当前更值得继续推进的，已经不是再扩写“如何跑入口”，而是把这些离线结果变成明确的升级/止损规则；因此当前主线切换为 `SV-006`，而 `SV-003` 转为必须持续守住的长期约束。
+> **背景**：`SV-003` 的第一轮收口已经到位后，本目录的主线已经从“继续扩写入口”切换为“把离线结果真正转成 machine-actionable 的升级/止损规则”。本轮已为 `gate-summary.json` 落地 `layeredDecision` 控制面，把 `risk-report.json` 里的 `samplesForL3` / `blockedSamples` 收口为 `overallDecision`、`stopAtL2`、`l3Plan`、`l4Plan` 四个机器可读决策；因此 `SV-006` 已完成首轮收口，当前主线切换到 `SV-004`，而 `SV-003` 继续作为必须持续守住的长期约束。
 
-**`SV-006`：在既有默认 gate 稳定的前提下，明确写清楚“何时停在 L2、何时升级到 L3、何时才允许进入 L4”，并保证这些边界默认仍由 agent 可独立执行。**
+**`SV-004`：在 `SV-006` 已明确升级边界的前提下，只从活跃 `L2` 候选集中挑极少量最有信息量的样本进入 compute-first 的最小行为测试。**
 
 当前最该优先继续推进的事，已经收窄为四条：
 
-1. **把 `test-data-representatives` 继续视为跨机器硬默认 gate，但把它从“当前唯一 deliverable”降为“必须守住的前提约束”**
+1. **继续把 `test-data-representatives` 视为跨机器硬默认 gate，但把它保持为所有升级动作的稳定前提，而不是下一阶段的唯一交付物**
    - 它仍是最稳定、最不依赖外部环境的日常 gate
-   - 任何新增命令、样本或升级规则，都不应破坏这条默认路径的 agent 自主执行性
-2. **把 `risk-report.json` 里的 `samplesForL3` 与 `blockedSamples` 真正转成分层决策**
-   - 当前硬默认 gate 中，最适合进入 `SV-004` 第一批候选的是 `3` 个活跃 `L2` 样本
-   - `blockedSamples` 仍应优先停在离线层，而不是直接被抬进行为测试或 live
-3. **把 `daily-default` / `local-corpus-representatives` 继续明确为“本机已有样本时的增强入口”，而不是日常强依赖**
+   - 任何新增命令、样本或行为测试入口，都不应破坏这条默认路径的 agent 自主执行性
+2. **直接复用 `layeredDecision` 选择 `SV-004` 的第一批样本，而不是重新手工挑选一整批 L2/L3**
+   - 当前硬默认 gate 的 `overallDecision` 已稳定为 `promote_l2_candidates_to_l3`
+   - 第一批候选仍是 `test_casts`、`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`
+   - `test_struct_array_field` 继续作为 blocked sample 停在离线层，不直接抬进行为测试或 live
+3. **继续把 `daily-default` / `local-corpus-representatives` 明确为“本机已有样本时的增强入口”，而不是日常强依赖**
    - 这两条入口可以帮助分层，但不能倒逼 fresh capture、人工准备环境或用户协助成为默认前提
    - `minimumExpectedJobCount + expectedJobCount` 的双边界仍应继续保留，防止缺少本地样本时误报回归
-4. **把进入 L4 的触发条件和用户确认边界写清楚**
-   - 只有当 L2/L3 证据不足、且确实需要 live 结构证据时，才允许升级
+4. **继续把进入 L4 的触发条件和用户确认边界保持为严格后置 gate**
+   - 只有当 L3 证据不足、或风险只会在 runtime / live 结构里暴露时，才允许升级
    - 若涉及 GUI / 登录 / 工作区外修改，必须先得到用户确认
 
 当前已确认、且和当前控制面直接相关的结果可概括为：
 
-- `test-data-representatives`：当前最新代表产物（`2026-04-08T07:37:53Z`）是 `8/8` round-trip 成功，风险分布 `L0 = 1 / L1 = 3 / L2 = 3 / L3 = 1`，`gate-summary.json` 为稳定 `WARN`
-- `daily-default`：当前最新增强产物（`2026-04-08T07:37:53Z`）是 `13/13` round-trip 成功，风险分布 `L0 = 1 / L1 = 3 / L2 = 5 / L3 = 4`，`gate-summary.json` 为稳定 `WARN`
+- `test-data-representatives`：当前最新代表产物保持 `8/8` round-trip 成功，风险分布 `L0 = 1 / L1 = 3 / L2 = 3 / L3 = 1`，`gate-summary.json` 继续稳定为 `WARN`
+- 同一份代表产物里，`layeredDecision.overallDecision = promote_l2_candidates_to_l3`，`l3Plan.candidateSampleKeys` 已稳定收敛为 `test_casts`、`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`
+- `blockedSamples` 当前仍只包含 `test_struct_array_field`，它会继续被 `stopAtL2` / `l4Plan` 明确挡在离线层与后置 gate 之前
+- `daily-default`：当前最新增强产物是 `13/13` round-trip 成功，风险分布 `L0 = 1 / L1 = 3 / L2 = 5 / L3 = 4`，`gate-summary.json` 为稳定 `WARN`
 - `local-corpus-representatives`：当前固定 `5` 个本地 `ShaderCorpus` 代表样本全部 round-trip 成功，风险分布 `L0 = 0 / L1 = 0 / L2 = 1 / L3 = 4`，`gate-summary.json` 为稳定 `WARN`
-- 当前硬默认 gate 中，`test_struct_array_field` 已不再是 compile failure，而是 **blocked sample**；活跃 `L2` 只剩 `test_casts`、`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`
 - 仓库里保留的 `test-data-batch` 目录当前仍是一份较早批量参考快照：`27` 个样本中 `26` 个 round-trip 成功、`1` 个 compile 失败，风险分布 `L0 = 1 / L1 = 3 / L2 = 3 / L3 = 20`；它只承担**参考批量基线**角色，不能再用来描述当前默认 gate 的 active 口径
 - 更细的 preset contract、gate profile、baseline snapshot 与 manifest 摘要已下沉到 `08-当前代表集与Gate契约参考.md`（工作参考，当前主线推进**不必须读取**）
 
-因此当前最高优先级已经切换为 `SV-006`，因为它直接决定：
+因此当前最高优先级已经切换为 `SV-004`，因为它直接决定：
 
-- L2 报告能否真正成为 **machine-actionable** 的升级/止损决策
-- `SV-004` 能否只从最有信息量的极少量样本起步，而不是被批量 `L3` 噪声带偏
+- `SV-006` 产出的 `layeredDecision` 能否真正喂给第一批 compute-first 行为测试，而不是停留在文档层
+- 是否能只从最有信息量的极少量样本起步，而不是被批量 `L3` 噪声带偏
 - `SV-005` 能否继续保持严格后置，而不把 live / 人工依赖重新写回默认主线
 - `SV-003` 的既有默认入口，能否继续作为所有升级动作的稳定基础
 
 ### 当前不该抢跑的事
 
-在 `SV-006` 未形成、且 `SV-003` 的默认 gate 仍需继续守住前，默认**不要**把精力放到：
+在 `SV-004` 的最小 behavior harness 尚未形成、且 `SV-003 / SV-006` 的默认控制面仍需继续守住前，默认**不要**把精力放到：
 
 - 大规模 live `.gputrace` 验证
 - 高成本 GUI/Accessibility 操作
@@ -247,17 +249,16 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representati
 | SV-003B | 把代表集边界显式写入 `preset-manifest.json` | ✅ DONE | - | 已让 manifest 同步记录 preset 期望代表集、已匹配样本、缺失本地代表样本与意外新增 discovered jobs，降低 `daily-default / local-corpus-representatives` 在跨机器执行时的心智负担 | `00-Dashboard.md` |
 | SV-003C | 收口代表集与 gate 契约的单一来源 | ✅ DONE | - | 已把 `test-data` / `ShaderCorpus` 代表样本及其 `allowed failure / allowed L2 / allowed blocked` 元数据收口到 runner 内的单一契约定义，`preset` / `gate profile` / manifest 期望边界统一从该定义推导，并补充同步性单测 | `00-Dashboard.md` |
 | SV-003D | 收敛 `test_struct_array_field` 并同步 debt 形态 | ✅ DONE | - | 已修复 direct entry metadata / `struct_type_info` 误解析与 buffer addrspace 回退问题，使该样本从 compile blocker 收敛为 round-trip 成功；同步把 `test-data` 代表 gate 合同从 allowed compile failure 切换为 allowed blocked sample，恢复 `test-data-representatives --enforce-gate` 的稳定 `WARN` | `00-Dashboard.md` |
-| SV-006 | 分层 gate 与止损策略 | TODO | P0（主线） | **当前主线。** 基于现有 `gate-summary.json` / `risk-report.json` 语义，把“停在 L2 / 升级到 L3 / 升级到 L4”的边界写清楚，并保证升级后默认仍保持 automation-first、最小人工依赖 | `02-总体技术路线.md` |
-| SV-004 | 最小行为测试（compute-first） | TODO | P1 | 在 `SV-006` 的口径下，只从活跃 `L2` 候选集里挑少量最有信息量样本进入 compute-first 行为测试，不直接扩大到全量样本 | `05-L3-最小行为测试.md` |
-| SV-005 | 真实场景验证流程收口 | TODO | P2 | 把 `.gputrace` / render diff / MCP live 验证收口成严格后置 gate；只有在 `SV-006 / SV-004` 证据仍不足时才允许升级，且不得回流为日常默认流程 | `06-L4-真实场景验证.md` |
+| SV-006 | 分层 gate 与止损策略 | ✅ DONE | - | 已把 `risk-report.json` 里的 `samplesForL3` / `blockedSamples` 收口为 `gate-summary.json` 内的 `layeredDecision`：明确产出 `overallDecision`、`stopAtL2`、`l3Plan`、`l4Plan`，使“停在 L2 / 升级到 L3 / 延后到 L4”的边界机器可读且默认仍保持 automation-first | `02-总体技术路线.md` |
+| SV-004 | 最小行为测试（compute-first） | TODO | P0（主线） | **当前主线。** 直接复用 `layeredDecision.l3Plan.candidateSampleKeys`，只从活跃 `L2` 候选集中挑极少量高价值样本进入 compute-first 行为测试，不直接扩大到全量样本 | `05-L3-最小行为测试.md` |
+| SV-005 | 真实场景验证流程收口 | TODO | P2 | 把 `.gputrace` / render diff / MCP live 验证收口成严格后置 gate；只有在 `SV-004` 证据仍不足或风险只会在 runtime/live 中暴露时才允许升级，且不得回流为日常默认流程 | `06-L4-真实场景验证.md` |
 
 ### 当前关键卡点
 
-- **`SV-006` 还没有把现有离线报告真正转成机器可执行的升级/止损边界**：当前 `risk-report.json` 已能区分 `samplesForL3` 与 `blockedSamples`，但主文档还需要把“停在 L2 / 进入 L3 / 允许进入 L4”的决策树写清楚
+- **缺少行为级 oracle**：`SV-006` 已给出 machine-actionable 的升级边界，但当前仍没有 compute-first harness 去判断这 3 个活跃 `L2` 候选样本的行为是否一致；`SV-004` 必须小步起步，而不是被整批 `L3` 样本牵着走
 - **`SV-003` 现在更像长期守护约束，而不是新的功能建设任务**：必须持续保证 `test-data-representatives` 是跨机器硬默认，`daily-default / local-corpus-representatives` 只是本地增强入口，避免把人工准备环境重新写回日常 gate
 - **`test_struct_array_field` 的当前口径必须和较早批量快照分开**：在硬默认 gate 中它已是 blocked sample，但仓库里保留的 `test-data-batch` 参考快照仍把它记成 compile failure；若不分层表述，文档就会继续自相矛盾
-- **没有行为级 oracle**：当前报告能筛查风险，但还不能判断行为是否一致；`SV-004` 应只从活跃 `L2` 候选集小步起步，而不是被整批 `L3` 样本牵着走
-- **真实场景验证成本高且可能引入人工步骤**：应继续严格后置；若确实需要用户介入，必须先压缩到最小步骤并征得确认
+- **真实场景验证成本高且可能引入人工步骤**：`SV-006` 已把 L4 明确收口为后置 gate，但若未来确实需要用户介入，仍必须先压缩到最小步骤并征得确认
 
 ## 踩坑与经验
 

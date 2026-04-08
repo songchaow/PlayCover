@@ -505,6 +505,11 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             self.assertEqual(gate_summary["jobCount"], 1)
             self.assertIn(gate_summary["status"], {"pass", "warn", "fail"})
             self.assertEqual(Path(gate_summary["reportPath"]).resolve(), gate_summary_path.resolve())
+            layered_decision = gate_summary.get("layeredDecision") or {}
+            self.assertEqual(layered_decision.get("currentLayer"), "L2")
+            self.assertIn(layered_decision.get("overallDecision"), {"stay_at_l2", "stop_at_l2", "promote_l2_candidates_to_l3"})
+            self.assertIn("l3Plan", layered_decision)
+            self.assertIn("l4Plan", layered_decision)
             self.assertEqual(Path(manifest["reportPath"]).resolve(), manifest_path.resolve())
             self.assertEqual(manifest["discovery"]["jobCount"], 1)
             self.assertEqual(manifest["baseline"]["reportPath"], str(baseline_path.resolve()))

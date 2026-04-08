@@ -776,6 +776,7 @@ def build_gate_summary(
             "outputRoot": roundtrip_report.get("outputRoot"),
         }
     )
+    summary["layeredDecision"] = canonical_compare.assess_layered_validation_decision(summary, risk_report)
     return summary
 
 
@@ -1331,6 +1332,12 @@ def print_summary(
     profile_label = gate_summary.get("profileName") or "generic"
     print(f"gate decision: {str(gate_summary.get('status', 'unknown')).upper()} ({profile_label})")
     print(f"gate summary: {gate_summary.get('summary')}")
+    layered_decision = gate_summary.get("layeredDecision") or {}
+    if layered_decision:
+        print(f"layered decision: {layered_decision.get('overallDecision', 'unknown')}")
+        l3_plan = layered_decision.get("l3Plan") or {}
+        if l3_plan.get("candidateSampleKeys"):
+            print("L3 candidates: " + ", ".join(l3_plan["candidateSampleKeys"]))
 
     failures = [item for item in report.get("results") or [] if item.get("failureStage")]
     if failures:

@@ -195,6 +195,139 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
         self.assertEqual(gate_profile["allowedL2SampleKeys"], expected_l2_keys)
         self.assertEqual([entry["sampleIdentity"] for entry in contract_jobs], expected_sample_identities)
 
+    def test_discover_jobs_from_shader_source_diagnostics_root_prefers_latest_event(self) -> None:
+        parser = roundtrip_runner.build_parser()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            diagnostics_root = temp_root / "ShaderSourceDiagnostics"
+            bundle_root = diagnostics_root / "com.example.demo"
+            older_module_dir = bundle_root / "2026-04-01T00_00_00Z_newLibraryWithData_error__compile_failed_modules" / "abc123"
+            newer_module_dir = bundle_root / "2026-04-02T00_00_00Z_newLibraryWithData_error__preflight_rejected_modules" / "abc123"
+            older_module_dir.mkdir(parents=True, exist_ok=True)
+            newer_module_dir.mkdir(parents=True, exist_ok=True)
+            (older_module_dir / "module.ll").write_text("define void @older() { ret void }\n", encoding="utf-8")
+            (newer_module_dir / "module.ll").write_text("define void @newer() { ret void }\n", encoding="utf-8")
+            (older_module_dir / "module.generated.metal").write_text("// older\n", encoding="utf-8")
+            (newer_module_dir / "module.generated.metal").write_text("// newer\n", encoding="utf-8")
+            (older_module_dir / "module.meta.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "bundleId": "com.example.demo",
+                        "moduleKey": "abc123",
+                        "selector": "newLibraryWithData:error:",
+                        "compileStatus": "compile_failed",
+                        "functionNames": ["older"],
+                        "functionTypes": ["kernel"],
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            (newer_module_dir / "module.meta.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "bundleId": "com.example.demo",
+                        "moduleKey": "abc123",
+                        "selector": "newLibraryWithData:error:",
+                        "compileStatus": "preflight_rejected",
+                        "functionNames": ["newer"],
+                        "functionTypes": ["vertex"],
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            args = parser.parse_args([
+                "--diagnostics-root",
+                str(diagnostics_root),
+                "--bundle-id",
+                "com.example.demo",
+            ])
+            warnings: list[roundtrip_runner.replay_runner.DiscoveryWarning] = []
+            jobs = roundtrip_runner.replay_runner.discover_jobs(args, temp_root / "out", warnings)
+
+            self.assertEqual([warning.message for warning in warnings], [])
+            self.assertEqual(len(jobs), 1)
+            self.assertEqual(jobs[0].source_kind, "shader_source_diagnostics")
+            self.assertEqual(jobs[0].bundle_id, "com.example.demo")
+            self.assertEqual(jobs[0].module_key, "abc123")
+            self.assertEqual(jobs[0].function_names, ["newer"])
+            self.assertEqual(jobs[0].function_types, ["vertex"])
+            self.assertEqual(jobs[0].observed_selectors, ["newLibraryWithData:error:"])
+            self.assertEqual(jobs[0].input_path, (newer_module_dir / "module.ll").resolve())
+            self.assertEqual(
+                jobs[0].baseline_generated_msl_path,
+                (newer_module_dir / "module.generated.metal").resolve(),
+            )
+
+    def test_build_preset_manifest_records_diagnostics_inputs_and_source_kind(self) -> None:
+        parser = roundtrip_runner.build_parser()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            diagnostics_root = temp_root / "ShaderSourceDiagnostics"
+            module_dir = diagnostics_root / "com.example.demo" / "2026-04-02T00_00_00Z_newLibraryWithData_error__compile_failed_modules" / "abc123"
+            module_dir.mkdir(parents=True, exist_ok=True)
+            input_path = (module_dir / "module.ll").resolve()
+            input_path.write_text("define void @demo() { ret void }\n", encoding="utf-8")
+            metadata_path = (module_dir / "module.meta.json").resolve()
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "bundleId": "com.example.demo",
+                        "moduleKey": "abc123",
+                        "functionNames": ["demo"],
+                        "functionTypes": ["kernel"],
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            args = parser.parse_args([
+                "--diagnostics-root",
+                str(diagnostics_root),
+                "--allow-failures",
+            ])
+            output_root = temp_root / "roundtrip"
+            manifest_path = output_root / "preset-manifest.json"
+            job = roundtrip_runner.replay_runner.ReplayJob(
+                job_id=7,
+                source_kind="shader_source_diagnostics",
+                input_path=input_path,
+                output_path=output_root / "com.example.demo" / "modules" / "abc123" / "generated.metal",
+                bundle_id="com.example.demo",
+                module_key="abc123",
+                metadata_path=metadata_path,
+                function_names=["demo"],
+                function_types=["kernel"],
+            )
+
+            manifest = roundtrip_runner.build_preset_manifest(
+                args,
+                output_root,
+                manifest_path,
+                [job],
+                REPO_ROOT,
+                {
+                    "roundtripReportPath": str(output_root / "roundtrip-summary.json"),
+                    "gateSummaryPath": str(output_root / "gate-summary.json"),
+                },
+                None,
+                None,
+                None,
+            )
+
+            self.assertEqual(manifest["requestedInputs"]["diagnosticsRoots"], [str(diagnostics_root)])
+            self.assertEqual(manifest["discovery"]["sourceKinds"]["shaderSourceDiagnostics"], 1)
+            self.assertEqual(manifest["discovery"]["sourceKinds"]["explicitLL"], 0)
+            self.assertEqual(manifest["discovery"]["sourceKinds"]["shaderCorpus"], 0)
+            self.assertEqual(manifest["discovery"]["jobs"][0]["sourceKind"], "shader_source_diagnostics")
+            self.assertEqual(manifest["discovery"]["jobs"][0]["metadataPath"], str(metadata_path))
+
     def test_resolve_llvm_dis_path_prefers_explicit_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -362,6 +495,7 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
         self.assertEqual(manifest["discovery"]["jobCount"], 1)
         self.assertEqual(manifest["discovery"]["sourceKinds"]["explicitLL"], 1)
         self.assertEqual(manifest["discovery"]["sourceKinds"]["shaderCorpus"], 0)
+        self.assertEqual(manifest["discovery"]["sourceKinds"]["shaderSourceDiagnostics"], 0)
         self.assertEqual(manifest["discovery"]["jobs"][0]["functionNames"], [representative_sample.stem])
         self.assertEqual(
             manifest["discovery"]["jobs"][0]["comparisonKey"],

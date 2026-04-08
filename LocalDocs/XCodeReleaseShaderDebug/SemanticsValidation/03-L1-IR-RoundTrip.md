@@ -44,7 +44,7 @@ regenerated.ll
 
 当前职责：
 
-1. 发现输入样本（显式 `.ll` / `ShaderCorpus`；failure-path 当前仍以显式 `.ll` 为主）
+1. 发现输入样本（显式 `.ll` / `ShaderCorpus` / `ShaderSourceDiagnostics` failure-path）
 2. 复用现有 `corpus_replay_runner.py` 与 `IRToMSLConverter`
 3. 生成 `generated.metal`
 4. 调用 `xcrun metal -c`
@@ -83,7 +83,7 @@ regenerated.ll
 - `test-data-representatives` 继续只承担**跨机器硬默认 gate** 角色
 - `local-corpus-representatives` 与 `daily-default` 继续只承担**本机增强证据** 角色，不反向定义当前主线优先级
 - `test-data-batch` 继续只作为**参考批量快照**，不承担当前默认 gate 契约
-- `--ll <path>` 继续可用于 failure-path 的定向补喂；但 `ShaderSourceDiagnostics` 仍未形成与 `ShaderCorpus` 同等级的批量发现入口
+- `--diagnostics-root <path>` 当前已可对 `ShaderSourceDiagnostics/` 做批量发现；`--ll <path>` 继续用于 failure-path 的定向补喂或单样本复核
 - 当前更细的 preset contract、样本计数、active known debt 与 manifest 摘要已统一下沉到 `08-当前代表集与Gate契约参考.md`（工作参考，当前日常推进**不必须读取**）
 
 ### 输出目录
@@ -207,16 +207,17 @@ build/semantics-validation/roundtrip/
 
 最后再按需跑：
 
-- `python3 Scripts/ir_semantics_roundtrip_runner.py --ll <path_to_failure_module.ll> --allow-failures`
+- `python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Containers/io.playcover.PlayCover/ShaderSourceDiagnostics --allow-failures`
+- 或 `python3 Scripts/ir_semantics_roundtrip_runner.py --ll <path_to_failure_module.ll> --allow-failures`
 - 或 `python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-batch --allow-failures`
 - 或 `python3 Scripts/ir_semantics_roundtrip_runner.py --preset local-corpus-representatives --allow-failures`
 - 或 `python3 Scripts/ir_semantics_roundtrip_runner.py --preset daily-default --allow-failures --enforce-gate`
 
 目标：
 
-- 对已有明确 blocker 的 failure-path 样本做**定向补充复核**
+- 先通过 `--diagnostics-root` 对已导出的 failure-path 样本做**批量补充复核**；必要时再回退到显式 `--ll` 处理单个 blocker
 - 读取参考批量快照或本机增强证据，但不反向定义当前主线优先级
-- 若某条路径需要人工批量整理 `ShaderSourceDiagnostics` 样本，应停在这里汇报，而不是写回默认流程
+- 即使当前已具备批量入口，也不要把人工批量整理 `ShaderSourceDiagnostics` 样本写回默认流程
 
 ## 当前不建议做的事
 
@@ -237,7 +238,7 @@ L1 只做一件事：**把 round-trip 链路本身做稳定。**
 - `ShaderCorpus` 继续是 **当前最高优先级的真实样本主入口**；它应尽可能复用同一套 `roundtrip / compare / risk` 报告，而不是另起一套平行控制面
 - `daily-default` 与 `local-corpus-representatives` 继续只承担 **本机增强证据** / **本地观察** 角色，不替代跨机器控制面，也不替代 `--corpus-root` 的全量样本主线
 - `test-data-batch` 继续只保留为 **参考批量快照**；旧分布、旧 compile failure 口径与历史样本名单统一下沉到 `07-首轮基线与历史进展归档.md`（历史参考，当前日常推进**不必须读取**）
-- `ShaderSourceDiagnostics` 当前仍只适合作为显式 `--ll` 的 failure-path 定向补充输入；在形成 agent 可自主的批量发现入口前，不应冒充默认 gate
+- `ShaderSourceDiagnostics` 当前已可通过 `--diagnostics-root` 作为 failure-path 批量补充输入；显式 `--ll` 继续保留给单样本复核，但这条路径仍不应冒充默认 gate
 - `test-data-representatives` 的固定输出目录继续被 L3 复用；因此它不仅是 L1/L2 产物目录，也是当前最小 L3 证据的锚点
 - 若缺少 `swiftc` / `xcrun` / 自动可解析的 `llvm-dis`，应视为环境前置条件未满足并停止汇报；不要把用户手工找路径或手工拼命令写回默认流程
 

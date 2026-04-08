@@ -301,6 +301,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="ShaderCorpus 根目录，或单个 bundle 目录（可重复指定）",
     )
     parser.add_argument(
+        "--diagnostics-root",
+        action="append",
+        dest="diagnostics_roots",
+        default=[],
+        help="ShaderSourceDiagnostics 根目录，或单个 bundle 目录（可重复指定）",
+    )
+    parser.add_argument(
         "--ll",
         action="append",
         dest="ll_inputs",
@@ -417,6 +424,23 @@ def resolve_bundle_roots(corpus_root: Path) -> list[Path]:
     if not corpus_root.is_dir():
         return []
     return sorted(child for child in corpus_root.iterdir() if is_bundle_root(child))
+
+
+def is_diagnostics_bundle_root(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    try:
+        return any(child.is_dir() and child.name.endswith("_modules") for child in path.iterdir())
+    except OSError:
+        return False
+
+
+def resolve_diagnostics_bundle_roots(diagnostics_root: Path) -> list[Path]:
+    if is_diagnostics_bundle_root(diagnostics_root):
+        return [diagnostics_root]
+    if not diagnostics_root.is_dir():
+        return []
+    return sorted(child for child in diagnostics_root.iterdir() if is_diagnostics_bundle_root(child))
 
 
 def load_manifest_index(bundle_root: Path, warnings: list[DiscoveryWarning]) -> tuple[list[str], dict[str, dict[str, Any]]]:
@@ -574,6 +598,8 @@ def discover_jobs(
     jobs: list[ReplayJob] = []
     bundle_filters = set(args.bundle_id)
     module_filters = set(args.module_key)
+    output_file = getattr(args, "output_file", None)
+    diagnostics_roots = [Path(raw).expanduser().resolve() for raw in getattr(args, "diagnostics_roots", [])]
     next_job_id = 0
 
     def enqueue(job: ReplayJob) -> None:
@@ -583,9 +609,9 @@ def discover_jobs(
         jobs.append(job)
 
     if args.ll_inputs:
-        if args.output_file and len(args.ll_inputs) != 1:
+        if output_file and len(args.ll_inputs) != 1:
             raise SystemExit("--output-file 只能和单个 --ll 输入一起使用")
-        if computed_output_root is None and not args.output_file:
+        if computed_output_root is None and not output_file:
             raise SystemExit("显式 .ll 模式在未指定 --output-file 时需要 output_root")
 
         for index, ll_input in enumerate(args.ll_inputs):
@@ -611,8 +637,8 @@ def discover_jobs(
                         fallback = sibling_meta_path.parent / "module.generated.metal"
                         baseline_path = fallback.resolve() if fallback.exists() else None
 
-            if args.output_file:
-                output_path = Path(args.output_file).expanduser().resolve()
+            if output_file:
+                output_path = Path(output_file).expanduser().resolve()
             else:
                 assert computed_output_root is not None
                 output_path = (computed_output_root / "manual" / f"{index:03d}-{input_path.stem}.generated.metal").resolve()
@@ -636,7 +662,7 @@ def discover_jobs(
             )
 
     corpus_roots = [Path(raw).expanduser().resolve() for raw in args.corpus_roots]
-    if not corpus_roots and not args.ll_inputs:
+    if not corpus_roots and not diagnostics_roots and not args.ll_inputs:
         default_root = default_corpus_root()
         if default_root is not None:
             corpus_roots = [default_root.resolve()]
@@ -724,6 +750,95 @@ def discover_jobs(
                     if module_filters and module_key not in module_filters:
                         continue
                     maybe_enqueue_from_meta((module_dir / "module.meta.json").resolve(), manifest_info.get(module_key))
+
+    for diagnostics_root in diagnostics_roots:
+        bundle_roots = resolve_diagnostics_bundle_roots(diagnostics_root)
+        if not bundle_roots:
+            warn(warnings, f"no bundle roots found under diagnostics root: {diagnostics_root}")
+            continue
+
+        for bundle_root in bundle_roots:
+            discovered_keys: set[str] = set()
+            event_dirs = sorted(
+                (child for child in bundle_root.iterdir() if child.is_dir() and child.name.endswith("_modules")),
+                reverse=True,
+            )
+            if not event_dirs:
+                warn(warnings, f"no *_modules directories found under diagnostics bundle root: {bundle_root}")
+                continue
+
+            for event_dir in event_dirs:
+                for module_dir in sorted(child for child in event_dir.iterdir() if child.is_dir()):
+                    meta_path = (module_dir / "module.meta.json").resolve()
+                    if not meta_path.is_file():
+                        warn(warnings, f"missing diagnostics module manifest: {meta_path}")
+                        continue
+                    metadata = load_json(meta_path, warnings)
+                    if not metadata:
+                        continue
+
+                    bundle_id = metadata.get("bundleId") or bundle_root.name
+                    module_key = metadata.get("moduleKey") or module_dir.name
+                    if bundle_filters and bundle_id not in bundle_filters:
+                        continue
+                    if module_filters and module_key not in module_filters:
+                        continue
+                    if module_key in discovered_keys:
+                        continue
+
+                    artifact_paths = metadata.get("artifactPaths") or {}
+                    llvm_ir_rel = artifact_paths.get("llvmIRPath")
+                    if llvm_ir_rel:
+                        llvm_ir_candidates = [
+                            (module_dir / llvm_ir_rel).resolve(),
+                            (event_dir / llvm_ir_rel).resolve(),
+                            (bundle_root / llvm_ir_rel).resolve(),
+                        ]
+                        input_path = next((path for path in llvm_ir_candidates if path.is_file()), llvm_ir_candidates[0])
+                    else:
+                        input_path = (module_dir / "module.ll").resolve()
+                    if not input_path.is_file():
+                        warn(warnings, f"missing diagnostics LLVM IR file for {module_key}: {input_path}")
+                        continue
+
+                    generated_rel = artifact_paths.get("generatedMSLPath")
+                    baseline_path: Path | None = None
+                    if generated_rel:
+                        generated_candidates = [
+                            (module_dir / generated_rel).resolve(),
+                            (event_dir / generated_rel).resolve(),
+                            (bundle_root / generated_rel).resolve(),
+                        ]
+                        baseline_path = next((path for path in generated_candidates if path.is_file()), None)
+                    else:
+                        fallback = module_dir / "module.generated.metal"
+                        if fallback.is_file():
+                            baseline_path = fallback.resolve()
+
+                    if computed_output_root is None:
+                        raise SystemExit("diagnostics 模式需要 output_root")
+                    output_path = (computed_output_root / bundle_id / "modules" / module_key / "replayed.generated.metal").resolve()
+
+                    selector = metadata.get("selector")
+                    observed_selectors = list(metadata.get("observedSelectors") or ([selector] if selector else []))
+                    discovered_keys.add(module_key)
+                    enqueue(
+                        ReplayJob(
+                            job_id=-1,
+                            source_kind="shader_source_diagnostics",
+                            input_path=input_path,
+                            output_path=output_path,
+                            bundle_id=bundle_id,
+                            module_key=module_key,
+                            metadata_path=meta_path,
+                            baseline_generated_msl_path=baseline_path,
+                            function_names=list(metadata.get("functionNames") or metadata.get("generatedFunctionNames") or []),
+                            function_types=list(metadata.get("functionTypes") or metadata.get("generatedFunctionTypes") or []),
+                            capture_count=metadata.get("captureCount"),
+                            observed_selectors=observed_selectors,
+                            source_root=event_dir,
+                        )
+                    )
 
     if args.limit is not None:
         jobs = jobs[: args.limit]

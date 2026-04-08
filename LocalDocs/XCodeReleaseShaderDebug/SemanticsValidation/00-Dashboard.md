@@ -67,7 +67,7 @@ makeLibrary(source:) / metal -c
 1. **`SV-003F`：让全量已采集样本尽可能进入 L1/L2**
    - 先以 `ShaderCorpus` 作为当前**可直接批量消费**的主入口
    - 用同一套 `roundtrip / compare / risk / gate` 结构化报告去覆盖更多已采集真实样本，而不是继续把主线停在极小代表集
-   - `ShaderSourceDiagnostics` 中已经具备 `module.ll / module.meta.json` 的 failure-path 样本，应被视为同一目标的一部分；但在未形成**agent 可自主批量执行**的稳定入口前，只能作为待补齐缺口或定向补充输入，不能写成日常默认 gate
+   - `ShaderSourceDiagnostics` 中已经具备 `module.ll / module.meta.json` 的 failure-path 样本，且现已可通过 `--diagnostics-root` 被 agent 批量纳入同一离线路径；它仍然只应作为 failure-path 补充输入，不能反向改写日常默认 gate
 2. **`SV-003`：继续守住跨机器硬默认 gate，不让全量样本路径带来人工依赖回流**
    - `test-data-representatives` 继续是跨机器硬默认入口
    - `SV-003F` 只能建立在现有自动化脚本能力之上；若某条新路径需要用户手工枚举大量 `.ll`、手工 fresh capture、手工准备工具或手工整理目录，就不能写回默认流程
@@ -81,7 +81,7 @@ makeLibrary(source:) / metal -c
 
 - `test-data-representatives` 继续是**跨机器硬默认 gate**；它的职责是守住 fresh workspace / 低上下文环境下的最小离线闭环
 - `Scripts/ir_semantics_roundtrip_runner.py` 当前已经可以**直接批量消费整个 `ShaderCorpus`**；因此“先让成功路径样本全量进入 L1/L2”是当前最直接、最该做的事
-- `ShaderSourceDiagnostics` 在 `E-004f4` 后已经为 failure-path 样本提供 `module.ll / module.generated.metal / module.meta.json`；但当前仍缺少“和 `ShaderCorpus` 同等级的批量发现入口”，因此它是当前最高优先级 gap 的组成部分，而不是当前已完成能力
+- `ShaderSourceDiagnostics` 在 `E-004f4` 后已经为 failure-path 样本提供 `module.ll / module.generated.metal / module.meta.json`，且当前已可通过 `Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ...` 被批量发现并进入同一套 L1/L2 报告；它的定位仍是 failure-path 补充输入，而不是默认 gate
 - 既有 `SV-004F` 默认白名单行为边界、`daily-default / local-corpus-representatives` 本机增强入口，以及更早的批量快照/样本数字，统一下沉到 `05-L3-最小行为测试.md`、`07-首轮基线与历史进展归档.md` 与 `08-当前代表集与Gate契约参考.md`（均为参考；除 `05` 外当前主线推进**不必须读取**）
 
 因此当前最高优先级可直接概括为：**先把“全量已采集样本尽可能进入 L1/L2”这条自动化离线路径收口，再讨论 L3/L4；在这之前，不把最小行为白名单继续误写成当前唯一主线。**
@@ -93,7 +93,7 @@ makeLibrary(source:) / metal -c
 - 为覆盖率而继续扩默认 L3 白名单
 - 大规模 live `.gputrace` 验证或高成本 GUI/Accessibility 操作
 - 需要用户频繁登录 / 摆场景 / 点按钮的流程
-- 因为当前脚本还不能自动消费 `ShaderSourceDiagnostics`，就把“人工批量枚举 `.ll` 路径”写成日常步骤
+- 即使当前已经支持 `--diagnostics-root`，也不要把人工批量枚举 `.ll` 路径重新写回日常步骤；优先复用现有脚本化入口
 - 因为当前机器缺少某批样本，就把 fresh capture / 手工准备环境写回日常 gate
 - 仅因为旧文档长期强调 `SV-004F`，就继续把当前主线误写成“守住 `pass/pass` 白名单”
 
@@ -133,7 +133,13 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representati
 python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus --allow-failures
 ```
 
-- **failure-path 定向补充验证**（仅在已有明确 blocker 样本、且无需人工批量整理路径时使用）：
+- **failure-path 批量补充验证**（当前已具备 agent 可自主的脚本化入口，但仍只作为补充输入，不替代默认 gate）：
+
+```bash
+python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Containers/io.playcover.PlayCover/ShaderSourceDiagnostics --allow-failures
+```
+
+- **failure-path 定向补充验证**（仅在已有明确 blocker 样本、且需要聚焦单个模块时使用）：
 
 ```bash
 python3 Scripts/ir_semantics_roundtrip_runner.py --ll <path_to_failure_module.ll> --allow-failures
@@ -227,7 +233,7 @@ python3 Scripts/ir_semantics_behavior_runner.py --gate-summary build/semantics-v
 | # | 任务 | 状态 | 优先级 | 说明 | 详细文档 |
 |---|---|---|---|---|---|
 | SV-003 | 把 L1/L2 接入 `test-data/` 与已采集真实样本 | ONGOING | P1（守护） | 已从“建设新入口”转为“长期守住默认 gate 契约 + 约束自动化边界”：`test-data-representatives` 必须继续作为跨机器硬默认入口；任何新样本路径若会把人工枚举、fresh capture、手工环境准备或用户协助写回默认流程，都不应并入日常 gate | `03-L1-IR-RoundTrip.md` / `04-L2-CanonicalCompareAndRiskGrading.md` |
-| SV-003F | 让全量已采集样本尽可能进入 L1/L2 | ONGOING | P0（唯一实际执行面） | **当前最高优先级。** 先把 `ShaderCorpus` 全量样本稳定纳入 `roundtrip / compare / risk`；再补齐 `ShaderSourceDiagnostics` failure-path 样本进入同一离线路径的 agent 可自主入口。当前允许的前提只有一个：默认构建、测试、验证必须继续由 agent 独立完成；若某一步不得不要求用户介入，必须先停下汇报并得到确认 | `03-L1-IR-RoundTrip.md` / `04-L2-CanonicalCompareAndRiskGrading.md` |
+| SV-003F | 让全量已采集样本尽可能进入 L1/L2 | ONGOING | P0（唯一实际执行面） | **当前最高优先级。** `ShaderCorpus` 与 `ShaderSourceDiagnostics` failure-path 样本当前都已能进入统一的 `roundtrip / compare / risk` 离线路径；接下来继续把这两类已采集样本稳定纳入同一套结构化报告，同时保持默认构建、测试、验证完全由 agent 独立完成。若某一步不得不要求用户介入，必须先停下汇报并得到确认 | `03-L1-IR-RoundTrip.md` / `04-L2-CanonicalCompareAndRiskGrading.md` |
 | SV-004 | 最小行为测试（compute-first + render-second） | ONGOING | P1（后置升级口） | 能力已存在，但当前不再是默认主线。只有当 `SV-003F` 的 L1/L2 全量样本证据仍不足、且确有高价值样本需要补行为证据时，才继续推进 | `05-L3-最小行为测试.md` |
 | SV-004F | 维持既有白名单行为边界与 oracle 同步护栏 | ONGOING | P1（后置守护） | 继续保留 `test_fast_math_select`、`test_intrinsic_vector_icmp_zext` 的既有自动化行为边界，作为后置参考能力与回归护栏；但它不再代表当前唯一实际执行面，也不应继续压过 `SV-003F` | `05-L3-最小行为测试.md` |
 | SV-005 | 真实场景验证流程收口 | TODO | P2 | 把 `.gputrace` / render diff / MCP live 验证收口成严格后置 gate；只有在 `SV-003F` 与 `SV-004` 的纯离线证据仍不足或风险只会在 runtime/live 中暴露时才允许升级，且凡是 GUI / 登录 / 工作区外修改都必须先得到用户确认 | `06-L4-真实场景验证.md` |
@@ -237,7 +243,7 @@ python3 Scripts/ir_semantics_behavior_runner.py --gate-summary build/semantics-v
 - **跨机器硬默认 gate 不变**：`test-data-representatives` 继续是 fresh workspace 下必须可由 agent 自主完成的最小 L1/L2 入口
 - **当前唯一实际执行面已改为 `SV-003F`**：主线优先关注“全量已采集样本尽可能进入 L1/L2”，而不是继续把 `SV-004F` 的白名单行为边界当作当前唯一主线
 - **`ShaderCorpus` 是当前可直接批量消费的真实样本主入口**：这条路径已可脚本化执行，应优先承担“扩大 L1/L2 真实样本覆盖面”的职责
-- **`ShaderSourceDiagnostics` 仍是当前 active gap 的组成部分**：failure-path 样本已经具备可离线 replay 的模块级产物，但在形成 agent 可自主的批量入口前，不应把人工枚举或人工辅助写回默认流程
+- **`ShaderSourceDiagnostics` 已具备 agent 可自主的批量入口**：failure-path 样本当前可通过 `--diagnostics-root` 进入同一套离线 L1/L2 报告；它仍然只是补充输入，不应把人工枚举或人工辅助重新写回默认流程
 - **`SV-004 / SV-005` 继续后置**：当前若未来确实需要用户介入，必须先把步骤压到最小并征得确认
 
 ## 踩坑与经验

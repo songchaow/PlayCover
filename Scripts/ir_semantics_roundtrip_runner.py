@@ -177,6 +177,8 @@ def make_test_data_paths(root: Path, file_names: list[str]) -> list[str]:
 def manifest_source_kind(source_kind: str | None) -> str:
     if source_kind == "shader_corpus":
         return "shaderCorpus"
+    if source_kind == "shader_source_diagnostics":
+        return "shaderSourceDiagnostics"
     if source_kind == "explicit_ll":
         return "explicitLL"
     return source_kind or "unknown"
@@ -186,6 +188,7 @@ def empty_manifest_source_kind_counts() -> dict[str, int]:
     return {
         "explicitLL": 0,
         "shaderCorpus": 0,
+        "shaderSourceDiagnostics": 0,
         "unknown": 0,
     }
 
@@ -496,6 +499,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="ShaderCorpus 根目录，或单个 bundle 目录（可重复指定）",
     )
     parser.add_argument(
+        "--diagnostics-root",
+        action="append",
+        dest="diagnostics_roots",
+        default=[],
+        help="ShaderSourceDiagnostics 根目录，或单个 bundle 目录（可重复指定）",
+    )
+    parser.add_argument(
         "--ll",
         action="append",
         dest="ll_inputs",
@@ -729,6 +739,7 @@ def build_preset_manifest(
         "requestedInputs": {
             "llInputs": list(args.ll_inputs),
             "corpusRoots": list(args.corpus_roots),
+            "diagnosticsRoots": list(args.diagnostics_roots),
             "bundleIds": list(args.bundle_id),
             "moduleKeys": list(args.module_key),
             "limit": args.limit,

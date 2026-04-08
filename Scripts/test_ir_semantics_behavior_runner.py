@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import sys
 
@@ -196,6 +199,139 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
         self.assertEqual(summary["executedSampleCount"], 2)
         self.assertEqual(summary["deferredSampleCount"], 1)
         self.assertIn("后置", summary["summary"])
+
+    def test_build_behavior_plan_defers_registry_missing_sample_without_breaking_ready_samples(self) -> None:
+        gate_summary = self.make_gate_summary()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            roundtrip_report = self.make_roundtrip_report(temp_root)
+            plan = behavior_runner.build_behavior_plan(
+                gate_summary,
+                roundtrip_report,
+                sample_keys=["unknown_sample", "test_fast_math_select"],
+                output_root=temp_root,
+            )
+
+        self.assertEqual(
+            [item["sampleKey"] for item in plan["readySamples"]],
+            ["test_fast_math_select"],
+        )
+        self.assertEqual(len(plan["errors"]), 0)
+        self.assertEqual(len(plan["deferredSamples"]), 1)
+        self.assertEqual(plan["deferredSamples"][0]["sampleKey"], "unknown_sample")
+        self.assertEqual(plan["deferredSamples"][0]["phase"], "registry-missing")
+
+    def test_summarize_status_returns_fail_when_setup_errors_exist(self) -> None:
+        status, summary = behavior_runner.summarize_status(
+            executed_results=[{"sampleKey": "test_fast_math_select", "status": "pass"}],
+            deferred_samples=[],
+            errors=[{"sampleKey": "broken_sample", "status": "error"}],
+        )
+
+        self.assertEqual(status, "fail")
+        self.assertIn("准备阶段失败", summary)
+
+    def test_summarize_status_returns_fail_when_executed_sample_does_not_pass(self) -> None:
+        status, summary = behavior_runner.summarize_status(
+            executed_results=[{"sampleKey": "test_fast_math_select", "status": "fail"}],
+            deferred_samples=[],
+            errors=[],
+        )
+
+        self.assertEqual(status, "fail")
+        self.assertIn("未通过行为对比", summary)
+
+    def test_summarize_status_returns_pass_when_all_samples_pass_without_deferred(self) -> None:
+        status, summary = behavior_runner.summarize_status(
+            executed_results=[{"sampleKey": "test_fast_math_select", "status": "pass"}],
+            deferred_samples=[],
+            errors=[],
+        )
+
+        self.assertEqual(status, "pass")
+        self.assertIn("全部通过", summary)
+
+    def test_run_sample_behavior_writes_spec_and_reads_swift_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            sample = {
+                "sampleKey": "test_fast_math_select",
+                "referenceSourcePath": str(root / "reference.metal"),
+                "candidateSourcePath": str(root / "candidate.metal"),
+                "artifactSpecPath": str(root / "artifacts" / "test_fast_math_select.spec.json"),
+                "artifactResultPath": str(root / "artifacts" / "test_fast_math_select.result.json"),
+                "cases": [{"name": "case", "entryPoint": "main0", "threadCount": 1, "buffers": [], "comparisons": []}],
+            }
+            swift_result = {
+                "schemaVersion": 1,
+                "sampleKey": "test_fast_math_select",
+                "status": "pass",
+                "summary": "passed 1 / 1 compute cases",
+                "deviceName": "Mock Metal",
+                "cases": [],
+            }
+
+            def fake_run(command, check, capture_output, text):
+                self.assertFalse(check)
+                self.assertTrue(capture_output)
+                self.assertTrue(text)
+                spec_path = Path(command[3])
+                result_path = Path(command[5])
+                self.assertTrue(spec_path.is_file())
+                spec_payload = json.loads(spec_path.read_text(encoding="utf-8"))
+                self.assertEqual(spec_payload["sampleKey"], "test_fast_math_select")
+                self.assertEqual(spec_payload["referenceSourcePath"], sample["referenceSourcePath"])
+                self.assertEqual(spec_payload["candidateSourcePath"], sample["candidateSourcePath"])
+                result_path.write_text(json.dumps(swift_result), encoding="utf-8")
+                return subprocess.CompletedProcess(command, 0, stdout="swift ok\n", stderr="behavior harness pass")
+
+            with mock.patch.object(behavior_runner.subprocess, "run", side_effect=fake_run) as mocked_run:
+                result = behavior_runner.run_sample_behavior(
+                    sample,
+                    swift_runner=root / "metal_compute_behavior_runner.swift",
+                    quiet=True,
+                )
+
+        self.assertEqual(mocked_run.call_count, 1)
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["returnCode"], 0)
+        self.assertEqual(result["swiftResult"]["status"], "pass")
+        self.assertEqual(result["swiftResult"]["deviceName"], "Mock Metal")
+
+    def test_run_sample_behavior_returns_error_when_swift_fails_without_result_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            sample = {
+                "sampleKey": "test_fast_math_select",
+                "referenceSourcePath": str(root / "reference.metal"),
+                "candidateSourcePath": str(root / "candidate.metal"),
+                "artifactSpecPath": str(root / "artifacts" / "test_fast_math_select.spec.json"),
+                "artifactResultPath": str(root / "artifacts" / "test_fast_math_select.result.json"),
+                "cases": [],
+            }
+
+            with mock.patch.object(
+                behavior_runner.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    ["swift", "runner.swift"],
+                    1,
+                    stdout="",
+                    stderr="swift harness failed hard",
+                ),
+            ):
+                result = behavior_runner.run_sample_behavior(
+                    sample,
+                    swift_runner=root / "metal_compute_behavior_runner.swift",
+                    quiet=True,
+                )
+
+            self.assertTrue(Path(sample["artifactSpecPath"]).is_file())
+            self.assertFalse(Path(sample["artifactResultPath"]).exists())
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["returnCode"], 1)
+        self.assertIn("swift harness failed hard", result["reason"])
 
 
 if __name__ == "__main__":

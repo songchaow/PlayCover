@@ -84,7 +84,7 @@ makeLibrary(source:) / metal -c
 - `gate-summary.json` 当前已把 `test_casts` 记为 `resolvedL2SampleKeys`，说明它不再属于活跃 `L2` debt，而是本轮已收口的已知改进
 - `behavior-summary.json` 的当前默认执行面也随之收缩：compute-first 只实际执行 `test_fast_math_select`，并将 `test_intrinsic_vector_icmp_zext` 结构化后置到 render-second
 - 定向复核产物 `behavior-summary.test-casts-verification.json` 已显示 `test_casts` 的 scalar / vector `2/2` case 全部通过；因此这条证据已从“可复现 fail”收口为“已定位根因并完成最小修复验证”
-- `Scripts/test_ir_semantics_behavior_runner.py` 已为 candidate 选择、defer 边界与 `behavior-summary.json` 汇总补齐纯逻辑单测，降低 `SV-004` 后续维护时的静默漂移风险
+- `Scripts/test_ir_semantics_behavior_runner.py` 已进一步补齐 `SV-004` 的测试护栏：除 candidate 选择、defer 边界与 `behavior-summary.json` 汇总外，也覆盖了 `registry-missing` defer、`summarize_status()` 的 `pass/warn/fail` 三态，以及 `run_sample_behavior()` 的 Python→Swift 桥接成功/失败路径，进一步降低 compute-first 边界与结果收口逻辑的静默漂移风险
 - `blockedSamples` 当前仍只包含 `test_struct_array_field`，它会继续被 `stopAtL2` / `l4Plan` 明确挡在离线层与后置 gate 之前
 - `daily-default`：当前最新增强产物是 `13/13` round-trip 成功，风险分布 `L0 = 1 / L1 = 3 / L2 = 5 / L3 = 4`，`gate-summary.json` 为稳定 `WARN`
 - `local-corpus-representatives`：当前固定 `5` 个本地 `ShaderCorpus` 代表样本全部 round-trip 成功，风险分布 `L0 = 0 / L1 = 0 / L2 = 1 / L3 = 4`，`gate-summary.json` 为稳定 `WARN`

@@ -44,7 +44,7 @@ regenerated.ll
 
 当前职责：
 
-1. 发现输入样本（显式 `.ll` / `ShaderCorpus`）
+1. 发现输入样本（显式 `.ll` / `ShaderCorpus`；failure-path 当前仍以显式 `.ll` 为主）
 2. 复用现有 `corpus_replay_runner.py` 与 `IRToMSLConverter`
 3. 生成 `generated.metal`
 4. 调用 `xcrun metal -c`
@@ -80,10 +80,11 @@ regenerated.ll
 
 补充说明：
 
-- `test-data-representatives` 当前固定为 `8` 个样本：覆盖 `L0 / L1 / 活跃 L2 / blocked debt`；`test_struct_array_field` 已从历史 compile failure 收敛到当前 gate 中的 blocked sample，其中 `test_casts` 已退出活跃 `L2` debt，`test_int_literal_half_suffix` 与 `test_vector_select_global_gep` 已从历史 `L2` debt 收敛到 `L1`
-- `local-corpus-representatives` 当前固定为本机已存在的 `5` 个 `ShaderCorpus` 代表模块
-- `daily-default` 当前等于：`test-data-representatives + local-corpus-representatives`；从 runner / preset 视角它是一键日常入口，但从当前控制面口径看仍只应视为“本机已有样本时的增强入口”
-- 当前更细的 preset contract、active known debt 与 manifest 摘要已下沉到 `08-当前代表集与Gate契约参考.md`（工作参考，当前日常推进**不必须读取**）
+- `test-data-representatives` 继续只承担**跨机器硬默认 gate** 角色
+- `local-corpus-representatives` 与 `daily-default` 继续只承担**本机增强证据** 角色，不反向定义当前主线优先级
+- `test-data-batch` 继续只作为**参考批量快照**，不承担当前默认 gate 契约
+- `--ll <path>` 继续可用于 failure-path 的定向补喂；但 `ShaderSourceDiagnostics` 仍未形成与 `ShaderCorpus` 同等级的批量发现入口
+- 当前更细的 preset contract、样本计数、active known debt 与 manifest 摘要已统一下沉到 `08-当前代表集与Gate契约参考.md`（工作参考，当前日常推进**不必须读取**）
 
 ### 输出目录
 
@@ -194,26 +195,28 @@ build/semantics-validation/roundtrip/
 
 再按需跑：
 
-- `python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-batch --allow-failures`
+- `python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus --allow-failures`
 
 目标：
 
-- 看完整 `test-data/` 基线
-- 为代表集维护、失败聚类和升级边界提供参考
-- 这一步属于参考批量，不属于每次都要执行的硬默认 gate
+- 让 **`ShaderCorpus` 全量已采集样本** 尽可能进入同一套 L1/L2 离线路径
+- 优先扩大真实样本覆盖，而不是继续把执行面停在代表集或 L3 白名单
+- 继续保持“单命令、本地、无人工介入”的自动化边界；若本机没有现成样本，应退回第一轮，而不是把 fresh capture 写成默认依赖
 
 ### 第三轮
 
 最后再按需跑：
 
-- `python3 Scripts/ir_semantics_roundtrip_runner.py --preset local-corpus-representatives --allow-failures`
+- `python3 Scripts/ir_semantics_roundtrip_runner.py --ll <path_to_failure_module.ll> --allow-failures`
+- 或 `python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-batch --allow-failures`
+- 或 `python3 Scripts/ir_semantics_roundtrip_runner.py --preset local-corpus-representatives --allow-failures`
 - 或 `python3 Scripts/ir_semantics_roundtrip_runner.py --preset daily-default --allow-failures --enforce-gate`
 
 目标：
 
-- 在本机已有样本时补充真实样本证据
-- 为 L2 compare 提供真实数据
-- 若当前机器缺样本，应退回前两轮，而不是把 fresh capture 写成默认依赖
+- 对已有明确 blocker 的 failure-path 样本做**定向补充复核**
+- 读取参考批量快照或本机增强证据，但不反向定义当前主线优先级
+- 若某条路径需要人工批量整理 `ShaderSourceDiagnostics` 样本，应停在这里汇报，而不是写回默认流程
 
 ## 当前不建议做的事
 
@@ -231,8 +234,10 @@ L1 只做一件事：**把 round-trip 链路本身做稳定。**
 本页当前只保留 L1 仍需记住的角色划分：
 
 - `test-data-representatives` 继续是 **跨机器硬默认入口**；当前详细事实、active debt 与固定命令统一见 `08-当前代表集与Gate契约参考.md`（工作参考，当前主线推进**不必须读取**）
-- `daily-default` 与 `local-corpus-representatives` 继续只承担 **本机增强证据** / **本地观察** 角色，不替代跨机器控制面
+- `ShaderCorpus` 继续是 **当前最高优先级的真实样本主入口**；它应尽可能复用同一套 `roundtrip / compare / risk` 报告，而不是另起一套平行控制面
+- `daily-default` 与 `local-corpus-representatives` 继续只承担 **本机增强证据** / **本地观察** 角色，不替代跨机器控制面，也不替代 `--corpus-root` 的全量样本主线
 - `test-data-batch` 继续只保留为 **参考批量快照**；旧分布、旧 compile failure 口径与历史样本名单统一下沉到 `07-首轮基线与历史进展归档.md`（历史参考，当前日常推进**不必须读取**）
+- `ShaderSourceDiagnostics` 当前仍只适合作为显式 `--ll` 的 failure-path 定向补充输入；在形成 agent 可自主的批量发现入口前，不应冒充默认 gate
 - `test-data-representatives` 的固定输出目录继续被 L3 复用；因此它不仅是 L1/L2 产物目录，也是当前最小 L3 证据的锚点
 - 若缺少 `swiftc` / `xcrun` / 自动可解析的 `llvm-dis`，应视为环境前置条件未满足并停止汇报；不要把用户手工找路径或手工拼命令写回默认流程
 
@@ -246,4 +251,4 @@ L1 只做一件事：**把 round-trip 链路本身做稳定。**
 
 - L1 成功样本 → 进入 `04-L2-CanonicalCompareAndRiskGrading.md`
 - L1 高价值/高风险样本 → 后续可进入 `05-L3-最小行为测试.md`
-- L1 当前最直接的后续任务 → `SV-003`（稳定 `test-data` / `ShaderCorpus` 默认入口）
+- L1 当前最直接的后续任务 → `SV-003F`（让全量已采集样本尽可能进入统一的 L1/L2 离线路径）

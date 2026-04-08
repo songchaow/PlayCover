@@ -27,16 +27,16 @@ makeLibrary(source:) / metal -c
 
 当前缺口主要在：
 
-- 如何把已落地的 **L1/L2 默认 gate** 继续保持为稳定前提，而不是在后续升级中被重新带偏到高人工成本流程
-- 如何基于现有 **gate-summary / risk-report / behavior-summary**，明确写清楚 **停在 L2 / 升级到 L3 / 升级到 L4** 的机器可执行边界
-- 如何在不引入人工依赖的前提下，只从最有信息量的样本里为 **L3 最小行为测试** 维持一个足够小、足够稳的入口
-- 如何把 **真实场景验证** 保持为自动化优先、低人工依赖、且必须按需征得用户确认的严格后置 gate
+- 如何把**已经采集到的样本**，尽可能纳入 **L1/L2** 的自动化离线验证，而不是长期停留在“小代表集 + 少量白名单行为样本”
+- 如何让这条“全量已采集样本 → round-trip → canonical compare → 风险分级”的路径继续保持 **agent 可自主完成**，不把人工枚举样本、人工 fresh capture、人工找工具路径写回日常流程
+- 如何把 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 的角色明确拆开：前者作为**当前可直接批量消费**的主入口，后者作为**failure-path 补充输入**，在未形成脚本化批量入口前不得冒充默认 gate
+- 如何在 L1/L2 的全量样本路径还未稳定前，严格把 **L3 最小行为测试** 与 **L4 真实场景验证** 保持为后置升级口，而不是继续占据当前控制面
 
 因此需要在本目录下建立一套**循序渐进、自动化优先、可按人力/上下文预算逐步停下**的语义验证体系。
 
 > 注：立项初版关于“缺少 L1/L2”的历史表述已经下沉到 `01-现状调研与缺口.md` 与 `07-首轮基线与历史进展归档.md`；当前 dashboard 只保留 active gap 与当前控制面。
 >
-> 当前控制面事实以结构化报告为准；具体的事实优先级、preset / manifest / baseline 契约，以及自动化前置条件与失败止损约束统一下沉到 `08-当前代表集与Gate契约参考.md`（工作参考，当前主线推进**不必须读取**）。
+> 当前控制面事实以结构化报告为准；更细的 L1/L2 输入边界、preset / manifest / baseline 契约、以及“哪些路径可自动、哪些仍是待补齐缺口”的细节统一下沉到 `03-L1-IR-RoundTrip.md`、`04-L2-CanonicalCompareAndRiskGrading.md` 与 `08-当前代表集与Gate契约参考.md`（前两者**建议读取**；`08` 为工作参考，当前主线推进**不必须读取**）。
 
 ## 最终目标
 
@@ -58,44 +58,44 @@ makeLibrary(source:) / metal -c
 
 ### 主线任务
 
-> **背景**：`SV-003` 与 `SV-006` 的第一轮收口已经完成后，本目录当前不再以“继续扩入口”为目标，而是以“让一条最小、稳定、纯离线、agent 可自主完成的证据链长期成立”为目标。执行层面上，`SV-004` 现在只是主线容器；真正的日常实际执行面只剩 `SV-004F`。只有当这条证据链仍不足以解释风险时，才考虑更后置的 `SV-005`。
+> **背景**：`SV-003` 的首轮 runner / compare / gate 基础已经具备，当前不再以“再补一条最小 L3 默认执行面”为主，而是以“让全量已采集样本尽可能进入 L1/L2，并且这条路径仍保持纯离线、自动化优先、agent 可自主完成”为主。为避免和 `SV-003` 的长期守护含义混淆，本文档把这条当前执行面记为 `SV-003F`。
 
-**当前主线应统一理解为：`SV-004F` = 唯一实际执行面，`SV-003` = 长期守护约束，`SV-005` = 严格后置升级口。**
+**当前主线应统一理解为：`SV-003F` = 唯一实际执行面，`SV-003` = 长期守护约束，`SV-004 / SV-004F / SV-005` = 严格后置升级口。**
 
 当前最该优先继续推进的事，已经收敛为三条：
 
-1. **`SV-004F`：守住唯一实际执行面**
-   - 默认执行边界只保留 `test_fast_math_select` 与 `test_intrinsic_vector_icmp_zext`
-   - 默认期望结果仍是 `pass/pass`
-   - 继续把固定输出目录、sample oracle ↔ `.ll` 同步校验作为这条执行面的硬护栏
-   - 默认 `ir_semantics_behavior_runner.py` 已收紧为只从 `layeredDecision.l3Plan.candidateSampleKeys` 里选择当前白名单执行面，并且必须写回 `gate-summary.outputRoot/behavior-summary.json`；若 `gate-summary.json` 缺少 `outputRoot`，默认 gate 也必须直接失败，不能静默回退到 manual 目录；若要另存报告，只允许在显式 `--sample-key` 定向复核时使用 `--report-file`
-2. **`SV-003`：守住跨机器硬默认 gate，不让主线被旁路信息带偏**
+1. **`SV-003F`：让全量已采集样本尽可能进入 L1/L2**
+   - 先以 `ShaderCorpus` 作为当前**可直接批量消费**的主入口
+   - 用同一套 `roundtrip / compare / risk / gate` 结构化报告去覆盖更多已采集真实样本，而不是继续把主线停在极小代表集
+   - `ShaderSourceDiagnostics` 中已经具备 `module.ll / module.meta.json` 的 failure-path 样本，应被视为同一目标的一部分；但在未形成**agent 可自主批量执行**的稳定入口前，只能作为待补齐缺口或定向补充输入，不能写成日常默认 gate
+2. **`SV-003`：继续守住跨机器硬默认 gate，不让全量样本路径带来人工依赖回流**
    - `test-data-representatives` 继续是跨机器硬默认入口
-   - `daily-default` / `local-corpus-representatives` / `test-data-batch` 只承担增强证据或历史参考角色，不反向驱动当前主线优先级
-   - `preset-manifest.json` / gate profile 的旧描述文字如果滞后，只能当参考，不能把 TODO 重新带回旧口径
-3. **`SV-005`：只在纯离线证据不足时才升级**
-   - 只有当 L3 证据仍不足、或风险只能在 runtime / live 中暴露时，才允许升级
+   - `SV-003F` 只能建立在现有自动化脚本能力之上；若某条新路径需要用户手工枚举大量 `.ll`、手工 fresh capture、手工准备工具或手工整理目录，就不能写回默认流程
+   - `preset-manifest.json` / gate profile / baseline 说明若滞后，只能当参考，当前事实口径仍以结构化报告字段为准
+3. **`SV-004 / SV-004F / SV-005`：只在 L1/L2 全量样本路径仍不足时才升级**
+   - L3 最小行为测试继续保留，但当前不是默认执行面
+   - L4 真实场景验证继续保留为严格后置 gate
    - 若涉及 GUI / 登录 / 工作区外修改，必须先得到用户确认
 
 当前已确认、且直接驱动主线判断的事实只保留下面几条：
 
-- `test-data-representatives` 当前保持 `8/8` round-trip 成功，风险分布为 `L0 = 2 / L1 = 3 / L2 = 2 / L3 = 1`，`gate-summary.json = WARN`
-- `layeredDecision.overallDecision = promote_l2_candidates_to_l3`；当前默认 `L3` 候选仍是 `test_fast_math_select`、`test_intrinsic_vector_icmp_zext`
-- `behavior-summary.json = pass`，默认实际执行 `2` 个样本且均为 `pass`；`Scripts/ir_semantics_behavior_runner.py` 会在写完该报告后自动刷新同目录 `gate-summary.json` 的 `layeredDecision.l4Plan`，保持当前控制面与行为证据同步
-- `test_casts` 当前仍保持“已退出活跃 `L2`、仅保留为显式定向复核入口”的定位；当前 `gate-summary.json.improvements.resolvedL2SampleKeys` 为空，`test_struct_array_field` 继续作为 blocked sample 停在离线层
-- 其它本机增强入口、baseline / manifest 细节、旧 fail 收口过程与较早批量背景，统一下沉到 `07-首轮基线与历史进展归档.md` 与 `08-当前代表集与Gate契约参考.md`（均为参考，当前主线推进**不必须读取**）
+- `test-data-representatives` 继续是**跨机器硬默认 gate**；它的职责是守住 fresh workspace / 低上下文环境下的最小离线闭环
+- `Scripts/ir_semantics_roundtrip_runner.py` 当前已经可以**直接批量消费整个 `ShaderCorpus`**；因此“先让成功路径样本全量进入 L1/L2”是当前最直接、最该做的事
+- `ShaderSourceDiagnostics` 在 `E-004f4` 后已经为 failure-path 样本提供 `module.ll / module.generated.metal / module.meta.json`；但当前仍缺少“和 `ShaderCorpus` 同等级的批量发现入口”，因此它是当前最高优先级 gap 的组成部分，而不是当前已完成能力
+- 既有 `SV-004F` 默认白名单行为边界、`daily-default / local-corpus-representatives` 本机增强入口，以及更早的批量快照/样本数字，统一下沉到 `05-L3-最小行为测试.md`、`07-首轮基线与历史进展归档.md` 与 `08-当前代表集与Gate契约参考.md`（均为参考；除 `05` 外当前主线推进**不必须读取**）
 
-因此当前最高优先级可直接概括为：**只继续守住 `SV-004F` 的 `pass/pass` 默认行为边界、`SV-003` 的跨机器硬默认 gate，以及 oracle ↔ `.ll` 的同步性；在这条纯离线证据链还够用时，不为覆盖率扩样，也不抢跑 `SV-005`。**
+因此当前最高优先级可直接概括为：**先把“全量已采集样本尽可能进入 L1/L2”这条自动化离线路径收口，再讨论 L3/L4；在这之前，不把最小行为白名单继续误写成当前唯一主线。**
 
 ### 当前不该抢跑的事
 
-在 `SV-004` 的首版 behavior harness 已落地、且当前默认执行边界已经收口为 `pass/pass`、live 仍保持严格后置 gate 前，默认**不要**把精力放到：
+在 `SV-003F` 这条执行面还未收口前，默认**不要**把精力放到：
 
-- 为覆盖率而扩样
+- 为覆盖率而继续扩默认 L3 白名单
 - 大规模 live `.gputrace` 验证或高成本 GUI/Accessibility 操作
 - 需要用户频繁登录 / 摆场景 / 点按钮的流程
-- 因为当前机器缺少本地样本，就把 fresh capture / 手工准备环境写回日常 gate
-- 仅因为 `preset-manifest.json` 或 gate profile 的旧描述文字滞后，就反推当前活跃 debt 仍是旧口径
+- 因为当前脚本还不能自动消费 `ShaderSourceDiagnostics`，就把“人工批量枚举 `.ll` 路径”写成日常步骤
+- 因为当前机器缺少某批样本，就把 fresh capture / 手工准备环境写回日常 gate
+- 仅因为旧文档长期强调 `SV-004F`，就继续把当前主线误写成“守住 `pass/pass` 白名单”
 
 除非它们是为解除当前最高优先级阻塞所**绝对必要**的最小步骤，且已获得用户确认。
 
@@ -105,7 +105,7 @@ makeLibrary(source:) / metal -c
 
 ### 日常默认验证（优先）
 
-适用于：文档、离线脚本、`IRToMSLConverter`、compare 逻辑、最小样本。
+适用于：文档、离线脚本、`IRToMSLConverter`、compare 逻辑、L1/L2 全量样本纳入路径。
 
 - 已有离线 replay / compile：
 
@@ -127,33 +127,41 @@ python3 Scripts/test_ir_semantics_roundtrip_runner.py
 python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representatives --allow-failures --enforce-gate
 ```
 
-- 其它 preset 变体（`daily-default` / `local-corpus-representatives` / `test-data-batch`）、baseline snapshot 保存/复用、固定输出目录约定，以及默认离线路径依赖的 `swiftc` / `xcrun` / `llvm-dis` 前置条件，统一下沉到 `08-当前代表集与Gate契约参考.md`（工作参考，当前主线推进**不必须读取**）；主文档只保留日常硬默认入口，避免把本机快照与较早批量口径重新暴露回控制面
+- **当前最高优先级的本机离线主线**（只复用已存在样本，不引入人工准备）：
+
+```bash
+python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus --allow-failures
+```
+
+- **failure-path 定向补充验证**（仅在已有明确 blocker 样本、且无需人工批量整理路径时使用）：
+
+```bash
+python3 Scripts/ir_semantics_roundtrip_runner.py --ll <path_to_failure_module.ll> --allow-failures
+```
+
+- 其它 preset 变体（`daily-default` / `local-corpus-representatives` / `test-data-batch`）、baseline snapshot 保存/复用、固定输出目录约定，以及“当前哪些入口只是参考、哪些入口仍不能写成默认 gate”的细节，统一下沉到 `03-L1-IR-RoundTrip.md`、`04-L2-CanonicalCompareAndRiskGrading.md` 与 `08-当前代表集与Gate契约参考.md`；主文档只保留当前硬默认入口与最高优先级执行面，避免把旧代表集口径重新暴露回控制面
 
 ### `SV-004` 当前最小行为验证
 
-适用于：需要把 `layeredDecision.l3Plan.candidateSampleKeys` 里的活跃 `L2` 候选推进到第一批本地行为证据时；当前默认会覆盖 compute-first 与已准入的最小 render-second。
+适用于：**在 `SV-003F` 的 L1/L2 证据仍不足时**，把少量高价值样本推进到第一批本地行为证据。
 
 ```bash
 python3 Scripts/test_ir_semantics_behavior_runner.py
 python3 Scripts/ir_semantics_behavior_runner.py --gate-summary build/semantics-validation/roundtrip/test-data-representatives/gate-summary.json
 ```
 
-当前首轮口径：
+当前口径：
 
-- 默认直接复用固定输出目录里的 `gate-summary.json` / `roundtrip-summary.json`
-- 默认把 `behavior-summary.json` 与 `behavior-artifacts/` 直接写回同一 `outputRoot`
-- 默认执行边界固定为 `test_fast_math_select` 与 `test_intrinsic_vector_icmp_zext`，当前结果为 `pass/pass`
-- `test_casts` 定向复核、artifact 字段契约以及更细的执行细节统一下沉到 `05-L3-最小行为测试.md` 与 `08-当前代表集与Gate契约参考.md`（前者**建议读取**，后者**不必须读取**）
+- 这条路径**保留可用**，但当前不再是默认主线执行面
+- 默认继续复用固定输出目录里的 `gate-summary.json` / `roundtrip-summary.json`
+- 默认继续保持“单命令、本地、无 UI、无工作区外修改、agent 可独立执行”的自动化边界
+- 更细的样本名单、artifact 契约与 render-second 细节统一下沉到 `05-L3-最小行为测试.md`（当前已不是主线，按需读取即可）
 
 补充约束：
 
-- `SV-004` 当前必须继续保持“单命令、本地、无 UI、无工作区外修改、agent 可独立执行”的自动化边界；若新增方法做不到这点，就不能写回日常默认流程
-- `ShaderCorpus` 日常 gate 默认只复用**当前机器上已经存在**的本地样本
+- 若新增方法做不到“单命令、本地、无人工介入”，就不能写回日常默认流程
 - 若当前机器上没有合适样本，不应自动升级成需要用户介入的 fresh capture 流程；这时应优先退回 `test-data-representatives` 或停在离线层汇报
-- `daily-default` / `local-corpus-representatives` 的定位是“增强证据”，不是把人工准备环境重新引回默认 gate
-- 对这两个 preset，`gate profile` 应区分 `minimumExpectedJobCount`（硬下界）与 `expectedJobCount`（完整代表集）；低于下界或超出代表集边界才记为 `FAIL`，仅缺少部分本地代表样本时记为 `WARN`
-- `SV-003` 当前已完成“固定样本集 + 固定命令 + 固定输出目录 + `gate-summary.json` / `--enforce-gate`”的首轮收口；剩余工作已收窄到继续维护代表集，并按后续经验继续细化升级边界
-- 当前首个 fragment 候选已证明可以满足“offscreen、单命令、本地、无 UI、无工作区外修改”并进入 render-second；后续若要扩到更多 fragment 样本，也必须继续满足这条准入契约，否则仍应明确 deferred，而不是默认升级到 live
+- `daily-default` / `local-corpus-representatives` 的定位继续是“增强证据”，不是把人工准备环境重新引回默认 gate
 
 ### 运行时链路验证（只在必要时）
 
@@ -218,17 +226,19 @@ python3 Scripts/ir_semantics_behavior_runner.py --gate-summary build/semantics-v
 
 | # | 任务 | 状态 | 优先级 | 说明 | 详细文档 |
 |---|---|---|---|---|---|
-| SV-003 | 把 L1/L2 接入 `test-data/` 与 `ShaderCorpus` | ONGOING | P1（守护） | 已从“建设新入口”转为“长期守住默认 gate 契约”：`test-data-representatives` 必须继续作为跨机器硬默认入口，`daily-default / local-corpus-representatives` 只保留为本地增强入口；代表集变化时仍需同步维护 gate profile / baseline / manifest，但当前事实口径必须继续以结构化报告字段为准，不能被旧描述文字带偏 | `08-当前代表集与Gate契约参考.md` |
-| SV-004 | 最小行为测试（compute-first + render-second） | ONGOING | P0（主线容器） | **当前主线容器，而非日常实际执行面。** `SV-004` 第一阶段目标已经达成；继续保留 `ONGOING`，仅表示当前只以下属 `SV-004F` 作为唯一实际执行面，维护最小、纯离线、agent 可自主完成的行为证据边界 | `05-L3-最小行为测试.md` |
-| SV-004F | 维持默认行为边界与 oracle 同步护栏 | ONGOING | P0（唯一实际执行面） | 继续把 `test_fast_math_select = pass`、`test_intrinsic_vector_icmp_zext = pass`、固定输出目录，以及 reference/generated MSL ↔ `.ll` 的同步校验保持为默认 L3 边界；新增候选只有在仍满足单命令、本地、无 UI、无工作区外修改、agent 可独立执行时才准入，否则不扩样、不抢跑 `SV-005` | `05-L3-最小行为测试.md` |
-| SV-005 | 真实场景验证流程收口 | TODO | P2 | 把 `.gputrace` / render diff / MCP live 验证收口成严格后置 gate；只有在 `SV-004F` 的纯离线证据仍不足或风险只会在 runtime/live 中暴露时才允许升级，且凡是 GUI / 登录 / 工作区外修改都必须先得到用户确认 | `06-L4-真实场景验证.md` |
+| SV-003 | 把 L1/L2 接入 `test-data/` 与已采集真实样本 | ONGOING | P1（守护） | 已从“建设新入口”转为“长期守住默认 gate 契约 + 约束自动化边界”：`test-data-representatives` 必须继续作为跨机器硬默认入口；任何新样本路径若会把人工枚举、fresh capture、手工环境准备或用户协助写回默认流程，都不应并入日常 gate | `03-L1-IR-RoundTrip.md` / `04-L2-CanonicalCompareAndRiskGrading.md` |
+| SV-003F | 让全量已采集样本尽可能进入 L1/L2 | ONGOING | P0（唯一实际执行面） | **当前最高优先级。** 先把 `ShaderCorpus` 全量样本稳定纳入 `roundtrip / compare / risk`；再补齐 `ShaderSourceDiagnostics` failure-path 样本进入同一离线路径的 agent 可自主入口。当前允许的前提只有一个：默认构建、测试、验证必须继续由 agent 独立完成；若某一步不得不要求用户介入，必须先停下汇报并得到确认 | `03-L1-IR-RoundTrip.md` / `04-L2-CanonicalCompareAndRiskGrading.md` |
+| SV-004 | 最小行为测试（compute-first + render-second） | ONGOING | P1（后置升级口） | 能力已存在，但当前不再是默认主线。只有当 `SV-003F` 的 L1/L2 全量样本证据仍不足、且确有高价值样本需要补行为证据时，才继续推进 | `05-L3-最小行为测试.md` |
+| SV-004F | 维持既有白名单行为边界与 oracle 同步护栏 | ONGOING | P1（后置守护） | 继续保留 `test_fast_math_select`、`test_intrinsic_vector_icmp_zext` 的既有自动化行为边界，作为后置参考能力与回归护栏；但它不再代表当前唯一实际执行面，也不应继续压过 `SV-003F` | `05-L3-最小行为测试.md` |
+| SV-005 | 真实场景验证流程收口 | TODO | P2 | 把 `.gputrace` / render diff / MCP live 验证收口成严格后置 gate；只有在 `SV-003F` 与 `SV-004` 的纯离线证据仍不足或风险只会在 runtime/live 中暴露时才允许升级，且凡是 GUI / 登录 / 工作区外修改都必须先得到用户确认 | `06-L4-真实场景验证.md` |
 
 ### 当前关键状态
 
-- **默认离线控制面已经收口**：`test-data-representatives` 继续是跨机器硬默认 gate；`daily-default / local-corpus-representatives` 继续只作为本机增强入口
-- **当前唯一实际执行面是 `SV-004F`**：`SV-004` 继续保留 `ONGOING`，只是为了表达这条守护任务仍在持续；默认执行面固定为 `test_fast_math_select` + `test_intrinsic_vector_icmp_zext`
-- **结构化报告优先级、preset / manifest / baseline 契约与自动化前置条件** 统一见 `08-当前代表集与Gate契约参考.md`（工作参考，当前主线推进**不必须读取**）
-- **真实场景验证仍是后置 gate**：若未来确实需要用户介入，必须先把步骤压到最小并征得确认
+- **跨机器硬默认 gate 不变**：`test-data-representatives` 继续是 fresh workspace 下必须可由 agent 自主完成的最小 L1/L2 入口
+- **当前唯一实际执行面已改为 `SV-003F`**：主线优先关注“全量已采集样本尽可能进入 L1/L2”，而不是继续把 `SV-004F` 的白名单行为边界当作当前唯一主线
+- **`ShaderCorpus` 是当前可直接批量消费的真实样本主入口**：这条路径已可脚本化执行，应优先承担“扩大 L1/L2 真实样本覆盖面”的职责
+- **`ShaderSourceDiagnostics` 仍是当前 active gap 的组成部分**：failure-path 样本已经具备可离线 replay 的模块级产物，但在形成 agent 可自主的批量入口前，不应把人工枚举或人工辅助写回默认流程
+- **`SV-004 / SV-005` 继续后置**：当前若未来确实需要用户介入，必须先把步骤压到最小并征得确认
 
 ## 踩坑与经验
 
@@ -240,19 +250,19 @@ python3 Scripts/ir_semantics_behavior_runner.py --gate-summary build/semantics-v
 - **要把 `air.fast_*` intrinsic alias 与纯 instruction-level fast-math flag 漂移视为降噪对象**：若 compile option 与 function attr 没变，这类差异更接近 `L1` 噪声，而不应继续把代表集里的默认 debt 放大成 `L2`
 - **对环境相关代表集，job count 不能只用单点值判定**：要区分“跨机器都必须成立的硬下界”和“本机样本齐备时的完整代表集”，否则容易把缺样本误报成回归
 - **优先把高频手工流程脚本化**；若无法脚本化，也不能默认把用户人工操作写成日常 gate
-- **L3 第一版优先复用 reference MSL vs generated MSL 对跑，比一上来就建立完整 CPU oracle 更容易在低人力预算下落地**
-- **要区分“背景问题”和“当前主线”**：本目录当前最该做的是守住稳定离线 gate，并只对少量高价值候选维持最小升级判断、优先维护已收口的 fragment 行为边界，而不是过早切到更高成本的运行时验证
-- **主文档不要直接暴露会漂移的本机快照**：本机增强入口、历史批量快照、manifest 描述文字等都应下沉到参考文档，主文档只保留当前主线真正依赖的控制面事实
+- **当前最重要的不是继续扩默认 L3，而是把已采集真实样本尽可能纳入 L1/L2**：只要 `ShaderCorpus` / failure-path 样本还没有被尽可能吃进离线主回路，就不应把主文档继续写成“白名单行为样本维护”
+- **主文档不要直接暴露会漂移的本机快照**：本机增强入口、历史批量快照、manifest 描述文字与局部样本数量都应下沉到参考文档，主文档只保留当前主线真正依赖的控制面事实
+- **若某条新构建/测试/验证方法不是 agent 可独立自动完成的，就不能默认落地**：若确实存在必须由用户介入的步骤，必须先得到用户确认
 
 ## 参考信息
 
 ### 本目录主文档
 
-- `01-现状调研与缺口.md`（需要理解“为什么当前主线仍停在离线层”时再读，当前日常推进**不必须读取**）
+- `01-现状调研与缺口.md`（需要理解“为什么当前主线改为全量样本 L1/L2”时再读，当前日常推进**不必须读取**）
 - `02-总体技术路线.md`（**建议读取**；主线任务与升级顺序的核心参考）
-- `03-L1-IR-RoundTrip.md`（做 L1 / runner / preset 维护时再读，当前日常推进**不必须读取**）
-- `04-L2-CanonicalCompareAndRiskGrading.md`（做 compare / gate / 风险分级时再读，当前日常推进**不必须读取**）
-- `05-L3-最小行为测试.md`（**建议读取**；当前主线 `SV-004` 的详细执行面）
+- `03-L1-IR-RoundTrip.md`（**建议读取**；当前主线 `SV-003F` 的详细执行参考）
+- `04-L2-CanonicalCompareAndRiskGrading.md`（**建议读取**；当前主线 `SV-003F` 的风险分级与 gate 参考）
+- `05-L3-最小行为测试.md`（当前已是后置升级口，按需阅读即可）
 - `06-L4-真实场景验证.md`（规划 live / `.gputrace` 时再读，当前**不必须读取**）
 - `07-首轮基线与历史进展归档.md`（历史归档与样本名单参考，**不必须读取**）
 - `08-当前代表集与Gate契约参考.md`（维护 preset / gate / manifest 细节，或排查 `gate-summary.json` / `preset-manifest.json` 口径不一致时再读；当前主线推进**不必须读取**）

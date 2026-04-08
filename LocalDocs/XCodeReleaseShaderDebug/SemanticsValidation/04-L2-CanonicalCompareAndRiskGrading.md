@@ -40,7 +40,7 @@
 当前状态需要明确区分两件事：
 
 - **L2 能力是否存在**：已经存在，且已在 `test-data/` 与代表 preset 上跑通
-- **L2 是否已经变成稳定日常入口**：已经完成第一版收口；当前重点不再是“再造 compare”，而是继续维护 `gate-summary.json` / `risk-report.json` / `--gate-profile` / `--enforce-gate` 对应的代表集边界，让 `PASS / WARN / FAIL` 的语义长期稳定；其中应优先看 `gate-summary.json` 的结构字段，而不是沿用 gate profile 的旧描述文字
+- **L2 是否已经变成稳定日常入口**：代表集的第一版收口已经完成；当前重点不再是“再造 compare”，而是把同一套 `gate-summary.json` / `risk-report.json` / `--gate-profile` / `--enforce-gate` 语义稳定扩展到尽可能多的已采集样本，并继续维持 `PASS / WARN / FAIL` 的自动化边界。其中应优先看 `gate-summary.json` 的结构字段，而不是沿用 gate profile 的旧描述文字；若某条新路径仍要求人工批量枚举 `ShaderSourceDiagnostics` 样本，就还不能视为已经收口
 
 ## 已实现的 canonical summary
 
@@ -173,11 +173,11 @@
 ### 当前代表样本
 
 - 当前 L2 只继续向主线暴露四条 active 事实：
-  - **当前跨机器硬默认 gate 已没有 compile failure；`test_struct_array_field` 已转为 blocked sample**
-  - **当前跨机器硬默认代表集中的活跃 `L2` 已缩到 `2` 个**：`test_fast_math_select`、`test_intrinsic_vector_icmp_zext`；`test_casts` 已退出活跃 debt，仅保留为定向回归样本
-  - **`risk-report.json` 已经把 `samplesForL3` 与 `blockedSamples` 分开**：前者应作为 `SV-004F` 的默认入口，后者应继续优先停在离线层
-  - **代表 preset 的当前边界契约应以 `gate-summary.json` / `risk-report.json` 为准；`preset-manifest.json` 更适合描述代表集发现与 artifact 锚点，不应单独充当 active debt 事实来源**
-- 更细的当前数值、artifact 锚点与契约摘要统一下沉到 `08-当前代表集与Gate契约参考.md`；旧 fail 解释与历史分布统一下沉到 `07-首轮基线与历史进展归档.md`（均为参考，当前主线推进**不必须读取**)
+  - **代表 preset 的当前边界契约应以 `gate-summary.json` / `risk-report.json` 为准；`preset-manifest.json` 更适合描述发现与 artifact 锚点，不应单独充当 active debt 事实来源**
+  - **`risk-report.json` 已经把 `samplesForL3`、`blockedSamples`、已解决 debt 与推荐动作拆开**：这保证了 L2 可以先给出“继续停在离线层 / 升级到最小 L3 / 明确阻断”的结构化判断
+  - **同一套 L2 报告语义应继续覆盖 `test-data-representatives` 与 `ShaderCorpus` 全量样本**；当前最高优先级不是重写代表集 debt 描述，而是把更多已采集样本纳入同样的结构化判断
+  - **`ShaderSourceDiagnostics` failure-path 样本仍只适合作为显式 `--ll` 的定向补充输入**；在形成 agent 可自主的批量入口前，它仍是 active gap，而不是默认主线事实
+- 更细的当前样本键、数值、artifact 锚点与契约摘要统一下沉到 `08-当前代表集与Gate契约参考.md`；旧 fail 解释与历史分布统一下沉到 `07-首轮基线与历史进展归档.md`（均为参考，当前主线推进**不必须读取**)
 
 ## 报告结构
 
@@ -240,17 +240,17 @@
 - 不是形式化语义证明器
 - 不是完整 IR AST / CFG 等价器
 - 还不能回答“行为是否一致”
-- 当前批量大盘仍可能很噪，但默认主线不应因此直接扩大 live 验证；更合理的顺序仍是先通过 `SV-003` 维护代表集与默认 gate，再让 `SV-004` 只消费最小、最有信息量的候选
+- 当前批量大盘仍可能很噪，但默认主线不应因此直接扩大 live 验证；更合理的顺序仍是先通过 `SV-003` 守住代表集与默认 gate，再以 `SV-003F` 让全量已采集样本尽可能进入 L1/L2，最后才让 `SV-004` 只消费最小、最有信息量的候选
 - 当前已经有第一版机器可执行的升级/止损边界：代表 preset 会通过 `gate-summary.json` / `--enforce-gate` 将“已知 debt”与“新增回归”区分开；更细的历史相位变化已下沉到 `07-首轮基线与历史进展归档.md`（历史参考，**不必须读取**）
 
 ## 对下一步的直接启示
 
 `SV-002` 完成后，当前最合理的下一步不是直接跳到 live，而是：
 
-1. 持续守住 `SV-003`，确保 `test-data-representatives` 这个跨机器硬默认入口不回退，并把 `ShaderCorpus` 继续限制为本地增强证据
-2. 继续复用 `SV-006` 已经落地的 `layeredDecision`，只让当前活跃候选进入最小升级链路，而不是重新扩大范围
-3. 把 `SV-004` 的默认执行面继续维持在最小边界：`test_fast_math_select` 走 compute-first，`test_intrinsic_vector_icmp_zext` 走已准入的最小 render-second，当前两者都已稳定 `pass`；当前更该做的是继续守住 oracle 与 `.ll` 的同步性、不要为覆盖率重新扩大候选范围，而不是回到“要不要升级更多样本”的阶段
-4. 对 blocked sample `test_struct_array_field` 保持单独跟踪，而不再沿用过时的 compile blocker 口径
+1. 持续守住 `SV-003`，确保 `test-data-representatives` 这个跨机器硬默认入口不回退
+2. 以 `SV-003F` 作为当前唯一实际执行面，把 `ShaderCorpus` 全量已采集样本尽可能纳入同一套 `compare-summary / risk-report / gate-summary` 语义，而不是继续把 `ShaderCorpus` 只当本地增强证据
+3. 继续复用 `SV-006` 已经落地的 `layeredDecision`，但把重点放在“更多已采集样本是否仍能自动得到稳定的 L2 判断”上；对 `ShaderSourceDiagnostics` failure-path 样本，当前只允许用显式 `--ll` 做定向 blocker 复核，不应把人工批量枚举写回默认流程
+4. 只有在 `SV-003F` 的 L1/L2 全量样本证据仍不足时，才回到 `05-L3-最小行为测试.md` 复用既有最小行为边界；L3 此时承担的是后置升级口，而不是当前主线
 
 ## 完成标准回顾
 

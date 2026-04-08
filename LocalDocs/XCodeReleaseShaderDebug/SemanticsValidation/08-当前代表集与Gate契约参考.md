@@ -192,11 +192,12 @@
 ### 默认应统一这样理解
 
 1. `test-data-representatives` = **跨机器硬默认 gate**
-2. `behavior-summary.json` = **当前默认 L3 证据**
-3. `behavior-summary.test-casts-verification.json` = **定向复核入口，不是默认执行面**
-4. `daily-default` = **本机已有样本时的一键增强入口**
-5. `local-corpus-representatives` = **更窄的本地观察入口**
-6. `test-data-batch` = **参考批量快照，不承担日常阻断职责**
+2. `python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus --allow-failures` = **当前最高优先级的本机 L1/L2 扩展主线**，但它不是固定 preset 契约
+3. `behavior-summary.json` = **当前默认 L3 证据（后置升级口）**
+4. `behavior-summary.test-casts-verification.json` = **定向复核入口，不是默认执行面**
+5. `daily-default` = **本机已有样本时的一键增强入口**
+6. `local-corpus-representatives` = **更窄的本地观察入口**
+7. `test-data-batch` = **参考批量快照，不承担日常阻断职责**
 
 ### 对 `SV-003` / `SV-004` / `SV-006` 最有用的当前事实
 
@@ -219,6 +220,12 @@
 python3 Scripts/test_ir_canonical_compare.py
 python3 Scripts/test_ir_semantics_roundtrip_runner.py
 python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representatives --allow-failures --enforce-gate
+```
+
+### 当前最高优先级本机 L1/L2 主线
+
+```bash
+python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus --allow-failures
 ```
 
 ### 默认行为证据

@@ -326,17 +326,34 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
         self.assertEqual(len(plan["errors"]), 0)
         self.assertEqual(len(plan["deferredSamples"]), 0)
 
+    def test_build_behavior_plan_keeps_test_casts_as_explicit_verification_path(self) -> None:
+        gate_summary = self.make_gate_summary()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            roundtrip_report = self.make_roundtrip_report(temp_root)
+            plan = behavior_runner.build_behavior_plan(
+                gate_summary,
+                roundtrip_report,
+                sample_keys=["test_casts"],
+                output_root=temp_root,
+            )
+
+        self.assertEqual(
+            [item["sampleKey"] for item in plan["readySamples"]],
+            ["test_casts"],
+        )
+        self.assertEqual(len(plan["errors"]), 0)
+        self.assertEqual(len(plan["deferredSamples"]), 0)
+
     def test_build_summary_passes_when_compute_and_fragment_cases_pass(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             plan = {
                 "candidateSampleKeys": [
-                    "test_casts",
                     "test_fast_math_select",
                     "test_intrinsic_vector_icmp_zext",
                 ],
                 "readySamples": [
-                    {"sampleKey": "test_casts"},
                     {"sampleKey": "test_fast_math_select"},
                     {"sampleKey": "test_intrinsic_vector_icmp_zext"},
                 ],
@@ -344,7 +361,6 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
                 "errors": [],
             }
             executed_results = [
-                {"sampleKey": "test_casts", "status": "pass"},
                 {"sampleKey": "test_fast_math_select", "status": "pass"},
                 {"sampleKey": "test_intrinsic_vector_icmp_zext", "status": "pass"},
             ]
@@ -358,7 +374,7 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
             )
 
         self.assertEqual(summary["status"], "pass")
-        self.assertEqual(summary["executedSampleCount"], 3)
+        self.assertEqual(summary["executedSampleCount"], 2)
         self.assertEqual(summary["deferredSampleCount"], 0)
         self.assertIn("全部通过", summary["summary"])
 

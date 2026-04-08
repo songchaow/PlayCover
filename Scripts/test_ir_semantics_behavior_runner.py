@@ -445,6 +445,27 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
             report_path=custom_report_path,
         )
 
+    def test_validate_default_output_contract_allows_custom_output_root_for_explicit_sample_verification(self) -> None:
+        parser = behavior_runner.build_parser()
+        gate_summary = self.make_gate_summary()
+        custom_output_root = REPO_ROOT / "build" / "semantics-validation" / "behavior" / "manual-probe"
+        custom_report_path = custom_output_root / "behavior-summary.test-casts-verification.json"
+        args = parser.parse_args([
+            "--sample-key",
+            "test_casts",
+            "--output-root",
+            str(custom_output_root),
+            "--report-file",
+            str(custom_report_path),
+        ])
+
+        behavior_runner.validate_default_output_contract(
+            args,
+            gate_summary,
+            output_root=custom_output_root,
+            report_path=custom_report_path,
+        )
+
     def test_build_behavior_plan_defers_registry_missing_sample_without_breaking_ready_samples(self) -> None:
         gate_summary = self.make_gate_summary()
         with tempfile.TemporaryDirectory() as temp_dir:

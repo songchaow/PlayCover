@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
-ir_semantics_behavior_runner.py — 执行 SV-004 的 compute-first 最小行为测试。
+ir_semantics_behavior_runner.py — 执行 SV-004 的最小行为测试（compute-first + render-second）。
 
 目标：
 - 直接消费 `gate-summary.json` 里的 `layeredDecision.l3Plan.candidateSampleKeys`
-- 从当前活跃 L2 候选里只挑第一批 compute 样本进入行为测试
-- 使用 `test-data/*.metal` 作为 reference MSL，和 round-trip 生成的 MSL 做真实 Metal compute 对比
+- 从当前活跃 L2 候选里挑最小、最稳定的本地行为样本进入验证
+- 使用 `test-data/*.metal` 作为 reference MSL，和 round-trip 生成的 MSL 做 reference-vs-generated 对跑
 - 输出结构化 `behavior-summary.json`
 
-当前默认执行面只覆盖：
-- `test_fast_math_select`
+当前默认执行面覆盖：
+- `test_fast_math_select`（compute-first）
+- `test_intrinsic_vector_icmp_zext`（offscreen render-second）
 
 补充说明：
 - `test_casts` 已退出活跃 `L2` 候选；默认不会再随 `gate-summary.json` 自动执行
 - 若需要复核 `air.convert` 相关回归，可显式传 `--sample-key test_casts` 做定向验证
-- 像 `test_intrinsic_vector_icmp_zext` 这类 fragment/render 样本会被结构化标记为 deferred，继续留在 render-second / L4 之前，不会被误抬进第一批 compute-only harness。
+- render-second 仍保持单命令、本地、无 UI、无工作区外修改；若后续样本做不到这点，仍应继续 deferred，而不是回退到 live/人工流程
 """
 
 from __future__ import annotations
@@ -47,7 +48,13 @@ DEFAULT_GATE_SUMMARY = (
     / "test-data-representatives"
     / "gate-summary.json"
 )
-DEFAULT_SWIFT_RUNNER = SCRIPTS_DIR / "metal_compute_behavior_runner.swift"
+DEFAULT_COMPUTE_SWIFT_RUNNER = SCRIPTS_DIR / "metal_compute_behavior_runner.swift"
+DEFAULT_FRAGMENT_SWIFT_RUNNER = SCRIPTS_DIR / "metal_fragment_behavior_runner.swift"
+EXPECTED_FUNCTION_TYPE_BY_EXECUTION_KIND = {
+    "compute": "kernel",
+    "fragment": "fragment",
+    "vertex": "vertex",
+}
 
 
 L3_BEHAVIOR_SAMPLE_SPECS: dict[str, dict[str, Any]] = {
@@ -229,7 +236,27 @@ L3_BEHAVIOR_SAMPLE_SPECS: dict[str, dict[str, Any]] = {
     "test_intrinsic_vector_icmp_zext": {
         "executionKind": "fragment",
         "phase": "render-second",
-        "deferredReason": "当前第一阶段只实现 compute-first harness；fragment/render 样本继续后置到 render-second。",
+        "comparisonMode": "reference_msl",
+        "whySelected": "覆盖 fragment lowering 里的 clamp / vector icmp / zext <2 x i1> → uchar2 组合路径。",
+        "cases": [
+            {
+                "name": "test_intrinsic_vector_icmp_zext",
+                "entryPoint": "xlatMtlMain",
+                "renderTarget": {
+                    "width": 4,
+                    "height": 4,
+                    "pixelFormat": "rgba16Float",
+                },
+                "comparisons": [
+                    {
+                        "attachmentIndex": 0,
+                        "mode": "approx",
+                        "absTolerance": 1e-3,
+                        "relTolerance": 1e-3,
+                    }
+                ],
+            }
+        ],
     },
 }
 
@@ -248,7 +275,7 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="执行 SV-004 compute-first 最小行为测试")
+    parser = argparse.ArgumentParser(description="执行 SV-004 最小行为测试（compute-first + render-second）")
     parser.add_argument(
         "--gate-summary",
         default=str(DEFAULT_GATE_SUMMARY),
@@ -275,8 +302,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--swift-runner",
-        default=str(DEFAULT_SWIFT_RUNNER),
-        help="Metal compute Swift harness 脚本路径",
+        default=str(DEFAULT_COMPUTE_SWIFT_RUNNER),
+        help="Metal compute Swift harness 脚本路径（兼容旧参数名）",
+    )
+    parser.add_argument(
+        "--fragment-swift-runner",
+        default=str(DEFAULT_FRAGMENT_SWIFT_RUNNER),
+        help="Metal fragment/render Swift harness 脚本路径",
     )
     parser.add_argument(
         "--quiet",
@@ -373,7 +405,7 @@ def flatten_numeric_values(values: list[Any]) -> list[float | int]:
     return flattened
 
 
-def build_case_spec(case: dict[str, Any]) -> dict[str, Any]:
+def build_compute_case_spec(case: dict[str, Any]) -> dict[str, Any]:
     buffers: list[dict[str, Any]] = []
     for buffer in case.get("buffers") or []:
         normalized = {
@@ -394,6 +426,28 @@ def build_case_spec(case: dict[str, Any]) -> dict[str, Any]:
         "buffers": buffers,
         "comparisons": list(case.get("comparisons") or []),
     }
+
+
+def build_fragment_case_spec(case: dict[str, Any]) -> dict[str, Any]:
+    render_target = dict(case.get("renderTarget") or {})
+    return {
+        "name": str(case["name"]),
+        "entryPoint": str(case["entryPoint"]),
+        "renderTarget": {
+            "width": int(render_target.get("width") or 1),
+            "height": int(render_target.get("height") or 1),
+            "pixelFormat": str(render_target.get("pixelFormat") or "rgba16Float"),
+        },
+        "comparisons": list(case.get("comparisons") or []),
+    }
+
+
+def build_case_spec(case: dict[str, Any], execution_kind: str) -> dict[str, Any]:
+    if execution_kind == "compute":
+        return build_compute_case_spec(case)
+    if execution_kind == "fragment":
+        return build_fragment_case_spec(case)
+    raise ValueError(f"unsupported execution kind for case spec: {execution_kind}")
 
 
 def build_behavior_plan(
@@ -425,13 +479,14 @@ def build_behavior_plan(
             continue
 
         execution_kind = str(sample_spec.get("executionKind") or "unknown")
-        if execution_kind != "compute":
+        expected_function_type = EXPECTED_FUNCTION_TYPE_BY_EXECUTION_KIND.get(execution_kind)
+        if expected_function_type is None:
             deferred_samples.append(
                 {
                     "sampleKey": sample_key,
                     "status": "deferred",
                     "reason": sample_spec.get("deferredReason")
-                    or "当前 compute-first 第一阶段不覆盖非 compute 样本。",
+                    or f"当前 behavior runner 还不支持 executionKind={execution_kind} 的自动化路径。",
                     "executionKind": execution_kind,
                     "phase": str(sample_spec.get("phase") or "later"),
                 }
@@ -454,6 +509,7 @@ def build_behavior_plan(
             str(name): str(function_type)
             for name, function_type in zip(generated_function_names, generated_function_types)
         }
+        case_entry_points = {str(case.get("entryPoint")) for case in sample_spec.get("cases") or []}
         missing_case_entries = [
             str(case.get("entryPoint"))
             for case in sample_spec.get("cases") or []
@@ -469,21 +525,24 @@ def build_behavior_plan(
             )
             continue
 
-        non_compute_entries = [
+        mismatched_entries = [
             entry_point
             for entry_point, function_type in generated_type_by_name.items()
-            if entry_point in {str(case.get("entryPoint")) for case in sample_spec.get("cases") or []}
-            and function_type != "kernel"
+            if entry_point in case_entry_points and function_type != expected_function_type
         ]
-        if non_compute_entries:
+        if mismatched_entries:
             deferred_samples.append(
                 {
                     "sampleKey": sample_key,
                     "status": "deferred",
-                    "reason": "当前 compute-first 第一阶段只接受 kernel entry；该样本的生成产物已经不再是纯 compute 入口。",
+                    "reason": (
+                        f"当前行为规格期望 {expected_function_type} entry；"
+                        f"但生成产物里这些入口的 shader 类型不匹配：{', '.join(mismatched_entries)}"
+                    ),
                     "executionKind": execution_kind,
                     "phase": "shape-drift",
-                    "entries": non_compute_entries,
+                    "entries": mismatched_entries,
+                    "expectedFunctionType": expected_function_type,
                 }
             )
             continue
@@ -525,7 +584,7 @@ def build_behavior_plan(
                 "candidateSourcePath": str(Path(str(candidate_source)).expanduser().resolve()),
                 "artifactSpecPath": str((output_root / "behavior-artifacts" / f"{sample_key}.spec.json").resolve()),
                 "artifactResultPath": str((output_root / "behavior-artifacts" / f"{sample_key}.result.json").resolve()),
-                "cases": [build_case_spec(case) for case in sample_spec.get("cases") or []],
+                "cases": [build_case_spec(case, execution_kind) for case in sample_spec.get("cases") or []],
             }
         )
 
@@ -546,6 +605,20 @@ def build_sample_spec_payload(sample: dict[str, Any]) -> dict[str, Any]:
         "candidateSourcePath": sample["candidateSourcePath"],
         "cases": list(sample.get("cases") or []),
     }
+
+
+def select_swift_runner_for_sample(
+    sample: dict[str, Any],
+    *,
+    compute_swift_runner: Path,
+    fragment_swift_runner: Path,
+) -> Path:
+    execution_kind = str(sample.get("executionKind") or "compute")
+    if execution_kind == "compute":
+        return compute_swift_runner
+    if execution_kind == "fragment":
+        return fragment_swift_runner
+    raise ValueError(f"unsupported execution kind for swift runner selection: {execution_kind}")
 
 
 def run_sample_behavior(
@@ -615,15 +688,15 @@ def summarize_status(executed_results: list[dict[str, Any]], deferred_samples: l
         if item.get("status") not in {"pass"}
     ]
     if failed:
-        return ("fail", f"有 {len(failed)} 个 compute 样本未通过行为对比。")
+        return ("fail", f"有 {len(failed)} 个行为样本未通过 reference-vs-generated 对比。")
 
     if deferred_samples:
         return (
             "warn",
-            f"已完成 {len(executed_results)} 个 compute 样本行为测试，另有 {len(deferred_samples)} 个候选按 compute-first 边界继续后置。",
+            f"已完成 {len(executed_results)} 个行为样本测试，另有 {len(deferred_samples)} 个候选继续后置。",
         )
 
-    return ("pass", f"已完成 {len(executed_results)} 个 compute 样本行为测试，全部通过。")
+    return ("pass", f"已完成 {len(executed_results)} 个行为样本测试，全部通过。")
 
 
 def build_summary(
@@ -686,11 +759,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     gate_summary_path = Path(args.gate_summary).expanduser().resolve()
-    swift_runner = Path(args.swift_runner).expanduser().resolve()
+    compute_swift_runner = Path(args.swift_runner).expanduser().resolve()
+    fragment_swift_runner = Path(args.fragment_swift_runner).expanduser().resolve()
     if not gate_summary_path.is_file():
         raise SystemExit(f"gate-summary.json 不存在：{gate_summary_path}")
-    if not swift_runner.is_file():
-        raise SystemExit(f"Swift harness 不存在：{swift_runner}")
+    if not compute_swift_runner.is_file():
+        raise SystemExit(f"compute Swift harness 不存在：{compute_swift_runner}")
+    if not fragment_swift_runner.is_file():
+        raise SystemExit(f"fragment Swift harness 不存在：{fragment_swift_runner}")
 
     gate_summary = load_json(gate_summary_path)
     output_root = resolve_output_root(args, gate_summary)
@@ -713,6 +789,11 @@ def main(argv: list[str] | None = None) -> int:
 
     executed_results: list[dict[str, Any]] = []
     for sample in plan.get("readySamples") or []:
+        swift_runner = select_swift_runner_for_sample(
+            sample,
+            compute_swift_runner=compute_swift_runner,
+            fragment_swift_runner=fragment_swift_runner,
+        )
         executed_results.append(run_sample_behavior(sample, swift_runner=swift_runner, quiet=args.quiet))
 
     summary = build_summary(

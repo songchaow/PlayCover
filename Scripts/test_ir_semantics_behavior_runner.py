@@ -87,7 +87,7 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
 
         return {"results": results}
 
-    def test_build_behavior_plan_selects_compute_samples_and_defers_fragment_candidate(self) -> None:
+    def test_build_behavior_plan_readies_compute_and_fragment_candidates(self) -> None:
         gate_summary = self.make_gate_summary()
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = Path(temp_dir)
@@ -101,21 +101,30 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
 
         self.assertEqual(
             [item["sampleKey"] for item in plan["readySamples"]],
-            ["test_casts", "test_fast_math_select"],
+            ["test_casts", "test_fast_math_select", "test_intrinsic_vector_icmp_zext"],
         )
         self.assertEqual(len(plan["errors"]), 0)
-        self.assertEqual(len(plan["deferredSamples"]), 1)
-        self.assertEqual(plan["deferredSamples"][0]["sampleKey"], "test_intrinsic_vector_icmp_zext")
-        self.assertIn("compute-first", plan["deferredSamples"][0]["reason"])
+        self.assertEqual(len(plan["deferredSamples"]), 0)
+        fragment_sample = next(item for item in plan["readySamples"] if item["sampleKey"] == "test_intrinsic_vector_icmp_zext")
+        self.assertEqual(fragment_sample["executionKind"], "fragment")
+        self.assertEqual(fragment_sample["cases"][0]["renderTarget"]["width"], 4)
 
     def test_build_case_spec_flattens_vector_values(self) -> None:
         case = behavior_runner.L3_BEHAVIOR_SAMPLE_SPECS["test_casts"]["cases"][1]
-        built = behavior_runner.build_case_spec(case)
+        built = behavior_runner.build_case_spec(case, "compute")
 
         vector_input = next(item for item in built["buffers"] if item["name"] == "uintIn")
         self.assertEqual(vector_input["elementType"], "uint4")
         self.assertEqual(len(vector_input["values"]), 16)
         self.assertEqual(vector_input["values"][:4], [0, 1, 2, 3])
+
+    def test_build_case_spec_preserves_fragment_render_target(self) -> None:
+        case = behavior_runner.L3_BEHAVIOR_SAMPLE_SPECS["test_intrinsic_vector_icmp_zext"]["cases"][0]
+        built = behavior_runner.build_case_spec(case, "fragment")
+
+        self.assertEqual(built["entryPoint"], "xlatMtlMain")
+        self.assertEqual(built["renderTarget"]["pixelFormat"], "rgba16Float")
+        self.assertEqual(built["comparisons"][0]["attachmentIndex"], 0)
 
     def test_build_behavior_plan_keeps_current_default_boundary_narrowed(self) -> None:
         gate_summary = {
@@ -155,15 +164,12 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
 
         self.assertEqual(
             [item["sampleKey"] for item in plan["readySamples"]],
-            ["test_fast_math_select"],
+            ["test_fast_math_select", "test_intrinsic_vector_icmp_zext"],
         )
         self.assertEqual(len(plan["errors"]), 0)
-        self.assertEqual(
-            [item["sampleKey"] for item in plan["deferredSamples"]],
-            ["test_intrinsic_vector_icmp_zext"],
-        )
+        self.assertEqual(len(plan["deferredSamples"]), 0)
 
-    def test_build_summary_warns_when_compute_cases_pass_but_fragment_candidate_is_deferred(self) -> None:
+    def test_build_summary_passes_when_compute_and_fragment_cases_pass(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             plan = {
@@ -172,19 +178,18 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
                     "test_fast_math_select",
                     "test_intrinsic_vector_icmp_zext",
                 ],
-                "readySamples": [{"sampleKey": "test_casts"}, {"sampleKey": "test_fast_math_select"}],
-                "deferredSamples": [
-                    {
-                        "sampleKey": "test_intrinsic_vector_icmp_zext",
-                        "status": "deferred",
-                        "reason": "当前第一阶段只实现 compute-first harness；fragment/render 样本继续后置到 render-second。",
-                    }
+                "readySamples": [
+                    {"sampleKey": "test_casts"},
+                    {"sampleKey": "test_fast_math_select"},
+                    {"sampleKey": "test_intrinsic_vector_icmp_zext"},
                 ],
+                "deferredSamples": [],
                 "errors": [],
             }
             executed_results = [
                 {"sampleKey": "test_casts", "status": "pass"},
                 {"sampleKey": "test_fast_math_select", "status": "pass"},
+                {"sampleKey": "test_intrinsic_vector_icmp_zext", "status": "pass"},
             ]
             summary = behavior_runner.build_summary(
                 gate_summary_path=root / "gate-summary.json",
@@ -195,10 +200,10 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
                 executed_results=executed_results,
             )
 
-        self.assertEqual(summary["status"], "warn")
-        self.assertEqual(summary["executedSampleCount"], 2)
-        self.assertEqual(summary["deferredSampleCount"], 1)
-        self.assertIn("后置", summary["summary"])
+        self.assertEqual(summary["status"], "pass")
+        self.assertEqual(summary["executedSampleCount"], 3)
+        self.assertEqual(summary["deferredSampleCount"], 0)
+        self.assertIn("全部通过", summary["summary"])
 
     def test_build_behavior_plan_defers_registry_missing_sample_without_breaking_ready_samples(self) -> None:
         gate_summary = self.make_gate_summary()
@@ -233,13 +238,13 @@ class IRSemanticsBehaviorRunnerTests(unittest.TestCase):
 
     def test_summarize_status_returns_fail_when_executed_sample_does_not_pass(self) -> None:
         status, summary = behavior_runner.summarize_status(
-            executed_results=[{"sampleKey": "test_fast_math_select", "status": "fail"}],
+            executed_results=[{"sampleKey": "test_intrinsic_vector_icmp_zext", "status": "fail"}],
             deferred_samples=[],
             errors=[],
         )
 
         self.assertEqual(status, "fail")
-        self.assertIn("未通过行为对比", summary)
+        self.assertIn("reference-vs-generated", summary)
 
     def test_summarize_status_returns_pass_when_all_samples_pass_without_deferred(self) -> None:
         status, summary = behavior_runner.summarize_status(

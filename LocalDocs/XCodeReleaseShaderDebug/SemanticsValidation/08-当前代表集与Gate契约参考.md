@@ -125,6 +125,7 @@
   - `test_casts`
   - `test_fast_math_select`
   - `test_intrinsic_vector_icmp_zext`
+- 但当前 `SV-004` 的**实际执行边界**仍应保持更窄：`test_casts`、`test_fast_math_select` 进入 compute-first；`test_intrinsic_vector_icmp_zext` 继续作为 render-second deferred，而不是今天就必须跑的默认步骤
 - `test_struct_array_field` 当前仍属于 **blocked sample**，默认不应直接进入第一批 `L3` 行为测试
 
 ## 当前默认命令参考

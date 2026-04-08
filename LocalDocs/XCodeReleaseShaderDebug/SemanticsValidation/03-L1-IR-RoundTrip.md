@@ -226,24 +226,18 @@ L1 只做一件事：**把 round-trip 链路本身做稳定。**
 本轮验证结果：
 
 - 显式单样本 smoke：`build/semantics-validation/roundtrip/explicit-smoke/`
-- `test-data/` 批量目录：`build/semantics-validation/roundtrip/test-data-batch/roundtrip-summary.json`
-  - 当前仓库里保留的是一份**批量参考快照**：`27` 个样本中 `26` 个 round-trip 成功，`1` 个 compile 失败，`0` 个 llvm-dis 失败
-  - 风险分布：`L0 = 1 / L1 = 3 / L2 = 3 / L3 = 20`
-  - 由于这份批量快照早于代表集新口径收敛，里面仍保留 `test_struct_array_field` 的旧 compile failure 记录；它只承担**参考批量基线**角色，不应用来描述当前默认 gate 合同
 - `test-data-representatives` 固定入口：`build/semantics-validation/roundtrip/test-data-representatives/roundtrip-summary.json`
-  - `8` 个样本中 `8` 个 round-trip 成功，`0` 个 compile 失败，`0` 个 llvm-dis 失败
-  - 风险分布：`L0 = 1 / L1 = 3 / L2 = 3 / L3 = 1`
-  - `gate-summary.json` 当前为 `WARN`；active known debt 是 `1` 个 blocked sample + `3` 个 `L2` samples
+  - 当前保持 `8/8` round-trip 成功，`gate-summary.json = WARN`
+  - 当前 active known debt 是 `1` 个 blocked sample + `3` 个 `L2` samples
+  - 这是 L1/L2 当前最应优先守住的**跨机器硬默认入口**
 - `daily-default` 一键增强入口：`build/semantics-validation/roundtrip/daily-default/roundtrip-summary.json`
-  - `13` 个样本中 `13` 个 round-trip 成功，`0` 个 compile 失败
-  - 风险分布：`L0 = 1 / L1 = 3 / L2 = 5 / L3 = 4`
+  - 当前保持 `13/13` round-trip 成功
   - `minimumExpectedJobCount = 8`、`expectedJobCount = 13`；若本机缺少部分 `ShaderCorpus` 代表样本，应降级为 `WARN` 而不是要求用户补环境
 - `local-corpus-representatives` 固定入口：`build/semantics-validation/roundtrip/local-corpus-representatives/roundtrip-summary.json`
   - 当前固定 `5` 个本地 `ShaderCorpus` 代表模块全部 round-trip 成功
-  - 风险分布：`L0 = 0 / L1 = 0 / L2 = 1 / L3 = 4`
-  - `gate-summary.json` 当前为 `WARN`，继续承担本地增强证据角色
+  - 继续承担本地增强证据角色，而不是跨机器硬默认入口
+- `test-data-batch` 当前只保留为**参考批量快照**；详细旧分布、旧 compile failure 口径与历史样本名单统一下沉到 `07-首轮基线与历史进展归档.md`、`08-当前代表集与Gate契约参考.md`（参考信息，当前日常推进**不必须读取**）
 - 当前代表默认 gate 中已不再有 compile-stage blocker：`test_struct_array_field` 已转为 blocked sample
-- 更细的样本名单、当前契约摘要与阶段性提交脉络已下沉到 `07-首轮基线与历史进展归档.md`、`08-当前代表集与Gate契约参考.md`（参考信息，当前日常推进**不必须读取**）
 
 ## 完成标准
 

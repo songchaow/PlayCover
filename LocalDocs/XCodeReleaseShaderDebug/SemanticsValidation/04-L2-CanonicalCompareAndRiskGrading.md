@@ -165,17 +165,13 @@
 
 输出目录：`build/semantics-validation/roundtrip/test-data-batch/`
 
-当前仓库里保留的是一份**批量参考快照**：
+当前仓库里保留的是一份**较早的批量参考快照**，它仍有失败聚类与历史对照价值，但已经**不是**当前默认 gate 的 active 口径。
 
-- `27` 个样本中 `26` 个 round-trip 成功
-- `1` 个样本在 compile 阶段失败：`test_struct_array_field`
-- 风险分布：
-  - `L0 = 1`
-  - `L1 = 3`
-  - `L2 = 3`
-  - `L3 = 20`
-- 其中 `test_int_literal_half_suffix` 与 `test_vector_select_global_gep` 已因 intrinsic alias 归一化和 fast-math 噪声下调而从历史 `L2` 收敛到 `L1`
-- 这份批量快照早于当前硬默认 gate 的最新代表产物，因此只适合作为参考批量基线，不应用来描述当前默认 gate 的 active 口径
+处理原则：
+
+- 这份快照只用于参考批量基线、失败聚类与历史对照
+- 当前 active 口径应统一回到 `test-data-representatives` 的固定输出目录与 `08-当前代表集与Gate契约参考.md`
+- 更细的旧分布、旧 compile failure 背景与样本名单统一下沉到 `07-首轮基线与历史进展归档.md`（历史参考，当前日常推进**不必须读取**）
 
 ### 当前代表样本
 

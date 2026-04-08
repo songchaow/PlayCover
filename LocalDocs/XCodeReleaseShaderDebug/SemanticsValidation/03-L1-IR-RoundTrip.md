@@ -67,11 +67,17 @@ regenerated.ll
 - `--metal-sdk`
 - `--metal-arg`
 - `--quiet`
+- `--preset test-data-representatives`
+- `--preset test-data-batch`
+- `--preset local-corpus-representatives`
+- `--preset daily-default`
 
 补充说明：
 
-- 当前**没有**单独的 `--test-data` 快捷选项
-- 因此 `SV-003` 的一个实际工作点，就是把 `test-data/` 代表样本的固定入口进一步收口，避免每次手工挑文件
+- `test-data-representatives` 当前固定为 `8` 个样本：`L0 / L1 / 5 个 L2 / compile blocker`
+- `local-corpus-representatives` 当前固定为本机已存在的 `5` 个 `ShaderCorpus` 代表模块
+- `daily-default` 当前等于：`test-data-representatives + local-corpus-representatives`
+- `SV-003` 当前已不再依赖“每次手工挑文件”，而是优先复用上述固定入口
 
 ### 输出目录
 
@@ -225,9 +231,15 @@ L1 只做一件事：**把 round-trip 链路本身做稳定。**
 
 - 显式单样本 smoke：`build/semantics-validation/roundtrip/explicit-smoke/`
 - `test-data/` 首轮批量报告：`build/semantics-validation/roundtrip/test-data-batch/roundtrip-summary.json`
-- 批量统计：`27` 个样本中 `26` 个 round-trip 成功，`1` 个 compile 失败，`0` 个 llvm-dis 失败
+- `test-data-representatives` 固定入口：`build/semantics-validation/roundtrip/test-data-representatives/roundtrip-summary.json`
+  - `8` 个样本中 `7` 个 round-trip 成功，`1` 个 compile 失败，`0` 个 llvm-dis 失败
+  - 风险分布：`L0 = 1 / L1 = 1 / L2 = 5 / L3 = 1`
+- `local-corpus-representatives` 固定入口：`build/semantics-validation/roundtrip/local-corpus-representatives/roundtrip-summary.json`
+  - 当前固定 `5` 个本地 `ShaderCorpus` 代表模块全部 round-trip 成功
+  - 风险分布：`L0 = 0 / L1 = 0 / L2 = 1 / L3 = 4`
+- `test-data-batch` 批量统计：`27` 个样本中 `26` 个 round-trip 成功，`1` 个 compile 失败，`0` 个 llvm-dis 失败
 - 当前首个 compile-stage blocker：`test_struct_array_field`
-- 更细的样本名单与阶段性提交脉络已下沉到 `07-首轮基线与历史进展归档.md`
+- 更细的样本名单、固定代表集与阶段性提交脉络已下沉到 `07-首轮基线与历史进展归档.md`
 
 ## 完成标准
 

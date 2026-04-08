@@ -21,6 +21,14 @@ ir_semantics_roundtrip_runner.py — 建立离线 IR -> MSL -> AIR -> IR round-t
         --bundle-id com.miHoYo.Yuanshen \
         --limit 10 \
         --allow-failures
+
+    python3 Scripts/ir_semantics_roundtrip_runner.py \
+        --preset test-data-representatives \
+        --allow-failures
+
+    python3 Scripts/ir_semantics_roundtrip_runner.py \
+        --preset daily-default \
+        --allow-failures
 """
 
 from __future__ import annotations
@@ -40,6 +48,42 @@ import corpus_replay_runner as replay_runner
 import ir_canonical_compare as canonical_compare
 
 
+TEST_DATA_RELATIVE_DIR = Path("LocalDocs") / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data"
+TEST_DATA_REPRESENTATIVE_FILES = [
+    "test_fast_math_binary.ll",
+    "test_scalar_select_vector.ll",
+    "test_casts.ll",
+    "test_fast_math_select.ll",
+    "test_int_literal_half_suffix.ll",
+    "test_intrinsic_vector_icmp_zext.ll",
+    "test_vector_select_global_gep.ll",
+    "test_struct_array_field.ll",
+]
+LOCAL_SHADERCORPUS_DEFAULT_ROOT = Path.home() / "Library/Containers/io.playcover.PlayCover/ShaderCorpus"
+LOCAL_SHADERCORPUS_REPRESENTATIVES = [
+    {
+        "bundleId": "com.miHoYo.Yuanshen",
+        "moduleKey": "db41fcfc1517b115d274f867634e00d08301415d450ca94eb04ca95638e41933",
+    },
+    {
+        "bundleId": "com.papegames.lysk",
+        "moduleKey": "6c08f93015cda305e6c675457bab3acfcf7febab294577d27cbe76317e2b1f45",
+    },
+    {
+        "bundleId": "com.papegames.lysk",
+        "moduleKey": "2646854687f12045e370b300deefca49e5c1bcd0a22b8755cd4af656bced5348",
+    },
+    {
+        "bundleId": "com.papegames.lysk",
+        "moduleKey": "ec0c6f0e72d6fc64daf4d5955cd1ea2cc5e729b0f988b1e857d13bfb54c7f6c3",
+    },
+    {
+        "bundleId": "com.tencent.tmgp.speedmobile",
+        "moduleKey": "1f5e65cd9f685b3673dd6fac9b81e3af82b5a6d436f8f1824919726483c967ad",
+    },
+]
+
+
 def repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
@@ -47,6 +91,96 @@ def repo_root() -> Path:
 def default_output_root(root: Path) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     return root / "build" / "semantics-validation" / "roundtrip" / timestamp
+
+
+def semantics_output_root(root: Path, name: str) -> Path:
+    return root / "build" / "semantics-validation" / "roundtrip" / name
+
+
+def test_data_root(root: Path) -> Path:
+    return root / TEST_DATA_RELATIVE_DIR
+
+
+def dedupe_preserving_order(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def make_test_data_paths(root: Path, file_names: list[str]) -> list[str]:
+    directory = test_data_root(root)
+    return [str((directory / file_name).resolve()) for file_name in file_names]
+
+
+def build_roundtrip_presets(root: Path) -> dict[str, dict[str, Any]]:
+    test_data_directory = test_data_root(root)
+    test_data_batch_inputs = [str(path.resolve()) for path in sorted(test_data_directory.glob("*.ll"))]
+    representative_inputs = make_test_data_paths(root, TEST_DATA_REPRESENTATIVE_FILES)
+    local_bundle_ids = dedupe_preserving_order(
+        [item["bundleId"] for item in LOCAL_SHADERCORPUS_REPRESENTATIVES]
+    )
+    local_module_keys = [item["moduleKey"] for item in LOCAL_SHADERCORPUS_REPRESENTATIVES]
+    local_corpus_root = str(LOCAL_SHADERCORPUS_DEFAULT_ROOT)
+
+    return {
+        "test-data-representatives": {
+            "description": "固定 8 个 test-data 代表样本（L0/L1/L2 代表 + compile blocker）。",
+            "ll_inputs": representative_inputs,
+            "suggested_output_root": str(semantics_output_root(root, "test-data-representatives")),
+        },
+        "test-data-batch": {
+            "description": "对 Road E/test-data 下全部 .ll 样本执行批量 round-trip。",
+            "ll_inputs": test_data_batch_inputs,
+            "suggested_output_root": str(semantics_output_root(root, "test-data-batch")),
+        },
+        "local-corpus-representatives": {
+            "description": "复用当前机器已存在的本地 ShaderCorpus 代表样本（缺样本时自动降级为 warning）。",
+            "corpus_roots": [local_corpus_root],
+            "bundle_ids": local_bundle_ids,
+            "module_keys": local_module_keys,
+            "suggested_output_root": str(semantics_output_root(root, "local-corpus-representatives")),
+        },
+        "daily-default": {
+            "description": "默认日常 gate：test-data 代表集 + 本地 ShaderCorpus 代表集。",
+            "ll_inputs": representative_inputs,
+            "corpus_roots": [local_corpus_root],
+            "bundle_ids": local_bundle_ids,
+            "module_keys": local_module_keys,
+            "suggested_output_root": str(semantics_output_root(root, "daily-default")),
+        },
+    }
+
+
+def print_available_presets(root: Path) -> None:
+    presets = build_roundtrip_presets(root)
+    print("Available semantics round-trip presets:")
+    for name, preset in presets.items():
+        print(f"- {name}")
+        print(f"  description: {preset['description']}")
+        print(f"  suggested output root: {preset['suggested_output_root']}")
+
+
+def apply_roundtrip_preset(args: argparse.Namespace, root: Path) -> None:
+    if not args.preset:
+        return
+
+    presets = build_roundtrip_presets(root)
+    preset = presets.get(args.preset)
+    if preset is None:
+        available = ", ".join(sorted(presets))
+        raise SystemExit(f"unknown preset: {args.preset}; available presets: {available}")
+
+    args.ll_inputs = dedupe_preserving_order(list(args.ll_inputs) + list(preset.get("ll_inputs") or []))
+    args.corpus_roots = dedupe_preserving_order(list(args.corpus_roots) + list(preset.get("corpus_roots") or []))
+    args.bundle_id = dedupe_preserving_order(list(args.bundle_id) + list(preset.get("bundle_ids") or []))
+    args.module_key = dedupe_preserving_order(list(args.module_key) + list(preset.get("module_keys") or []))
+    if not args.output_root:
+        args.output_root = preset.get("suggested_output_root")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -64,6 +198,15 @@ def build_parser() -> argparse.ArgumentParser:
         dest="ll_inputs",
         default=[],
         help="显式指定一个 .ll 输入（可重复指定）",
+    )
+    parser.add_argument(
+        "--preset",
+        help="使用固定样本集预设：test-data-representatives / test-data-batch / local-corpus-representatives / daily-default",
+    )
+    parser.add_argument(
+        "--list-presets",
+        action="store_true",
+        help="列出所有内建 preset 及其建议输出目录，然后退出",
     )
     parser.add_argument(
         "--bundle-id",
@@ -721,6 +864,12 @@ def main() -> int:
     args = parser.parse_args()
     setattr(args, "output_file", None)
 
+    root = repo_root()
+    if args.list_presets:
+        print_available_presets(root)
+        return 0
+    apply_roundtrip_preset(args, root)
+
     if shutil.which("swiftc") is None:
         print("error: cannot find swiftc in PATH", file=sys.stderr)
         return 2
@@ -728,7 +877,6 @@ def main() -> int:
         print("error: cannot find xcrun in PATH", file=sys.stderr)
         return 2
 
-    root = repo_root()
     converter_swift = root / "Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift"
     if not converter_swift.is_file():
         print(f"error: cannot find IRToMSLConverter.swift at {converter_swift}", file=sys.stderr)

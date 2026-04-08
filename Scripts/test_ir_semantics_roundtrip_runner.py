@@ -22,6 +22,44 @@ import ir_semantics_roundtrip_runner as roundtrip_runner
 
 
 class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
+    def test_apply_test_data_representatives_preset(self) -> None:
+        parser = roundtrip_runner.build_parser()
+        args = parser.parse_args(["--preset", "test-data-representatives"])
+
+        roundtrip_runner.apply_roundtrip_preset(args, REPO_ROOT)
+
+        self.assertEqual(
+            Path(args.output_root),
+            REPO_ROOT / "build" / "semantics-validation" / "roundtrip" / "test-data-representatives",
+        )
+        self.assertEqual(len(args.ll_inputs), len(roundtrip_runner.TEST_DATA_REPRESENTATIVE_FILES))
+        self.assertTrue(all(path.endswith(".ll") for path in args.ll_inputs))
+        self.assertTrue(any(path.endswith("test_struct_array_field.ll") for path in args.ll_inputs))
+        self.assertEqual(args.corpus_roots, [])
+        self.assertEqual(args.bundle_id, [])
+        self.assertEqual(args.module_key, [])
+
+    def test_apply_daily_default_preset_adds_local_corpus_representatives(self) -> None:
+        parser = roundtrip_runner.build_parser()
+        args = parser.parse_args(["--preset", "daily-default"])
+
+        roundtrip_runner.apply_roundtrip_preset(args, REPO_ROOT)
+
+        self.assertEqual(
+            Path(args.output_root),
+            REPO_ROOT / "build" / "semantics-validation" / "roundtrip" / "daily-default",
+        )
+        self.assertEqual(args.corpus_roots, [str(roundtrip_runner.LOCAL_SHADERCORPUS_DEFAULT_ROOT)])
+        self.assertEqual(
+            args.bundle_id,
+            ["com.miHoYo.Yuanshen", "com.papegames.lysk", "com.tencent.tmgp.speedmobile"],
+        )
+        self.assertEqual(
+            args.module_key,
+            [item["moduleKey"] for item in roundtrip_runner.LOCAL_SHADERCORPUS_REPRESENTATIVES],
+        )
+        self.assertEqual(len(args.ll_inputs), len(roundtrip_runner.TEST_DATA_REPRESENTATIVE_FILES))
+
     def test_resolve_llvm_dis_path_prefers_explicit_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

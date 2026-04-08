@@ -82,6 +82,19 @@ makeLibrary(source:) / metal -c
   - `risk-report.json`
   - `high-risk-samples.json`
 - 已对 `test-data/` 跑通首轮 L1/L2 批量报告：`build/semantics-validation/roundtrip/test-data-batch/`
+- 本轮已为 `SV-003` 落地固定入口：
+  - `--preset test-data-representatives`
+  - `--preset test-data-batch`
+  - `--preset local-corpus-representatives`
+  - `--preset daily-default`
+- 当前固定输出目录已收口到：
+  - `build/semantics-validation/roundtrip/test-data-representatives/`
+  - `build/semantics-validation/roundtrip/test-data-batch/`
+  - `build/semantics-validation/roundtrip/local-corpus-representatives/`
+  - `build/semantics-validation/roundtrip/daily-default/`
+- 本轮已验证：
+  - `test-data-representatives`：`8` 个样本中 `7` 个 round-trip 成功、`1` 个 compile 失败，风险分布 `L0 = 1 / L1 = 1 / L2 = 5 / L3 = 1`
+  - `local-corpus-representatives`：当前固定 `5` 个本地 `ShaderCorpus` 代表样本全部 round-trip 成功，风险分布 `L0 = 0 / L1 = 0 / L2 = 1 / L3 = 4`
 
 当前 `test-data/` 首轮基线可概括为：
 
@@ -134,13 +147,20 @@ FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh
 ```bash
 python3 Scripts/test_ir_canonical_compare.py
 python3 Scripts/test_ir_semantics_roundtrip_runner.py
-python3 Scripts/ir_semantics_roundtrip_runner.py --ll <sample.ll> --output-root build/semantics-validation/roundtrip/manual-smoke
+python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representatives --allow-failures
+python3 Scripts/ir_semantics_roundtrip_runner.py --preset daily-default --allow-failures
 ```
 
-- 若本机已存在可复用的本地 `ShaderCorpus`，可以继续使用小规模代表集批量报告：
+- 若需要完整 `test-data/` 批量基线，使用固定全量入口：
 
 ```bash
-python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus --bundle-id <bundleId> --limit <N> --allow-failures
+python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-batch --allow-failures
+```
+
+- 若只想看本机已存在的本地 `ShaderCorpus` 代表集，使用固定本地入口：
+
+```bash
+python3 Scripts/ir_semantics_roundtrip_runner.py --preset local-corpus-representatives --allow-failures
 ```
 
 默认会继续产出：
@@ -156,7 +176,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Contain
 
 - `ShaderCorpus` 日常 gate 默认只复用**当前机器上已经存在**的本地样本
 - 若当前机器上没有合适样本，不应自动升级成需要用户介入的 fresh capture 流程；这时应优先退回 `test-data/` 或停在离线层汇报
-- `SV-003` 当前一个明确待补点，就是把 `test-data/` 与代表性 `ShaderCorpus` 样本集固定成更低心智负担的日常入口，而不是依赖每次手工挑文件
+- `SV-003` 当前已完成“固定样本集 + 固定命令 + 固定输出目录”的首轮收口；剩余工作是继续维护代表集并把风险升级边界写清楚
 
 ### 运行时链路验证（只在必要时）
 
@@ -214,14 +234,14 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Contain
 | SV-000 | 现状调研与缺口梳理 | ✅ DONE | - | 已确认当前没有严格语义闭环，已形成总体路线 | `01-现状调研与缺口.md` |
 | SV-001 | 离线 IR round-trip harness | ✅ DONE | - | 已新增 `Scripts/ir_semantics_roundtrip_runner.py`，并在 `test-data/` 首轮批量报告中得到 `26 / 27` round-trip 成功 | `03-L1-IR-RoundTrip.md` |
 | SV-002 | Canonical compare + 风险分级 | ✅ DONE | - | 已新增 `Scripts/ir_canonical_compare.py`，并在 `test-data/` 上产出 `compare-summary.json / risk-report.json / high-risk-samples.json` | `04-L2-CanonicalCompareAndRiskGrading.md` |
-| SV-003 | 把 L1/L2 接入 `test-data/` 与 `ShaderCorpus` | TODO | P0 | 固化 `test-data` 默认 gate，补一组代表性本地 `ShaderCorpus` 样本，形成稳定日常批量报告 | `02-总体技术路线.md` |
+| SV-003 | 把 L1/L2 接入 `test-data/` 与 `ShaderCorpus` | TODO | P0 | 已落地 preset 化固定入口与首组本地 `ShaderCorpus` 代表样本；剩余工作是继续维护代表集并把它稳定衔接到升级/止损规则 | `02-总体技术路线.md` |
 | SV-004 | 最小行为测试（compute-first） | TODO | P2 | 优先建立 compute 输出对比，再决定是否补离屏 render | `05-L3-最小行为测试.md` |
 | SV-005 | 真实场景验证流程收口 | TODO | P3 | 把 `.gputrace` / render diff / MCP live 验证收口成后置 gate | `06-L4-真实场景验证.md` |
 | SV-006 | 分层 gate 与止损策略 | TODO | P1 | 明确“什么时候可以先停在 L2，什么时候必须升级到 L3/L4”的预算与升级规则 | `02-总体技术路线.md` |
 
 ### 当前关键卡点
 
-- **`SV-003` 还没有完全收口成低心智负担的默认入口**：当前脚本能力已经够用，但 `test-data` 与代表性 `ShaderCorpus` 的固定样本集、固定命令和固定输出约定还需要再收紧
+- **`SV-003` 已完成首轮 preset 收口，但还没有完全结束**：当前已经有 `test-data-representatives / test-data-batch / local-corpus-representatives / daily-default` 固定入口；剩余缺口是继续维护代表集并把它与 `SV-006` 的升级/止损规则更紧地衔接
 - **`test_struct_array_field` 仍是当前首个 compile-stage blocker**：当前 `test-data/` 批量 round-trip 中，27 个样本里仍只有它在 `generated.metal -> generated.air` 阶段失败
 - **L2 已落地，但 `test-data/` 里仍有较多 `L3` 结构性不一致样本**：当前批量分布为 `L0 = 1 / L1 = 1 / L2 = 5 / L3 = 20`，下一步需要结合 `SV-003` 做样本聚类与代表集扩展
 - **没有行为级 oracle**：当前报告能筛查风险，但还不能判断行为是否一致；`L2` 样本仍需后续 `L3` 最小行为测试承接

@@ -81,12 +81,17 @@ makeLibrary(source:) / metal -c
   - `compare-summary.json`
   - `risk-report.json`
   - `high-risk-samples.json`
+  - `gate-summary.json`
 - 已对 `test-data/` 跑通首轮 L1/L2 批量报告：`build/semantics-validation/roundtrip/test-data-batch/`
 - 本轮已为 `SV-003` 落地固定入口：
   - `--preset test-data-representatives`
   - `--preset test-data-batch`
   - `--preset local-corpus-representatives`
   - `--preset daily-default`
+- 本轮已新增第一版 stable gate 收口：
+  - `--gate-profile <name>`（可显式指定 gate profile；若 preset 存在同名 profile，则自动复用）
+  - `--enforce-gate`（仅当出现新增 round-trip / L3 回归时阻断退出）
+  - `gate-summary.json`（输出 `pass / warn / fail`、活跃已知 debt 与新增回归样本）
 - 当前固定输出目录已收口到：
   - `build/semantics-validation/roundtrip/test-data-representatives/`
   - `build/semantics-validation/roundtrip/test-data-batch/`
@@ -95,6 +100,8 @@ makeLibrary(source:) / metal -c
 - 本轮已验证：
   - `test-data-representatives`：`8` 个样本中 `7` 个 round-trip 成功、`1` 个 compile 失败，风险分布 `L0 = 1 / L1 = 1 / L2 = 5 / L3 = 1`
   - `local-corpus-representatives`：当前固定 `5` 个本地 `ShaderCorpus` 代表样本全部 round-trip 成功，风险分布 `L0 = 0 / L1 = 0 / L2 = 1 / L3 = 4`
+  - `daily-default`：`13` 个样本中 `12` 个 round-trip 成功、`1` 个 compile 失败，风险分布 `L0 = 1 / L1 = 1 / L2 = 6 / L3 = 5`
+  - 三个代表 preset 在加上 `--enforce-gate` 后，当前都能稳定输出 `WARN`（保留已知 debt），不会把现有基线误判成 `FAIL`
 
 当前 `test-data/` 首轮基线可概括为：
 
@@ -147,8 +154,8 @@ FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh
 ```bash
 python3 Scripts/test_ir_canonical_compare.py
 python3 Scripts/test_ir_semantics_roundtrip_runner.py
-python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representatives --allow-failures
-python3 Scripts/ir_semantics_roundtrip_runner.py --preset daily-default --allow-failures
+python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representatives --allow-failures --enforce-gate
+python3 Scripts/ir_semantics_roundtrip_runner.py --preset daily-default --allow-failures --enforce-gate
 ```
 
 - 若需要完整 `test-data/` 批量基线，使用固定全量入口：
@@ -171,12 +178,13 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset local-corpus-represent
 - `compare-summary.json`
 - `risk-report.json`
 - `high-risk-samples.json`
+- `gate-summary.json`
 
 补充约束：
 
 - `ShaderCorpus` 日常 gate 默认只复用**当前机器上已经存在**的本地样本
 - 若当前机器上没有合适样本，不应自动升级成需要用户介入的 fresh capture 流程；这时应优先退回 `test-data/` 或停在离线层汇报
-- `SV-003` 当前已完成“固定样本集 + 固定命令 + 固定输出目录”的首轮收口；剩余工作是继续维护代表集并把风险升级边界写清楚
+- `SV-003` 当前已完成“固定样本集 + 固定命令 + 固定输出目录 + `gate-summary.json` / `--enforce-gate`”的首轮收口；剩余工作已收窄到继续维护代表集，并按后续经验继续细化升级边界
 
 ### 运行时链路验证（只在必要时）
 
@@ -234,14 +242,14 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --preset local-corpus-represent
 | SV-000 | 现状调研与缺口梳理 | ✅ DONE | - | 已确认当前没有严格语义闭环，已形成总体路线 | `01-现状调研与缺口.md` |
 | SV-001 | 离线 IR round-trip harness | ✅ DONE | - | 已新增 `Scripts/ir_semantics_roundtrip_runner.py`，并在 `test-data/` 首轮批量报告中得到 `26 / 27` round-trip 成功 | `03-L1-IR-RoundTrip.md` |
 | SV-002 | Canonical compare + 风险分级 | ✅ DONE | - | 已新增 `Scripts/ir_canonical_compare.py`，并在 `test-data/` 上产出 `compare-summary.json / risk-report.json / high-risk-samples.json` | `04-L2-CanonicalCompareAndRiskGrading.md` |
-| SV-003 | 把 L1/L2 接入 `test-data/` 与 `ShaderCorpus` | TODO | P0 | 已落地 preset 化固定入口与首组本地 `ShaderCorpus` 代表样本；剩余工作是继续维护代表集并把它稳定衔接到升级/止损规则 | `02-总体技术路线.md` |
+| SV-003 | 把 L1/L2 接入 `test-data/` 与 `ShaderCorpus` | TODO | P0 | 已落地 preset 化固定入口、首组本地 `ShaderCorpus` 代表样本，以及 `gate-summary.json` / `--enforce-gate`；剩余工作是继续维护代表集 | `02-总体技术路线.md` |
 | SV-004 | 最小行为测试（compute-first） | TODO | P2 | 优先建立 compute 输出对比，再决定是否补离屏 render | `05-L3-最小行为测试.md` |
 | SV-005 | 真实场景验证流程收口 | TODO | P3 | 把 `.gputrace` / render diff / MCP live 验证收口成后置 gate | `06-L4-真实场景验证.md` |
 | SV-006 | 分层 gate 与止损策略 | TODO | P1 | 明确“什么时候可以先停在 L2，什么时候必须升级到 L3/L4”的预算与升级规则 | `02-总体技术路线.md` |
 
 ### 当前关键卡点
 
-- **`SV-003` 已完成首轮 preset 收口，但还没有完全结束**：当前已经有 `test-data-representatives / test-data-batch / local-corpus-representatives / daily-default` 固定入口；剩余缺口是继续维护代表集并把它与 `SV-006` 的升级/止损规则更紧地衔接
+- **`SV-003` 已完成首轮 preset + gate 收口，但还没有完全结束**：当前已经有 `test-data-representatives / test-data-batch / local-corpus-representatives / daily-default` 固定入口，以及 `gate-summary.json` / `--enforce-gate` 第一版 gate profile；剩余缺口是继续维护代表集，并在后续经验积累中继续细化升级边界
 - **`test_struct_array_field` 仍是当前首个 compile-stage blocker**：当前 `test-data/` 批量 round-trip 中，27 个样本里仍只有它在 `generated.metal -> generated.air` 阶段失败
 - **L2 已落地，但 `test-data/` 里仍有较多 `L3` 结构性不一致样本**：当前批量分布为 `L0 = 1 / L1 = 1 / L2 = 5 / L3 = 20`，下一步需要结合 `SV-003` 做样本聚类与代表集扩展
 - **没有行为级 oracle**：当前报告能筛查风险，但还不能判断行为是否一致；`L2` 样本仍需后续 `L3` 最小行为测试承接

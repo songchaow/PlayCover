@@ -41,6 +41,30 @@ attributes #0 = {{ nounwind memory(argmem: write) "no-builtins" }}
 '''
 
 
+def make_roundtrip_report(*, job_count: int, roundtrip_failed_jobs: int = 0, compile_failed_jobs: int = 0) -> dict:
+    return {
+        "jobCount": job_count,
+        "roundTripSucceededJobs": job_count - roundtrip_failed_jobs,
+        "roundTripFailedJobs": roundtrip_failed_jobs,
+        "replayFailedJobs": 0,
+        "compileFailedJobs": compile_failed_jobs,
+        "llvmDisFailedJobs": 0,
+    }
+
+
+def make_risk_report(*, samples: list[dict], blocked_samples: list[dict] | None = None, l2_samples: list[dict] | None = None) -> dict:
+    risk_counts = {"L0": 0, "L1": 0, "L2": 0, "L3": 0}
+    for sample in samples:
+        risk_counts[sample["riskLevel"]] += 1
+    return {
+        "jobCount": len(samples),
+        "riskCounts": risk_counts,
+        "samples": samples,
+        "blockedSamples": blocked_samples or [],
+        "samplesForL3": l2_samples or [],
+    }
+
+
 class IRCanonicalCompareTests(unittest.TestCase):
     def test_extract_ir_summary_from_real_sample(self) -> None:
         summary = canonical_compare.extract_ir_summary(TEST_SAMPLE)
@@ -69,6 +93,77 @@ class IRCanonicalCompareTests(unittest.TestCase):
         self.assertEqual(comparison["riskLevel"], "L3")
         self.assertFalse(comparison["same"])
         self.assertTrue(any(item["category"] in {"entry", "address-space"} for item in comparison["differences"]))
+
+    def test_assess_gate_result_warns_for_known_debt(self) -> None:
+        samples = [
+            {
+                "comparisonKey": "explicit_ll:/tmp/test_struct_array_field.ll",
+                "inputPath": "/tmp/test_struct_array_field.ll",
+                "roundTripStatus": "failed",
+                "failureStage": "compile",
+                "riskLevel": "L3",
+            },
+            {
+                "comparisonKey": "explicit_ll:/tmp/test_casts.ll",
+                "inputPath": "/tmp/test_casts.ll",
+                "roundTripStatus": "success",
+                "failureStage": None,
+                "riskLevel": "L2",
+            },
+        ]
+        roundtrip_report = make_roundtrip_report(job_count=2, roundtrip_failed_jobs=1, compile_failed_jobs=1)
+        risk_report = make_risk_report(
+            samples=samples,
+            blocked_samples=[],
+            l2_samples=[samples[1]],
+        )
+
+        summary = canonical_compare.assess_gate_result(
+            roundtrip_report,
+            risk_report,
+            gate_profile={
+                "expectedJobCount": 2,
+                "allowedFailureSamples": {"test_struct_array_field": "compile"},
+                "allowedBlockedSampleKeys": [],
+                "allowedL2SampleKeys": ["test_casts"],
+            },
+            profile_name="test-data-representatives",
+        )
+
+        self.assertEqual(summary["status"], "warn")
+        self.assertFalse(summary["shouldBlock"])
+        self.assertIn("test_struct_array_field", summary["activeKnownDebt"]["failureSampleKeys"])
+        self.assertIn("test_casts", summary["activeKnownDebt"]["l2SampleKeys"])
+
+    def test_assess_gate_result_fails_for_unexpected_blocked_sample(self) -> None:
+        blocked_sample = {
+            "comparisonKey": "explicit_ll:/tmp/test_new_regression.ll",
+            "inputPath": "/tmp/test_new_regression.ll",
+            "roundTripStatus": "success",
+            "failureStage": None,
+            "riskLevel": "L3",
+        }
+        roundtrip_report = make_roundtrip_report(job_count=1)
+        risk_report = make_risk_report(
+            samples=[blocked_sample],
+            blocked_samples=[blocked_sample],
+            l2_samples=[],
+        )
+
+        summary = canonical_compare.assess_gate_result(
+            roundtrip_report,
+            risk_report,
+            gate_profile={
+                "expectedJobCount": 1,
+                "allowedFailureSamples": {},
+                "allowedBlockedSampleKeys": [],
+                "allowedL2SampleKeys": [],
+            },
+        )
+
+        self.assertEqual(summary["status"], "fail")
+        self.assertTrue(summary["shouldBlock"])
+        self.assertIn("test_new_regression", summary["regressions"]["unexpectedBlockedSampleKeys"])
 
 
 if __name__ == "__main__":

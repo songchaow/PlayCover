@@ -27,11 +27,12 @@
 - `compare-summary.json`
 - `risk-report.json`
 - `high-risk-samples.json`
+- `gate-summary.json`
 
 当前状态需要明确区分两件事：
 
 - **L2 能力是否存在**：已经存在，且已在 `test-data/` 上跑通
-- **L2 是否已经变成稳定日常入口**：还没有完全收口，这正是 `SV-003` 的工作范围
+- **L2 是否已经变成稳定日常入口**：已经完成第一版收口，这一版通过 `gate-summary.json` / `--gate-profile` / `--enforce-gate` 把代表 preset 的已知 baseline 变成可执行的 `pass / warn / fail` 判定；后续仍需继续维护代表集与扩展边界
 
 ## 已实现的 canonical summary
 
@@ -210,6 +211,15 @@
 
 样本，便于后续聚类或选取代表集。
 
+### `gate-summary.json`
+
+当前用于输出：
+
+- 当前这次运行是 `pass / warn / fail`
+- 哪些已知 `L2 / L3 / round-trip failure` 仍然存在
+- 是否出现了超出当前代表集 profile 的新增 blocker / 新增 `L3`
+- 在 `--enforce-gate` 模式下是否应阻断退出
+
 ## 已验证测试
 
 当前已覆盖：
@@ -227,7 +237,7 @@
 - 不是完整 IR AST / CFG 等价器
 - 还不能回答“行为是否一致”
 - 当前 `L3` 样本较多，说明还需要后续 `SV-003` 做代表集扩展、聚类与日常 gate 收敛
-- 当前还缺少明确的升级/止损规则（`SV-006`），因此不能看到 `L2/L3` 就默认继续往更高成本层推进
+- 当前已经有第一版机器可执行的升级/止损边界：代表 preset 会通过 `gate-summary.json` / `--enforce-gate` 将“已知 debt”与“新增回归”区分开；但更广义的分层策略（`SV-006`）仍需继续整理与扩展
 
 ## 对下一步的直接启示
 

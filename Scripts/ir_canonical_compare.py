@@ -918,6 +918,198 @@ def _recommended_action_for_risk(risk_level: str) -> str:
     return "先视为结构性不一致或 round-trip blocker，优先修 L2/L1 问题后再决定是否进入 L3。"
 
 
+def sample_identity(sample: dict[str, Any]) -> str:
+    module_key = sample.get("moduleKey")
+    bundle_id = sample.get("bundleId")
+    if module_key:
+        if bundle_id:
+            return f"bundle:{bundle_id}::module:{module_key}"
+        return f"module:{module_key}"
+
+    input_path = sample.get("inputPath")
+    if input_path:
+        return Path(str(input_path)).stem
+
+    comparison_key = sample.get("comparisonKey")
+    if comparison_key:
+        return str(comparison_key)
+    return "<unknown>"
+
+
+def _identity_map(samples: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {sample_identity(item): item for item in samples}
+
+
+def _normalize_gate_profile(gate_profile: dict[str, Any] | None) -> dict[str, Any]:
+    profile = dict(gate_profile or {})
+    allowed_failures = profile.get("allowedFailureSamples") or {}
+    profile["allowedFailureSamples"] = {
+        str(sample_key): (str(stage) if stage is not None else None)
+        for sample_key, stage in allowed_failures.items()
+    }
+    profile["allowedBlockedSampleKeys"] = sorted({str(item) for item in (profile.get("allowedBlockedSampleKeys") or [])})
+    profile["allowedL2SampleKeys"] = sorted({str(item) for item in (profile.get("allowedL2SampleKeys") or [])})
+    profile.setdefault("expectedJobCount", None)
+    profile.setdefault("description", None)
+    return profile
+
+
+def assess_gate_result(
+    roundtrip_report: dict[str, Any],
+    risk_report: dict[str, Any],
+    *,
+    gate_profile: dict[str, Any] | None = None,
+    profile_name: str | None = None,
+) -> dict[str, Any]:
+    normalized_profile = _normalize_gate_profile(gate_profile)
+    samples = list(risk_report.get("samples") or [])
+    failure_samples = [sample for sample in samples if sample.get("roundTripStatus") != "success"]
+    blocked_samples = [
+        sample
+        for sample in (risk_report.get("blockedSamples") or [])
+        if sample.get("roundTripStatus") == "success"
+    ]
+    l2_samples = list(risk_report.get("samplesForL3") or [])
+
+    allowed_failures = normalized_profile["allowedFailureSamples"]
+    allowed_blocked_keys = set(normalized_profile["allowedBlockedSampleKeys"])
+    allowed_l2_keys = set(normalized_profile["allowedL2SampleKeys"])
+
+    failure_by_key = _identity_map(failure_samples)
+    blocked_by_key = _identity_map(blocked_samples)
+    l2_by_key = _identity_map(l2_samples)
+
+    unexpected_failures: list[dict[str, Any]] = []
+    for sample_key, sample in sorted(failure_by_key.items()):
+        expected_stage = allowed_failures.get(sample_key)
+        actual_stage = sample.get("failureStage")
+        if expected_stage is None and sample_key not in allowed_failures:
+            unexpected_failures.append(
+                {
+                    "sampleKey": sample_key,
+                    "failureStage": actual_stage,
+                    "reason": "unexpected round-trip failure",
+                    "comparisonKey": sample.get("comparisonKey"),
+                }
+            )
+            continue
+        if expected_stage is not None and actual_stage != expected_stage:
+            unexpected_failures.append(
+                {
+                    "sampleKey": sample_key,
+                    "failureStage": actual_stage,
+                    "expectedFailureStage": expected_stage,
+                    "reason": "round-trip failure stage changed",
+                    "comparisonKey": sample.get("comparisonKey"),
+                }
+            )
+
+    missing_expected_failures = sorted(set(allowed_failures) - set(failure_by_key))
+    unexpected_blocked_keys = sorted(set(blocked_by_key) - allowed_blocked_keys)
+    missing_expected_blocked = sorted(allowed_blocked_keys - set(blocked_by_key))
+    unexpected_l2_keys = sorted(set(l2_by_key) - allowed_l2_keys)
+    missing_expected_l2 = sorted(allowed_l2_keys - set(l2_by_key))
+
+    expected_job_count = normalized_profile.get("expectedJobCount")
+    job_count_mismatch = None
+    if expected_job_count is not None and int(risk_report.get("jobCount") or 0) != int(expected_job_count):
+        job_count_mismatch = {
+            "expectedJobCount": int(expected_job_count),
+            "actualJobCount": int(risk_report.get("jobCount") or 0),
+        }
+
+    active_allowed_failures = sorted(set(failure_by_key) & set(allowed_failures))
+    active_allowed_blocked = sorted(set(blocked_by_key) & allowed_blocked_keys)
+    active_allowed_l2 = sorted(set(l2_by_key) & allowed_l2_keys)
+
+    notes: list[str] = []
+    if missing_expected_failures:
+        notes.append(f"known failure resolved: {', '.join(missing_expected_failures)}")
+    if missing_expected_blocked:
+        notes.append(f"known blocked sample improved: {', '.join(missing_expected_blocked)}")
+    if missing_expected_l2:
+        notes.append(f"known L2 sample improved: {', '.join(missing_expected_l2)}")
+
+    failure_reasons: list[str] = []
+    if job_count_mismatch:
+        failure_reasons.append(
+            f"job count changed: expected {job_count_mismatch['expectedJobCount']}, got {job_count_mismatch['actualJobCount']}"
+        )
+    if unexpected_failures:
+        failure_reasons.extend(
+            f"unexpected failure {item['sampleKey']}@{item.get('failureStage') or 'unknown'}" for item in unexpected_failures
+        )
+    if unexpected_blocked_keys:
+        failure_reasons.extend(f"unexpected blocked sample {sample_key}" for sample_key in unexpected_blocked_keys)
+
+    warning_reasons: list[str] = []
+    if unexpected_l2_keys:
+        warning_reasons.extend(f"new L2 sample {sample_key}" for sample_key in unexpected_l2_keys)
+    if active_allowed_failures:
+        warning_reasons.append(f"known round-trip blockers still present: {', '.join(active_allowed_failures)}")
+    if active_allowed_blocked:
+        warning_reasons.append(f"known L3 blocked samples still present: {', '.join(active_allowed_blocked)}")
+    if active_allowed_l2:
+        warning_reasons.append(f"known L2 samples still need L3 follow-up: {', '.join(active_allowed_l2)}")
+
+    if failure_reasons:
+        status = "fail"
+        recommended_action = "视为日常 gate 回归：先修复新增 round-trip / L3 问题，或在确认代表集发生有意变化后同步更新 gate profile。"
+        summary = failure_reasons[0]
+    elif warning_reasons:
+        status = "warn"
+        recommended_action = "当前结果仍可停在离线层继续观察；优先维护代表集，并把活跃 L2 样本排入后续 L3 最小行为测试。"
+        summary = warning_reasons[0]
+    else:
+        status = "pass"
+        recommended_action = "当前 gate 在已配置边界内通过，可继续作为稳定离线入口使用。"
+        summary = "all observed samples stayed within the configured gate boundary"
+
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "profileName": profile_name,
+        "profileConfigured": bool(profile_name or gate_profile),
+        "profileDescription": normalized_profile.get("description"),
+        "status": status,
+        "shouldBlock": status == "fail",
+        "summary": summary,
+        "recommendedAction": recommended_action,
+        "expectedJobCount": expected_job_count,
+        "jobCount": risk_report.get("jobCount"),
+        "riskCounts": risk_report.get("riskCounts") or {},
+        "activeKnownDebt": {
+            "failureSampleKeys": active_allowed_failures,
+            "blockedSampleKeys": active_allowed_blocked,
+            "l2SampleKeys": active_allowed_l2,
+        },
+        "improvements": {
+            "resolvedFailureSampleKeys": missing_expected_failures,
+            "resolvedBlockedSampleKeys": missing_expected_blocked,
+            "resolvedL2SampleKeys": missing_expected_l2,
+        },
+        "regressions": {
+            "jobCountMismatch": job_count_mismatch,
+            "unexpectedFailures": unexpected_failures,
+            "unexpectedBlockedSampleKeys": unexpected_blocked_keys,
+            "unexpectedL2SampleKeys": unexpected_l2_keys,
+        },
+        "observed": {
+            "failureSampleKeys": sorted(failure_by_key),
+            "blockedSampleKeys": sorted(blocked_by_key),
+            "l2SampleKeys": sorted(l2_by_key),
+        },
+        "notes": notes,
+        "roundtripStats": {
+            "jobCount": roundtrip_report.get("jobCount"),
+            "roundTripSucceededJobs": roundtrip_report.get("roundTripSucceededJobs"),
+            "roundTripFailedJobs": roundtrip_report.get("roundTripFailedJobs"),
+            "replayFailedJobs": roundtrip_report.get("replayFailedJobs"),
+            "compileFailedJobs": roundtrip_report.get("compileFailedJobs"),
+            "llvmDisFailedJobs": roundtrip_report.get("llvmDisFailedJobs"),
+        },
+    }
+
+
 def compare_ir_summaries(original: dict[str, Any], regenerated: dict[str, Any]) -> dict[str, Any]:
     entry_comparison = _compare_entry_summaries(original, regenerated)
     address_space_comparison = _compare_address_spaces(original, regenerated)

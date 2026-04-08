@@ -39,6 +39,10 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
         self.assertEqual(args.bundle_id, [])
         self.assertEqual(args.module_key, [])
 
+        gate_profile_name, gate_profile = roundtrip_runner.resolve_gate_profile(args)
+        self.assertEqual(gate_profile_name, "test-data-representatives")
+        self.assertEqual(gate_profile["expectedJobCount"], len(roundtrip_runner.TEST_DATA_REPRESENTATIVE_FILES))
+
     def test_apply_daily_default_preset_adds_local_corpus_representatives(self) -> None:
         parser = roundtrip_runner.build_parser()
         args = parser.parse_args(["--preset", "daily-default"])
@@ -77,6 +81,16 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             self.assertEqual(resolved.resolve(), explicit.resolve())
             self.assertEqual([path.resolve() for path in candidates], [explicit.resolve(), fallback.resolve()])
 
+    def test_test_data_batch_has_no_default_gate_profile(self) -> None:
+        parser = roundtrip_runner.build_parser()
+        args = parser.parse_args(["--preset", "test-data-batch"])
+
+        roundtrip_runner.apply_roundtrip_preset(args, REPO_ROOT)
+
+        gate_profile_name, gate_profile = roundtrip_runner.resolve_gate_profile(args)
+        self.assertIsNone(gate_profile_name)
+        self.assertIsNone(gate_profile)
+
     @unittest.skipUnless(shutil.which("swiftc") and shutil.which("xcrun"), "requires swiftc and xcrun")
     def test_roundtrip_runner_generates_roundtrip_summary_for_sample(self) -> None:
         default_llvm_dis, _ = roundtrip_runner.resolve_llvm_dis_path()
@@ -108,17 +122,20 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             compare_report_path = output_root / "compare-summary.json"
             risk_report_path = output_root / "risk-report.json"
             high_risk_path = output_root / "high-risk-samples.json"
+            gate_summary_path = output_root / "gate-summary.json"
             self.assertTrue(report_path.is_file())
             self.assertTrue(replay_report_path.is_file())
             self.assertTrue(compile_report_path.is_file())
             self.assertTrue(compare_report_path.is_file())
             self.assertTrue(risk_report_path.is_file())
             self.assertTrue(high_risk_path.is_file())
+            self.assertTrue(gate_summary_path.is_file())
 
             report = json.loads(report_path.read_text(encoding="utf-8"))
             compare_report = json.loads(compare_report_path.read_text(encoding="utf-8"))
             risk_report = json.loads(risk_report_path.read_text(encoding="utf-8"))
             high_risk_samples = json.loads(high_risk_path.read_text(encoding="utf-8"))
+            gate_summary = json.loads(gate_summary_path.read_text(encoding="utf-8"))
             self.assertEqual(report["jobCount"], 1)
             self.assertEqual(report["roundTripSucceededJobs"], 1)
             self.assertEqual(report["roundTripFailedJobs"], 0)
@@ -130,6 +147,9 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             self.assertEqual(compare_report["compareAvailableJobs"], 1)
             self.assertEqual(risk_report["jobCount"], 1)
             self.assertIsInstance(high_risk_samples, list)
+            self.assertEqual(gate_summary["jobCount"], 1)
+            self.assertIn(gate_summary["status"], {"pass", "warn", "fail"})
+            self.assertEqual(Path(gate_summary["reportPath"]).resolve(), gate_summary_path.resolve())
 
             result = report["results"][0]
             self.assertEqual(result["replayStatus"], "success")

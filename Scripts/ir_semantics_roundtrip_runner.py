@@ -82,6 +82,45 @@ LOCAL_SHADERCORPUS_REPRESENTATIVES = [
         "moduleKey": "1f5e65cd9f685b3673dd6fac9b81e3af82b5a6d436f8f1824919726483c967ad",
     },
 ]
+TEST_DATA_REPRESENTATIVE_L2_KEYS = [
+    "test_casts",
+    "test_fast_math_select",
+    "test_int_literal_half_suffix",
+    "test_intrinsic_vector_icmp_zext",
+    "test_vector_select_global_gep",
+]
+TEST_DATA_REPRESENTATIVE_ALLOWED_FAILURES = {
+    "test_struct_array_field": "compile",
+}
+LOCAL_SHADERCORPUS_ALLOWED_BLOCKED_KEYS = [
+    canonical_compare.sample_identity(item)
+    for item in [
+        {
+            "bundleId": "com.miHoYo.Yuanshen",
+            "moduleKey": "db41fcfc1517b115d274f867634e00d08301415d450ca94eb04ca95638e41933",
+        },
+        {
+            "bundleId": "com.papegames.lysk",
+            "moduleKey": "6c08f93015cda305e6c675457bab3acfcf7febab294577d27cbe76317e2b1f45",
+        },
+        {
+            "bundleId": "com.papegames.lysk",
+            "moduleKey": "2646854687f12045e370b300deefca49e5c1bcd0a22b8755cd4af656bced5348",
+        },
+        {
+            "bundleId": "com.tencent.tmgp.speedmobile",
+            "moduleKey": "1f5e65cd9f685b3673dd6fac9b81e3af82b5a6d436f8f1824919726483c967ad",
+        },
+    ]
+]
+LOCAL_SHADERCORPUS_ALLOWED_L2_KEYS = [
+    canonical_compare.sample_identity(
+        {
+            "bundleId": "com.papegames.lysk",
+            "moduleKey": "ec0c6f0e72d6fc64daf4d5955cd1ea2cc5e729b0f988b1e857d13bfb54c7f6c3",
+        }
+    )
+]
 
 
 def repo_root() -> Path:
@@ -156,6 +195,41 @@ def build_roundtrip_presets(root: Path) -> dict[str, dict[str, Any]]:
     }
 
 
+def build_gate_profiles() -> dict[str, dict[str, Any]]:
+    test_data_profile = {
+        "description": "固定 test-data 代表集的首版 gate 基线：允许 1 个已知 compile blocker，并继续跟踪 5 个已知 L2 样本。",
+        "expectedJobCount": len(TEST_DATA_REPRESENTATIVE_FILES),
+        "allowedFailureSamples": dict(TEST_DATA_REPRESENTATIVE_ALLOWED_FAILURES),
+        "allowedBlockedSampleKeys": [],
+        "allowedL2SampleKeys": list(TEST_DATA_REPRESENTATIVE_L2_KEYS),
+    }
+    local_corpus_profile = {
+        "description": "本机 ShaderCorpus 代表集的首版 gate 基线：当前保留 4 个已知 L3 结构阻断样本和 1 个已知 L2 样本。",
+        "expectedJobCount": len(LOCAL_SHADERCORPUS_REPRESENTATIVES),
+        "allowedFailureSamples": {},
+        "allowedBlockedSampleKeys": list(LOCAL_SHADERCORPUS_ALLOWED_BLOCKED_KEYS),
+        "allowedL2SampleKeys": list(LOCAL_SHADERCORPUS_ALLOWED_L2_KEYS),
+    }
+    return {
+        "test-data-representatives": test_data_profile,
+        "local-corpus-representatives": local_corpus_profile,
+        "daily-default": {
+            "description": "默认日常 gate：合并 test-data 代表集与本机 ShaderCorpus 代表集，只在出现新增 round-trip/L3 回归时阻断。",
+            "expectedJobCount": int(test_data_profile["expectedJobCount"]) + int(local_corpus_profile["expectedJobCount"]),
+            "allowedFailureSamples": {
+                **dict(test_data_profile["allowedFailureSamples"]),
+                **dict(local_corpus_profile["allowedFailureSamples"]),
+            },
+            "allowedBlockedSampleKeys": dedupe_preserving_order(
+                list(test_data_profile["allowedBlockedSampleKeys"]) + list(local_corpus_profile["allowedBlockedSampleKeys"])
+            ),
+            "allowedL2SampleKeys": dedupe_preserving_order(
+                list(test_data_profile["allowedL2SampleKeys"]) + list(local_corpus_profile["allowedL2SampleKeys"])
+            ),
+        },
+    }
+
+
 def print_available_presets(root: Path) -> None:
     presets = build_roundtrip_presets(root)
     print("Available semantics round-trip presets:")
@@ -163,6 +237,28 @@ def print_available_presets(root: Path) -> None:
         print(f"- {name}")
         print(f"  description: {preset['description']}")
         print(f"  suggested output root: {preset['suggested_output_root']}")
+
+
+def print_available_gate_profiles() -> None:
+    profiles = build_gate_profiles()
+    print("Available semantics gate profiles:")
+    for name, profile in profiles.items():
+        print(f"- {name}")
+        print(f"  description: {profile['description']}")
+        print(f"  expected job count: {profile['expectedJobCount']}")
+
+
+def resolve_gate_profile(args: argparse.Namespace) -> tuple[str | None, dict[str, Any] | None]:
+    profiles = build_gate_profiles()
+    if args.gate_profile:
+        profile = profiles.get(args.gate_profile)
+        if profile is None:
+            available = ", ".join(sorted(profiles))
+            raise SystemExit(f"unknown gate profile: {args.gate_profile}; available profiles: {available}")
+        return args.gate_profile, profile
+    if args.preset and args.preset in profiles:
+        return args.preset, profiles[args.preset]
+    return None, None
 
 
 def apply_roundtrip_preset(args: argparse.Namespace, root: Path) -> None:
@@ -209,6 +305,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="列出所有内建 preset 及其建议输出目录，然后退出",
     )
     parser.add_argument(
+        "--list-gate-profiles",
+        action="store_true",
+        help="列出所有内建 gate profile，然后退出",
+    )
+    parser.add_argument(
         "--bundle-id",
         action="append",
         default=[],
@@ -248,6 +349,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--high-risk-file",
         help="高风险样本列表输出路径；默认写到 output-root/high-risk-samples.json",
+    )
+    parser.add_argument(
+        "--gate-summary-file",
+        help="gate 判定报告输出路径；默认写到 output-root/gate-summary.json",
+    )
+    parser.add_argument(
+        "--gate-profile",
+        help="显式指定 gate profile；若未指定且 preset 存在同名 profile，则自动复用该 profile",
+    )
+    parser.add_argument(
+        "--enforce-gate",
+        action="store_true",
+        help="当 gate 判定为 fail 时返回非零退出码；与 --allow-failures 可同时使用",
     )
     parser.add_argument(
         "--allow-failures",
@@ -317,6 +431,36 @@ def make_risk_report_path(args: argparse.Namespace, output_root: Path) -> Path:
 
 def make_high_risk_path(args: argparse.Namespace, output_root: Path) -> Path:
     return _make_optional_report_path(args.high_risk_file, output_root, "high-risk-samples.json")
+
+
+def make_gate_summary_path(args: argparse.Namespace, output_root: Path) -> Path:
+    return _make_optional_report_path(args.gate_summary_file, output_root, "gate-summary.json")
+
+
+def build_gate_summary(
+    roundtrip_report: dict[str, Any],
+    risk_report: dict[str, Any],
+    gate_summary_path: Path,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    profile_name, gate_profile = resolve_gate_profile(args)
+    summary = canonical_compare.assess_gate_result(
+        roundtrip_report,
+        risk_report,
+        gate_profile=gate_profile,
+        profile_name=profile_name,
+    )
+    summary.update(
+        {
+            "generatedAt": replay_runner.utc_now_iso(),
+            "tool": "Scripts/ir_semantics_roundtrip_runner.py",
+            "reportPath": str(gate_summary_path),
+            "roundtripReportPath": roundtrip_report.get("reportPath"),
+            "riskReportPath": risk_report.get("reportPath"),
+            "outputRoot": roundtrip_report.get("outputRoot"),
+        }
+    )
+    return summary
 
 
 def candidate_llvm_dis_paths(explicit_path: str | None = None) -> list[Path]:
@@ -810,7 +954,12 @@ def build_high_risk_samples(compare_report: dict[str, Any]) -> list[dict[str, An
     ]
 
 
-def print_summary(report: dict[str, Any], compare_report: dict[str, Any], args: argparse.Namespace) -> None:
+def print_summary(
+    report: dict[str, Any],
+    compare_report: dict[str, Any],
+    gate_summary: dict[str, Any],
+    args: argparse.Namespace,
+) -> None:
     if args.quiet:
         return
 
@@ -828,6 +977,7 @@ def print_summary(report: dict[str, Any], compare_report: dict[str, Any], args: 
     print(f"output root: {report['outputRoot']}")
     print(f"roundtrip report: {report['reportPath']}")
     print(f"compare report: {compare_report['reportPath']}")
+    print(f"gate summary: {gate_summary['reportPath']}")
 
     llvm_disassembler = report.get("llvmDisassembler") or {}
     if llvm_disassembler.get("resolvedPath"):
@@ -843,6 +993,9 @@ def print_summary(report: dict[str, Any], compare_report: dict[str, Any], args: 
         f"L2={risk_counts.get('L2', 0)}, "
         f"L3={risk_counts.get('L3', 0)}"
     )
+    profile_label = gate_summary.get("profileName") or "generic"
+    print(f"gate decision: {str(gate_summary.get('status', 'unknown')).upper()} ({profile_label})")
+    print(f"gate summary: {gate_summary.get('summary')}")
 
     failures = [item for item in report.get("results") or [] if item.get("failureStage")]
     if failures:
@@ -858,6 +1011,12 @@ def print_summary(report: dict[str, Any], compare_report: dict[str, Any], args: 
             key = item.get("moduleKey") or Path(item.get("inputPath") or "job").stem
             print(f"  - {key}: risk={item['riskLevel']} reason={item.get('riskReason')}")
 
+    notes = gate_summary.get("notes") or []
+    if notes:
+        print("gate notes:")
+        for note in notes[:5]:
+            print(f"  - {note}")
+
 
 def main() -> int:
     parser = build_parser()
@@ -867,6 +1026,9 @@ def main() -> int:
     root = repo_root()
     if args.list_presets:
         print_available_presets(root)
+        return 0
+    if args.list_gate_profiles:
+        print_available_gate_profiles()
         return 0
     apply_roundtrip_preset(args, root)
 
@@ -889,6 +1051,7 @@ def main() -> int:
     compare_report_path = make_compare_report_path(args, output_root)
     risk_report_path = make_risk_report_path(args, output_root)
     high_risk_path = make_high_risk_path(args, output_root)
+    gate_summary_path = make_gate_summary_path(args, output_root)
 
     warnings: list[replay_runner.DiscoveryWarning] = []
     jobs = replay_runner.discover_jobs(args, output_root, warnings)
@@ -922,6 +1085,7 @@ def main() -> int:
     compare_report = build_compare_report(roundtrip_report, compare_report_path)
     risk_report = build_risk_report(compare_report, risk_report_path)
     high_risk_samples = build_high_risk_samples(compare_report)
+    gate_summary = build_gate_summary(roundtrip_report, risk_report, gate_summary_path, args)
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(roundtrip_report, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -931,8 +1095,12 @@ def main() -> int:
     risk_report_path.write_text(json.dumps(risk_report, indent=2, ensure_ascii=False), encoding="utf-8")
     high_risk_path.parent.mkdir(parents=True, exist_ok=True)
     high_risk_path.write_text(json.dumps(high_risk_samples, indent=2, ensure_ascii=False), encoding="utf-8")
-    print_summary(roundtrip_report, compare_report, args)
+    gate_summary_path.parent.mkdir(parents=True, exist_ok=True)
+    gate_summary_path.write_text(json.dumps(gate_summary, indent=2, ensure_ascii=False), encoding="utf-8")
+    print_summary(roundtrip_report, compare_report, gate_summary, args)
 
+    if args.enforce_gate and gate_summary.get("shouldBlock"):
+        return 1
     if roundtrip_report["roundTripFailedJobs"] and not args.allow_failures:
         return 1
     return 0

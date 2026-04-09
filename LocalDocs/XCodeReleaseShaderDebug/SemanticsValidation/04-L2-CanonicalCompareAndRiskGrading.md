@@ -249,7 +249,7 @@
 
 1. 持续守住 `test-data-representatives` 这个跨机器硬默认入口不回退
 2. 把 `ShaderCorpus` 全量已采集样本尽可能纳入同一套 `compare-summary / risk-report / gate-summary` 语义
-3. 继续使用 `--diagnostics-root` 批量补充 failure-path 样本，但不把人工批量枚举写回默认流程
+3. 继续使用 `--diagnostics-root`（或标准本机路径下的 `--preset local-diagnostics-batch`）批量补充 failure-path 样本，但不把人工批量枚举写回默认流程
 4. 继续把当前默认目标停留在“全量 corpus 的 L1/L2 测试”，而不是把 L3/L4 重新写回主线
 
 ## 完成标准回顾

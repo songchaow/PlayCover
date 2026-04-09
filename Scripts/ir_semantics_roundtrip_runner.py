@@ -128,6 +128,7 @@ TEST_DATA_REPRESENTATIVE_ALLOWED_BLOCKED_KEYS = [
     for item in TEST_DATA_REPRESENTATIVE_CONTRACT
     if item.get("allowedBlocked")
 ]
+LOCAL_SHADERDIAGNOSTICS_DEFAULT_ROOT = Path.home() / "Library/Containers/io.playcover.PlayCover/ShaderSourceDiagnostics"
 LOCAL_SHADERCORPUS_ALLOWED_BLOCKED_KEYS = [
     shader_corpus_identity(str(item["bundleId"]), str(item["moduleKey"]))
     for item in LOCAL_SHADERCORPUS_REPRESENTATIVE_CONTRACT
@@ -264,7 +265,7 @@ def build_expected_preset_contract_jobs(preset_name: str | None, root: Path) -> 
 
     presets = build_roundtrip_presets(root)
     preset = presets.get(preset_name)
-    if preset is None:
+    if preset is None or not preset.get("fixed_contract", True):
         return []
 
     expected_jobs = [
@@ -292,10 +293,17 @@ def build_preset_contract_summary(
     root: Path,
     discovered_jobs: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    expected_jobs = build_expected_preset_contract_jobs(preset_name, root)
     if not preset_name:
         return None
 
+    presets = build_roundtrip_presets(root)
+    preset = presets.get(preset_name)
+    if preset is None:
+        return None
+    if not preset.get("fixed_contract", True):
+        return None
+
+    expected_jobs = build_expected_preset_contract_jobs(preset_name, root)
     expected_by_key = {entry["comparisonKey"]: entry for entry in expected_jobs}
     matched_expected_jobs: list[dict[str, Any]] = []
     missing_expected_jobs: list[dict[str, Any]] = []
@@ -355,6 +363,7 @@ def build_roundtrip_presets(root: Path) -> dict[str, dict[str, Any]]:
     )
     local_module_keys = [item["moduleKey"] for item in LOCAL_SHADERCORPUS_REPRESENTATIVES]
     local_corpus_root = str(LOCAL_SHADERCORPUS_DEFAULT_ROOT)
+    local_diagnostics_root = str(LOCAL_SHADERDIAGNOSTICS_DEFAULT_ROOT)
 
     return {
         "test-data-representatives": {
@@ -373,6 +382,12 @@ def build_roundtrip_presets(root: Path) -> dict[str, dict[str, Any]]:
             "bundle_ids": local_bundle_ids,
             "module_keys": local_module_keys,
             "suggested_output_root": str(semantics_output_root(root, "local-corpus-representatives")),
+        },
+        "local-diagnostics-batch": {
+            "description": "复用当前机器标准容器路径下的 ShaderSourceDiagnostics failure-path 样本，做批量 L1/L2 补充验证。",
+            "diagnostics_roots": [local_diagnostics_root],
+            "suggested_output_root": str(semantics_output_root(root, "local-diagnostics-batch")),
+            "fixed_contract": False,
         },
         "daily-default": {
             "description": "默认日常 gate：test-data 代表集 + 本地 ShaderCorpus 代表集。",
@@ -482,6 +497,9 @@ def apply_roundtrip_preset(args: argparse.Namespace, root: Path) -> None:
 
     args.ll_inputs = dedupe_preserving_order(list(args.ll_inputs) + list(preset.get("ll_inputs") or []))
     args.corpus_roots = dedupe_preserving_order(list(args.corpus_roots) + list(preset.get("corpus_roots") or []))
+    args.diagnostics_roots = dedupe_preserving_order(
+        list(args.diagnostics_roots) + list(preset.get("diagnostics_roots") or [])
+    )
     args.bundle_id = dedupe_preserving_order(list(args.bundle_id) + list(preset.get("bundle_ids") or []))
     args.module_key = dedupe_preserving_order(list(args.module_key) + list(preset.get("module_keys") or []))
     if not args.output_root:
@@ -513,7 +531,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--preset",
-        help="使用固定样本集预设：test-data-representatives / test-data-batch / local-corpus-representatives / daily-default",
+        help="使用固定样本集预设：test-data-representatives / test-data-batch / local-corpus-representatives / local-diagnostics-batch / daily-default",
     )
     parser.add_argument(
         "--list-presets",

@@ -156,7 +156,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 
 1. `test-data-representatives` = **跨机器硬默认 gate**
 2. `python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus --allow-failures` = **当前最高优先级的 L1/L2 主线**
-3. `python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Containers/io.playcover.PlayCover/ShaderSourceDiagnostics --allow-failures` = **failure-path 批量补充输入**
+3. `python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Containers/io.playcover.PlayCover/ShaderSourceDiagnostics --allow-failures` / `--preset local-diagnostics-batch --allow-failures` = **failure-path 批量补充输入**
 4. `behavior-summary.json` = **后置 L3 参考**
 5. `daily-default` / `local-corpus-representatives` = **本机增强 / 观察入口**
 6. `test-data-batch` = **参考批量快照，不承担日常阻断职责**

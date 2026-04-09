@@ -103,6 +103,7 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             REPO_ROOT / "build" / "semantics-validation" / "roundtrip" / "daily-default",
         )
         self.assertEqual(args.corpus_roots, [str(roundtrip_runner.LOCAL_SHADERCORPUS_DEFAULT_ROOT)])
+        self.assertEqual(args.diagnostics_roots, [])
         self.assertEqual(
             args.bundle_id,
             ["com.miHoYo.Yuanshen", "com.papegames.lysk", "com.tencent.tmgp.speedmobile"],
@@ -133,6 +134,41 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
                 roundtrip_runner.TEST_DATA_REPRESENTATIVE_L2_KEYS + roundtrip_runner.LOCAL_SHADERCORPUS_ALLOWED_L2_KEYS
             ),
         )
+
+    def test_apply_local_diagnostics_batch_preset_adds_default_root(self) -> None:
+        parser = roundtrip_runner.build_parser()
+        args = parser.parse_args(["--preset", "local-diagnostics-batch"])
+
+        roundtrip_runner.apply_roundtrip_preset(args, REPO_ROOT)
+
+        self.assertEqual(
+            Path(args.output_root),
+            REPO_ROOT / "build" / "semantics-validation" / "roundtrip" / "local-diagnostics-batch",
+        )
+        self.assertEqual(args.ll_inputs, [])
+        self.assertEqual(args.corpus_roots, [])
+        self.assertEqual(args.diagnostics_roots, [str(roundtrip_runner.LOCAL_SHADERDIAGNOSTICS_DEFAULT_ROOT)])
+        self.assertEqual(args.bundle_id, [])
+        self.assertEqual(args.module_key, [])
+
+        gate_profile_name, gate_profile = roundtrip_runner.resolve_gate_profile(args)
+        self.assertIsNone(gate_profile_name)
+        self.assertIsNone(gate_profile)
+
+    def test_apply_local_diagnostics_batch_preset_dedupes_explicit_diagnostics_root(self) -> None:
+        parser = roundtrip_runner.build_parser()
+        args = parser.parse_args(
+            [
+                "--preset",
+                "local-diagnostics-batch",
+                "--diagnostics-root",
+                str(roundtrip_runner.LOCAL_SHADERDIAGNOSTICS_DEFAULT_ROOT),
+            ]
+        )
+
+        roundtrip_runner.apply_roundtrip_preset(args, REPO_ROOT)
+
+        self.assertEqual(args.diagnostics_roots, [str(roundtrip_runner.LOCAL_SHADERDIAGNOSTICS_DEFAULT_ROOT)])
 
     def test_local_corpus_gate_profile_allows_missing_local_samples(self) -> None:
         parser = roundtrip_runner.build_parser()
@@ -423,6 +459,33 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
         gate_profile_name, gate_profile = roundtrip_runner.resolve_gate_profile(args)
         self.assertIsNone(gate_profile_name)
         self.assertIsNone(gate_profile)
+
+    def test_local_diagnostics_batch_preset_skips_fixed_contract_summary(self) -> None:
+        parser = roundtrip_runner.build_parser()
+        args = parser.parse_args(["--preset", "local-diagnostics-batch"])
+        roundtrip_runner.apply_roundtrip_preset(args, REPO_ROOT)
+
+        contract = roundtrip_runner.build_preset_contract_summary(
+            "local-diagnostics-batch",
+            REPO_ROOT,
+            [
+                {
+                    "jobID": 1,
+                    "comparisonKey": "shaderSourceDiagnostics::bundle:com.example.demo::module:abc123",
+                    "sourceKind": "shader_source_diagnostics",
+                    "inputPath": "/tmp/module.ll",
+                    "bundleId": "com.example.demo",
+                    "moduleKey": "abc123",
+                    "sampleKey": "abc123",
+                    "sampleIdentity": "shaderSourceDiagnostics::bundle:com.example.demo::module:abc123",
+                    "metadataPath": "/tmp/module.meta.json",
+                    "functionNames": ["demo"],
+                    "functionTypes": ["kernel"],
+                }
+            ],
+        )
+
+        self.assertIsNone(contract)
 
     def test_build_compare_result_returns_l3_for_roundtrip_failure(self) -> None:
         result = roundtrip_runner.build_compare_result(

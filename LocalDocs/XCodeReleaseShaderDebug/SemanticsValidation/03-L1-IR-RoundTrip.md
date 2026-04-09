@@ -77,13 +77,14 @@ regenerated.ll
 - `--preset test-data-representatives`
 - `--preset test-data-batch`
 - `--preset local-corpus-representatives`
+- `--preset local-diagnostics-batch`
 - `--preset daily-default`
 
 补充说明：
 
 - `test-data-representatives` 继续只承担**跨机器硬默认 gate** 角色
 - `ShaderCorpus` 继续是**当前最高优先级的批量主入口**
-- `ShaderSourceDiagnostics` 继续只承担**failure-path 补充输入**角色，不反向定义当前默认 gate
+- `ShaderSourceDiagnostics` 继续只承担**failure-path 补充输入**角色，不反向定义当前默认 gate；当前既可显式使用 `--diagnostics-root`，也可在标准本机路径下通过 `--preset local-diagnostics-batch` 复用同一批量入口
 - `local-corpus-representatives`、`daily-default` 与 `test-data-batch` 继续只承担**增强入口 / 观察入口 / 历史参考**角色，不反向定义当前主线优先级
 - 若 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 在同一次运行里命中相同 `bundleId + moduleKey`，L1 报告中的 `comparisonKey / sampleIdentity` 必须保留来源区分，避免 diagnostics 样本覆盖 success-path 的 corpus 事实
 - 当前更细的 preset contract、样本计数、active known debt 与 manifest 摘要已统一下沉到 `08-当前代表集与Gate契约参考.md`（工作参考，当前日常推进**不必须读取**）

@@ -69,16 +69,97 @@
 
 也就是说，本轮已把这支样本里最直接的一处 converter CFG 回放缺口补上，但还没有把整条 `CC-003.4` 闭环做完。
 
+## CC-003.4.2：helper / lowering 残留归类
+
+在 `CC-003.4.1` 之后，继续对 `f26d322...` 下钻 helper `_ZN11_fract_impl...` 的 nested branch 与 `fract / floor / fmin` 残留，可以把问题再切开成两层：
+
+- **generated.metal 是否还缺失真实控制流 / 语义结构？**
+- **original / regenerated 里的 residual `L2`，到底是 converter 继续出错，还是 Metal 编译器对 helper 做了 fast-math 内联/折叠后的 compare 噪声？**
+
+这轮结论是：
+
+- entry 侧的真实 converter CFG 问题已经被 `CC-003.4.1` 修掉
+- 剩下这支 helper / lowering 漂移，已经更像 **compare 口径噪声**，而不是新的 converter 漏洞
+
+## 新证据
+
+本轮没有再发现新的 generated MSL 结构缺口，反而发现剩余差异有一个稳定模式：
+
+- `f26d322...` 的 `entryComparison` 已经稳定为 `L0`
+- 但 compare 仍会报：
+  - `模块级 air intrinsic 使用变化`
+  - `函数内 air intrinsic 调用统计变化`
+  - `控制流粗摘要变化`
+  - `指令族统计变化`
+- 对照 original / regenerated 可以看到，这些残留主要来自：
+  - helper 中的 `floor / fmin / fract` 被重新编译后折叠成 fast 版本或向量版本
+  - helper 或局部表达式被内联回 entry，导致 entry 内 intrinsic family 计数与 CFG 统计漂移
+  - 但 entry/resource 摘要并没有继续发生新的 first-class 语义变化
+
+也就是说，这组 residual 已经不再像“生成错了代码”，而更像“同一类数学 helper 被编译器重新排布后，compare 对 shape 过于敏感”。
+
+## 本轮实现内容
+
+因此这轮实现没有继续改 `IRToMSLConverter.swift`，而是把最小改动落在：
+
+- `Scripts/ir_canonical_compare.py`
+
+具体做了两件事：
+
+1. 在现有 fast/non-fast intrinsic 归一化之上，再补一层 **intrinsic family** 判定
+2. 当同时满足下面条件时，把这类 residual 从 `L2` 下调为 `L1`：
+   - entry/resource 语义未变
+   - module intrinsic family 集合一致
+   - entry 只多/少一支来自 helper 内联的 family，或 family 集合本身未变
+   - 差异主要体现在 intrinsic 计数、CFG shape、instruction-family 统计
+
+这条规则的目标不是“普遍放宽 compare”，而是只把 `f26d322...` 这一类 **family-preserving / optimizer-only** 的 residual 降噪掉。
+
+## 新增回归
+
+本轮补了 compare 单测，覆盖两条边界：
+
+- optimizer-only intrinsic family 漂移应当从 `L2` 降为 `L1`
+- 真正发生 family 缺失/变化的场景仍应保留 `L2`
+
+对应文件：
+
+- `Scripts/test_ir_canonical_compare.py`
+
+## 验证结果
+
+### 单 case
+
+1. `python3 Scripts/test_ir_canonical_compare.py`
+   - 通过
+2. `python3 Scripts/test_ir_semantics_roundtrip_runner.py`
+   - 通过
+3. 直接对现有 diagnostics artifact 重算 compare：
+   - `f26d322...`：`L2 -> L1`
+   - `91c46448...`：仍为 `L2`
+
+### full-batch
+
+1. diagnostics 复跑：
+   - 输出：`build/semantics-validation/roundtrip/20260410-025055-4bfa19e0`
+   - 结果：`L1 5 -> 6`、`L2 2 -> 1`、`L3` 持平
+   - 变化样本只有：`f26d322...` 从 `L2 -> L1`
+2. corpus 复跑：
+   - 输出：`build/semantics-validation/roundtrip/20260410-025055-78cb9622`
+   - 结果：`L1 80 -> 99`、`L2 106 -> 87`、`L3` 持平
+   - 一共 19 个样本从 `L2 -> L1`，抽查 `44cab0a5...` 也属于同样的 optimizer-only intrinsic family 漂移模式
+
 ## 当前结论
 
-本轮可以先明确两点：
+本轮可以把 `CC-003.4.2` 明确收敛成下面这个判断：
 
-- `CC-003.4` 这组 diagnostics `L2` 里，至少有一部分不是 compare 纯噪声，而是 converter 对 diamond CFG 的真实回放缺口
-- 这类问题值得优先在 `IRToMSLConverter.swift` 修，而不是先放宽 `ir_canonical_compare.py`
+- `CC-003.4` 里确实既有真实 converter CFG 缺口，也有 compare 噪声
+- `f26d322...` 在 `CC-003.4.1` 修完 diamond CFG 之后，helper `fract / floor / fmin` 残留已经更像 compare 噪声，而不是新的实现问题
+- 这类 residual 适合在 `ir_canonical_compare.py` 做定向降噪，不值得继续扩大 converter 侧改动
 
 ## 下一步建议
 
-当前更值得继续沿同一条样本线下钻的是：
+下一步更值得继续沿 `CC-003.4` 推进的是：
 
-- `f26d322...` 里 helper `_ZN11_fract_impl...` 这类嵌套分支仍未被结构化发射的问题
-- 或者，在确认 generated MSL / regenerated IR 已经稳定后，再评估剩余 `fract.v2f32 / floor / fmin` 模式是否属于 compare 口径上的 lowering 噪声
+- 单独下钻 `91c46448...` 的 residual `fmin.f16 / floor.v2f32 / sample + half lowering` 漂移
+- 继续确认它是否也属于 compare 噪声，还是仍有一支真实 converter / compile posture 问题没有被解释掉

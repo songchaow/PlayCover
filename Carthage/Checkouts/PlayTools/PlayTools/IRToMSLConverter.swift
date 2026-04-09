@@ -3748,6 +3748,7 @@ struct IRToMSLConverter {
         var types: [String: String] = [:]
         /// 生成的 MSL 语句（按顺序）
         var statements: [String] = []
+        var indentLevel: Int = 0
         /// 下一个临时变量编号
         var nextTemp: Int = 0
         /// 函数参数名映射（IR 参数 %N → MSL 参数名）
@@ -3898,7 +3899,8 @@ struct IRToMSLConverter {
 
         /// 发射一条 MSL 语句到输出
         func emit(_ stmt: String) {
-            statements.append(stmt)
+            let indent = String(repeating: "    ", count: max(0, indentLevel))
+            statements.append(indent + stmt)
         }
 
         /// 为 SSA 值分配临时变量并发射赋值语句
@@ -4005,38 +4007,210 @@ struct IRToMSLConverter {
             ctx.emit(decl)
         }
 
-        // ── 第二遍：逐行翻译函数体 ──
-        for line in bodyLines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty { continue }
+        let blockLines = buildBasicBlockLineMap(bodyLines)
+        if canEmitStructuredCFG(blockLines, ctx: ctx) {
+            var emittedBlocks: Set<String> = []
+            emitStructuredBasicBlock(
+                "entry",
+                blockLines: blockLines,
+                ctx: ctx,
+                emittedBlocks: &emittedBlocks
+            )
+        } else {
+            // ── 第二遍：逐行翻译函数体 ──
+            for line in bodyLines {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.isEmpty { continue }
 
-            // 基本块标签（纯名字:）
-            if trimmed.hasSuffix(":") && !trimmed.contains(" ") {
-                ctx.currentBBLabel = String(trimmed.dropLast())
-                ctx.emit("// BB: \(trimmed)")
-                // 发射 phi 赋值（当前 BB 的 phi 节点从各前驱来的值，
-                // 由 translateBr 在前驱 BB 处理）
-                continue
-            }
-            // 带前驱注释的基本块标签: "10:  ; preds = %7"
-            if let colonIdx = trimmed.firstIndex(of: ":"),
-               trimmed[trimmed.startIndex..<colonIdx].allSatisfy({ $0.isNumber || $0.isLetter || $0 == "_" }) {
-                let labelCandidate = String(trimmed[trimmed.startIndex..<colonIdx])
-                // 确保冒号后面是空格或分号（注释），不是 IR 指令
-                let afterColon = trimmed.index(after: colonIdx)
-                if afterColon == trimmed.endIndex ||
-                   trimmed[afterColon...].trimmingCharacters(in: .whitespaces).isEmpty ||
-                   trimmed[afterColon...].trimmingCharacters(in: .whitespaces).hasPrefix(";") {
-                    ctx.currentBBLabel = labelCandidate
-                    ctx.emit("// BB\(labelCandidate):")
+                // 基本块标签（纯名字:）
+                if trimmed.hasSuffix(":") && !trimmed.contains(" ") {
+                    ctx.currentBBLabel = String(trimmed.dropLast())
+                    ctx.emit("// BB: \(trimmed)")
+                    // 发射 phi 赋值（当前 BB 的 phi 节点从各前驱来的值，
+                    // 由 translateBr 在前驱 BB 处理）
                     continue
                 }
-            }
+                // 带前驱注释的基本块标签: "10:  ; preds = %7"
+                if let colonIdx = trimmed.firstIndex(of: ":"),
+                   trimmed[trimmed.startIndex..<colonIdx].allSatisfy({ $0.isNumber || $0.isLetter || $0 == "_" }) {
+                    let labelCandidate = String(trimmed[trimmed.startIndex..<colonIdx])
+                    // 确保冒号后面是空格或分号（注释），不是 IR 指令
+                    let afterColon = trimmed.index(after: colonIdx)
+                    if afterColon == trimmed.endIndex ||
+                       trimmed[afterColon...].trimmingCharacters(in: .whitespaces).isEmpty ||
+                       trimmed[afterColon...].trimmingCharacters(in: .whitespaces).hasPrefix(";") {
+                        ctx.currentBBLabel = labelCandidate
+                        ctx.emit("// BB\(labelCandidate):")
+                        continue
+                    }
+                }
 
-            translateInstruction(trimmed, ctx: ctx)
+                translateInstruction(trimmed, ctx: ctx)
+            }
         }
 
         return ctx.statements
+    }
+
+    private static func buildBasicBlockLineMap(_ lines: [String]) -> [String: [String]] {
+        var blocks: [String: [String]] = ["entry": []]
+        var currentLabel = "entry"
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            if let label = parseBBLabel(trimmed) {
+                currentLabel = label
+                if blocks[label] == nil {
+                    blocks[label] = []
+                }
+                continue
+            }
+            blocks[currentLabel, default: []].append(trimmed)
+        }
+
+        return blocks
+    }
+
+    private static func canEmitStructuredCFG(_ blockLines: [String: [String]], ctx: SSAContext) -> Bool {
+        let conditionalBlocks = ctx.bbInfo.values.filter {
+            if case .conditional = $0.branch { return true }
+            return false
+        }
+        guard !conditionalBlocks.isEmpty else {
+            return false
+        }
+
+        for block in conditionalBlocks {
+            guard case .conditional(_, let trueLabel, let falseLabel) = block.branch else {
+                continue
+            }
+            let trueBranch = ctx.bbInfo[trueLabel]?.branch
+            let falseBranch = ctx.bbInfo[falseLabel]?.branch
+            guard case .unconditional(let trueMerge)? = trueBranch,
+                  case .unconditional(let falseMerge)? = falseBranch,
+                  trueMerge == falseMerge,
+                  blockLines[trueLabel] != nil,
+                  blockLines[falseLabel] != nil,
+                  blockLines[trueMerge] != nil else {
+                return false
+            }
+        }
+
+        return true
+    }
+
+    private static func emitStructuredBasicBlock(
+        _ label: String,
+        blockLines: [String: [String]],
+        ctx: SSAContext,
+        emittedBlocks: inout Set<String>
+    ) {
+        guard !emittedBlocks.contains(label) else { return }
+        emittedBlocks.insert(label)
+        ctx.currentBBLabel = label
+
+        let lines = blockLines[label] ?? []
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            if isPhiInstruction(trimmed) {
+                translateInstruction(trimmed, ctx: ctx)
+                continue
+            }
+            if trimmed.hasPrefix("br ") {
+                if emitStructuredConditionalBranch(
+                    trimmed,
+                    blockLines: blockLines,
+                    ctx: ctx,
+                    emittedBlocks: &emittedBlocks
+                ) {
+                    return
+                }
+
+                translateBr(trimmed, ctx: ctx)
+                if case .unconditional(let dest)? = parseBrInstruction(trimmed) {
+                    emitStructuredBasicBlock(dest, blockLines: blockLines, ctx: ctx, emittedBlocks: &emittedBlocks)
+                }
+                return
+            }
+            translateInstruction(trimmed, ctx: ctx)
+        }
+    }
+
+    private static func emitStructuredConditionalBranch(
+        _ line: String,
+        blockLines: [String: [String]],
+        ctx: SSAContext,
+        emittedBlocks: inout Set<String>
+    ) -> Bool {
+        guard case .conditional(let condValue, let trueLabel, let falseLabel)? = parseBrInstruction(line),
+              case .unconditional(let trueMerge)? = ctx.bbInfo[trueLabel]?.branch,
+              case .unconditional(let falseMerge)? = ctx.bbInfo[falseLabel]?.branch,
+              trueMerge == falseMerge else {
+            return false
+        }
+
+        let cond = resolveIROperand(condValue, ctx: ctx)
+        let mergeLabel = trueMerge
+
+        ctx.emit("if (\(cond)) {")
+        ctx.indentLevel += 1
+        emitStructuredBranchArm(
+            trueLabel,
+            stopBefore: mergeLabel,
+            blockLines: blockLines,
+            ctx: ctx,
+            emittedBlocks: &emittedBlocks
+        )
+        ctx.indentLevel -= 1
+        ctx.emit("} else {")
+        ctx.indentLevel += 1
+        emitStructuredBranchArm(
+            falseLabel,
+            stopBefore: mergeLabel,
+            blockLines: blockLines,
+            ctx: ctx,
+            emittedBlocks: &emittedBlocks
+        )
+        ctx.indentLevel -= 1
+        ctx.emit("}")
+
+        emitStructuredBasicBlock(mergeLabel, blockLines: blockLines, ctx: ctx, emittedBlocks: &emittedBlocks)
+        return true
+    }
+
+    private static func emitStructuredBranchArm(
+        _ label: String,
+        stopBefore stopLabel: String,
+        blockLines: [String: [String]],
+        ctx: SSAContext,
+        emittedBlocks: inout Set<String>
+    ) {
+        guard label != stopLabel, !emittedBlocks.contains(label) else { return }
+        emittedBlocks.insert(label)
+        ctx.currentBBLabel = label
+
+        let lines = blockLines[label] ?? []
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || isPhiInstruction(trimmed) { continue }
+            if trimmed.hasPrefix("br ") {
+                if case .unconditional(let dest)? = parseBrInstruction(trimmed), dest == stopLabel {
+                    translateBr(trimmed, ctx: ctx)
+                    return
+                }
+                translateBr(trimmed, ctx: ctx)
+                return
+            }
+            translateInstruction(trimmed, ctx: ctx)
+        }
+    }
+
+    private static func isPhiInstruction(_ line: String) -> Bool {
+        guard let eqRange = line.range(of: " = ") else { return false }
+        let rhs = String(line[eqRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+        return rhs.hasPrefix("phi ")
     }
 
     // MARK: - CFG Prescan (E-004e4b)
@@ -6149,26 +6323,34 @@ struct IRToMSLConverter {
             if truePhiAssigns.isEmpty && falsePhiAssigns.isEmpty {
                 // 无 phi 赋值，生成简洁的 if/else 注释
                 ctx.emit("if (\(cond)) {")
-                ctx.emit("    // → BB\(trueLabel)")
+                ctx.indentLevel += 1
+                ctx.emit("// → BB\(trueLabel)")
+                ctx.indentLevel -= 1
                 ctx.emit("} else {")
-                ctx.emit("    // → BB\(falseLabel)")
+                ctx.indentLevel += 1
+                ctx.emit("// → BB\(falseLabel)")
+                ctx.indentLevel -= 1
                 ctx.emit("}")
             } else {
                 // 有 phi 赋值：生成包含赋值的 if/else
                 ctx.emit("if (\(cond)) {")
+                ctx.indentLevel += 1
                 for assign in truePhiAssigns {
-                    ctx.emit("    \(assign)")
+                    ctx.emit(assign)
                 }
                 if truePhiAssigns.isEmpty {
-                    ctx.emit("    // → BB\(trueLabel)")
+                    ctx.emit("// → BB\(trueLabel)")
                 }
+                ctx.indentLevel -= 1
                 ctx.emit("} else {")
+                ctx.indentLevel += 1
                 for assign in falsePhiAssigns {
-                    ctx.emit("    \(assign)")
+                    ctx.emit(assign)
                 }
                 if falsePhiAssigns.isEmpty {
-                    ctx.emit("    // → BB\(falseLabel)")
+                    ctx.emit("// → BB\(falseLabel)")
                 }
+                ctx.indentLevel -= 1
                 ctx.emit("}")
             }
         } else if cleaned.hasPrefix("label ") {

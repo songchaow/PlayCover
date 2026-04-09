@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = REPO_ROOT / "Scripts"
 ROUNDTRIP_SCRIPT = SCRIPTS_DIR / "ir_semantics_roundtrip_runner.py"
 TEST_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_addrspace.ll"
+TEST_PHI_BRANCH_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_phi_branch.ll"
 
 import sys
 
@@ -804,6 +805,32 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
 
             self.assertEqual(original_ir_path.read_text(encoding="utf-8"), TEST_SAMPLE.read_text(encoding="utf-8"))
             self.assertGreater(regenerated_ir_path.stat().st_size, 0)
+
+    @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
+    def test_corpus_replay_runner_preserves_phi_branch_structure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            generated_path = Path(temp_dir) / "phi.generated.metal"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(REPO_ROOT / "Scripts" / "corpus_replay_runner.py"),
+                    "--ll",
+                    str(TEST_PHI_BRANCH_SAMPLE),
+                    "--output-file",
+                    str(generated_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("replay summary", completed.stdout)
+            generated_text = generated_path.read_text(encoding="utf-8")
+            self.assertIn("if (", generated_text)
+            self.assertIn("phi_0 = 1", generated_text)
+            self.assertIn("phi_0 = 2", generated_text)
+            self.assertIn("} else {", generated_text)
 
 
 if __name__ == "__main__":

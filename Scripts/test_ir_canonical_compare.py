@@ -139,6 +139,55 @@ def write_json(path: Path, payload: dict) -> None:
 
 
 class IRCanonicalCompareTests(unittest.TestCase):
+    @staticmethod
+    def _make_optimizer_drift_summary(
+        module_intrinsics: dict[str, int],
+        entry_intrinsics: dict[str, int],
+        cfg: dict[str, object],
+        instruction_families: dict[str, int],
+    ) -> dict[str, object]:
+        entry = {
+            "shaderType": "vertex",
+            "functionName": "xlatMtlMain",
+            "returnSignature": "void",
+            "parameterCount": 1,
+            "parameterSignatures": ["ptr addrspace(2)"],
+            "parameterAddrspaces": [2],
+            "argSemantics": ["kind=air.buffer|index=0|location=0|access=read|type=Uniforms|typeSize=16|align=16|qualifiers=air.read"],
+            "resourceSemantics": ["kind=air.buffer|index=0|location=0|access=read|type=Uniforms|typeSize=16|align=16|qualifiers=air.read"],
+            "builtinSemantics": ["kind=air.vertex_input|index=0|location=0|type=float4"],
+            "outputSemantics": ["kind=air.position|type=float4"],
+            "functionAttrs": [],
+            "fastMathAttrKeys": [],
+            "cfg": cfg,
+            "instructionFamilies": instruction_families,
+            "airIntrinsicCalls": entry_intrinsics,
+            "addrspaceCounts": {"2": 12},
+            "fastMathInstructionFlags": {},
+        }
+        return {
+            "schemaVersion": canonical_compare.SCHEMA_VERSION,
+            "module": {
+                "sourceFilename": None,
+                "targetTriple": "air64-apple-ios11.0.0",
+                "dataLayout": None,
+                "compileOptions": ["air.compile.fast_math_enable"],
+            },
+            "entryCount": 1,
+            "functionCount": 1,
+            "entries": [entry],
+            "functions": [],
+            "entryKeys": ["vertex:xlatMtlMain"],
+            "moduleAddressSpaces": {"2": 32},
+            "moduleAirIntrinsics": module_intrinsics,
+            "moduleInstructionFamilies": instruction_families,
+            "fastMath": {
+                "compileOptions": ["air.compile.fast_math_enable"],
+                "functionAttrKeys": [],
+                "instructionFlags": {"fast": 5},
+            },
+        }
+
     def test_extract_ir_summary_from_real_sample(self) -> None:
         summary = canonical_compare.extract_ir_summary(TEST_SAMPLE)
 
@@ -246,6 +295,123 @@ class IRCanonicalCompareTests(unittest.TestCase):
         self.assertEqual(comparison["riskLevel"], "L1")
         self.assertEqual(comparison["instructionFamilyComparison"]["severity"], "L1")
         self.assertEqual(comparison["instructionFamilyComparison"]["differenceCount"], 1)
+
+    def test_compare_downgrades_optimizer_only_intrinsic_family_drift_to_l1(self) -> None:
+        original = self._make_optimizer_drift_summary(
+            module_intrinsics={
+                "air.convert.f.v2f32.f.v2f16": 2,
+                "air.dot.v3f32": 5,
+                "air.fast_fract.f32": 1,
+                "air.fast_rsqrt.f32": 2,
+                "air.floor.f32": 1,
+                "air.fma.f32": 4,
+                "air.fma.v2f32": 6,
+                "air.fma.v3f32": 3,
+                "air.fma.v4f32": 5,
+                "air.fmin.f32": 1,
+            },
+            entry_intrinsics={
+                "air.convert.f.v2f32.f.v2f16": 2,
+                "air.dot.v3f32": 5,
+                "air.fast_rsqrt.f32": 2,
+                "air.fma.f32": 4,
+                "air.fma.v2f32": 6,
+                "air.fma.v3f32": 3,
+                "air.fma.v4f32": 5,
+            },
+            cfg={
+                "basicBlockCount": 4,
+                "terminatorCounts": {"br": 2, "condbr": 1, "ret": 1},
+                "phiCount": 2,
+                "selectCount": 0,
+            },
+            instruction_families={
+                "aggregate": 8,
+                "arithmetic": 18,
+                "call": 29,
+                "cast": 1,
+                "compare": 1,
+                "intrinsic": 27,
+                "memory": 69,
+                "vector": 76,
+            },
+        )
+        regenerated = self._make_optimizer_drift_summary(
+            module_intrinsics={
+                "air.convert.f.v2f32.f.v2f16": 2,
+                "air.dot.v3f32": 5,
+                "air.fast_floor.f32": 5,
+                "air.fast_fmin.f32": 5,
+                "air.fast_fract.f32": 1,
+                "air.fast_fract.v2f32": 2,
+                "air.fast_rsqrt.f32": 2,
+                "air.fma.f32": 4,
+                "air.fma.v2f32": 5,
+                "air.fma.v3f32": 3,
+                "air.fma.v4f32": 5,
+            },
+            entry_intrinsics={
+                "air.convert.f.v2f32.f.v2f16": 2,
+                "air.dot.v3f32": 5,
+                "air.fast_fract.v2f32": 2,
+                "air.fast_rsqrt.f32": 2,
+                "air.fma.f32": 4,
+                "air.fma.v2f32": 5,
+                "air.fma.v3f32": 3,
+                "air.fma.v4f32": 5,
+            },
+            cfg={
+                "basicBlockCount": 1,
+                "terminatorCounts": {"ret": 1},
+                "phiCount": 0,
+                "selectCount": 0,
+            },
+            instruction_families={
+                "aggregate": 8,
+                "arithmetic": 16,
+                "call": 28,
+                "cast": 1,
+                "intrinsic": 28,
+                "memory": 60,
+                "vector": 68,
+            },
+        )
+
+        comparison = canonical_compare.compare_ir_summaries(original, regenerated)
+
+        self.assertEqual(comparison["riskLevel"], "L1")
+        self.assertEqual(comparison["builtinComparison"]["severity"], "L1")
+        self.assertEqual(comparison["cfgComparison"]["severity"], "L1")
+        self.assertEqual(comparison["instructionFamilyComparison"]["severity"], "L1")
+
+    def test_compare_keeps_l2_when_intrinsic_family_set_really_changes(self) -> None:
+        original = self._make_optimizer_drift_summary(
+            module_intrinsics={"air.floor.f32": 1, "air.fmin.f32": 1, "air.fast_sin.f32": 1},
+            entry_intrinsics={"air.floor.f32": 1, "air.fast_sin.f32": 1},
+            cfg={
+                "basicBlockCount": 3,
+                "terminatorCounts": {"br": 1, "condbr": 1, "ret": 1},
+                "phiCount": 1,
+                "selectCount": 0,
+            },
+            instruction_families={"call": 4, "intrinsic": 4, "memory": 8},
+        )
+        regenerated = self._make_optimizer_drift_summary(
+            module_intrinsics={"air.fast_floor.f32": 2, "air.fast_fmin.f32": 2},
+            entry_intrinsics={"air.fast_floor.f32": 2},
+            cfg={
+                "basicBlockCount": 1,
+                "terminatorCounts": {"ret": 1},
+                "phiCount": 0,
+                "selectCount": 0,
+            },
+            instruction_families={"call": 2, "intrinsic": 2, "memory": 4},
+        )
+
+        comparison = canonical_compare.compare_ir_summaries(original, regenerated)
+
+        self.assertEqual(comparison["riskLevel"], "L2")
+        self.assertEqual(comparison["builtinComparison"]["severity"], "L2")
 
     def test_assess_gate_result_warns_for_known_debt(self) -> None:
         samples = [

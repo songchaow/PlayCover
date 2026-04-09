@@ -198,11 +198,114 @@ def _normalize_air_intrinsic_name(name: str) -> str:
     return name
 
 
+def _air_intrinsic_family_name(name: str) -> str:
+    normalized = _normalize_air_intrinsic_name(name)
+    if not normalized.startswith("air."):
+        return normalized
+    parts = normalized.split(".")
+    if len(parts) >= 2:
+        return ".".join(parts[:2])
+    return normalized
+
+
 def _normalize_air_intrinsic_counter(counter_like: dict[str, Any] | None) -> dict[str, int]:
     normalized: Counter[str] = Counter()
     for name, value in (counter_like or {}).items():
         normalized[_normalize_air_intrinsic_name(str(name))] += int(value)
     return _counter_to_sorted_dict(normalized)
+
+
+def _air_intrinsic_family_set(counter_like: dict[str, Any] | None) -> set[str]:
+    families: set[str] = set()
+    for name, value in (counter_like or {}).items():
+        if int(value) <= 0:
+            continue
+        families.add(_air_intrinsic_family_name(str(name)))
+    return families
+
+
+def _entry_has_optimizer_only_intrinsic_drift(
+    original_entry: dict[str, Any],
+    regenerated_entry: dict[str, Any],
+    shared_module_families: set[str],
+) -> bool:
+    if original_entry.get("resourceSemantics") != regenerated_entry.get("resourceSemantics"):
+        return False
+    if original_entry.get("builtinSemantics") != regenerated_entry.get("builtinSemantics"):
+        return False
+
+    original_intrinsics = original_entry.get("airIntrinsicCalls") or {}
+    regenerated_intrinsics = regenerated_entry.get("airIntrinsicCalls") or {}
+    if not original_intrinsics or not regenerated_intrinsics:
+        return False
+
+    if _normalize_air_intrinsic_counter(original_intrinsics) == _normalize_air_intrinsic_counter(regenerated_intrinsics):
+        return False
+
+    original_families = _air_intrinsic_family_set(original_intrinsics)
+    regenerated_families = _air_intrinsic_family_set(regenerated_intrinsics)
+    if original_families == regenerated_families:
+        return True
+
+    family_delta = original_families ^ regenerated_families
+    return bool(family_delta) and len(family_delta) == 1 and family_delta <= shared_module_families
+
+
+def _module_has_optimizer_only_intrinsic_drift(original: dict[str, Any], regenerated: dict[str, Any]) -> bool:
+    original_intrinsics = original.get("moduleAirIntrinsics") or {}
+    regenerated_intrinsics = regenerated.get("moduleAirIntrinsics") or {}
+    if not original_intrinsics or not regenerated_intrinsics:
+        return False
+
+    if _normalize_air_intrinsic_counter(original_intrinsics) == _normalize_air_intrinsic_counter(regenerated_intrinsics):
+        return False
+
+    return _air_intrinsic_family_set(original_intrinsics) == _air_intrinsic_family_set(regenerated_intrinsics)
+
+
+def _downgrade_optimizer_only_shape_drift(
+    original: dict[str, Any],
+    regenerated: dict[str, Any],
+    builtin_comparison: dict[str, Any],
+    cfg_comparison: dict[str, Any],
+    instruction_family_comparison: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    original_entries = _map_by_entry_key(original.get("entries") or [])
+    regenerated_entries = _map_by_entry_key(regenerated.get("entries") or [])
+    shared_module_families = _air_intrinsic_family_set(original.get("moduleAirIntrinsics") or {}) & _air_intrinsic_family_set(regenerated.get("moduleAirIntrinsics") or {})
+    optimizer_only_entry_keys = {
+        key
+        for key in sorted(set(original_entries) & set(regenerated_entries))
+        if _entry_has_optimizer_only_intrinsic_drift(original_entries[key], regenerated_entries[key], shared_module_families)
+    }
+    module_only_intrinsic_drift = _module_has_optimizer_only_intrinsic_drift(original, regenerated)
+
+    adjusted_builtin_differences: list[dict[str, Any]] = []
+    for difference in builtin_comparison.get("differences") or []:
+        updated = dict(difference)
+        if difference.get("reason") == "模块级 air intrinsic 使用变化" and module_only_intrinsic_drift:
+            updated["severity"] = "L1"
+        adjusted_builtin_differences.append(updated)
+
+    adjusted_cfg_differences: list[dict[str, Any]] = []
+    for difference in cfg_comparison.get("differences") or []:
+        updated = dict(difference)
+        if difference.get("subject") in optimizer_only_entry_keys:
+            updated["severity"] = "L1"
+        adjusted_cfg_differences.append(updated)
+
+    adjusted_instruction_differences: list[dict[str, Any]] = []
+    for difference in instruction_family_comparison.get("differences") or []:
+        updated = dict(difference)
+        if difference.get("subject") in optimizer_only_entry_keys:
+            updated["severity"] = "L1"
+        adjusted_instruction_differences.append(updated)
+
+    return (
+        _make_section_result(adjusted_builtin_differences),
+        _make_section_result(adjusted_cfg_differences),
+        _make_section_result(adjusted_instruction_differences),
+    )
 
 
 def _sanitize_param_signature(param: str) -> str:
@@ -1566,6 +1669,13 @@ def compare_ir_summaries(original: dict[str, Any], regenerated: dict[str, Any]) 
     instruction_family_comparison = _compare_instruction_families(original, regenerated)
     fast_math_comparison = _compare_fast_math(original, regenerated)
     module_metadata_comparison = _compare_module_metadata(original, regenerated)
+    builtin_comparison, cfg_comparison, instruction_family_comparison = _downgrade_optimizer_only_shape_drift(
+        original,
+        regenerated,
+        builtin_comparison,
+        cfg_comparison,
+        instruction_family_comparison,
+    )
 
     sections = [
         entry_comparison,

@@ -2845,13 +2845,8 @@ struct IRToMSLConverter {
                     }
                 } else {
                     let rawName = meta.typeName.isEmpty ? "uint8_t" : meta.typeName
-                    // E-006c3: 对结构体类型名应用 sanitizeTypeName（首字母大写），
-                    // 使参数声明中的类型名与 generateUserStructDefinitions 输出的结构体定义名一致。
-                    // 例如 metadata 中 "unity_Builtins0Array_Type" → 参数声明用 "Unity_Builtins0Array_Type"
-                    // 与 struct 定义 "struct Unity_Builtins0Array_Type { ... }" 匹配。
-                    // 但 MSL 基本类型（float, half, int, uint 等小写开头）不做大写化。
                     if rawName.first.map({ $0.isLowercase }) == true && !isMSLScalarOrVectorType(rawName) {
-                        resolvedTypeName = sanitizeTypeName(rawName)
+                        resolvedTypeName = sanitizeUserTypeName(rawName)
                     } else {
                         resolvedTypeName = rawName
                     }
@@ -3486,12 +3481,12 @@ struct IRToMSLConverter {
         // 结构体名: %struct.VertexIn → VertexIn, %"class::Name" → class_Name
         if cleaned.hasPrefix("%struct.") {
             let structName = String(cleaned.dropFirst("%struct.".count))
-            return sanitizeTypeName(structName)
+            return sanitizeUserTypeName(structName)
         }
         if cleaned.hasPrefix("%") {
             let typeName = String(cleaned.dropFirst())
                 .replacingOccurrences(of: "\"", with: "")
-            return sanitizeTypeName(typeName)
+            return sanitizeUserTypeName(typeName)
         }
 
         // 指针类型 → void* 等效
@@ -3527,6 +3522,10 @@ struct IRToMSLConverter {
     /// 将类型名清理为合法的 MSL 标识符
     private static func sanitizeTypeName(_ name: String) -> String {
         sanitizeIdentifier(name, fallback: "UnknownType", uppercaseFirst: true)
+    }
+
+    private static func sanitizeUserTypeName(_ name: String) -> String {
+        sanitizeIdentifier(name, fallback: "UnknownType", uppercaseFirst: false)
     }
 
     private static func sanitizeIdentifier(
@@ -7294,7 +7293,7 @@ struct IRToMSLConverter {
         }
 
         func emitStruct(named rawTypeName: String) {
-            let sanitizedTypeName = sanitizeTypeName(rawTypeName)
+            let sanitizedTypeName = sanitizeUserTypeName(rawTypeName)
             guard emitted.insert(sanitizedTypeName).inserted else { return }
             guard let fields = structFieldInfo[rawTypeName], !fields.isEmpty else { return }
 
@@ -7306,7 +7305,7 @@ struct IRToMSLConverter {
 
             // 尝试找到对应的 IR 结构体定义，用于交叉验证字段类型
             let irTypeDef = structTypeDefs.first { key, _ in
-                sanitizeTypeName(String(key.dropFirst(key.hasPrefix("%") ? 1 : 0)).replacingOccurrences(of: "\"", with: "")) == sanitizedTypeName
+                sanitizeUserTypeName(String(key.dropFirst(key.hasPrefix("%") ? 1 : 0)).replacingOccurrences(of: "\"", with: "")) == sanitizedTypeName
             }
 
             lines.append("struct \(sanitizedTypeName) {")
@@ -7318,7 +7317,7 @@ struct IRToMSLConverter {
                 // 比 IR 交叉检查更直接，覆盖 elementCount > 1 但 IR 字段不是 [N x T] 的边缘情况。
                 if field.elementCount > 1 {
                     let elementTypeMSL = knownTypes.contains(field.typeName)
-                        ? sanitizeTypeName(field.typeName)
+                        ? sanitizeUserTypeName(field.typeName)
                         : field.typeName
                     lines.append("    \(elementTypeMSL) \(fieldName)[\(field.elementCount)];")
                     continue
@@ -7336,7 +7335,7 @@ struct IRToMSLConverter {
                 }
 
                 let fieldType = knownTypes.contains(field.typeName)
-                    ? sanitizeTypeName(field.typeName)
+                    ? sanitizeUserTypeName(field.typeName)
                     : field.typeName
                 lines.append("    \(fieldType) \(fieldName);")
             }

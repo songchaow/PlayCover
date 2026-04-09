@@ -36,19 +36,19 @@
 
 ### 当前最新状态
 
-- **`CC-003.3` 当前这轮已完成闭环**：先复核 `747fc286...` 的单 case 证据，确认当前 `IRToMSLConverter.swift` 已经落地了需要的 vector-preserving emission（例如 `insertelement` / `shufflevector` 的构造保形，以及 `__restrict` 回放），因此这一个回归点剩下的主要矛盾已经不再是生成侧缺机制，而是 compare 对“极小的 arithmetic↔vector 互换”仍放得过重
-- 本轮实际实现改动收敛到 `ir_canonical_compare.py`：
-   - 将**仅由 `arithmetic -1` / `vector +1` 构成、且总 delta 仅为 `2` 的 instruction-family 小幅互换**降为 `L1`
-   - 这条规则只覆盖当前已验证的最小噪声形态，不放宽其它 instruction-family 漂移
-- 代表 case `747fc286...` 已完成单 case 验证：
-   - 修复前：`L2`（原因：`指令族统计变化 + targetTriple`）
-   - 修复后：`L1`
-   - 结论：这处回归更像 canonical compare 口径过敏，而不是新的 converter 实现问题
-- full-batch 复跑结果说明这轮已经把上一轮的未闭环点收干净，且没有放大新的高风险：
-   - corpus：`L1 77 -> 79`，`L2 109 -> 107`，`L3 251 -> 251`
-   - diagnostics：`L1 4 -> 4`，`L2 3 -> 3`，`L3 146 -> 146`
-   - 当前观察结论：**没有新增 `L3`；corpus 的 `L2` 继续下降，diagnostics 持平**
-- 因此当前最新状态可以概括为：**`CC-003.3` 这一轮 converter-first 收益已完成闭环；下一刀应回到 `CC-003.2`，继续挑 `entry 资源语义摘要变化` 里重复模式最明显、最有希望一处改动改善多样本的 case**
+- **`CC-003.2` 当前这轮已完成闭环**：本轮回到 `entry 资源语义摘要变化` 残留样本，先下钻 `c66b9d4...`，确认它的主矛盾不是 buffer binding / addrspace / layout 真变了，而是 `IRToMSLConverter.swift` 把 metadata 里的用户类型名 `unity_Builtins0Array_Type` 人为改写成了 `Unity_Builtins0Array_Type`
+- 本轮实际实现改动收敛到 `IRToMSLConverter.swift`：
+   - 对 metadata / IR 里的用户自定义类型名只做合法标识符清理，不再主动首字母大写
+   - 同步让 buffer 参数声明、IR struct 类型映射、用户 struct 定义中的类型引用都走同一套 preserve-case 规则
+- 代表 case `c66b9d4...` 已完成单 case 验证：
+   - 修复前：`L2`（原因：`entry 参数语义摘要变化 + entry 资源语义摘要变化 + 指令族统计变化`）
+   - 修复后：`L1`（原因：`指令族统计变化 + targetTriple`）
+   - 结论：这处回归更像 converter 对用户类型名处理过度，而不是 compare 口径问题
+- full-batch 复跑结果说明这轮收益虽小，但闭环很干净，且没有放大新的高风险：
+   - corpus：`L1 79 -> 80`，`L2 107 -> 106`，`L3 251 -> 251`
+   - diagnostics：`L1 4 -> 5`，`L2 3 -> 2`，`L3 146 -> 146`
+   - 当前观察结论：**没有新增 `L3`；corpus / diagnostics 的 `L2` 都各下降 1；diagnostics 中 `entry 资源语义摘要变化` 已退出当前 `L2` 集合**
+- 因此当前最新状态可以概括为：**`CC-003.2` 这一轮 converter-first 收益已完成闭环；下一刀应转向剩余更硬的 `模块级 addrspace 分布变化 / air intrinsic 使用变化` 重复模式**
 
 ## 当前默认流程
 
@@ -167,8 +167,9 @@
 | `CC-002` 收敛 `buffer-noalias` 这类 entry 参数对齐问题 | DONE | 已完成 `noalias -> __restrict` 闭环，并在 full-batch 上确认一批 `L3` 下降且无新增 `L3` | `difference-analysis/buffer-noalias/04-implementation-result.md` / `difference-analysis/buffer-noalias/05-full-batch-compare.md` |
 | `CC-003` 归类 `buffer-noalias` 修复后剩余的高频 `L3/L2` 模式 | DOING | 已确认 `entry 参数语义摘要变化` 里有一批是 compare 噪声；接下来需继续统计真正还留在前列的高频残留模式，并明确下一刀优先 case | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
 | `CC-003.1` 优先检查 `entry 参数语义摘要变化` 的高频残留模式 | DONE | 已完成 resource metadata `air.address_space` 噪声归一化闭环，并确认一批共有样本 `L2 -> L1` 且无回归 | `difference-analysis/resource-metadata-addrspace/04-implementation-result.md` / `difference-analysis/resource-metadata-addrspace/05-full-batch-compare.md` |
-| `CC-003.2` 优先检查 `entry 资源语义摘要变化` 的高频残留模式 | TODO | 在去掉 `resource metadata addrspace` 噪声后，确认这类风险是否仍然高频；若仍高频，再选一个重复模式明显的 case 做闭环 | 同上 |
+| `CC-003.2` 优先检查 `entry 资源语义摘要变化` 的高频残留模式 | DONE | 已确认残留里有一支是 converter 把 `unity_Builtins0Array_Type` 人为大写化导致的真实实现问题；修复后代表 case `c66b9d4...` 从 `L2 -> L1`，且 diagnostics `L2 3 -> 2`、无新增 `L3` | `difference-analysis/resource-type-name-preservation/04-implementation-result.md` / `difference-analysis/resource-type-name-preservation/05-full-batch-compare.md` |
 | `CC-003.3` 优先检查 `模块级 air intrinsic 使用变化 / 指令族统计变化` 的高频残留模式 | DONE | 已先在 converter 侧收敛 vector / half lowering，再把 `747fc286...` 这一处仅剩的极小 instruction-family compare 噪声降回 `L1`；full-batch 复跑后 corpus `L2 109 -> 107`、`L3` 无新增，diagnostics 持平 | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
+| `CC-003.4` 优先检查 `模块级 addrspace 分布变化 / air intrinsic 使用变化` 的高频残留模式 | TODO | 以当前 diagnostics 剩余两个 `L2`（`91c46448...` / `f26d322...`）为入口，确认这组重复模式更像 compare、compile posture 还是 converter / round-trip 实现问题，并完成至少一个闭环 case | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
 | `CC-004` 固化新的 case 分析模板 | TODO | 在 `difference-analysis/` 下沉淀一套稳定模板，确保后续每个 case 都按同样结构记录证据、结论与回归数据 | `difference-analysis/` |
 
 ## 任务执行规则
@@ -309,6 +310,8 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - `difference-analysis/buffer-noalias/05-full-batch-compare.md`
 - `difference-analysis/resource-metadata-addrspace/04-implementation-result.md`
 - `difference-analysis/resource-metadata-addrspace/05-full-batch-compare.md`
+- `difference-analysis/resource-type-name-preservation/04-implementation-result.md`
+- `difference-analysis/resource-type-name-preservation/05-full-batch-compare.md`
 
 ### 相关实现与工具
 

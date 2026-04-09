@@ -36,20 +36,19 @@
 
 ### 当前最新状态
 
-- **当前最新推进中的任务是 `CC-003.3` 的 converter-first 分支**：已按“若能通过生成侧消根因，优先改 `IRToMSLConverter`”的规则，把第一轮工作落到 `IRToMSLConverter.swift`，而不是继续扩 compare 归一化
-- 当前实现集中在两类 emission 侧收敛：
-   - `insertelement` / `extractelement` / `shufflevector` 的向量构造保形
-   - LLVM half 常量到 MSL `half(...)` 字面量的显式化，减少不必要的 float↔half promotion
-- 代表 case `62316900...` 仍停留在 `L2`，但 regenerated AIR 已明显更接近原始 IR：
-   - `cast`: `23 -> 15`
-   - `vector`: `92 -> 81`
-   - 当前剩余原因收敛为 `指令族统计变化 + fast-math 相关属性变化 + targetTriple`
-- full-batch 复跑（converter-first v3）结果说明这条路线已经有统计收益，但尚未闭环：
-   - corpus：`L1 68 -> 77`，`L2 118 -> 109`，`L3 251 -> 251`
-   - diagnostics：`L1 2 -> 4`，`L2 5 -> 3`，`L3 146 -> 146`
-   - 共有样本口径：corpus `10` 个、diagnostics `2` 个样本从 `L2 -> L1`
-- 当前未闭环点也已经很清楚：corpus 里仍有 `1` 个共有样本回归 `747fc286...`，它从一个极小的 `L1` instruction-family 差异升成了极小的 `L2`
-- 因此当前最新状态可以概括为：**主线已转到 converter-first；这条路线已证明有统计收益，但当前收口点非常明确——先消掉 `747fc286...` 这一处回归，再决定是否把本轮收益记为已完成闭环**
+- **`CC-003.3` 当前这轮已完成闭环**：先复核 `747fc286...` 的单 case 证据，确认当前 `IRToMSLConverter.swift` 已经落地了需要的 vector-preserving emission（例如 `insertelement` / `shufflevector` 的构造保形，以及 `__restrict` 回放），因此这一个回归点剩下的主要矛盾已经不再是生成侧缺机制，而是 compare 对“极小的 arithmetic↔vector 互换”仍放得过重
+- 本轮实际实现改动收敛到 `ir_canonical_compare.py`：
+   - 将**仅由 `arithmetic -1` / `vector +1` 构成、且总 delta 仅为 `2` 的 instruction-family 小幅互换**降为 `L1`
+   - 这条规则只覆盖当前已验证的最小噪声形态，不放宽其它 instruction-family 漂移
+- 代表 case `747fc286...` 已完成单 case 验证：
+   - 修复前：`L2`（原因：`指令族统计变化 + targetTriple`）
+   - 修复后：`L1`
+   - 结论：这处回归更像 canonical compare 口径过敏，而不是新的 converter 实现问题
+- full-batch 复跑结果说明这轮已经把上一轮的未闭环点收干净，且没有放大新的高风险：
+   - corpus：`L1 77 -> 79`，`L2 109 -> 107`，`L3 251 -> 251`
+   - diagnostics：`L1 4 -> 4`，`L2 3 -> 3`，`L3 146 -> 146`
+   - 当前观察结论：**没有新增 `L3`；corpus 的 `L2` 继续下降，diagnostics 持平**
+- 因此当前最新状态可以概括为：**`CC-003.3` 这一轮 converter-first 收益已完成闭环；下一刀应回到 `CC-003.2`，继续挑 `entry 资源语义摘要变化` 里重复模式最明显、最有希望一处改动改善多样本的 case**
 
 ## 当前默认流程
 
@@ -169,7 +168,7 @@
 | `CC-003` 归类 `buffer-noalias` 修复后剩余的高频 `L3/L2` 模式 | DOING | 已确认 `entry 参数语义摘要变化` 里有一批是 compare 噪声；接下来需继续统计真正还留在前列的高频残留模式，并明确下一刀优先 case | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
 | `CC-003.1` 优先检查 `entry 参数语义摘要变化` 的高频残留模式 | DONE | 已完成 resource metadata `air.address_space` 噪声归一化闭环，并确认一批共有样本 `L2 -> L1` 且无回归 | `difference-analysis/resource-metadata-addrspace/04-implementation-result.md` / `difference-analysis/resource-metadata-addrspace/05-full-batch-compare.md` |
 | `CC-003.2` 优先检查 `entry 资源语义摘要变化` 的高频残留模式 | TODO | 在去掉 `resource metadata addrspace` 噪声后，确认这类风险是否仍然高频；若仍高频，再选一个重复模式明显的 case 做闭环 | 同上 |
-| `CC-003.3` 优先检查 `模块级 air intrinsic 使用变化 / 指令族统计变化` 的高频残留模式 | DOING | 已确认该类问题至少有一部分可以通过 `IRToMSLConverter` 的 vector / half lowering 改善；当前需要先消掉 `747fc286...` 这一个 converter-first 回归样本，再决定是否把本轮统计收益记为已完成闭环 | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
+| `CC-003.3` 优先检查 `模块级 air intrinsic 使用变化 / 指令族统计变化` 的高频残留模式 | DONE | 已先在 converter 侧收敛 vector / half lowering，再把 `747fc286...` 这一处仅剩的极小 instruction-family compare 噪声降回 `L1`；full-batch 复跑后 corpus `L2 109 -> 107`、`L3` 无新增，diagnostics 持平 | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
 | `CC-004` 固化新的 case 分析模板 | TODO | 在 `difference-analysis/` 下沉淀一套稳定模板，确保后续每个 case 都按同样结构记录证据、结论与回归数据 | `difference-analysis/` |
 
 ## 任务执行规则

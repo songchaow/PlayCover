@@ -93,11 +93,10 @@ makeLibrary(source:) / metal -c
 
 当前已确认、且直接驱动主线判断的事实只保留下面几条：
 
-- `test-data-representatives` 继续是**跨机器硬默认 gate**；它的职责是守住 fresh workspace / 低上下文环境下的最小离线闭环
-- `Scripts/ir_semantics_roundtrip_runner.py` 当前已经可以**直接批量消费整个 `ShaderCorpus`**；因此 success-path 主入口里的 blocker 仍是当前最直接、最该做的事
-- `ShaderSourceDiagnostics` 在 `E-004f4` 后已经为 failure-path 样本提供 `module.ll / module.generated.metal / module.meta.json`，且当前已可通过 `Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ...` 被批量发现并进入同一套 L1/L2 报告；它的定位仍是 failure-path 补充输入，而不是默认 gate，但它当前批量暴露出来的错误已经进入主线待修范围
-- 当 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 在同一次批量运行中出现相同 `bundleId + moduleKey` 时，结构化报告里的 `comparisonKey / sampleKey` 必须继续保持 source-aware，避免 diagnostics failure-path 样本伪装成 success-path 主入口事实
-- 既有 `L3 / L4` 规划、白名单行为边界、本机增强入口与历史快照统一下沉到 `05-L3-最小行为测试.md`、`06-L4-真实场景验证.md`、`07-首轮基线与历史进展归档.md` 与 `08-当前代表集与Gate契约参考.md`（均为参考；除 `05` 外当前主线推进**不必须读取**）
+- `test-data-representatives` 继续是**跨机器硬默认 gate**
+- `ShaderCorpus` 与 `ShaderSourceDiagnostics` 都已具备进入同一套 L1/L2 离线路径的批量入口，因此当前完成判定必须同时覆盖两边
+- 仓库内现有 full-batch 报告显示 corpus / diagnostics 两边都仍未通过，因此主线仍是**持续清零两边 blocker**
+- 更细的 preset / manifest / source-aware / 行为边界 / 历史快照细节统一下沉到 `05`、`06`、`07`、`08` 子文档；dashboard 只保留会改变下一步选择的控制面事实
 
 因此当前最高优先级可直接概括为：**先把 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 两条 full-batch 入口里已经暴露的 L1/L2 错误一起修清；在这之前，不把 L3/L4、本机增强入口或体系打磨本身重新写成当前主线。**
 

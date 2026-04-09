@@ -61,11 +61,7 @@
 
 ### 2. `ShaderCorpus` 批量入口
 
-入口形式示例：
-
-```bash
-python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus --allow-failures
-```
+入口形式：`--corpus-root <path>`
 
 性质：
 
@@ -81,11 +77,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Contain
 
 ### 3. `ShaderSourceDiagnostics` 批量入口
 
-入口形式示例：
-
-```bash
-python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Containers/io.playcover.PlayCover/ShaderSourceDiagnostics --allow-failures
-```
+入口形式：`--diagnostics-root <path>`
 
 性质：
 
@@ -160,33 +152,10 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - `preset-manifest.json`：描述发现范围、输入集合与 artifact 锚点
 - `behavior-summary.json`：描述行为层的附加证据
 
-## 命令模板
+## 命令归属
 
-### 固定代表集
-
-```bash
-python3 Scripts/test_ir_canonical_compare.py
-python3 Scripts/test_ir_semantics_roundtrip_runner.py
-python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representatives --allow-failures --enforce-gate
-```
-
-### corpus 批量入口
-
-```bash
-python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus --allow-failures
-```
-
-### diagnostics 批量入口
-
-```bash
-python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Containers/io.playcover.PlayCover/ShaderSourceDiagnostics --allow-failures
-```
-
-### 行为层入口
-
-```bash
-python3 Scripts/ir_semantics_behavior_runner.py --gate-summary build/semantics-validation/roundtrip/test-data-representatives/gate-summary.json
-```
+- 当前默认验证顺序、收尾命令与“哪些命令必须执行”的动态要求统一见 `00-Dashboard.md`
+- 本页只解释这些入口各自的契约、角色和事实优先级，不重复展开命令列表
 
 ## 参考锚点
 

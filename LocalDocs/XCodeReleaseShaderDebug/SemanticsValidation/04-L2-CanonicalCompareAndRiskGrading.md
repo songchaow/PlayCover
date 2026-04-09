@@ -182,26 +182,13 @@ L2 的目标是提供**可批量运行、可解释、可回归的语义风险筛
 - `layeredDecision`：是否继续停留在当前层、还是升级到更高层
 - 在 `--enforce-gate` 模式下是否应阻断退出
 
-## 事实来源优先级
+## 契约引用
 
-当不同报告之间存在表述差异时，应优先按下面顺序理解事实：
+以下契约已统一收口到 `08-当前代表集与Gate契约参考.md`，本页不再重复展开：
 
-1. `gate-summary.json`
-2. `risk-report.json`
-3. `roundtrip-summary.json`
-4. `preset-manifest.json` 的结构字段
-5. `preset-manifest.json` 的描述文字
-
-如果描述文字与结构字段不一致，应以结构字段为准。
-
-## source-aware 身份规则
-
-当 corpus 与 diagnostics 等不同来源命中同一 `bundleId + moduleKey` 时，L2 的身份字段必须继续保留来源区分，例如：
-
-- `comparisonKey`
-- `sampleKey`
-
-否则 failure-path 结果会污染 success-path 的 gate 事实。
+- `gate-summary.json > risk-report.json > roundtrip-summary.json > preset-manifest.json` 的事实优先级
+- `comparisonKey` / `sampleKey` 等 source-aware 身份规则
+- `preset-manifest.json` 与其它报告之间的职责划分
 
 ## L2 的边界
 

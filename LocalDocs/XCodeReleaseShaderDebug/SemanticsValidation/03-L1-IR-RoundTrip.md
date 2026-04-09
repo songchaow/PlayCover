@@ -188,52 +188,13 @@ build/semantics-validation/roundtrip/
 - `failureStage`
 - `errorSummary`
 
-### source-aware 身份要求
+### 契约引用
 
-当不同来源命中相同 `bundleId + moduleKey` 时，L1 报告中的身份字段应继续保留来源区分，例如：
+以下内容已统一收口到其它文档，本页只保留接口说明，不再重复展开：
 
-- `comparisonKey`
-- `sampleIdentity`
-- `sampleKey`
-
-这样可以避免 diagnostics failure-path 结果覆盖 corpus success-path 的事实。
-
-## 常见使用模式
-
-### 固定代表集验证
-
-```bash
-python3 Scripts/test_ir_semantics_roundtrip_runner.py
-python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representatives --allow-failures --enforce-gate
-```
-
-### corpus 批量验证
-
-```bash
-python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus --allow-failures
-```
-
-### diagnostics 批量验证
-
-```bash
-python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Containers/io.playcover.PlayCover/ShaderSourceDiagnostics --allow-failures
-```
-
-### 单样本 smoke / blocker 复现
-
-```bash
-python3 Scripts/ir_semantics_roundtrip_runner.py --ll <path_to_failure_module.ll> --allow-failures
-```
-
-## 环境前置条件
-
-L1 默认依赖：
-
-- `swiftc`
-- `xcrun`
-- 可自动解析的 `llvm-dis`
-
-若缺少这些工具，应视为环境前置条件未满足并停止汇报；不要把“用户手工找路径”或“手工拼命令”写回默认流程。
+- `comparisonKey` / `sampleIdentity` / `sampleKey` 等 source-aware 身份规则：见 `08-当前代表集与Gate契约参考.md`
+- 当前默认命令顺序、收尾验证要求与完成判定：见 `00-Dashboard.md`
+- 环境前置条件与失败止损：见 `08-当前代表集与Gate契约参考.md`
 
 ## L1 的非目标
 

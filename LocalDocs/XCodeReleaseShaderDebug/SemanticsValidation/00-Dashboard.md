@@ -36,23 +36,18 @@
 
 ### 当前最新状态
 
-- 当前主线仍在 `CC-003.4`，但 `CC-003.4.2` 已完成一次明确闭环：沿 `f26d322...` 继续下钻 helper `_ZN11_fract_impl...` 与 `fract / floor / fmin` 残留后，已把这支样本的剩余 `L2` 收敛成 **compare 口径问题**，而不是继续扩 converter 改动
-- 这轮关键证据是：`CC-003.4.1` 修完 entry 侧 simple diamond CFG 后，`f26d322...` 的 `entryComparison` 已经稳定为 `L0`，但 original / regenerated 仍会在 helper lowering 上出现：
-   - `fract / floor / fmin` 这组 intrinsic 家族计数变化
-   - entry CFG / instruction-family 因 Metal 编译器内联与 fast-math 折叠而继续漂移
-   - 这些残留会把同一类“entry 语义稳定、只是 helper 被内联/折叠”的样本继续误判成 `L2`
-- 因此这轮实现没有继续硬改 `IRToMSLConverter.swift`，而是收敛到 `Scripts/ir_canonical_compare.py`：
-   - 保留现有 fast/non-fast intrinsic 名称归一化
-   - 新增一层 family 级 compare：当 entry/resource 语义未变、module intrinsic family 集合一致、且 entry 只多/少一支来自 helper 内联的 family 时，把这类 optimizer-only 的 intrinsic / CFG / instruction-family 漂移从 `L2` 降为 `L1`
-   - 同步补两条 compare 单测，明确限定这条降噪只命中 `f26d322...` 这类 family-preserving 模式，不放宽真实 family 缺失场景
-- 定向验证已经说明这刀命中了目标边界：
-   - `python3 Scripts/test_ir_canonical_compare.py` 通过
-   - `python3 Scripts/test_ir_semantics_roundtrip_runner.py` 通过
-   - 直接对现有 artifacts 重算 compare 后，`f26d322...` 已从 `L2 -> L1`，`91c46448...` 仍保持 `L2`
-- full-batch 复跑结果也与单 case 判断一致：
-   - diagnostics：`L1 5 -> 6`、`L2 2 -> 1`、`L3` 无新增；唯一变化就是 `f26d322...` 从 `L2 -> L1`
-   - corpus：`L1 80 -> 99`、`L2 106 -> 87`、`L3` 持平；下降的 19 个样本都落在同一类 optimizer-only intrinsic family 漂移模式里
-- 因此当前最新状态可以概括为：**`CC-003.4` 已确认既包含真实 converter CFG 问题，也包含 compare 噪声；`CC-003.4.1` 解决了 entry 侧 diamond CFG 缺口，`CC-003.4.2` 已把 `f26d322...` helper/lowering 残留收敛为 compare 噪声并完成 full-batch 闭环；下一步优先单独下钻 `91c46448...` 是否还存在真实实现问题**
+- 当前主线仍在 `CC-003.4`，但 `CC-003.4.3` 已完成一次明确的“compare 还是实现”定性：基于 `20260410-025055-4bfa19e0` / `20260410-025055-78cb9622` 两条最新 full-batch artifacts 重算后，`91c46448...` 在当前 compare 规则下仍稳定为 `L2`
+- 与 `CC-003.4.2` 不同，这支样本现在已经不再残留 entry / resource 摘要问题：`entryComparison` 已经稳定为 `L0`，剩余差异集中在：
+  - `模块级 air intrinsic 使用变化`
+  - `控制流粗摘要变化`
+  - `指令族统计变化`
+- 新证据说明它不是 `f26d322...` 那类 optimizer-only compare 噪声：`generated.metal` 里仍能直接看到多个 **空 `if/else` 骨架 + 线性发射基本块** 模式，例如：
+  - `if (t124) { // → BB142 } else { // → BB148 }` 之后把 `BB142` / `BB148` 两段都顺序发射，并对 `phi_0` / `phi_1` 连续覆盖
+  - `if (t239) { // → BB286 } else { // → BB283 }` 之后同样把两边都线性发射，`phi_6` 最终被后一路覆盖
+  - 对照 `original.ll` / `regenerated.ll` 可以看到，原始样本仍是显式 `condbr + phi` / loop-carried phi 结构，而回生成结果已经塌缩成 `2` 个 `condbr` + 大量 `select`
+- 同时，`91c46448...` 的 module intrinsic family 还真实少了 `fract / max / sin / sqrt` 四支 family，不满足 `f26d322...` 那种 family-preserving 降噪前提，因此不应继续放宽 `Scripts/ir_canonical_compare.py`
+- 因此当前最新状态可以概括为：**`CC-003.4.3` 已确认 `91c46448...` 的 residual 主要是 `IRToMSLConverter` 在 simple diamond 之外的 structured CFG 回放缺口，而不是 compare 噪声；当前 full-batch 风险计数仍保持 diagnostics `L1 6 / L2 1 / L3 146`、corpus `L1 99 / L2 87 / L3 251`，下一步应拆成更小的 converter 修复子任务，而不是继续扩 compare 降噪。**
+
 
 ## 当前默认流程
 
@@ -173,10 +168,11 @@
 | `CC-003.1` 优先检查 `entry 参数语义摘要变化` 的高频残留模式 | DONE | 已完成 resource metadata `air.address_space` 噪声归一化闭环，并确认一批共有样本 `L2 -> L1` 且无回归 | `difference-analysis/resource-metadata-addrspace/04-implementation-result.md` / `difference-analysis/resource-metadata-addrspace/05-full-batch-compare.md` |
 | `CC-003.2` 优先检查 `entry 资源语义摘要变化` 的高频残留模式 | DONE | 已确认残留里有一支是 converter 把 `unity_Builtins0Array_Type` 人为大写化导致的真实实现问题；修复后代表 case `c66b9d4...` 从 `L2 -> L1`，且 diagnostics `L2 3 -> 2`、无新增 `L3` | `difference-analysis/resource-type-name-preservation/04-implementation-result.md` / `difference-analysis/resource-type-name-preservation/05-full-batch-compare.md` |
 | `CC-003.3` 优先检查 `模块级 air intrinsic 使用变化 / 指令族统计变化` 的高频残留模式 | DONE | 已先在 converter 侧收敛 vector / half lowering，再把 `747fc286...` 这一处仅剩的极小 instruction-family compare 噪声降回 `L1`；full-batch 复跑后 corpus `L2 109 -> 107`、`L3` 无新增，diagnostics 持平 | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
-| `CC-003.4` 优先检查 `模块级 addrspace 分布变化 / air intrinsic 使用变化` 的高频残留模式 | DOING | 以当前 diagnostics 剩余两个 `L2`（`91c46448...` / `f26d322...`）为入口，确认这组重复模式更像 compare、compile posture 还是 converter / round-trip 实现问题，并完成至少一个闭环 case | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
+| `CC-003.4` 优先检查 `模块级 addrspace 分布变化 / air intrinsic 使用变化` 的高频残留模式 | DOING | 已确认 `f26d322...` 更像 compare 噪声、`91c46448...` 更像真实 converter CFG 缺口；下一步需把 `91c46448...` 继续拆成可落地的 structured CFG 修复子问题，并完成至少一个实现闭环 | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
 | `CC-003.4.1` 先修 `f26d322...` 中 simple diamond `br + phi` 的 CFG 回放缺口 | DONE | `IRToMSLConverter.swift` 已能把 `condbr -> true/false -> common merge` 这类简单 diamond 发射成真实 `if/else`，并有最小 replay 回归覆盖 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
 | `CC-003.4.2` 继续下钻 `f26d322...` / `91c46448...` 里 helper CFG 与 lowering 残留 | DONE | 已确认 `f26d322...` 在 `CC-003.4.1` 之后剩余的 helper `fract / floor / fmin` 漂移更像 compare 噪声；compare 降噪后 diagnostics `L2 2 -> 1`、corpus `L2 106 -> 87`，且无新增 `L3` | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
-| `CC-003.4.3` 单独下钻 `91c46448...` 的 residual intrinsic / CFG 漂移 | TODO | 继续确认 `91c46448...` 里 `fmin.f16 / floor.v2f32 / sample + half lowering` 残留是否仍包含真实实现问题；至少完成一个明确“compare 还是实现”的判断 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
+| `CC-003.4.3` 单独下钻 `91c46448...` 的 residual intrinsic / CFG 漂移 | DONE | 已确认 `91c46448...` 当前 residual 不是 compare 噪声：latest artifact 中 `entryComparison` 已为 `L0`，但 `generated.metal` 仍存在空 `if/else` + 顺序覆盖 phi 的真实 CFG 回放缺口 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
+| `CC-003.4.4` 以 `91c46448...` 为入口修 simple diamond 之外的 structured CFG 回放缺口 | TODO | 至少让一处“空 `if/else` 骨架 + 线性发射基本块 + 覆盖 phi” 模式恢复成真实结构，并在单 case + full-batch 上验证风险是否下降 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
 | `CC-004` 固化新的 case 分析模板 | TODO | 在 `difference-analysis/` 下沉淀一套稳定模板，确保后续每个 case 都按同样结构记录证据、结论与回归数据 | `difference-analysis/` |
 
 ## 任务执行规则

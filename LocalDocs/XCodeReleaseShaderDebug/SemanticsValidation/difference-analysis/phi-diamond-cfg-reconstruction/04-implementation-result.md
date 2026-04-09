@@ -157,9 +157,91 @@
 - `f26d322...` 在 `CC-003.4.1` 修完 diamond CFG 之后，helper `fract / floor / fmin` 残留已经更像 compare 噪声，而不是新的实现问题
 - 这类 residual 适合在 `ir_canonical_compare.py` 做定向降噪，不值得继续扩大 converter 侧改动
 
+## CC-003.4.3：`91c46448...` residual 定性
+
+这轮没有继续改 `IRToMSLConverter.swift` 或 compare 规则，而是先用最新 artifacts 把 `91c46448...` 的 residual 重新定性，判断它到底是 compare 噪声还是实现问题。
+
+## 复核结果
+
+### 单 case
+
+1. `python3 Scripts/test_ir_canonical_compare.py`
+   - 通过
+2. `python3 Scripts/test_ir_semantics_roundtrip_runner.py`
+   - 通过
+3. 直接对最新 diagnostics artifact `build/semantics-validation/roundtrip/20260410-025055-4bfa19e0/.../91c46448.../original.ll` 与 `regenerated.ll` 重算 compare：
+   - `entryComparison` 已经是 `L0`
+   - 总体 `riskLevel` 仍为 `L2`
+   - 剩余风险集中在：
+     - `模块级 air intrinsic 使用变化`
+     - `控制流粗摘要变化`
+     - `指令族统计变化`
+4. 同样对最新 corpus artifact `build/semantics-validation/roundtrip/20260410-025055-78cb9622/.../91c46448.../original.ll` 与 `regenerated.ll` 重算 compare：
+   - 结论一致，仍是同一组 residual
+
+### full-batch
+
+本轮没有引入新的实现改动，因此没有再重复发起 full-batch；控制面继续沿用 `CC-003.4.2` 已经生成的最新批次：
+
+- diagnostics：`build/semantics-validation/roundtrip/20260410-025055-4bfa19e0`
+  - 风险计数保持 `L1 6 / L2 1 / L3 146`
+  - `91c46448...` 仍是 diagnostics 中唯一 `L2`
+- corpus：`build/semantics-validation/roundtrip/20260410-025055-78cb9622`
+  - 风险计数保持 `L1 99 / L2 87 / L3 251`
+
+## 新证据：这不是 compare 噪声
+
+这轮最关键的新证据不在 canonical compare 本身，而在 `generated.metal` 的结构上。
+
+### 1. `generated.metal` 仍在顺序发射互斥分支
+
+在最新 diagnostics artifact 的 `generated.metal` 里，仍能直接看到：
+
+- 先发一个空的 `if (t124) { // → BB142 } else { // → BB148 }`
+- 随后把 `BB142` 与 `BB148` 两段代码都按线性顺序发出来
+- `phi_0` / `phi_1` 先被 `BB142` 赋值，再立刻被 `BB148` 覆盖
+
+同类模式后面还会再次出现，例如：
+
+- `if (t239) { // → BB286 } else { // → BB283 }`
+- 但 `BB283` / `BB286` 仍被顺序发射，`phi_6` 最终只保留后一路结果
+
+这说明当前 residual 不是“helper 被编译器内联后 compare 对 count 太敏感”，而是 **generated MSL 自身仍然没有把互斥控制流真正恢复出来**。
+
+### 2. 原始 / 回生成 IR 的 CFG 也支持这个判断
+
+对照同一批 diagnostics artifact：
+
+- `original.ll` 里 `xlatMtlMain` 仍有大量显式 `condbr + phi` 与 loop-carried phi
+- `regenerated.ll` 已塌缩成 `2` 个 `condbr` + 大量 `select`
+- compare 对应地报出：
+  - `basicBlockCount: 48 -> 5`
+  - `phiCount: 20 -> 2`
+  - `condbr: 20 -> 2`
+
+这更像 converter 在 simple diamond 之外仍有 structured CFG 回放缺口，而不是 compare 无端放大噪声。
+
+### 3. intrinsic family 也不满足 `f26d322...` 的降噪前提
+
+`91c46448...` 与 `f26d322...` 的另一个关键差异是：
+
+- `f26d322...` 的 residual 仍是 family-preserving 的 optimizer-only 漂移
+- `91c46448...` 这轮直接缺了 `fract / max / sin / sqrt` 四支 module intrinsic family
+
+因此它不满足 `CC-003.4.2` 那条 compare 降噪规则的适用边界，不应该继续靠放宽 `ir_canonical_compare.py` 来压低风险。
+
+## 当前结论
+
+本轮可以把 `CC-003.4.3` 明确收敛成下面这个判断：
+
+- `91c46448...` 当前 residual **不是 compare 噪声**
+- 它更像 `IRToMSLConverter.swift` 在 simple diamond 之外的 structured CFG 回放缺口
+- 当前最值得修的不是 compare，而是把这支样本继续拆成更小的 converter CFG 子问题
+
 ## 下一步建议
 
 下一步更值得继续沿 `CC-003.4` 推进的是：
 
-- 单独下钻 `91c46448...` 的 residual `fmin.f16 / floor.v2f32 / sample + half lowering` 漂移
-- 继续确认它是否也属于 compare 噪声，还是仍有一支真实 converter / compile posture 问题没有被解释掉
+- 以 `91c46448...` 为入口，先挑一类最小且可复现的“空 `if/else` + 线性发射基本块 + 覆盖 phi” 模式修掉
+- 优先从 multi-block diamond 或 loop-carried phi 的最小子模式切，不要一口气扩成泛化 CFG 重建
+- 真正落实现后，再做单 case + full-batch 验证，看 diagnostics `L2 1` 是否继续下降

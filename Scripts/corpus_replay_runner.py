@@ -32,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -395,9 +396,14 @@ def default_corpus_root() -> Path | None:
     return candidate if candidate.is_dir() else None
 
 
+def make_timestamped_run_name(now: datetime | None = None, unique_suffix: str | None = None) -> str:
+    active_now = now or datetime.now()
+    suffix = unique_suffix or uuid.uuid4().hex[:8]
+    return f"{active_now.strftime('%Y%m%d-%H%M%S')}-{suffix}"
+
+
 def default_output_root(root: Path) -> Path:
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return root / "build" / "shader-corpus-replay" / timestamp
+    return root / "build" / "shader-corpus-replay" / make_timestamped_run_name()
 
 
 def warn(warnings: list[DiscoveryWarning], message: str) -> None:

@@ -98,7 +98,7 @@ build/semantics-validation/roundtrip/
   test-data-batch/
   local-corpus-representatives/
   daily-default/
-  <timestamp>/                 # 非 preset / 临时试跑
+  <timestamp>-<unique-suffix>/ # 非 preset / 临时试跑；默认追加唯一后缀，避免并行运行互相覆盖
     replay-summary.json
     compile-summary.json
     roundtrip-summary.json

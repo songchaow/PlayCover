@@ -40,7 +40,6 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -146,8 +145,7 @@ def repo_root() -> Path:
 
 
 def default_output_root(root: Path) -> Path:
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return root / "build" / "semantics-validation" / "roundtrip" / timestamp
+    return root / "build" / "semantics-validation" / "roundtrip" / replay_runner.make_timestamped_run_name()
 
 
 def semantics_output_root(root: Path, name: str) -> Path:

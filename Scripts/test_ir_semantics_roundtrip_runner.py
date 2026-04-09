@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 
@@ -45,6 +46,31 @@ def make_roundtrip_result(
 
 
 class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
+    def test_make_timestamped_run_name_adds_unique_suffix(self) -> None:
+        fixed_now = datetime(2026, 4, 9, 10, 41, 2)
+
+        first = roundtrip_runner.replay_runner.make_timestamped_run_name(
+            now=fixed_now,
+            unique_suffix="corpus",
+        )
+        second = roundtrip_runner.replay_runner.make_timestamped_run_name(
+            now=fixed_now,
+            unique_suffix="diagnostics",
+        )
+
+        self.assertEqual(first, "20260409-104102-corpus")
+        self.assertEqual(second, "20260409-104102-diagnostics")
+        self.assertNotEqual(first, second)
+
+    def test_default_output_root_uses_unique_timestamped_run_name(self) -> None:
+        output_root = roundtrip_runner.default_output_root(REPO_ROOT)
+
+        self.assertEqual(
+            output_root.parent,
+            REPO_ROOT / "build" / "semantics-validation" / "roundtrip",
+        )
+        self.assertRegex(output_root.name, r"^\d{8}-\d{6}-[0-9a-f]{8}$")
+
     def test_apply_test_data_representatives_preset(self) -> None:
         parser = roundtrip_runner.build_parser()
         args = parser.parse_args(["--preset", "test-data-representatives"])

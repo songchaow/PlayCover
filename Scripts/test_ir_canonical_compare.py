@@ -159,7 +159,7 @@ class IRCanonicalCompareTests(unittest.TestCase):
         self.assertEqual(len(entry["argSemantics"]), 2)
         self.assertEqual(entry["outputSemantics"], ["kind=air.position|type=float4"])
         self.assertIn(
-            "kind=air.buffer|index=0|location=0|addrspace=2|access=read|type=Uniforms|typeSize=16|align=16|qualifiers=air.read",
+            "kind=air.buffer|index=0|location=0|access=read|type=Uniforms|typeSize=16|align=16|qualifiers=air.read",
             entry["resourceSemantics"],
         )
         self.assertIn(
@@ -184,6 +184,20 @@ class IRCanonicalCompareTests(unittest.TestCase):
         self.assertEqual(comparison["riskLevel"], "L3")
         self.assertFalse(comparison["same"])
         self.assertTrue(any(item["category"] in {"entry", "address-space"} for item in comparison["differences"]))
+
+    def test_compare_ignores_resource_metadata_addrspace_when_parameter_addrspace_matches(self) -> None:
+        original = canonical_compare.extract_ir_summary_text(make_kernel_ir(buffer_addrspace=2, metadata_addrspace=1))
+        regenerated = canonical_compare.extract_ir_summary_text(make_kernel_ir(buffer_addrspace=2, metadata_addrspace=2))
+
+        comparison = canonical_compare.compare_ir_summaries(original, regenerated)
+        self.assertEqual(comparison["riskLevel"], "L0")
+        self.assertTrue(comparison["same"])
+
+        original_entry = original["entries"][0]
+        regenerated_entry = regenerated["entries"][0]
+        self.assertEqual(original_entry["parameterAddrspaces"], regenerated_entry["parameterAddrspaces"])
+        self.assertEqual(original_entry["argSemantics"], regenerated_entry["argSemantics"])
+        self.assertEqual(original_entry["resourceSemantics"], regenerated_entry["resourceSemantics"])
 
     def test_compare_ignores_fast_intrinsic_alias_names(self) -> None:
         original = canonical_compare.extract_ir_summary_text(make_intrinsic_alias_ir(intrinsic_name="air.fast_fmax.v2f16"))

@@ -285,12 +285,14 @@ def _parse_output_or_arg_metadata(content: str) -> dict[str, Any] | None:
     type_size = _extract_metadata_int(content, "air.arg_type_size")
     align_size = _extract_metadata_int(content, "air.arg_type_align_size")
 
+    include_addrspace_in_signature = kind not in RESOURCE_KINDS
+
     signature_parts = [f"kind={kind}"]
     if arg_index is not None:
         signature_parts.append(f"index={arg_index}")
     if location_index is not None:
         signature_parts.append(f"location={location_index}")
-    if address_space is not None:
+    if include_addrspace_in_signature and address_space is not None:
         signature_parts.append(f"addrspace={address_space}")
     if access is not None:
         signature_parts.append(f"access={access.removeprefix('air.')}")

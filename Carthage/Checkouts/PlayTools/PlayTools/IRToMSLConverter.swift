@@ -159,6 +159,7 @@ struct IRToMSLConverter {
         let irArgIndex: Int?
         /// 参数在 AIR metadata 中的语义种类（如 `air.buffer` / `air.fragment_input` / `air.texture`）
         let kind: String?
+        let hasNoAlias: Bool
         /// metadata 未覆盖时，从原始 IR 参数列表补齐的普通值参数需要显式发射到 entry signature。
         let emitAsValueParameter: Bool
 
@@ -171,10 +172,11 @@ struct IRToMSLConverter {
 
                 let elemType = ptr.pointedMSLType
                 let constPrefix = ptr.addressSpace.isReadOnly ? "const " : ""
+                let restrictPrefix = hasNoAlias ? "__restrict " : ""
 
                 if ptr.addressSpace.isBufferAddressSpace {
                     let idx = bufferIndex ?? 0
-                    return "\(constPrefix)\(qualifier) \(elemType)* \(name) [[buffer(\(idx))]]"
+                    return "\(constPrefix)\(qualifier) \(elemType)* \(restrictPrefix)\(name) [[buffer(\(idx))]]"
                 } else if ptr.addressSpace.isThreadgroupAddressSpace {
                     let idx = bufferIndex ?? 0
                     return "threadgroup \(elemType)* \(name) [[threadgroup(\(idx))]]"
@@ -2929,6 +2931,7 @@ struct IRToMSLConverter {
                 pointerInfo: ptrInfo,
                 irArgIndex: meta.argIndex,
                 kind: meta.kind,
+                hasNoAlias: meta.argIndex >= 0 && meta.argIndex < rawIRParams.count && irParameterHasNoAlias(rawIRParams[meta.argIndex]),
                 emitAsValueParameter: false
             ))
             mappedArgIndices.insert(meta.argIndex)
@@ -2988,6 +2991,7 @@ struct IRToMSLConverter {
                 pointerInfo: ptrInfo,
                 irArgIndex: index,
                 kind: nil,
+                hasNoAlias: irParameterHasNoAlias(trimmed),
                 emitAsValueParameter: ptrInfo == nil && !cleanedValueType.isEmpty && isIRParameterReferenced(trimmed, in: irBody)
             ))
         }
@@ -3040,6 +3044,7 @@ struct IRToMSLConverter {
             pointerInfo: nil,
             irArgIndex: index,
             kind: kind,
+            hasNoAlias: false,
             emitAsValueParameter: false
         )
     }
@@ -3261,6 +3266,7 @@ struct IRToMSLConverter {
                     pointerInfo: ptrInfo,
                     irArgIndex: index,
                     kind: orphaned.kind,
+                    hasNoAlias: irParameterHasNoAlias(trimmed),
                     emitAsValueParameter: false
                 ))
                 continue
@@ -3295,6 +3301,7 @@ struct IRToMSLConverter {
                 pointerInfo: ptrInfo,
                 irArgIndex: index,
                 kind: nil,
+                hasNoAlias: irParameterHasNoAlias(trimmed),
                 emitAsValueParameter: ptrInfo == nil && !cleanedValueType.isEmpty && isIRParameterReferenced(trimmed, in: irBody)
             ))
         }
@@ -3331,6 +3338,15 @@ struct IRToMSLConverter {
         let numStr = String(afterParen[afterParen.startIndex..<closeParen])
         guard let num = Int(numStr) else { return nil }
         return AddressSpace(rawValue: num)
+    }
+
+    private static func irParameterHasNoAlias(_ irParam: String) -> Bool {
+        let sanitized = irParam
+            .replacingOccurrences(of: ",", with: " ")
+            .replacingOccurrences(of: "(", with: " ")
+            .replacingOccurrences(of: ")", with: " ")
+            .replacingOccurrences(of: "*", with: " ")
+        return sanitized.split(whereSeparator: \.isWhitespace).contains { $0 == "noalias" }
     }
 
     /// 从 IR 参数字符串中提取完整的指针信息（地址空间 + 指向的元素类型）。
@@ -7510,6 +7526,7 @@ struct IRToMSLConverter {
 
                 let elemType = ptr.pointedMSLType
                 let constPrefix = ptr.addressSpace.isReadOnly ? "const " : ""
+                let restrictPrefix = param.hasNoAlias ? "__restrict " : ""
 
                 if ptr.addressSpace.isBufferAddressSpace {
                     let idx = param.bufferIndex ?? 0
@@ -7521,12 +7538,12 @@ struct IRToMSLConverter {
                         !forcedPointerArgIndices.contains(param.irArgIndex ?? -1)
                     if shouldKeepReference {
                         // 仅当 IR 没把它当数组/指针根使用时，constant struct 才保留 `constant Uniforms& uniforms` 形式。
-                        mslParams.append("\(constPrefix)\(qualifier) \(elemType)& \(emittedName) [[buffer(\(idx))]]")
+                        mslParams.append("\(constPrefix)\(qualifier) \(elemType)& \(restrictPrefix)\(emittedName) [[buffer(\(idx))]]")
                     } else if isAtomicType {
                         // MSL 中 atomic 类型作为 buffer 参数使用引用: device atomic_uint& counter
-                        mslParams.append("\(qualifier) \(elemType)& \(emittedName) [[buffer(\(idx))]]")
+                        mslParams.append("\(qualifier) \(elemType)& \(restrictPrefix)\(emittedName) [[buffer(\(idx))]]")
                     } else {
-                        mslParams.append("\(constPrefix)\(qualifier) \(elemType)* \(emittedName) [[buffer(\(idx))]]")
+                        mslParams.append("\(constPrefix)\(qualifier) \(elemType)* \(restrictPrefix)\(emittedName) [[buffer(\(idx))]]")
                     }
                 } else if ptr.addressSpace.isThreadgroupAddressSpace {
                     let idx = param.bufferIndex ?? 0
@@ -7577,8 +7594,9 @@ struct IRToMSLConverter {
                 if qualifier.isEmpty { continue }
                 let idx = param.bufferIndex ?? 0
                 let constPrefix = addrSpace.isReadOnly ? "const " : ""
+                let restrictPrefix = param.hasNoAlias ? "__restrict " : ""
                 if addrSpace.isBufferAddressSpace {
-                    mslParams.append("\(constPrefix)\(qualifier) uint8_t* \(emittedName) [[buffer(\(idx))]]")
+                    mslParams.append("\(constPrefix)\(qualifier) uint8_t* \(restrictPrefix)\(emittedName) [[buffer(\(idx))]]")
                 } else if addrSpace.isThreadgroupAddressSpace {
                     mslParams.append("threadgroup uint8_t* \(emittedName) [[threadgroup(\(idx))]]")
                 }

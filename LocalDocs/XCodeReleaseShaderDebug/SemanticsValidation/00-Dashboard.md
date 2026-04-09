@@ -34,6 +34,14 @@
 - **每次实现修改之后，必须重新看 full-batch 风险计数是否下降**
 - **没有统计收益的实现，不应轻易继续放大**
 
+### 当前最新闭环
+
+- 已完成 `CC-003.1`：确认一批残留的 `entry 参数语义摘要变化` / `entry 资源语义摘要变化`，本质上是 `air.buffer` metadata 对 `addrspace=2` 的显式化差异，不是 `IRToMSLConverter` 的真实地址空间回放错误
+- 已在 `Scripts/ir_canonical_compare.py` 增加定向归一化：resource metadata 里的 `air.address_space` 不再进入 canonical `signature`，真实参数 `addrspace` 变化仍继续由 `parameterSignatures` / `parameterAddrspaces` 捕获
+- 单 case（`91c46448...`）验证后，`entryComparison` 已变成 `L0`，对应的 entry/resource metadata 噪声消失
+- full-batch 复跑后，`L3` 没下降，但 corpus 有 `64` 个共有样本、diagnostics 有 `2` 个共有样本从 `L2 -> L1`，且没有新增 `L3`
+- 这说明当前主线应继续转向更硬的残留模式：`模块级 air intrinsic 使用变化` / `指令族统计变化` / `entry 返回类型摘要变化`
+
 ## 当前默认流程
 
 ### Step 1：从 canonical compare 报告选下一个 case
@@ -145,9 +153,10 @@
 |---|---|---|---|
 | `CC-001` 建立 canonical-diff 驱动的新主线 | DOING | `00-Dashboard.md` 已完成重写，后续任务统一改用 case-by-case + full-batch 复跑口径 | 本文档 |
 | `CC-002` 收敛 `buffer-noalias` 这类 entry 参数对齐问题 | DONE | 已完成单 case 分析、实现 `noalias -> __restrict`、重跑 full-batch 并看到 `L3` 数量下降 | `difference-analysis/buffer-noalias/04-implementation-result.md` / `difference-analysis/buffer-noalias/05-full-batch-compare.md` |
-| `CC-003` 归类 `buffer-noalias` 修复后剩余的高频 `L3/L2` 模式 | TODO | 从最新 full-batch 报告中统计“仍然最常见”的剩余高风险模式，并明确下一刀优先分析哪一类 case | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
-| `CC-003.1` 优先检查 `entry 参数语义摘要变化` 的高频残留模式 | TODO | 解释为什么 `noalias` 修复后仍保留大量 `entry 参数语义摘要变化`，并判断它更像 compare 口径问题还是实现问题 | 同上 |
-| `CC-003.2` 优先检查 `entry 资源语义摘要变化` 的高频残留模式 | TODO | 选一个重复模式明显的 case，完成“分析 -> 实现/不实现 -> full-batch 复跑”的闭环 | 同上 |
+| `CC-003` 归类 `buffer-noalias` 修复后剩余的高频 `L3/L2` 模式 | DOING | 已确认 `entry 参数语义摘要变化` 里有一批是 compare 噪声；接下来需继续统计真正还留在前列的高频残留模式，并明确下一刀优先 case | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
+| `CC-003.1` 优先检查 `entry 参数语义摘要变化` 的高频残留模式 | DONE | 已确认其中一批重复模式来自 resource metadata `air.address_space` 显式化；已完成 compare 归一化、单 case 验证与 full-batch 复跑，并看到一批 `L2 -> L1` | `difference-analysis/resource-metadata-addrspace/04-implementation-result.md` / `difference-analysis/resource-metadata-addrspace/05-full-batch-compare.md` |
+| `CC-003.2` 优先检查 `entry 资源语义摘要变化` 的高频残留模式 | TODO | 在去掉 `resource metadata addrspace` 噪声后，确认这类风险是否仍然高频；若仍高频，再选一个重复模式明显的 case 做闭环 | 同上 |
+| `CC-003.3` 优先检查 `模块级 air intrinsic 使用变化 / 指令族统计变化` 的高频残留模式 | TODO | 选一个在 corpus / diagnostics 都重复出现的 case，判断它更像 emission 问题、compile posture 差异，还是 compare 仍需继续降噪 | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
 | `CC-004` 固化新的 case 分析模板 | TODO | 在 `difference-analysis/` 下沉淀一套稳定模板，确保后续每个 case 都按同样结构记录证据、结论与回归数据 | `difference-analysis/` |
 
 ## 任务执行规则
@@ -266,6 +275,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - **主文档不要直接暴露会漂移的本机快照**：本机增强入口、历史批量快照、manifest 描述文字与局部样本数量都应下沉到参考文档，主文档只保留当前主线真正依赖的控制面事实
 - **非 preset 的默认输出目录必须避免碰撞**：当前离线路径允许 agent 近同时发起 corpus / diagnostics 等批量运行；默认输出目录若只按秒命名，会导致报告互相覆盖，因此默认目录需要追加唯一后缀
 - **L2 compare 需要主动降噪**；更细的降噪对象与风险口径统一见 `04-L2-CanonicalCompareAndRiskGrading.md`（工作参考，当前主线推进**不必须读取**）
+- **resource metadata 的 `air.address_space` 显式化不应重复放大**；当函数参数 `addrspace` 摘要已一致时，这更像 compare 噪声，而不是 entry/resource 语义真的发生变化
 
 ## 参考信息
 
@@ -285,6 +295,8 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - `difference-analysis/buffer-noalias/00-progress.md`
 - `difference-analysis/buffer-noalias/04-implementation-result.md`
 - `difference-analysis/buffer-noalias/05-full-batch-compare.md`
+- `difference-analysis/resource-metadata-addrspace/04-implementation-result.md`
+- `difference-analysis/resource-metadata-addrspace/05-full-batch-compare.md`
 
 ### 相关实现与工具
 

@@ -118,6 +118,7 @@ L2 的目标是提供**可批量运行、可解释、可回归的语义风险筛
 - 注释 / 空行 / 格式变化
 - 某些声明顺序变化
 - `bufferSize` 缺失这类 metadata 省略
+- 仅体现在 resource metadata 的 `air.address_space` 显式化、且函数参数 `addrspace` 摘要未变化时的差异
 - `readonly / writeonly / readnone / dereferenceable / align / nocapture / noundef` 等参数修饰噪声
 - `air.fast_*` 与对应 `air.*` intrinsic alias 的名称差异
 - 仅发生在 instruction-level、且未伴随 compile option / function attr 漂移的 fast-math flag 变化

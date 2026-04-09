@@ -193,7 +193,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --ll <path_to_failure_module.ll
 2. 严格按优先级选取最高优先级的 **一个最关键的** 未完成任务执行；若存在更细的未完成子任务，优先以子任务为实际执行面
 3. 若选中的任务**没有明确结束标准**（例如无法判断“本轮做到哪里算完成”，或很可能导致下一次新 agent 继续在同一任务上查漏补缺式推进），立即停止实现并汇报；优先先补齐/澄清该任务的结束标准，再决定是否继续执行
 4. 若最高优先级任务处于阻塞状态（如需人工/外部协助）。立即停止并汇报。严禁执行任何与解决阻塞本身无关的任务。
-5. 若任务过大，先拆分出新子任务到 TODO，再只完成其中**最关键**的一个
+5. 若任务过大，先拆分出新子任务附加到 TODO，再只完成其中**最关键**的一个。单个TODO不宜过长。
 6. 若这次实现了新功能，尽可能靠 skills 或 mcp 做 **实际测试**；若受环境限制，至少做 **模拟性质、离线或最小样本测试**
 7. 执行完毕后整理文档：结合已有内容，**深度整理并同步全局信息**，更新优先级、当前主线、TODO、验证与经验；较旧信息可下沉到独立参考文档，主体保持简洁，**不要只做追加**
 8. 复盘工作流；若本轮新增的测试脚本或辅助脚本对后续仍有价值，也应一并整理并提交。如果当前你手工执行的一些流程在未来预计仍会高频反复用到，考虑使用脚本来完成，并更新到文档参考信息。另外，最重要的：最优方案往往会随着你的探究得到新信息而发生改变。你拥有很大的自主决定权，除了最终目标不能改变，中间的技术路线均可以随时根据实际情况去重新调整。
@@ -206,14 +206,25 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --ll <path_to_failure_module.ll
 ## TODO 状态
 
 > 注：已完成里程碑与较旧说明统一下沉到 `07-首轮基线与历史进展归档.md`（历史参考，当前主线推进**不必须读取**）；dashboard 只保留仍会改变下一步选择的 active items。
+>
+> 补充：若某条 TODO 仍明显过大，它只能作为**父任务**存在；实际执行前必须先在本区补出更短的子任务，并把“当前唯一实际执行面”落到其中一条，避免单个 TODO 过长。
 
 | # | 任务 | 状态 | 优先级 | 说明 | 详细文档 |
 |---|---|---|---|---|---|
-| SV-003F | 收口“全量 corpus 的 L1/L2 测试” | ONGOING | P0（唯一实际执行面） | **当前最高优先级。** 目标只有这一条：让 `ShaderCorpus` 全量已采集样本尽可能稳定进入统一的 `roundtrip / compare / risk / gate` 离线路径，同时把 `ShaderSourceDiagnostics` 明确限制为 failure-path 补充输入，并继续守住 `test-data-representatives` 的跨机器硬默认 gate 与 automation-first 边界。默认构建、测试、验证必须仍可由 agent 独立完成；若某一步不得不要求用户介入，必须先停下汇报并得到确认 | `03-L1-IR-RoundTrip.md` / `04-L2-CanonicalCompareAndRiskGrading.md` |
+| SV-003F | 收口“全量 corpus 的 L1/L2 测试” | ONGOING | P0（父任务） | 只负责定义本阶段目标与自动化边界；实际执行时必须先落到下方某个更短子任务，单轮只推进其中**一个最关键**的实际执行面 | `03-L1-IR-RoundTrip.md` / `04-L2-CanonicalCompareAndRiskGrading.md` |
+
+### `SV-003F` 当前子任务拆分
+
+| # | 子任务 | 状态 | 优先级 | 结束标准 |
+|---|---|---|---|---|
+| SV-003F1 | 守住 `test-data-representatives` 硬默认 gate 不回退 | READY | P1 | 固定三条硬默认命令继续可由 agent 独立完成，且无新增 gate 回归 |
+| SV-003F2 | 收口 `ShaderCorpus` 批量主入口 | NEXT | P0（当前唯一实际执行面） | 解决一个最关键的 corpus 批量 blocker / contract 问题，或把该 blocker 与可验证结束标准文档化；不得要求 fresh capture、人工整理目录或其它用户协助 |
+| SV-003F3 | 守住 `ShaderSourceDiagnostics` 补充入口与 source-aware 身份隔离 | READY | P1 | `--diagnostics-root` / `--preset local-diagnostics-batch` 继续可批量进入同一套 L1/L2 报告，且 `comparisonKey / sampleKey` 不污染 corpus 主入口事实 |
 
 ### 当前关键状态
 
 - **当前最终目标已收口**：当前只以“全量 corpus 的 L1/L2 测试”作为本阶段目标；L3/L4 继续保留为参考，不进入当前 TODO
+- **当前唯一实际执行面已下沉到子任务**：父任务 `SV-003F` 只负责目标与边界；本轮默认只推进 `SV-003F2`，除非它阻塞或已完成
 - **跨机器硬默认 gate 不变**：`test-data-representatives` 继续是 fresh workspace 下必须可由 agent 自主完成的最小 L1/L2 入口
 - **`ShaderCorpus` 是当前唯一主入口**：主线优先关注“全量已采集 corpus 样本尽可能进入 L1/L2”，而不是继续维护后置行为边界或本机增强快照
 - **`ShaderSourceDiagnostics` 已具备 agent 可自主的批量入口**：failure-path 样本当前可通过 `--diagnostics-root` 进入同一套离线 L1/L2 报告；它仍然只是补充输入，不应把人工枚举或人工辅助重新写回默认流程

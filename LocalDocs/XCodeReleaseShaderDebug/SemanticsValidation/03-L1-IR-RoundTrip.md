@@ -34,7 +34,7 @@ regenerated.ll
 - 不依赖 live
 - 不依赖用户操作
 - 可以直接复用 `test-data/` 与 `ShaderCorpus`
-- 是 L2/L3/L4 的输入基础
+- 是当前“全量 corpus 的 L1/L2 测试”的入口基础
 
 ## 已落地的工具
 
@@ -61,6 +61,7 @@ regenerated.ll
 
 - `--ll <path>`：单个或多个显式 `.ll`
 - `--corpus-root <path>`：对 `ShaderCorpus/` 批量发现
+- `--diagnostics-root <path>`：对 `ShaderSourceDiagnostics/` 批量发现
 - `--bundle-id`
 - `--module-key`
 - `--limit`
@@ -81,9 +82,9 @@ regenerated.ll
 补充说明：
 
 - `test-data-representatives` 继续只承担**跨机器硬默认 gate** 角色
-- `local-corpus-representatives` 与 `daily-default` 继续只承担**本机增强证据** 角色，不反向定义当前主线优先级
-- `test-data-batch` 继续只作为**参考批量快照**，不承担当前默认 gate 契约
-- `--diagnostics-root <path>` 当前已可对 `ShaderSourceDiagnostics/` 做批量发现；`--ll <path>` 继续用于 failure-path 的定向补喂或单样本复核
+- `ShaderCorpus` 继续是**当前最高优先级的批量主入口**
+- `ShaderSourceDiagnostics` 继续只承担**failure-path 补充输入**角色，不反向定义当前默认 gate
+- `local-corpus-representatives`、`daily-default` 与 `test-data-batch` 继续只承担**增强入口 / 观察入口 / 历史参考**角色，不反向定义当前主线优先级
 - 若 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 在同一次运行里命中相同 `bundleId + moduleKey`，L1 报告中的 `comparisonKey / sampleIdentity` 必须保留来源区分，避免 diagnostics 样本覆盖 success-path 的 corpus 事实
 - 当前更细的 preset contract、样本计数、active known debt 与 manifest 摘要已统一下沉到 `08-当前代表集与Gate契约参考.md`（工作参考，当前日常推进**不必须读取**）
 
@@ -119,8 +120,8 @@ build/semantics-validation/roundtrip/
 
 补充说明：
 
-- 当前 `test-data-representatives` 的同一输出目录还会被 L3 默认复用，直接生成 `behavior-summary.json` 与 `behavior-artifacts/`
-- 因此对于跨机器硬默认入口，固定输出目录已经不仅是 L1/L2 产物目录，也是当前最小 L3 证据的锚点
+- 当前 `test-data-representatives` 的同一输出目录仍会被后置 L3 参考路径复用，但这**不改变**当前 L1/L2 主线目标
+- 对当前阶段而言，最重要的是稳定产出 `roundtrip / compare / risk / gate` 这组 L1/L2 报告
 
 ## 实现路线
 
@@ -201,7 +202,7 @@ build/semantics-validation/roundtrip/
 目标：
 
 - 让 **`ShaderCorpus` 全量已采集样本** 尽可能进入同一套 L1/L2 离线路径
-- 优先扩大真实样本覆盖，而不是继续把执行面停在代表集或 L3 白名单
+- 优先扩大真实样本覆盖，而不是继续把执行面停在代表集或后置验证
 - 继续保持“单命令、本地、无人工介入”的自动化边界；若本机没有现成样本，应退回第一轮，而不是把 fresh capture 写成默认依赖
 
 ### 第三轮
@@ -210,15 +211,11 @@ build/semantics-validation/roundtrip/
 
 - `python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Containers/io.playcover.PlayCover/ShaderSourceDiagnostics --allow-failures`
 - 或 `python3 Scripts/ir_semantics_roundtrip_runner.py --ll <path_to_failure_module.ll> --allow-failures`
-- 或 `python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-batch --allow-failures`
-- 或 `python3 Scripts/ir_semantics_roundtrip_runner.py --preset local-corpus-representatives --allow-failures`
-- 或 `python3 Scripts/ir_semantics_roundtrip_runner.py --preset daily-default --allow-failures --enforce-gate`
 
 目标：
 
 - 先通过 `--diagnostics-root` 对已导出的 failure-path 样本做**批量补充复核**；必要时再回退到显式 `--ll` 处理单个 blocker
-- 读取参考批量快照或本机增强证据，但不反向定义当前主线优先级
-- 即使当前已具备批量入口，也不要把人工批量整理 `ShaderSourceDiagnostics` 样本写回默认流程
+- 继续保持“默认脚本化入口优先”；即使当前已具备批量入口，也不要把人工批量整理 `ShaderSourceDiagnostics` 样本写回默认流程
 
 ## 当前不建议做的事
 
@@ -229,7 +226,7 @@ build/semantics-validation/roundtrip/
 - 试图一步到位做行为测试
 - 把 GUI / `.gputrace` 校验混进 L1
 
-L1 只做一件事：**把 round-trip 链路本身做稳定。**
+L1 当前只做一件事：**把全量 corpus 的 round-trip 链路本身做稳定。**
 
 ## 当前落地结果
 
@@ -237,20 +234,18 @@ L1 只做一件事：**把 round-trip 链路本身做稳定。**
 
 - `test-data-representatives` 继续是 **跨机器硬默认入口**；当前详细事实、active debt 与固定命令统一见 `08-当前代表集与Gate契约参考.md`（工作参考，当前主线推进**不必须读取**）
 - `ShaderCorpus` 继续是 **当前最高优先级的真实样本主入口**；它应尽可能复用同一套 `roundtrip / compare / risk` 报告，而不是另起一套平行控制面
-- `daily-default` 与 `local-corpus-representatives` 继续只承担 **本机增强证据** / **本地观察** 角色，不替代跨机器控制面，也不替代 `--corpus-root` 的全量样本主线
-- `test-data-batch` 继续只保留为 **参考批量快照**；旧分布、旧 compile failure 口径与历史样本名单统一下沉到 `07-首轮基线与历史进展归档.md`（历史参考，当前日常推进**不必须读取**）
 - `ShaderSourceDiagnostics` 当前已可通过 `--diagnostics-root` 作为 failure-path 批量补充输入；显式 `--ll` 继续保留给单样本复核，但这条路径仍不应冒充默认 gate
-- `test-data-representatives` 的固定输出目录继续被 L3 复用；因此它不仅是 L1/L2 产物目录，也是当前最小 L3 证据的锚点
+- `daily-default`、`local-corpus-representatives` 与 `test-data-batch` 的更细定位统一下沉到 `08-当前代表集与Gate契约参考.md` 与 `07-首轮基线与历史进展归档.md`（均为参考，当前主线推进**不必须读取**）
 - 若缺少 `swiftc` / `xcrun` / 自动可解析的 `llvm-dis`，应视为环境前置条件未满足并停止汇报；不要把用户手工找路径或手工拼命令写回默认流程
 
 ## 完成标准
 
 `SV-001` 已完成；原定的 5 条完成标准（显式 `.ll` round-trip、`test-data/` 批量执行、失败阶段区分、关键产物保留、L2 可直接消费）当前均已满足。
 
-> L1 当前的工作重心已从“把 runner 做出来”转为“把它接入更稳定的日常 gate”；更细的首轮完成过程与历史结果已下沉到 `07-首轮基线与历史进展归档.md`（历史参考，**不必须读取**）。
+> L1 当前的工作重心已从“把 runner 做出来”转为“把它接入更稳定的日常 gate，并让更多已采集 corpus 样本稳定进入同一套 L1/L2 路径”；更细的首轮完成过程与历史结果已下沉到 `07-首轮基线与历史进展归档.md`（历史参考，**不必须读取**）。
 
 ## 后续衔接
 
 - L1 成功样本 → 进入 `04-L2-CanonicalCompareAndRiskGrading.md`
-- L1 高价值/高风险样本 → 后续可进入 `05-L3-最小行为测试.md`
-- L1 当前最直接的后续任务 → `SV-003F`（让全量已采集样本尽可能进入统一的 L1/L2 离线路径）
+- L1 当前最直接的后续任务 → `SV-003F`（让全量已采集 corpus 样本尽可能进入统一的 L1/L2 离线路径）
+- L3 / L4 继续只保留为后置参考，不改变当前阶段目标

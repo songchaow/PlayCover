@@ -6,7 +6,7 @@
 
 - 哪些差异只是编译器 / metadata / 表面形态变化
 - 哪些差异可能影响语义，应优先进入后续复核
-- 哪些样本已经可以继续沉淀到日常 gate，哪些样本暂时不应进入 live
+- 哪些样本已经可以继续沉淀到日常 gate，哪些样本暂时不应进入当前默认边界
 
 这层的目标仍然不是形式化证明，而是先得到一个**可批量运行、可解释、可回归**的语义风险筛查器。
 
@@ -40,7 +40,7 @@
 当前状态需要明确区分两件事：
 
 - **L2 能力是否存在**：已经存在，且已在 `test-data/` 与代表 preset 上跑通
-- **L2 是否已经变成稳定日常入口**：代表集的第一版收口已经完成；当前重点不再是“再造 compare”，而是把同一套 `gate-summary.json` / `risk-report.json` / `--gate-profile` / `--enforce-gate` 语义稳定扩展到尽可能多的已采集样本，并继续维持 `PASS / WARN / FAIL` 的自动化边界。其中应优先看 `gate-summary.json` 的结构字段，而不是沿用 gate profile 的旧描述文字；若某条新路径仍要求人工批量枚举 `ShaderSourceDiagnostics` 样本，就还不能视为已经收口
+- **L2 当前在做什么**：重点不再是“再造 compare”，而是把同一套 `gate-summary.json` / `risk-report.json` / `--gate-profile` / `--enforce-gate` 语义稳定扩展到尽可能多的已采集 corpus 样本，并继续维持 `PASS / WARN / FAIL` 的自动化边界。其中应优先看 `gate-summary.json` 的结构字段，而不是沿用 gate profile 的旧描述文字；若某条新路径仍要求人工批量枚举 `ShaderSourceDiagnostics` 样本，就还不能视为已经收口
 
 ## 已实现的 canonical summary
 
@@ -107,7 +107,7 @@
 
 - canonical summary 基本一致
 - 没有关键 entry / 地址空间 / builtin / resource 差异
-- 无需立即进入 L3
+- 无需立即升级
 
 ### L1：可接受差异
 
@@ -122,8 +122,8 @@
 特征：
 
 - builtin / resource / CFG / fast-math / instruction family 中有可疑变化
-- 默认优先进入 `SV-006` 的升级判定，再决定是否进入少量 `L3` 最小行为测试
-- 不建议直接跳到 live，也不应把人工复核写成日常默认 gate
+- 默认先停留在当前 L1/L2 主线内复核其分布与边界
+- 是否升级到 L3 由后续用户决策决定；当前不把升级写回默认任务
 
 ### L3：高风险 / 结构性不一致
 
@@ -134,7 +134,7 @@
 - 参数 `addrspace` 关键项变化
 - 或 round-trip 主链路本身失败
 
-这类样本默认视为**不应直接进入 live**。
+这类样本默认视为**不应直接进入后续路径**，应先在 L1/L2 层修清结构风险。
 
 ## 第一版主动降噪策略
 
@@ -172,13 +172,12 @@
 
 ### 当前代表样本
 
-- 当前 L2 只继续向主线暴露四条 active 事实：
-  - **代表 preset 的当前边界契约应以 `gate-summary.json` / `risk-report.json` 为准；`preset-manifest.json` 更适合描述发现与 artifact 锚点，不应单独充当 active debt 事实来源**
-  - **`risk-report.json` 已经把 `samplesForL3`、`blockedSamples`、已解决 debt 与推荐动作拆开**：这保证了 L2 可以先给出“继续停在离线层 / 升级到最小 L3 / 明确阻断”的结构化判断
-  - **同一套 L2 报告语义应继续覆盖 `test-data-representatives` 与 `ShaderCorpus` 全量样本**；当前最高优先级不是重写代表集 debt 描述，而是把更多已采集样本纳入同样的结构化判断
-  - **`ShaderSourceDiagnostics` failure-path 样本当前已可通过 `--diagnostics-root` 批量进入同一套 L2 报告语义**；显式 `--ll` 继续只用于定向补充复核，而不是默认主线事实
-  - **当 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 命中相同 `bundleId + moduleKey` 时，L2 的 `comparisonKey / sampleKey` 必须继续保留来源区分**；否则 failure-path 结果会污染 success-path 的 gate 事实
-- 更细的当前样本键、数值、artifact 锚点与契约摘要统一下沉到 `08-当前代表集与Gate契约参考.md`；旧 fail 解释与历史分布统一下沉到 `07-首轮基线与历史进展归档.md`（均为参考，当前主线推进**不必须读取**)
+当前 L2 只继续向主线暴露四条 active 事实：
+
+- **代表 preset 的当前边界契约应以 `gate-summary.json` / `risk-report.json` 为准；`preset-manifest.json` 更适合描述发现与 artifact 锚点，不应单独充当 active debt 事实来源**
+- **同一套 L2 报告语义应继续覆盖 `test-data-representatives`、`ShaderCorpus` 与 `ShaderSourceDiagnostics` 补充输入**；当前最高优先级不是重写代表集 debt 描述，而是把更多已采集样本纳入同样的结构化判断
+- **当 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 命中相同 `bundleId + moduleKey` 时，L2 的 `comparisonKey / sampleKey` 必须继续保留来源区分**；否则 failure-path 结果会污染 success-path 的 gate 事实
+- **更细的当前样本键、数值、artifact 锚点与契约摘要统一下沉到 `08-当前代表集与Gate契约参考.md`；旧 fail 解释与历史分布统一下沉到 `07-首轮基线与历史进展归档.md`（均为参考，当前主线推进**不必须读取**）**
 
 ## 报告结构
 
@@ -227,7 +226,7 @@
 - 哪些已知 `L2 / L3 / round-trip failure` 仍然存在
 - 哪些 debt 已被结构化记为 improvement（如 `resolvedL2SampleKeys`）
 - 是否出现了超出当前代表集 profile 的新增 blocker / 新增 `L3`
-- `layeredDecision`：当前应停在 L2、升级到 L3，还是继续推迟到更后置层
+- `layeredDecision`：当前是否应继续停在 L1/L2 离线层
 - 在 `--enforce-gate` 模式下是否应阻断退出
 
 ## 已验证测试
@@ -241,18 +240,18 @@
 - 不是形式化语义证明器
 - 不是完整 IR AST / CFG 等价器
 - 还不能回答“行为是否一致”
-- 当前批量大盘仍可能很噪，但默认主线不应因此直接扩大 live 验证；更合理的顺序仍是先通过 `SV-003` 守住代表集与默认 gate，再以 `SV-003F` 让全量已采集样本尽可能进入 L1/L2，最后才让 `SV-004` 只消费最小、最有信息量的候选
+- 当前批量大盘仍可能很噪，但当前阶段不因此直接扩大到后置 live 验证
 - 当前已经有第一版机器可执行的升级/止损边界：代表 preset 会通过 `gate-summary.json` / `--enforce-gate` 将“已知 debt”与“新增回归”区分开；更细的历史相位变化已下沉到 `07-首轮基线与历史进展归档.md`（历史参考，**不必须读取**）
 
 ## 对下一步的直接启示
 
-`SV-002` 完成后，当前最合理的下一步不是直接跳到 live，而是：
+`SV-002` 完成后，当前最合理的下一步不是直接跳到后置层，而是：
 
-1. 持续守住 `SV-003`，确保 `test-data-representatives` 这个跨机器硬默认入口不回退
-2. 以 `SV-003F` 作为当前唯一实际执行面，把 `ShaderCorpus` 全量已采集样本尽可能纳入同一套 `compare-summary / risk-report / gate-summary` 语义，而不是继续把 `ShaderCorpus` 只当本地增强证据
-3. 继续复用 `SV-006` 已经落地的 `layeredDecision`，但把重点放在“更多已采集样本是否仍能自动得到稳定的 L2 判断”上；对 `ShaderSourceDiagnostics` failure-path 样本，当前优先使用 `--diagnostics-root` 做批量补充验证，必要时再用显式 `--ll` 做定向 blocker 复核，仍不应把人工批量枚举写回默认流程
-4. 只有在 `SV-003F` 的 L1/L2 全量样本证据仍不足时，才回到 `05-L3-最小行为测试.md` 复用既有最小行为边界；L3 此时承担的是后置升级口，而不是当前主线
+1. 持续守住 `test-data-representatives` 这个跨机器硬默认入口不回退
+2. 把 `ShaderCorpus` 全量已采集样本尽可能纳入同一套 `compare-summary / risk-report / gate-summary` 语义
+3. 继续使用 `--diagnostics-root` 批量补充 failure-path 样本，但不把人工批量枚举写回默认流程
+4. 继续把当前默认目标停留在“全量 corpus 的 L1/L2 测试”，而不是把 L3/L4 重新写回主线
 
 ## 完成标准回顾
 
-`SV-002` 已完成；原定的 5 条完成标准（自动提取 canonical summary、输出结构化 compare、形成 4 档风险分级、在 `test-data/` 跑通批量报告、给出 L3/L4 升级指向）当前均已满足。
+`SV-002` 已完成；原定的 5 条完成标准（自动提取 canonical summary、输出结构化 compare、形成 4 档风险分级、在 `test-data/` 跑通批量报告、给出升级指向）当前均已满足。

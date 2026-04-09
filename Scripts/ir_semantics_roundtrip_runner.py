@@ -218,6 +218,7 @@ def build_discovered_job_manifest_entry(job: replay_runner.ReplayJob) -> dict[st
         "sampleKey": sample_key,
         "sampleIdentity": canonical_compare.sample_identity(
             {
+                "sourceKind": job.source_kind,
                 "bundleId": job.bundle_id,
                 "moduleKey": job.module_key,
                 "inputPath": str(job.input_path),

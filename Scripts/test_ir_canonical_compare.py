@@ -367,6 +367,78 @@ class IRCanonicalCompareTests(unittest.TestCase):
             "test_sample",
         )
 
+    def test_sample_identity_qualifies_shader_source_diagnostics_samples(self) -> None:
+        self.assertEqual(
+            canonical_compare.sample_identity(
+                {
+                    "sourceKind": "shader_source_diagnostics",
+                    "bundleId": "com.example.game",
+                    "moduleKey": "abc123",
+                }
+            ),
+            "shaderSourceDiagnostics::bundle:com.example.game::module:abc123",
+        )
+        self.assertEqual(
+            canonical_compare.sample_identity(
+                {
+                    "sourceKind": "shader_source_diagnostics",
+                    "inputPath": "/tmp/test_sample.ll",
+                }
+            ),
+            "shaderSourceDiagnostics::test_sample",
+        )
+
+    def test_assess_gate_result_keeps_shader_corpus_and_diagnostics_samples_distinct(self) -> None:
+        corpus_sample = {
+            "sourceKind": "shader_corpus",
+            "comparisonKey": "bundle:com.example.game::module:abc123",
+            "bundleId": "com.example.game",
+            "moduleKey": "abc123",
+            "inputPath": "/tmp/corpus-module.ll",
+            "roundTripStatus": "success",
+            "failureStage": None,
+            "riskLevel": "L0",
+        }
+        diagnostics_sample = {
+            "sourceKind": "shader_source_diagnostics",
+            "comparisonKey": "shaderSourceDiagnostics::bundle:com.example.game::module:abc123",
+            "bundleId": "com.example.game",
+            "moduleKey": "abc123",
+            "inputPath": "/tmp/diagnostics-module.ll",
+            "roundTripStatus": "success",
+            "failureStage": None,
+            "riskLevel": "L3",
+        }
+        roundtrip_report = make_roundtrip_report(job_count=2)
+        risk_report = make_risk_report(
+            samples=[corpus_sample, diagnostics_sample],
+            blocked_samples=[diagnostics_sample],
+            l2_samples=[],
+        )
+
+        summary = canonical_compare.assess_gate_result(
+            roundtrip_report,
+            risk_report,
+            gate_profile={
+                "expectedJobCount": 2,
+                "allowedFailureSamples": {},
+                "allowedBlockedSampleKeys": [],
+                "allowedL2SampleKeys": [],
+            },
+        )
+
+        self.assertEqual(
+            summary["observed"]["sampleKeys"],
+            [
+                "bundle:com.example.game::module:abc123",
+                "shaderSourceDiagnostics::bundle:com.example.game::module:abc123",
+            ],
+        )
+        self.assertEqual(
+            summary["regressions"]["unexpectedBlockedSampleKeys"],
+            ["shaderSourceDiagnostics::bundle:com.example.game::module:abc123"],
+        )
+
     def test_assess_gate_result_passes_when_all_samples_stay_within_boundary(self) -> None:
         sample = {
             "comparisonKey": "explicit_ll:/tmp/test_ok.ll",

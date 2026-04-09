@@ -177,6 +177,7 @@
   - **`risk-report.json` 已经把 `samplesForL3`、`blockedSamples`、已解决 debt 与推荐动作拆开**：这保证了 L2 可以先给出“继续停在离线层 / 升级到最小 L3 / 明确阻断”的结构化判断
   - **同一套 L2 报告语义应继续覆盖 `test-data-representatives` 与 `ShaderCorpus` 全量样本**；当前最高优先级不是重写代表集 debt 描述，而是把更多已采集样本纳入同样的结构化判断
   - **`ShaderSourceDiagnostics` failure-path 样本当前已可通过 `--diagnostics-root` 批量进入同一套 L2 报告语义**；显式 `--ll` 继续只用于定向补充复核，而不是默认主线事实
+  - **当 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 命中相同 `bundleId + moduleKey` 时，L2 的 `comparisonKey / sampleKey` 必须继续保留来源区分**；否则 failure-path 结果会污染 success-path 的 gate 事实
 - 更细的当前样本键、数值、artifact 锚点与契约摘要统一下沉到 `08-当前代表集与Gate契约参考.md`；旧 fail 解释与历史分布统一下沉到 `07-首轮基线与历史进展归档.md`（均为参考，当前主线推进**不必须读取**)
 
 ## 报告结构

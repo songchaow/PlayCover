@@ -82,6 +82,7 @@ makeLibrary(source:) / metal -c
 - `test-data-representatives` 继续是**跨机器硬默认 gate**；它的职责是守住 fresh workspace / 低上下文环境下的最小离线闭环
 - `Scripts/ir_semantics_roundtrip_runner.py` 当前已经可以**直接批量消费整个 `ShaderCorpus`**；因此“先让成功路径样本全量进入 L1/L2”是当前最直接、最该做的事
 - `ShaderSourceDiagnostics` 在 `E-004f4` 后已经为 failure-path 样本提供 `module.ll / module.generated.metal / module.meta.json`，且当前已可通过 `Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ...` 被批量发现并进入同一套 L1/L2 报告；它的定位仍是 failure-path 补充输入，而不是默认 gate
+- 当 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 在同一次批量运行中出现相同 `bundleId + moduleKey` 时，结构化报告里的 `comparisonKey / sampleKey` 必须继续保持 source-aware，避免 diagnostics failure-path 样本伪装成 success-path 主入口事实
 - 既有 `SV-004F` 默认白名单行为边界、`daily-default / local-corpus-representatives` 本机增强入口，以及更早的批量快照/样本数字，统一下沉到 `05-L3-最小行为测试.md`、`07-首轮基线与历史进展归档.md` 与 `08-当前代表集与Gate契约参考.md`（均为参考；除 `05` 外当前主线推进**不必须读取**）
 
 因此当前最高优先级可直接概括为：**先把“全量已采集样本尽可能进入 L1/L2”这条自动化离线路径收口，再讨论 L3/L4；在这之前，不把最小行为白名单继续误写成当前唯一主线。**

@@ -84,6 +84,7 @@ regenerated.ll
 - `local-corpus-representatives` 与 `daily-default` 继续只承担**本机增强证据** 角色，不反向定义当前主线优先级
 - `test-data-batch` 继续只作为**参考批量快照**，不承担当前默认 gate 契约
 - `--diagnostics-root <path>` 当前已可对 `ShaderSourceDiagnostics/` 做批量发现；`--ll <path>` 继续用于 failure-path 的定向补喂或单样本复核
+- 若 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 在同一次运行里命中相同 `bundleId + moduleKey`，L1 报告中的 `comparisonKey / sampleIdentity` 必须保留来源区分，避免 diagnostics 样本覆盖 success-path 的 corpus 事实
 - 当前更细的 preset contract、样本计数、active known debt 与 manifest 摘要已统一下沉到 `08-当前代表集与Gate契约参考.md`（工作参考，当前日常推进**不必须读取**）
 
 ### 输出目录

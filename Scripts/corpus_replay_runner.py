@@ -548,11 +548,18 @@ def same_file_contents(left: Path, right: Path) -> bool | None:
     return normalize_generated_msl(left_text) == normalize_generated_msl(right_text)
 
 
+def _comparison_key_source_prefix(source_kind: str | None) -> str:
+    if source_kind == "shader_source_diagnostics":
+        return "shaderSourceDiagnostics::"
+    return ""
+
+
 def make_comparison_key(source_kind: str | None, bundle_id: str | None, module_key: str | None, input_path: str | None) -> str:
+    source_prefix = _comparison_key_source_prefix(source_kind)
     if bundle_id and module_key:
-        return f"bundle:{bundle_id}::module:{module_key}"
+        return f"{source_prefix}bundle:{bundle_id}::module:{module_key}"
     if module_key:
-        return f"module:{module_key}"
+        return f"{source_prefix}module:{module_key}"
     if input_path:
         return f"{source_kind or 'input'}:{input_path}"
     return f"{source_kind or 'unknown'}:job"

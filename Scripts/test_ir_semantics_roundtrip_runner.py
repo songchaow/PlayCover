@@ -327,6 +327,34 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             self.assertEqual(manifest["discovery"]["sourceKinds"]["shaderCorpus"], 0)
             self.assertEqual(manifest["discovery"]["jobs"][0]["sourceKind"], "shader_source_diagnostics")
             self.assertEqual(manifest["discovery"]["jobs"][0]["metadataPath"], str(metadata_path))
+            self.assertEqual(
+                manifest["discovery"]["jobs"][0]["sampleIdentity"],
+                "shaderSourceDiagnostics::bundle:com.example.demo::module:abc123",
+            )
+            self.assertEqual(
+                manifest["discovery"]["jobs"][0]["comparisonKey"],
+                "shaderSourceDiagnostics::bundle:com.example.demo::module:abc123",
+            )
+
+    def test_make_comparison_key_distinguishes_shader_source_diagnostics_from_shader_corpus(self) -> None:
+        self.assertEqual(
+            roundtrip_runner.replay_runner.make_comparison_key(
+                "shader_corpus",
+                "com.example.demo",
+                "abc123",
+                None,
+            ),
+            "bundle:com.example.demo::module:abc123",
+        )
+        self.assertEqual(
+            roundtrip_runner.replay_runner.make_comparison_key(
+                "shader_source_diagnostics",
+                "com.example.demo",
+                "abc123",
+                None,
+            ),
+            "shaderSourceDiagnostics::bundle:com.example.demo::module:abc123",
+        )
 
     def test_resolve_llvm_dis_path_prefers_explicit_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -976,21 +976,28 @@ def _recommended_action_for_risk(risk_level: str) -> str:
     return "先视为结构性不一致或 round-trip blocker，优先修 L2/L1 问题后再决定是否进入 L3。"
 
 
+def _sample_source_prefix(source_kind: Any) -> str:
+    if source_kind == "shader_source_diagnostics":
+        return "shaderSourceDiagnostics::"
+    return ""
+
+
 def sample_identity(sample: dict[str, Any]) -> str:
+    source_prefix = _sample_source_prefix(sample.get("sourceKind"))
     module_key = sample.get("moduleKey")
     bundle_id = sample.get("bundleId")
     if module_key:
         if bundle_id:
-            return f"bundle:{bundle_id}::module:{module_key}"
-        return f"module:{module_key}"
+            return f"{source_prefix}bundle:{bundle_id}::module:{module_key}"
+        return f"{source_prefix}module:{module_key}"
 
     input_path = sample.get("inputPath")
     if input_path:
-        return Path(str(input_path)).stem
+        return f"{source_prefix}{Path(str(input_path)).stem}"
 
     comparison_key = sample.get("comparisonKey")
     if comparison_key:
-        return str(comparison_key)
+        return f"{source_prefix}{comparison_key}"
     return "<unknown>"
 
 

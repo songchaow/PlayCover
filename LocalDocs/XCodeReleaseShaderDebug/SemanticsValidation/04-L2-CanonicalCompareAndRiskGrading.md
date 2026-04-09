@@ -1,65 +1,38 @@
 ## L2：Canonical Compare + 风险分级
 
+## 文档职责
+
+本文只记录 L2 的**比较口径、风险分级、降噪策略、报告结构与 gate 语义**。
+
+**任务状态、进展、优先级、TODO、完成判定与默认执行顺序统一只在 `00-Dashboard.md` 维护。** 本页不重复动态控制面信息。
+
 ## 目标
 
 在 L1 已产出的 `original.ll` / `regenerated.ll` 基础上，建立一套**结构化 compare + 风险分级**，回答：
 
-- 哪些差异只是编译器 / metadata / 表面形态变化
-- 哪些差异可能影响语义，应优先进入后续复核
-- 哪些样本已经可以继续沉淀到日常 gate，哪些样本暂时不应进入当前默认边界
+- 哪些差异只是编译器、metadata 或表面形态变化
+- 哪些差异可能影响语义，应优先复核
+- 哪些结果适合继续沉淀为 gate 事实，哪些只适合作为观察信号
 
-这层的目标仍然不是形式化证明，而是先得到一个**可批量运行、可解释、可回归**的语义风险筛查器。
+L2 的目标是提供**可批量运行、可解释、可回归的语义风险筛查器**。
 
-若只是理解当前主线优先级，优先读 `00-Dashboard.md` 与 `02-总体技术路线.md`；本文件更偏向 L2 口径、报告结构与 gate 语义的工作参考，当前日常推进**不必须读取**。
-
-## 当前实现状态
-
-**`SV-002` 已完成。**
-
-当前已落地：
-
-- 新增 `Scripts/ir_canonical_compare.py`
-- 已让 `Scripts/ir_semantics_roundtrip_runner.py` 在完成 `roundtrip` 后自动继续执行 L2
-- 已新增 `Scripts/test_ir_canonical_compare.py`
-- 已更新 `Scripts/test_ir_semantics_roundtrip_runner.py`
-
-当前 `roundtrip runner` 默认会产出：
-
-- `roundtrip-summary.json`
-- `compare-summary.json`
-- `risk-report.json`
-- `high-risk-samples.json`
-- `gate-summary.json`
-- `preset-manifest.json`
-
-对固定输出目录，当前还支持：
-
-- 用 `--save-baseline` 保存 replay baseline snapshot
-- 在目录下已有 `baseline.json` 时自动复用它做 replay baseline diff（也可显式用 `--baseline-report` 覆盖）
-
-当前状态需要明确区分两件事：
-
-- **L2 能力是否存在**：已经存在，且已在 `test-data/` 与代表 preset 上跑通
-- **L2 当前在做什么**：重点不再是“再造 compare”，而是用同一套 `gate-summary.json` / `risk-report.json` / `--gate-profile` / `--enforce-gate` 语义，持续清理 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 两条 full-batch 批量入口中已经暴露出来的风险与失败，并继续维持 `PASS / WARN / FAIL` 的自动化边界。其中应优先看 `gate-summary.json` 的结构字段，而不是沿用 gate profile 的旧描述文字；若某条新路径仍要求人工批量枚举 `ShaderSourceDiagnostics` 样本，就还不能视为已经收口
-
-## 已实现的 canonical summary
+## canonical summary 的比较维度
 
 ### Entry 面
 
-当前会提取并比较：
+比较：
 
 - entry 函数集合
 - shader 类型（`vertex / fragment / kernel`）
 - entry 名称
 - 返回类型摘要
-- 参数个数
-- 参数类型摘要
+- 参数个数与参数类型摘要
 - entry 参数语义摘要
 - entry 输出语义摘要
 
 ### 类型 / 地址空间面
 
-当前会提取并比较：
+比较：
 
 - 参数 `addrspace` 摘要
 - 模块级 `addrspace` 分布
@@ -67,7 +40,7 @@
 
 ### Builtin / Resource 面
 
-当前会提取并比较：
+比较：
 
 - `!air.vertex / !air.fragment / !air.kernel` 元数据里的参数语义
 - buffer / texture / sampler / stage-in / builtin 摘要
@@ -76,7 +49,7 @@
 
 ### 控制流 / 指令族面
 
-当前会提取并比较：
+比较：
 
 - basic block 数量
 - terminator 分布（`ret / br / condbr / switch ...`）
@@ -92,38 +65,38 @@
 
 ### 关键属性面
 
-当前会提取并比较：
+比较：
 
 - `fast-math` 相关 compile option
-- function attr 里的 `fast-math` 相关 key
+- function attr 中的 `fast-math` 相关 key
 - 指令级 `fast / nnan / ninf / nsz / arcp / contract / afn / reassoc` 统计
-- `target triple / data layout`（仅记录，默认不单独作为阻断）
+- `target triple / data layout`（可记录，但通常不单独作为阻断依据）
 
-## 当前风险分级口径
+## 风险分级口径
 
 ### L0：低风险 / 近似一致
 
 特征：
 
 - canonical summary 基本一致
-- 没有关键 entry / 地址空间 / builtin / resource 差异
-- 无需立即升级
+- 没有关键 entry、地址空间、builtin、resource 差异
+- 可视为低风险结果
 
 ### L1：可接受差异
 
 特征：
 
 - 存在局部结构波动
-- 主要是统计层或优化层差异
-- 默认记录，但不阻塞
+- 主要属于统计层、优化层或表现层差异
+- 适合记录与观察，不应轻易放大为阻断
 
 ### L2：中风险 / 需复核
 
 特征：
 
-- builtin / resource / CFG / fast-math / instruction family 中有可疑变化
-- 默认先停留在当前 L1/L2 主线内复核其分布与边界
-- 是否升级到 L3 由后续用户决策决定；当前不把升级写回默认任务
+- builtin、resource、CFG、fast-math、instruction family 等维度出现可疑变化
+- 需要继续在离线层做聚类、解释或补充证据
+- 是否升级到更高层，应由 dashboard 的决策面统一裁定
 
 ### L3：高风险 / 结构性不一致
 
@@ -132,24 +105,24 @@
 - entry 集合变化
 - 参数 / 返回关键摘要变化
 - 参数 `addrspace` 关键项变化
-- 或 round-trip 主链路本身失败
+- 或 round-trip 主链路失败
 
-这类样本默认视为**不应直接进入后续路径**，应先在 L1/L2 层修清结构风险。
+这类样本应先回到低层修清结构风险，再决定是否继续升级。
 
-## 第一版主动降噪策略
+## 主动降噪策略
 
-为了让 L2 更像“风险筛查器”而不是“文本 diff 放大器”，当前已明确**弱化或忽略**以下差异：
+为了让 L2 更像“风险筛查器”而不是“文本 diff 放大器”，默认应弱化或忽略以下差异：
 
 - SSA 名称变化
 - metadata 编号变化
 - 注释 / 空行 / 格式变化
 - 某些声明顺序变化
 - `bufferSize` 缺失这类 metadata 省略
-- `readonly / writeonly / readnone / dereferenceable / align / nocapture / noundef` 这类参数修饰噪声
+- `readonly / writeonly / readnone / dereferenceable / align / nocapture / noundef` 等参数修饰噪声
 - `air.fast_*` 与对应 `air.*` intrinsic alias 的名称差异
 - 仅发生在 instruction-level、且未伴随 compile option / function attr 漂移的 fast-math flag 变化
 
-当前仍然对下面差异保持敏感：
+默认仍应保持敏感的差异包括：
 
 - entry 集合与 shader type
 - 参数 / 返回关键摘要
@@ -159,31 +132,11 @@
 - CFG 粗结构
 - fast-math 相关差异
 
-## 批量验证结果
-
-### `test-data/` 首轮 L2 报告
-
-`test-data-batch` 目录继续保留为一份**较早的批量参考快照**，但已经**不是**当前默认 gate 的 active 口径；它当前主要承担失败聚类、历史对照与降噪回看价值。
-
-处理原则：
-
-- 当前 active 口径统一回到 `test-data-representatives` 的固定输出目录与 `08-当前代表集与Gate契约参考.md`
-- 更细的旧分布、旧 compile failure 背景与样本名单统一下沉到 `07-首轮基线与历史进展归档.md`（历史参考，当前日常推进**不必须读取**）
-
-### 当前代表样本
-
-当前 L2 只继续向主线暴露四条 active 事实：
-
-- **代表 preset 的当前边界契约应以 `gate-summary.json` / `risk-report.json` 为准；`preset-manifest.json` 更适合描述发现与 artifact 锚点，不应单独充当 active debt 事实来源**
-- **同一套 L2 报告语义应继续覆盖 `test-data-representatives`、`ShaderCorpus` 与 `ShaderSourceDiagnostics` 补充输入**；当前最高优先级不是重写代表集 debt 描述，而是把更多已采集样本纳入同样的结构化判断
-- **当 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 命中相同 `bundleId + moduleKey` 时，L2 的 `comparisonKey / sampleKey` 必须继续保留来源区分**；否则 failure-path 结果会污染 success-path 的 gate 事实
-- **更细的当前样本键、数值、artifact 锚点与契约摘要统一下沉到 `08-当前代表集与Gate契约参考.md`；旧 fail 解释与历史分布统一下沉到 `07-首轮基线与历史进展归档.md`（均为参考，当前主线推进**不必须读取**）**
-
 ## 报告结构
 
 ### `compare-summary.json`
 
-每个样本当前至少包含：
+每个样本建议至少包含：
 
 - `comparisonKey`
 - `riskLevel`
@@ -202,7 +155,7 @@
 
 ### `risk-report.json`
 
-当前用于输出：
+建议包含：
 
 - 批量 `riskCounts`
 - `samplesForL3`
@@ -211,47 +164,63 @@
 
 ### `high-risk-samples.json`
 
-当前用于快速列出：
+建议快速列出：
 
-- `L2`
-- `L3`
+- `L2` 样本
+- `L3` 样本
 
-样本，便于后续聚类或选取代表集。
+以便后续聚类或挑选复核样本。
 
 ### `gate-summary.json`
 
-当前用于输出：
+建议表达：
 
-- 当前这次运行是 `pass / warn / fail`
-- 哪些已知 `L2 / L3 / round-trip failure` 仍然存在
-- 哪些 debt 已被结构化记为 improvement（如 `resolvedL2SampleKeys`）
-- 是否出现了超出当前代表集 profile 的新增 blocker / 新增 `L3`
-- `layeredDecision`：当前是否应继续停在 L1/L2 离线层
+- 运行整体状态（如 `pass / warn / fail`）
+- 仍存在的已知 `L2 / L3 / round-trip failure`
+- 已被结构化记为 improvement 的 debt
+- 是否出现 profile 之外的新 blocker 或新高风险
+- `layeredDecision`：是否继续停留在当前层、还是升级到更高层
 - 在 `--enforce-gate` 模式下是否应阻断退出
 
-## 已验证测试
+## 事实来源优先级
 
-当前已覆盖真实样本提取、合成正向 / 反向样本以及 `roundtrip runner` 集成测试三类关键路径；更细的测试入口可直接参考 `Scripts/test_ir_canonical_compare.py` 与 `Scripts/test_ir_semantics_roundtrip_runner.py`。
+当不同报告之间存在表述差异时，应优先按下面顺序理解事实：
 
-## 当前边界
+1. `gate-summary.json`
+2. `risk-report.json`
+3. `roundtrip-summary.json`
+4. `preset-manifest.json` 的结构字段
+5. `preset-manifest.json` 的描述文字
 
-第一版仍然有明确边界：
+如果描述文字与结构字段不一致，应以结构字段为准。
 
-- 不是形式化语义证明器
-- 不是完整 IR AST / CFG 等价器
-- 还不能回答“行为是否一致”
-- 当前批量大盘仍可能很噪，但当前阶段不因此直接扩大到后置 live 验证
-- 当前已经有第一版机器可执行的升级/止损边界：代表 preset 会通过 `gate-summary.json` / `--enforce-gate` 将“已知 debt”与“新增回归”区分开；更细的历史相位变化已下沉到 `07-首轮基线与历史进展归档.md`（历史参考，**不必须读取**）
+## source-aware 身份规则
 
-## 对下一步的直接启示
+当 corpus 与 diagnostics 等不同来源命中同一 `bundleId + moduleKey` 时，L2 的身份字段必须继续保留来源区分，例如：
 
-`SV-002` 完成后，当前最合理的下一步不是直接跳到后置层，而是：
+- `comparisonKey`
+- `sampleKey`
 
-1. 持续守住 `test-data-representatives` 这个跨机器硬默认入口不回退
-2. 把 `ShaderCorpus` full-batch 样本持续纳入同一套 `compare-summary / risk-report / gate-summary` 语义，并优先清理 success-path 主入口里的 blocker
-3. 继续使用 `--diagnostics-root`（或标准本机路径下的 `--preset local-diagnostics-batch`）批量复核 failure-path 样本，并把其中已暴露出来的风险与失败一并纳入当前 blocker 清理，但不把人工批量枚举写回默认流程
-4. 继续把当前默认目标停留在“清零当前 full-batch L1/L2 错误（`ShaderCorpus` + `ShaderSourceDiagnostics`）”，而不是把 L3/L4 重新写回主线
+否则 failure-path 结果会污染 success-path 的 gate 事实。
 
-## 完成标准回顾
+## L2 的边界
 
-`SV-002` 已完成；原定的 5 条完成标准（自动提取 canonical summary、输出结构化 compare、形成 4 档风险分级、在 `test-data/` 跑通批量报告、给出升级指向）当前均已满足。
+L2 不是：
+
+- 形式化语义证明器
+- 完整 IR AST / CFG 等价器
+- 行为级测试
+- live / GUI 验证
+
+L2 的价值在于：
+
+- 把结构化差异变成机器可读风险
+- 为是否升级到 L3/L4 提供依据
+- 让回归判断能够依赖报告，而不是依赖人工口头解释
+
+## 与相邻文档的关系
+
+- L1 输入与产物：`03-L1-IR-RoundTrip.md`
+- L3 方法与 harness：`05-L3-最小行为测试.md`
+- gate / preset / manifest 契约：`08-当前代表集与Gate契约参考.md`
+- 动态控制面：`00-Dashboard.md`

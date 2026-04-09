@@ -2,102 +2,26 @@
 
 > **单一来源规则**：凡是任务状态、进展、优先级、TODO、完成判定与默认执行顺序，只在本文件维护；`01`~`08` 子文档只保留背景、方法、契约与历史归档，不重复记录动态控制面。
 
-## 问题背景
-
-前置任务已经建立了比较完整的工程链路：
-
-```text
-metallib / wrapper payload
-  ↓
-BitcodeModule.data
-  ↓
-llvm-dis
-  ↓
-LLVM IR
-  ↓
-IRToMSLConverter
-  ↓
-MSL
-  ↓
-makeLibrary(source:) / metal -c
-```
-
-但现状更接近：
-
-- **逐指令机械翻译 + compile 守门 + replay/diff 回归**
-- 而不是 **已被严格证明的语义等价闭环**
-
-当前缺口主要在：
-
-- 如何把**已经采集到的 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 样本**，都稳定纳入同一套自动化离线验证，而不是长期停留在“小代表集 + 少量后置行为样本”
-- 如何让这条“全量批量样本 → round-trip → 结构化 compare / gate 报告”的路径继续保持 **agent 可自主完成**，不把人工枚举样本、人工 fresh capture、人工找工具路径写回日常流程
-- 如何把 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 的角色明确拆开：前者继续作为**success-path 主入口**，后者继续作为**failure-path 补充入口**；二者都进入当前待修错误范围，但 `ShaderSourceDiagnostics` 仍不得冒充默认 gate
-- 如何把当前阶段的最终目标明确收口为：**现有测试全部通过**（重点是 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 两条 full-batch 批量入口通过），并且 `QQ飞车手游` 启动不会崩溃；不再额外派生“后续继续收口 `L2/L3 gate`”的第二阶段规划
-
-因此需要在本目录下建立一套**自动化优先、止损清晰、只服务当前完工标准**的语义验证文档与执行约束。
-
-> 注：立项初版关于“缺少 L1/L2”的历史表述已经下沉到 `01-现状调研与缺口.md` 与 `07-首轮基线与历史进展归档.md`；当前 dashboard 只保留 active gap 与当前控制面。
->
-> 当前控制面事实以结构化报告为准；更细的 L1/L2 输入边界、preset / manifest / baseline 契约、以及“哪些路径可自动、哪些仍是待补齐缺口”的细节统一下沉到 `03-L1-IR-RoundTrip.md`、`04-L2-CanonicalCompareAndRiskGrading.md` 与 `08-当前代表集与Gate契约参考.md`（前两者**建议读取**；`08` 为工作参考，当前主线推进**不必须读取**）。
-
 ## 当前主线
 
-> **当前最该做的事只有一件：`SV-003F`。** 也就是确保当前现有测试通过，重点是 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 两条 full-batch 批量入口全部通过，同时守住 `QQ飞车手游` 启动不崩。
+> 当前只做 `SV-003F`：把现有测试跑绿，重点覆盖 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 两条 full-batch 批量入口，同时守住 `QQ飞车手游` 启动不崩。
 
-### 这条主线怎么理解
+### 当前卡在哪里
 
-- `SV-003F` = 当前唯一实际执行面
-- 当前完成标准只看“现有测试是否通过 + 启动是否稳定”，不再单独规划“后续继续收口 `L2/L3 gate`”
-- `SV-004 / SV-005` 相关文档仅保留为资料参考，不再作为当前规划里的后续里程碑
-
-### 当前主线的完成判定
-
-只有同时满足下面几条，当前阶段才算完成：
-
-1. `test_ir_canonical_compare.py` 与 `test_ir_semantics_roundtrip_runner.py` 当前测试通过
-2. `test-data-representatives` 继续保持跨机器硬默认 gate，不回退
-3. `ShaderCorpus` full-batch 通过
-4. `ShaderSourceDiagnostics` full-batch 通过
-5. `QQ飞车手游` 启动不崩溃
-6. 日常构建、测试、验证仍可由 agent 独立自动完成；若某步必须人工介入，必须先得到用户确认
-
-### 当前状态归纳
-
-- `IRToMSLConverter` 相关的 helper / entry 误分类、helper 递归发射、前置声明补齐与 `fastcc` 返回类型解析等问题已经完成一轮修正，compile blocker 不再是当前主矛盾
-- 当前控制面已经收敛为两个直接结果：**现有测试跑绿**，以及 **`QQ飞车手游` 启动稳定**
-- `compare / risk / gate` 报告仍然保留为定位与解释问题的结构化证据，但不要再把“继续收口 `L2/L3` 风险样本”写成单独的后续 gate
-
-### 当前最该做的事
-
-1. **把现有自动化测试跑绿**
-   - 重点先看 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 两条 full-batch 批量入口
-   - 同时守住 `test_ir_canonical_compare.py`、`test_ir_semantics_roundtrip_runner.py` 与 `test-data-representatives` 不回退
-2. **守住 `QQ飞车手游` 启动不崩**
-   - 若本轮改动影响 runtime replacement 主链路、PlayTools 产物或准备宣称 `SV-003F` 完成，必须补做启动 smoke
-   - 目标是“能正常启动、不崩溃”，不是扩展新的 live / `.gputrace` gate
-3. **继续守住自动化边界**
-   - 默认流程必须继续可由 agent 独立完成
-   - 不要把人工枚举样本、fresh capture、手工准备工具或手工整理目录写回默认流程
-
-### 当前不该抢跑的事
-
-在 `SV-003F` 未完成前，默认不要把精力放到：
-
-- 再新增“后续继续收口 `L2/L3 gate`”的子规划或 TODO
-- 为覆盖率继续扩默认 `L3` 白名单、行为 harness 或其它额外 gate
-- 大规模 live `.gputrace` 验证或高成本 GUI / Accessibility 操作
-- 需要用户频繁登录 / 摆场景 / 点按钮的流程
-- 已有 `--diagnostics-root` 批量入口时，重新把人工批量枚举 `.ll` 路径写回日常步骤
-- 因当前机器缺少某批样本，就把 fresh capture / 手工准备环境写回默认 gate
-- 把 `L3/L4`、本机增强入口或体系打磨本身重新写成当前主线
+- 当前收口仍卡在 full-batch 批量入口是否全部跑通，而不是 compile blocker
+- `ShaderCorpus` 是 success-path 主入口，`ShaderSourceDiagnostics` 是 failure-path 补充入口；两条都要过，但后者不替代默认 gate
+- 默认流程仍必须保持 agent 可独立完成；若某步必须人工介入，需要先明确阻塞
 
 ## TODO
-
-> 注：已完成里程碑与较旧说明统一下沉到 `07-首轮基线与历史进展归档.md`；本节只保留 active item。
 
 | 任务 | 状态 | 结束标准 | 详细文档 |
 |---|---|---|---|
 | `SV-003F` | DOING | 当前现有测试全部通过：`test_ir_canonical_compare.py`、`test_ir_semantics_roundtrip_runner.py`、`test-data-representatives` 不回退，且 `ShaderCorpus` / `ShaderSourceDiagnostics` 两条批量入口通过，同时 `QQ飞车手游` 启动不崩 | `03-L1-IR-RoundTrip.md` / `06-L4-真实场景验证.md` |
+| `SV-003F.1` | DONE | compile blocker 已不再是当前主矛盾，问题已收敛到 full-batch 批量入口与启动稳定性 | 同上 |
+| `SV-003F.2` | TODO | 跑通 `test_ir_canonical_compare.py`、`test_ir_semantics_roundtrip_runner.py` 与 `test-data-representatives` | 同上 |
+| `SV-003F.3` | TODO | 跑通 `ShaderCorpus` full-batch | 同上 |
+| `SV-003F.4` | TODO | 跑通 `ShaderSourceDiagnostics` full-batch | 同上 |
+| `SV-003F.5` | TODO | 在需要时补做 `QQ飞车手游` 启动 smoke，并确认启动不崩 | 同上 |
 
 ## 构建与验证方法
 
@@ -168,14 +92,12 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --ll <path_to_failure_module.ll
 ## Agent 工作流程
 
 1. 读取本文档，先理解 **当前主线** 与 **TODO** 的最新状态
-2. 严格按优先级选取最高优先级的 **一个最关键的** 未完成任务执行；若存在更细的未完成子任务，优先以子任务为实际执行面
-3. 若选中的任务**没有明确结束标准**（例如无法判断“本轮做到哪里算完成”，或很可能导致下一次新 agent 继续在同一任务上查漏补缺式推进），立即停止实现并汇报；优先先补齐/澄清该任务的结束标准，再决定是否继续执行
-4. 若最高优先级任务处于阻塞状态（如需人工/外部协助）。立即停止并汇报。严禁执行任何与解决阻塞本身无关的任务。
-5. 若任务过大，先拆分出新子任务追加到 TODO，再只完成其中**最关键**的一个。单个TODO不宜过长。
-6. 若本轮修改触及 `SV-003F` 主线（包括 dashboard / 文档、离线脚本、`IRToMSLConverter`、`LLVMDisassembler`、compare / gate 逻辑或样本纳入路径），收尾测试时必须回到上面的“日常默认验证（优先）”，并按顺序执行所有**适用**步骤：必要时先做 PlayTools 构建守门，然后执行跨机器硬默认 gate，再执行 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 的 full-batch 批量验证；若本轮改动影响 runtime 主链路，或本轮准备宣称阶段目标完成，还应补做 `QQ飞车手游` 启动不崩 smoke。**不要只做单样本 smoke 就宣称验证完成。**
-7. 执行完毕后整理文档：结合已有内容，**深度整理并同步全局信息**，更新优先级、当前主线、TODO、验证与经验；较旧信息可下沉到独立参考文档，主体保持简洁，**不要只做追加**，禁止擅自在主线新增新的章节。
-8. 复盘工作流；若本轮新增的测试脚本或辅助脚本对后续仍有价值，也应一并整理并提交。如果当前你手工执行的一些流程在未来预计仍会高频反复用到，考虑使用脚本来完成，并更新到文档参考信息。另外，最重要的：最优方案往往会随着你的探究得到新信息而发生改变。你拥有很大的自主决定权，除了最终目标不能改变，中间的技术路线均可以随时根据实际情况去重新调整。
-9. 收尾完成后执行 `git commit`
+2. 严格按优先级选取最高优先级的 **一个最关键的** 未完成任务执行。
+3. 若最高优先级任务处于阻塞状态（如需人工/外部协助）。立即停止并汇报。严禁执行任何与解决阻塞本身无关的任务。
+4. 若任务过大，先拆分出新子任务追加到 TODO，再只完成其中**最关键**的一个。单个TODO不宜过长。
+5. 执行完毕后整理文档：结合已有内容，**深度整理并同步全局信息**，更新优先级、当前主线、TODO、验证与经验；较旧信息可下沉到独立参考文档，主体保持简洁，**不要只做追加**，禁止擅自在主线新增新的章节。
+6. 复盘工作流；若本轮新增的测试脚本或辅助脚本对后续仍有价值，也应一并整理并提交。如果当前你手工执行的一些流程在未来预计仍会高频反复用到，考虑使用脚本来完成，并更新到文档参考信息。另外，最重要的：最优方案往往会随着你的探究得到新信息而发生改变。你拥有很大的自主决定权，除了最终目标不能改变，中间的技术路线均可以随时根据实际情况去重新调整。
+7. 收尾完成后执行 `git commit`
 
 > 注：`git commit` 不是日常构建/测试/验证闭环的一部分；若当前会话没有明确要求提交，默认停在“变更已落盘且文档已同步”的状态即可。
 >

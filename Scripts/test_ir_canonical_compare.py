@@ -218,6 +218,35 @@ class IRCanonicalCompareTests(unittest.TestCase):
         self.assertFalse(comparison["same"])
         self.assertEqual(comparison["fastMathComparison"]["severity"], "L1")
 
+    def test_compare_downgrades_small_arithmetic_vector_tradeoff_to_l1(self) -> None:
+        original = canonical_compare.extract_ir_summary_text(make_kernel_ir())
+        regenerated = canonical_compare.extract_ir_summary_text(make_kernel_ir())
+
+        original["entries"][0]["shaderType"] = "vertex"
+        regenerated["entries"][0]["shaderType"] = "vertex"
+        original["entries"][0]["instructionFamilies"] = {
+            "aggregate": 3,
+            "arithmetic": 9,
+            "call": 10,
+            "intrinsic": 10,
+            "memory": 28,
+            "vector": 26,
+        }
+        regenerated["entries"][0]["instructionFamilies"] = {
+            "aggregate": 3,
+            "arithmetic": 8,
+            "call": 10,
+            "intrinsic": 10,
+            "memory": 28,
+            "vector": 27,
+        }
+
+        comparison = canonical_compare.compare_ir_summaries(original, regenerated)
+
+        self.assertEqual(comparison["riskLevel"], "L1")
+        self.assertEqual(comparison["instructionFamilyComparison"]["severity"], "L1")
+        self.assertEqual(comparison["instructionFamilyComparison"]["differenceCount"], 1)
+
     def test_assess_gate_result_warns_for_known_debt(self) -> None:
         samples = [
             {

@@ -896,7 +896,20 @@ def _compare_instruction_families(original: dict[str, Any], regenerated: dict[st
         keys = set(lhs) | set(rhs)
         total_delta = sum(abs(int(lhs.get(name, 0)) - int(rhs.get(name, 0))) for name in keys)
         important_changed = any((lhs.get(name, 0) != rhs.get(name, 0)) for name in IMPORTANT_FAMILY_KEYS)
+        changed_keys = {name for name in keys if int(lhs.get(name, 0)) != int(rhs.get(name, 0))}
+
+        arithmetic_delta = int(lhs.get("arithmetic", 0)) - int(rhs.get("arithmetic", 0))
+        vector_delta = int(lhs.get("vector", 0)) - int(rhs.get("vector", 0))
+        is_small_arithmetic_vector_tradeoff = (
+            changed_keys == {"arithmetic", "vector"}
+            and abs(arithmetic_delta) == 1
+            and abs(vector_delta) == 1
+            and arithmetic_delta == -vector_delta
+        )
+
         severity = "L2" if important_changed and total_delta >= 2 else "L1"
+        if is_small_arithmetic_vector_tradeoff:
+            severity = "L1"
         differences.append(
             _make_difference(
                 "instruction-family",

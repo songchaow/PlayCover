@@ -2780,6 +2780,17 @@ struct IRToMSLConverter {
         sanitizeTypeName(functionName) + "_Out"
     }
 
+    private static func entryOutputFieldType(
+        for output: MetadataReturnInfo,
+        index: Int
+    ) -> String {
+        let rawTypeName = output.typeName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if rawTypeName.isEmpty {
+            return output.kind == "air.position" ? "float4" : "float"
+        }
+        return irScalarTypeToMSL(rawTypeName)
+    }
+
     /// 从 IR metadata 参数信息构建 ParsedParameter 列表。
     ///
     /// metadata 提供了精确的 MSL 类型名、参数名、绑定索引和地址空间，
@@ -3730,6 +3741,7 @@ struct IRToMSLConverter {
         var paramTypes: [String: String] = [:]
         /// 当前函数的 MSL 返回类型
         var functionReturnType: String = ""
+        var functionReturnFieldTypes: [String] = []
         /// 指针值集合（IR 参数/GEP/alloca 等会产出"地址"语义的 SSA）
         var pointerValues: Set<String> = []
         /// 指针 SSA → 指向的元素 MSL 类型（如 "uint4"、"int"、"float2"）
@@ -3912,6 +3924,9 @@ struct IRToMSLConverter {
     ) -> [String] {
         let ctx = SSAContext()
         ctx.functionReturnType = func_.returnType
+        ctx.functionReturnFieldTypes = func_.outputs.enumerated().map { index, output in
+            entryOutputFieldType(for: output, index: index)
+        }
         // E-004e4c: 传入结构体信息供 extractvalue/insertvalue/GEP 使用
         ctx.structTypeDefs = structTypeDefs
         ctx.structFieldInfo = structFieldInfo
@@ -4795,7 +4810,17 @@ struct IRToMSLConverter {
         let trimmedType = aggType.trimmingCharacters(in: .whitespaces)
 
         // 从类型字符串解析字段数量
-        let fieldCount = countAggregateFields(trimmedType)
+        let fieldTypes = aggregateFieldTypes(trimmedType)
+        let fieldCount = fieldTypes.count
+
+        func makeAggregatePlaceholders(minimumCount: Int) -> [String] {
+            let count = max(fieldCount, minimumCount)
+            guard count > 0 else { return [] }
+            return (0..<count).map { index in
+                guard index < fieldTypes.count else { return "0" }
+                return zeroInitializerExpression(forIRType: fieldTypes[index])
+            }
+        }
 
         // 判断是否为 undef 基础（链的起点）
         let isUndef = aggValue.trimmingCharacters(in: .whitespaces) == "undef" ||
@@ -4803,7 +4828,7 @@ struct IRToMSLConverter {
 
         if isUndef {
             // 链起点：记录已知的第一个字段
-            var fields = Array(repeating: "0", count: max(fieldCount, fieldIdx + 1))
+            var fields = makeAggregatePlaceholders(minimumCount: fieldIdx + 1)
             fields[fieldIdx] = val
             ctx.insertValueFields[lhs] = fields
             // 如果是单字段结构体，直接完成
@@ -4823,7 +4848,7 @@ struct IRToMSLConverter {
                 fields[fieldIdx] = val
             } else {
                 // 无前驱记录，创建新的
-                fields = Array(repeating: "0", count: max(fieldCount, fieldIdx + 1))
+                fields = makeAggregatePlaceholders(minimumCount: fieldIdx + 1)
                 fields[fieldIdx] = val
             }
             ctx.insertValueFields[lhs] = fields
@@ -4843,6 +4868,10 @@ struct IRToMSLConverter {
     /// 如 `<{ <4 x float>, <2 x float> }>` → 2
     /// 如 `{ <4 x float>, i8 }` → 2
     private static func countAggregateFields(_ type: String) -> Int {
+        aggregateFieldTypes(type).count
+    }
+
+    private static func aggregateFieldTypes(_ type: String) -> [String] {
         var body = type.trimmingCharacters(in: .whitespaces)
         // 去掉 packed struct 外层 <{ }>
         if body.hasPrefix("<{") && body.hasSuffix("}>") {
@@ -4850,11 +4879,50 @@ struct IRToMSLConverter {
         } else if body.hasPrefix("{") && body.hasSuffix("}") {
             body = String(body.dropFirst().dropLast())
         } else {
-            return 0  // 不是聚合类型
+            return []  // 不是聚合类型
         }
-        return splitIRParameters(body).filter {
+        return splitIRParameters(body).map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }.filter {
             !$0.trimmingCharacters(in: .whitespaces).isEmpty
-        }.count
+        }
+    }
+
+    private static func parseIRArrayType(_ irType: String) -> (count: Int, elementType: String)? {
+        let trimmed = irType.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("["), trimmed.hasSuffix("]"), let xRange = trimmed.range(of: " x ") else {
+            return nil
+        }
+        let countStr = String(trimmed[trimmed.index(after: trimmed.startIndex)..<xRange.lowerBound])
+            .trimmingCharacters(in: .whitespaces)
+        guard let count = Int(countStr) else { return nil }
+        let afterX = trimmed[xRange.upperBound...]
+        let elementType = String(afterX[..<afterX.index(before: afterX.endIndex)])
+            .trimmingCharacters(in: .whitespaces)
+        return (count, elementType)
+    }
+
+    private static func zeroInitializerExpression(forIRType irType: String) -> String {
+        let trimmed = irType.trimmingCharacters(in: .whitespaces)
+        if let array = parseIRArrayType(trimmed) {
+            let zeroValue = zeroInitializerExpression(forIRType: array.elementType)
+            return "{ \(Array(repeating: zeroValue, count: array.count).joined(separator: ", ")) }"
+        }
+
+        let fieldTypes = aggregateFieldTypes(trimmed)
+        if !fieldTypes.isEmpty {
+            return "{ \(fieldTypes.map { zeroInitializerExpression(forIRType: $0) }.joined(separator: ", ")) }"
+        }
+
+        if trimmed == "i1" {
+            return "false"
+        }
+
+        let mslType = irScalarTypeToMSL(trimmed)
+        if trimmed.hasPrefix("%") || isStructTypeName(mslType) {
+            return "\(mslType)()"
+        }
+        return "\(mslType)(0)"
     }
 
     private static func stripAddressOfExpression(_ expr: String) -> String? {
@@ -5917,10 +5985,11 @@ struct IRToMSLConverter {
         let parts = splitTypedOperands(cleaned, count: 1)
         if let first = parts.first {
             let val = resolveIROperand(first.value, ctx: ctx)
+            let normalizedAggregateReturn = normalizeAggregateReturnExpression(val, ctx: ctx)
             if val.trimmingCharacters(in: .whitespaces).hasPrefix("{"),
                !ctx.functionReturnType.isEmpty,
                ctx.functionReturnType != "void" {
-                ctx.emit("return \(ctx.functionReturnType)\(val);")
+                ctx.emit("return \(ctx.functionReturnType)\(normalizedAggregateReturn ?? val);")
             } else if val == "0" && !ctx.functionReturnType.isEmpty
                         && ctx.functionReturnType != "void"
                         && isStructTypeName(ctx.functionReturnType) {
@@ -5933,6 +6002,40 @@ struct IRToMSLConverter {
         } else {
             ctx.emit("return;")
         }
+    }
+
+    private static func normalizeAggregateReturnExpression(_ expression: String, ctx: SSAContext) -> String? {
+        let trimmed = expression.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("{"), trimmed.hasSuffix("}"), !ctx.functionReturnFieldTypes.isEmpty else {
+            return nil
+        }
+
+        let inner = String(trimmed.dropFirst().dropLast())
+        let parts = splitIRParameters(inner).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard parts.count == ctx.functionReturnFieldTypes.count else {
+            return nil
+        }
+
+        let normalizedParts = zip(parts, ctx.functionReturnFieldTypes).map { part, targetType in
+            coerceExpression(part, toMSLType: targetType)
+        }
+        return "{ \(normalizedParts.joined(separator: ", ")) }"
+    }
+
+    private static func coerceExpression(_ expression: String, toMSLType targetType: String) -> String {
+        let trimmed = expression.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !targetType.isEmpty else { return trimmed }
+        guard !trimmed.isEmpty else {
+            return isStructTypeName(targetType) ? "\(targetType)()" : "\(targetType)(0)"
+        }
+
+        if targetType == "bool" {
+            return trimmed == "false" ? "false" : "bool(\(trimmed))"
+        }
+        if isStructTypeName(targetType) {
+            return trimmed == "0" ? "\(targetType)()" : "\(targetType)(\(trimmed))"
+        }
+        return "\(targetType)(\(trimmed))"
     }
 
     /// 翻译 br 指令（E-004e4b: 条件→if/else + phi 赋值，无条件→phi 赋值+忽略跳转）
@@ -7092,13 +7195,7 @@ struct IRToMSLConverter {
         let structName = func_.returnType
         var lines: [String] = ["struct \(structName) {"]
         for (index, output) in func_.outputs.enumerated() {
-            let rawTypeName = output.typeName.trimmingCharacters(in: .whitespacesAndNewlines)
-            let fieldType: String
-            if rawTypeName.isEmpty {
-                fieldType = output.kind == "air.position" ? "float4" : "float"
-            } else {
-                fieldType = irScalarTypeToMSL(rawTypeName)
-            }
+            let fieldType = entryOutputFieldType(for: output, index: index)
 
             let fallbackName: String
             switch output.kind {

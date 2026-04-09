@@ -4,12 +4,13 @@
 
 ## 当前主线
 
-> 当前只做 `SV-003F`：把现有测试跑绿，重点覆盖 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 两条 full-batch 批量入口，同时守住 `QQ飞车手游` 启动不崩。
+> 当前只做 `SV-003F`：现有测试已跑绿，`ShaderCorpus` 与 `ShaderSourceDiagnostics` 两条 full-batch 批量入口都已完成零 replay / compile / llvm-dis 失败的批量复跑；当前剩余收口点是如何看待两条 full-batch 仍报出的 generic `L2/L3` 风险债务，以及运行时 bridge 注册信号未稳定时是否直接宣告主线完成。
 
 ### 当前卡在哪里
 
-- 当前收口仍卡在 full-batch 批量入口是否全部跑通，而不是 compile blocker
-- `ShaderCorpus` 是 success-path 主入口，`ShaderSourceDiagnostics` 是 failure-path 补充入口；两条都要过，但后者不替代默认 gate
+- `c66b9d4a60df030991dd90f8ed9e58368df846eeed70022fb8a0f402b4bbcd7b` 的 `int -> uint` compile blocker 已修复，当前离线闭环不再卡在这条编译失败上
+- `ShaderCorpus` 是 success-path 主入口，`ShaderSourceDiagnostics` 是 failure-path 补充入口；两条 full-batch 现已完成零 replay / compile / llvm-dis 失败复跑，但 generic gate 仍报告已有 `L2/L3` 风险债务
+- `QQ飞车手游` 已按标准 `build_and_install.sh` 后补做启动 smoke：alias app 可拉起、进程在 settle 窗口内存活，当前未观察到“启动即崩”；但 host bridge registration acknowledgement 在本机仍未稳定，暂不能把 `create_session` ready 当作这轮自动化证据
 - 默认流程仍必须保持 agent 可独立完成；若某步必须人工介入，需要先明确阻塞
 
 ## TODO
@@ -18,10 +19,10 @@
 |---|---|---|---|
 | `SV-003F` | DOING | 当前现有测试全部通过：`test_ir_canonical_compare.py`、`test_ir_semantics_roundtrip_runner.py`、`test-data-representatives` 不回退，且 `ShaderCorpus` / `ShaderSourceDiagnostics` 两条批量入口通过，同时 `QQ飞车手游` 启动不崩 | `03-L1-IR-RoundTrip.md` / `06-L4-真实场景验证.md` |
 | `SV-003F.1` | DONE | compile blocker 已不再是当前主矛盾，问题已收敛到 full-batch 批量入口与启动稳定性 | 同上 |
-| `SV-003F.2` | TODO | 跑通 `test_ir_canonical_compare.py`、`test_ir_semantics_roundtrip_runner.py` 与 `test-data-representatives` | 同上 |
-| `SV-003F.3` | TODO | 跑通 `ShaderCorpus` full-batch | 同上 |
-| `SV-003F.4` | TODO | 跑通 `ShaderSourceDiagnostics` full-batch | 同上 |
-| `SV-003F.5` | TODO | 在需要时补做 `QQ飞车手游` 启动 smoke，并确认启动不崩 | 同上 |
+| `SV-003F.2` | DONE | `test_ir_canonical_compare.py`、`test_ir_semantics_roundtrip_runner.py` 与 `test-data-representatives` 已复跑通过，代表集 gate 仍保持 `WARN` / known debt 口径 | 同上 |
+| `SV-003F.3` | DONE | `ShaderCorpus` full-batch 已复跑完成，`380 / 380` job round-trip 成功，`replay / compile / llvm-dis` 三段零失败 | 同上 |
+| `SV-003F.4` | DONE | `ShaderSourceDiagnostics` full-batch 已复跑完成，`153 / 153` job round-trip 成功，`replay / compile / llvm-dis` 三段零失败；原 `c66b9d4...` compile blocker 已降级为 `L2` compare 风险 | 同上 |
+| `SV-003F.5` | DONE | 已执行 `./BuildScripts/build_and_install.sh` 后补做 `QQ飞车手游` alias 启动 smoke；当前观察到 app 进程在 settle 窗口内存活、未出现“启动即崩”，但 host bridge ack 仍未稳定 | 同上 |
 
 ## 构建与验证方法
 

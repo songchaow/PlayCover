@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-04-09T15:28:44Z",
+  "tool": "Scripts/corpus_replay_runner.py",
+  "converterSwift": "/Users/songdogwang/Codes/PlayCover/Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift",
+  "outputRoot": null,
+  "totalJobs": 1,
+  "successfulJobs": 1,
+  "failedJobs": 0,
+  "warnings": [],
+  "results": [
+    {
+      "jobID": 0,
+      "comparisonKey": "explicit_ll:/Users/songdogwang/Codes/PlayCover/build/semantics-validation/roundtrip/shader-source-diagnostics-batch/com.miHoYo.Yuanshen/modules/91c46448ca24983b29716a9fe2c28a7930c10b81802758ded6977907bf01ae9b/original.ll",
+      "sourceKind": "explicit_ll",
+      "bundleId": null,
+      "moduleKey": null,
+      "inputPath": "/Users/songdogwang/Codes/PlayCover/build/semantics-validation/roundtrip/shader-source-diagnostics-batch/com.miHoYo.Yuanshen/modules/91c46448ca24983b29716a9fe2c28a7930c10b81802758ded6977907bf01ae9b/original.ll",
+      "outputPath": "/Users/songdogwang/Codes/PlayCover/LocalDocs/XCodeReleaseShaderDebug/SemanticsValidation/difference-analysis/buffer-noalias/experiments/real_case_generated_after_fix.metal",
+      "metadataPath": null,
+      "baselineGeneratedMSLPath": null,
+      "baselineMatchesGeneratedMSL": null,
+      "functionNames": [],
+      "functionTypes": [],
+      "captureCount": null,
+      "manifestEventCount": null,
+      "observedSelectors": [],
+      "success": true,
+      "error": null,
+      "elapsedSeconds": 0.08072304725646973,
+      "conversionSummary": "functions=1, mslSize=51587, elapsed=0.081s, irFuncs=1, shaders=1, parsed=1, stubs=0, airCalls=306(mapped=306,unmapped=0)",
+      "mslBytes": 51587,
+      "generatedFunctionNames": [
+        "xlatMtlMain"
+      ],
+      "generatedFunctionTypes": [
+        "fragment"
+      ],
+      "stats": {
+        "airBuiltinCalls": 306,
+        "fullyParsedFunctions": 1,
+        "mappedAirCalls": 306,
+        "shaderFunctions": 1,
+        "stubFunctions": 0,
+        "totalIRFunctions": 1,
+        "unmappedAirCalls": 0
+      }
+    }
+  ]
+}

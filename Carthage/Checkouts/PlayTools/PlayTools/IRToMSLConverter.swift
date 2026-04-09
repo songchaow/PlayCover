@@ -3783,6 +3783,7 @@ struct IRToMSLConverter {
         var structFieldInfo: [String: [StructFieldInfo]] = [:]
         /// insertvalue 链追踪：SSA 名 → 已填充的字段表达式数组
         var insertValueFields: [String: [String]] = [:]
+        var insertElementComponents: [String: [String]] = [:]
 
         // ── E-004e4c: 结构体辅助查找 ──
 
@@ -3821,6 +3822,16 @@ struct IRToMSLConverter {
                 return nil
             }
             return fields[fieldIndex]
+        }
+
+        func lookupInsertedElementComponent(vectorSSA: String, elementIndex: Int) -> String? {
+            let key = vectorSSA.trimmingCharacters(in: .whitespaces)
+            guard let components = insertElementComponents[key],
+                  elementIndex >= 0,
+                  elementIndex < components.count else {
+                return nil
+            }
+            return components[elementIndex]
         }
 
         /// 将 IR 结构体类型名转换为 MSL 类型名
@@ -4631,6 +4642,10 @@ struct IRToMSLConverter {
                 let srcType = shuffleParts[0].type
                 let outType = vectorTypeWithDim(srcType, dim: resultDim)
                 let mslOutType = irScalarTypeToMSL(outType)
+                if let cached = ctx.lookupInsertedElementComponent(vectorSSA: shuffleParts[0].value, elementIndex: idx) {
+                    ctx.emitAutoAssign(lhs, expr: "\(mslOutType)(\(cached))", knownType: mslOutType)
+                    return
+                }
                 ctx.emitAutoAssign(lhs, expr: "\(mslOutType)(\(v1).\(swizzle))", knownType: mslOutType)
             } else {
                 // poison/undef splat
@@ -4650,6 +4665,20 @@ struct IRToMSLConverter {
         } else {
             // 涉及 v2 或 poison，生成逐元素构造
             let v2 = resolveIROperand(shuffleParts[1].value, ctx: ctx)
+            let srcType = shuffleParts[0].type
+            let outType = vectorTypeWithDim(srcType, dim: resultDim)
+            let mslType = irScalarTypeToMSL(outType)
+            if let groupedExpr = groupedShuffleConstructor(
+                v1: v1,
+                v2: v2,
+                srcIRType: srcType,
+                resultMSLType: mslType,
+                maskIndices: maskIndices,
+                maxSrcDim: maxSrcDim
+            ) {
+                ctx.emitAutoAssign(lhs, expr: groupedExpr, knownType: mslType)
+                return
+            }
             var elems: [String] = []
             for idx in maskIndices {
                 if idx < 0 {
@@ -4660,9 +4689,6 @@ struct IRToMSLConverter {
                     elems.append("\(v2)[\(idx - maxSrcDim)]")
                 }
             }
-            let srcType = shuffleParts[0].type
-            let outType = vectorTypeWithDim(srcType, dim: resultDim)
-            let mslType = irScalarTypeToMSL(outType)
             ctx.emitAutoAssign(lhs, expr: "\(mslType)(\(elems.joined(separator: ", ")))", knownType: mslType)
         }
     }
@@ -4681,6 +4707,10 @@ struct IRToMSLConverter {
 
         // 常量索引用 swizzle
         if let idxNum = Int(idx) {
+            if let cached = ctx.lookupInsertedElementComponent(vectorSSA: parts[0].value, elementIndex: idxNum) {
+                ctx.define(lhs, expr: cached)
+                return
+            }
             let swizzle = vectorIndexToSwizzle(idxNum)
             ctx.emitAutoAssign(lhs, expr: "\(vec).\(swizzle)")
         } else {
@@ -4701,8 +4731,29 @@ struct IRToMSLConverter {
         let elem = resolveIROperand(parts[1].value, ctx: ctx)
         let idx = resolveIROperand(parts[2].value, ctx: ctx)
 
-        let temp = ctx.freshTemp()
         let mslType = irScalarTypeToMSL(parts[0].type)
+        let vectorDim = extractVectorDim(parts[0].type)
+        if let idxNum = Int(idx), idxNum >= 0, idxNum < vectorDim, vectorDim > 1 {
+            let vectorOperand = parts[0].value.trimmingCharacters(in: .whitespaces)
+            let componentIRType = vectorElementIRType(parts[0].type)
+            let zeroComponent = zeroInitializerExpression(forIRType: componentIRType)
+            var components: [String]
+            if vectorOperand == "poison" || vectorOperand == "undef" {
+                components = Array(repeating: zeroComponent, count: vectorDim)
+            } else if let cached = ctx.insertElementComponents[vectorOperand], cached.count == vectorDim {
+                components = cached
+            } else {
+                components = (0..<vectorDim).map { componentIndex in
+                    vectorComponentExpression(vectorExpr: vec, index: componentIndex)
+                }
+            }
+            components[idxNum] = elem
+            ctx.insertElementComponents[lhs.trimmingCharacters(in: .whitespaces)] = components
+            ctx.emitAutoAssign(lhs, expr: "\(mslType)(\(components.joined(separator: ", ")))", knownType: mslType)
+            return
+        }
+
+        let temp = ctx.freshTemp()
         if vec == "poison" || vec == "undef" {
             ctx.emit("\(mslType) \(temp) = \(mslType)(0);")
         } else {
@@ -6649,10 +6700,7 @@ struct IRToMSLConverter {
             return "as_type<half>(ushort(0x\(String(bits, radix: 16).uppercased())))"
         }
 
-        if exponent == 0 && mantissa == 0 {
-            // ±zero — 返回 0.0（上下文类型决定 half/float）
-            return "0.0"
-        }
+        if exponent == 0 && mantissa == 0 { return "half(0.0)" }
 
         // 正常值 / subnormal: 转为 Float 再格式化
         let floatValue: Float
@@ -6667,16 +6715,16 @@ struct IRToMSLConverter {
         }
 
         // 尝试简洁的十进制表示
-        if floatValue == 0.0 { return "0.0" }
-        if floatValue == 1.0 { return "1.0" }
-        if floatValue == -1.0 { return "-1.0" }
-        if floatValue == 0.5 { return "0.5" }
-        if floatValue == -0.5 { return "-0.5" }
-        if floatValue == 2.0 { return "2.0" }
-        if floatValue == -2.0 { return "-2.0" }
+        if floatValue == 0.0 { return "half(0.0)" }
+        if floatValue == 1.0 { return "half(1.0)" }
+        if floatValue == -1.0 { return "half(-1.0)" }
+        if floatValue == 0.5 { return "half(0.5)" }
+        if floatValue == -0.5 { return "half(-0.5)" }
+        if floatValue == 2.0 { return "half(2.0)" }
+        if floatValue == -2.0 { return "half(-2.0)" }
 
         // 一般值: 输出十进制浮点（MSL 上下文自动匹配 half 类型）
-        return String(format: "%.6g", Double(floatValue))
+        return "half(\(String(format: "%.6g", Double(floatValue))))"
     }
 
     /// 解析 IR 向量字面量: <float 1.0, float 0.0, ...> → float4(1.0, 0.0, ...)
@@ -6700,6 +6748,111 @@ struct IRToMSLConverter {
         }
         let mslType = irScalarTypeToMSL(elemType)
         return "\(mslType)\(dim)(\(values.joined(separator: ", ")))"
+    }
+
+    private static func vectorElementIRType(_ irType: String) -> String {
+        let trimmed = irType.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("<"), trimmed.hasSuffix(">"), trimmed.contains(" x ") else {
+            return trimmed
+        }
+        let inner = String(trimmed.dropFirst().dropLast())
+        let parts = inner.components(separatedBy: " x ")
+        return parts.last?.trimmingCharacters(in: .whitespaces) ?? trimmed
+    }
+
+    private static func vectorComponentExpression(vectorExpr: String, index: Int) -> String {
+        if index >= 0 && index < 4 {
+            return "\(vectorExpr).\(vectorIndexToSwizzle(index))"
+        }
+        return "\(vectorExpr)[\(index)]"
+    }
+
+    private static func vectorConstructorElementTypeName(_ mslScalarType: String) -> String {
+        if mslScalarType == "uint8_t" {
+            return "uchar"
+        }
+        return mslScalarType
+    }
+
+    private static func groupedShuffleConstructor(
+        v1: String,
+        v2: String,
+        srcIRType: String,
+        resultMSLType: String,
+        maskIndices: [Int],
+        maxSrcDim: Int
+    ) -> String? {
+        guard !maskIndices.isEmpty, maskIndices.count <= 4 else { return nil }
+        let elementIRType = vectorElementIRType(srcIRType)
+        let elementMSLType = irScalarTypeToMSL(elementIRType)
+        let vectorElementType = vectorConstructorElementTypeName(elementMSLType)
+        let zeroScalar = zeroInitializerExpression(forIRType: elementIRType)
+
+        enum Segment {
+            case zero(Int)
+            case v1(Int, Int)
+            case v2(Int, Int)
+        }
+
+        func sourceAndOffset(for index: Int) -> (isV1: Bool, offset: Int)? {
+            if index < 0 { return nil }
+            if index < maxSrcDim { return (true, index) }
+            return (false, index - maxSrcDim)
+        }
+
+        var segments: [Segment] = []
+        var cursor = 0
+        while cursor < maskIndices.count {
+            let current = maskIndices[cursor]
+            if current < 0 {
+                var length = 1
+                while cursor + length < maskIndices.count, maskIndices[cursor + length] < 0 {
+                    length += 1
+                }
+                segments.append(.zero(length))
+                cursor += length
+                continue
+            }
+            guard let info = sourceAndOffset(for: current) else { return nil }
+            var length = 1
+            while cursor + length < maskIndices.count,
+                  let next = sourceAndOffset(for: maskIndices[cursor + length]),
+                  next.isV1 == info.isV1,
+                  next.offset == info.offset + length,
+                  next.offset < 4 {
+                length += 1
+            }
+            segments.append(info.isV1 ? .v1(info.offset, length) : .v2(info.offset, length))
+            cursor += length
+        }
+
+        guard segments.count < maskIndices.count, segments.count <= 2 else { return nil }
+
+        func swizzleExpr(vector: String, start: Int, length: Int) -> String {
+            if length == 1 {
+                return vectorComponentExpression(vectorExpr: vector, index: start)
+            }
+            let swizzle = (start..<(start + length)).map(vectorIndexToSwizzle).joined()
+            return "\(vector).\(swizzle)"
+        }
+
+        func zeroExpr(length: Int) -> String {
+            if length == 1 { return zeroScalar }
+            return "\(vectorElementType)\(length)(\(Array(repeating: zeroScalar, count: length).joined(separator: ", ")) )"
+                .replacingOccurrences(of: ") )", with: "))")
+        }
+
+        let args = segments.map { segment in
+            switch segment {
+            case .zero(let length):
+                return zeroExpr(length: length)
+            case .v1(let start, let length):
+                return swizzleExpr(vector: v1, start: start, length: length)
+            case .v2(let start, let length):
+                return swizzleExpr(vector: v2, start: start, length: length)
+            }
+        }
+        return "\(resultMSLType)(\(args.joined(separator: ", ")) )".replacingOccurrences(of: ") )", with: "))")
     }
 
     /// 解析向量常量 mask: <i32 0, i32 1, i32 2, i32 poison>

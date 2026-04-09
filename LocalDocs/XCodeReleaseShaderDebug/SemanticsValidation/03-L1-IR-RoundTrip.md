@@ -227,7 +227,7 @@ build/semantics-validation/roundtrip/
 - 试图一步到位做行为测试
 - 把 GUI / `.gputrace` 校验混进 L1
 
-L1 当前只做一件事：**把全量 corpus 的 round-trip 链路本身做稳定。**
+L1 当前只优先做一件事：**把 success-path 的 `ShaderCorpus` 批量入口做稳定，并把 failure-path 补充输入继续维持在同一套自动化离线路径内。**
 
 ## 当前落地结果
 

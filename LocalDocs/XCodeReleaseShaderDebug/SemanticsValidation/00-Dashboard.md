@@ -73,12 +73,19 @@ makeLibrary(source:) / metal -c
 
 1. **`SV-003F`：让全量已采集 corpus 样本尽可能进入 L1/L2**
    - 先以 `ShaderCorpus` 作为当前**可直接批量消费**的主入口
-   - 用同一套 `roundtrip / compare / risk / gate` 结构化报告去覆盖更多已采集真实样本，而不是继续把主线停在极小代表集
-   - `ShaderSourceDiagnostics` 中已经具备 `module.ll / module.meta.json` 的 failure-path 样本，且现已可通过 `--diagnostics-root` 被 agent 批量纳入同一离线路径；它仍然只应作为 failure-path 补充输入，不能反向改写日常默认 gate
+   - 用同一套 `roundtrip / compare / risk / gate` 结构化报告覆盖更多已采集真实样本，而不是继续把主线停在极小代表集
+   - `ShaderSourceDiagnostics` 中已经具备 `module.ll / module.generated.metal / module.meta.json` 的 failure-path 样本，且现已可通过 `--diagnostics-root` / `--preset local-diagnostics-batch` 被 agent 批量纳入同一离线路径；它仍然只应作为 failure-path 补充输入，不能反向改写日常默认 gate
 2. **自动化边界必须继续守住**
    - `test-data-representatives` 继续是跨机器硬默认入口
    - `SV-003F` 只能建立在现有自动化脚本能力之上；若某条新路径需要用户手工枚举大量 `.ll`、手工 fresh capture、手工准备工具或手工整理目录，就不能写回默认流程
    - 日常构建、调试、测试、验证默认不准出现需要人工介入协助的情况；若未来确有不可避免的阻塞，必须先停下汇报并征得用户确认
+
+**只有直接改善下面 4 条收口判定的工作，才属于当前 TODO：**
+
+- **硬默认 gate 不回退**：`test-data-representatives` 继续可在 fresh workspace 下由 agent 独立完成
+- **`ShaderCorpus` 批量入口稳定**：可用单命令进入统一的 `roundtrip / compare / risk / gate` 报告，不要求 fresh capture 或人工整理目录
+- **`ShaderSourceDiagnostics` 只作为补充输入**：可通过 `--diagnostics-root` / `--preset local-diagnostics-batch` 进入同一套 L1/L2 报告，但不改写默认 gate 身份
+- **新增方法不破坏自动化边界**：任一新构建 / 测试 / 验证方法若不能保持 agent 自主自动完成，就不能落入日常流程
 
 当前已确认、且直接驱动主线判断的事实只保留下面几条：
 
@@ -131,19 +138,19 @@ python3 Scripts/test_ir_semantics_roundtrip_runner.py
 python3 Scripts/ir_semantics_roundtrip_runner.py --preset test-data-representatives --allow-failures --enforce-gate
 ```
 
-- **当前最高优先级的本机离线主线**（只复用已存在样本，不引入人工准备）：
+- **当前最高优先级的本机离线主线**（只复用已存在样本，不引入人工准备；若本机没有现成 `ShaderCorpus`，直接退回跨机器硬默认 gate，不把 fresh capture 写回日常步骤）：
 
 ```bash
 python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus --allow-failures
 ```
 
-- **failure-path 批量补充验证**（当前已具备 agent 可自主的脚本化入口，但仍只作为补充输入，不替代默认 gate）：
+- **failure-path 批量补充验证**（仅在需要补充 failure-path 证据时运行；当前已具备 agent 可自主的脚本化入口，但仍只作为补充输入，不替代默认 gate）：
 
 ```bash
 python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Containers/io.playcover.PlayCover/ShaderSourceDiagnostics --allow-failures
 ```
 
-- **failure-path 定向补充验证**（仅在已有明确 blocker 样本、且需要聚焦单个模块时使用）：
+- **failure-path 定向补充验证**（仅在已有明确 blocker 样本、且需要聚焦单个模块时使用；不要因为已有 `--diagnostics-root` 入口，就把人工批量枚举 `.ll` 路径重新写回日常步骤）：
 
 ```bash
 python3 Scripts/ir_semantics_roundtrip_runner.py --ll <path_to_failure_module.ll> --allow-failures

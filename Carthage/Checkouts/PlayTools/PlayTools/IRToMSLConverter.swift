@@ -131,6 +131,7 @@ struct IRToMSLConverter {
         case vertex
         case fragment
         case kernel
+        case helper
 
         /// 从 IR 函数属性中推断 shader 类型
         static func fromIRAttributes(_ attributes: String) -> ShaderType? {
@@ -198,10 +199,12 @@ struct IRToMSLConverter {
         }
     }
 
-    /// 从 IR 中解析出的 shader 函数
+    /// 从 IR 中解析出的 shader / helper 函数
     struct ParsedShaderFunction {
         let name: String
         let shaderType: ShaderType
+        /// 是否是实际的 shader entry（vertex / fragment / kernel）
+        let isEntryPoint: Bool
         let returnType: String
         /// 返回值字段（来自 metadata return node；多字段时需要生成 entry output struct）
         let outputs: [MetadataReturnInfo]
@@ -2390,7 +2393,7 @@ struct IRToMSLConverter {
             .trimmingCharacters(in: .whitespaces)
 
         // 处理尾部可能存在的 calling convention
-        for cc in ["spir_func ", "spir_kernel ", "cc75 ", "cc76 ", "cc77 "] {
+        for cc in ["spir_func ", "spir_kernel ", "cc75 ", "cc76 ", "cc77 ", "fastcc "] {
             cleaned = cleaned.replacingOccurrences(of: cc, with: "")
         }
 
@@ -2486,7 +2489,8 @@ struct IRToMSLConverter {
         return lookup
     }
 
-    /// 结合 IR 函数定义、metallib 元数据和 IR metadata，识别 shader 函数并推断其类型。
+    /// 结合 IR 函数定义、metallib 元数据和 IR metadata，识别 shader entry，
+    /// 并补发射 entry 递归依赖的 internal helper 函数。
     private static func identifyShaderFunctions(
         irFunctions: [IRFunctionDef],
         metallibNames: [String],
@@ -2515,50 +2519,25 @@ struct IRToMSLConverter {
         // E-006b2: 预解析 attributes #N 声明和孤立 texture/sampler metadata 参数
         let attrGroups = !irText.isEmpty ? parseAttributeGroupDeclarations(irText) : [:]
         let orphanedArgLookup = !irText.isEmpty ? parseOrphanedMetadataArgLookup(irText) : [:]
+        let irFunctionsByName = Dictionary(uniqueKeysWithValues: irFunctions.map { ($0.name, $0) })
 
-        var shaderFunctions: [ParsedShaderFunction] = []
+        var parsedFunctions: [ParsedShaderFunction] = []
+        var entryNames: Set<String> = []
 
         for irFunc in irFunctions {
             // 跳过 LLVM 内部函数和 air 运行时函数
-            if irFunc.name.hasPrefix("llvm.") { continue }
+            if irFunc.name.hasPrefix("llvm.") || irFunc.name.hasPrefix("air.") { continue }
 
-            // 判断是否是 shader 入口函数
-            let shaderType: ShaderType?
-
-            // 优先使用 IR metadata（最可靠的来源）
-            if let metaInfo = metadataMap[irFunc.name] {
-                shaderType = metaInfo.shaderType
-            }
-            // 其次使用 metallib 元数据中的类型信息
-            else if let type = nameToType[irFunc.name] {
-                shaderType = type
-            }
-            // E-006b2: 从 attributes #N 声明中检测 shader 类型
-            // 当 !air.* 顶层 metadata 缺失时，"air.fragment" 等信息可能只在 attributes 声明中出现
-            else if let attrType = extractAttributeGroupRefs(from: irFunc.attributes)
-                .compactMap({ attrGroups[$0] })
-                .compactMap({ shaderTypeFromAttributeContent($0) })
-                .first {
-                shaderType = attrType
-            }
-            else if irFunc.name.contains("vertex") || irFunc.attributes.contains("vertex") {
-                shaderType = .vertex
-            } else if irFunc.name.contains("fragment") || irFunc.attributes.contains("fragment") {
-                shaderType = .fragment
-            } else if irFunc.name.contains("kernel") || irFunc.attributes.contains("kernel") {
-                shaderType = .kernel
-            } else if metallibNames.contains(irFunc.name) {
-                shaderType = .vertex
-            } else if irFunc.name.hasPrefix("air.") {
+            guard let type = detectEntryShaderType(
+                for: irFunc,
+                metadataMap: metadataMap,
+                nameToType: nameToType,
+                attrGroups: attrGroups,
+                metallibNames: metallibNames
+            ) else {
                 continue
-            } else {
-                if !metallibNames.isEmpty && metadataMap.isEmpty { continue }
-                shaderType = inferShaderType(from: irFunc)
             }
 
-            guard let type = shaderType else { continue }
-
-            // 解析参数：优先使用 metadata 信息
             let params: [ParsedParameter]
             let outputs: [MetadataReturnInfo]
             let isFullyParsed: Bool
@@ -2582,7 +2561,6 @@ struct IRToMSLConverter {
                 isFullyParsed = false
             }
 
-            // 推断 MSL 返回类型
             let mslReturnType = deriveEntryReturnType(
                 irReturnType: irFunc.returnType,
                 shaderType: type,
@@ -2590,9 +2568,10 @@ struct IRToMSLConverter {
                 functionName: irFunc.name
             )
 
-            shaderFunctions.append(ParsedShaderFunction(
+            parsedFunctions.append(ParsedShaderFunction(
                 name: irFunc.name,
                 shaderType: type,
+                isEntryPoint: true,
                 returnType: mslReturnType,
                 outputs: outputs,
                 parameters: params,
@@ -2601,10 +2580,11 @@ struct IRToMSLConverter {
                 airBuiltinCalls: airBuiltinCalls,
                 irBody: irFunc.body
             ))
+            entryNames.insert(irFunc.name)
         }
 
         // 如果 IR 中没找到匹配的函数，为 metallib 中的每个函数生成 stub
-        if shaderFunctions.isEmpty && !metallibNames.isEmpty {
+        if parsedFunctions.isEmpty && !metallibNames.isEmpty {
             for (i, name) in metallibNames.enumerated() {
                 let type: ShaderType
                 if i < metallibTypes.count {
@@ -2616,9 +2596,10 @@ struct IRToMSLConverter {
                     type = .vertex
                 }
 
-                shaderFunctions.append(ParsedShaderFunction(
+                parsedFunctions.append(ParsedShaderFunction(
                     name: name,
                     shaderType: type,
+                    isEntryPoint: true,
                     returnType: defaultReturnType(for: type),
                     outputs: [],
                     parameters: [],
@@ -2627,10 +2608,148 @@ struct IRToMSLConverter {
                     airBuiltinCalls: [],
                     irBody: ""
                 ))
+                entryNames.insert(name)
             }
         }
 
-        return shaderFunctions
+        let reachableHelperNames = collectReachableHelperFunctionNames(
+            entryNames: entryNames,
+            irFunctionsByName: irFunctionsByName
+        )
+
+        for irFunc in irFunctions where reachableHelperNames.contains(irFunc.name) {
+            let params = parseParameters(
+                irFunc.parameterList,
+                irBody: irFunc.body,
+                shaderType: .helper,
+                orphanedArgLookup: [:]
+            )
+            let mslReturnType = irTypeToMSL(irFunc.returnType, forShaderType: .helper)
+
+            parsedFunctions.append(ParsedShaderFunction(
+                name: irFunc.name,
+                shaderType: .helper,
+                isEntryPoint: false,
+                returnType: mslReturnType,
+                outputs: [],
+                parameters: params,
+                irSignature: "define \(irFunc.returnType) @\"\(irFunc.name)\"(\(irFunc.parameterList))",
+                isFullyParsed: true,
+                airBuiltinCalls: airBuiltinCalls,
+                irBody: irFunc.body
+            ))
+        }
+
+        return parsedFunctions
+    }
+
+    private static func detectEntryShaderType(
+        for irFunc: IRFunctionDef,
+        metadataMap: [String: MetadataFuncInfo],
+        nameToType: [String: ShaderType],
+        attrGroups: [String: String],
+        metallibNames: [String]
+    ) -> ShaderType? {
+        if let metaInfo = metadataMap[irFunc.name] {
+            return metaInfo.shaderType
+        }
+        if let type = nameToType[irFunc.name] {
+            return type
+        }
+        if let attrType = extractAttributeGroupRefs(from: irFunc.attributes)
+            .compactMap({ attrGroups[$0] })
+            .compactMap({ shaderTypeFromAttributeContent($0) })
+            .first {
+            return attrType
+        }
+        if irFunc.name.contains("vertex") || irFunc.attributes.contains("vertex") {
+            return .vertex
+        }
+        if irFunc.name.contains("fragment") || irFunc.attributes.contains("fragment") {
+            return .fragment
+        }
+        if irFunc.name.contains("kernel") || irFunc.attributes.contains("kernel") {
+            return .kernel
+        }
+        if metallibNames.contains(irFunc.name) {
+            return .vertex
+        }
+        if !metallibNames.isEmpty && metadataMap.isEmpty {
+            return nil
+        }
+        if isLikelyInternalHelperFunction(irFunc) {
+            return nil
+        }
+        return inferShaderType(from: irFunc)
+    }
+
+    private static func isLikelyInternalHelperFunction(_ irFunc: IRFunctionDef) -> Bool {
+        let fullDefinition = irFunc.fullDefinition
+        return fullDefinition.hasPrefix("define internal ") ||
+            fullDefinition.contains(" internal ") ||
+            fullDefinition.contains(" private ") ||
+            fullDefinition.contains(" linkonce_odr ") ||
+            fullDefinition.contains(" fastcc ")
+    }
+
+    private static func collectReachableHelperFunctionNames(
+        entryNames: Set<String>,
+        irFunctionsByName: [String: IRFunctionDef]
+    ) -> Set<String> {
+        guard !entryNames.isEmpty else { return [] }
+
+        var reachableHelpers: Set<String> = []
+        var worklist = Array(entryNames)
+        var visited: Set<String> = []
+
+        while let current = worklist.popLast() {
+            guard visited.insert(current).inserted,
+                  let irFunc = irFunctionsByName[current] else {
+                continue
+            }
+
+            for callee in parseCalledFunctionNames(from: irFunc.body) {
+                guard !callee.hasPrefix("air."),
+                      !callee.hasPrefix("llvm."),
+                      !entryNames.contains(callee),
+                      irFunctionsByName[callee] != nil else {
+                    continue
+                }
+
+                if reachableHelpers.insert(callee).inserted {
+                    worklist.append(callee)
+                }
+            }
+        }
+
+        return reachableHelpers
+    }
+
+    private static func parseCalledFunctionNames(from irBody: String) -> [String] {
+        guard !irBody.isEmpty,
+              let regex = try? NSRegularExpression(pattern: #"@(?:\"([^\"]+)\"|([A-Za-z0-9$._]+))\("#) else {
+            return []
+        }
+
+        let range = NSRange(irBody.startIndex..<irBody.endIndex, in: irBody)
+        var names: [String] = []
+        var seen: Set<String> = []
+        regex.enumerateMatches(in: irBody, options: [], range: range) { match, _, _ in
+            guard let match else { return }
+            for groupIndex in 1...2 {
+                let groupRange = match.range(at: groupIndex)
+                guard groupRange.location != NSNotFound,
+                      let swiftRange = Range(groupRange, in: irBody) else {
+                    continue
+                }
+                let name = String(irBody[swiftRange])
+                if seen.insert(name).inserted {
+                    names.append(name)
+                }
+                break
+            }
+        }
+        return names
     }
 
     private static func deriveEntryReturnType(
@@ -2897,6 +3016,8 @@ struct IRToMSLConverter {
             name = defaultBuiltinParamName(for: .kernel) ?? "tid"
             attribute = "[[thread_position_in_grid]]"
             kind = "air.thread_position_in_grid"
+        case .helper:
+            return nil
         }
 
         return ParsedParameter(
@@ -3435,6 +3556,72 @@ struct IRToMSLConverter {
         return irSignature
     }
 
+    /// 收集需要强制按指针参数发射的 constant struct buffer 参数。
+    ///
+    /// 某些 addrspace(2) 结构体参数虽然 metadata 看起来像“单个 uniforms 对象”，
+    /// 但函数体里的 GEP 会对它做非零首索引（如 `%buf, i64 %instanceId, ...`），
+    /// 这说明它在 IR 语义上其实是数组/指针根，而不是单对象引用。
+    /// 这类参数若仍发射成 `constant T&`，后续 lowering 会生成 `buf[idx]` 之类非法 MSL。
+    private static func collectArrayIndexedConstantStructBufferArgs(
+        params: [ParsedParameter],
+        irParamList: String,
+        irBody: String
+    ) -> Set<Int> {
+        let candidateArgIndices = Set(params.compactMap { param -> Int? in
+            guard let irArgIndex = param.irArgIndex,
+                  let ptr = param.pointerInfo,
+                  ptr.addressSpace == .constant,
+                  ptr.addressSpace.isBufferAddressSpace,
+                  isStructTypeName(ptr.pointedMSLType),
+                  !ptr.pointedMSLType.hasPrefix("atomic_") else {
+                return nil
+            }
+            return irArgIndex
+        })
+        guard !candidateArgIndices.isEmpty else { return [] }
+
+        let rawIRParams = splitIRParameters(irParamList)
+        var argIndexBySSAName: [String: Int] = [:]
+        for argIndex in candidateArgIndices where argIndex < rawIRParams.count {
+            let irName = extractParamName(from: rawIRParams[argIndex]) ?? "\(argIndex)"
+            argIndexBySSAName["%\(irName)"] = argIndex
+        }
+        guard !argIndexBySSAName.isEmpty else { return [] }
+
+        var forcedPointerArgIndices: Set<Int> = []
+        for line in irBody.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, trimmed.contains("getelementptr ") else { continue }
+
+            let rhs: String
+            if let equalIndex = trimmed.firstIndex(of: "=") {
+                rhs = String(trimmed[trimmed.index(after: equalIndex)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                rhs = trimmed
+            }
+            guard rhs.hasPrefix("getelementptr ") else { continue }
+
+            var cleaned = rhs.replacingOccurrences(of: "getelementptr ", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            if cleaned.hasPrefix("inbounds ") {
+                cleaned = String(cleaned.dropFirst("inbounds ".count))
+            }
+
+            let parts = splitTypedOperands(cleaned, count: 10)
+            guard parts.count >= 3 else { continue }
+
+            let baseSSAName = extractSSAName(from: parts[1].value)
+            guard let argIndex = argIndexBySSAName[baseSSAName] else { continue }
+
+            let firstIdx = parts[2].value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if firstIdx != "0" {
+                forcedPointerArgIndices.insert(argIndex)
+            }
+        }
+
+        return forcedPointerArgIndices
+    }
+
     // MARK: - IR Type → MSL Type Mapping
 
     /// 将 IR 返回类型转换为 MSL 类型
@@ -3486,6 +3673,7 @@ struct IRToMSLConverter {
         case .vertex: return "float4"
         case .fragment: return "float4"
         case .kernel: return "void"
+        case .helper: return "float"
         }
     }
 
@@ -3719,7 +3907,8 @@ struct IRToMSLConverter {
         _ func_: ParsedShaderFunction,
         irParamList: String,
         structTypeDefs: [String: IRStructTypeDef] = [:],
-        structFieldInfo: [String: [StructFieldInfo]] = [:]
+        structFieldInfo: [String: [StructFieldInfo]] = [:],
+        forcedPointerArgIndices: Set<Int> = []
     ) -> [String] {
         let ctx = SSAContext()
         ctx.functionReturnType = func_.returnType
@@ -3728,7 +3917,13 @@ struct IRToMSLConverter {
         ctx.structFieldInfo = structFieldInfo
 
         // 建立参数名映射：IR 的 %0, %1, ... → MSL 参数名
-        setupParameterMappings(ctx, params: func_.parameters, irParamList: irParamList, shaderType: func_.shaderType)
+        setupParameterMappings(
+            ctx,
+            params: func_.parameters,
+            irParamList: irParamList,
+            shaderType: func_.shaderType,
+            forcedPointerArgIndices: forcedPointerArgIndices
+        )
 
         // E-006b6: IR 参数实际类型与 MSL 参数声明的类型不匹配修复
         // 某些 AIR IR 中，builtin 参数（如 thread_position_in_grid）的 IR 实际类型是 float 向量
@@ -3991,7 +4186,8 @@ struct IRToMSLConverter {
         _ ctx: SSAContext,
         params: [ParsedParameter],
         irParamList: String,
-        shaderType: ShaderType
+        shaderType: ShaderType,
+        forcedPointerArgIndices: Set<Int> = []
     ) {
         let irParams = splitIRParameters(irParamList)
         let usesStageIn = shouldUseStageInStruct(params, shaderType: shaderType)
@@ -4035,7 +4231,10 @@ struct IRToMSLConverter {
                 ctx.paramTypes[ssaName] = param.irType
             }
             if let ptr = param.pointerInfo {
-                let emitsReference = ptr.addressSpace == .constant && ptr.addressSpace.isBufferAddressSpace && isStructTypeName(ptr.pointedMSLType)
+                let emitsReference = ptr.addressSpace == .constant &&
+                    ptr.addressSpace.isBufferAddressSpace &&
+                    isStructTypeName(ptr.pointedMSLType) &&
+                    !forcedPointerArgIndices.contains(irArgIndex)
                 if !emitsReference {
                     ctx.markPointer(ssaName, elementType: ptr.pointedMSLType)
                 }
@@ -4058,6 +4257,8 @@ struct IRToMSLConverter {
             return "position"
         case .kernel:
             return "tid"
+        case .helper:
+            return nil
         }
     }
 
@@ -4069,6 +4270,8 @@ struct IRToMSLConverter {
             return "float4"
         case .kernel:
             return "i32"
+        case .helper:
+            return nil
         }
     }
 
@@ -4083,7 +4286,7 @@ struct IRToMSLConverter {
             return params.contains { $0.kind == "air.vertex_input" }
         case .fragment:
             return params.contains { $0.kind == "air.fragment_input" }
-        case .kernel:
+        case .kernel, .helper:
             return false
         }
     }
@@ -4102,7 +4305,7 @@ struct IRToMSLConverter {
             default:
                 return false
             }
-        case .kernel:
+        case .kernel, .helper:
             return false
         }
     }
@@ -5192,8 +5395,47 @@ struct IRToMSLConverter {
             translateMetalIntrinsic(lhs: lhs, fullRhs: rhs, ctx: ctx)
             return
         }
-        // 其他函数调用（包括 @llvm.* 等）
-        ctx.define(lhs, expr: "/* call: \(rhs.prefix(80)) */")
+        // llvm.* 大多是 IR 级 intrinsic，不应直接发射为普通 MSL 调用。
+        if rhs.contains("@llvm.") {
+            ctx.define(lhs, expr: "/* call: \(rhs.prefix(80)) */")
+            return
+        }
+        translateRegularCall(lhs: lhs, fullRhs: rhs, ctx: ctx)
+    }
+
+    /// 翻译普通函数调用（helper / internal 函数）。
+    ///
+    /// 这类调用通常已经在同一份生成源码里有对应函数定义，
+    /// 例如 `@_Z13_target_floorf`、`@_Z11_target_minff`、`@_ZN11_fract_impl...`。
+    /// 直接降成 `callee(args...)` 即可，不能再退回到注释占位符，否则会把 LLVM 语法泄漏进 MSL。
+    private static func translateRegularCall(lhs: String, fullRhs: String, ctx: SSAContext) {
+        guard let atIndex = fullRhs.firstIndex(of: "@") else {
+            ctx.define(lhs, expr: "/* call: \(fullRhs.prefix(80)) */")
+            return
+        }
+
+        let afterAt = fullRhs[fullRhs.index(after: atIndex)...]
+        guard let parenIdx = afterAt.firstIndex(of: "(") else {
+            ctx.define(lhs, expr: "/* call: \(fullRhs.prefix(80)) */")
+            return
+        }
+
+        let rawName = String(afterAt[afterAt.startIndex..<parenIdx]).replacingOccurrences(of: "\"", with: "")
+        let calleeName = sanitizeIdentifier(rawName, fallback: "callTarget", uppercaseFirst: false)
+
+        let argsStart = afterAt.index(after: parenIdx)
+        var depth = 1
+        var cursor = argsStart
+        while cursor < afterAt.endIndex && depth > 0 {
+            if afterAt[cursor] == "(" { depth += 1 }
+            else if afterAt[cursor] == ")" { depth -= 1 }
+            if depth > 0 { cursor = afterAt.index(after: cursor) }
+        }
+
+        let argsStr = String(afterAt[argsStart..<cursor])
+        let argParts = splitTypedOperands(argsStr, count: 20)
+        let resolvedArgs = argParts.map { resolveIROperand($0.value, ctx: ctx) }
+        ctx.emitAutoAssign(lhs, expr: "\(calleeName)(\(resolvedArgs.joined(separator: ", ")))")
     }
 
     /// 已知的 ___metal_* intrinsic 映射到 MSL 函数名
@@ -6680,6 +6922,23 @@ struct IRToMSLConverter {
             lines.append("")
         }
 
+        let helperFunctions = functions.filter { !$0.isEntryPoint }
+        if !helperFunctions.isEmpty {
+            var emittedHelperPrototypes: Set<String> = []
+            for helper in helperFunctions {
+                let safeName = sanitizeFunctionName(helper.name)
+                guard emittedHelperPrototypes.insert(safeName).inserted else { continue }
+                let params = generateAllParams(
+                    helper.parameters,
+                    safeName: safeName,
+                    shaderType: .helper,
+                    defaultBuiltin: ""
+                )
+                lines.append("\(helper.returnType) \(safeName)(\(params));")
+            }
+            lines.append("")
+        }
+
         // 用于去重
         var emittedNames: Set<String> = []
         var emittedAuxiliaryStructs: Set<String> = []
@@ -6703,7 +6962,7 @@ struct IRToMSLConverter {
             }
 
             lines.append("// [\(index)] \(func_.shaderType.rawValue): \(func_.name)")
-            if !func_.isFullyParsed {
+            if func_.isEntryPoint && !func_.isFullyParsed {
                 lines.append("// (stub — IR signature not fully converted)")
                 lines.append("// IR: \(func_.irSignature.prefix(200))")
             }
@@ -6950,25 +7209,38 @@ struct IRToMSLConverter {
         structTypeDefs: [String: IRStructTypeDef] = [:],
         structFieldInfo: [String: [StructFieldInfo]] = [:]
     ) -> String {
+        let irParamList = extractIRParameterList(from: func_.irSignature)
+        let forcedPointerArgIndices = collectArrayIndexedConstantStructBufferArgs(
+            params: func_.parameters,
+            irParamList: irParamList,
+            irBody: func_.irBody
+        )
+
         let allParams = generateAllParams(
             func_.parameters,
             safeName: safeName,
             shaderType: func_.shaderType,
             defaultBuiltin: defaultBuiltinParam(for: func_.shaderType),
-            fragmentReturnType: func_.shaderType == .kernel ? "" : func_.returnType
+            fragmentReturnType: func_.shaderType == .kernel ? "" : func_.returnType,
+            forcedPointerArgIndices: forcedPointerArgIndices
         )
 
         let bodyStatements = translateFunctionBody(
-            func_, irParamList: extractIRParameterList(from: func_.irSignature),
+            func_, irParamList: irParamList,
             structTypeDefs: structTypeDefs,
-            structFieldInfo: structFieldInfo
+            structFieldInfo: structFieldInfo,
+            forcedPointerArgIndices: forcedPointerArgIndices
         )
 
-        let shaderQualifier = func_.shaderType.rawValue
+        let shaderQualifier = func_.isEntryPoint ? func_.shaderType.rawValue : ""
         let retType = func_.shaderType == .kernel ? "void" : func_.returnType
 
         var lines: [String] = []
-        lines.append("\(shaderQualifier) \(retType) \(safeName)(\(allParams)) {")
+        if shaderQualifier.isEmpty {
+            lines.append("\(retType) \(safeName)(\(allParams)) {")
+        } else {
+            lines.append("\(shaderQualifier) \(retType) \(safeName)(\(allParams)) {")
+        }
         for stmt in bodyStatements {
             lines.append("    \(stmt)")
         }
@@ -6992,6 +7264,8 @@ struct IRToMSLConverter {
             return generateFragmentFunction(func_, safeName: safeName)
         case .kernel:
             return generateKernelFunction(func_, safeName: safeName)
+        case .helper:
+            return generateHelperFunction(func_, safeName: safeName)
         }
     }
 
@@ -7001,6 +7275,7 @@ struct IRToMSLConverter {
         case .vertex: return "uint vid [[vertex_id]]"
         case .fragment: return "float4 position [[position]]"
         case .kernel: return "uint tid [[thread_position_in_grid]]"
+        case .helper: return ""
         }
     }
 
@@ -7062,6 +7337,33 @@ struct IRToMSLConverter {
         """
     }
 
+    /// 生成普通 helper 函数 stub
+    private static func generateHelperFunction(
+        _ func_: ParsedShaderFunction,
+        safeName: String
+    ) -> String {
+        let allParams = generateAllParams(
+            func_.parameters,
+            safeName: safeName,
+            shaderType: .helper,
+            defaultBuiltin: ""
+        )
+
+        if func_.returnType == "void" {
+            return """
+            void \(safeName)(\(allParams)) {
+                // stub helper
+            }
+            """
+        }
+
+        return """
+        \(func_.returnType) \(safeName)(\(allParams)) {
+            return \(defaultReturnValue(for: func_.returnType));
+        }
+        """
+    }
+
     /// 生成完整的参数列表，包括 buffer 参数、texture/sampler 参数和内置属性参数。
     ///
     /// 如果 metadata 提供了精确参数信息，使用它们；否则使用 defaultBuiltin 作为回退。
@@ -7070,7 +7372,8 @@ struct IRToMSLConverter {
         safeName: String,
         shaderType: ShaderType,
         defaultBuiltin: String,
-        fragmentReturnType: String = ""
+        fragmentReturnType: String = "",
+        forcedPointerArgIndices: Set<Int> = []
     ) -> String {
         var mslParams: [String] = []
         let usesStageIn = shouldUseStageInStruct(params, shaderType: shaderType)
@@ -7115,8 +7418,12 @@ struct IRToMSLConverter {
                     let idx = param.bufferIndex ?? 0
                     // E-006b9: atomic 类型在 MSL 中是引用类型，使用 & 而非 *
                     let isAtomicType = elemType.hasPrefix("atomic_")
-                    if isStructTypeName(elemType) && ptr.addressSpace == .constant && !isAtomicType {
-                        // constant struct 往往是单个 uniforms 对象，更贴近 `constant Uniforms& uniforms`。
+                    let shouldKeepReference = isStructTypeName(elemType) &&
+                        ptr.addressSpace == .constant &&
+                        !isAtomicType &&
+                        !forcedPointerArgIndices.contains(param.irArgIndex ?? -1)
+                    if shouldKeepReference {
+                        // 仅当 IR 没把它当数组/指针根使用时，constant struct 才保留 `constant Uniforms& uniforms` 形式。
                         mslParams.append("\(constPrefix)\(qualifier) \(elemType)& \(emittedName) [[buffer(\(idx))]]")
                     } else if isAtomicType {
                         // MSL 中 atomic 类型作为 buffer 参数使用引用: device atomic_uint& counter

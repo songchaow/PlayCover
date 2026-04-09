@@ -33,8 +33,8 @@ regenerated.ll
 - 成本最低
 - 不依赖 live
 - 不依赖用户操作
-- 可以直接复用 `test-data/` 与 `ShaderCorpus`
-- 是当前“全量 corpus 的 L1/L2 测试”的入口基础
+- 可以直接复用 `test-data/`、`ShaderCorpus` 与 `ShaderSourceDiagnostics`
+- 是当前“清零 full-batch L1/L2 错误（`ShaderCorpus` + `ShaderSourceDiagnostics`）”的入口基础
 
 ## 已落地的工具
 
@@ -84,7 +84,7 @@ regenerated.ll
 
 - `test-data-representatives` 继续只承担**跨机器硬默认 gate** 角色
 - `ShaderCorpus` 继续是**当前最高优先级的批量主入口**
-- `ShaderSourceDiagnostics` 继续只承担**failure-path 补充输入**角色，不反向定义当前默认 gate；当前既可显式使用 `--diagnostics-root`，也可在标准本机路径下通过 `--preset local-diagnostics-batch` 复用同一批量入口
+- `ShaderSourceDiagnostics` 继续承担**failure-path 补充输入**角色，不反向定义当前默认 gate；但它当前批量入口里已经暴露出来的错误，已经进入本轮待修范围。当前既可显式使用 `--diagnostics-root`，也可在标准本机路径下通过 `--preset local-diagnostics-batch` 复用同一批量入口
 - `local-corpus-representatives`、`daily-default` 与 `test-data-batch` 继续只承担**增强入口 / 观察入口 / 历史参考**角色，不反向定义当前主线优先级
 - 若 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 在同一次运行里命中相同 `bundleId + moduleKey`，L1 报告中的 `comparisonKey / sampleIdentity` 必须保留来源区分，避免 diagnostics 样本覆盖 success-path 的 corpus 事实
 - 当前更细的 preset contract、样本计数、active known debt 与 manifest 摘要已统一下沉到 `08-当前代表集与Gate契约参考.md`（工作参考，当前日常推进**不必须读取**）
@@ -202,7 +202,7 @@ build/semantics-validation/roundtrip/
 
 目标：
 
-- 让 **`ShaderCorpus` 全量已采集样本** 尽可能进入同一套 L1/L2 离线路径
+- 让 **`ShaderCorpus` full-batch** 稳定进入同一套 L1/L2 离线路径，并优先清理 success-path 主入口里的 blocker
 - 优先扩大真实样本覆盖，而不是继续把执行面停在代表集或后置验证
 - 继续保持“单命令、本地、无人工介入”的自动化边界；若本机没有现成样本，应退回第一轮，而不是把 fresh capture 写成默认依赖
 
@@ -215,7 +215,7 @@ build/semantics-validation/roundtrip/
 
 目标：
 
-- 先通过 `--diagnostics-root` 对已导出的 failure-path 样本做**批量补充复核**；必要时再回退到显式 `--ll` 处理单个 blocker
+- 先通过 `--diagnostics-root` 对已导出的 failure-path 样本做**full-batch 批量复核**，并把其中已经暴露出来的 compile / compare / gate 错误纳入当前 blocker 清理；必要时再回退到显式 `--ll` 处理单个 blocker
 - 继续保持“默认脚本化入口优先”；即使当前已具备批量入口，也不要把人工批量整理 `ShaderSourceDiagnostics` 样本写回默认流程
 
 ## 当前不建议做的事
@@ -227,7 +227,7 @@ build/semantics-validation/roundtrip/
 - 试图一步到位做行为测试
 - 把 GUI / `.gputrace` 校验混进 L1
 
-L1 当前只优先做一件事：**把 success-path 的 `ShaderCorpus` 批量入口做稳定，并把 failure-path 补充输入继续维持在同一套自动化离线路径内。**
+L1 当前只优先做一件事：**把 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 两条批量入口都稳定收口到同一套自动化离线路径里，并继续清零它们当前 full-batch 已暴露出来的错误。**
 
 ## 当前落地结果
 
@@ -248,5 +248,5 @@ L1 当前只优先做一件事：**把 success-path 的 `ShaderCorpus` 批量入
 ## 后续衔接
 
 - L1 成功样本 → 进入 `04-L2-CanonicalCompareAndRiskGrading.md`
-- L1 当前最直接的后续任务 → `SV-003F`（让全量已采集 corpus 样本尽可能进入统一的 L1/L2 离线路径）
+- L1 当前最直接的后续任务 → `SV-003F`（清零 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 两条批量入口当前 full-batch 已暴露出来的 L1/L2 错误）
 - L3 / L4 继续只保留为后置参考，不改变当前阶段目标

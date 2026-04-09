@@ -40,7 +40,7 @@
 当前状态需要明确区分两件事：
 
 - **L2 能力是否存在**：已经存在，且已在 `test-data/` 与代表 preset 上跑通
-- **L2 当前在做什么**：重点不再是“再造 compare”，而是把同一套 `gate-summary.json` / `risk-report.json` / `--gate-profile` / `--enforce-gate` 语义稳定扩展到尽可能多的已采集 corpus 样本，并继续维持 `PASS / WARN / FAIL` 的自动化边界。其中应优先看 `gate-summary.json` 的结构字段，而不是沿用 gate profile 的旧描述文字；若某条新路径仍要求人工批量枚举 `ShaderSourceDiagnostics` 样本，就还不能视为已经收口
+- **L2 当前在做什么**：重点不再是“再造 compare”，而是用同一套 `gate-summary.json` / `risk-report.json` / `--gate-profile` / `--enforce-gate` 语义，持续清理 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 两条 full-batch 批量入口中已经暴露出来的风险与失败，并继续维持 `PASS / WARN / FAIL` 的自动化边界。其中应优先看 `gate-summary.json` 的结构字段，而不是沿用 gate profile 的旧描述文字；若某条新路径仍要求人工批量枚举 `ShaderSourceDiagnostics` 样本，就还不能视为已经收口
 
 ## 已实现的 canonical summary
 
@@ -248,9 +248,9 @@
 `SV-002` 完成后，当前最合理的下一步不是直接跳到后置层，而是：
 
 1. 持续守住 `test-data-representatives` 这个跨机器硬默认入口不回退
-2. 把 `ShaderCorpus` 全量已采集样本尽可能纳入同一套 `compare-summary / risk-report / gate-summary` 语义
-3. 继续使用 `--diagnostics-root`（或标准本机路径下的 `--preset local-diagnostics-batch`）批量补充 failure-path 样本，但不把人工批量枚举写回默认流程
-4. 继续把当前默认目标停留在“全量 corpus 的 L1/L2 测试”，而不是把 L3/L4 重新写回主线
+2. 把 `ShaderCorpus` full-batch 样本持续纳入同一套 `compare-summary / risk-report / gate-summary` 语义，并优先清理 success-path 主入口里的 blocker
+3. 继续使用 `--diagnostics-root`（或标准本机路径下的 `--preset local-diagnostics-batch`）批量复核 failure-path 样本，并把其中已暴露出来的风险与失败一并纳入当前 blocker 清理，但不把人工批量枚举写回默认流程
+4. 继续把当前默认目标停留在“清零当前 full-batch L1/L2 错误（`ShaderCorpus` + `ShaderSourceDiagnostics`）”，而不是把 L3/L4 重新写回主线
 
 ## 完成标准回顾
 

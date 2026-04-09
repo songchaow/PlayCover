@@ -68,7 +68,7 @@
 - `test_struct_array_field` 在当前硬默认 gate 中已经不再是 compile failure，而是 **round-trip 成功但 compare 仍 blocked 的样本**
 - `baseline.json` 已可被固定目录自动复用；若需要看非回归型变化，应直接回到同目录 `roundtrip-summary.json`
 
-### 2. `ShaderCorpus` 全量批量入口（当前主线）
+### 2. `ShaderCorpus` 全量批量入口（success-path 主入口）
 
 当前最高优先级入口命令为：
 
@@ -76,14 +76,22 @@
 python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus --allow-failures
 ```
 
+当前事实：
+
+- `gate-summary.json` 当前为 **`FAIL`**
+- `jobCount = 372`
+- `roundTripSucceededJobs = 365`
+- `roundTripFailedJobs = 7`
+- 风险分布：`L0 = 0 / L1 = 4 / L2 = 104 / L3 = 264`
+
 当前契约：
 
-- 这条入口的定位是：**当前唯一实际执行面的批量主入口**
-- 它的职责是让已采集成功路径样本尽可能进入统一的 `roundtrip / compare / risk / gate` 语义
-- 它不是固定 preset 契约，但它是当前主线最优先要维持稳定的批量入口
+- 这条入口的定位是：**当前 success-path 的批量主入口**
+- 它的职责是让已采集成功路径样本进入统一的 `roundtrip / compare / risk / gate` 语义，并持续清理 full-batch blocker
+- 它不是固定 preset 契约，但它仍是当前主线里最优先要维持稳定的批量入口
 - 若本机缺少现成 `ShaderCorpus`，正确处理是退回跨机器硬默认 gate，而不是要求用户协助 fresh capture
 
-### 3. `ShaderSourceDiagnostics`（failure-path 批量补充输入）
+### 3. `ShaderSourceDiagnostics`（failure-path 批量补充入口）
 
 当前批量补充入口命令为：
 
@@ -91,10 +99,19 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Contain
 python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Containers/io.playcover.PlayCover/ShaderSourceDiagnostics --allow-failures
 ```
 
+当前事实：
+
+- `gate-summary.json` 当前为 **`FAIL`**
+- `jobCount = 152`
+- `roundTripSucceededJobs = 149`
+- `roundTripFailedJobs = 3`
+- 风险分布：`L0 = 0 / L1 = 0 / L2 = 4 / L3 = 148`
+
 当前契约：
 
-- 这条入口只承担 **failure-path 补充输入** 角色，不替代默认 gate
+- 这条入口继续承担 **failure-path 补充输入** 角色，不替代默认 gate
 - 当前已支持直接批量发现 `module.ll / module.generated.metal / module.meta.json`
+- 虽然它不是默认 gate，但它当前批量结果里已经暴露出来的 compile / compare / gate 错误，已经进入当前主线待修范围
 - 当 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 命中相同 `bundleId + moduleKey` 时，`comparisonKey / sampleKey` 必须继续保留来源区分，避免 failure-path 结果污染 success-path 事实
 - 若未来某种 diagnostics 用法仍要求人工批量整理路径，就不应并入默认流程
 
@@ -155,8 +172,8 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 ### 默认应统一这样理解
 
 1. `test-data-representatives` = **跨机器硬默认 gate**
-2. `python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus --allow-failures` = **当前最高优先级的 L1/L2 主线**
-3. `python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Containers/io.playcover.PlayCover/ShaderSourceDiagnostics --allow-failures` / `--preset local-diagnostics-batch --allow-failures` = **failure-path 批量补充输入**
+2. `python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus --allow-failures` = **当前 success-path 主入口，也是最优先的 blocker 清理入口**
+3. `python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Containers/io.playcover.PlayCover/ShaderSourceDiagnostics --allow-failures` / `--preset local-diagnostics-batch --allow-failures` = **failure-path 批量补充入口；不替代默认 gate，但其当前错误已进入待修范围**
 4. `behavior-summary.json` = **后置 L3 参考**
 5. `daily-default` / `local-corpus-representatives` = **本机增强 / 观察入口**
 6. `test-data-batch` = **参考批量快照，不承担日常阻断职责**
@@ -167,8 +184,8 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - 对硬默认 gate，当前最该优先维护的活跃 `L2` 候选仍是：
   - `test_fast_math_select`
   - `test_intrinsic_vector_icmp_zext`
-- 当前主线应优先守住 `ShaderCorpus` 全量样本进入同一套 L1/L2 报告语义的能力
-- 当前主线也应继续守住 success-path 与 failure-path 的身份隔离，避免 `ShaderSourceDiagnostics` 覆盖 corpus 事实
+- 当前主线应优先守住 `ShaderCorpus` 全量样本进入同一套 L1/L2 报告语义的能力，并优先清理 success-path 主入口里的 blocker
+- 当前主线也应继续守住 success-path 与 failure-path 的身份隔离，避免 `ShaderSourceDiagnostics` 覆盖 corpus 事实；同时，diagnostics 当前批量入口里已经暴露的错误也应继续被计入主线待修范围
 - `daily-default` / `local-corpus-representatives` 现在更适合回答“本机有没有额外线索”，不适合替代主文档里的跨机器控制面
 
 ## 当前默认命令参考

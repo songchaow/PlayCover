@@ -27,10 +27,10 @@ makeLibrary(source:) / metal -c
 
 当前缺口主要在：
 
-- 如何把**已经采集到的 corpus 样本**，尽可能纳入 **L1/L2** 的自动化离线验证，而不是长期停留在“小代表集 + 少量后置行为样本”
-- 如何让这条“全量已采集样本 → round-trip → canonical compare → 风险分级”的路径继续保持 **agent 可自主完成**，不把人工枚举样本、人工 fresh capture、人工找工具路径写回日常流程
-- 如何把 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 的角色明确拆开：前者作为**当前可直接批量消费**的主入口，后者作为**failure-path 补充输入**，在未形成脚本化批量入口前不得冒充默认 gate
-- 如何在当前阶段把控制面严格收口到 **`ShaderCorpus` 全量已采集样本的 L1/L2 测试通过**，不让较旧的 L3/L4 规划继续占据主文档暴露面
+- 如何把**已经采集到的 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 样本**，都稳定纳入同一套 **L1/L2** 自动化离线验证，而不是长期停留在“小代表集 + 少量后置行为样本”
+- 如何让这条“全量批量样本 → round-trip → canonical compare → 风险分级”的路径继续保持 **agent 可自主完成**，不把人工枚举样本、人工 fresh capture、人工找工具路径写回日常流程
+- 如何把 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 的角色明确拆开：前者继续作为**success-path 主入口**，后者继续作为**failure-path 补充入口**；二者都进入当前待修错误范围，但 `ShaderSourceDiagnostics` 仍不得冒充默认 gate
+- 如何在当前阶段把控制面严格收口到 **当前 full-batch L1/L2 错误清零**：也就是 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 两条批量入口都不再 `fail`，而不是只看其中一边
 
 因此需要在本目录下建立一套**循序渐进、自动化优先、可按人力/上下文预算逐步停下**的语义验证体系。
 
@@ -40,19 +40,19 @@ makeLibrary(source:) / metal -c
 
 ## 最终目标
 
-当前阶段的最终目标先收口为：**`ShaderCorpus` 全量已采集样本的 L1/L2 测试通过。**
+当前阶段的最终目标先收口为：**清零当前 full-batch L1/L2 错误：`ShaderCorpus` 与 `ShaderSourceDiagnostics` 两条批量入口都不再 `fail`。**
 
 当前只承诺把下面四件事收口：
 
-1. **`ShaderCorpus` 全量已采集样本进入统一的 L1/L2 离线路径，并以“全量通过”作为当前阶段完成判定**
-2. **`ShaderSourceDiagnostics` 仅作为 failure-path 补充输入进入同一套 L1/L2 报告语义；除非它直接帮助解除 corpus blocker，否则不单独定义完成标准**
+1. **`ShaderCorpus` 继续作为 success-path 主入口进入统一的 L1/L2 离线路径，并持续消灭其 full-batch blocker**
+2. **`ShaderSourceDiagnostics` 继续作为 failure-path 补充入口进入同一套 L1/L2 报告语义；它不替代默认 gate，但其当前 full-batch 暴露出的 compile / compare / gate 错误也纳入完成判定**
 3. **`test-data-representatives` 继续作为跨机器硬默认 gate，确保 fresh workspace 下也能由 agent 自主完成最小验证闭环**
 4. **日常构建、测试、验证默认必须仍是 agent 可独立自动完成；若确实需要用户介入，必须先得到确认**
 
 补充说明：
 
-- 当前更关心 **`ShaderCorpus` 全量通过**，而不是把语义验证体系本身打磨到尽善尽美；只要体系已经足以支撑并验证这件事，就不为“体系完善”本身继续拉长任务
-- 若 `ShaderCorpus` 全量已采集样本的 L1/L2 测试已经通过，则当前阶段任务视为完成
+- 当前更关心的是把 **两条 full-batch 批量入口里已经暴露出来的错误一起修清**，而不是继续优化测试流程或把语义验证体系本身打磨到尽善尽美
+- 若 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 两条批量入口都不再 `fail`，则当前阶段任务视为完成
 - `L3` / `L4` 仍作为后置能力保留，但当前**不是**本阶段最终目标，也**不进入当前 TODO**
 - 四层模型与后置升级口仍保留在 `02-总体技术路线.md`、`05-L3-最小行为测试.md`、`06-L4-真实场景验证.md` 中，作为参考，不改变当前控制面
 
@@ -67,16 +67,16 @@ makeLibrary(source:) / metal -c
 
 ### 主线任务
 
-> **背景**：`SV-003` 的首轮 runner / compare / gate 基础已经具备；当前不再以“再补一条最小 L3 默认执行面”为主，而是以“推动 `ShaderCorpus` 全量已采集样本的 L1/L2 测试通过，并且这条路径仍保持纯离线、自动化优先、agent 可自主完成”为主。为避免和 `SV-003` 的长期守护含义混淆，本文档把这条当前执行面记为 `SV-003F`。
+> **背景**：`SV-003` 的首轮 runner / compare / gate 基础已经具备；当前不再以“再补一条最小 L3 默认执行面”为主，而是以“清零当前 full-batch L1/L2 错误（`ShaderCorpus` + `ShaderSourceDiagnostics`），并且这条路径仍保持纯离线、自动化优先、agent 可自主完成”为主。为避免和 `SV-003` 的长期守护含义混淆，本文档把这条当前执行面记为 `SV-003F`。
 
 **当前主线应统一理解为：`SV-003F` = 当前唯一实际执行面；`SV-003` = 这条执行面的自动化边界与硬默认 gate 约束；`SV-004 / SV-005` = 已后置、当前不进入 TODO。**
 
 当前最该优先继续推进的事，已经收敛为两条：
 
-1. **`SV-003F`：推动 `ShaderCorpus` 全量已采集样本的 L1/L2 测试通过**
-   - 先以 `ShaderCorpus` 作为当前**可直接批量消费**的主入口
-   - 用同一套 `roundtrip / compare / risk / gate` 结构化报告定位并消灭 corpus blocker，直到全量已采集样本通过，而不是继续把主线停在“覆盖更多样本”或体系打磨本身
-   - `ShaderSourceDiagnostics` 中已经具备 `module.ll / module.generated.metal / module.meta.json` 的 failure-path 样本，且现已可通过 `--diagnostics-root` / `--preset local-diagnostics-batch` 被 agent 批量纳入同一离线路径；它仍然只应作为 failure-path 补充输入，只有在直接帮助解除 corpus blocker 时才提高优先级
+1. **`SV-003F`：清零当前 full-batch L1/L2 错误（`ShaderCorpus` + `ShaderSourceDiagnostics`）**
+   - `ShaderCorpus` 继续作为当前**success-path 可直接批量消费**的主入口
+   - 用同一套 `roundtrip / compare / risk / gate` 结构化报告同时定位并消灭 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 两边已经暴露出来的 blocker，直到两条批量入口都不再 `fail`
+   - `ShaderSourceDiagnostics` 中已经具备 `module.ll / module.generated.metal / module.meta.json` 的 failure-path 样本，且现已可通过 `--diagnostics-root` / `--preset local-diagnostics-batch` 被 agent 批量纳入同一离线路径；它仍然不应冒充默认 gate，但它当前批量结果里的错误已经进入本轮待修范围
 2. **自动化边界必须继续守住**
    - `test-data-representatives` 继续是跨机器硬默认入口
    - `SV-003F` 只能建立在现有自动化脚本能力之上；若某条新路径需要用户手工枚举大量 `.ll`、手工 fresh capture、手工准备工具或手工整理目录，就不能写回默认流程
@@ -85,19 +85,19 @@ makeLibrary(source:) / metal -c
 **只有直接改善下面 4 条收口判定的工作，才属于当前 TODO：**
 
 - **硬默认 gate 不回退**：`test-data-representatives` 继续可在 fresh workspace 下由 agent 独立完成
-- **`ShaderCorpus` 全量通过仍在推进**：可用单命令进入统一的 `roundtrip / compare / risk / gate` 报告，并持续消灭阻塞“全量通过”的最关键 blocker，不要求 fresh capture 或人工整理目录
-- **`ShaderSourceDiagnostics` 只作为补充输入**：可通过 `--diagnostics-root` / `--preset local-diagnostics-batch` 进入同一套 L1/L2 报告，但不改写默认 gate 身份，也不单独决定任务是否完成
-- **新增方法不破坏自动化边界**：任一新构建 / 测试 / 验证方法若不能保持 agent 自主自动完成，就不能落入日常流程；体系完善若不直接帮助 corpus 通关，不应单独升为主任务
+- **`ShaderCorpus` full-batch 错误持续下降直至不再 `fail`**：可用单命令进入统一的 `roundtrip / compare / risk / gate` 报告，并持续消灭 success-path 主入口里的 blocker，不要求 fresh capture 或人工整理目录
+- **`ShaderSourceDiagnostics` full-batch 错误也持续下降直至不再 `fail`**：可通过 `--diagnostics-root` / `--preset local-diagnostics-batch` 进入同一套 L1/L2 报告；它不改写默认 gate 身份，但其当前错误已进入完成判定
+- **新增方法不破坏自动化边界**：任一新构建 / 测试 / 验证方法若不能保持 agent 自主自动完成，就不能落入日常流程；体系完善若不直接帮助两条 full-batch 入口清零，不应单独升为主任务
 
 当前已确认、且直接驱动主线判断的事实只保留下面几条：
 
 - `test-data-representatives` 继续是**跨机器硬默认 gate**；它的职责是守住 fresh workspace / 低上下文环境下的最小离线闭环
-- `Scripts/ir_semantics_roundtrip_runner.py` 当前已经可以**直接批量消费整个 `ShaderCorpus`**；因此“优先消灭阻塞全量通过的 corpus blocker”是当前最直接、最该做的事
-- `ShaderSourceDiagnostics` 在 `E-004f4` 后已经为 failure-path 样本提供 `module.ll / module.generated.metal / module.meta.json`，且当前已可通过 `Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ...` 被批量发现并进入同一套 L1/L2 报告；它的定位仍是 failure-path 补充输入，而不是默认 gate
+- `Scripts/ir_semantics_roundtrip_runner.py` 当前已经可以**直接批量消费整个 `ShaderCorpus`**；因此 success-path 主入口里的 blocker 仍是当前最直接、最该做的事
+- `ShaderSourceDiagnostics` 在 `E-004f4` 后已经为 failure-path 样本提供 `module.ll / module.generated.metal / module.meta.json`，且当前已可通过 `Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ...` 被批量发现并进入同一套 L1/L2 报告；它的定位仍是 failure-path 补充输入，而不是默认 gate，但它当前批量暴露出来的错误已经进入主线待修范围
 - 当 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 在同一次批量运行中出现相同 `bundleId + moduleKey` 时，结构化报告里的 `comparisonKey / sampleKey` 必须继续保持 source-aware，避免 diagnostics failure-path 样本伪装成 success-path 主入口事实
 - 既有 `L3 / L4` 规划、白名单行为边界、本机增强入口与历史快照统一下沉到 `05-L3-最小行为测试.md`、`06-L4-真实场景验证.md`、`07-首轮基线与历史进展归档.md` 与 `08-当前代表集与Gate契约参考.md`（均为参考；除 `05` 外当前主线推进**不必须读取**）
 
-因此当前最高优先级可直接概括为：**先把“`ShaderCorpus` 全量已采集样本的 L1/L2 测试通过”这条自动化离线路径收口；在这之前，不把 L3/L4、本机增强入口或体系打磨本身重新写成当前主线。**
+因此当前最高优先级可直接概括为：**先把 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 两条 full-batch 入口里已经暴露的 L1/L2 错误一起修清；在这之前，不把 L3/L4、本机增强入口或体系打磨本身重新写成当前主线。**
 
 ### 当前不该抢跑的事
 
@@ -204,20 +204,20 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --ll <path_to_failure_module.ll
 
 ## TODO 状态
 
-> 注：已完成里程碑与较旧说明统一下沉到 `07-首轮基线与历史进展归档.md`（历史参考，当前主线推进**不必须读取**）；dashboard 只保留真正会改变下一步执行面的 active item。
+> 注：已完成里程碑与较旧说明统一下沉到 `07-首轮基线与历史进展归档.md`（历史参考，当前主线推进**不必须读取**）；dashboard 只保留真正会改变下一步选择的 active item。
 
 | # | 任务 | 状态 | 优先级 | 说明 | 详细文档 |
 |---|---|---|---|---|---|
-| SV-003F | 推动 `ShaderCorpus` 全量 L1/L2 通过 | NEXT | P0（当前唯一实际执行面） | 当前唯一 TODO。以 `ShaderCorpus` 全量已采集样本的 L1/L2 测试通过作为完成判定；`test-data-representatives`、`ShaderSourceDiagnostics` 批量补充验证与日常验证顺序都只是必须遵守的边界/验证要求，不再单独列为 TODO | `03-L1-IR-RoundTrip.md` / `04-L2-CanonicalCompareAndRiskGrading.md` |
+| SV-003F | 清零当前 full-batch L1/L2 错误（`ShaderCorpus` + `ShaderSourceDiagnostics`） | NEXT | P0（当前唯一实际执行面） | 当前唯一 TODO。完成判定改为：`ShaderCorpus` 与 `ShaderSourceDiagnostics` 两条批量入口都不再 `fail`；`test-data-representatives` 与日常验证顺序继续只是必须遵守的边界/验证要求，不再单独列为 TODO | `03-L1-IR-RoundTrip.md` / `04-L2-CanonicalCompareAndRiskGrading.md` |
 
 ### 当前关键状态
 
-- **当前最终目标已收口**：当前只以“`ShaderCorpus` 全量已采集样本的 L1/L2 测试通过”作为本阶段目标；L3/L4 继续保留为参考，不进入当前 TODO
+- **当前最终目标已收口**：当前以“清零 `ShaderCorpus` 与 `ShaderSourceDiagnostics` 两条 full-batch L1/L2 错误”作为本阶段目标；L3/L4 继续保留为参考，不进入当前 TODO
 - **当前 TODO 已收口为单条主线**：除 `SV-003F` 外，不再保留“维护默认 gate”“维护 diagnostics 入口”之类独立 TODO；这些都只作为执行边界与验证要求存在
 - **跨机器硬默认 gate 不变**：`test-data-representatives` 继续是 fresh workspace 下必须可由 agent 自主完成的最小 L1/L2 入口
-- **`ShaderCorpus` 是当前唯一主入口**：主线优先关注“全量已采集 corpus 样本通过 L1/L2”，而不是继续维护后置行为边界、本机增强快照或体系打磨本身
-- **最新全量批量报告尚未通过**：仓库内现有 `shader-corpus-batch` 与 `shader-source-diagnostics-batch` 的 `gate-summary.json` 仍为 `fail`；因此 `SV-003F` 仍未完成，当前重点仍是持续消灭 corpus 全量 blocker
-- **`ShaderSourceDiagnostics` 仍只作为补充输入**：failure-path 样本当前可通过 `--diagnostics-root` 进入同一套离线 L1/L2 报告；它不单独决定完成判定
+- **`ShaderCorpus` 仍是当前主入口**：主线优先关注 success-path 主入口里的真实样本问题，但不再把 diagnostics 已暴露错误排除在外
+- **最新 full-batch 批量报告两边都尚未通过**：仓库内现有 `shader-corpus-batch` 与 `shader-source-diagnostics-batch` 的 `gate-summary.json` 仍为 `fail`；因此 `SV-003F` 仍未完成，当前重点是同时持续消灭 corpus / diagnostics 两边的 blocker
+- **`ShaderSourceDiagnostics` 仍是补充入口而不是默认 gate**：但它当前批量结果里的 compile / compare / gate 错误已经进入完成判定，不再只是“有空再看”的参考信息
 - **日常自动化边界不变**：若未来某条新构建/测试/验证方法不是 agent 可独立自动完成的，就不能默认落地；若确实存在必须由用户介入的步骤，必须先得到用户确认
 
 ## 踩坑与经验

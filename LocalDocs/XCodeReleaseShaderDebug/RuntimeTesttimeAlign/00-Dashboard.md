@@ -1,30 +1,25 @@
 ## Runtime / Test-time Align Dashboard
 
-> **单一来源规则**：本目录中，凡是 runtime 与 test-time 行为统一工作的任务状态、进展、优先级、TODO、默认验证方法与经验，只在本文维护。更细节的分析、设计、验证记录与历史归档下沉到本目录子文档或引用文档；主文档保持简洁，不重复流水账。
+> **单一来源规则**：本目录中，凡是 runtime 与 test-time 行为统一工作的任务状态、进展、优先级、TODO、默认验证方法与经验，只在本文维护。更细节的分析、设计、验证记录与历史归档下沉到子文档；主文档保持简洁，不重复流水账。
 
 ## 最终目标
 
 - 让 runtime shader 重编译链路与离线 replay / round-trip / semantics 验证链路在**同一组输入语义**下尽可能共享**同一份决策与规则**，避免“离线通过但 runtime 失败”或“runtime 成功但离线误报”。
 - 当前优先统一三层：
-  - compile posture 决策（尤其 `fast-math`）
+  - compile posture / compile request 决策
   - compile preflight 规则
   - 多模块 aggregate 形态
 - 默认只推进 agent 可自主完成的链路；若某一步必须依赖用户授权、GUI 操作、登录态或工作区外高风险动作，必须**先得到用户确认**，再继续落地方案。
 
 ## 主线任务
 
-- **当前主线**：`RTA-002` 已完成，差异边界已收口到 `01-差异边界分类.md`：必须继续对齐的是 shared manifest 规则来源、`fast-math` compile posture、aggregate 的真实模块顺序与去重语义、compile preflight yes/no 决策，以及跨 backend compile summary 语义；有意保留的是 backend-specific 执行宿主、产物形态、diagnostics / failure clustering 与 `target triple / data layout` 等观察字段。当前最高优先级切到 `RTA-003`：恢复推进上游 `SemanticsValidation` 里剩余的 `entry 参数` 高风险 family（`CC-003.9`）。
-- 当前已确认的关键事实：
+- **当前主线**：优先推进 `RTA-004`：把“从 `original IR` 推导 generated MSL 编译请求”的整条链收口成**单一实现**。目标不是统一执行 backend，而是让 runtime、`mtl-device` harness 与离线 `xcrun` backend 共同消费同一份 compile planner。方案见 `02-原始IR到CompileRequest共享方案.md`。
+- 当前只保留几条最关键的控制面事实：
   - runtime 真实路径是 `bitcode -> LLVMDisassembler -> IRToMSLConverter -> 多模块 aggregate -> newLibraryWithSource(..., options: MTLCompileOptions?)`
-  - 离线默认路径仍有两条：`module.ll -> IRToMSLConverter -> xcrun metal -c -> llvm-dis -> canonical compare`，以及 `aggregate.generated.metal -> MTLDevice.newLibraryWithSource(...)` 的最小 harness compile
-  - `RTA-001.1` 已完成：runtime 已能依据 original IR 中可判定且全模块一致的 `fast-math` posture，显式设置 `MTLCompileOptions.fastMathEnabled`
-  - `RTA-001.2` 已完成：compile preflight 规则与 `fast-math` enable/disable option token 已收口到 `LibrarySourceInjectionSwizzles.swift` 内嵌 shared manifest；Swift runtime 直接使用，Python 离线脚本从同一源读取
-  - `RTA-001.3` 已完成：`Scripts/aggregate_replay_runner.py` 现在既能保留 `xcrun` backend 做 AIR / CLI 诊断，也能通过 `Scripts/metal_aggregate_compile_harness.swift` 走 `MTLDevice.newLibraryWithSource(...)`，离线复现 runtime 特有的 aggregate / dedupe / preflight / fast-math compile decision
-  - `RTA-001.4.1` 已完成：当 backend 是 `mtl-device` 时，Python 不再手工决定 `MTLCompileOptions`；`aggregate_replay_runner.py` 只把 `sourcePath / originalIRPaths / user metal args / manifest source path` 交给 Swift harness，再消费 harness 回写的结构化 JSON compile report
-  - `RTA-001.4.2` 已完成：`xcrun` backend 继续由 Python 持有 CLI-specific 逻辑，包括 `fast-math posture -> metal args` 映射、compiler diagnostics 提取、failure clustering、AIR 产物与 baseline diff；这些能力不再被误当成 runtime / harness 必须共用的执行宿主
-  - shared contract 当前只统一“规则来源 + compile summary 语义”：`fast-math` token、preflight rule 来自同一份 manifest；`fastMathMode` / `fastMathDecision` / `usesExplicitCompileOptions` / `compileOptionsFastMathEnabled` / `inferredMetalArgs` / `effectiveMetalArgs` 作为跨 backend 对齐字段继续保留；`airPath` 仅属于 `xcrun`，`backendReportPath` 仅属于 `mtl-device`
-  - `mtl-device` backend 的 runtime-like compile posture、`MTLCompileOptions` 决策与结构化 compile report 仍留在 Swift runtime / harness；Python 只负责 orchestration 与 summary 归并
-- 当前默认判断：**不要把 `xcrun metal -c` 结果直接当作 runtime 真值**；若目标是贴近 runtime compile 结论，应优先使用 `Scripts/aggregate_replay_runner.py --compile-backend mtl-device`，而 `xcrun` backend 继续作为 AIR / CLI 诊断补充入口。
+  - 离线仍保留两条路径：`module.ll -> IRToMSLConverter -> xcrun metal -c -> llvm-dis -> canonical compare`，以及 `aggregate.generated.metal -> MTLDevice.newLibraryWithSource(...)` 的最小 harness compile
+  - 已完成的共享层主要是：shared manifest（`fast-math` token / preflight rule）与 compile summary 语义；差异边界见 `01-差异边界分类.md`
+  - **当前最大的剩余共享缺口**：`original IR -> compile request` 仍不是单一实现；runtime、`mtl-device` harness 与 Python `xcrun` backend 还各自维护一份 posture / arg inference
+  - **默认判断**：不要把 `xcrun metal -c` 结果直接当作 runtime 真值；若目标是贴近 runtime compile 结论，应优先使用 `Scripts/aggregate_replay_runner.py --compile-backend mtl-device`
 
 ## 构建与验证的方法
 
@@ -52,7 +47,7 @@
 
 1. **最小样本验证**：先验证单个 representative case 是否命中新改动的目标差异
 2. **离线脚本回归**：确保已有 round-trip / compare 测试不回退
-3. **runtime 形态贴近验证**：优先用自动化脚本或最小 harness；当前仓库已提供 `Scripts/aggregate_replay_runner.py` 作为 aggregate 形态下的默认自动化入口，应优先使用它
+3. **runtime 形态贴近验证**：优先用自动化脚本或最小 harness；aggregate 相关问题默认优先使用 `Scripts/aggregate_replay_runner.py`
 4. **必要时再做更重验证**：只有当离线与最小自动化验证无法回答问题时，才考虑安装、真实 app、capture、GUI 或其它需要用户确认的动作
 
 ### 当前不作为默认流程的动作
@@ -80,27 +75,22 @@
 
 | 任务 | 状态 | 结束标准 | 备注 |
 |---|---|---|---|
-| `RTA-001` 统一 runtime 与离线 compile decision 层 | DONE | runtime 与离线不再各自维护独立的 compile posture 决策；至少 `fast-math` 已共用同一套判断逻辑，并能分别映射到 `MTLCompileOptions` 与离线 metal args | 已完成 `RTA-001.1` / `RTA-001.2` / `RTA-001.3` / `RTA-001.4.1` / `RTA-001.4.2`，且 `RTA-002` 已把“必须对齐 / 有意保留”的边界收口落盘 |
-| `RTA-001.1` runtime 显式接入 `fast-math` compile posture 对齐 | DONE | runtime 不再固定 `options: nil`；对于 original IR 中可判定的 `fast-math` posture，能显式设置对应编译选项 | 已接入 `MTLCompileOptions.fastMathEnabled`；仅在全模块都可判定且结论一致时显式设置；当前默认验证脚本已切换为 `./BuildScripts/build_and_install.sh` |
-| `RTA-001.2` 提取 compile preflight 规则的单一来源 | DONE | Swift runtime 与 Python 离线脚本不再各自维护一份手写规则；新增规则时只需改一处 | shared manifest 已落在 `LibrarySourceInjectionSwizzles.swift`；Swift runtime 直接使用，Python 通过解析同一源文件加载；`fast-math` enable/disable token 也已并入同一处 |
-| `RTA-001.3` 为离线补一条贴近 runtime 的“多模块 aggregate + compile”验证入口 | DONE | agent 可在不依赖人工操作的前提下，验证 aggregate 形态下的 compile 结果；至少能覆盖 runtime 特有的 aggregate / dedupe / preflight 风险 | `Scripts/aggregate_replay_runner.py` 已支持 `xcrun` / `mtl-device` 双 backend；默认把 `mtl-device` 作为更贴近 runtime 的补充真值入口 |
-| `RTA-001.4` 明确 Swift 与 Python 的共用边界 | DONE | 形成稳定约定：哪些逻辑留在 Swift，哪些只做 orchestration，哪些通过 JSON / manifest / harness 共享 | `mtl-device` request/report 边界与 `xcrun` backend 保留边界都已文档化；shared contract 只保留规则来源与跨 backend summary 语义 |
-| `RTA-001.4.1` 收口 `mtl-device` backend 的 request/report 边界 | DONE | Python 不再为 harness 手工翻译 `MTLCompileOptions`；harness 能基于 shared manifest + original IR 自行做 fast-math decision，并回写结构化 compile report | `metal_aggregate_compile_harness.swift` 现在直接接收 `source / manifest source / original IR / user metal args`；`aggregate_replay_runner.py` 只做 orchestration |
-| `RTA-001.4.2` 明确 `xcrun` backend 与 shared contract 的保留边界 | DONE | 文档里能稳定回答：哪些 compile decision 仍由 Python 为 CLI backend 持有，哪些必须继续留在 Swift runtime / harness，哪些字段需要两边统一落盘 | 已明确：Python 保留 CLI arg translation / diagnostics / failure clustering / AIR 与 baseline diff；Swift 保留 runtime-like compile posture 与 structured report；共享层只保留 manifest 与 compile summary 字段 |
-| `RTA-002` 明确“必须对齐”和“有意保留”的差异边界 | DONE | 文档中能稳定回答：哪些差异必须继续收口，哪些属于 backend / 输入形态天然不同、无需强行统一 | 已整理到 `01-差异边界分类.md`；明确了 aggregate 顺序 / dedupe / preflight decision / compile summary 语义属于必须对齐，而 backend-specific 宿主 / 产物 / diagnostics 属于有意保留 |
-| `RTA-003` 在链路对齐后恢复上游高风险 case 推进 | TODO | 在已收稳的边界之上，继续推进 `SemanticsValidation` 中剩余 `entry 参数` family 的 case-by-case 收敛 | 当前直接对应上游 `CC-003.9`：剩余 `7` 个 corpus `L3` 已收敛成 `entry 参数个数变化 + entry 参数类型摘要变化 + entry 参数语义摘要变化` |
+| `RTA-001` 统一 runtime 与离线 compile decision 层 | DONE | runtime 与离线不再各自维护独立的 compile posture 决策；至少 `fast-math` 已共用同一套判断逻辑，并能分别映射到 `MTLCompileOptions` 与离线 metal args | 已完成 shared manifest、aggregate 验证入口、`mtl-device` / `xcrun` 边界收口 |
+| `RTA-002` 明确“必须对齐”和“有意保留”的差异边界 | DONE | 文档中能稳定回答：哪些差异必须继续收口，哪些属于 backend / 输入形态天然不同、无需强行统一 | 结论已整理到 `01-差异边界分类.md` |
+| `RTA-004` 收口 `original IR -> compile request` 的单一实现 | DOING | runtime、`mtl-device` harness 与 Python `xcrun` backend 不再各写一份 posture / arg inference；compile 规则修改时默认只需改一处 shared planner | 当前最高优先级 |
+| `RTA-004.1` 定义 shared compile planner contract 与迁移路线 | DONE | 文档能稳定回答：单一实现放哪、输入输出是什么、Python 如何消费、哪些逻辑仍留在 backend-specific 宿主 | 已整理到 `02-原始IR到CompileRequest共享方案.md` |
+| `RTA-004.2` 抽出 Swift 侧 shared compile planner | TODO | 新增独立 shared planner 源文件；semantic decision 与 backend projection 在同一处维护，runtime / harness 不再手写一份 fast-math 推导 | 建议先只迁现有 `fast-math` 规则 |
+| `RTA-004.3` 让 runtime 与 `mtl-device` harness 共同消费 shared planner | TODO | `LibrarySourceInjectionSwizzles.swift` 与 `metal_aggregate_compile_harness.swift` 不再各自维护 posture 推导，统一改为调用 shared planner | harness 构建时应把 shared planner Swift 文件一并编译 |
+| `RTA-004.4` 让 Python `xcrun` backend 改为消费 planner 输出 | TODO | `corpus_replay_runner.py` / `aggregate_replay_runner.py` 不再维护 `resolve_compile_metal_args(...)` / `resolve_aggregate_compile_metal_args(...)` 一类推导逻辑，只消费 planner JSON plan | Python 继续保留 orchestration、diagnostics 与 baseline diff，但不再保留规则推导 |
+| `RTA-004.5` 补 shared planner 回归与跨 backend 一致性测试 | TODO | single-module / multi-module / user override / `xcrun` / `mtl-device` 的 plan 输出与 compile summary 字段都能稳定对齐 | 应覆盖 `fast_math_aligned` / `conflict` / `partial` / `unavailable` / `user_override` |
+| `RTA-003` 在链路对齐后恢复上游高风险 case 推进 | BLOCKED | 在 `RTA-004` 完成后，再继续推进 `SemanticsValidation` 中剩余 `entry 参数` family 的 case-by-case 收敛 | 当前对应上游 `CC-003.9` |
 
 ## 踩坑与经验
 
-- **离线 `xcrun metal -c` 成功，不等于 runtime `newLibraryWithSource` 一定成功**。
-- **backend 不同可以保留，但 compile decision 不能长期分叉**；真正要统一的是“决策层”，不是强行把 runtime 和离线都改成同一个执行 backend。
-- **多模块 aggregate 是 runtime 的真实形态**；离线若长期只看单模块结果，会系统性漏掉 runtime 特有问题。
-- **`fast-math` posture 在 runtime 侧应走保守显式化策略**：只有 original IR 可判定且 aggregate 内所有模块结论一致时，才显式设置 `MTLCompileOptions.fastMathEnabled`；部分可判定、互相冲突或完全不可判定时继续回退默认编译行为。
-- **规则表与常量一旦双份维护，迟早会漂**；凡是 preflight / posture / compile metadata 这类高频规则，优先寻找单一来源。对当前仓库而言，把 shared manifest 内嵌在 Swift runtime 源码、再由 Python 解析同一源文件，比额外引入资源打包链路更稳妥。
-- **shared manifest 是规则来源，不是所有 backend 的执行宿主**；`xcrun` backend 可以继续把 CLI-specific 逻辑留在 Python（如 `metal args` 映射、diagnostics 提取、failure clustering），但 token / preflight rule 必须继续从同一份 manifest 读取。
-- **当 backend 是 `MTLDevice.newLibraryWithSource(...)` 时，不要让 Python 手工翻译 `MTLCompileOptions`**；更稳的边界是 Python 只负责 orchestration，把 `source / original IR / 用户 override / manifest source` 交给 Swift harness，由 Swift 决定 compile posture 并通过 JSON report 回传结果。
-- **跨 backend 真正该统一的是 compile summary 语义，不是产物形态**；`fastMathMode` / `fastMathDecision` / `usesExplicitCompileOptions` 可以对齐，但 `airPath` 只属于 `xcrun`、`backendReportPath` 只属于 `mtl-device`，不必强行做成同一类产物。
-- **aggregate 的真实模块顺序不能只看 `replacement.meta.json` 的 `moduleKeys`**；runtime 落盘时这个字段会做稳定排序，更接近身份归档而不是拼源顺序；离线若要贴近 runtime source shape，必须优先恢复 `manifest.jsonl` 中的 capture 顺序。
+- **离线 `xcrun metal -c` 成功，不等于 runtime `newLibraryWithSource` 一定成功。**
+- **backend 不同可以保留，但 compile decision 不能长期分叉**；真正要统一的是决策层，不是强行把 runtime 和离线都改成同一个执行 backend。
+- **如果 compile 规则预期会频繁变更，就不能长期停留在“manifest 共享、推导逻辑多份实现”。** 真正高成本的是 `original IR -> compile request` 的推导过程，而不是 token 常量本身。
+- **aggregate 的真实模块顺序不能只看 `replacement.meta.json` 的 `moduleKeys`**；runtime 落盘时这个字段会做稳定排序，更接近身份归档而不是拼源顺序；离线要贴近 runtime source shape，必须优先恢复 `manifest.jsonl` 中的 capture 顺序。
 - **preflight 需要统一的是“是否拒绝继续 compile”的决策，不是 reject 之后的宿主行为**；runtime 返回 original library、写 launch diagnostics，离线落结构化 JSON 报告，都可以保留差异。
 - **涉及 PlayCover 构建、重建、安装时，一律优先使用 `BuildScripts/`**；不要回退到手写 `xcodebuild`。
 
@@ -112,19 +102,20 @@
 
 ### 按需读取
 
-- `01-差异边界分类.md`：`RTA-002` 的稳定结论；需要判断某类 residual 属于“必须继续对齐”还是“有意保留”时优先读取
+- `01-差异边界分类.md`：稳定边界结论；判断某类 residual 属于“必须继续对齐”还是“有意保留”时优先读取
+- `02-原始IR到CompileRequest共享方案.md`：shared compile planner 方案；实现 `RTA-004` 时优先读取
 - `SemanticsValidation/00-Dashboard.md`：上游风险主线、case 优先级与当前 residual 背景
 - `SemanticsValidation/02-总体技术路线.md`：分层模型、止损边界与自动化优先原则
 - `Carthage/Checkouts/PlayTools/PlayTools/LibrarySourceInjectionSwizzles.swift`：runtime shader 替换 / aggregate / compile 主路径
 - `Carthage/Checkouts/PlayTools/PlayTools/LLVMDisassembler.swift`：runtime bitcode -> IR 反汇编路径与 host bridge 边界
 - `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift`：runtime / offline 已共用的核心转换器
-- `Scripts/corpus_replay_runner.py`：离线 replay + compile posture 决策 + compile preflight 现状
-- `Scripts/aggregate_replay_runner.py`：当前 aggregate 形态下的默认离线验证入口
-- `Scripts/metal_aggregate_compile_harness.swift`：最小 runtime-like aggregate compile harness，直接调用 `MTLDevice.newLibraryWithSource(...)`
+- `Scripts/corpus_replay_runner.py`：离线 replay + compile posture 决策现状
+- `Scripts/aggregate_replay_runner.py`：aggregate 形态下的默认离线验证入口
+- `Scripts/metal_aggregate_compile_harness.swift`：最小 runtime-like aggregate compile harness
 - `Scripts/test_aggregate_replay_runner.py`：aggregate 入口的单元 / CLI 集成回归
 - `Scripts/ir_semantics_roundtrip_runner.py`：当前 round-trip / canonical compare 主入口
 - `BuildScripts/README.md`：标准构建与测试脚本说明
 
 ### 暂不需读取
 
-- 除 `01-差异边界分类.md` 外，本目录其余子文档当前留空；后续若新增设计稿、问题列表、验证记录，再按“必须读取 / 按需读取 / 暂不需读取”继续归类维护
+- 除 `01-差异边界分类.md`、`02-原始IR到CompileRequest共享方案.md` 外，本目录其余子文档当前留空；后续若新增设计稿、问题列表、验证记录，再按“必须读取 / 按需读取 / 暂不需读取”继续归类维护

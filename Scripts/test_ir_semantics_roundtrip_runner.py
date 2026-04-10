@@ -201,9 +201,13 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
         command = run_mock.call_args.args[0]
         self.assertIn("-fno-fast-math", command)
         self.assertEqual(compile_result["status"], "success")
+        self.assertEqual(compile_result["compileBackend"], "xcrun")
         self.assertEqual(compile_result["originalFastMathMode"], "disable")
         self.assertEqual(compile_result["fastMathMode"], "disable")
         self.assertEqual(compile_result["fastMathDecision"], "fast_math_aligned")
+        self.assertTrue(compile_result["usesExplicitCompileOptions"])
+        self.assertFalse(compile_result["compileOptionsFastMathEnabled"])
+        self.assertIsNone(compile_result["explicitOverrideSource"])
         self.assertEqual(compile_result["inferredMetalArgs"], ["-fno-fast-math"])
         self.assertEqual(compile_result["effectiveMetalArgs"], ["-fno-fast-math"])
 
@@ -253,9 +257,13 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
         self.assertIn("-ffast-math", command)
         self.assertNotIn("-fno-fast-math", command)
         self.assertEqual(compile_result["status"], "success")
+        self.assertEqual(compile_result["compileBackend"], "xcrun")
         self.assertEqual(compile_result["originalFastMathMode"], "disable")
         self.assertEqual(compile_result["fastMathMode"], "enable")
         self.assertEqual(compile_result["fastMathDecision"], "user_override")
+        self.assertTrue(compile_result["usesExplicitCompileOptions"])
+        self.assertTrue(compile_result["compileOptionsFastMathEnabled"])
+        self.assertEqual(compile_result["explicitOverrideSource"], "user_metal_args")
         self.assertEqual(compile_result["inferredMetalArgs"], [])
         self.assertEqual(compile_result["effectiveMetalArgs"], ["-ffast-math"])
 

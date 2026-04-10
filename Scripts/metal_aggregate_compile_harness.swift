@@ -13,6 +13,7 @@ private struct CompileReport: Encodable {
     let fastMathEnabled: Bool?
     let fastMathMode: String?
     let fastMathDecision: String
+    let explicitOverrideSource: String?
     let inferredMetalArgs: [String]
     let effectiveMetalArgs: [String]
 }
@@ -68,6 +69,7 @@ private enum MetalAggregateCompileHarnessMain {
                 fastMathEnabled: nil,
                 fastMathMode: nil,
                 fastMathDecision: "unresolved",
+                explicitOverrideSource: nil,
                 inferredMetalArgs: [],
                 effectiveMetalArgs: []
             )
@@ -192,6 +194,7 @@ private enum MetalAggregateCompileHarnessMain {
                 fastMathEnabled: compilePlan.decision.compileOptionsFastMathEnabled,
                 fastMathMode: compilePlan.decision.fastMathMode?.rawValue,
                 fastMathDecision: compilePlan.decision.fastMathDecision,
+                explicitOverrideSource: compilePlan.decision.explicitOverrideSource,
                 inferredMetalArgs: compilePlan.inferredMetalArgs,
                 effectiveMetalArgs: compilePlan.effectiveMetalArgs
             )
@@ -206,6 +209,7 @@ private enum MetalAggregateCompileHarnessMain {
                 fastMathEnabled: compilePlan.decision.compileOptionsFastMathEnabled,
                 fastMathMode: compilePlan.decision.fastMathMode?.rawValue,
                 fastMathDecision: compilePlan.decision.fastMathDecision,
+                explicitOverrideSource: compilePlan.decision.explicitOverrideSource,
                 inferredMetalArgs: compilePlan.inferredMetalArgs,
                 effectiveMetalArgs: compilePlan.effectiveMetalArgs
             )

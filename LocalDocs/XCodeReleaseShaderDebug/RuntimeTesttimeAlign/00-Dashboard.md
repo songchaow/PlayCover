@@ -18,7 +18,7 @@
   - runtime 真实路径是 `bitcode -> LLVMDisassembler -> IRToMSLConverter -> 多模块 aggregate -> newLibraryWithSource(..., options: MTLCompileOptions?)`
   - 离线仍保留两条路径：`module.ll -> IRToMSLConverter -> xcrun metal -c -> llvm-dis -> canonical compare`，以及 `aggregate.generated.metal -> MTLDevice.newLibraryWithSource(...)` 的最小 harness compile
   - 已完成的共享层主要是：shared manifest（`fast-math` token / preflight rule）、shared compile planner contract、runtime / `mtl-device` harness 直连 planner，以及 Python `xcrun` backend 通过 `Scripts/shared_compile_planner_harness.swift` 消费 planner JSON plan；差异边界见 `01-差异边界分类.md`
-  - **当前最大的剩余共享缺口**：compile posture / arg inference 已基本只剩一份 Swift planner 实现，下一步主要是补跨 backend 回归覆盖，持续验证 `fast_math_aligned / conflict / partial / unavailable / user_override` 在 single-module / aggregate / `xcrun` / `mtl-device` 报告字段上的一致性
+  - **当前最大的剩余共享缺口**：compile posture / arg inference 已基本只剩一份 Swift planner 实现；single-module / aggregate 的 compile summary 已补齐 `usesExplicitCompileOptions`、`compileOptionsFastMathEnabled` 与 `explicitOverrideSource` 契约，下一步主要继续补 `fast_math_conflict / partial / unavailable` 在 `mtl-device` 与更完整 cross-backend 断言矩阵上的覆盖
   - **默认判断**：不要把 `xcrun metal -c` 结果直接当作 runtime 真值；若目标是贴近 runtime compile 结论，应优先使用 `Scripts/aggregate_replay_runner.py --compile-backend mtl-device`
 
 ## 构建与验证的方法

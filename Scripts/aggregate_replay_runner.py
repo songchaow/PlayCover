@@ -689,6 +689,7 @@ def compile_aggregate_source(
         "libraryFunctionCount": 0,
         "usesExplicitCompileOptions": False,
         "compileOptionsFastMathEnabled": None,
+        "explicitOverrideSource": None,
         "command": None,
         "returnCode": None,
         "elapsedSeconds": None,
@@ -801,6 +802,8 @@ def compile_aggregate_source(
             base_result["usesExplicitCompileOptions"] = harness_payload["usesExplicitCompileOptions"]
         if "fastMathEnabled" in harness_payload:
             base_result["compileOptionsFastMathEnabled"] = harness_payload.get("fastMathEnabled")
+        if isinstance(harness_payload.get("explicitOverrideSource"), str):
+            base_result["explicitOverrideSource"] = harness_payload["explicitOverrideSource"]
         if primary_diagnostic is not None:
             base_result["sourceContext"] = replay_runner.read_source_context(source_path, int(primary_diagnostic["line"]))
 
@@ -834,9 +837,10 @@ def compile_aggregate_source(
         return base_result
 
     try:
-        fast_math_mode, fast_math_decision, inferred_args, effective_args = resolve_aggregate_compile_metal_args(
+        compile_plan = replay_runner.resolve_shared_compile_plan(
             original_ir_paths,
             list(args.metal_args),
+            requested_backend="xcrun",
             shared_compile_planner_binary=shared_compile_planner_binary,
         )
     except (RuntimeError, subprocess.CalledProcessError) as exc:
@@ -850,12 +854,14 @@ def compile_aggregate_source(
         base_result["clusterTitle"] = cluster_title
         return base_result
 
-    base_result["fastMathMode"] = fast_math_mode
-    base_result["fastMathDecision"] = fast_math_decision
-    base_result["inferredMetalArgs"] = inferred_args
-    base_result["effectiveMetalArgs"] = effective_args
-    base_result["usesExplicitCompileOptions"] = fast_math_mode is not None
-    base_result["compileOptionsFastMathEnabled"] = fast_math_mode_to_enabled(fast_math_mode)
+    compile_summary = replay_runner.extract_shared_compile_plan_summary(compile_plan)
+    base_result["fastMathMode"] = compile_summary["fastMathMode"]
+    base_result["fastMathDecision"] = compile_summary["fastMathDecision"]
+    base_result["inferredMetalArgs"] = compile_summary["inferredMetalArgs"]
+    base_result["effectiveMetalArgs"] = compile_summary["effectiveMetalArgs"]
+    base_result["usesExplicitCompileOptions"] = compile_summary["usesExplicitCompileOptions"]
+    base_result["compileOptionsFastMathEnabled"] = compile_summary["compileOptionsFastMathEnabled"]
+    base_result["explicitOverrideSource"] = compile_summary["explicitOverrideSource"]
 
     air_path = replay_runner.compiled_air_output_path(source_path).resolve()
     air_path.parent.mkdir(parents=True, exist_ok=True)
@@ -863,7 +869,17 @@ def compile_aggregate_source(
         air_path.unlink()
     base_result["airPath"] = str(air_path)
 
-    command = ["xcrun", "--sdk", args.metal_sdk, "metal", "-c", *effective_args, str(source_path), "-o", str(air_path)]
+    command = [
+        "xcrun",
+        "--sdk",
+        args.metal_sdk,
+        "metal",
+        "-c",
+        *base_result["effectiveMetalArgs"],
+        str(source_path),
+        "-o",
+        str(air_path),
+    ]
     base_result["command"] = replay_runner.shell_join(command)
 
     start_time = time.perf_counter()

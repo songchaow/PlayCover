@@ -744,17 +744,36 @@ def resolve_shared_compile_plan(
     return plan
 
 
-def unpack_shared_compile_plan(plan: dict[str, Any]) -> tuple[str | None, str, list[str], list[str]]:
+def extract_shared_compile_plan_summary(plan: dict[str, Any]) -> dict[str, Any]:
     decision = plan.get("decision") or {}
     fast_math_mode = decision.get("fastMathMode")
     fast_math_decision = decision.get("fastMathDecision") or decision.get("reason") or "unresolved"
-    inferred_metal_args = [str(arg) for arg in (plan.get("inferredMetalArgs") or [])]
-    effective_metal_args = [str(arg) for arg in (plan.get("effectiveMetalArgs") or [])]
+    explicit_override_source = decision.get("explicitOverrideSource")
+    return {
+        "fastMathMode": str(fast_math_mode) if isinstance(fast_math_mode, str) else None,
+        "fastMathDecision": str(fast_math_decision),
+        "inferredMetalArgs": [str(arg) for arg in (plan.get("inferredMetalArgs") or [])],
+        "effectiveMetalArgs": [str(arg) for arg in (plan.get("effectiveMetalArgs") or [])],
+        "usesExplicitCompileOptions": bool(decision.get("usesExplicitCompileOptions"))
+        if isinstance(decision.get("usesExplicitCompileOptions"), bool)
+        else False,
+        "compileOptionsFastMathEnabled": decision.get("compileOptionsFastMathEnabled")
+        if "compileOptionsFastMathEnabled" in decision
+        else None,
+        "explicitOverrideSource": str(explicit_override_source)
+        if isinstance(explicit_override_source, str)
+        else None,
+    }
+
+
+
+def unpack_shared_compile_plan(plan: dict[str, Any]) -> tuple[str | None, str, list[str], list[str]]:
+    summary = extract_shared_compile_plan_summary(plan)
     return (
-        str(fast_math_mode) if isinstance(fast_math_mode, str) else None,
-        str(fast_math_decision),
-        inferred_metal_args,
-        effective_metal_args,
+        summary["fastMathMode"],
+        summary["fastMathDecision"],
+        summary["inferredMetalArgs"],
+        summary["effectiveMetalArgs"],
     )
 
 
@@ -1239,6 +1258,7 @@ def compile_replay_result(result: dict[str, Any], args: argparse.Namespace) -> d
         "airPath": None,
         "success": False,
         "status": "skipped_replay_failed",
+        "compileBackend": "xcrun",
         "command": None,
         "returnCode": None,
         "elapsedSeconds": None,
@@ -1257,6 +1277,9 @@ def compile_replay_result(result: dict[str, Any], args: argparse.Namespace) -> d
         "originalFastMathMode": None,
         "fastMathMode": None,
         "fastMathDecision": None,
+        "usesExplicitCompileOptions": False,
+        "compileOptionsFastMathEnabled": None,
+        "explicitOverrideSource": None,
         "inferredMetalArgs": [],
         "effectiveMetalArgs": [],
     }
@@ -1297,9 +1320,10 @@ def compile_replay_result(result: dict[str, Any], args: argparse.Namespace) -> d
 
     original_fast_math_mode = infer_original_ir_fast_math_mode(original_ir_path)
     try:
-        fast_math_mode, fast_math_decision, inferred_metal_args, effective_metal_args = resolve_compile_metal_args(
-            original_ir_path,
+        compile_plan = resolve_shared_compile_plan(
+            [original_ir_path] if original_ir_path is not None else [],
             list(args.metal_args),
+            requested_backend="xcrun",
             shared_compile_planner_binary=shared_compile_planner_binary,
         )
     except (RuntimeError, subprocess.CalledProcessError) as exc:
@@ -1313,11 +1337,15 @@ def compile_replay_result(result: dict[str, Any], args: argparse.Namespace) -> d
         base_result["clusterTitle"] = cluster_title
         return base_result
 
+    compile_summary = extract_shared_compile_plan_summary(compile_plan)
     base_result["originalFastMathMode"] = original_fast_math_mode
-    base_result["fastMathMode"] = fast_math_mode
-    base_result["fastMathDecision"] = fast_math_decision
-    base_result["inferredMetalArgs"] = inferred_metal_args
-    base_result["effectiveMetalArgs"] = effective_metal_args
+    base_result["fastMathMode"] = compile_summary["fastMathMode"]
+    base_result["fastMathDecision"] = compile_summary["fastMathDecision"]
+    base_result["usesExplicitCompileOptions"] = compile_summary["usesExplicitCompileOptions"]
+    base_result["compileOptionsFastMathEnabled"] = compile_summary["compileOptionsFastMathEnabled"]
+    base_result["explicitOverrideSource"] = compile_summary["explicitOverrideSource"]
+    base_result["inferredMetalArgs"] = compile_summary["inferredMetalArgs"]
+    base_result["effectiveMetalArgs"] = compile_summary["effectiveMetalArgs"]
 
     air_path = compiled_air_output_path(source_path).resolve()
     air_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1325,7 +1353,17 @@ def compile_replay_result(result: dict[str, Any], args: argparse.Namespace) -> d
         air_path.unlink()
     base_result["airPath"] = str(air_path)
 
-    command = ["xcrun", "--sdk", args.metal_sdk, "metal", "-c", *effective_metal_args, str(source_path), "-o", str(air_path)]
+    command = [
+        "xcrun",
+        "--sdk",
+        args.metal_sdk,
+        "metal",
+        "-c",
+        *base_result["effectiveMetalArgs"],
+        str(source_path),
+        "-o",
+        str(air_path),
+    ]
     base_result["command"] = shell_join(command)
 
     if preflight_issues and not args.skip_preflight:

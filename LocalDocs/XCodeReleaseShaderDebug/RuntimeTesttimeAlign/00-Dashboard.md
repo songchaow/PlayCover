@@ -13,12 +13,12 @@
 
 ## 主线任务
 
-- **当前主线**：继续推进 `RTA-004`：把“从 `original IR` 推导 generated MSL 编译请求”的整条链收口成**单一实现**。`RTA-004.3` 与 `RTA-004.4` 已完成；当前子任务转为 `RTA-004.5`：补 shared planner 回归与跨 backend 一致性测试。方案见 `02-原始IR到CompileRequest共享方案.md`。
+- **当前主线**：继续推进 `RTA-004`：把“从 `original IR` 推导 generated MSL 编译请求”的整条链收口成**单一实现**。`RTA-004.3`、`RTA-004.4` 与新增的 `RTA-004.5.1` 已完成；当前子任务转为 `RTA-004.5.2`：继续补 shared planner 的 cross-backend compile summary 断言矩阵，重点放在 aggregate `xcrun` 入口与更完整 CLI 覆盖。方案见 `02-原始IR到CompileRequest共享方案.md`。
 - 当前只保留几条最关键的控制面事实：
   - runtime 真实路径是 `bitcode -> LLVMDisassembler -> IRToMSLConverter -> 多模块 aggregate -> newLibraryWithSource(..., options: MTLCompileOptions?)`
   - 离线仍保留两条路径：`module.ll -> IRToMSLConverter -> xcrun metal -c -> llvm-dis -> canonical compare`，以及 `aggregate.generated.metal -> MTLDevice.newLibraryWithSource(...)` 的最小 harness compile
   - 已完成的共享层主要是：shared manifest（`fast-math` token / preflight rule）、shared compile planner contract、runtime / `mtl-device` harness 直连 planner，以及 Python `xcrun` backend 通过 `Scripts/shared_compile_planner_harness.swift` 消费 planner JSON plan；差异边界见 `01-差异边界分类.md`
-  - **当前最大的剩余共享缺口**：compile posture / arg inference 已基本只剩一份 Swift planner 实现；single-module / aggregate 的 compile summary 已补齐 `usesExplicitCompileOptions`、`compileOptionsFastMathEnabled` 与 `explicitOverrideSource` 契约，下一步主要继续补 `fast_math_conflict / partial / unavailable` 在 `mtl-device` 与更完整 cross-backend 断言矩阵上的覆盖
+  - **当前最大的剩余共享缺口**：compile posture / arg inference 已基本只剩一份 Swift planner 实现；single-module / aggregate 的 compile summary 已补齐 `usesExplicitCompileOptions`、`compileOptionsFastMathEnabled` 与 `explicitOverrideSource` 契约，下一步主要继续补 aggregate `xcrun` 入口与更完整 CLI 级 cross-backend 断言矩阵
   - **默认判断**：不要把 `xcrun metal -c` 结果直接当作 runtime 真值；若目标是贴近 runtime compile 结论，应优先使用 `Scripts/aggregate_replay_runner.py --compile-backend mtl-device`
 
 ## 构建与验证的方法
@@ -85,7 +85,9 @@
 | `RTA-004.2` 抽出 Swift 侧 shared compile planner | DONE | 新增独立 shared planner 源文件；manifest、semantic decision 与 backend projection contract 在同一处维护 | 已落地 `SharedCompilePlanner.swift`，并把 shared manifest 单一来源切到该文件 |
 | `RTA-004.3` 让 runtime 与 `mtl-device` harness 共同消费 shared planner | DONE | `LibrarySourceInjectionSwizzles.swift` 与 `metal_aggregate_compile_harness.swift` 不再各自维护 posture 推导，统一改为调用 shared planner | runtime 主路径与 `mtl-device` harness 已直连 `SharedCompilePlanner.swift`；harness 构建也已联编 shared planner 源文件 |
 | `RTA-004.4` 让 Python `xcrun` backend 改为消费 planner 输出 | DONE | `corpus_replay_runner.py` / `aggregate_replay_runner.py` 不再维护 `resolve_compile_metal_args(...)` / `resolve_aggregate_compile_metal_args(...)` 一类推导逻辑，只消费 planner JSON plan | 已新增 `Scripts/shared_compile_planner_harness.swift`；single-module、aggregate 与 `ir_semantics_roundtrip_runner.py` 上层入口都改为预构建 harness 并消费 planner 输出 |
-| `RTA-004.5` 补 shared planner 回归与跨 backend 一致性测试 | DOING | single-module / multi-module / user override / `xcrun` / `mtl-device` 的 plan 输出与 compile summary 字段都能稳定对齐 | 已补 `Scripts/test_shared_compile_planner.py`、`Scripts/test_ir_semantics_roundtrip_runner.py` 与 `Scripts/test_aggregate_replay_runner.py` 的基础回归；后续继续覆盖更完整的 cross-backend 断言矩阵 |
+| `RTA-004.5` 补 shared planner 回归与跨 backend 一致性测试 | DOING | single-module / multi-module / user override / `xcrun` / `mtl-device` 的 plan 输出与 compile summary 字段都能稳定对齐 | 已补 `Scripts/test_shared_compile_planner.py`、`Scripts/test_ir_semantics_roundtrip_runner.py` 与 `Scripts/test_aggregate_replay_runner.py` 的基础回归；当前剩余重点是 aggregate `xcrun` 入口与更完整 CLI 级 cross-backend 断言矩阵 |
+| `RTA-004.5.1` 补 `mtl-device` harness compile summary reason-code 实际回归 | DONE | `metal_aggregate_compile_harness.swift` 对 `fast_math_aligned / conflict / partial / unavailable / user_override` 的报告字段都有真实回归覆盖 | 已在 `Scripts/test_aggregate_replay_runner.py` 新增实际 harness matrix，锁定 `fastMathMode` / `fastMathDecision` / `usesExplicitCompileOptions` / `fastMathEnabled` / `explicitOverrideSource` / metal args 契约 |
+| `RTA-004.5.2` 补 aggregate `xcrun` 入口与 CLI 级 cross-backend compile summary 断言矩阵 | DOING | aggregate `xcrun` compile summary 与 `mtl-device` 在 conflict / partial / unavailable / override 上都有更直接的端到端断言 | 这轮先完成 `mtl-device` 实际 harness 覆盖；后续继续补 `compile_aggregate_source(...)` 与 CLI summary 的对照断言 |
 | `RTA-003` 在链路对齐后恢复上游高风险 case 推进 | BLOCKED | 在 `RTA-004` 完成后，再继续推进 `SemanticsValidation` 中剩余 `entry 参数` family 的 case-by-case 收敛 | 当前对应上游 `CC-003.9` |
 
 ## 踩坑与经验

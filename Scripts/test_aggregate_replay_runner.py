@@ -44,6 +44,46 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
 
 
+VALID_AGGREGATE_SOURCE = (
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n\n"
+    "kernel void main0(device float* output [[buffer(0)]]) { output[0] = 1.0f; }\n"
+)
+
+
+def run_aggregate_compile_harness(
+    root: Path,
+    harness_binary: Path,
+    *,
+    original_ir_texts: list[str],
+    metal_args: list[str] | None = None,
+    source_text: str = VALID_AGGREGATE_SOURCE,
+) -> tuple[subprocess.CompletedProcess[str], dict]:
+    source_path = root / "aggregate.replayed.generated.metal"
+    report_path = root / "aggregate.compile.report.json"
+    source_path.write_text(source_text, encoding="utf-8")
+
+    command = [
+        str(harness_binary),
+        "--source",
+        str(source_path.resolve()),
+        "--report",
+        str(report_path.resolve()),
+    ]
+    for index, original_ir_text in enumerate(original_ir_texts):
+        original_ir_path = root / f"module-{index}.ll"
+        original_ir_path.write_text(original_ir_text, encoding="utf-8")
+        command.extend(["--original-ir", str(original_ir_path.resolve())])
+    for metal_arg in list(metal_args or []):
+        command.extend(["--metal-arg", metal_arg])
+
+    completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    if completed.returncode == 2 and report.get("error") == "failed to create system default Metal device":
+        raise unittest.SkipTest("requires system default Metal device")
+    return completed, report
+
+
 class AggregateReplayRunnerTests(unittest.TestCase):
     def test_resolve_manifest_capture_order_prefers_matching_capture_sequence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -141,6 +181,103 @@ class AggregateReplayRunnerTests(unittest.TestCase):
         self.assertEqual(command[1], str(aggregate_runner.replay_runner.shared_compile_decision_manifest_path().resolve()))
         self.assertEqual(command[2], str(aggregate_runner.aggregate_compile_harness_swift_path(REPO_ROOT)))
         self.assertEqual(command[3:], ["-o", str(expected_binary.resolve())])
+
+    @unittest.skipUnless(sys.platform == "darwin" and shutil.which("swiftc"), "requires macOS Metal + swiftc")
+    def test_metal_aggregate_compile_harness_reports_shared_planner_reason_code_matrix(self) -> None:
+        enable_ir = '!1 = !{!"air.compile.fast_math_enable"}\n'
+        disable_ir = '!1 = !{!"air.compile.fast_math_disable"}\n'
+        unknown_ir = '; no compile options\n'
+
+        cases = [
+            {
+                "name": "aligned_disable",
+                "original_ir_texts": [disable_ir],
+                "metal_args": [],
+                "expected_mode": "disable",
+                "expected_decision": "fast_math_aligned",
+                "expected_explicit": True,
+                "expected_fast_math_enabled": False,
+                "expected_inferred": ["-fno-fast-math"],
+                "expected_effective": ["-fno-fast-math"],
+                "expected_override_source": None,
+            },
+            {
+                "name": "conflict",
+                "original_ir_texts": [enable_ir, disable_ir],
+                "metal_args": [],
+                "expected_mode": None,
+                "expected_decision": "fast_math_conflict",
+                "expected_explicit": False,
+                "expected_fast_math_enabled": None,
+                "expected_inferred": [],
+                "expected_effective": [],
+                "expected_override_source": None,
+            },
+            {
+                "name": "partial",
+                "original_ir_texts": [enable_ir, unknown_ir],
+                "metal_args": [],
+                "expected_mode": None,
+                "expected_decision": "fast_math_partial",
+                "expected_explicit": False,
+                "expected_fast_math_enabled": None,
+                "expected_inferred": [],
+                "expected_effective": [],
+                "expected_override_source": None,
+            },
+            {
+                "name": "unavailable",
+                "original_ir_texts": [unknown_ir],
+                "metal_args": [],
+                "expected_mode": None,
+                "expected_decision": "fast_math_unavailable",
+                "expected_explicit": False,
+                "expected_fast_math_enabled": None,
+                "expected_inferred": [],
+                "expected_effective": [],
+                "expected_override_source": None,
+            },
+            {
+                "name": "user_override",
+                "original_ir_texts": [disable_ir],
+                "metal_args": ["-ffast-math"],
+                "expected_mode": "enable",
+                "expected_decision": "user_override",
+                "expected_explicit": True,
+                "expected_fast_math_enabled": True,
+                "expected_inferred": [],
+                "expected_effective": ["-ffast-math"],
+                "expected_override_source": "user_metal_args",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            harness_binary = aggregate_runner.build_aggregate_compile_harness_binary(REPO_ROOT, root / "out")
+
+            for case in cases:
+                with self.subTest(case=case["name"]):
+                    case_root = root / case["name"]
+                    case_root.mkdir(parents=True, exist_ok=True)
+                    completed, report = run_aggregate_compile_harness(
+                        case_root,
+                        harness_binary,
+                        original_ir_texts=case["original_ir_texts"],
+                        metal_args=case["metal_args"],
+                    )
+
+                    self.assertEqual(completed.returncode, 0, msg=completed.stderr)
+                    self.assertTrue(report["success"], msg=report.get("error"))
+                    self.assertEqual(report["schemaVersion"], 1)
+                    self.assertEqual(report["functionNames"], ["main0"])
+                    self.assertEqual(report["functionCount"], 1)
+                    self.assertEqual(report.get("fastMathMode"), case["expected_mode"])
+                    self.assertEqual(report["fastMathDecision"], case["expected_decision"])
+                    self.assertEqual(report["usesExplicitCompileOptions"], case["expected_explicit"])
+                    self.assertEqual(report.get("fastMathEnabled"), case["expected_fast_math_enabled"])
+                    self.assertEqual(report["inferredMetalArgs"], case["expected_inferred"])
+                    self.assertEqual(report["effectiveMetalArgs"], case["expected_effective"])
+                    self.assertEqual(report.get("explicitOverrideSource"), case["expected_override_source"])
 
     def test_build_aggregate_source_deduplicates_duplicate_functions_and_strips_headers(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

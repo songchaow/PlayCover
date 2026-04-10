@@ -106,6 +106,44 @@ def _normalize_whitespace(value: str) -> str:
     return " ".join(value.replace("\n", " ").split())
 
 
+def _unwrap_single_field_aggregate_signature(signature: str | None) -> str | None:
+    normalized = _normalize_whitespace(signature or "")
+    if not normalized:
+        return None
+
+    current = normalized
+    while True:
+        if current.startswith("<{") and current.endswith("}>"):
+            inner = current[2:-2].strip()
+        elif current.startswith("{") and current.endswith("}"):
+            inner = current[1:-1].strip()
+        else:
+            return current
+
+        if not inner:
+            return current
+
+        parts = _split_top_level(inner)
+        if len(parts) != 1:
+            return current
+
+        current = _normalize_whitespace(parts[0])
+
+
+def _single_output_return_wrapper_equivalent(lhs: dict[str, Any], rhs: dict[str, Any]) -> bool:
+    if lhs.get("returnSignature") == rhs.get("returnSignature"):
+        return True
+
+    lhs_outputs = lhs.get("outputSemantics") or []
+    rhs_outputs = rhs.get("outputSemantics") or []
+    if lhs_outputs != rhs_outputs or len(lhs_outputs) != 1:
+        return False
+
+    lhs_unwrapped = _unwrap_single_field_aggregate_signature(lhs.get("returnSignature"))
+    rhs_unwrapped = _unwrap_single_field_aggregate_signature(rhs.get("returnSignature"))
+    return bool(lhs_unwrapped) and lhs_unwrapped == rhs_unwrapped
+
+
 def _split_top_level(value: str, delimiter: str = ",") -> list[str]:
     if not value.strip():
         return []
@@ -766,7 +804,7 @@ def _compare_entry_summaries(original: dict[str, Any], regenerated: dict[str, An
     for key in sorted(original_keys & regenerated_keys):
         lhs = original_entries[key]
         rhs = regenerated_entries[key]
-        if lhs.get("returnSignature") != rhs.get("returnSignature"):
+        if not _single_output_return_wrapper_equivalent(lhs, rhs):
             differences.append(
                 _make_difference(
                     "entry",

@@ -36,16 +36,19 @@
 
 ### 当前最新状态
 
-- 当前主线已完成 `CC-003.4.5.2`：围绕 `91c46448...` 的 `BB821 / BB845 / BB857 / BB1337 / BB1371` nested fallback family 继续下钻后，确认真正缺口不是继续放大 eager recursion，而是 **structured conditional 某个 arm 直接命中 merge label 时，没有像普通 `br label %merge` 一样补发对应 edge 的 phi 赋值**
-- 实现上只做了一刀最小修正：`IRToMSLConverter.swift` 的 `emitStructuredBranchArm(...)` 新增前驱参数，并在 `label == stopLabel` 时改为先 `collectPhiAssignments(...)` 再返回；同时补了 `test_nested_common_merge.ll` 与 `test_corpus_replay_runner_keeps_nested_common_merge_inside_branch_scope`
-- 目标 case `cc-003-4-5-2-single-91c46448-v6` 已从 **`L2 -> L1`**，`regenerated.ll` 的 CFG / phi 统计也已基本贴近原始 IR：
-  - `basicBlockCount 48 -> 49`
-  - `condbr 20 -> 20`
-  - `phiCount 20 -> 20`
-- full-batch 已出现统计收益且无新增 `L3`：
-  - diagnostics `cc-003-4-5-2-diagnostics-20260410-direct-merge-phi-fix`：`L1 7 / L2 0 / L3 146`
-  - corpus `cc-003-4-5-2-corpus-20260410-direct-merge-phi-fix`：**`L1 102 / L2 84 / L3 251`**
-- 因此当前最新状态可以概括为：**`CC-003.4.5` 已完成闭环；`91c46448...` 已降到可接受 `L1`，下一步应回到 canonical compare 报告继续挑下一支重复出现的高风险 residual family。**
+- 当前主线最新已完成 `CC-003.5`：围绕 `083c8443...` 等一支高频 `L3` 下钻后，确认真正问题不是 entry first-class 输出语义真的变了，而是 **single-field output 在 original AIR 里经常表现为 packed wrapper return（如 `<{ <4 x half> }>`），而 regenerated AIR 更常直接回成裸类型（如 `<4 x half>`）；当 `outputSemantics` 完全一致且只存在一个 output 时，raw `returnSignature` 文本差异更像 compare 口径问题**
+- 实现上这轮只补了 compare / gate 闭环，不再继续放大 converter 改动：
+  - `Scripts/ir_canonical_compare.py` 新增 `_single_output_return_wrapper_equivalent(...)`，在 `outputSemantics` 一致且仅单 output 时忽略这类 wrapper / bare return 形态差异
+  - 同时补了 `Scripts/test_ir_canonical_compare.py`、`Scripts/test_ir_semantics_roundtrip_runner.py`，并收紧 `LOCAL_SHADERCORPUS_REPRESENTATIVE_CONTRACT` 里已降到 `L1` 的 `1f5e65...`
+- 单 case 结果已经形成闭环：
+  - `cc-003-5-single-speedmobile-return-wrapper-083c-v1`：`L3`
+  - `cc-003-5-single-speedmobile-return-wrapper-083c-v2`：`L2`
+  - `manual-test-fragment-packed-return-after-compare-fix`：**`L1`**，gate `PASS`
+- full-batch 已出现大幅统计收益且无新增 `L3`：
+  - diagnostics `cc-003-5-1-diagnostics-20260410-single-field-return-compare-normalization`：`L1 8 / L2 141 / L3 4`
+  - corpus `cc-003-5-1-corpus-20260410-single-field-return-compare-normalization`：**`L1 174 / L2 192 / L3 71`**
+  - 相比 `CC-003.4.5.2`，共有 `142` 个 diagnostics 样本、`180` 个 corpus 样本移除了 `entry 返回类型摘要变化`
+- 因此当前最新状态可以概括为：**`single-field return wrapper` 这支高频 blocked family 已被收敛成可分析的 `L2/L1` residual；下一步应回到最新 canonical compare 报告，优先挑剩余仍为 `L3` 的真实 `entry 参数类型 / addrspace / CFG` 家族继续下钻。**
 
 
 ## 当前默认流程
@@ -176,6 +179,7 @@
 | `CC-003.4.5` 在不回退 `CC-003.4.4` 收益的前提下继续下钻 `91c46448...` residual | DONE | 已确认真正缺口是 structured conditional 的 direct-to-merge arm 没有补发 phi edge；修复后 `91c46448...` 从 `L2 -> L1`，diagnostics `L2 1 -> 0`、corpus `L2 86 -> 84`，且无新增 `L3` | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
 | `CC-003.4.5.1` 先修 fallback 路径里 final merge / `ret` 被更早前驱提前递归发射的边界缺口 | DONE | `IRToMSLConverter.swift` 已只在 successor 其它前驱齐备时才 eager-emit，并有 `test_late_merge_fallback_order.ll` 回归覆盖；但 `91c46448...` 与 full-batch 均无统计变化 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
 | `CC-003.4.5.2` 继续下钻 `91c46448...` 中 `BB821 / BB845 / BB857 / BB1337 / BB1371` 的 nested fallback family | DONE | 已定位真正切口是 structured conditional 的 direct-to-merge arm 未补 phi edge；补齐后 `91c46448...` 从 `L2 -> L1`，nested common merge 最小样本与 full-batch 全部验证通过 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
+| `CC-003.5` 优先检查 `entry 返回类型摘要变化` 的高频 `L3` 家族 | DONE | 已确认其中一大支是 single-field return wrapper compare 口径问题；补齐等价判定后 diagnostics `L3 146 -> 4`、corpus `L3 251 -> 71`，且无新增 `L3` | `difference-analysis/single-field-return-wrapper/04-implementation-result.md` / `difference-analysis/single-field-return-wrapper/05-full-batch-compare.md` |
 | `CC-004` 固化新的 case 分析模板 | TODO | 在 `difference-analysis/` 下沉淀一套稳定模板，确保后续每个 case 都按同样结构记录证据、结论与回归数据 | `difference-analysis/` |
 
 ## 任务执行规则
@@ -295,6 +299,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - **非 preset 的默认输出目录必须避免碰撞**：当前离线路径允许 agent 近同时发起 corpus / diagnostics 等批量运行；默认输出目录若只按秒命名，会导致报告互相覆盖，因此默认目录需要追加唯一后缀
 - **L2 compare 需要主动降噪**；更细的降噪对象与风险口径统一见 `04-L2-CanonicalCompareAndRiskGrading.md`（工作参考，当前主线推进**不必须读取**）
 - **resource metadata 的 `air.address_space` 显式化不应重复放大**；当函数参数 `addrspace` 摘要已一致时，这更像 compare 噪声，而不是 entry/resource 语义真的发生变化
+- **single-field output 不应只按 raw `returnSignature` 文本判高风险**；当 `outputSemantics` 完全一致且仅有一个 output 时，packed wrapper return 与 bare return 更像 compare 口径差异，而不是 entry 输出语义真的变了
 
 ## 参考信息
 
@@ -318,6 +323,8 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - `difference-analysis/resource-metadata-addrspace/05-full-batch-compare.md`
 - `difference-analysis/resource-type-name-preservation/04-implementation-result.md`
 - `difference-analysis/resource-type-name-preservation/05-full-batch-compare.md`
+- `difference-analysis/single-field-return-wrapper/04-implementation-result.md`
+- `difference-analysis/single-field-return-wrapper/05-full-batch-compare.md`
 
 ### 相关实现与工具
 

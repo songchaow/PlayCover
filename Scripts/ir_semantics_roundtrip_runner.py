@@ -98,7 +98,6 @@ LOCAL_SHADERCORPUS_REPRESENTATIVE_CONTRACT = [
     {
         "bundleId": "com.tencent.tmgp.speedmobile",
         "moduleKey": "1f5e65cd9f685b3673dd6fac9b81e3af82b5a6d436f8f1824919726483c967ad",
-        "allowedBlocked": True,
     },
 ]
 

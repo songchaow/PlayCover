@@ -267,6 +267,74 @@ class IRCanonicalCompareTests(unittest.TestCase):
         self.assertFalse(comparison["same"])
         self.assertEqual(comparison["fastMathComparison"]["severity"], "L1")
 
+    def test_compare_ignores_single_field_return_wrapper_when_output_semantics_match(self) -> None:
+        original = self._make_optimizer_drift_summary(
+            module_intrinsics={},
+            entry_intrinsics={},
+            cfg={
+                "basicBlockCount": 1,
+                "terminatorCounts": {"ret": 1},
+                "phiCount": 0,
+                "selectCount": 0,
+            },
+            instruction_families={"aggregate": 1},
+        )
+        regenerated = json.loads(json.dumps(original))
+
+        original_entry = original["entries"][0]
+        regenerated_entry = regenerated["entries"][0]
+        original_entry["shaderType"] = "fragment"
+        regenerated_entry["shaderType"] = "fragment"
+        original["entryKeys"] = ["fragment:xlatMtlMain"]
+        regenerated["entryKeys"] = ["fragment:xlatMtlMain"]
+
+        original_entry["returnSignature"] = "<{ <4 x half> }>"
+        regenerated_entry["returnSignature"] = "<4 x half>"
+        original_entry["outputSemantics"] = ["kind=air.render_target|type=half4"]
+        regenerated_entry["outputSemantics"] = ["kind=air.render_target|type=half4"]
+        regenerated_entry["instructionFamilies"] = {}
+        regenerated["moduleInstructionFamilies"] = {}
+
+        comparison = canonical_compare.compare_ir_summaries(original, regenerated)
+
+        self.assertEqual(comparison["riskLevel"], "L1")
+        self.assertTrue(comparison["entryComparison"]["same"])
+        self.assertEqual(comparison["entryComparison"]["severity"], "L0")
+        self.assertFalse(any(item["reason"] == "entry 返回类型摘要变化" for item in comparison["differences"]))
+        self.assertEqual(comparison["instructionFamilyComparison"]["severity"], "L1")
+
+    def test_compare_keeps_single_field_return_wrapper_high_risk_when_output_semantics_change(self) -> None:
+        original = self._make_optimizer_drift_summary(
+            module_intrinsics={},
+            entry_intrinsics={},
+            cfg={
+                "basicBlockCount": 1,
+                "terminatorCounts": {"ret": 1},
+                "phiCount": 0,
+                "selectCount": 0,
+            },
+            instruction_families={},
+        )
+        regenerated = json.loads(json.dumps(original))
+
+        original_entry = original["entries"][0]
+        regenerated_entry = regenerated["entries"][0]
+        original_entry["shaderType"] = "fragment"
+        regenerated_entry["shaderType"] = "fragment"
+        original["entryKeys"] = ["fragment:xlatMtlMain"]
+        regenerated["entryKeys"] = ["fragment:xlatMtlMain"]
+
+        original_entry["returnSignature"] = "<{ <4 x half> }>"
+        regenerated_entry["returnSignature"] = "<4 x half>"
+        original_entry["outputSemantics"] = ["kind=air.render_target|type=half4"]
+        regenerated_entry["outputSemantics"] = ["kind=air.render_target|type=float4"]
+
+        comparison = canonical_compare.compare_ir_summaries(original, regenerated)
+
+        self.assertEqual(comparison["riskLevel"], "L3")
+        self.assertFalse(comparison["entryComparison"]["same"])
+        self.assertTrue(any(item["reason"] == "entry 返回类型摘要变化" for item in comparison["differences"]))
+
     def test_compare_downgrades_small_arithmetic_vector_tradeoff_to_l1(self) -> None:
         original = canonical_compare.extract_ir_summary_text(make_kernel_ir())
         regenerated = canonical_compare.extract_ir_summary_text(make_kernel_ir())

@@ -4113,11 +4113,15 @@ struct IRToMSLConverter {
 
     private static func emitStructuredBasicBlock(
         _ label: String,
+        stopBefore stopLabel: String? = nil,
         bodyLines: [String],
         blockLines: [String: [String]],
         ctx: SSAContext,
         emittedBlocks: inout Set<String>
     ) {
+        if let stopLabel, label == stopLabel {
+            return
+        }
         guard !emittedBlocks.contains(label) else { return }
         emittedBlocks.insert(label)
         ctx.currentBBLabel = label
@@ -4133,6 +4137,8 @@ struct IRToMSLConverter {
             if trimmed.hasPrefix("br ") {
                 if emitStructuredConditionalBranch(
                     trimmed,
+                    currentLabel: label,
+                    stopBefore: stopLabel,
                     bodyLines: bodyLines,
                     blockLines: blockLines,
                     ctx: ctx,
@@ -4143,16 +4149,37 @@ struct IRToMSLConverter {
 
                 translateBr(trimmed, ctx: ctx)
                 if case .unconditional(let dest)? = parseBrInstruction(trimmed) {
-                    emitStructuredBasicBlock(
+                    if let stopLabel, dest == stopLabel {
+                        return
+                    }
+                    if canEagerlyEmitSuccessor(
                         dest,
-                        bodyLines: bodyLines,
-                        blockLines: blockLines,
+                        from: label,
                         ctx: ctx,
-                        emittedBlocks: &emittedBlocks
-                    )
+                        emittedBlocks: emittedBlocks
+                    ) {
+                        emitStructuredBasicBlock(
+                            dest,
+                            stopBefore: stopLabel,
+                            bodyLines: bodyLines,
+                            blockLines: blockLines,
+                            ctx: ctx,
+                            emittedBlocks: &emittedBlocks
+                        )
+                    } else {
+                        emitBlocksInSourceOrderAfter(
+                            label,
+                            stopBefore: stopLabel,
+                            bodyLines: bodyLines,
+                            blockLines: blockLines,
+                            ctx: ctx,
+                            emittedBlocks: &emittedBlocks
+                        )
+                    }
                 } else if case .conditional? = parseBrInstruction(trimmed) {
                     emitBlocksInSourceOrderAfter(
                         label,
+                        stopBefore: stopLabel,
                         bodyLines: bodyLines,
                         blockLines: blockLines,
                         ctx: ctx,
@@ -4167,28 +4194,33 @@ struct IRToMSLConverter {
 
     private static func emitStructuredConditionalBranch(
         _ line: String,
+        currentLabel: String,
+        stopBefore stopLabel: String? = nil,
         bodyLines: [String],
         blockLines: [String: [String]],
         ctx: SSAContext,
         emittedBlocks: inout Set<String>
     ) -> Bool {
         guard case .conditional(let condValue, let trueLabel, let falseLabel)? = parseBrInstruction(line),
-              case .unconditional(let trueMerge)? = ctx.bbInfo[trueLabel]?.branch,
-              case .unconditional(let falseMerge)? = ctx.bbInfo[falseLabel]?.branch,
-              trueMerge == falseMerge,
-              blockLines[trueLabel] != nil,
-              blockLines[falseLabel] != nil,
-              blockLines[trueMerge] != nil else {
+              let shape = findStructuredConditionalShape(
+                  currentLabel: currentLabel,
+                  trueLabel: trueLabel,
+                  falseLabel: falseLabel,
+                  stopBefore: stopLabel,
+                  ctx: ctx,
+                  blockLines: blockLines
+              ) else {
             return false
         }
 
         let cond = resolveIROperand(condValue, ctx: ctx)
-        let mergeLabel = trueMerge
+        let mergeLabel = shape.mergeLabel
 
         ctx.emit("if (\(cond)) {")
         ctx.indentLevel += 1
         emitStructuredBranchArm(
             trueLabel,
+            from: currentLabel,
             stopBefore: mergeLabel,
             bodyLines: bodyLines,
             blockLines: blockLines,
@@ -4200,6 +4232,7 @@ struct IRToMSLConverter {
         ctx.indentLevel += 1
         emitStructuredBranchArm(
             falseLabel,
+            from: currentLabel,
             stopBefore: mergeLabel,
             bodyLines: bodyLines,
             blockLines: blockLines,
@@ -4209,25 +4242,42 @@ struct IRToMSLConverter {
         ctx.indentLevel -= 1
         ctx.emit("}")
 
-        emitStructuredBasicBlock(
-            mergeLabel,
-            bodyLines: bodyLines,
-            blockLines: blockLines,
-            ctx: ctx,
-            emittedBlocks: &emittedBlocks
-        )
+        if stopLabel != mergeLabel,
+           canEmitStructuredMerge(
+               mergeLabel,
+               expectedPredecessors: shape.mergePredecessors,
+               ctx: ctx,
+               emittedBlocks: emittedBlocks
+           ) {
+            emitStructuredBasicBlock(
+                mergeLabel,
+                stopBefore: stopLabel,
+                bodyLines: bodyLines,
+                blockLines: blockLines,
+                ctx: ctx,
+                emittedBlocks: &emittedBlocks
+            )
+        }
         return true
     }
 
     private static func emitStructuredBranchArm(
         _ label: String,
+        from predecessorLabel: String,
         stopBefore stopLabel: String,
         bodyLines: [String],
         blockLines: [String: [String]],
         ctx: SSAContext,
         emittedBlocks: inout Set<String>
     ) {
-        guard label != stopLabel, !emittedBlocks.contains(label) else { return }
+        if label == stopLabel {
+            let phiAssignments = collectPhiAssignments(forTarget: stopLabel, fromPred: predecessorLabel, ctx: ctx)
+            for assignment in phiAssignments {
+                ctx.emit(assignment)
+            }
+            return
+        }
+        guard !emittedBlocks.contains(label) else { return }
         emittedBlocks.insert(label)
         ctx.currentBBLabel = label
 
@@ -4236,20 +4286,51 @@ struct IRToMSLConverter {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty || isPhiInstruction(trimmed) { continue }
             if trimmed.hasPrefix("br ") {
-                if case .unconditional(let dest)? = parseBrInstruction(trimmed), dest == stopLabel {
-                    translateBr(trimmed, ctx: ctx)
+                if emitStructuredConditionalBranch(
+                    trimmed,
+                    currentLabel: label,
+                    stopBefore: stopLabel,
+                    bodyLines: bodyLines,
+                    blockLines: blockLines,
+                    ctx: ctx,
+                    emittedBlocks: &emittedBlocks
+                ) {
                     return
                 }
+
                 translateBr(trimmed, ctx: ctx)
-                if case .unconditional(let dest)? = parseBrInstruction(trimmed),
-                   canEagerlyEmitSuccessor(
-                       dest,
-                       from: label,
-                       ctx: ctx,
-                       emittedBlocks: emittedBlocks
-                   ) {
-                    emitStructuredBasicBlock(
+                if case .unconditional(let dest)? = parseBrInstruction(trimmed) {
+                    if dest == stopLabel {
+                        return
+                    }
+                    if canEagerlyEmitSuccessor(
                         dest,
+                        from: label,
+                        ctx: ctx,
+                        emittedBlocks: emittedBlocks
+                    ) {
+                        emitStructuredBasicBlock(
+                            dest,
+                            stopBefore: stopLabel,
+                            bodyLines: bodyLines,
+                            blockLines: blockLines,
+                            ctx: ctx,
+                            emittedBlocks: &emittedBlocks
+                        )
+                    } else {
+                        emitBlocksInSourceOrderAfter(
+                            label,
+                            stopBefore: stopLabel,
+                            bodyLines: bodyLines,
+                            blockLines: blockLines,
+                            ctx: ctx,
+                            emittedBlocks: &emittedBlocks
+                        )
+                    }
+                } else if case .conditional? = parseBrInstruction(trimmed) {
+                    emitBlocksInSourceOrderAfter(
+                        label,
+                        stopBefore: stopLabel,
                         bodyLines: bodyLines,
                         blockLines: blockLines,
                         ctx: ctx,
@@ -4264,6 +4345,7 @@ struct IRToMSLConverter {
 
     private static func emitBlocksInSourceOrderAfter(
         _ label: String,
+        stopBefore stopLabel: String? = nil,
         bodyLines: [String],
         blockLines: [String: [String]],
         ctx: SSAContext,
@@ -4282,6 +4364,9 @@ struct IRToMSLConverter {
                 }
                 continue
             }
+            if let stopLabel, parsedLabel == stopLabel {
+                break
+            }
             orderedLabels.append(parsedLabel)
         }
 
@@ -4299,6 +4384,7 @@ struct IRToMSLConverter {
                 let beforeCount = emittedBlocks.count
                 emitStructuredBasicBlock(
                     nextLabel,
+                    stopBefore: stopLabel,
                     bodyLines: bodyLines,
                     blockLines: blockLines,
                     ctx: ctx,
@@ -4315,11 +4401,112 @@ struct IRToMSLConverter {
         for nextLabel in pendingLabels where !emittedBlocks.contains(nextLabel) {
             emitStructuredBasicBlock(
                 nextLabel,
+                stopBefore: stopLabel,
                 bodyLines: bodyLines,
                 blockLines: blockLines,
                 ctx: ctx,
                 emittedBlocks: &emittedBlocks
             )
+        }
+    }
+
+    private static func findStructuredConditionalShape(
+        currentLabel: String,
+        trueLabel: String,
+        falseLabel: String,
+        stopBefore stopLabel: String?,
+        ctx: SSAContext,
+        blockLines: [String: [String]]
+    ) -> (mergeLabel: String, mergePredecessors: [String])? {
+        guard blockLines[trueLabel] != nil,
+              blockLines[falseLabel] != nil else {
+            return nil
+        }
+
+        let trueDistances = reachableLabelDistances(from: trueLabel, stopBefore: stopLabel, ctx: ctx)
+        let falseDistances = reachableLabelDistances(from: falseLabel, stopBefore: stopLabel, ctx: ctx)
+        let trueReachable = Set(trueDistances.keys)
+        let falseReachable = Set(falseDistances.keys)
+        let commonCandidates = trueReachable.intersection(falseReachable).filter { label in
+            guard label != currentLabel,
+                  blockLines[label] != nil else {
+                return false
+            }
+            if let stopLabel, label == stopLabel {
+                return true
+            }
+            return (ctx.bbInfo[label]?.predecessors.count ?? 0) > 1
+        }
+
+        guard !commonCandidates.isEmpty else {
+            return nil
+        }
+
+        let orderedCandidates = commonCandidates.compactMap { label -> (String, Int, Int)? in
+            guard let trueDistance = trueDistances[label],
+                  let falseDistance = falseDistances[label] else {
+                return nil
+            }
+            return (label, trueDistance + falseDistance, max(trueDistance, falseDistance))
+        }.sorted { lhs, rhs in
+            if lhs.1 != rhs.1 { return lhs.1 < rhs.1 }
+            if lhs.2 != rhs.2 { return lhs.2 < rhs.2 }
+            return lhs.0 < rhs.0
+        }
+
+        for (candidate, _, _) in orderedCandidates {
+            let mergePredecessors = ctx.bbInfo[candidate]?.predecessors.filter {
+                trueReachable.contains($0) || falseReachable.contains($0)
+            } ?? []
+            if !mergePredecessors.isEmpty {
+                return (candidate, mergePredecessors)
+            }
+        }
+
+        return nil
+    }
+
+    private static func reachableLabelDistances(
+        from startLabel: String,
+        stopBefore stopLabel: String?,
+        ctx: SSAContext
+    ) -> [String: Int] {
+        var distances: [String: Int] = [startLabel: 0]
+        var queue: [String] = [startLabel]
+        var queueIndex = 0
+
+        while queueIndex < queue.count {
+            let label = queue[queueIndex]
+            queueIndex += 1
+            let nextDistance = (distances[label] ?? 0) + 1
+
+            for successor in successorLabels(for: label, ctx: ctx) {
+                if let stopLabel, successor == stopLabel {
+                    if distances[successor] == nil || nextDistance < (distances[successor] ?? Int.max) {
+                        distances[successor] = nextDistance
+                    }
+                    continue
+                }
+                if distances[successor] != nil {
+                    continue
+                }
+                distances[successor] = nextDistance
+                queue.append(successor)
+            }
+        }
+
+        return distances
+    }
+
+    private static func successorLabels(for label: String, ctx: SSAContext) -> [String] {
+        guard let branch = ctx.bbInfo[label]?.branch else {
+            return []
+        }
+        switch branch {
+        case .conditional(_, let trueLabel, let falseLabel):
+            return [trueLabel, falseLabel]
+        case .unconditional(let dest):
+            return [dest]
         }
     }
 
@@ -4334,6 +4521,22 @@ struct IRToMSLConverter {
         }
         let pendingPredecessors = bbInfo.predecessors.filter {
             $0 != predecessor && !emittedBlocks.contains($0)
+        }
+        return pendingPredecessors.isEmpty
+    }
+
+    private static func canEmitStructuredMerge(
+        _ label: String,
+        expectedPredecessors: [String],
+        ctx: SSAContext,
+        emittedBlocks: Set<String>
+    ) -> Bool {
+        guard let bbInfo = ctx.bbInfo[label] else {
+            return true
+        }
+        let expected = Set(expectedPredecessors)
+        let pendingPredecessors = bbInfo.predecessors.filter {
+            !expected.contains($0) && !emittedBlocks.contains($0)
         }
         return pendingPredecessors.isEmpty
     }

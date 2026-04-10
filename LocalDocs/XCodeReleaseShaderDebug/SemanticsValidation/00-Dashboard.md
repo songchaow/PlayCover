@@ -36,14 +36,16 @@
 
 ### 当前最新状态
 
-- 当前主线已完成 `CC-003.4.5.1`：围绕 `91c46448...` 继续下钻时，确认 fallback 路径里还混有一支更窄的 converter bug：**当 `br label %dest` 指向的 merge / final block 仍有其它源码顺序更晚的前驱未发射时，旧实现会提前递归发 `dest`，把最终 merge / `ret` 拉到后续前驱之前**
-- 实现上只做了一刀最小修正：`IRToMSLConverter.swift` 在 fallback 路径下仅在 successor 的其它前驱都已发射时才 eager-emit，并给 `emitBlocksInSourceOrderAfter(...)` 加了最小 deferred 调度；同时补了 `test_late_merge_fallback_order.ll` 与对应 `roundtrip` 单测，专门覆盖“更晚前驱未发射时不能提前发最终 merge / `return`”
-- 但目标 case `cc-003-4-5-single-91c46448-v1` 证明这刀**没有命中 `91c46448...` 当前主 residual**：样本仍为 `L2`，`generated.metal` 里仍存在 `BB1337 -> return` 早于更晚分支族的结构问题，`cfg / instruction-family` 统计也没有进一步下降
-- full-batch 复跑没有统计变化：
-  - diagnostics `cc-003-4-5-diagnostics-20260410-late-merge-order-fix` 仍为 `L1 6 / L2 1 / L3 146`
-  - corpus `cc-003-4-5-corpus-20260410-late-merge-order-fix` 仍为 **`L1 100 / L2 86 / L3 251`**
-  - 相对 `cc-003-4-4-*-20260410-1240-entry-fallback-fix` 的样本级变化均为 `0`
-- 因此当前最新状态可以概括为：**`CC-003.4.5.1` 已完成并证明“late merge eager recursion”确实是一支真实但更窄的 fallback 边界 bug；`CC-003.4.5` 仍未闭环，下一步应继续下钻 `91c46448...` 中 `BB821 / BB845 / BB857 / BB1337 / BB1371` 这支 nested fallback family。**
+- 当前主线已完成 `CC-003.4.5.2`：围绕 `91c46448...` 的 `BB821 / BB845 / BB857 / BB1337 / BB1371` nested fallback family 继续下钻后，确认真正缺口不是继续放大 eager recursion，而是 **structured conditional 某个 arm 直接命中 merge label 时，没有像普通 `br label %merge` 一样补发对应 edge 的 phi 赋值**
+- 实现上只做了一刀最小修正：`IRToMSLConverter.swift` 的 `emitStructuredBranchArm(...)` 新增前驱参数，并在 `label == stopLabel` 时改为先 `collectPhiAssignments(...)` 再返回；同时补了 `test_nested_common_merge.ll` 与 `test_corpus_replay_runner_keeps_nested_common_merge_inside_branch_scope`
+- 目标 case `cc-003-4-5-2-single-91c46448-v6` 已从 **`L2 -> L1`**，`regenerated.ll` 的 CFG / phi 统计也已基本贴近原始 IR：
+  - `basicBlockCount 48 -> 49`
+  - `condbr 20 -> 20`
+  - `phiCount 20 -> 20`
+- full-batch 已出现统计收益且无新增 `L3`：
+  - diagnostics `cc-003-4-5-2-diagnostics-20260410-direct-merge-phi-fix`：`L1 7 / L2 0 / L3 146`
+  - corpus `cc-003-4-5-2-corpus-20260410-direct-merge-phi-fix`：**`L1 102 / L2 84 / L3 251`**
+- 因此当前最新状态可以概括为：**`CC-003.4.5` 已完成闭环；`91c46448...` 已降到可接受 `L1`，下一步应回到 canonical compare 报告继续挑下一支重复出现的高风险 residual family。**
 
 
 ## 当前默认流程
@@ -165,15 +167,15 @@
 | `CC-003.1` 优先检查 `entry 参数语义摘要变化` 的高频残留模式 | DONE | 已完成 resource metadata `air.address_space` 噪声归一化闭环，并确认一批共有样本 `L2 -> L1` 且无回归 | `difference-analysis/resource-metadata-addrspace/04-implementation-result.md` / `difference-analysis/resource-metadata-addrspace/05-full-batch-compare.md` |
 | `CC-003.2` 优先检查 `entry 资源语义摘要变化` 的高频残留模式 | DONE | 已确认残留里有一支是 converter 把 `unity_Builtins0Array_Type` 人为大写化导致的真实实现问题；修复后代表 case `c66b9d4...` 从 `L2 -> L1`，且 diagnostics `L2 3 -> 2`、无新增 `L3` | `difference-analysis/resource-type-name-preservation/04-implementation-result.md` / `difference-analysis/resource-type-name-preservation/05-full-batch-compare.md` |
 | `CC-003.3` 优先检查 `模块级 air intrinsic 使用变化 / 指令族统计变化` 的高频残留模式 | DONE | 已先在 converter 侧收敛 vector / half lowering，再把 `747fc286...` 这一处仅剩的极小 instruction-family compare 噪声降回 `L1`；full-batch 复跑后 corpus `L2 109 -> 107`、`L3` 无新增，diagnostics 持平 | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
-| `CC-003.4` 优先检查 `模块级 addrspace 分布变化 / air intrinsic 使用变化` 的高频残留模式 | DOING | 已确认 `f26d322...` 更像 compare 噪声、`91c46448...` 更像真实 converter CFG 缺口；下一步需把 `91c46448...` 继续拆成可落地的 structured CFG 修复子问题，并完成至少一个实现闭环 | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
+| `CC-003.4` 优先检查 `模块级 addrspace 分布变化 / air intrinsic 使用变化` 的高频残留模式 | DONE | 已完成 `f26d322...` compare 降噪与 `91c46448...` structured CFG 两轮实现闭环；latest `CC-003.4.5.2` 已将 `91c46448...` 从 `L2 -> L1`，且 full-batch `L2` 继续下降、无新增 `L3` | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
 | `CC-003.4.1` 先修 `f26d322...` 中 simple diamond `br + phi` 的 CFG 回放缺口 | DONE | `IRToMSLConverter.swift` 已能把 `condbr -> true/false -> common merge` 这类简单 diamond 发射成真实 `if/else`，并有最小 replay 回归覆盖 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
 | `CC-003.4.2` 继续下钻 `f26d322...` / `91c46448...` 里 helper CFG 与 lowering 残留 | DONE | 已确认 `f26d322...` 在 `CC-003.4.1` 之后剩余的 helper `fract / floor / fmin` 漂移更像 compare 噪声；compare 降噪后 diagnostics `L2 2 -> 1`、corpus `L2 106 -> 87`，且无新增 `L3` | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
 | `CC-003.4.3` 单独下钻 `91c46448...` 的 residual intrinsic / CFG 漂移 | DONE | 已确认 `91c46448...` 当前 residual 不是 compare 噪声：latest artifact 中 `entryComparison` 已为 `L0`，但 `generated.metal` 仍存在空 `if/else` + 顺序覆盖 phi 的真实 CFG 回放缺口 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
 | `CC-003.4.4` 以 `91c46448...` 为入口修 simple diamond 之外的 structured CFG 回放缺口 | DONE | 已完成 self-loop gated partial structured CFG + entry fallback 边界补齐：`91c46448...` 单 case 获得真实 CFG 收益，`d8ff0527...` 回归已收回，full-batch 达到 `corpus L1 100 / L2 86 / L3 251`、diagnostics 持平 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
 | `CC-003.4.4.1` 对比 `91c46448...` 与 `d8ff0527...` 的 self-loop family 差异 | DONE | 已确认回归根因是 entry 首个 non-structured `condbr` 的 fallback 断流，而不是 self-loop family 本身；修复后 `d8ff0527...` 与 `1fb4a75f...` 均从 `L2 -> L1` | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
-| `CC-003.4.5` 在不回退 `CC-003.4.4` 收益的前提下继续下钻 `91c46448...` residual | DOING | 已先修补一支更窄的 fallback eager-recursion 顺序 bug，并完成单测 / 单 case / full-batch 验证；但 `91c46448...` 与整体风险分布均无变化，仍需继续拆 deeper nested fallback family | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
+| `CC-003.4.5` 在不回退 `CC-003.4.4` 收益的前提下继续下钻 `91c46448...` residual | DONE | 已确认真正缺口是 structured conditional 的 direct-to-merge arm 没有补发 phi edge；修复后 `91c46448...` 从 `L2 -> L1`，diagnostics `L2 1 -> 0`、corpus `L2 86 -> 84`，且无新增 `L3` | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
 | `CC-003.4.5.1` 先修 fallback 路径里 final merge / `ret` 被更早前驱提前递归发射的边界缺口 | DONE | `IRToMSLConverter.swift` 已只在 successor 其它前驱齐备时才 eager-emit，并有 `test_late_merge_fallback_order.ll` 回归覆盖；但 `91c46448...` 与 full-batch 均无统计变化 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
-| `CC-003.4.5.2` 继续下钻 `91c46448...` 中 `BB821 / BB845 / BB857 / BB1337 / BB1371` 的 nested fallback family | TODO | 明确到底是哪一层递归仍把 `BB1337 -> 1371 -> ret` 提前到更晚分支族之前，并找到下一刀真正影响 `91c46448...` 的最小实现切口 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
+| `CC-003.4.5.2` 继续下钻 `91c46448...` 中 `BB821 / BB845 / BB857 / BB1337 / BB1371` 的 nested fallback family | DONE | 已定位真正切口是 structured conditional 的 direct-to-merge arm 未补 phi edge；补齐后 `91c46448...` 从 `L2 -> L1`，nested common merge 最小样本与 full-batch 全部验证通过 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
 | `CC-004` 固化新的 case 分析模板 | TODO | 在 `difference-analysis/` 下沉淀一套稳定模板，确保后续每个 case 都按同样结构记录证据、结论与回归数据 | `difference-analysis/` |
 
 ## 任务执行规则

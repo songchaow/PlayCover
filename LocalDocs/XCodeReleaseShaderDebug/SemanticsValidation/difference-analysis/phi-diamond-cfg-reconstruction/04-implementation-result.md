@@ -526,3 +526,103 @@
 - 它已经在最小样本与回归单测层面形成闭环
 - 但它**没有**给 `91c46448...` 带来单 case 或 full-batch 的统计收益，因此不能把 `CC-003.4.5` 标成完成
 - 下一步不该继续泛化这条 eager-recursion 规则，而应继续下钻 `91c46448...` 中 `BB821 / BB845 / BB857 / BB1337 / BB1371` 这支 nested fallback family，确认真正把 `BB1337 -> 1371 -> ret` 提前出来的递归入口到底落在哪一层
+
+## CC-003.4.5.2：direct-to-merge arm 的 phi edge 补齐
+
+这轮继续沿 `91c46448...` 的 nested fallback family 往下拆，但最终定位到的最小实现切口并不是继续放大 eager recursion 规则，而是 structured conditional 的一个更直接边界：**当 `condbr` 的某个 arm 直接跳到 merge label 时，旧实现会把这个 arm 当成“空 arm”处理，却没有像普通 `br label %merge` 那样补发该 edge 对应的 phi 赋值。**
+
+## 新证据
+
+这轮先把 `91c46448...` 的 residual 形状抽象成一个新的最小样本：
+
+- `LocalDocs/XCodeReleaseShaderDebug/RoadE-HookMakeLibraryWithSrc/test-data/test_nested_common_merge.ll`
+
+样本特征是：
+
+- 外层一支分支可直接到最终 merge
+- 另一支分支内部还有 nested common merge
+- 其中内层 merge 有一条 arm 会**直接**落到 merge label
+
+修复前，`generated.metal` 会稳定缺少：
+
+- `phi_0 = 1.0; // phi from BB3`
+
+表现出来就是：
+
+- outer `else` 里内层 `if (t3) {}` 仍是空 arm
+- `phi_1 = phi_0` 虽然留在了外层 branch scope 内，但 `phi_0` 并没有吃到来自 direct-to-merge edge 的输入
+
+这说明当前 residual 真正缺的是 **merge edge 的 phi 发射**，而不是更深一层的 fallback 顺序本身。
+
+## 本轮实现内容
+
+实现仍只落在：
+
+- `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift`
+
+这轮只补了一刀最小修正：
+
+1. `emitStructuredBranchArm(...)` 新增 `from predecessorLabel: String`
+2. 当 `label == stopLabel` 时，不再直接 `return`
+3. 改为先执行 `collectPhiAssignments(forTarget: stopLabel, fromPred: predecessorLabel, ctx: ctx)`，把 direct-to-merge edge 对应的 phi 赋值落盘，再结束该 arm
+4. `emitStructuredConditionalBranch(...)` 在 true / false arm 调用处把 `currentLabel` 传给 `emitStructuredBranchArm(...)`
+
+同时新增 / 固化回归：
+
+- `LocalDocs/XCodeReleaseShaderDebug/RoadE-HookMakeLibraryWithSrc/test-data/test_nested_common_merge.ll`
+- `Scripts/test_ir_semantics_roundtrip_runner.py` 里的 `test_corpus_replay_runner_keeps_nested_common_merge_inside_branch_scope`
+
+## 验证结果
+
+### 最小回归
+
+1. `python3 Scripts/test_ir_canonical_compare.py`
+   - 通过
+2. `python3 Scripts/test_ir_semantics_roundtrip_runner.py`
+   - 通过（30 tests）
+3. `python3 Scripts/corpus_replay_runner.py --ll LocalDocs/.../test_nested_common_merge.ll --output-file build/nested-common-merge.generated.metal`
+   - `generated.metal` 已补回 `phi_0 = 1.0; // phi from BB3`
+   - `phi_1 = phi_0` 仍保持在 outer `else` scope 内
+   - 只有一个 `return;`
+
+### 单 case：`91c46448...`
+
+1. `python3 Scripts/ir_semantics_roundtrip_runner.py --ll /Users/songdogwang/Library/Containers/io.playcover.PlayCover/ShaderSourceDiagnostics/com.miHoYo.Yuanshen/2026-04-04T08_04_46Z_newLibraryWithData_error__compile_failed_modules/91c46448ca24983b29716a9fe2c28a7930c10b81802758ded6977907bf01ae9b/module.ll --output-root build/semantics-validation/roundtrip/cc-003-4-5-2-single-91c46448-v6 --allow-failures`
+   - 结果：**`L2 -> L1`**
+   - `riskReason` 仍是：
+     - `模块级 addrspace 分布变化`
+     - `模块级 air intrinsic 使用变化`
+     - `函数内 air intrinsic 调用统计变化`
+   - 但 `compare-summary.json` 里的结构摘要已经基本贴近原始 IR：
+     - `basicBlockCount 48 -> 49`
+     - `condbr 20 -> 20`
+     - `phiCount 20 -> 20`
+   - `module addrspace` 也从上一版的 `36/180 -> 34/152` 收敛到 `36/180 -> 36/178`
+
+### full-batch
+
+1. diagnostics 复跑：
+   - 输出：`build/semantics-validation/roundtrip/cc-003-4-5-2-diagnostics-20260410-direct-merge-phi-fix`
+   - 结果：`L1 7 / L2 0 / L3 146`
+   - 相对 `cc-003-4-4-diagnostics-20260410-1240-entry-fallback-fix` 的 `L1 6 / L2 1 / L3 146`：
+     - `91c46448...`：`L2 -> L1`
+     - 无新增 `L3`
+2. corpus 复跑：
+   - 输出：`build/semantics-validation/roundtrip/cc-003-4-5-2-corpus-20260410-direct-merge-phi-fix`
+   - 结果：`L1 102 / L2 84 / L3 251`
+   - 相对 `cc-003-4-4-corpus-20260410-1240-entry-fallback-fix` 的 `L1 100 / L2 86 / L3 251`：
+     - `L2` 净减 `2`
+     - `91c46448...` 已降到 `L1`
+     - 无新增 `L3`
+
+## 当前结论
+
+这轮可以把 `CC-003.4.5.2` 收敛成下面这个判断：
+
+- `91c46448...` nested fallback family 里真正缺的，不是继续放大 fallback eager recursion，而是 **structured conditional 的 direct-to-merge arm 没有补发 phi edge**
+- 这是一刀非常小的 converter 修复，但它同时命中了：
+  - 新的 nested common merge 最小样本
+  - 目标样本 `91c46448...`
+  - full-batch 的 `L2` 统计下降
+- 因此 `CC-003.4.5` 可以标成完成：`91c46448...` 已从 `L2 -> L1`，diagnostics `L2 1 -> 0`，corpus `L2 86 -> 84`，且无新增 `L3`
+- 下一步不应继续深挖 `91c46448...`，而应回到 canonical compare 报告，挑下一支重复出现的高风险 residual family

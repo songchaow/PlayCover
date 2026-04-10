@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import difflib
+import functools
 import hashlib
 import json
 import re
@@ -260,15 +261,77 @@ class DiscoveryWarning:
     message: str
 
 
-REPLACEMENT_SOURCE_VALIDATION_RULES: list[tuple[str, re.Pattern[str]]] = [
-    ("LLVM vector syntax leaked into generated MSL", re.compile(r"<\s*\d+\s+x\s+")),
-    ("LLVM opaque pointer token leaked into generated MSL", re.compile(r"(^|[^A-Za-z0-9_])ptr([^A-Za-z0-9_]|$)")),
-    ("LLVM addrspace token leaked into generated MSL", re.compile(r"addrspace\s*\(")),
-    ("LLVM SSA or struct token leaked into generated MSL", re.compile(r"%[A-Za-z0-9_\.\"]+")),
-    ("LLVM raw integer type leaked into generated MSL", re.compile(r"(^|[^A-Za-z0-9_])(i1|i8|i16|i32|i64)([^A-Za-z0-9_]|$)")),
-    ("LLVM symbol token leaked into generated MSL", re.compile(r"@[A-Za-z0-9_\.\"]+")),
-    ("LLVM placeholder token leaked into generated MSL", re.compile(r"\b(?:undef|poison|zeroinitializer)\b")),
-]
+SHARED_COMPILE_DECISION_MANIFEST_SWIFT = (
+    Path(__file__).resolve().parent.parent
+    / "Carthage"
+    / "Checkouts"
+    / "PlayTools"
+    / "PlayTools"
+    / "LibrarySourceInjectionSwizzles.swift"
+)
+SHARED_COMPILE_DECISION_MANIFEST_REGEX = re.compile(
+    r'private static let sharedCompileDecisionManifestJSON = #"""(?P<payload>.*?)"""#',
+    re.DOTALL,
+)
+
+
+def shared_compile_decision_manifest_path() -> Path:
+    return SHARED_COMPILE_DECISION_MANIFEST_SWIFT
+
+
+@functools.lru_cache(maxsize=None)
+def load_shared_compile_decision_manifest(manifest_source_path: Path | None = None) -> dict[str, Any]:
+    source_path = (manifest_source_path or shared_compile_decision_manifest_path()).expanduser().resolve()
+    try:
+        source_text = source_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(
+            f"failed to read shared compile decision manifest source: {source_path} ({exc})"
+        ) from exc
+
+    match = SHARED_COMPILE_DECISION_MANIFEST_REGEX.search(source_text)
+    if match is None:
+        raise RuntimeError(f"shared compile decision manifest JSON not found in {source_path}")
+
+    try:
+        manifest = json.loads(match.group("payload"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"invalid shared compile decision manifest JSON in {source_path}: {exc}"
+        ) from exc
+
+    fast_math = manifest.get("fastMath")
+    validation_rules = manifest.get("replacementSourceValidationRules")
+    if not isinstance(fast_math, dict):
+        raise RuntimeError(f"shared compile decision manifest is missing fastMath config: {source_path}")
+    if not isinstance(fast_math.get("enableOption"), str) or not isinstance(fast_math.get("disableOption"), str):
+        raise RuntimeError(f"shared compile decision manifest fastMath config is invalid: {source_path}")
+    if not isinstance(validation_rules, list) or not validation_rules:
+        raise RuntimeError(f"shared compile decision manifest has no validation rules: {source_path}")
+    for index, entry in enumerate(validation_rules):
+        if not isinstance(entry, dict):
+            raise RuntimeError(f"shared compile decision validation rule #{index} is not an object: {source_path}")
+        if not isinstance(entry.get("reason"), str) or not isinstance(entry.get("pattern"), str):
+            raise RuntimeError(
+                f"shared compile decision validation rule #{index} is missing reason/pattern: {source_path}"
+            )
+
+    return manifest
+
+
+def compile_replacement_source_validation_rules(
+    manifest: dict[str, Any],
+) -> list[tuple[str, re.Pattern[str]]]:
+    return [
+        (str(entry["reason"]), re.compile(str(entry["pattern"])))
+        for entry in manifest["replacementSourceValidationRules"]
+    ]
+
+
+SHARED_COMPILE_DECISION_MANIFEST = load_shared_compile_decision_manifest()
+REPLACEMENT_SOURCE_VALIDATION_RULES: list[tuple[str, re.Pattern[str]]] = compile_replacement_source_validation_rules(
+    SHARED_COMPILE_DECISION_MANIFEST
+)
 
 COMPILER_DIAGNOSTIC_REGEX = re.compile(
     r"^(?P<file>.+?):(?P<line>\d+):(?P<column>\d+): (?P<severity>warning|error|note): (?P<message>.+)$",
@@ -287,8 +350,8 @@ COMPILE_FAILURE_CATEGORY_RULES: list[tuple[str, re.Pattern[str]]] = [
     ("unsupported_builtin", re.compile(r"\bair\.|builtin|intrinsic", re.IGNORECASE)),
 ]
 
-FAST_MATH_ENABLE_OPTION = "air.compile.fast_math_enable"
-FAST_MATH_DISABLE_OPTION = "air.compile.fast_math_disable"
+FAST_MATH_ENABLE_OPTION = str(SHARED_COMPILE_DECISION_MANIFEST["fastMath"]["enableOption"])
+FAST_MATH_DISABLE_OPTION = str(SHARED_COMPILE_DECISION_MANIFEST["fastMath"]["disableOption"])
 EXPLICIT_FAST_MATH_METAL_ARGS = {"-ffast-math", "-fno-fast-math"}
 
 

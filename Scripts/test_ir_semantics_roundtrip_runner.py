@@ -83,6 +83,53 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
         )
         self.assertRegex(output_root.name, r"^\d{8}-\d{6}-[0-9a-f]{8}$")
 
+    def test_load_shared_compile_decision_manifest_from_swift_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            swift_path = Path(temp_dir) / "LibrarySourceInjectionSwizzles.swift"
+            swift_path.write_text(
+                'private final class Dummy {\n'
+                '    private static let sharedCompileDecisionManifestJSON = #"""\n'
+                '{\n'
+                '  "schemaVersion": 1,\n'
+                '  "fastMath": {\n'
+                '    "enableOption": "custom.fast_math_enable",\n'
+                '    "disableOption": "custom.fast_math_disable"\n'
+                '  },\n'
+                '  "replacementSourceValidationRules": [\n'
+                '    {\n'
+                '      "reason": "synthetic rule",\n'
+                '      "pattern": "foo+"\n'
+                '    }\n'
+                '  ]\n'
+                '}\n'
+                '"""#\n'
+                '}\n',
+                encoding="utf-8",
+            )
+
+            manifest = roundtrip_runner.replay_runner.load_shared_compile_decision_manifest(swift_path)
+
+        self.assertEqual(manifest["fastMath"]["enableOption"], "custom.fast_math_enable")
+        self.assertEqual(manifest["fastMath"]["disableOption"], "custom.fast_math_disable")
+        self.assertEqual(manifest["replacementSourceValidationRules"][0]["reason"], "synthetic rule")
+        self.assertEqual(manifest["replacementSourceValidationRules"][0]["pattern"], "foo+")
+
+    def test_replay_runner_uses_shared_compile_decision_manifest(self) -> None:
+        manifest = roundtrip_runner.replay_runner.load_shared_compile_decision_manifest()
+
+        self.assertEqual(
+            roundtrip_runner.replay_runner.FAST_MATH_ENABLE_OPTION,
+            manifest["fastMath"]["enableOption"],
+        )
+        self.assertEqual(
+            roundtrip_runner.replay_runner.FAST_MATH_DISABLE_OPTION,
+            manifest["fastMath"]["disableOption"],
+        )
+        self.assertEqual(
+            [reason for reason, _ in roundtrip_runner.replay_runner.REPLACEMENT_SOURCE_VALIDATION_RULES],
+            [entry["reason"] for entry in manifest["replacementSourceValidationRules"]],
+        )
+
     def test_resolve_compile_metal_args_infers_fast_math_disable(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             original_ir_path = Path(temp_dir) / "original.ll"

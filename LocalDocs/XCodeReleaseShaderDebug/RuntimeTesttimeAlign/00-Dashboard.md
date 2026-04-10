@@ -15,9 +15,10 @@
 
 - **当前主线**：先完成 `RTA-001`，把 runtime 与离线 compile path 的**决策层**收口，再继续下钻上游 `SemanticsValidation` 里的 `entry 参数` 残余高风险 family。
 - 当前已确认的关键事实：
-  - runtime 真实路径是 `bitcode -> LLVMDisassembler -> IRToMSLConverter -> 多模块 aggregate -> newLibraryWithSource(..., options: nil)`
+  - runtime 真实路径是 `bitcode -> LLVMDisassembler -> IRToMSLConverter -> 多模块 aggregate -> newLibraryWithSource(..., options: MTLCompileOptions?)`
   - 离线默认路径是 `module.ll -> IRToMSLConverter -> xcrun metal -c -> llvm-dis -> canonical compare`
-  - 两边目前尚未共用同一份 compile posture / preflight / aggregate 决策；`fast-math` 只是已暴露出来的第一条差异
+  - `RTA-001.1` 已完成：runtime 已能依据 original IR 中可判定且全模块一致的 `fast-math` posture，显式设置 `MTLCompileOptions.fastMathEnabled`
+  - 两边目前仍未共用同一份 compile posture / preflight / aggregate 决策实现；`fast-math` 的显式映射已打通，但“单一来源”问题仍待继续收口
 - 当前默认判断：**不要继续把离线 compile 结果直接当作 runtime 真值**；在完成 `RTA-001` 之前，后续 case 分析都要把这一层漂移计入风险。
 
 ## 构建与验证的方法
@@ -74,9 +75,9 @@
 
 | 任务 | 状态 | 结束标准 | 备注 |
 |---|---|---|---|
-| `RTA-001` 统一 runtime 与离线 compile decision 层 | DOING | runtime 与离线不再各自维护独立的 compile posture 决策；至少 `fast-math` 已共用同一套判断逻辑，并能分别映射到 `MTLCompileOptions` 与离线 metal args | 当前最高优先级 |
-| `RTA-001.1` runtime 显式接入 `fast-math` compile posture 对齐 | TODO | runtime 不再固定 `options: nil`；对于 original IR 中可判定的 `fast-math` posture，能显式设置对应编译选项 | `fast-math` 是当前已确认的第一条真实漂移 |
-| `RTA-001.2` 提取 compile preflight 规则的单一来源 | TODO | Swift runtime 与 Python 离线脚本不再各自维护一份手写规则；新增规则时只需改一处 | 当前两边规则内容接近，但维护方式仍分叉 |
+| `RTA-001` 统一 runtime 与离线 compile decision 层 | DOING | runtime 与离线不再各自维护独立的 compile posture 决策；至少 `fast-math` 已共用同一套判断逻辑，并能分别映射到 `MTLCompileOptions` 与离线 metal args | 已完成 `RTA-001.1`；当前最高优先级转到 `RTA-001.2` |
+| `RTA-001.1` runtime 显式接入 `fast-math` compile posture 对齐 | DONE | runtime 不再固定 `options: nil`；对于 original IR 中可判定的 `fast-math` posture，能显式设置对应编译选项 | 已接入 `MTLCompileOptions.fastMathEnabled`；仅在全模块都可判定且结论一致时显式设置；`./BuildScripts/build_gui.sh` 已通过 |
+| `RTA-001.2` 提取 compile preflight 规则的单一来源 | TODO | Swift runtime 与 Python 离线脚本不再各自维护一份手写规则；新增规则时只需改一处 | 当前最高优先级；当前两边规则内容接近，但维护方式仍分叉 |
 | `RTA-001.3` 为离线补一条贴近 runtime 的“多模块 aggregate + compile”验证入口 | TODO | agent 可在不依赖人工操作的前提下，验证 aggregate 形态下的 compile 结果；至少能覆盖 runtime 特有的 aggregate / dedupe / preflight 风险 | 不替代现有 round-trip；作为补充真值入口 |
 | `RTA-001.4` 明确 Swift 与 Python 的共用边界 | TODO | 形成稳定约定：哪些逻辑留在 Swift，哪些只做 orchestration，哪些通过 JSON / manifest / harness 共享 | 目标是减少双份逻辑，不强求统一 backend |
 | `RTA-002` 明确“必须对齐”和“有意保留”的差异边界 | TODO | 文档中能稳定回答：哪些差异必须继续收口，哪些属于 backend / 输入形态天然不同、无需强行统一 | 避免无限扩大统一范围 |
@@ -87,6 +88,7 @@
 - **离线 `xcrun metal -c` 成功，不等于 runtime `newLibraryWithSource` 一定成功**。
 - **backend 不同可以保留，但 compile decision 不能长期分叉**；真正要统一的是“决策层”，不是强行把 runtime 和离线都改成同一个执行 backend。
 - **多模块 aggregate 是 runtime 的真实形态**；离线若长期只看单模块结果，会系统性漏掉 runtime 特有问题。
+- **`fast-math` posture 在 runtime 侧应走保守显式化策略**：只有 original IR 可判定且 aggregate 内所有模块结论一致时，才显式设置 `MTLCompileOptions.fastMathEnabled`；部分可判定、互相冲突或完全不可判定时继续回退默认编译行为。
 - **规则表与常量一旦双份维护，迟早会漂**；凡是 preflight / posture / compile metadata 这类高频规则，优先寻找单一来源。
 - **涉及 PlayCover 构建、重建、安装时，一律优先使用 `BuildScripts/`**；不要回退到手写 `xcodebuild`。
 

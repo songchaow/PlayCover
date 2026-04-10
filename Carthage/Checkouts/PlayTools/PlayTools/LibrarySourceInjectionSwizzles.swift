@@ -171,8 +171,8 @@ private final class LibrarySourceInjectionSwizzles: NSObject {
             modules: modules,
             selector: selector,
             cacheKey: cacheKey,
-            compileSource: { source, compileError in
-                self.pc_newLibraryWithSource(source, options: nil, error: compileError)
+            compileSource: { source, options, compileError in
+                self.pc_newLibraryWithSource(source, options: options, error: compileError)
             }
         ) ?? originalLibrary
     }
@@ -405,7 +405,7 @@ class LibrarySourceInjectionService {
         modules: [MetallibParser.BitcodeModule],
         selector: String,
         cacheKey: String,
-        compileSource: (_ source: NSString, _ error: UnsafeMutablePointer<NSError?>?) -> AnyObject?
+        compileSource: (_ source: NSString, _ options: MTLCompileOptions?, _ error: UnsafeMutablePointer<NSError?>?) -> AnyObject?
     ) -> AnyObject? {
         let moduleKeys = modules.map { stableCorpusModuleKey(for: $0) }.sorted()
         let replacementDetails = [
@@ -583,23 +583,33 @@ class LibrarySourceInjectionService {
                 return nil
             }
 
+            let compileDecision = resolveAggregateReplacementCompileDecision(for: preparedModules)
+            let compileDetails = replacementDetails.merging([
+                "sourceFunctionCount": String(aggregate.functionCount),
+                "sourceLength": String(aggregate.source.utf8.count),
+                "fastMathMode": compileDecision.fastMathMode?.rawValue ?? "default",
+                "fastMathDecision": compileDecision.reason,
+                "usesExplicitCompileOptions": compileDecision.options == nil ? "false" : "true",
+            ]) { _, new in new }
+            NSLog("[PlayTools] LibrarySourceInjection: %@ — aggregate compile posture %@ (fastMath=%@, explicitOptions=%d)",
+                  selector,
+                  compileDecision.reason,
+                  compileDecision.fastMathMode?.rawValue ?? "default",
+                  compileDecision.options == nil ? 0 : 1)
             RuntimeLaunchDiagnostics.record(
                 event: "replacement_compile_started",
                 bundleId: runtimeBundleIdentifier,
-                details: replacementDetails.merging([
-                    "sourceFunctionCount": String(aggregate.functionCount),
-                    "sourceLength": String(aggregate.source.utf8.count),
-                ]) { _, new in new }
+                details: compileDetails
             )
 
             var compileError: NSError?
-            let replacementLibrary = compileSource(aggregate.source as NSString, &compileError)
+            let replacementLibrary = compileSource(aggregate.source as NSString, compileDecision.options, &compileError)
             guard let replacementLibrary else {
                 let compilerMessage = compileError?.localizedDescription ?? "unknown error"
                 RuntimeLaunchDiagnostics.record(
                     event: "replacement_compile_failed",
                     bundleId: runtimeBundleIdentifier,
-                    details: replacementDetails.merging([
+                    details: compileDetails.merging([
                         "compilerMessage": compilerMessage,
                     ]) { _, new in new }
                 )
@@ -654,7 +664,7 @@ class LibrarySourceInjectionService {
             RuntimeLaunchDiagnostics.record(
                 event: "replacement_succeeded",
                 bundleId: runtimeBundleIdentifier,
-                details: replacementDetails.merging([
+                details: compileDetails.merging([
                     "functionCount": String(replacedFunctionCount),
                     "corpusDumpCount": String(dumpedCorpusPaths.count),
                 ]) { _, new in new }
@@ -736,6 +746,74 @@ class LibrarySourceInjectionService {
             }
             return nil
         }
+    }
+
+    private enum AggregateReplacementFastMathMode: String {
+        case enable
+        case disable
+
+        var fastMathEnabled: Bool {
+            switch self {
+            case .enable:
+                return true
+            case .disable:
+                return false
+            }
+        }
+    }
+
+    private struct AggregateReplacementCompileDecision {
+        let fastMathMode: AggregateReplacementFastMathMode?
+        let options: MTLCompileOptions?
+        let reason: String
+    }
+
+    private func inferAggregateReplacementFastMathMode(from irText: String) -> AggregateReplacementFastMathMode? {
+        let hasDisable = irText.contains("air.compile.fast_math_disable")
+        let hasEnable = irText.contains("air.compile.fast_math_enable")
+        if hasDisable && !hasEnable {
+            return .disable
+        }
+        if hasEnable && !hasDisable {
+            return .enable
+        }
+        return nil
+    }
+
+    private func resolveAggregateReplacementCompileDecision(
+        for preparedModules: [PreparedModuleReplacement]
+    ) -> AggregateReplacementCompileDecision {
+        let inferredModes = preparedModules.map { inferAggregateReplacementFastMathMode(from: $0.irResult.irText) }
+        let knownModes = inferredModes.compactMap { $0 }
+        guard let firstKnownMode = knownModes.first else {
+            return AggregateReplacementCompileDecision(
+                fastMathMode: nil,
+                options: nil,
+                reason: "fast_math_unavailable"
+            )
+        }
+        guard knownModes.allSatisfy({ $0 == firstKnownMode }) else {
+            return AggregateReplacementCompileDecision(
+                fastMathMode: nil,
+                options: nil,
+                reason: "fast_math_conflict"
+            )
+        }
+        guard knownModes.count == inferredModes.count else {
+            return AggregateReplacementCompileDecision(
+                fastMathMode: nil,
+                options: nil,
+                reason: "fast_math_partial"
+            )
+        }
+
+        let options = MTLCompileOptions()
+        options.fastMathEnabled = firstKnownMode.fastMathEnabled
+        return AggregateReplacementCompileDecision(
+            fastMathMode: firstKnownMode,
+            options: options,
+            reason: "fast_math_aligned"
+        )
     }
 
     private struct PreparedModuleReplacement {

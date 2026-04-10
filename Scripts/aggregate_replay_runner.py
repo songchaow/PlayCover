@@ -646,41 +646,21 @@ def compare_aggregate_sources(current_path: Path, baseline_path: Path | None) ->
     return comparison
 
 
-def resolve_user_fast_math_override(user_metal_args: list[str] | None) -> str | None:
-    override_mode: str | None = None
-    for arg in user_metal_args or []:
-        if arg == "-ffast-math":
-            override_mode = "enable"
-        elif arg == "-fno-fast-math":
-            override_mode = "disable"
-    return override_mode
-
-
 # 这里是 `xcrun metal -c` 专用的 compile posture -> CLI args 映射层。
 # 共享的是 token / 决策语义，不共享执行宿主；`mtl-device` 路径应继续让 Swift runtime-like harness 自己决策。
 def resolve_aggregate_compile_metal_args(
     original_ir_paths: list[Path],
     user_metal_args: list[str] | None,
+    *,
+    shared_compile_planner_binary: Path | str,
 ) -> tuple[str | None, str, list[str], list[str]]:
-    effective_args = list(user_metal_args or [])
-    explicit_override_mode = resolve_user_fast_math_override(effective_args)
-    if explicit_override_mode is not None:
-        return explicit_override_mode, "user_override", [], effective_args
-
-    inferred_modes = [replay_runner.infer_original_ir_fast_math_mode(path) for path in original_ir_paths]
-    known_modes = [mode for mode in inferred_modes if mode is not None]
-    if not known_modes:
-        return None, "fast_math_unavailable", [], effective_args
-
-    first_mode = known_modes[0]
-    if any(mode != first_mode for mode in known_modes):
-        return None, "fast_math_conflict", [], effective_args
-
-    if len(known_modes) != len(inferred_modes):
-        return None, "fast_math_partial", [], effective_args
-
-    inferred_args = ["-ffast-math"] if first_mode == "enable" else ["-fno-fast-math"]
-    return first_mode, "fast_math_aligned", inferred_args, [*inferred_args, *effective_args]
+    plan = replay_runner.resolve_shared_compile_plan(
+        original_ir_paths,
+        user_metal_args,
+        requested_backend="xcrun",
+        shared_compile_planner_binary=shared_compile_planner_binary,
+    )
+    return replay_runner.unpack_shared_compile_plan(plan)
 
 
 def compile_aggregate_source(
@@ -839,11 +819,37 @@ def compile_aggregate_source(
         base_result["clusterTitle"] = cluster_title
         return base_result
 
-    # CLI backend 保留边界：这里只服务 `xcrun metal -c`，负责把共享 fast-math posture 映射为 CLI metal args。
-    fast_math_mode, fast_math_decision, inferred_args, effective_args = resolve_aggregate_compile_metal_args(
-        original_ir_paths,
-        list(args.metal_args),
-    )
+    # CLI backend 保留边界：这里只服务 `xcrun metal -c`，负责消费 shared planner 的 compile plan，
+    # 再把同一份语义结果投影为 CLI metal args。
+    shared_compile_planner_binary = getattr(args, "shared_compile_planner_binary", None)
+    if not shared_compile_planner_binary:
+        base_result["status"] = "compile_failed"
+        base_result["error"] = "shared compile planner binary is missing"
+        cluster_key, cluster_category, cluster_title = replay_runner.derive_failure_cluster(
+            base_result["status"], [], preflight_issues, base_result["error"]
+        )
+        base_result["clusterKey"] = cluster_key
+        base_result["clusterCategory"] = cluster_category
+        base_result["clusterTitle"] = cluster_title
+        return base_result
+
+    try:
+        fast_math_mode, fast_math_decision, inferred_args, effective_args = resolve_aggregate_compile_metal_args(
+            original_ir_paths,
+            list(args.metal_args),
+            shared_compile_planner_binary=shared_compile_planner_binary,
+        )
+    except (RuntimeError, subprocess.CalledProcessError) as exc:
+        base_result["status"] = "compile_failed"
+        base_result["error"] = str(exc)
+        cluster_key, cluster_category, cluster_title = replay_runner.derive_failure_cluster(
+            base_result["status"], [], preflight_issues, base_result["error"]
+        )
+        base_result["clusterKey"] = cluster_key
+        base_result["clusterCategory"] = cluster_category
+        base_result["clusterTitle"] = cluster_title
+        return base_result
+
     base_result["fastMathMode"] = fast_math_mode
     base_result["fastMathDecision"] = fast_math_decision
     base_result["inferredMetalArgs"] = inferred_args
@@ -1066,6 +1072,7 @@ def build_report(
             "compileBackend": args.compile_backend,
             "metalSDK": args.metal_sdk,
             "metalArgs": list(args.metal_args),
+            "sharedCompilePlanner": args.compile_backend == "xcrun",
             "skipPreflight": bool(args.skip_preflight),
         },
         "aggregateJobCount": len(jobs),
@@ -1174,6 +1181,16 @@ def main() -> int:
 
     output_root = Path(args.output_root).expanduser().resolve() if args.output_root else default_output_root(root).resolve()
     report_path = Path(args.report_file).expanduser().resolve() if args.report_file else default_report_path(output_root)
+    if args.compile_backend == "xcrun":
+        try:
+            args.shared_compile_planner_binary = str(replay_runner.build_shared_compile_planner_harness_binary(root, output_root))
+        except subprocess.CalledProcessError as exc:
+            detail = "\n".join(part for part in [exc.stdout.strip(), exc.stderr.strip()] if part) or str(exc)
+            print(f"error: failed to build shared compile planner harness: {detail}", file=sys.stderr)
+            return 2
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
     if args.compile_backend == "mtl-device":
         try:
             args.aggregate_compile_harness_binary = str(build_aggregate_compile_harness_binary(root, output_root))

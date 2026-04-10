@@ -672,6 +672,92 @@ def build_runner_binary(temp_dir: Path, converter_swift: Path) -> Path:
     return binary_path
 
 
+def shared_compile_planner_harness_swift_path(root: Path) -> Path:
+    return root / "Scripts" / "shared_compile_planner_harness.swift"
+
+
+def build_shared_compile_planner_harness_binary(root: Path, output_root: Path) -> Path:
+    harness_swift = shared_compile_planner_harness_swift_path(root)
+    if not harness_swift.is_file():
+        raise RuntimeError(f"cannot find shared compile planner harness at {harness_swift}")
+
+    shared_compile_planner_swift = shared_compile_decision_manifest_path().expanduser().resolve()
+    if not shared_compile_planner_swift.is_file():
+        raise RuntimeError(f"cannot find shared compile planner Swift source at {shared_compile_planner_swift}")
+
+    binary_path = (output_root / "_internal" / "shared_compile_planner_harness").resolve()
+    binary_path.parent.mkdir(parents=True, exist_ok=True)
+    command = ["swiftc", str(shared_compile_planner_swift), str(harness_swift), "-o", str(binary_path)]
+    subprocess.run(command, check=True, capture_output=True, text=True)
+    return binary_path
+
+
+def load_original_ir_texts(original_ir_paths: list[Path]) -> list[str]:
+    original_ir_texts: list[str] = []
+    for original_ir_path in original_ir_paths:
+        try:
+            original_ir_texts.append(original_ir_path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            original_ir_texts.append("")
+    return original_ir_texts
+
+
+def resolve_shared_compile_plan(
+    original_ir_paths: list[Path],
+    user_metal_args: list[str] | None,
+    *,
+    requested_backend: str,
+    shared_compile_planner_binary: Path | str,
+) -> dict[str, Any]:
+    binary_path = Path(shared_compile_planner_binary).expanduser().resolve()
+    if not binary_path.is_file():
+        raise RuntimeError(f"shared compile planner binary is missing: {binary_path}")
+
+    payload = {
+        "originalIRTexts": load_original_ir_texts(original_ir_paths),
+        "userMetalArgs": list(user_metal_args or []),
+        "requestedBackend": requested_backend,
+    }
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        input_path = Path(temp_dir) / "planner-input.json"
+        input_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        completed = subprocess.run(
+            [str(binary_path), str(input_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    try:
+        plan = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"invalid shared compile planner output: {exc}") from exc
+
+    if not isinstance(plan, dict):
+        raise RuntimeError("shared compile planner output is not a JSON object")
+    if plan.get("requestedBackend") != requested_backend:
+        raise RuntimeError(
+            "shared compile planner returned unexpected backend: "
+            f"expected {requested_backend}, got {plan.get('requestedBackend')}"
+        )
+    return plan
+
+
+def unpack_shared_compile_plan(plan: dict[str, Any]) -> tuple[str | None, str, list[str], list[str]]:
+    decision = plan.get("decision") or {}
+    fast_math_mode = decision.get("fastMathMode")
+    fast_math_decision = decision.get("fastMathDecision") or decision.get("reason") or "unresolved"
+    inferred_metal_args = [str(arg) for arg in (plan.get("inferredMetalArgs") or [])]
+    effective_metal_args = [str(arg) for arg in (plan.get("effectiveMetalArgs") or [])]
+    return (
+        str(fast_math_mode) if isinstance(fast_math_mode, str) else None,
+        str(fast_math_decision),
+        inferred_metal_args,
+        effective_metal_args,
+    )
+
+
 def discover_jobs(
     args: argparse.Namespace,
     computed_output_root: Path | None,
@@ -1124,20 +1210,22 @@ def infer_original_ir_fast_math_mode(original_ir_path: Path | None) -> str | Non
     return None
 
 
-# 这里保留的是 CLI backend 的 arg translation contract：把 posture 映射到 `xcrun metal` 参数。
-def resolve_compile_metal_args(original_ir_path: Path | None, user_metal_args: list[str] | None) -> tuple[str | None, list[str], list[str]]:
-    original_fast_math_mode = infer_original_ir_fast_math_mode(original_ir_path)
-    effective_args = list(user_metal_args or [])
-    if any(arg in EXPLICIT_FAST_MATH_METAL_ARGS for arg in effective_args):
-        return original_fast_math_mode, [], effective_args
-
-    inferred_args: list[str] = []
-    if original_fast_math_mode == "disable":
-        inferred_args = ["-fno-fast-math"]
-    elif original_fast_math_mode == "enable":
-        inferred_args = ["-ffast-math"]
-
-    return original_fast_math_mode, inferred_args, [*inferred_args, *effective_args]
+# 这里保留的是 CLI backend 的 arg translation contract：把 shared planner 产出的 compile plan
+# 映射到 `xcrun metal` 参数；Python 不再维护独立的 fast-math posture 推导逻辑。
+def resolve_compile_metal_args(
+    original_ir_path: Path | None,
+    user_metal_args: list[str] | None,
+    *,
+    shared_compile_planner_binary: Path | str,
+) -> tuple[str | None, str, list[str], list[str]]:
+    original_ir_paths = [original_ir_path] if original_ir_path is not None else []
+    plan = resolve_shared_compile_plan(
+        original_ir_paths,
+        user_metal_args,
+        requested_backend="xcrun",
+        shared_compile_planner_binary=shared_compile_planner_binary,
+    )
+    return unpack_shared_compile_plan(plan)
 
 
 def compile_replay_result(result: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
@@ -1166,6 +1254,11 @@ def compile_replay_result(result: dict[str, Any], args: argparse.Namespace) -> d
         "clusterCategory": None,
         "clusterTitle": None,
         "error": None,
+        "originalFastMathMode": None,
+        "fastMathMode": None,
+        "fastMathDecision": None,
+        "inferredMetalArgs": [],
+        "effectiveMetalArgs": [],
     }
 
     if not result.get("success"):
@@ -1190,11 +1283,39 @@ def compile_replay_result(result: dict[str, Any], args: argparse.Namespace) -> d
 
     original_ir_path_value = result.get("inputPath")
     original_ir_path = Path(original_ir_path_value).expanduser().resolve() if original_ir_path_value else None
-    original_fast_math_mode, inferred_metal_args, effective_metal_args = resolve_compile_metal_args(
-        original_ir_path,
-        list(args.metal_args),
-    )
+    shared_compile_planner_binary = getattr(args, "shared_compile_planner_binary", None)
+    if not shared_compile_planner_binary:
+        base_result["status"] = "compile_failed"
+        base_result["error"] = "shared compile planner binary is missing"
+        cluster_key, cluster_category, cluster_title = derive_failure_cluster(
+            base_result["status"], [], preflight_issues, base_result["error"]
+        )
+        base_result["clusterKey"] = cluster_key
+        base_result["clusterCategory"] = cluster_category
+        base_result["clusterTitle"] = cluster_title
+        return base_result
+
+    original_fast_math_mode = infer_original_ir_fast_math_mode(original_ir_path)
+    try:
+        fast_math_mode, fast_math_decision, inferred_metal_args, effective_metal_args = resolve_compile_metal_args(
+            original_ir_path,
+            list(args.metal_args),
+            shared_compile_planner_binary=shared_compile_planner_binary,
+        )
+    except (RuntimeError, subprocess.CalledProcessError) as exc:
+        base_result["status"] = "compile_failed"
+        base_result["error"] = str(exc)
+        cluster_key, cluster_category, cluster_title = derive_failure_cluster(
+            base_result["status"], [], preflight_issues, base_result["error"]
+        )
+        base_result["clusterKey"] = cluster_key
+        base_result["clusterCategory"] = cluster_category
+        base_result["clusterTitle"] = cluster_title
+        return base_result
+
     base_result["originalFastMathMode"] = original_fast_math_mode
+    base_result["fastMathMode"] = fast_math_mode
+    base_result["fastMathDecision"] = fast_math_decision
     base_result["inferredMetalArgs"] = inferred_metal_args
     base_result["effectiveMetalArgs"] = effective_metal_args
 
@@ -1312,6 +1433,7 @@ def run_compile_jobs(
             "sdk": args.metal_sdk,
             "extraArgs": list(args.metal_args),
             "autoAlignFastMathFromOriginalIR": True,
+            "sharedCompilePlanner": True,
             "skipPreflight": bool(args.skip_preflight),
         },
         "totalJobs": len(compile_results),
@@ -1930,6 +2052,17 @@ def main() -> int:
 
     report_path = make_report_path(args, computed_output_root)
     compile_report_path = make_compile_report_path(args, report_path, computed_output_root) if args.compile else None
+    if args.compile:
+        planner_output_root = computed_output_root or report_path.parent
+        try:
+            args.shared_compile_planner_binary = str(build_shared_compile_planner_harness_binary(root, planner_output_root))
+        except subprocess.CalledProcessError as exc:
+            detail = "\n".join(part for part in [exc.stdout.strip(), exc.stderr.strip()] if part) or str(exc)
+            print(f"error: failed to build shared compile planner harness: {detail}", file=sys.stderr)
+            return 2
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
     warnings: list[DiscoveryWarning] = []
 
     jobs = discover_jobs(args, computed_output_root, warnings)

@@ -1443,6 +1443,15 @@ def main() -> int:
     gate_summary_path = make_gate_summary_path(args, output_root)
     manifest_path = make_manifest_path(args, output_root)
     baseline_report_path = resolve_replay_baseline_report_path(args, output_root)
+    try:
+        args.shared_compile_planner_binary = str(replay_runner.build_shared_compile_planner_harness_binary(root, output_root))
+    except subprocess.CalledProcessError as exc:
+        detail = "\n".join(part for part in [exc.stdout.strip(), exc.stderr.strip()] if part) or str(exc)
+        print(f"error: failed to build shared compile planner harness: {detail}", file=sys.stderr)
+        return 2
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
     warnings: list[replay_runner.DiscoveryWarning] = []
     jobs = replay_runner.discover_jobs(args, output_root, warnings)

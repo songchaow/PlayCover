@@ -14,20 +14,20 @@
 - 跨 backend 的 compile summary 字段语义已经对齐
 - runtime / harness / Python `xcrun` backend 在 `fast_math_aligned / conflict / partial / unavailable / user_override` 这些 reason code 上大体一致
 
-但仍然存在一个高频维护缺口：
+当前这条共享链已经完成主体收口：
 
-- runtime 在 Swift 里自己从 original IR 推导 `MTLCompileOptions`
-- `mtl-device` harness 在 Swift 里又写了一份同类推导
-- Python `xcrun` backend 再写一份 `posture -> metal args` 推导
+- runtime 直接调用 `SharedCompilePlanner.swift` 生成 `MTLCompileOptions` 决策
+- `mtl-device` harness 在编译时联编 `SharedCompilePlanner.swift`，不再维护独立 posture 推导
+- Python `xcrun` backend 通过 `Scripts/shared_compile_planner_harness.swift` 消费 planner JSON plan，只保留 orchestration 与 CLI 执行层
 
-这意味着以后只要 compile 规则继续变化，例如：
+因此当前剩下的高频维护点已经不再是“多份实现如何同步”，而是：
 
 - 新增 compile option
 - 新增 user override 口径
 - 调整“部分可判定 / 冲突 / fallback”的策略
 - 把 `fast-math` 之外的 compile posture 纳入共享范围
 
-agent 就必须同时记住修改多处实现，极易发生“语义一致但代码漂移”或“改了 runtime 忘了改测试链路”的问题。
+真正需要防的是：shared planner 虽然已经成为单一实现，但如果回归覆盖跟不上，仍可能出现“规则本身改对了，single-module / aggregate / `xcrun` / `mtl-device` 的断言矩阵没有同步补齐”的隐性回退。
 
 ## 目标
 
@@ -65,7 +65,7 @@ original IR 集合 + user override + backend target
 
 ### 总体思路
 
-把“推导 compile request”的核心逻辑上提为 **Swift 侧单一 planner**，由 runtime / harness / Python 离线脚本共同消费。
+把“推导 compile request”的核心逻辑上提为 **Swift 侧单一 planner**，由 runtime / harness / Python 离线脚本共同消费。这一方向现已落地，当前文档记录的是这套稳定形态，而不是待实施草案。
 
 之所以优先放在 Swift，而不是 Python：
 
@@ -80,7 +80,7 @@ original IR 集合 + user override + backend target
 
 ### 目标结构
 
-建议新增一个共享层，例如：
+当前共享层位于：
 
 - `Carthage/Checkouts/PlayTools/PlayTools/SharedCompilePlanner.swift`
 
@@ -135,58 +135,38 @@ original IR 集合 + user override + backend target
 
 ### A. runtime 直接调用 shared planner
 
-`LibrarySourceInjectionSwizzles.swift` 不再自己维护：
-
-- `inferAggregateReplacementFastMathMode(...)`
-- `resolveAggregateReplacementCompileDecision(...)`
-
-而是改为调用 `SharedCompilePlanner`，然后把 planner 结果投影为 `MTLCompileOptions?`。
+这一步已经完成：`LibrarySourceInjectionSwizzles.swift` 不再自己维护 aggregate fast-math posture 推导，而是直接调用 `SharedCompilePlanner`，再把 planner 结果投影为 `MTLCompileOptions?`。
 
 ### B. `mtl-device` harness 编译时直接带上 shared planner 源文件
 
-当前 `metal_aggregate_compile_harness.swift` 里还保留了一份独立推导。
-
-建议改为：
-
-- harness 本身只做 CLI 参数解析、调用 Metal API、写 report
-- compile decision 的推导完全委托给 `SharedCompilePlanner`
-- `aggregate_replay_runner.py` 构建 harness 时，直接把 shared planner Swift 文件与 harness 一起编译
-
-也就是说：
+这一步也已经完成：`metal_aggregate_compile_harness.swift` 只负责 CLI 参数解析、调用 Metal API、写 report，compile decision 完全委托给 `SharedCompilePlanner`；`aggregate_replay_runner.py` 构建 harness 时会直接把 shared planner Swift 文件与 harness 一起编译：
 
 ```text
 swiftc SharedCompilePlanner.swift metal_aggregate_compile_harness.swift -o <binary>
 ```
 
-### C. Python `xcrun` backend 改为消费 planner CLI，而不是自己推导
+### C. Python `xcrun` backend 消费 planner harness，而不是自己推导
 
-这是本轮共享化的关键。
+这一步已经以一个很小的 Swift harness 落地：
 
-建议新增一个很小的 CLI wrapper，例如：
-
-- `Scripts/shared_compile_planner_cli.swift`
+- `Scripts/shared_compile_planner_harness.swift`
 
 它本身不持有规则，只负责：
 
-- 接收 original IR path / user metal args / backend kind
+- 接收 `SharedCompilePlannerInput` JSON
 - 调用 `SharedCompilePlanner`
-- 把结果写成 JSON
+- 把 `SharedCompilePlannerPlan` 写回 JSON
 
-然后 Python 的：
+Python 的：
 
 - `corpus_replay_runner.py`
 - `aggregate_replay_runner.py`
+- `ir_semantics_roundtrip_runner.py`（上层 compile orchestration 入口）
 
-都不再保留：
+现在统一改为：
 
-- `infer_original_ir_fast_math_mode(...)`
-- `resolve_compile_metal_args(...)`
-- `resolve_aggregate_compile_metal_args(...)`
-
-而是统一改为：
-
-1. 调用 planner CLI
-2. 读取 JSON plan
+1. 预构建 shared planner harness binary
+2. 调用 harness 读取 JSON plan
 3. 直接使用其中的 `effectiveMetalArgs` / summary 字段
 
 这样以后 compile 规则修改时：
@@ -211,21 +191,15 @@ swiftc SharedCompilePlanner.swift metal_aggregate_compile_harness.swift -o <bina
 
 对“compile 规则会频繁变化”的场景来说，真正高成本的不是 token 常量，而是**推导逻辑**。
 
-## 建议的执行顺序
+## 当前迁移状态
 
-### 第 1 步：先定义 shared contract，不急着改行为
+### 第 1 步：shared contract 已完成
 
-先把 `SharedCompilePlanner` 的输入 / 输出 contract 定稳：
+`SharedCompilePlanner` 的输入 / 输出 contract 已稳定，runtime、harness 与 Python 现在都能消费同一种 plan 结构。
 
-- 哪些字段属于语义层
-- 哪些字段属于 backend 投影层
-- 哪些字段必须进入 JSON plan
+### 第 2 步：fast-math 推导已迁入 shared planner
 
-这一阶段的目标是：**先让 runtime、harness、Python 至少能消费同一种 plan 结构。**
-
-### 第 2 步：把现有 fast-math 推导迁进 shared planner
-
-先只迁现有已经稳定的 `fast-math` 逻辑：
+当前已统一收口的 fast-math 语义包括：
 
 - `user_override`
 - `fast_math_aligned`
@@ -233,28 +207,17 @@ swiftc SharedCompilePlanner.swift metal_aggregate_compile_harness.swift -o <bina
 - `fast_math_partial`
 - `fast_math_unavailable`
 
-不要同时引入新 compile option，先把“单一实现”闭环跑通。
+### 第 3 步：runtime / harness 已切到 planner
 
-### 第 3 步：让 runtime / harness 改为消费 planner
+Swift 侧的 runtime 主路径与 `mtl-device` harness 已经物理共用同一份 `SharedCompilePlanner.swift` 逻辑。
 
-在 Swift 侧先去掉两份重复实现：
+### 第 4 步：Python `xcrun` backend 已切到 planner harness
 
-- runtime
-- harness
+Python 不再自己做 compile posture / arg inference，而是通过 `Scripts/shared_compile_planner_harness.swift` 调用 shared planner，再消费返回的 JSON plan。
 
-这样能先保证真正 runtime path 与 runtime-like offline path 已经物理共用一份 Swift 逻辑。
+### 第 5 步：当前重点是补验证与防回退测试
 
-### 第 4 步：让 Python `xcrun` backend 改为消费 planner CLI
-
-等 Swift planner 稳定后，再删 Python 里的手写 inference。
-
-这一步完成后，才算真正达成：
-
-- **测试时** 与 **运行时** 共用同一份 compile request 推导实现
-
-### 第 5 步：补验证与防回退测试
-
-至少补三类测试：
+当前仍需持续补强的主要是三类回归：
 
 1. **planner 单元测试**
    - single-module enable / disable
@@ -263,7 +226,7 @@ swiftc SharedCompilePlanner.swift metal_aggregate_compile_harness.swift -o <bina
 2. **harness 集成测试**
    - `mtl-device` backend 消费 planner 输出后，report 字段仍保持一致
 3. **Python CLI 集成测试**
-   - `xcrun` backend 改为 planner CLI 后，`effectiveMetalArgs` 与当前期望一致
+   - single-module 与 aggregate 的 `xcrun` backend 在消费 planner 后，`fastMathMode` / `fastMathDecision` / `effectiveMetalArgs` 与当前期望一致
 
 ## 完成判定
 

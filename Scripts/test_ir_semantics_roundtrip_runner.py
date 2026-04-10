@@ -34,6 +34,10 @@ if str(SCRIPTS_DIR) not in sys.path:
 import ir_semantics_roundtrip_runner as roundtrip_runner
 
 
+def build_shared_compile_planner_binary(output_root: Path) -> Path:
+    return roundtrip_runner.replay_runner.build_shared_compile_planner_harness_binary(REPO_ROOT, output_root)
+
+
 def make_roundtrip_result(
     *,
     roundtrip_status: str = "success",
@@ -130,23 +134,29 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             [entry["reason"] for entry in manifest["replacementSourceValidationRules"]],
         )
 
+    @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
     def test_resolve_compile_metal_args_infers_fast_math_disable(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            original_ir_path = Path(temp_dir) / "original.ll"
+            temp_root = Path(temp_dir)
+            original_ir_path = temp_root / "original.ll"
             original_ir_path.write_text(
                 '!llvm.module.flags = !{!0}\n!air.compile_options = !{!1}\n!1 = !{!"air.compile.fast_math_disable"}\n',
                 encoding="utf-8",
             )
+            planner_binary = build_shared_compile_planner_binary(temp_root / "out")
 
-            original_mode, inferred_args, effective_args = roundtrip_runner.replay_runner.resolve_compile_metal_args(
+            original_mode, fast_math_decision, inferred_args, effective_args = roundtrip_runner.replay_runner.resolve_compile_metal_args(
                 original_ir_path,
                 [],
+                shared_compile_planner_binary=planner_binary,
             )
 
         self.assertEqual(original_mode, "disable")
+        self.assertEqual(fast_math_decision, "fast_math_aligned")
         self.assertEqual(inferred_args, ["-fno-fast-math"])
         self.assertEqual(effective_args, ["-fno-fast-math"])
 
+    @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
     def test_compile_replay_result_auto_aligns_fast_math_disable_from_original_ir(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = Path(temp_dir)
@@ -160,7 +170,13 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
                 '#include <metal_stdlib>\nusing namespace metal;\nkernel void test_kernel(device float* output [[buffer(0)]]) { output[0] = 1.0f; }\n',
                 encoding="utf-8",
             )
-            args = argparse.Namespace(metal_sdk="macosx", metal_args=[], skip_preflight=False)
+            planner_binary = build_shared_compile_planner_binary(temp_root / "out")
+            args = argparse.Namespace(
+                metal_sdk="macosx",
+                metal_args=[],
+                skip_preflight=False,
+                shared_compile_planner_binary=str(planner_binary),
+            )
             replay_result = {
                 "jobID": 1,
                 "success": True,
@@ -168,10 +184,17 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
                 "outputPath": str(generated_msl_path),
             }
 
+            original_run = subprocess.run
+
+            def fake_run(command: list[str], check: bool, capture_output: bool, text: bool) -> subprocess.CompletedProcess[str]:
+                if command and Path(command[0]).name == "shared_compile_planner_harness":
+                    return original_run(command, check=check, capture_output=capture_output, text=text)
+                return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
             with mock.patch.object(
                 roundtrip_runner.replay_runner.subprocess,
                 "run",
-                return_value=subprocess.CompletedProcess(args=["xcrun"], returncode=0, stdout="", stderr=""),
+                side_effect=fake_run,
             ) as run_mock:
                 compile_result = roundtrip_runner.replay_runner.compile_replay_result(replay_result, args)
 
@@ -179,9 +202,12 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
         self.assertIn("-fno-fast-math", command)
         self.assertEqual(compile_result["status"], "success")
         self.assertEqual(compile_result["originalFastMathMode"], "disable")
+        self.assertEqual(compile_result["fastMathMode"], "disable")
+        self.assertEqual(compile_result["fastMathDecision"], "fast_math_aligned")
         self.assertEqual(compile_result["inferredMetalArgs"], ["-fno-fast-math"])
         self.assertEqual(compile_result["effectiveMetalArgs"], ["-fno-fast-math"])
 
+    @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
     def test_compile_replay_result_preserves_explicit_fast_math_override(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = Path(temp_dir)
@@ -195,7 +221,13 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
                 '#include <metal_stdlib>\nusing namespace metal;\nkernel void test_kernel(device float* output [[buffer(0)]]) { output[0] = 1.0f; }\n',
                 encoding="utf-8",
             )
-            args = argparse.Namespace(metal_sdk="macosx", metal_args=["-ffast-math"], skip_preflight=False)
+            planner_binary = build_shared_compile_planner_binary(temp_root / "out")
+            args = argparse.Namespace(
+                metal_sdk="macosx",
+                metal_args=["-ffast-math"],
+                skip_preflight=False,
+                shared_compile_planner_binary=str(planner_binary),
+            )
             replay_result = {
                 "jobID": 1,
                 "success": True,
@@ -203,10 +235,17 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
                 "outputPath": str(generated_msl_path),
             }
 
+            original_run = subprocess.run
+
+            def fake_run(command: list[str], check: bool, capture_output: bool, text: bool) -> subprocess.CompletedProcess[str]:
+                if command and Path(command[0]).name == "shared_compile_planner_harness":
+                    return original_run(command, check=check, capture_output=capture_output, text=text)
+                return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
             with mock.patch.object(
                 roundtrip_runner.replay_runner.subprocess,
                 "run",
-                return_value=subprocess.CompletedProcess(args=["xcrun"], returncode=0, stdout="", stderr=""),
+                side_effect=fake_run,
             ) as run_mock:
                 compile_result = roundtrip_runner.replay_runner.compile_replay_result(replay_result, args)
 
@@ -215,6 +254,8 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
         self.assertNotIn("-fno-fast-math", command)
         self.assertEqual(compile_result["status"], "success")
         self.assertEqual(compile_result["originalFastMathMode"], "disable")
+        self.assertEqual(compile_result["fastMathMode"], "enable")
+        self.assertEqual(compile_result["fastMathDecision"], "user_override")
         self.assertEqual(compile_result["inferredMetalArgs"], [])
         self.assertEqual(compile_result["effectiveMetalArgs"], ["-ffast-math"])
 

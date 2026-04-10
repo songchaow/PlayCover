@@ -30,6 +30,10 @@ if str(SCRIPTS_DIR) not in sys.path:
 import aggregate_replay_runner as aggregate_runner
 
 
+def build_shared_compile_planner_binary(output_root: Path) -> Path:
+    return aggregate_runner.replay_runner.build_shared_compile_planner_harness_binary(REPO_ROOT, output_root)
+
+
 def write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -78,6 +82,7 @@ class AggregateReplayRunnerTests(unittest.TestCase):
         self.assertEqual(source, "manifest_capture_order")
         self.assertEqual(warnings, [])
 
+    @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
     def test_resolve_aggregate_compile_metal_args_requires_full_alignment(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -89,10 +94,12 @@ class AggregateReplayRunnerTests(unittest.TestCase):
             enable_b.write_text('!1 = !{!"air.compile.fast_math_enable"}\n', encoding="utf-8")
             disable_c.write_text('!1 = !{!"air.compile.fast_math_disable"}\n', encoding="utf-8")
             unknown_d.write_text('; no compile options\n', encoding="utf-8")
+            planner_binary = build_shared_compile_planner_binary(root / "out")
 
             mode, reason, inferred_args, effective_args = aggregate_runner.resolve_aggregate_compile_metal_args(
                 [enable_a, enable_b],
                 [],
+                shared_compile_planner_binary=planner_binary,
             )
             self.assertEqual(mode, "enable")
             self.assertEqual(reason, "fast_math_aligned")
@@ -102,6 +109,7 @@ class AggregateReplayRunnerTests(unittest.TestCase):
             mode, reason, inferred_args, effective_args = aggregate_runner.resolve_aggregate_compile_metal_args(
                 [enable_a, disable_c],
                 [],
+                shared_compile_planner_binary=planner_binary,
             )
             self.assertIsNone(mode)
             self.assertEqual(reason, "fast_math_conflict")
@@ -111,6 +119,7 @@ class AggregateReplayRunnerTests(unittest.TestCase):
             mode, reason, inferred_args, effective_args = aggregate_runner.resolve_aggregate_compile_metal_args(
                 [enable_a, unknown_d],
                 [],
+                shared_compile_planner_binary=planner_binary,
             )
             self.assertIsNone(mode)
             self.assertEqual(reason, "fast_math_partial")

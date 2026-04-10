@@ -47,7 +47,7 @@
 
 1. **最小样本验证**：先验证单个 representative case 是否命中新改动的目标差异
 2. **离线脚本回归**：确保已有 round-trip / compare 测试不回退
-3. **runtime 形态贴近验证**：优先用自动化脚本或最小 harness；若当前仓库里还没有这条自动化入口，应优先补脚本，再使用它
+3. **runtime 形态贴近验证**：优先用自动化脚本或最小 harness；当前仓库已提供 `Scripts/aggregate_replay_runner.py` 作为 aggregate 形态下的默认自动化入口，应优先使用它
 4. **必要时再做更重验证**：只有当离线与最小自动化验证无法回答问题时，才考虑安装、真实 app、capture、GUI 或其它需要用户确认的动作
 
 ### 当前不作为默认流程的动作
@@ -106,6 +106,7 @@
 - `Carthage/Checkouts/PlayTools/PlayTools/LLVMDisassembler.swift`：runtime bitcode -> IR 反汇编路径与 host bridge 边界
 - `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift`：runtime / offline 已共用的核心转换器
 - `Scripts/corpus_replay_runner.py`：离线 replay + compile posture 决策 + compile preflight 现状
+- `Scripts/aggregate_replay_runner.py`：当前 aggregate 形态下的默认离线验证入口
 - `Scripts/ir_semantics_roundtrip_runner.py`：当前 round-trip / canonical compare 主入口
 - `BuildScripts/README.md`：标准构建与测试脚本说明
 

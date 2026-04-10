@@ -36,7 +36,7 @@
   - `python3 Scripts/test_ir_semantics_roundtrip_runner.py`
   - `python3 Scripts/test_ir_canonical_compare.py`
 - **Swift runtime / PlayTools / host bridge / compile decision 相关改动**：
-  - `./BuildScripts/build_gui.sh`
+  - `./BuildScripts/build_and_install.sh`
   - 若同时改了 round-trip 逻辑，继续补跑：
     - `python3 Scripts/test_ir_semantics_roundtrip_runner.py`
     - `python3 Scripts/test_ir_canonical_compare.py`
@@ -52,8 +52,8 @@
 
 ### 当前不作为默认流程的动作
 
-- `./BuildScripts/build_and_install.sh`（涉及安装与更高权限/更重副作用）
-- 真实 app 安装、覆盖安装、工作区外改动
+- 真实 app 安装后的 GUI 点击、登录态验证、覆盖安装后的人工检查
+- 工作区外的额外手工改动
 - 依赖 GUI 点击、登录态、手工切换系统设置的验证
 - 任何需要用户持续在线配合的操作
 
@@ -76,7 +76,7 @@
 | 任务 | 状态 | 结束标准 | 备注 |
 |---|---|---|---|
 | `RTA-001` 统一 runtime 与离线 compile decision 层 | DOING | runtime 与离线不再各自维护独立的 compile posture 决策；至少 `fast-math` 已共用同一套判断逻辑，并能分别映射到 `MTLCompileOptions` 与离线 metal args | 已完成 `RTA-001.1`；当前最高优先级转到 `RTA-001.2` |
-| `RTA-001.1` runtime 显式接入 `fast-math` compile posture 对齐 | DONE | runtime 不再固定 `options: nil`；对于 original IR 中可判定的 `fast-math` posture，能显式设置对应编译选项 | 已接入 `MTLCompileOptions.fastMathEnabled`；仅在全模块都可判定且结论一致时显式设置；`./BuildScripts/build_gui.sh` 已通过 |
+| `RTA-001.1` runtime 显式接入 `fast-math` compile posture 对齐 | DONE | runtime 不再固定 `options: nil`；对于 original IR 中可判定的 `fast-math` posture，能显式设置对应编译选项 | 已接入 `MTLCompileOptions.fastMathEnabled`；仅在全模块都可判定且结论一致时显式设置；当前默认验证脚本已切换为 `./BuildScripts/build_and_install.sh` |
 | `RTA-001.2` 提取 compile preflight 规则的单一来源 | TODO | Swift runtime 与 Python 离线脚本不再各自维护一份手写规则；新增规则时只需改一处 | 当前最高优先级；当前两边规则内容接近，但维护方式仍分叉 |
 | `RTA-001.3` 为离线补一条贴近 runtime 的“多模块 aggregate + compile”验证入口 | TODO | agent 可在不依赖人工操作的前提下，验证 aggregate 形态下的 compile 结果；至少能覆盖 runtime 特有的 aggregate / dedupe / preflight 风险 | 不替代现有 round-trip；作为补充真值入口 |
 | `RTA-001.4` 明确 Swift 与 Python 的共用边界 | TODO | 形成稳定约定：哪些逻辑留在 Swift，哪些只做 orchestration，哪些通过 JSON / manifest / harness 共享 | 目标是减少双份逻辑，不强求统一 backend |

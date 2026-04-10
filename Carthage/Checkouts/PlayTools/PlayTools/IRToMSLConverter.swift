@@ -4241,7 +4241,13 @@ struct IRToMSLConverter {
                     return
                 }
                 translateBr(trimmed, ctx: ctx)
-                if case .unconditional(let dest)? = parseBrInstruction(trimmed) {
+                if case .unconditional(let dest)? = parseBrInstruction(trimmed),
+                   canEagerlyEmitSuccessor(
+                       dest,
+                       from: label,
+                       ctx: ctx,
+                       emittedBlocks: emittedBlocks
+                   ) {
                     emitStructuredBasicBlock(
                         dest,
                         bodyLines: bodyLines,
@@ -4279,7 +4285,34 @@ struct IRToMSLConverter {
             orderedLabels.append(parsedLabel)
         }
 
-        for nextLabel in orderedLabels where !emittedBlocks.contains(nextLabel) {
+        var pendingLabels = orderedLabels.filter { !emittedBlocks.contains($0) }
+        var madeProgress = true
+        while madeProgress, !pendingLabels.isEmpty {
+            madeProgress = false
+            var deferredLabels: [String] = []
+
+            for nextLabel in pendingLabels {
+                guard canEmitDeferredBlock(nextLabel, ctx: ctx, emittedBlocks: emittedBlocks) else {
+                    deferredLabels.append(nextLabel)
+                    continue
+                }
+                let beforeCount = emittedBlocks.count
+                emitStructuredBasicBlock(
+                    nextLabel,
+                    bodyLines: bodyLines,
+                    blockLines: blockLines,
+                    ctx: ctx,
+                    emittedBlocks: &emittedBlocks
+                )
+                if emittedBlocks.count > beforeCount {
+                    madeProgress = true
+                }
+            }
+
+            pendingLabels = deferredLabels.filter { !emittedBlocks.contains($0) }
+        }
+
+        for nextLabel in pendingLabels where !emittedBlocks.contains(nextLabel) {
             emitStructuredBasicBlock(
                 nextLabel,
                 bodyLines: bodyLines,
@@ -4288,6 +4321,35 @@ struct IRToMSLConverter {
                 emittedBlocks: &emittedBlocks
             )
         }
+    }
+
+    private static func canEagerlyEmitSuccessor(
+        _ label: String,
+        from predecessor: String,
+        ctx: SSAContext,
+        emittedBlocks: Set<String>
+    ) -> Bool {
+        guard let bbInfo = ctx.bbInfo[label] else {
+            return true
+        }
+        let pendingPredecessors = bbInfo.predecessors.filter {
+            $0 != predecessor && !emittedBlocks.contains($0)
+        }
+        return pendingPredecessors.isEmpty
+    }
+
+    private static func canEmitDeferredBlock(
+        _ label: String,
+        ctx: SSAContext,
+        emittedBlocks: Set<String>
+    ) -> Bool {
+        guard let bbInfo = ctx.bbInfo[label] else {
+            return true
+        }
+        if bbInfo.predecessors.isEmpty || label == "entry" {
+            return true
+        }
+        return bbInfo.predecessors.allSatisfy { emittedBlocks.contains($0) }
     }
 
     private static func isPhiInstruction(_ line: String) -> Bool {

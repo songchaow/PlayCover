@@ -443,3 +443,86 @@
 - 这是一刀非常小的实现修复，且已经在单测、单 case、full-batch 三层形成闭环
 - 修完之后，`CC-003.4.4` 可以标成完成：`91c46448...` 的局部 CFG 收益保住了，`d8ff0527...` 回归也已经收回
 - 下一步最值得继续推进的，不再是收窄 self-loop family，而是回到 `91c46448...` 仍残留的 module addrspace / intrinsic 漂移，继续找下一刀最小切口
+
+## CC-003.4.5.1：late-merge eager recursion 边界修补
+
+这轮开始落 `CC-003.4.5` 的第一个可闭环子问题：先不继续泛化 structured CFG，而是只修一类更窄的 fallback 顺序 bug。
+
+## 新证据
+
+这轮把 `91c46448...` 当前 residual 再往下拆时，先抽象出一条更小的模式：
+
+- 在 fallback 按源码顺序继续发块时，如果当前 BB 末尾是 `br label %dest`
+- 而 `dest` 仍有其它**源码顺序更晚、尚未发射**的前驱
+- 旧实现会立刻递归发 `dest`
+- 若 `dest` 或其后继再继续走到最终 merge / `ret`，就会把最终收尾代码提前到这些更晚前驱之前
+
+针对这条边界，我补了一个最小样本 `test_late_merge_fallback_order.ll`。修复前，它会稳定复现：
+
+- `return;` 先落盘
+- 来自更晚前驱的 `// phi from BB17` 赋值反而出现在 `return;` 之后
+
+这说明当前 fallback 路径里，确实还存在一支**与 simple diamond / entry fallback 不同、但同样真实的递归顺序 bug**。
+
+## 本轮实现内容
+
+实现仍只落在：
+
+- `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift`
+
+这轮只引入两个最小机制：
+
+1. 对 fallback 路径下的 `br label %dest`，只有当 `dest` 的其它前驱都已经发射后，才允许继续 eager-recursive emit successor
+2. 对 `emitBlocksInSourceOrderAfter(...)` 增加一层最小 deferred 调度：优先发“前驱已齐”的块，尽量避免把 merge / final block 拉到尚未落盘的前驱之前
+
+同时新增：
+
+- `LocalDocs/XCodeReleaseShaderDebug/RoadE-HookMakeLibraryWithSrc/test-data/test_late_merge_fallback_order.ll`
+- `Scripts/test_ir_semantics_roundtrip_runner.py` 中的定向回归
+
+回归目标只有一个：**更晚源码顺序的前驱还没发出来时，最终 merge / `return` 不能提前落盘。**
+
+## 验证结果
+
+### 最小回归
+
+1. `python3 -m unittest Scripts.test_ir_semantics_roundtrip_runner.IRSemanticsRoundtripRunnerTests.test_corpus_replay_runner_preserves_phi_branch_structure Scripts.test_ir_semantics_roundtrip_runner.IRSemanticsRoundtripRunnerTests.test_corpus_replay_runner_keeps_simple_diamond_when_later_cfg_is_not_structured Scripts.test_ir_semantics_roundtrip_runner.IRSemanticsRoundtripRunnerTests.test_corpus_replay_runner_keeps_emitting_blocks_after_entry_fallback_condbr Scripts.test_ir_semantics_roundtrip_runner.IRSemanticsRoundtripRunnerTests.test_corpus_replay_runner_defers_final_merge_until_late_predecessors_are_emitted`
+   - 通过
+2. `python3 Scripts/test_ir_canonical_compare.py`
+   - 通过
+3. `python3 Scripts/test_ir_semantics_roundtrip_runner.py`
+   - 通过（新增 1 条 late-merge 回归）
+
+### 单 case：`91c46448...`
+
+1. `python3 Scripts/ir_semantics_roundtrip_runner.py --ll /Users/songdogwang/Library/Containers/io.playcover.PlayCover/ShaderSourceDiagnostics/com.miHoYo.Yuanshen/2026-04-04T08_04_46Z_newLibraryWithData_error__compile_failed_modules/91c46448ca24983b29716a9fe2c28a7930c10b81802758ded6977907bf01ae9b/module.ll --output-root build/semantics-validation/roundtrip/cc-003-4-5-single-91c46448-v1 --allow-failures`
+   - 结果：**仍为 `L2`**
+   - `riskReason` 仍是：
+     - `模块级 addrspace 分布变化`
+     - `模块级 air intrinsic 使用变化`
+     - `函数内 air intrinsic 调用统计变化`
+   - `compare-summary.json` 里 `cfg` / `instruction-family` 统计也没有进一步改善：
+     - `basicBlockCount 48 -> 20`
+     - `condbr 20 -> 7`
+     - `phiCount 20 -> 9`
+   - `generated.metal` 里仍能看到 `phi_19 = t874 // phi from BB1337` 后立刻 `return XlatMtlMain_Out{...}`，随后才出现更晚分支族对应的代码；说明 **这刀没有真正命中 `91c46448...` 当前主 residual**
+
+### full-batch
+
+1. diagnostics 复跑：
+   - 输出：`build/semantics-validation/roundtrip/cc-003-4-5-diagnostics-20260410-late-merge-order-fix`
+   - 结果：仍为 `L1 6 / L2 1 / L3 146`
+   - 相对 `cc-003-4-4-diagnostics-20260410-1240-entry-fallback-fix`：**样本级变化 0**
+2. corpus 复跑：
+   - 输出：`build/semantics-validation/roundtrip/cc-003-4-5-corpus-20260410-late-merge-order-fix`
+   - 结果：仍为 `L1 100 / L2 86 / L3 251`
+   - 相对 `cc-003-4-4-corpus-20260410-1240-entry-fallback-fix`：**样本级变化 0**
+
+## 当前结论
+
+这轮可以把 `CC-003.4.5.1` 收敛成下面这个判断：
+
+- 这刀修到的是一支**真实但更窄**的 fallback eager-recursion 边界 bug
+- 它已经在最小样本与回归单测层面形成闭环
+- 但它**没有**给 `91c46448...` 带来单 case 或 full-batch 的统计收益，因此不能把 `CC-003.4.5` 标成完成
+- 下一步不该继续泛化这条 eager-recursion 规则，而应继续下钻 `91c46448...` 中 `BB821 / BB845 / BB857 / BB1337 / BB1371` 这支 nested fallback family，确认真正把 `BB1337 -> 1371 -> ret` 提前出来的递归入口到底落在哪一层

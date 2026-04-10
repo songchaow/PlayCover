@@ -16,6 +16,7 @@ TEST_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookM
 TEST_PHI_BRANCH_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_phi_branch.ll"
 TEST_PARTIAL_STRUCTURED_CFG_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_partial_structured_cfg.ll"
 TEST_ENTRY_PARTIAL_STRUCTURED_CFG_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_entry_partial_structured_cfg.ll"
+TEST_LATE_MERGE_FALLBACK_ORDER_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_late_merge_fallback_order.ll"
 
 import sys
 
@@ -888,6 +889,34 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             self.assertIn("phi_0 = 2", generated_text)
             self.assertGreaterEqual(generated_text.count("if ("), 2)
             self.assertIn("*(output) = phi_0", generated_text)
+
+    @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
+    def test_corpus_replay_runner_defers_final_merge_until_late_predecessors_are_emitted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            generated_path = Path(temp_dir) / "late-merge-fallback.generated.metal"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(REPO_ROOT / "Scripts" / "corpus_replay_runner.py"),
+                    "--ll",
+                    str(TEST_LATE_MERGE_FALLBACK_ORDER_SAMPLE),
+                    "--output-file",
+                    str(generated_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("replay summary", completed.stdout)
+            generated_text = generated_path.read_text(encoding="utf-8")
+            self.assertIn("// phi from BB15", generated_text)
+            self.assertIn("// phi from BB17", generated_text)
+            return_index = generated_text.index("return;")
+            self.assertGreater(return_index, generated_text.index("// phi from BB15"))
+            self.assertGreater(return_index, generated_text.index("// phi from BB17"))
+            self.assertEqual(generated_text.count("return;"), 1)
 
 
 if __name__ == "__main__":

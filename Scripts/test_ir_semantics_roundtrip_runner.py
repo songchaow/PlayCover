@@ -15,6 +15,7 @@ ROUNDTRIP_SCRIPT = SCRIPTS_DIR / "ir_semantics_roundtrip_runner.py"
 TEST_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_addrspace.ll"
 TEST_FRAGMENT_PACKED_RETURN_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_fragment_packed_return.ll"
 TEST_UNDERSCORE_STRUCT_REFERENCE_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_underscore_struct_reference.ll"
+TEST_VERTEX_POSITION_INVARIANT_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_vertex_position_invariant.ll"
 TEST_PHI_BRANCH_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_phi_branch.ll"
 TEST_PARTIAL_STRUCTURED_CFG_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_partial_structured_cfg.ll"
 TEST_ENTRY_PARTIAL_STRUCTURED_CFG_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_entry_partial_structured_cfg.ll"
@@ -939,6 +940,71 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             self.assertFalse(any(item["reason"] == "entry 参数类型摘要变化" for item in compare_result["differences"]))
             self.assertEqual(risk_report["blockedSamples"], [])
             self.assertIn("dereferenceable(4)", regenerated_ir)
+
+    @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
+    def test_corpus_replay_runner_preserves_invariant_position_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            generated_path = Path(temp_dir) / "vertex-position-invariant.generated.metal"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(REPO_ROOT / "Scripts" / "corpus_replay_runner.py"),
+                    "--ll",
+                    str(TEST_VERTEX_POSITION_INVARIANT_SAMPLE),
+                    "--output-file",
+                    str(generated_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("replay summary", completed.stdout)
+            generated_text = generated_path.read_text(encoding="utf-8")
+            self.assertIn("struct Test_vertex_position_invariant_Out {", generated_text)
+            self.assertIn("float4 position [[position, invariant]];", generated_text)
+            self.assertIn("float2 texcoord;", generated_text)
+
+    @unittest.skipUnless(shutil.which("swiftc") and shutil.which("xcrun"), "requires swiftc and xcrun")
+    def test_roundtrip_runner_preserves_invariant_position_output_semantics(self) -> None:
+        default_llvm_dis, _ = roundtrip_runner.resolve_llvm_dis_path()
+        if default_llvm_dis is None:
+            self.skipTest("requires llvm-dis")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir) / "vertex-position-invariant"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(ROUNDTRIP_SCRIPT),
+                    "--ll",
+                    str(TEST_VERTEX_POSITION_INVARIANT_SAMPLE),
+                    "--output-root",
+                    str(output_root),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("semantics round-trip summary", completed.stdout)
+            compare_report = json.loads((output_root / "compare-summary.json").read_text(encoding="utf-8"))
+            risk_report = json.loads((output_root / "risk-report.json").read_text(encoding="utf-8"))
+            compare_result = compare_report["results"][0]
+            roundtrip_report = json.loads((output_root / "roundtrip-summary.json").read_text(encoding="utf-8"))
+            regenerated_ir_path = Path(roundtrip_report["results"][0]["regeneratedIRPath"])
+            generated_msl_path = Path(roundtrip_report["results"][0]["generatedMSLPath"])
+            regenerated_ir = regenerated_ir_path.read_text(encoding="utf-8")
+            generated_msl = generated_msl_path.read_text(encoding="utf-8")
+
+            self.assertNotEqual(compare_result["riskLevel"], "L3")
+            self.assertEqual(compare_result["entryComparison"]["severity"], "L0")
+            self.assertFalse(any(item["reason"] == "entry 输出语义摘要变化" for item in compare_result["differences"]))
+            self.assertEqual(risk_report["blockedSamples"], [])
+            self.assertIn("air.invariant", regenerated_ir)
+            self.assertIn("float4 position [[position, invariant]];", generated_msl)
 
     @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
     def test_corpus_replay_runner_preserves_phi_branch_structure(self) -> None:

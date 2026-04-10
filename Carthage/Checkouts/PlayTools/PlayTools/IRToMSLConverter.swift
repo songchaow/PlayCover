@@ -1406,6 +1406,8 @@ struct IRToMSLConverter {
         let argName: String
         /// 颜色附件等输出槽位（若 metadata 提供）
         let locationIndex: Int?
+        /// 返回字段 qualifier（如 `air.invariant`）
+        let qualifiers: [String]
     }
 
     /// 从 IR metadata 中解析出的函数信息
@@ -1633,6 +1635,7 @@ struct IRToMSLConverter {
         var typeName = ""
         var argName = ""
         var locationIndex: Int?
+        var qualifiers: [String] = []
         var i = 1
 
         while i < tokens.count {
@@ -1665,6 +1668,8 @@ struct IRToMSLConverter {
                    token.hasPrefix("i32 "),
                    (kind == "air.render_target" || kind == "air.vertex_output") {
                     locationIndex = parseMetadataInt(tokens[i])
+                } else if token.hasPrefix("air."), token != kind, token != "air.arg_unused" {
+                    qualifiers.append(token)
                 }
                 i += 1
             }
@@ -1686,7 +1691,8 @@ struct IRToMSLConverter {
             kind: kind,
             typeName: typeName,
             argName: argName.isEmpty ? fallbackName : argName,
-            locationIndex: locationIndex
+            locationIndex: locationIndex,
+            qualifiers: Array(Set(qualifiers)).sorted()
         )
     }
 
@@ -7963,7 +7969,9 @@ struct IRToMSLConverter {
             let attribute: String
             switch output.kind {
             case "air.position":
-                attribute = " [[position]]"
+                attribute = output.qualifiers.contains("air.invariant")
+                    ? " [[position, invariant]]"
+                    : " [[position]]"
             case "air.render_target":
                 attribute = " [[color(\(output.locationIndex ?? 0))]]"
             case "air.depth":

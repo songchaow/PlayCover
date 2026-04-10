@@ -36,21 +36,22 @@
 
 ### 当前最新状态
 
-- 当前主线最新已完成 `CC-003.6`：围绕 `c6d1420a...`、`82d1eb85...`、`1cdc9318...` 这支高频 `L3` 下钻后，已经确认真正缺口并不在 compare，而在 **`IRToMSLConverter.swift` 对“哪些 constant buffer struct 应保留为引用 `&`”的判定过窄，导致 `_Foo_Type` / `cb_Foo_Type` 一类用户类型被错误发成 `const constant T*`，进而在 regenerated IR 中丢失 `dereferenceable(N)`**
+- 当前主线最新已完成 `CC-003.7`：围绕 corpus 中 `36` 个高频 `L3` `entry 输出语义摘要变化` 下钻后，已经确认真正缺口并不在 compare，而在 **`IRToMSLConverter.swift` 对返回 metadata qualifier 的保真不完整：`parseMetadataReturnNode(...)` 会丢掉 `air.position` 上的 `air.invariant`，entry output struct 也固定只发 `[[position]]`，导致 regenerated IR 丢失 `qualifiers=air.invariant`**
 - 实现上这轮继续严格按 converter-first 收敛，只改了生成侧：
-  - `IRToMSLConverter.swift` 放宽 `isStructTypeName(...)` 的判定，不再只把“首字母大写”的类型名视为 struct
-  - `_ScreenSpaceShadowParams_Type`、`_DirectionalShadowBuffer_Type`、`cb_SSAOBlur_Type`、`cb_TAA_Type` 等用户类型因此重新走 `const constant T&` 路径
-  - 同时补了 `Scripts/test_ir_semantics_roundtrip_runner.py` 的最小 replay / round-trip 回归，并新增 `test_underscore_struct_reference.ll` 最小样本
+  - `MetadataReturnInfo` 新增 `qualifiers`
+  - `parseMetadataReturnNode(...)` 开始保留 `air.invariant`
+  - entry output struct 在 `air.position` 带有 invariant 时改为生成 `[[position, invariant]]`
+  - 同时补了 `Scripts/test_ir_semantics_roundtrip_runner.py` 的最小 replay / round-trip 回归，并新增 `test_vertex_position_invariant.ll` 最小样本
 - 单 case 结果已经形成闭环：
-  - `cc-003-6-single-c6d142-dereferenceable-reference`：`c6d1420a...` 从 `L3 -> L1`
-  - `entryComparison`：`L3 -> L0`
-  - `blockedSamples = []`，gate `PASS`
-  - 最小样本 `manual-underscore-struct-reference` 中 regenerated IR 保留 `dereferenceable(4)`
-- full-batch 已继续出现明确统计收益且无新增 `L3`：
-  - diagnostics `cc-003-6-diagnostics-20260410-dereferenceable-reference`：`L1 12 / L2 140 / L3 1`
-  - corpus `cc-003-6-corpus-20260410-dereferenceable-reference`：**`L1 186 / L2 197 / L3 54`**
-  - 相比 `CC-003.5`，共有 `3` 个 diagnostics 样本、`16` 个 corpus 样本移除了 `entry 参数类型摘要变化`
-- 因此当前最新状态可以概括为：**`constant struct reference / dereferenceable` 这支高频 blocked family 已通过 converter-first 从源头收敛；下一步应优先回到最新 canonical compare 报告，继续下钻剩余 `L3` 中的 `entry 输出语义摘要变化`、`模块级 addrspace 分布变化 + air intrinsic 使用变化`，以及 `entry 参数个数变化` family。**
+  - `cc-003-7-single-fc1d64-position-invariant` 中，代表样本 `fc1d64b2...` 的 `entryComparison`：`L3 -> L0`
+  - `entry 输出语义摘要变化` 已完全消失，`outputSemantics` 重新对齐为 `kind=air.position|type=float4|qualifiers=air.invariant`
+  - 最小样本 `test_vertex_position_invariant.ll` 中，`generated.metal` 已出现 `float4 position [[position, invariant]];`，round-trip 后 regenerated IR 保留 `air.invariant`
+- full-batch 给出的结论非常关键：
+  - diagnostics `cc-003-7-diagnostics-20260410-position-invariant`：`L1 12 / L2 140 / L3 1`（与 `CC-003.6` 持平）
+  - corpus `cc-003-7-corpus-20260410-position-invariant`：**`L1 186 / L2 197 / L3 54`**（与 `CC-003.6` 持平）
+  - 但 corpus compare 中 `entry 输出语义摘要变化` 已经 **`36 -> 0`**
+  - 同时 `blockedSamples` 集合保持不变：corpus `54 -> 54`、diagnostics `1 -> 1`
+- 因此当前最新状态可以概括为：**`air.position` 的 `air.invariant` 保真问题已经通过 converter-first 从源头收敛，但它并不是当前 blocked 计数的真正杠杆；修掉这条表层差异后，原先那 `36` 个 corpus case 会直接暴露成 `fast-math` compile posture family。下一步不应继续放大 invariant 方向，而应优先下钻这支新暴露出来的 `fast-math` family，其次再看 `模块级 addrspace 分布变化 + air intrinsic 使用变化` 与 `entry 参数个数变化`。**
 
 
 ## 当前默认流程
@@ -181,6 +182,8 @@
 | `CC-003.4.5.2` 继续下钻 `91c46448...` 中 `BB821 / BB845 / BB857 / BB1337 / BB1371` 的 nested fallback family | DONE | 已定位真正切口是 structured conditional 的 direct-to-merge arm 未补 phi edge；补齐后 `91c46448...` 从 `L2 -> L1`，nested common merge 最小样本与 full-batch 全部验证通过 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
 | `CC-003.5` 优先检查 `entry 返回类型摘要变化` 的高频 `L3` 家族 | DONE | 已确认其中一大支是 converter 把 original IR 的 single-field wrapped return 过早塌成 bare return 的真实实现问题；按 converter-first 修复后 diagnostics `L3 146 -> 4`、corpus `L3 251 -> 70`，且无新增 `L3` | `difference-analysis/single-field-return-wrapper/04-implementation-result.md` / `difference-analysis/single-field-return-wrapper/05-full-batch-compare.md` |
 | `CC-003.6` 优先检查 `entry 参数类型摘要变化` 的高频 `L3` 家族 | DONE | 已确认其中一大支不是 compare 噪声，而是 converter 对 constant buffer 用户 struct 的引用判定过窄；修复后 diagnostics `L3 4 -> 1`、corpus `L3 70 -> 54`，且无新增 `L3` | `difference-analysis/constant-struct-reference-dereferenceable/04-implementation-result.md` / `difference-analysis/constant-struct-reference-dereferenceable/05-full-batch-compare.md` |
+| `CC-003.7` 优先检查 `entry 输出语义摘要变化` 的高频 `L3` 家族 | DONE | 已确认 corpus 中 `36` 个 `entry 输出语义摘要变化` 真实缺口是 `air.position` 的 `air.invariant` 在返回 metadata / MSL output struct 发射时丢失；修复后 corpus compare 中该差异 `36 -> 0`，但 top-level `L3` 计数与 blocked 集合保持不变，因为同批样本继续暴露为 `fast-math` family | `difference-analysis/position-invariant-output/04-implementation-result.md` / `difference-analysis/position-invariant-output/05-full-batch-compare.md` |
+| `CC-003.8` 优先检查 `CC-003.7` 之后暴露出来的 `fast-math` 高风险 family | TODO | 已确认 `CC-003.7` 清掉 `entry 输出语义摘要变化` 后，corpus `36` 个样本直接暴露为 `fast-math 相关属性变化`；下一步需判断它更像 compile posture 差异、converter emission 影响，还是 compare 口径问题 | `difference-analysis/position-invariant-output/05-full-batch-compare.md` / `04-L2-CanonicalCompareAndRiskGrading.md` |
 | `CC-004` 固化新的 case 分析模板 | TODO | 在 `difference-analysis/` 下沉淀一套稳定模板，确保后续每个 case 都按同样结构记录证据、结论与回归数据 | `difference-analysis/` |
 
 ## 任务执行规则
@@ -302,6 +305,8 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - **resource metadata 的 `air.address_space` 显式化不应重复放大**；当函数参数 `addrspace` 摘要已一致时，这更像 compare 噪声，而不是 entry/resource 语义真的发生变化
 - **single-field output 先不要急着改 compare**；当 `outputSemantics` 一致但 `returnSignature` 出现 `wrapped -> bare` 漂移时，应先检查 converter 是否把 original IR 的 single-field wrapped return 过早塌平，只有排除生成侧后才考虑 compare 口径
 - **constant buffer struct 的 `&` / `*` 选择会直接影响 `dereferenceable(N)` 是否能 round-trip 保住**；当 `entry 参数类型摘要变化` 表现为 `ptr addrspace(2) dereferenceable(N) -> ptr addrspace(2)` 时，应优先检查 converter 是否把 `_Foo_Type` / `cb_Foo_Type` 这类用户 struct 误降成指针参数
+- **`air.position` 的 `air.invariant` 不能在返回 metadata 解析阶段被吞掉**；当 `entry 输出语义摘要变化` 表现为 `kind=air.position|type=float4|qualifiers=air.invariant -> kind=air.position|type=float4` 时，应先检查 converter 是否保留了返回 qualifier，并把它发到 `[[position, invariant]]`
+- **修掉表层 `entry` 差异后要立刻复跑 full-batch 看 blocked 集合是否真的变化**；像 `air.invariant` 这类修复即使能把 corpus compare 中的 `entry 输出语义摘要变化 36 -> 0`，也可能只是把同一批 `L3` 暴露成更底层的 `fast-math` family，而不会直接降低 `L3` 计数
 
 ## 参考信息
 
@@ -329,6 +334,8 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - `difference-analysis/single-field-return-wrapper/05-full-batch-compare.md`
 - `difference-analysis/constant-struct-reference-dereferenceable/04-implementation-result.md`
 - `difference-analysis/constant-struct-reference-dereferenceable/05-full-batch-compare.md`
+- `difference-analysis/position-invariant-output/04-implementation-result.md`
+- `difference-analysis/position-invariant-output/05-full-batch-compare.md`
 
 ### 相关实现与工具
 

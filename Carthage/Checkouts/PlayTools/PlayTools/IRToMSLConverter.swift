@@ -4008,45 +4008,17 @@ struct IRToMSLConverter {
         }
 
         let blockLines = buildBasicBlockLineMap(bodyLines)
-        if canEmitStructuredCFG(blockLines, ctx: ctx) {
+        if hasSelfLoopConditionalBranch(ctx: ctx) || canEmitStructuredCFG(blockLines, ctx: ctx) {
             var emittedBlocks: Set<String> = []
             emitStructuredBasicBlock(
                 "entry",
+                bodyLines: bodyLines,
                 blockLines: blockLines,
                 ctx: ctx,
                 emittedBlocks: &emittedBlocks
             )
         } else {
-            // ── 第二遍：逐行翻译函数体 ──
-            for line in bodyLines {
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                if trimmed.isEmpty { continue }
-
-                // 基本块标签（纯名字:）
-                if trimmed.hasSuffix(":") && !trimmed.contains(" ") {
-                    ctx.currentBBLabel = String(trimmed.dropLast())
-                    ctx.emit("// BB: \(trimmed)")
-                    // 发射 phi 赋值（当前 BB 的 phi 节点从各前驱来的值，
-                    // 由 translateBr 在前驱 BB 处理）
-                    continue
-                }
-                // 带前驱注释的基本块标签: "10:  ; preds = %7"
-                if let colonIdx = trimmed.firstIndex(of: ":"),
-                   trimmed[trimmed.startIndex..<colonIdx].allSatisfy({ $0.isNumber || $0.isLetter || $0 == "_" }) {
-                    let labelCandidate = String(trimmed[trimmed.startIndex..<colonIdx])
-                    // 确保冒号后面是空格或分号（注释），不是 IR 指令
-                    let afterColon = trimmed.index(after: colonIdx)
-                    if afterColon == trimmed.endIndex ||
-                       trimmed[afterColon...].trimmingCharacters(in: .whitespaces).isEmpty ||
-                       trimmed[afterColon...].trimmingCharacters(in: .whitespaces).hasPrefix(";") {
-                        ctx.currentBBLabel = labelCandidate
-                        ctx.emit("// BB\(labelCandidate):")
-                        continue
-                    }
-                }
-
-                translateInstruction(trimmed, ctx: ctx)
-            }
+            emitLinearizedFunctionBody(bodyLines, ctx: ctx)
         }
 
         return ctx.statements
@@ -4070,6 +4042,18 @@ struct IRToMSLConverter {
         }
 
         return blocks
+    }
+
+    private static func hasSelfLoopConditionalBranch(ctx: SSAContext) -> Bool {
+        for (label, block) in ctx.bbInfo {
+            guard case .conditional(_, let trueLabel, let falseLabel) = block.branch else {
+                continue
+            }
+            if trueLabel == label || falseLabel == label {
+                return true
+            }
+        }
+        return false
     }
 
     private static func canEmitStructuredCFG(_ blockLines: [String: [String]], ctx: SSAContext) -> Bool {
@@ -4100,8 +4084,36 @@ struct IRToMSLConverter {
         return true
     }
 
+    private static func emitLinearizedFunctionBody(_ bodyLines: [String], ctx: SSAContext) {
+        for line in bodyLines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+
+            if trimmed.hasSuffix(":") && !trimmed.contains(" ") {
+                ctx.currentBBLabel = String(trimmed.dropLast())
+                ctx.emit("// BB: \(trimmed)")
+                continue
+            }
+            if let colonIdx = trimmed.firstIndex(of: ":"),
+               trimmed[trimmed.startIndex..<colonIdx].allSatisfy({ $0.isNumber || $0.isLetter || $0 == "_" }) {
+                let labelCandidate = String(trimmed[trimmed.startIndex..<colonIdx])
+                let afterColon = trimmed.index(after: colonIdx)
+                if afterColon == trimmed.endIndex ||
+                   trimmed[afterColon...].trimmingCharacters(in: .whitespaces).isEmpty ||
+                   trimmed[afterColon...].trimmingCharacters(in: .whitespaces).hasPrefix(";") {
+                    ctx.currentBBLabel = labelCandidate
+                    ctx.emit("// BB\(labelCandidate):")
+                    continue
+                }
+            }
+
+            translateInstruction(trimmed, ctx: ctx)
+        }
+    }
+
     private static func emitStructuredBasicBlock(
         _ label: String,
+        bodyLines: [String],
         blockLines: [String: [String]],
         ctx: SSAContext,
         emittedBlocks: inout Set<String>
@@ -4121,6 +4133,7 @@ struct IRToMSLConverter {
             if trimmed.hasPrefix("br ") {
                 if emitStructuredConditionalBranch(
                     trimmed,
+                    bodyLines: bodyLines,
                     blockLines: blockLines,
                     ctx: ctx,
                     emittedBlocks: &emittedBlocks
@@ -4130,7 +4143,21 @@ struct IRToMSLConverter {
 
                 translateBr(trimmed, ctx: ctx)
                 if case .unconditional(let dest)? = parseBrInstruction(trimmed) {
-                    emitStructuredBasicBlock(dest, blockLines: blockLines, ctx: ctx, emittedBlocks: &emittedBlocks)
+                    emitStructuredBasicBlock(
+                        dest,
+                        bodyLines: bodyLines,
+                        blockLines: blockLines,
+                        ctx: ctx,
+                        emittedBlocks: &emittedBlocks
+                    )
+                } else if case .conditional? = parseBrInstruction(trimmed) {
+                    emitBlocksInSourceOrderAfter(
+                        label,
+                        bodyLines: bodyLines,
+                        blockLines: blockLines,
+                        ctx: ctx,
+                        emittedBlocks: &emittedBlocks
+                    )
                 }
                 return
             }
@@ -4140,6 +4167,7 @@ struct IRToMSLConverter {
 
     private static func emitStructuredConditionalBranch(
         _ line: String,
+        bodyLines: [String],
         blockLines: [String: [String]],
         ctx: SSAContext,
         emittedBlocks: inout Set<String>
@@ -4147,7 +4175,10 @@ struct IRToMSLConverter {
         guard case .conditional(let condValue, let trueLabel, let falseLabel)? = parseBrInstruction(line),
               case .unconditional(let trueMerge)? = ctx.bbInfo[trueLabel]?.branch,
               case .unconditional(let falseMerge)? = ctx.bbInfo[falseLabel]?.branch,
-              trueMerge == falseMerge else {
+              trueMerge == falseMerge,
+              blockLines[trueLabel] != nil,
+              blockLines[falseLabel] != nil,
+              blockLines[trueMerge] != nil else {
             return false
         }
 
@@ -4159,6 +4190,7 @@ struct IRToMSLConverter {
         emitStructuredBranchArm(
             trueLabel,
             stopBefore: mergeLabel,
+            bodyLines: bodyLines,
             blockLines: blockLines,
             ctx: ctx,
             emittedBlocks: &emittedBlocks
@@ -4169,6 +4201,7 @@ struct IRToMSLConverter {
         emitStructuredBranchArm(
             falseLabel,
             stopBefore: mergeLabel,
+            bodyLines: bodyLines,
             blockLines: blockLines,
             ctx: ctx,
             emittedBlocks: &emittedBlocks
@@ -4176,13 +4209,20 @@ struct IRToMSLConverter {
         ctx.indentLevel -= 1
         ctx.emit("}")
 
-        emitStructuredBasicBlock(mergeLabel, blockLines: blockLines, ctx: ctx, emittedBlocks: &emittedBlocks)
+        emitStructuredBasicBlock(
+            mergeLabel,
+            bodyLines: bodyLines,
+            blockLines: blockLines,
+            ctx: ctx,
+            emittedBlocks: &emittedBlocks
+        )
         return true
     }
 
     private static func emitStructuredBranchArm(
         _ label: String,
         stopBefore stopLabel: String,
+        bodyLines: [String],
         blockLines: [String: [String]],
         ctx: SSAContext,
         emittedBlocks: inout Set<String>
@@ -4201,9 +4241,51 @@ struct IRToMSLConverter {
                     return
                 }
                 translateBr(trimmed, ctx: ctx)
+                if case .unconditional(let dest)? = parseBrInstruction(trimmed) {
+                    emitStructuredBasicBlock(
+                        dest,
+                        bodyLines: bodyLines,
+                        blockLines: blockLines,
+                        ctx: ctx,
+                        emittedBlocks: &emittedBlocks
+                    )
+                }
                 return
             }
             translateInstruction(trimmed, ctx: ctx)
+        }
+    }
+
+    private static func emitBlocksInSourceOrderAfter(
+        _ label: String,
+        bodyLines: [String],
+        blockLines: [String: [String]],
+        ctx: SSAContext,
+        emittedBlocks: inout Set<String>
+    ) {
+        var foundStartLabel = false
+        var orderedLabels: [String] = []
+
+        for line in bodyLines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty, let parsedLabel = parseBBLabel(trimmed) else { continue }
+
+            if parsedLabel == label {
+                foundStartLabel = true
+                continue
+            }
+            guard foundStartLabel else { continue }
+            orderedLabels.append(parsedLabel)
+        }
+
+        for nextLabel in orderedLabels where !emittedBlocks.contains(nextLabel) {
+            emitStructuredBasicBlock(
+                nextLabel,
+                bodyLines: bodyLines,
+                blockLines: blockLines,
+                ctx: ctx,
+                emittedBlocks: &emittedBlocks
+            )
         }
     }
 

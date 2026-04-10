@@ -36,17 +36,16 @@
 
 ### 当前最新状态
 
-- 当前主线仍在 `CC-003.4`，但 `CC-003.4.3` 已完成一次明确的“compare 还是实现”定性：基于 `20260410-025055-4bfa19e0` / `20260410-025055-78cb9622` 两条最新 full-batch artifacts 重算后，`91c46448...` 在当前 compare 规则下仍稳定为 `L2`
-- 与 `CC-003.4.2` 不同，这支样本现在已经不再残留 entry / resource 摘要问题：`entryComparison` 已经稳定为 `L0`，剩余差异集中在：
+- 当前主线已经进入 `CC-003.4.4`：本轮在 `IRToMSLConverter.swift` 里补了一版**仅对带 self-loop `condbr` 的函数启用**的 partial structured CFG 回放，目标是避免“函数里只要有一个 loop / 非 simple diamond，整函数就退回空 `if/else` 骨架 + 线性发射”的旧行为
+- 单 case `cc-003-4-4-single-91c46448-v3` 证明这条方向是有效的：`91c46448...` 的 `generated.metal` 已经不再把 `BB142/148` 与 `BB283/286` 两组互斥分支顺序串发；对应 `regenerated.ll` 的 CFG 也从之前塌缩的 `basicBlockCount 5 / condbr 3 / phiCount 2` 恢复到 `basicBlockCount 20 / condbr 7 / phiCount 9`
+- 这支样本的 `entryComparison` 仍保持 `L0`，总体 `riskLevel` 仍是 `L2`，但摘要级 `riskReason` 已经只剩：
+  - `模块级 addrspace 分布变化`
   - `模块级 air intrinsic 使用变化`
-  - `控制流粗摘要变化`
-  - `指令族统计变化`
-- 新证据说明它不是 `f26d322...` 那类 optimizer-only compare 噪声：`generated.metal` 里仍能直接看到多个 **空 `if/else` 骨架 + 线性发射基本块** 模式，例如：
-  - `if (t124) { // → BB142 } else { // → BB148 }` 之后把 `BB142` / `BB148` 两段都顺序发射，并对 `phi_0` / `phi_1` 连续覆盖
-  - `if (t239) { // → BB286 } else { // → BB283 }` 之后同样把两边都线性发射，`phi_6` 最终被后一路覆盖
-  - 对照 `original.ll` / `regenerated.ll` 可以看到，原始样本仍是显式 `condbr + phi` / loop-carried phi 结构，而回生成结果已经塌缩成 `2` 个 `condbr` + 大量 `select`
-- 同时，`91c46448...` 的 module intrinsic family 还真实少了 `fract / max / sin / sqrt` 四支 family，不满足 `f26d322...` 那种 family-preserving 降噪前提，因此不应继续放宽 `Scripts/ir_canonical_compare.py`
-- 因此当前最新状态可以概括为：**`CC-003.4.3` 已确认 `91c46448...` 的 residual 主要是 `IRToMSLConverter` 在 simple diamond 之外的 structured CFG 回放缺口，而不是 compare 噪声；当前 full-batch 风险计数仍保持 diagnostics `L1 6 / L2 1 / L3 146`、corpus `L1 99 / L2 87 / L3 251`，下一步应拆成更小的 converter 修复子任务，而不是继续扩 compare 降噪。**
+  - `函数内 air intrinsic 调用统计变化`
+- full-batch 复跑结果显示，这个 cut 还**没有形成统计闭环**：
+  - diagnostics `cc-003-4-4-diagnostics-20260410-1110` 仍是 `L1 6 / L2 1 / L3 146`
+  - corpus `cc-003-4-4-corpus-20260410-1110` 为 `L1 98 / L2 88 / L3 251`，相对上一条基线 `L1 99 / L2 87 / L3 251` 只剩 **`d8ff0527...` 一支 `L1 -> L2` 回归**
+- 因此当前最新状态可以概括为：**`CC-003.4.4` 已验证“带 self-loop 的函数可从 partial structured CFG 回放中得到真实单 case 收益”，但 full-batch 仍差最后一支 corpus 回归，当前不应继续放大实现范围；下一步应直接对比 `91c46448...` 与 `d8ff0527...` 两支 self-loop 样本，继续收窄启用边界或补齐该 family 的残留模式。**
 
 
 ## 当前默认流程
@@ -172,7 +171,8 @@
 | `CC-003.4.1` 先修 `f26d322...` 中 simple diamond `br + phi` 的 CFG 回放缺口 | DONE | `IRToMSLConverter.swift` 已能把 `condbr -> true/false -> common merge` 这类简单 diamond 发射成真实 `if/else`，并有最小 replay 回归覆盖 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
 | `CC-003.4.2` 继续下钻 `f26d322...` / `91c46448...` 里 helper CFG 与 lowering 残留 | DONE | 已确认 `f26d322...` 在 `CC-003.4.1` 之后剩余的 helper `fract / floor / fmin` 漂移更像 compare 噪声；compare 降噪后 diagnostics `L2 2 -> 1`、corpus `L2 106 -> 87`，且无新增 `L3` | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
 | `CC-003.4.3` 单独下钻 `91c46448...` 的 residual intrinsic / CFG 漂移 | DONE | 已确认 `91c46448...` 当前 residual 不是 compare 噪声：latest artifact 中 `entryComparison` 已为 `L0`，但 `generated.metal` 仍存在空 `if/else` + 顺序覆盖 phi 的真实 CFG 回放缺口 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
-| `CC-003.4.4` 以 `91c46448...` 为入口修 simple diamond 之外的 structured CFG 回放缺口 | TODO | 至少让一处“空 `if/else` 骨架 + 线性发射基本块 + 覆盖 phi” 模式恢复成真实结构，并在单 case + full-batch 上验证风险是否下降 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
+| `CC-003.4.4` 以 `91c46448...` 为入口修 simple diamond 之外的 structured CFG 回放缺口 | DOING | 已完成 self-loop gated partial structured CFG 试探：`91c46448...` 单 case 的两处空壳分支已恢复真实结构，但 full-batch 仍残留 `d8ff0527...` 一支 `L1 -> L2` corpus 回归；需继续收窄或补齐该 self-loop family，直到风险分布至少不差于当前基线 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
+| `CC-003.4.4.1` 对比 `91c46448...` 与 `d8ff0527...` 的 self-loop family 差异 | TODO | 找出为什么同属 self-loop case，`91c46448...` 能获得局部 CFG 收益而 `d8ff0527...` 会从 `L1 -> L2`；明确下一版启用边界或补丁切口 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
 | `CC-004` 固化新的 case 分析模板 | TODO | 在 `difference-analysis/` 下沉淀一套稳定模板，确保后续每个 case 都按同样结构记录证据、结论与回归数据 | `difference-analysis/` |
 
 ## 任务执行规则

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import shutil
 import subprocess
@@ -7,6 +8,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -80,6 +82,94 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             REPO_ROOT / "build" / "semantics-validation" / "roundtrip",
         )
         self.assertRegex(output_root.name, r"^\d{8}-\d{6}-[0-9a-f]{8}$")
+
+    def test_resolve_compile_metal_args_infers_fast_math_disable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_ir_path = Path(temp_dir) / "original.ll"
+            original_ir_path.write_text(
+                '!llvm.module.flags = !{!0}\n!air.compile_options = !{!1}\n!1 = !{!"air.compile.fast_math_disable"}\n',
+                encoding="utf-8",
+            )
+
+            original_mode, inferred_args, effective_args = roundtrip_runner.replay_runner.resolve_compile_metal_args(
+                original_ir_path,
+                [],
+            )
+
+        self.assertEqual(original_mode, "disable")
+        self.assertEqual(inferred_args, ["-fno-fast-math"])
+        self.assertEqual(effective_args, ["-fno-fast-math"])
+
+    def test_compile_replay_result_auto_aligns_fast_math_disable_from_original_ir(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            original_ir_path = temp_root / "original.ll"
+            generated_msl_path = temp_root / "generated.metal"
+            original_ir_path.write_text(
+                '!llvm.module.flags = !{!0}\n!air.compile_options = !{!1}\n!1 = !{!"air.compile.fast_math_disable"}\n',
+                encoding="utf-8",
+            )
+            generated_msl_path.write_text(
+                '#include <metal_stdlib>\nusing namespace metal;\nkernel void test_kernel(device float* output [[buffer(0)]]) { output[0] = 1.0f; }\n',
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(metal_sdk="macosx", metal_args=[], skip_preflight=False)
+            replay_result = {
+                "jobID": 1,
+                "success": True,
+                "inputPath": str(original_ir_path),
+                "outputPath": str(generated_msl_path),
+            }
+
+            with mock.patch.object(
+                roundtrip_runner.replay_runner.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(args=["xcrun"], returncode=0, stdout="", stderr=""),
+            ) as run_mock:
+                compile_result = roundtrip_runner.replay_runner.compile_replay_result(replay_result, args)
+
+        command = run_mock.call_args.args[0]
+        self.assertIn("-fno-fast-math", command)
+        self.assertEqual(compile_result["status"], "success")
+        self.assertEqual(compile_result["originalFastMathMode"], "disable")
+        self.assertEqual(compile_result["inferredMetalArgs"], ["-fno-fast-math"])
+        self.assertEqual(compile_result["effectiveMetalArgs"], ["-fno-fast-math"])
+
+    def test_compile_replay_result_preserves_explicit_fast_math_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            original_ir_path = temp_root / "original.ll"
+            generated_msl_path = temp_root / "generated.metal"
+            original_ir_path.write_text(
+                '!llvm.module.flags = !{!0}\n!air.compile_options = !{!1}\n!1 = !{!"air.compile.fast_math_disable"}\n',
+                encoding="utf-8",
+            )
+            generated_msl_path.write_text(
+                '#include <metal_stdlib>\nusing namespace metal;\nkernel void test_kernel(device float* output [[buffer(0)]]) { output[0] = 1.0f; }\n',
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(metal_sdk="macosx", metal_args=["-ffast-math"], skip_preflight=False)
+            replay_result = {
+                "jobID": 1,
+                "success": True,
+                "inputPath": str(original_ir_path),
+                "outputPath": str(generated_msl_path),
+            }
+
+            with mock.patch.object(
+                roundtrip_runner.replay_runner.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(args=["xcrun"], returncode=0, stdout="", stderr=""),
+            ) as run_mock:
+                compile_result = roundtrip_runner.replay_runner.compile_replay_result(replay_result, args)
+
+        command = run_mock.call_args.args[0]
+        self.assertIn("-ffast-math", command)
+        self.assertNotIn("-fno-fast-math", command)
+        self.assertEqual(compile_result["status"], "success")
+        self.assertEqual(compile_result["originalFastMathMode"], "disable")
+        self.assertEqual(compile_result["inferredMetalArgs"], [])
+        self.assertEqual(compile_result["effectiveMetalArgs"], ["-ffast-math"])
 
     def test_apply_test_data_representatives_preset(self) -> None:
         parser = roundtrip_runner.build_parser()

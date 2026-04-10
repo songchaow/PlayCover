@@ -287,6 +287,10 @@ COMPILE_FAILURE_CATEGORY_RULES: list[tuple[str, re.Pattern[str]]] = [
     ("unsupported_builtin", re.compile(r"\bair\.|builtin|intrinsic", re.IGNORECASE)),
 ]
 
+FAST_MATH_ENABLE_OPTION = "air.compile.fast_math_enable"
+FAST_MATH_DISABLE_OPTION = "air.compile.fast_math_disable"
+EXPLICIT_FAST_MATH_METAL_ARGS = {"-ffast-math", "-fno-fast-math"}
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -1037,6 +1041,39 @@ def compiled_air_output_path(metal_path: Path) -> Path:
     return metal_path.with_name(f"{metal_path.name}.air")
 
 
+def infer_original_ir_fast_math_mode(original_ir_path: Path | None) -> str | None:
+    if original_ir_path is None or not original_ir_path.is_file():
+        return None
+
+    try:
+        text = original_ir_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+    has_disable = FAST_MATH_DISABLE_OPTION in text
+    has_enable = FAST_MATH_ENABLE_OPTION in text
+    if has_disable and not has_enable:
+        return "disable"
+    if has_enable and not has_disable:
+        return "enable"
+    return None
+
+
+def resolve_compile_metal_args(original_ir_path: Path | None, user_metal_args: list[str] | None) -> tuple[str | None, list[str], list[str]]:
+    original_fast_math_mode = infer_original_ir_fast_math_mode(original_ir_path)
+    effective_args = list(user_metal_args or [])
+    if any(arg in EXPLICIT_FAST_MATH_METAL_ARGS for arg in effective_args):
+        return original_fast_math_mode, [], effective_args
+
+    inferred_args: list[str] = []
+    if original_fast_math_mode == "disable":
+        inferred_args = ["-fno-fast-math"]
+    elif original_fast_math_mode == "enable":
+        inferred_args = ["-ffast-math"]
+
+    return original_fast_math_mode, inferred_args, [*inferred_args, *effective_args]
+
+
 def compile_replay_result(result: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     source_path = Path(result["outputPath"])
     base_result = {
@@ -1085,13 +1122,23 @@ def compile_replay_result(result: dict[str, Any], args: argparse.Namespace) -> d
     base_result["preflightIssueCount"] = len(preflight_issues)
     base_result["preflightIssues"] = preflight_issues
 
+    original_ir_path_value = result.get("inputPath")
+    original_ir_path = Path(original_ir_path_value).expanduser().resolve() if original_ir_path_value else None
+    original_fast_math_mode, inferred_metal_args, effective_metal_args = resolve_compile_metal_args(
+        original_ir_path,
+        list(args.metal_args),
+    )
+    base_result["originalFastMathMode"] = original_fast_math_mode
+    base_result["inferredMetalArgs"] = inferred_metal_args
+    base_result["effectiveMetalArgs"] = effective_metal_args
+
     air_path = compiled_air_output_path(source_path).resolve()
     air_path.parent.mkdir(parents=True, exist_ok=True)
     if air_path.exists():
         air_path.unlink()
     base_result["airPath"] = str(air_path)
 
-    command = ["xcrun", "--sdk", args.metal_sdk, "metal", "-c", *args.metal_args, str(source_path), "-o", str(air_path)]
+    command = ["xcrun", "--sdk", args.metal_sdk, "metal", "-c", *effective_metal_args, str(source_path), "-o", str(air_path)]
     base_result["command"] = shell_join(command)
 
     if preflight_issues and not args.skip_preflight:
@@ -1198,6 +1245,7 @@ def run_compile_jobs(
         "compiler": {
             "sdk": args.metal_sdk,
             "extraArgs": list(args.metal_args),
+            "autoAlignFastMathFromOriginalIR": True,
             "skipPreflight": bool(args.skip_preflight),
         },
         "totalJobs": len(compile_results),

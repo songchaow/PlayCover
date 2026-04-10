@@ -36,22 +36,26 @@
 
 ### 当前最新状态
 
-- 当前主线最新已完成 `CC-003.7`：围绕 corpus 中 `36` 个高频 `L3` `entry 输出语义摘要变化` 下钻后，已经确认真正缺口并不在 compare，而在 **`IRToMSLConverter.swift` 对返回 metadata qualifier 的保真不完整：`parseMetadataReturnNode(...)` 会丢掉 `air.position` 上的 `air.invariant`，entry output struct 也固定只发 `[[position]]`，导致 regenerated IR 丢失 `qualifiers=air.invariant`**
-- 实现上这轮继续严格按 converter-first 收敛，只改了生成侧：
-  - `MetadataReturnInfo` 新增 `qualifiers`
-  - `parseMetadataReturnNode(...)` 开始保留 `air.invariant`
-  - entry output struct 在 `air.position` 带有 invariant 时改为生成 `[[position, invariant]]`
-  - 同时补了 `Scripts/test_ir_semantics_roundtrip_runner.py` 的最小 replay / round-trip 回归，并新增 `test_vertex_position_invariant.ll` 最小样本
+- 当前主线最新已完成 `CC-003.8`：围绕 `CC-003.7` 之后暴露出来的高频 `L3` `fast-math 相关属性变化` 下钻后，已经确认真正缺口**不在 compare，也不在 converter emission 本身，而在 round-trip compile posture：compile `generated.metal` 时一直使用裸 `xcrun metal -c`，导致 original IR 中带 `air.compile.fast_math_disable` 的样本被稳定回编成 `air.compile.fast_math_enable`**
+- 实现上这轮没有继续放大 `IRToMSLConverter.swift`，而是只改 compile 阶段：
+  - `Scripts/corpus_replay_runner.py` 新增 `infer_original_ir_fast_math_mode(...)` / `resolve_compile_metal_args(...)`
+  - compile `generated.metal` 时会先读取 original IR：
+    - `air.compile.fast_math_disable -> -fno-fast-math`
+    - `air.compile.fast_math_enable -> -ffast-math`
+  - 若用户已经显式传入 fast-math 参数，则保持用户覆盖，不再自动追加
+  - compile 结果里开始记录 `originalFastMathMode` / `inferredMetalArgs` / `effectiveMetalArgs`
+  - 同时补了 `Scripts/test_ir_semantics_roundtrip_runner.py` 的 3 条 compile posture 回归
 - 单 case 结果已经形成闭环：
-  - `cc-003-7-single-fc1d64-position-invariant` 中，代表样本 `fc1d64b2...` 的 `entryComparison`：`L3 -> L0`
-  - `entry 输出语义摘要变化` 已完全消失，`outputSemantics` 重新对齐为 `kind=air.position|type=float4|qualifiers=air.invariant`
-  - 最小样本 `test_vertex_position_invariant.ll` 中，`generated.metal` 已出现 `float4 position [[position, invariant]];`，round-trip 后 regenerated IR 保留 `air.invariant`
+  - `cc-003-8-single-d48165-fast-math-compile-posture` 中，代表样本 `d48165ab...`：`L3 -> L1`
+  - compile 命令已自动带出 `-fno-fast-math`
+  - regenerated IR 的 `compileOptions` 已重新对齐为 `air.compile.fast_math_disable`
+  - 剩余 fast-math 差异只剩 instruction-level residual，维持在 `L1`
 - full-batch 给出的结论非常关键：
-  - diagnostics `cc-003-7-diagnostics-20260410-position-invariant`：`L1 12 / L2 140 / L3 1`（与 `CC-003.6` 持平）
-  - corpus `cc-003-7-corpus-20260410-position-invariant`：**`L1 186 / L2 197 / L3 54`**（与 `CC-003.6` 持平）
-  - 但 corpus compare 中 `entry 输出语义摘要变化` 已经 **`36 -> 0`**
-  - 同时 `blockedSamples` 集合保持不变：corpus `54 -> 54`、diagnostics `1 -> 1`
-- 因此当前最新状态可以概括为：**`air.position` 的 `air.invariant` 保真问题已经通过 converter-first 从源头收敛，但它并不是当前 blocked 计数的真正杠杆；修掉这条表层差异后，原先那 `36` 个 corpus case 会直接暴露成 `fast-math` compile posture family。下一步不应继续放大 invariant 方向，而应优先下钻这支新暴露出来的 `fast-math` family，其次再看 `模块级 addrspace 分布变化 + air intrinsic 使用变化` 与 `entry 参数个数变化`。**
+  - diagnostics `cc-003-8-diagnostics-20260410-fast-math-compile-posture`：`L1 13 / L2 140 / L3 0`
+  - corpus `cc-003-8-corpus-20260410-fast-math-compile-posture`：**`L1 222 / L2 208 / L3 7`**
+  - `blockedSamples` 集合对比：corpus **`54 -> 7`**、diagnostics **`1 -> 0`**
+  - 新增 blocked 回归：corpus `0`、diagnostics `0`
+- 因此当前最新状态可以概括为：**`fast-math` compile posture family 已经通过 round-trip compile 对齐被大幅收掉，它就是 `CC-003.7` 之后真正的 blocked 杠杆；修完之后，剩余的 corpus `7` 个 `L3` 已全部收敛成 `entry 参数个数变化 + entry 参数类型摘要变化 + entry 参数语义摘要变化` family。下一步不应继续放大 fast-math 方向，而应优先下钻这支 entry 参数 family，其次再看 `模块级 addrspace 分布变化 + air intrinsic 使用变化` 的 residual。**
 
 
 ## 当前默认流程
@@ -183,7 +187,8 @@
 | `CC-003.5` 优先检查 `entry 返回类型摘要变化` 的高频 `L3` 家族 | DONE | 已确认其中一大支是 converter 把 original IR 的 single-field wrapped return 过早塌成 bare return 的真实实现问题；按 converter-first 修复后 diagnostics `L3 146 -> 4`、corpus `L3 251 -> 70`，且无新增 `L3` | `difference-analysis/single-field-return-wrapper/04-implementation-result.md` / `difference-analysis/single-field-return-wrapper/05-full-batch-compare.md` |
 | `CC-003.6` 优先检查 `entry 参数类型摘要变化` 的高频 `L3` 家族 | DONE | 已确认其中一大支不是 compare 噪声，而是 converter 对 constant buffer 用户 struct 的引用判定过窄；修复后 diagnostics `L3 4 -> 1`、corpus `L3 70 -> 54`，且无新增 `L3` | `difference-analysis/constant-struct-reference-dereferenceable/04-implementation-result.md` / `difference-analysis/constant-struct-reference-dereferenceable/05-full-batch-compare.md` |
 | `CC-003.7` 优先检查 `entry 输出语义摘要变化` 的高频 `L3` 家族 | DONE | 已确认 corpus 中 `36` 个 `entry 输出语义摘要变化` 真实缺口是 `air.position` 的 `air.invariant` 在返回 metadata / MSL output struct 发射时丢失；修复后 corpus compare 中该差异 `36 -> 0`，但 top-level `L3` 计数与 blocked 集合保持不变，因为同批样本继续暴露为 `fast-math` family | `difference-analysis/position-invariant-output/04-implementation-result.md` / `difference-analysis/position-invariant-output/05-full-batch-compare.md` |
-| `CC-003.8` 优先检查 `CC-003.7` 之后暴露出来的 `fast-math` 高风险 family | TODO | 已确认 `CC-003.7` 清掉 `entry 输出语义摘要变化` 后，corpus `36` 个样本直接暴露为 `fast-math 相关属性变化`；下一步需判断它更像 compile posture 差异、converter emission 影响，还是 compare 口径问题 | `difference-analysis/position-invariant-output/05-full-batch-compare.md` / `04-L2-CanonicalCompareAndRiskGrading.md` |
+| `CC-003.8` 优先检查 `CC-003.7` 之后暴露出来的 `fast-math` 高风险 family | DONE | 已确认真正缺口是 round-trip compile posture 丢失了 original IR 的 `air.compile.fast_math_disable/enable`；修复后 corpus `L3 54 -> 7`、diagnostics `L3 1 -> 0`，且无新增 blocked | `difference-analysis/fast-math-compile-posture/04-implementation-result.md` / `difference-analysis/fast-math-compile-posture/05-full-batch-compare.md` |
+| `CC-003.9` 优先检查 `CC-003.8` 收敛后剩余的 `entry 参数` 高风险 family | TODO | 已确认 `CC-003.8` 收掉 compile posture family 后，corpus 剩余 `7` 个 `L3` 已全部收敛成 `entry 参数个数变化 + entry 参数类型摘要变化 + entry 参数语义摘要变化`；下一步需判断它更像真实参数建模缺口，还是 compare / metadata 口径问题 | `difference-analysis/fast-math-compile-posture/05-full-batch-compare.md` / `04-L2-CanonicalCompareAndRiskGrading.md` |
 | `CC-004` 固化新的 case 分析模板 | TODO | 在 `difference-analysis/` 下沉淀一套稳定模板，确保后续每个 case 都按同样结构记录证据、结论与回归数据 | `difference-analysis/` |
 
 ## 任务执行规则
@@ -307,6 +312,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - **constant buffer struct 的 `&` / `*` 选择会直接影响 `dereferenceable(N)` 是否能 round-trip 保住**；当 `entry 参数类型摘要变化` 表现为 `ptr addrspace(2) dereferenceable(N) -> ptr addrspace(2)` 时，应优先检查 converter 是否把 `_Foo_Type` / `cb_Foo_Type` 这类用户 struct 误降成指针参数
 - **`air.position` 的 `air.invariant` 不能在返回 metadata 解析阶段被吞掉**；当 `entry 输出语义摘要变化` 表现为 `kind=air.position|type=float4|qualifiers=air.invariant -> kind=air.position|type=float4` 时，应先检查 converter 是否保留了返回 qualifier，并把它发到 `[[position, invariant]]`
 - **修掉表层 `entry` 差异后要立刻复跑 full-batch 看 blocked 集合是否真的变化**；像 `air.invariant` 这类修复即使能把 corpus compare 中的 `entry 输出语义摘要变化 36 -> 0`，也可能只是把同一批 `L3` 暴露成更底层的 `fast-math` family，而不会直接降低 `L3` 计数
+- **original IR 里带 `air.compile.fast_math_disable` 的样本不能用裸 `xcrun metal -c` 回编**；默认 compile posture 若丢掉这条信息，会把 whole-module `compileOptions` 从 `disable` 漂成 `enable`，直接形成高频 `L3` fast-math family；应按 original IR 自动补 `-fno-fast-math`（enable 样本则显式补 `-ffast-math`），但若用户已显式传入 fast-math 参数，应尊重用户覆盖
 
 ## 参考信息
 
@@ -336,6 +342,8 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - `difference-analysis/constant-struct-reference-dereferenceable/05-full-batch-compare.md`
 - `difference-analysis/position-invariant-output/04-implementation-result.md`
 - `difference-analysis/position-invariant-output/05-full-batch-compare.md`
+- `difference-analysis/fast-math-compile-posture/04-implementation-result.md`
+- `difference-analysis/fast-math-compile-posture/05-full-batch-compare.md`
 
 ### 相关实现与工具
 

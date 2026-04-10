@@ -36,16 +36,18 @@
 
 ### 当前最新状态
 
-- 当前主线已经进入 `CC-003.4.4`：本轮在 `IRToMSLConverter.swift` 里补了一版**仅对带 self-loop `condbr` 的函数启用**的 partial structured CFG 回放，目标是避免“函数里只要有一个 loop / 非 simple diamond，整函数就退回空 `if/else` 骨架 + 线性发射”的旧行为
-- 单 case `cc-003-4-4-single-91c46448-v3` 证明这条方向是有效的：`91c46448...` 的 `generated.metal` 已经不再把 `BB142/148` 与 `BB283/286` 两组互斥分支顺序串发；对应 `regenerated.ll` 的 CFG 也从之前塌缩的 `basicBlockCount 5 / condbr 3 / phiCount 2` 恢复到 `basicBlockCount 20 / condbr 7 / phiCount 9`
-- 这支样本的 `entryComparison` 仍保持 `L0`，总体 `riskLevel` 仍是 `L2`，但摘要级 `riskReason` 已经只剩：
+- 当前主线已完成 `CC-003.4.4.1`：对比 `91c46448...` 与 `d8ff0527...` 后，确认 `d8ff0527...` 的回归不是新的 compare 噪声，而是 **entry 块首个 non-structured `condbr` 触发 fallback 时，`emitBlocksInSourceOrderAfter("entry", ...)` 因为找不到显式 `entry:` 标签而直接停止后续 BB 发射**
+- 实现上只做了一刀最小修正：让 `entry` 在 fallback 模式下从源码中的第一个显式 BB 开始继续按顺序发射；同时补了最小回归 `test_entry_partial_structured_cfg.ll` 与对应 `roundtrip` 单测，专门覆盖“入口第一跳不能结构化，但后续 BB 仍必须继续发射”的场景
+- 单 case `cc-003-4-4-single-d8ff0527-v4` 已证明这条修复命中根因：`d8ff0527...` 从之前 entry 附近直接塌成空函数的 `L2` 回到 `L1`，残留只剩：
   - `模块级 addrspace 分布变化`
   - `模块级 air intrinsic 使用变化`
   - `函数内 air intrinsic 调用统计变化`
-- full-batch 复跑结果显示，这个 cut 还**没有形成统计闭环**：
-  - diagnostics `cc-003-4-4-diagnostics-20260410-1110` 仍是 `L1 6 / L2 1 / L3 146`
-  - corpus `cc-003-4-4-corpus-20260410-1110` 为 `L1 98 / L2 88 / L3 251`，相对上一条基线 `L1 99 / L2 87 / L3 251` 只剩 **`d8ff0527...` 一支 `L1 -> L2` 回归**
-- 因此当前最新状态可以概括为：**`CC-003.4.4` 已验证“带 self-loop 的函数可从 partial structured CFG 回放中得到真实单 case 收益”，但 full-batch 仍差最后一支 corpus 回归，当前不应继续放大实现范围；下一步应直接对比 `91c46448...` 与 `d8ff0527...` 两支 self-loop 样本，继续收窄启用边界或补齐该 family 的残留模式。**
+- full-batch 复跑结果已经形成统计闭环：
+  - diagnostics `cc-003-4-4-diagnostics-20260410-1240-entry-fallback-fix` 保持 `L1 6 / L2 1 / L3 146`
+  - corpus `cc-003-4-4-corpus-20260410-1240-entry-fallback-fix` 变为 **`L1 100 / L2 86 / L3 251`**，相对 `cc-003-4-4-corpus-20260410-1110` 的 `L1 98 / L2 88 / L3 251`，共有两支样本 `L2 -> L1`：
+    - `d8ff0527...`
+    - `1fb4a75f...`
+- 因此当前最新状态可以概括为：**`CC-003.4.4` 已经完成闭环；self-loop gated partial structured CFG 方向保留，但 entry fallback 需要补齐“无显式 `entry:` 标签”这条边界。下一步不必继续围着 `d8ff0527...` 止损，应重新聚焦 `91c46448...` 仍残留的 module addrspace / intrinsic 漂移。**
 
 
 ## 当前默认流程
@@ -171,8 +173,9 @@
 | `CC-003.4.1` 先修 `f26d322...` 中 simple diamond `br + phi` 的 CFG 回放缺口 | DONE | `IRToMSLConverter.swift` 已能把 `condbr -> true/false -> common merge` 这类简单 diamond 发射成真实 `if/else`，并有最小 replay 回归覆盖 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
 | `CC-003.4.2` 继续下钻 `f26d322...` / `91c46448...` 里 helper CFG 与 lowering 残留 | DONE | 已确认 `f26d322...` 在 `CC-003.4.1` 之后剩余的 helper `fract / floor / fmin` 漂移更像 compare 噪声；compare 降噪后 diagnostics `L2 2 -> 1`、corpus `L2 106 -> 87`，且无新增 `L3` | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
 | `CC-003.4.3` 单独下钻 `91c46448...` 的 residual intrinsic / CFG 漂移 | DONE | 已确认 `91c46448...` 当前 residual 不是 compare 噪声：latest artifact 中 `entryComparison` 已为 `L0`，但 `generated.metal` 仍存在空 `if/else` + 顺序覆盖 phi 的真实 CFG 回放缺口 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
-| `CC-003.4.4` 以 `91c46448...` 为入口修 simple diamond 之外的 structured CFG 回放缺口 | DOING | 已完成 self-loop gated partial structured CFG 试探：`91c46448...` 单 case 的两处空壳分支已恢复真实结构，但 full-batch 仍残留 `d8ff0527...` 一支 `L1 -> L2` corpus 回归；需继续收窄或补齐该 self-loop family，直到风险分布至少不差于当前基线 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
-| `CC-003.4.4.1` 对比 `91c46448...` 与 `d8ff0527...` 的 self-loop family 差异 | TODO | 找出为什么同属 self-loop case，`91c46448...` 能获得局部 CFG 收益而 `d8ff0527...` 会从 `L1 -> L2`；明确下一版启用边界或补丁切口 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
+| `CC-003.4.4` 以 `91c46448...` 为入口修 simple diamond 之外的 structured CFG 回放缺口 | DONE | 已完成 self-loop gated partial structured CFG + entry fallback 边界补齐：`91c46448...` 单 case 获得真实 CFG 收益，`d8ff0527...` 回归已收回，full-batch 达到 `corpus L1 100 / L2 86 / L3 251`、diagnostics 持平 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
+| `CC-003.4.4.1` 对比 `91c46448...` 与 `d8ff0527...` 的 self-loop family 差异 | DONE | 已确认回归根因是 entry 首个 non-structured `condbr` 的 fallback 断流，而不是 self-loop family 本身；修复后 `d8ff0527...` 与 `1fb4a75f...` 均从 `L2 -> L1` | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
+| `CC-003.4.5` 在不回退 `CC-003.4.4` 收益的前提下继续下钻 `91c46448...` residual | TODO | 基于已稳定的 self-loop + entry fallback 边界，继续分析为什么 `91c46448...` 仍残留模块级 addrspace / intrinsic 漂移，并找到下一刀最小实现切口 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
 | `CC-004` 固化新的 case 分析模板 | TODO | 在 `difference-analysis/` 下沉淀一套稳定模板，确保后续每个 case 都按同样结构记录证据、结论与回归数据 | `difference-analysis/` |
 
 ## 任务执行规则

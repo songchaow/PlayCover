@@ -4263,18 +4263,19 @@ struct IRToMSLConverter {
         ctx: SSAContext,
         emittedBlocks: inout Set<String>
     ) {
-        var foundStartLabel = false
+        var foundStartLabel = label == "entry"
         var orderedLabels: [String] = []
 
         for line in bodyLines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard !trimmed.isEmpty, let parsedLabel = parseBBLabel(trimmed) else { continue }
 
-            if parsedLabel == label {
-                foundStartLabel = true
+            if !foundStartLabel {
+                if parsedLabel == label {
+                    foundStartLabel = true
+                }
                 continue
             }
-            guard foundStartLabel else { continue }
             orderedLabels.append(parsedLabel)
         }
 

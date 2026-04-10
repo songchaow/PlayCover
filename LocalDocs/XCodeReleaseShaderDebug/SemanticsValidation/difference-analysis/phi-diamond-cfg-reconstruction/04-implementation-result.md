@@ -352,3 +352,94 @@
 - **方向本身是对的**：对带 self-loop 的函数启用 partial structured CFG，确实能让 `91c46448...` 这种 case 的 `generated.metal` / `regenerated.ll` 更接近原始 CFG
 - **但这轮还没有形成统计闭环**：diagnostics 没下降，corpus 还残留 `d8ff0527...` 一支 `L1 -> L2` 回归，因此不能把 `CC-003.4.4` 标成完成
 - **当前最合理的止损点** 是停在这版 self-loop gated 实现，不再继续扩大启用范围；下一步直接对比 `91c46448...` 与 `d8ff0527...` 的 self-loop family 差异，找出更窄的启用边界或下一刀实现切口
+
+## CC-003.4.4.1：entry fallback 断流修复
+
+这轮只做 `CC-003.4.4` 的收尾子问题：对比 `91c46448...` 与 `d8ff0527...` 两支 self-loop family 样本，确认为什么前者能获益、后者会回归。
+
+## 复核结果
+
+### 新证据：回归根因不在 self-loop 本身，而在 entry fallback
+
+对照 `cc-003-4-4-corpus-20260410-1110` 的 `d8ff0527...` artifacts，可以直接看到：
+
+- `generated.metal` 在 entry 首个 `if (t86)` 之后就提前结束，后续 BB 完全没有继续发射
+- `regenerated.ll` 因此直接塌成单个 `ret` 基本块，`basicBlockCount 32 -> 1`
+- 但同一版实现下，`91c46448...` 之所以还能受益，是因为它的 entry 首个关键 `condbr` 本身就是 simple diamond，能先走结构化路径，不会立刻掉进 fallback 断流
+
+进一步回看 `IRToMSLConverter.swift`，可以把根因收敛到一处很小的边界缺口：
+
+- 当 `emitStructuredConditionalBranch(...)` 对 entry 首个 non-structured `condbr` 返回 `false` 时，会转去 `emitBlocksInSourceOrderAfter("entry", ...)`
+- 但 entry 在 IR body 里没有显式 `entry:` 标签，旧实现只能在扫描到与 `label` 同名的标签后才开始收集后续 BB
+- 结果就是：**对 entry 触发 fallback 时，后续基本块列表永远为空，函数会在第一处空骨架 `if/else` 之后直接停止发射**
+
+这说明 `d8ff0527...` 的回归并不是 self-loop family 不适合当前策略，而是一个更基础的 fallback 边界 bug。
+
+## 本轮实现内容
+
+实现仍只落在：
+
+- `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift`
+
+具体改动只有一处：
+
+- 当 `emitBlocksInSourceOrderAfter(...)` 的起点是 `entry` 时，直接把“已找到起点”视为成立，让 fallback 从源码中的第一个显式 BB 开始继续发射
+
+这条修正不会扩大 structured CFG 的适用范围，也不会改变原有 simple diamond / self-loop 的判定逻辑；它只修补“entry 没有显式标签”导致的遍历断流。
+
+## 新增最小回归
+
+这轮新增：
+
+- `LocalDocs/XCodeReleaseShaderDebug/RoadE-HookMakeLibraryWithSrc/test-data/test_entry_partial_structured_cfg.ll`
+
+并在：
+
+- `Scripts/test_ir_semantics_roundtrip_runner.py`
+
+补了一条专门覆盖入口 fallback 的回归，验证：
+
+- entry 第一个 `condbr` 即使不能结构化，也不会阻断后续 BB 发射
+- merge phi 的另一条来路仍会继续被发出来
+- 后续简单分支仍会继续生成 `if (...) { ... }`
+
+## 验证结果
+
+### 单测
+
+1. `python3 Scripts/test_ir_canonical_compare.py`
+   - 通过
+2. `python3 Scripts/test_ir_semantics_roundtrip_runner.py`
+   - 通过（新增 1 条入口 fallback 回归）
+
+### 单 case
+
+1. `python3 Scripts/ir_semantics_roundtrip_runner.py --ll /Users/songdogwang/Library/Containers/io.playcover.PlayCover/ShaderCorpus/com.miHoYo.Yuanshen/modules/d8ff0527cc89aa97dce0753a687356ab166db58b8c8e9ee32c8b13cda47fa339/module.ll --output-root build/semantics-validation/roundtrip/cc-003-4-4-single-d8ff0527-v4 --allow-failures`
+   - 结果：`d8ff0527...` 从 `L2 -> L1`
+   - `riskReason` 只剩：
+     - `模块级 addrspace 分布变化`
+     - `模块级 air intrinsic 使用变化`
+     - `函数内 air intrinsic 调用统计变化`
+
+### full-batch
+
+1. diagnostics 复跑：
+   - 输出：`build/semantics-validation/roundtrip/cc-003-4-4-diagnostics-20260410-1240-entry-fallback-fix`
+   - 结果：`L1 6 / L2 1 / L3 146`
+   - 相对 `cc-003-4-4-diagnostics-20260410-1110`：**0 变化**
+2. corpus 复跑：
+   - 输出：`build/semantics-validation/roundtrip/cc-003-4-4-corpus-20260410-1240-entry-fallback-fix`
+   - 结果：`L1 100 / L2 86 / L3 251`
+   - 相对 `cc-003-4-4-corpus-20260410-1110` 的 `L1 98 / L2 88 / L3 251`：
+     - `d8ff0527...`：`L2 -> L1`
+     - `1fb4a75f...`：`L2 -> L1`
+     - 无新增 `L3`
+
+## 当前结论
+
+这轮可以把 `CC-003.4.4.1` 收敛成下面这个判断：
+
+- `d8ff0527...` 的回归根因已经明确：**不是 self-loop family 本身，而是 entry 首个 non-structured `condbr` 触发 fallback 时的遍历断流**
+- 这是一刀非常小的实现修复，且已经在单测、单 case、full-batch 三层形成闭环
+- 修完之后，`CC-003.4.4` 可以标成完成：`91c46448...` 的局部 CFG 收益保住了，`d8ff0527...` 回归也已经收回
+- 下一步最值得继续推进的，不再是收窄 self-loop family，而是回到 `91c46448...` 仍残留的 module addrspace / intrinsic 漂移，继续找下一刀最小切口

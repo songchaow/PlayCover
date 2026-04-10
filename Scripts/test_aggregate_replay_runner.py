@@ -299,6 +299,80 @@ class AggregateReplayRunnerTests(unittest.TestCase):
         self.assertGreater(compile_result["preflightIssueCount"], 0)
         run_mock.assert_not_called()
 
+    def test_compile_aggregate_source_reads_compile_decision_from_mtl_device_harness(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_path = root / "aggregate.replayed.generated.metal"
+            source_path.write_text(
+                "#include <metal_stdlib>\nusing namespace metal;\n\nkernel void main0(device float* output [[buffer(0)]]) { output[0] = 1.0f; }\n",
+                encoding="utf-8",
+            )
+            original_ir_path = root / "module-a.ll"
+            original_ir_path.write_text('!1 = !{!"air.compile.fast_math_disable"}\n', encoding="utf-8")
+            harness_binary = root / "metal_aggregate_compile_harness"
+            harness_binary.write_text("#!/bin/sh\n", encoding="utf-8")
+            harness_binary.chmod(0o755)
+            args = argparse.Namespace(
+                compile_backend="mtl-device",
+                metal_sdk="macosx",
+                metal_args=[],
+                skip_preflight=False,
+                aggregate_compile_harness_binary=str(harness_binary),
+            )
+            aggregate_result = {"success": True, "sourcePath": str(source_path)}
+
+            def fake_run(command: list[str], check: bool, capture_output: bool, text: bool) -> subprocess.CompletedProcess[str]:
+                self.assertFalse(check)
+                self.assertTrue(capture_output)
+                self.assertTrue(text)
+                self.assertIn("--manifest-source", command)
+                self.assertIn("--original-ir", command)
+                self.assertIn(str(original_ir_path.resolve()), command)
+                report_path = Path(command[command.index("--report") + 1])
+                report_path.write_text(
+                    json.dumps(
+                        {
+                            "schemaVersion": 1,
+                            "success": True,
+                            "error": None,
+                            "functionNames": ["main0"],
+                            "functionCount": 1,
+                            "usesExplicitCompileOptions": True,
+                            "fastMathEnabled": False,
+                            "fastMathMode": "disable",
+                            "fastMathDecision": "fast_math_aligned",
+                            "inferredMetalArgs": ["-fno-fast-math"],
+                            "effectiveMetalArgs": ["-fno-fast-math"],
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+            with mock.patch.object(aggregate_runner.subprocess, "run", side_effect=fake_run):
+                compile_result = aggregate_runner.compile_aggregate_source(
+                    aggregate_result,
+                    [original_ir_path],
+                    args,
+                    job_id=1,
+                    bundle_id="com.example.demo",
+                    replacement_key="replacement-key",
+                    module_keys=["module-a"],
+                )
+
+        self.assertEqual(compile_result["status"], "success")
+        self.assertTrue(compile_result["success"])
+        self.assertEqual(compile_result["compileBackend"], "mtl-device")
+        self.assertEqual(compile_result["fastMathMode"], "disable")
+        self.assertEqual(compile_result["fastMathDecision"], "fast_math_aligned")
+        self.assertEqual(compile_result["inferredMetalArgs"], ["-fno-fast-math"])
+        self.assertEqual(compile_result["effectiveMetalArgs"], ["-fno-fast-math"])
+        self.assertEqual(compile_result["libraryFunctionNames"], ["main0"])
+        self.assertEqual(compile_result["libraryFunctionCount"], 1)
+        self.assertTrue(compile_result["usesExplicitCompileOptions"])
+        self.assertFalse(compile_result["compileOptionsFastMathEnabled"])
+
     @unittest.skipUnless(shutil.which("swiftc") and shutil.which("xcrun"), "requires swiftc and xcrun")
     def test_cli_rebuilds_duplicate_modules_and_compiles_aggregate(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

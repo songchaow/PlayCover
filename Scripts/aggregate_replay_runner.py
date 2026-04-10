@@ -733,17 +733,6 @@ def compile_aggregate_source(
     base_result["preflightIssueCount"] = len(preflight_issues)
     base_result["preflightIssues"] = preflight_issues
 
-    fast_math_mode, fast_math_decision, inferred_args, effective_args = resolve_aggregate_compile_metal_args(
-        original_ir_paths,
-        list(args.metal_args),
-    )
-    base_result["fastMathMode"] = fast_math_mode
-    base_result["fastMathDecision"] = fast_math_decision
-    base_result["inferredMetalArgs"] = inferred_args
-    base_result["effectiveMetalArgs"] = effective_args
-    base_result["usesExplicitCompileOptions"] = fast_math_mode is not None
-    base_result["compileOptionsFastMathEnabled"] = fast_math_mode_to_enabled(fast_math_mode)
-
     if preflight_issues and not args.skip_preflight:
         base_result["status"] = "preflight_rejected"
         base_result["error"] = preflight_issues[0]["summary"]
@@ -769,6 +758,18 @@ def compile_aggregate_source(
             base_result["clusterTitle"] = cluster_title
             return base_result
 
+        manifest_source = replay_runner.shared_compile_decision_manifest_path().expanduser().resolve()
+        if not manifest_source.is_file():
+            base_result["status"] = "compile_failed"
+            base_result["error"] = f"shared compile decision manifest source is missing: {manifest_source}"
+            cluster_key, cluster_category, cluster_title = replay_runner.derive_failure_cluster(
+                base_result["status"], [], preflight_issues, base_result["error"]
+            )
+            base_result["clusterKey"] = cluster_key
+            base_result["clusterCategory"] = cluster_category
+            base_result["clusterTitle"] = cluster_title
+            return base_result
+
         report_path = source_path.with_name(f"{source_path.stem}.mtl-device.compile.json").resolve()
         base_result["backendReportPath"] = str(report_path)
         command = [
@@ -777,9 +778,13 @@ def compile_aggregate_source(
             str(source_path),
             "--report",
             str(report_path),
-            "--fast-math-mode",
-            fast_math_mode or "default",
+            "--manifest-source",
+            str(manifest_source),
         ]
+        for original_ir_path in original_ir_paths:
+            command.extend(["--original-ir", str(original_ir_path.expanduser().resolve())])
+        for metal_arg in list(args.metal_args):
+            command.extend(["--metal-arg", metal_arg])
         base_result["command"] = replay_runner.shell_join(command)
 
         start_time = time.perf_counter()
@@ -812,6 +817,12 @@ def compile_aggregate_source(
         base_result["primaryDiagnostic"] = primary_diagnostic
         base_result["libraryFunctionNames"] = [str(name) for name in (harness_payload.get("functionNames") or [])]
         base_result["libraryFunctionCount"] = int(harness_payload.get("functionCount") or 0)
+        if isinstance(harness_payload.get("fastMathMode"), str):
+            base_result["fastMathMode"] = harness_payload["fastMathMode"]
+        if isinstance(harness_payload.get("fastMathDecision"), str):
+            base_result["fastMathDecision"] = harness_payload["fastMathDecision"]
+        base_result["inferredMetalArgs"] = [str(arg) for arg in (harness_payload.get("inferredMetalArgs") or [])]
+        base_result["effectiveMetalArgs"] = [str(arg) for arg in (harness_payload.get("effectiveMetalArgs") or [])]
         if isinstance(harness_payload.get("usesExplicitCompileOptions"), bool):
             base_result["usesExplicitCompileOptions"] = harness_payload["usesExplicitCompileOptions"]
         if "fastMathEnabled" in harness_payload:
@@ -833,6 +844,17 @@ def compile_aggregate_source(
         base_result["clusterCategory"] = cluster_category
         base_result["clusterTitle"] = cluster_title
         return base_result
+
+    fast_math_mode, fast_math_decision, inferred_args, effective_args = resolve_aggregate_compile_metal_args(
+        original_ir_paths,
+        list(args.metal_args),
+    )
+    base_result["fastMathMode"] = fast_math_mode
+    base_result["fastMathDecision"] = fast_math_decision
+    base_result["inferredMetalArgs"] = inferred_args
+    base_result["effectiveMetalArgs"] = effective_args
+    base_result["usesExplicitCompileOptions"] = fast_math_mode is not None
+    base_result["compileOptionsFastMathEnabled"] = fast_math_mode_to_enabled(fast_math_mode)
 
     air_path = replay_runner.compiled_air_output_path(source_path).resolve()
     air_path.parent.mkdir(parents=True, exist_ok=True)

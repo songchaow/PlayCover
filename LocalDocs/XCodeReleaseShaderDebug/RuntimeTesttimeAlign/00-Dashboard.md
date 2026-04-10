@@ -37,6 +37,9 @@
   - `python3 Scripts/test_ir_canonical_compare.py`
 - **Swift runtime / PlayTools / host bridge / compile decision 相关改动**：
   - `./BuildScripts/build_and_install.sh`
+  - 若改动涉及 `SharedCompilePlanner.swift` / `metal_aggregate_compile_harness.swift` / aggregate compile decision，共享层回归优先补跑：
+    - `python3 Scripts/test_shared_compile_planner.py`
+    - `python3 Scripts/test_aggregate_replay_runner.py`
   - 若同时改了 round-trip 逻辑，继续补跑：
     - `python3 Scripts/test_ir_semantics_roundtrip_runner.py`
     - `python3 Scripts/test_ir_canonical_compare.py`
@@ -93,6 +96,7 @@
 - **aggregate 的真实模块顺序不能只看 `replacement.meta.json` 的 `moduleKeys`**；runtime 落盘时这个字段会做稳定排序，更接近身份归档而不是拼源顺序；离线要贴近 runtime source shape，必须优先恢复 `manifest.jsonl` 中的 capture 顺序。
 - **preflight 需要统一的是“是否拒绝继续 compile”的决策，不是 reject 之后的宿主行为**；runtime 返回 original library、写 launch diagnostics，离线落结构化 JSON 报告，都可以保留差异。
 - **涉及 PlayCover 构建、重建、安装时，一律优先使用 `BuildScripts/`**；不要回退到手写 `xcodebuild`。
+- **Swift harness 一旦改成和 shared planner 多文件联编，入口要用 `@main` 或其它显式 main 形式。** 单文件脚本式顶层 `do/catch` 在联编场景下会直接编译失败。
 
 ## 参考信息
 

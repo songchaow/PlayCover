@@ -17,39 +17,11 @@ private struct CompileReport: Encodable {
     let effectiveMetalArgs: [String]
 }
 
-private struct SharedCompileDecisionManifest: Decodable {
-    let schemaVersion: Int
-    let fastMath: SharedFastMathOptions
-}
-
-private struct SharedFastMathOptions: Decodable {
-    let enableOption: String
-    let disableOption: String
-}
-
-private struct CompileDecision {
-    let fastMathMode: FastMathMode
-    let fastMathDecision: String
-    let inferredMetalArgs: [String]
-    let effectiveMetalArgs: [String]
-
-    var usesExplicitCompileOptions: Bool {
-        fastMathMode.usesExplicitCompileOptions
-    }
-
-    var fastMathEnabled: Bool? {
-        fastMathMode.fastMathEnabled
-    }
-}
-
 private enum HarnessError: LocalizedError {
     case missingArgument(String)
     case unexpectedArgument(String)
     case unsupportedMetalArgument(String)
     case metalUnavailable
-    case failedToReadSharedManifestSource(String)
-    case sharedManifestJSONNotFound(String)
-    case invalidSharedManifestJSON(String)
 
     var errorDescription: String? {
         switch self {
@@ -61,38 +33,6 @@ private enum HarnessError: LocalizedError {
             return "unsupported metal arg for mtl-device backend: \(value)"
         case .metalUnavailable:
             return "failed to create system default Metal device"
-        case .failedToReadSharedManifestSource(let path):
-            return "failed to read shared compile decision manifest source: \(path)"
-        case .sharedManifestJSONNotFound(let path):
-            return "shared compile decision manifest JSON not found in \(path)"
-        case .invalidSharedManifestJSON(let path):
-            return "invalid shared compile decision manifest JSON in \(path)"
-        }
-    }
-}
-
-private enum FastMathMode: String {
-    case `default`
-    case enable
-    case disable
-
-    var usesExplicitCompileOptions: Bool {
-        switch self {
-        case .default:
-            return false
-        case .enable, .disable:
-            return true
-        }
-    }
-
-    var fastMathEnabled: Bool? {
-        switch self {
-        case .default:
-            return nil
-        case .enable:
-            return true
-        case .disable:
-            return false
         }
     }
 }
@@ -106,8 +46,6 @@ private extension JSONEncoder {
 }
 
 private enum MetalAggregateCompileHarnessMain {
-    private static let sharedManifestStartMarker = "private static let sharedCompileDecisionManifestJSON = #\"\"\""
-    private static let sharedManifestEndMarker = "\"\"\"#"
     private static let explicitFastMathMetalArgs: Set<String> = ["-ffast-math", "-fno-fast-math"]
 
     static func run() throws -> Int32 {
@@ -142,7 +80,6 @@ private enum MetalAggregateCompileHarnessMain {
     private struct Arguments {
         let sourcePath: String
         let reportPath: String
-        let manifestSourcePath: String
         let originalIRPaths: [String]
         let metalArgs: [String]
     }
@@ -150,7 +87,6 @@ private enum MetalAggregateCompileHarnessMain {
     private static func parseArguments(_ arguments: [String]) throws -> Arguments {
         var sourcePath: String?
         var reportPath: String?
-        var manifestSourcePath: String?
         var originalIRPaths: [String] = []
         var metalArgs: [String] = []
         var index = 0
@@ -165,10 +101,6 @@ private enum MetalAggregateCompileHarnessMain {
                 index += 1
                 guard index < arguments.count else { throw HarnessError.missingArgument("--report") }
                 reportPath = arguments[index]
-            case "--manifest-source":
-                index += 1
-                guard index < arguments.count else { throw HarnessError.missingArgument("--manifest-source") }
-                manifestSourcePath = arguments[index]
             case "--original-ir":
                 index += 1
                 guard index < arguments.count else { throw HarnessError.missingArgument("--original-ir") }
@@ -185,11 +117,9 @@ private enum MetalAggregateCompileHarnessMain {
 
         guard let sourcePath else { throw HarnessError.missingArgument("--source") }
         guard let reportPath else { throw HarnessError.missingArgument("--report") }
-        guard let manifestSourcePath else { throw HarnessError.missingArgument("--manifest-source") }
         return Arguments(
             sourcePath: sourcePath,
             reportPath: reportPath,
-            manifestSourcePath: manifestSourcePath,
             originalIRPaths: originalIRPaths,
             metalArgs: metalArgs
         )
@@ -202,121 +132,43 @@ private enum MetalAggregateCompileHarnessMain {
         return arguments[index + 1]
     }
 
-    private static func loadSharedCompileDecisionManifest(from manifestSourcePath: String) throws -> SharedCompileDecisionManifest {
-        let sourceText: String
-        do {
-            sourceText = try String(contentsOfFile: manifestSourcePath, encoding: .utf8)
-        } catch {
-            throw HarnessError.failedToReadSharedManifestSource(manifestSourcePath)
-        }
-
-        guard let startRange = sourceText.range(of: sharedManifestStartMarker) else {
-            throw HarnessError.sharedManifestJSONNotFound(manifestSourcePath)
-        }
-        let payloadStart = startRange.upperBound
-        guard let endRange = sourceText.range(of: sharedManifestEndMarker, range: payloadStart..<sourceText.endIndex) else {
-            throw HarnessError.sharedManifestJSONNotFound(manifestSourcePath)
-        }
-
-        let payload = String(sourceText[payloadStart..<endRange.lowerBound])
-        guard let data = payload.data(using: .utf8) else {
-            throw HarnessError.invalidSharedManifestJSON(manifestSourcePath)
-        }
-
-        do {
-            return try JSONDecoder().decode(SharedCompileDecisionManifest.self, from: data)
-        } catch {
-            throw HarnessError.invalidSharedManifestJSON(manifestSourcePath)
-        }
-    }
-
-    private static func resolveUserFastMathOverride(_ metalArgs: [String]) throws -> FastMathMode? {
-        var overrideMode: FastMathMode?
+    private static func validateSupportedMetalArgs(_ metalArgs: [String]) throws {
         for arg in metalArgs {
             guard explicitFastMathMetalArgs.contains(arg) else {
                 throw HarnessError.unsupportedMetalArgument(arg)
             }
-            if arg == "-ffast-math" {
-                overrideMode = .enable
-            } else if arg == "-fno-fast-math" {
-                overrideMode = .disable
+        }
+    }
+
+    private static func loadOriginalIRTexts(from originalIRPaths: [String]) -> [String] {
+        originalIRPaths.map { originalIRPath in
+            guard FileManager.default.fileExists(atPath: originalIRPath),
+                  let text = try? String(contentsOfFile: originalIRPath, encoding: .utf8) else {
+                return ""
             }
+            return text
         }
-        return overrideMode
     }
 
-    private static func inferOriginalIRFastMathMode(
-        at originalIRPath: String,
-        manifest: SharedCompileDecisionManifest
-    ) -> FastMathMode? {
-        guard FileManager.default.fileExists(atPath: originalIRPath) else {
-            return nil
-        }
-
-        guard let text = try? String(contentsOfFile: originalIRPath, encoding: .utf8) else {
-            return nil
-        }
-
-        let hasDisable = text.contains(manifest.fastMath.disableOption)
-        let hasEnable = text.contains(manifest.fastMath.enableOption)
-        if hasDisable && !hasEnable {
-            return .disable
-        }
-        if hasEnable && !hasDisable {
-            return .enable
-        }
-        return nil
-    }
-
-    // runtime-like compile posture 宿主：除显式 fast-math override 外，其余决策都在 Swift 内完成，
-    // 保持与真实 runtime 对 `MTLCompileOptions` 的拥有权一致。
-    private static func resolveCompileDecision(_ arguments: Arguments) throws -> CompileDecision {
-        if let overrideMode = try resolveUserFastMathOverride(arguments.metalArgs) {
-            return CompileDecision(
-                fastMathMode: overrideMode,
-                fastMathDecision: "user_override",
-                inferredMetalArgs: [],
-                effectiveMetalArgs: arguments.metalArgs
-            )
-        }
-
-        let manifest = try loadSharedCompileDecisionManifest(from: arguments.manifestSourcePath)
-        let inferredModes = arguments.originalIRPaths.map {
-            inferOriginalIRFastMathMode(at: $0, manifest: manifest)
-        }
-        let knownModes = inferredModes.compactMap { $0 }
-        guard let firstKnownMode = knownModes.first else {
-            return CompileDecision(
-                fastMathMode: .default,
-                fastMathDecision: "fast_math_unavailable",
-                inferredMetalArgs: [],
-                effectiveMetalArgs: arguments.metalArgs
-            )
-        }
-        guard knownModes.allSatisfy({ $0 == firstKnownMode }) else {
-            return CompileDecision(
-                fastMathMode: .default,
-                fastMathDecision: "fast_math_conflict",
-                inferredMetalArgs: [],
-                effectiveMetalArgs: arguments.metalArgs
-            )
-        }
-        guard knownModes.count == inferredModes.count else {
-            return CompileDecision(
-                fastMathMode: .default,
-                fastMathDecision: "fast_math_partial",
-                inferredMetalArgs: [],
-                effectiveMetalArgs: arguments.metalArgs
-            )
-        }
-
-        let inferredArgs = [firstKnownMode == .enable ? "-ffast-math" : "-fno-fast-math"]
-        return CompileDecision(
-            fastMathMode: firstKnownMode,
-            fastMathDecision: "fast_math_aligned",
-            inferredMetalArgs: inferredArgs,
-            effectiveMetalArgs: inferredArgs + arguments.metalArgs
+    // runtime-like compile posture 宿主：参数校验保留在 harness，真正的 compile posture 与 `MTLCompileOptions`
+    // 决策统一委托给 SharedCompilePlanner，保持与真实 runtime 主路径一致。
+    private static func resolveCompilePlan(_ arguments: Arguments) throws -> SharedCompilePlannerPlan {
+        try validateSupportedMetalArgs(arguments.metalArgs)
+        let input = SharedCompilePlannerInput(
+            originalIRTexts: loadOriginalIRTexts(from: arguments.originalIRPaths),
+            userMetalArgs: arguments.metalArgs,
+            requestedBackend: .mtlDevice
         )
+        return SharedCompilePlanner.makePlan(input: input)
+    }
+
+    private static func compileOptions(from compilePlan: SharedCompilePlannerPlan) -> MTLCompileOptions? {
+        guard let payload = compilePlan.mtlCompileOptionsPayload else {
+            return nil
+        }
+        let options = MTLCompileOptions()
+        options.fastMathEnabled = payload.fastMathEnabled
+        return options
     }
 
     private static func compileSource(_ arguments: Arguments) throws -> CompileReport {
@@ -325,15 +177,8 @@ private enum MetalAggregateCompileHarnessMain {
         }
 
         let source = try String(contentsOfFile: arguments.sourcePath, encoding: .utf8)
-        let compileDecision = try resolveCompileDecision(arguments)
-        let options: MTLCompileOptions?
-        if compileDecision.usesExplicitCompileOptions {
-            let compileOptions = MTLCompileOptions()
-            compileOptions.fastMathEnabled = compileDecision.fastMathEnabled ?? false
-            options = compileOptions
-        } else {
-            options = nil
-        }
+        let compilePlan = try resolveCompilePlan(arguments)
+        let options = compileOptions(from: compilePlan)
 
         do {
             let library = try device.makeLibrary(source: source, options: options)
@@ -343,12 +188,12 @@ private enum MetalAggregateCompileHarnessMain {
                 error: nil,
                 functionNames: library.functionNames.sorted(),
                 functionCount: library.functionNames.count,
-                usesExplicitCompileOptions: compileDecision.usesExplicitCompileOptions,
-                fastMathEnabled: compileDecision.fastMathEnabled,
-                fastMathMode: compileDecision.fastMathMode == .default ? nil : compileDecision.fastMathMode.rawValue,
-                fastMathDecision: compileDecision.fastMathDecision,
-                inferredMetalArgs: compileDecision.inferredMetalArgs,
-                effectiveMetalArgs: compileDecision.effectiveMetalArgs
+                usesExplicitCompileOptions: compilePlan.decision.usesExplicitCompileOptions,
+                fastMathEnabled: compilePlan.decision.compileOptionsFastMathEnabled,
+                fastMathMode: compilePlan.decision.fastMathMode?.rawValue,
+                fastMathDecision: compilePlan.decision.fastMathDecision,
+                inferredMetalArgs: compilePlan.inferredMetalArgs,
+                effectiveMetalArgs: compilePlan.effectiveMetalArgs
             )
         } catch {
             return CompileReport(
@@ -357,12 +202,12 @@ private enum MetalAggregateCompileHarnessMain {
                 error: error.localizedDescription,
                 functionNames: [],
                 functionCount: 0,
-                usesExplicitCompileOptions: compileDecision.usesExplicitCompileOptions,
-                fastMathEnabled: compileDecision.fastMathEnabled,
-                fastMathMode: compileDecision.fastMathMode == .default ? nil : compileDecision.fastMathMode.rawValue,
-                fastMathDecision: compileDecision.fastMathDecision,
-                inferredMetalArgs: compileDecision.inferredMetalArgs,
-                effectiveMetalArgs: compileDecision.effectiveMetalArgs
+                usesExplicitCompileOptions: compilePlan.decision.usesExplicitCompileOptions,
+                fastMathEnabled: compilePlan.decision.compileOptionsFastMathEnabled,
+                fastMathMode: compilePlan.decision.fastMathMode?.rawValue,
+                fastMathDecision: compilePlan.decision.fastMathDecision,
+                inferredMetalArgs: compilePlan.inferredMetalArgs,
+                effectiveMetalArgs: compilePlan.effectiveMetalArgs
             )
         }
     }
@@ -378,8 +223,13 @@ private enum MetalAggregateCompileHarnessMain {
     }
 }
 
-do {
-    exit(try MetalAggregateCompileHarnessMain.run())
-} catch {
-    MetalAggregateCompileHarnessMain.writeFailureReportAndExit(error)
+@main
+private struct MetalAggregateCompileHarnessEntry {
+    static func main() {
+        do {
+            exit(try MetalAggregateCompileHarnessMain.run())
+        } catch {
+            MetalAggregateCompileHarnessMain.writeFailureReportAndExit(error)
+        }
+    }
 }

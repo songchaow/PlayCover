@@ -583,19 +583,23 @@ class LibrarySourceInjectionService {
                 return nil
             }
 
-            let compileDecision = resolveAggregateReplacementCompileDecision(for: preparedModules)
+            let compilePlan = SharedCompilePlanner.makePlan(input: SharedCompilePlannerInput(
+                originalIRTexts: preparedModules.map(\.irResult.irText),
+                requestedBackend: .mtlDevice
+            ))
+            let compileOptions = compileOptions(from: compilePlan)
             let compileDetails = replacementDetails.merging([
                 "sourceFunctionCount": String(aggregate.functionCount),
                 "sourceLength": String(aggregate.source.utf8.count),
-                "fastMathMode": compileDecision.fastMathMode?.rawValue ?? "default",
-                "fastMathDecision": compileDecision.reason,
-                "usesExplicitCompileOptions": compileDecision.options == nil ? "false" : "true",
+                "fastMathMode": compilePlan.decision.fastMathMode?.rawValue ?? "default",
+                "fastMathDecision": compilePlan.decision.reason,
+                "usesExplicitCompileOptions": compilePlan.decision.usesExplicitCompileOptions ? "true" : "false",
             ]) { _, new in new }
             NSLog("[PlayTools] LibrarySourceInjection: %@ — aggregate compile posture %@ (fastMath=%@, explicitOptions=%d)",
                   selector,
-                  compileDecision.reason,
-                  compileDecision.fastMathMode?.rawValue ?? "default",
-                  compileDecision.options == nil ? 0 : 1)
+                  compilePlan.decision.reason,
+                  compilePlan.decision.fastMathMode?.rawValue ?? "default",
+                  compilePlan.decision.usesExplicitCompileOptions ? 1 : 0)
             RuntimeLaunchDiagnostics.record(
                 event: "replacement_compile_started",
                 bundleId: runtimeBundleIdentifier,
@@ -603,7 +607,7 @@ class LibrarySourceInjectionService {
             )
 
             var compileError: NSError?
-            let replacementLibrary = compileSource(aggregate.source as NSString, compileDecision.options, &compileError)
+            let replacementLibrary = compileSource(aggregate.source as NSString, compileOptions, &compileError)
             guard let replacementLibrary else {
                 let compilerMessage = compileError?.localizedDescription ?? "unknown error"
                 RuntimeLaunchDiagnostics.record(
@@ -748,73 +752,13 @@ class LibrarySourceInjectionService {
         }
     }
 
-    private enum AggregateReplacementFastMathMode: String {
-        case enable
-        case disable
-
-        var fastMathEnabled: Bool {
-            switch self {
-            case .enable:
-                return true
-            case .disable:
-                return false
-            }
+    private func compileOptions(from plan: SharedCompilePlannerPlan) -> MTLCompileOptions? {
+        guard let payload = plan.mtlCompileOptionsPayload else {
+            return nil
         }
-    }
-
-    private struct AggregateReplacementCompileDecision {
-        let fastMathMode: AggregateReplacementFastMathMode?
-        let options: MTLCompileOptions?
-        let reason: String
-    }
-
-    private func inferAggregateReplacementFastMathMode(from irText: String) -> AggregateReplacementFastMathMode? {
-        let manifest = SharedCompilePlanner.sharedCompileDecisionManifest
-        let hasDisable = irText.contains(manifest.fastMath.disableOption)
-        let hasEnable = irText.contains(manifest.fastMath.enableOption)
-        if hasDisable && !hasEnable {
-            return .disable
-        }
-        if hasEnable && !hasDisable {
-            return .enable
-        }
-        return nil
-    }
-
-    private func resolveAggregateReplacementCompileDecision(
-        for preparedModules: [PreparedModuleReplacement]
-    ) -> AggregateReplacementCompileDecision {
-        let inferredModes = preparedModules.map { inferAggregateReplacementFastMathMode(from: $0.irResult.irText) }
-        let knownModes = inferredModes.compactMap { $0 }
-        guard let firstKnownMode = knownModes.first else {
-            return AggregateReplacementCompileDecision(
-                fastMathMode: nil,
-                options: nil,
-                reason: "fast_math_unavailable"
-            )
-        }
-        guard knownModes.allSatisfy({ $0 == firstKnownMode }) else {
-            return AggregateReplacementCompileDecision(
-                fastMathMode: nil,
-                options: nil,
-                reason: "fast_math_conflict"
-            )
-        }
-        guard knownModes.count == inferredModes.count else {
-            return AggregateReplacementCompileDecision(
-                fastMathMode: nil,
-                options: nil,
-                reason: "fast_math_partial"
-            )
-        }
-
         let options = MTLCompileOptions()
-        options.fastMathEnabled = firstKnownMode.fastMathEnabled
-        return AggregateReplacementCompileDecision(
-            fastMathMode: firstKnownMode,
-            options: options,
-            reason: "fast_math_aligned"
-        )
+        options.fastMathEnabled = payload.fastMathEnabled
+        return options
     }
 
     private struct PreparedModuleReplacement {

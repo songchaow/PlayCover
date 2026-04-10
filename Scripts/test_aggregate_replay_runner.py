@@ -117,6 +117,22 @@ class AggregateReplayRunnerTests(unittest.TestCase):
             self.assertEqual(inferred_args, [])
             self.assertEqual(effective_args, [])
 
+    def test_build_aggregate_compile_harness_binary_includes_shared_planner_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir) / "out"
+            expected_binary = output_root / "_internal" / "metal_aggregate_compile_harness"
+
+            with mock.patch.object(aggregate_runner.subprocess, "run") as run_mock:
+                binary_path = aggregate_runner.build_aggregate_compile_harness_binary(REPO_ROOT, output_root)
+
+        self.assertEqual(binary_path, expected_binary.resolve())
+        run_mock.assert_called_once()
+        command = run_mock.call_args.args[0]
+        self.assertEqual(command[0], "swiftc")
+        self.assertEqual(command[1], str(aggregate_runner.replay_runner.shared_compile_decision_manifest_path().resolve()))
+        self.assertEqual(command[2], str(aggregate_runner.aggregate_compile_harness_swift_path(REPO_ROOT)))
+        self.assertEqual(command[3:], ["-o", str(expected_binary.resolve())])
+
     def test_build_aggregate_source_deduplicates_duplicate_functions_and_strips_headers(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -325,7 +341,7 @@ class AggregateReplayRunnerTests(unittest.TestCase):
                 self.assertFalse(check)
                 self.assertTrue(capture_output)
                 self.assertTrue(text)
-                self.assertIn("--manifest-source", command)
+                self.assertNotIn("--manifest-source", command)
                 self.assertIn("--original-ir", command)
                 self.assertIn(str(original_ir_path.resolve()), command)
                 report_path = Path(command[command.index("--report") + 1])

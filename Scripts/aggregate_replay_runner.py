@@ -88,9 +88,13 @@ def build_aggregate_compile_harness_binary(root: Path, output_root: Path) -> Pat
     if not harness_swift.is_file():
         raise RuntimeError(f"cannot find aggregate compile harness at {harness_swift}")
 
+    shared_compile_planner_swift = replay_runner.shared_compile_decision_manifest_path().expanduser().resolve()
+    if not shared_compile_planner_swift.is_file():
+        raise RuntimeError(f"cannot find shared compile planner Swift source at {shared_compile_planner_swift}")
+
     binary_path = (output_root / "_internal" / "metal_aggregate_compile_harness").resolve()
     binary_path.parent.mkdir(parents=True, exist_ok=True)
-    command = ["swiftc", str(harness_swift), "-o", str(binary_path)]
+    command = ["swiftc", str(shared_compile_planner_swift), str(harness_swift), "-o", str(binary_path)]
     subprocess.run(command, check=True, capture_output=True, text=True)
     return binary_path
 
@@ -762,18 +766,6 @@ def compile_aggregate_source(
             base_result["clusterTitle"] = cluster_title
             return base_result
 
-        manifest_source = replay_runner.shared_compile_decision_manifest_path().expanduser().resolve()
-        if not manifest_source.is_file():
-            base_result["status"] = "compile_failed"
-            base_result["error"] = f"shared compile decision manifest source is missing: {manifest_source}"
-            cluster_key, cluster_category, cluster_title = replay_runner.derive_failure_cluster(
-                base_result["status"], [], preflight_issues, base_result["error"]
-            )
-            base_result["clusterKey"] = cluster_key
-            base_result["clusterCategory"] = cluster_category
-            base_result["clusterTitle"] = cluster_title
-            return base_result
-
         report_path = source_path.with_name(f"{source_path.stem}.mtl-device.compile.json").resolve()
         base_result["backendReportPath"] = str(report_path)
         command = [
@@ -782,8 +774,6 @@ def compile_aggregate_source(
             str(source_path),
             "--report",
             str(report_path),
-            "--manifest-source",
-            str(manifest_source),
         ]
         for original_ir_path in original_ir_paths:
             command.extend(["--original-ir", str(original_ir_path.expanduser().resolve())])

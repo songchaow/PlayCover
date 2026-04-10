@@ -338,6 +338,8 @@ COMPILER_DIAGNOSTIC_REGEX = re.compile(
     re.MULTILINE,
 )
 
+# 这组 failure cluster 规则只服务离线 `xcrun metal -c` 报告归类；它不属于 shared manifest，
+# 也不是 runtime / `mtl-device` 必须复刻的 compile decision 逻辑。
 COMPILE_FAILURE_CATEGORY_RULES: list[tuple[str, re.Pattern[str]]] = [
     ("undeclared_identifier", re.compile(r"undeclared identifier", re.IGNORECASE)),
     ("unknown_type", re.compile(r"unknown type name|use of undeclared type", re.IGNORECASE)),
@@ -1122,6 +1124,7 @@ def infer_original_ir_fast_math_mode(original_ir_path: Path | None) -> str | Non
     return None
 
 
+# 这里保留的是 CLI backend 的 arg translation contract：把 posture 映射到 `xcrun metal` 参数。
 def resolve_compile_metal_args(original_ir_path: Path | None, user_metal_args: list[str] | None) -> tuple[str | None, list[str], list[str]]:
     original_fast_math_mode = infer_original_ir_fast_math_mode(original_ir_path)
     effective_args = list(user_metal_args or [])

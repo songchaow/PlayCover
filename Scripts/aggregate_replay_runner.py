@@ -652,6 +652,8 @@ def resolve_user_fast_math_override(user_metal_args: list[str] | None) -> str | 
     return override_mode
 
 
+# 这里是 `xcrun metal -c` 专用的 compile posture -> CLI args 映射层。
+# 共享的是 token / 决策语义，不共享执行宿主；`mtl-device` 路径应继续让 Swift runtime-like harness 自己决策。
 def resolve_aggregate_compile_metal_args(
     original_ir_paths: list[Path],
     user_metal_args: list[str] | None,
@@ -745,6 +747,8 @@ def compile_aggregate_source(
         return base_result
 
     if args.compile_backend == "mtl-device":
+        # runtime-like 路径：Python 只组装 request / 消费 report，真正的 compile posture 与 `MTLCompileOptions`
+        # 决策留在 Swift harness，保持与 runtime 主路径一致。
         harness_binary_value = getattr(args, "aggregate_compile_harness_binary", None)
         harness_binary = Path(harness_binary_value).expanduser().resolve() if harness_binary_value else None
         if harness_binary is None or not harness_binary.is_file():
@@ -845,6 +849,7 @@ def compile_aggregate_source(
         base_result["clusterTitle"] = cluster_title
         return base_result
 
+    # CLI backend 保留边界：这里只服务 `xcrun metal -c`，负责把共享 fast-math posture 映射为 CLI metal args。
     fast_math_mode, fast_math_decision, inferred_args, effective_args = resolve_aggregate_compile_metal_args(
         original_ir_paths,
         list(args.metal_args),

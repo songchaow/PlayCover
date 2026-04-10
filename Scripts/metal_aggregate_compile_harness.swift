@@ -1,6 +1,8 @@
 import Foundation
 import Metal
 
+// `mtl-device` backend 的标准 compile report contract。
+// Python orchestration 应消费这份 Swift report，再归一化为 aggregate summary；不要在 Python 侧重建一份 runtime-like posture 决策。
 private struct CompileReport: Encodable {
     let schemaVersion: Int
     let success: Bool
@@ -266,6 +268,8 @@ private enum MetalAggregateCompileHarnessMain {
         return nil
     }
 
+    // runtime-like compile posture 宿主：除显式 fast-math override 外，其余决策都在 Swift 内完成，
+    // 保持与真实 runtime 对 `MTLCompileOptions` 的拥有权一致。
     private static func resolveCompileDecision(_ arguments: Arguments) throws -> CompileDecision {
         if let overrideMode = try resolveUserFastMathOverride(arguments.metalArgs) {
             return CompileDecision(

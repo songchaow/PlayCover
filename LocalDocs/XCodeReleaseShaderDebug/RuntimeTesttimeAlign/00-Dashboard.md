@@ -76,11 +76,11 @@
 
 | 任务 | 状态 | 结束标准 | 备注 |
 |---|---|---|---|
-| `RTA-001` 统一 runtime 与离线 compile decision 层 | DOING | runtime 与离线不再各自维护独立的 compile posture 决策；至少 `fast-math` 已共用同一套判断逻辑，并能分别映射到 `MTLCompileOptions` 与离线 metal args | 已完成 `RTA-001.1` / `RTA-001.2`；当前最高优先级转到 `RTA-001.3` |
+| `RTA-001` 统一 runtime 与离线 compile decision 层 | DOING | runtime 与离线不再各自维护独立的 compile posture 决策；至少 `fast-math` 已共用同一套判断逻辑，并能分别映射到 `MTLCompileOptions` 与离线 metal args | 已完成 `RTA-001.1` / `RTA-001.2` / `RTA-001.3`；当前最高优先级转到 `RTA-001.4` |
 | `RTA-001.1` runtime 显式接入 `fast-math` compile posture 对齐 | DONE | runtime 不再固定 `options: nil`；对于 original IR 中可判定的 `fast-math` posture，能显式设置对应编译选项 | 已接入 `MTLCompileOptions.fastMathEnabled`；仅在全模块都可判定且结论一致时显式设置；当前默认验证脚本已切换为 `./BuildScripts/build_and_install.sh` |
 | `RTA-001.2` 提取 compile preflight 规则的单一来源 | DONE | Swift runtime 与 Python 离线脚本不再各自维护一份手写规则；新增规则时只需改一处 | shared manifest 已落在 `LibrarySourceInjectionSwizzles.swift`；Swift runtime 直接使用，Python 通过解析同一源文件加载；`fast-math` enable/disable token 也已并入同一处 |
-| `RTA-001.3` 为离线补一条贴近 runtime 的“多模块 aggregate + compile”验证入口 | TODO | agent 可在不依赖人工操作的前提下，验证 aggregate 形态下的 compile 结果；至少能覆盖 runtime 特有的 aggregate / dedupe / preflight 风险 | 当前最高优先级；不替代现有 round-trip，作为补充真值入口 |
-| `RTA-001.4` 明确 Swift 与 Python 的共用边界 | TODO | 形成稳定约定：哪些逻辑留在 Swift，哪些只做 orchestration，哪些通过 JSON / manifest / harness 共享 | 目标是减少双份逻辑，不强求统一 backend |
+| `RTA-001.3` 为离线补一条贴近 runtime 的“多模块 aggregate + compile”验证入口 | DONE | agent 可在不依赖人工操作的前提下，验证 aggregate 形态下的 compile 结果；至少能覆盖 runtime 特有的 aggregate / dedupe / preflight 风险 | `Scripts/aggregate_replay_runner.py` 已支持 `xcrun` / `mtl-device` 双 backend；默认把 `mtl-device` 作为更贴近 runtime 的补充真值入口 |
+| `RTA-001.4` 明确 Swift 与 Python 的共用边界 | TODO | 形成稳定约定：哪些逻辑留在 Swift，哪些只做 orchestration，哪些通过 JSON / manifest / harness 共享 | 当前最高优先级；目标是减少双份逻辑，不强求统一 backend |
 | `RTA-002` 明确“必须对齐”和“有意保留”的差异边界 | TODO | 文档中能稳定回答：哪些差异必须继续收口，哪些属于 backend / 输入形态天然不同、无需强行统一 | 避免无限扩大统一范围 |
 | `RTA-003` 在链路对齐后恢复上游高风险 case 推进 | BLOCKED | `RTA-001` 完成后，再继续推进 `SemanticsValidation` 中剩余 `entry 参数` family 的 case-by-case 收敛 | 当前被 `RTA-001` 前置依赖阻塞 |
 

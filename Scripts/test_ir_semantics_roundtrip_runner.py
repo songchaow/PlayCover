@@ -813,8 +813,34 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             self.assertEqual(original_ir_path.read_text(encoding="utf-8"), TEST_SAMPLE.read_text(encoding="utf-8"))
             self.assertGreater(regenerated_ir_path.stat().st_size, 0)
 
+    @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
+    def test_corpus_replay_runner_preserves_single_field_fragment_output_wrapper(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            generated_path = Path(temp_dir) / "fragment-packed-return.generated.metal"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(REPO_ROOT / "Scripts" / "corpus_replay_runner.py"),
+                    "--ll",
+                    str(TEST_FRAGMENT_PACKED_RETURN_SAMPLE),
+                    "--output-file",
+                    str(generated_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("replay summary", completed.stdout)
+            generated_text = generated_path.read_text(encoding="utf-8")
+            self.assertIn("struct Test_fragment_packed_Out {", generated_text)
+            self.assertIn("float4 color [[color(0)]];", generated_text)
+            self.assertIn("fragment Test_fragment_packed_Out test_fragment_packed", generated_text)
+            self.assertIn("return Test_fragment_packed_Out{ float4(position) };", generated_text)
+
     @unittest.skipUnless(shutil.which("swiftc") and shutil.which("xcrun"), "requires swiftc and xcrun")
-    def test_roundtrip_runner_downgrades_single_field_fragment_return_wrapper_to_non_blocking(self) -> None:
+    def test_roundtrip_runner_preserves_single_field_fragment_output_wrapper(self) -> None:
         default_llvm_dis, _ = roundtrip_runner.resolve_llvm_dis_path()
         if default_llvm_dis is None:
             self.skipTest("requires llvm-dis")
@@ -841,11 +867,10 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             risk_report = json.loads((output_root / "risk-report.json").read_text(encoding="utf-8"))
             compare_result = compare_report["results"][0]
 
-            self.assertEqual(compare_result["riskLevel"], "L1")
-            self.assertTrue(compare_result["entryComparison"]["same"])
+            self.assertEqual(compare_result["riskLevel"], "L0")
+            self.assertTrue(compare_result["same"])
             self.assertEqual(compare_result["entryComparison"]["severity"], "L0")
             self.assertFalse(any(item["reason"] == "entry 返回类型摘要变化" for item in compare_result["differences"]))
-            self.assertEqual(compare_result["instructionFamilyComparison"]["severity"], "L1")
             self.assertEqual(risk_report["blockedSamples"], [])
 
     @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")

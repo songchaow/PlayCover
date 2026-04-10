@@ -2762,7 +2762,12 @@ struct IRToMSLConverter {
     ) -> String {
         guard shaderType != .kernel else { return "void" }
 
-        if outputs.count > 1 {
+        if shouldUseEntryOutputStruct(
+            irReturnType: irReturnType,
+            shaderType: shaderType,
+            outputs: outputs,
+            functionName: functionName
+        ) {
             return entryOutputStructName(for: functionName)
         }
 
@@ -2776,6 +2781,47 @@ struct IRToMSLConverter {
         }
 
         return irTypeToMSL(irReturnType, forShaderType: shaderType)
+    }
+
+    private static func shouldUseEntryOutputStruct(
+        irReturnType: String,
+        shaderType: ShaderType,
+        outputs: [MetadataReturnInfo],
+        functionName: String
+    ) -> Bool {
+        guard shaderType != .kernel, !outputs.isEmpty else { return false }
+        if outputs.count > 1 { return true }
+        guard let onlyOutput = outputs.first else { return false }
+        let expectedFieldType = entryOutputFieldType(for: onlyOutput, index: 0)
+        guard let unwrappedIRType = unwrapSingleFieldAggregateIRType(irReturnType) else {
+            return false
+        }
+        return irTypeToMSL(unwrappedIRType, forShaderType: shaderType) == expectedFieldType
+    }
+
+    private static func unwrapSingleFieldAggregateIRType(_ irType: String) -> String? {
+        var current = irType.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !current.isEmpty else { return nil }
+
+        var unwrappedAtLeastOnce = false
+        while true {
+            let inner: String
+            if current.hasPrefix("<{") && current.hasSuffix("}>") {
+                inner = String(current.dropFirst(2).dropLast(2)).trimmingCharacters(in: .whitespacesAndNewlines)
+                unwrappedAtLeastOnce = true
+            } else if current.hasPrefix("{") && current.hasSuffix("}") {
+                inner = String(current.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+                unwrappedAtLeastOnce = true
+            } else {
+                return unwrappedAtLeastOnce ? current : nil
+            }
+
+            let fields = splitIRParameters(inner).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            guard fields.count == 1, let onlyField = fields.first else {
+                return nil
+            }
+            current = onlyField
+        }
     }
 
     private static func entryOutputStructName(for functionName: String) -> String {
@@ -7888,7 +7934,9 @@ struct IRToMSLConverter {
     private static func generateEntryOutputStructDefinition(
         for func_: ParsedShaderFunction
     ) -> (name: String, definition: String)? {
-        guard func_.outputs.count > 1 else { return nil }
+        guard !func_.outputs.isEmpty else { return nil }
+        let expectedStructName = entryOutputStructName(for: func_.name)
+        guard func_.returnType == expectedStructName else { return nil }
 
         let structName = func_.returnType
         var lines: [String] = ["struct \(structName) {"]

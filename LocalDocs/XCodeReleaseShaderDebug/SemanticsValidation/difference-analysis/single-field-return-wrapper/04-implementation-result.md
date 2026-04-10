@@ -11,88 +11,93 @@
 - original 常见形态：`<{ <4 x half> }>`、`<{ <4 x float> }>`
 - regenerated 常见形态：`<4 x half>`、`<4 x float>`
 
-也就是说，这支 residual 的主矛盾不是“entry first-class 输出语义真的变了”，而是：
+这轮重新按 dashboard 规则做了 converter-first 复核后，可以把问题进一步收紧成：
 
-- original AIR 往往把单字段输出保留成 packed single-field wrapper
-- regenerated AIR 更倾向直接返回该字段自身类型
-- 当 `outputSemantics` 完全一致且只存在一个 output 时，直接按 `returnSignature` 文本做 `L3` 判定会把大量 blocked 样本误判成结构性不一致
+- 不是所有 single-output entry 都应该保留 wrapper
+- 真正需要保留的是：**original IR 本身已经是 single-field aggregate return 的那一支**
+- 当前 `IRToMSLConverter.swift` 在 entry return type 选择时，把这类 wrapped return 也提前塌成了裸返回类型，导致 round-trip 后 `returnSignature` 从源头漂移
 
 ## 单 case 证据
 
 代表 case：
 
-- `build/semantics-validation/roundtrip/cc-003-5-single-speedmobile-return-wrapper-083c-v1/compare-summary.json`
-- `build/semantics-validation/roundtrip/cc-003-5-single-speedmobile-return-wrapper-083c-v2/compare-summary.json`
+- 修复前：`build/semantics-validation/roundtrip/cc-003-5-single-speedmobile-return-wrapper-083c-v1/compare-summary.json`
+- converter-first 修复后：`build/semantics-validation/roundtrip/cc-003-5-1-single-speedmobile-return-wrapper-083c-converter-first/compare-summary.json`
 
-`083c8443...` 在修正前后有一条很稳定的轨迹：
+`083c8443...` 的轨迹现在可以清楚写成：
 
-- `v1`：`L3`
+- 修复前：`L3`
   - 关键原因：`entry 返回类型摘要变化`
   - 差异：`<{ <4 x half> }> -> <4 x half>`
-- `v2`：`L2`
+- converter-first 修复后：`L2`
+  - regenerated `returnSignature` 已恢复成 `<{ <4 x half> }>`
   - `entry 返回类型摘要变化` 消失
   - 剩余只剩：
     - `控制流粗摘要变化`
     - `指令族统计变化`
     - `fast-math 相关属性变化`
 
-为了把这类等价性再压缩到一个最小、可复现的离线样本，本轮还直接用：
+为了把这类修复再压缩到一个最小、可复现的离线样本，本轮还直接用：
 
 - `LocalDocs/XCodeReleaseShaderDebug/RoadE-HookMakeLibraryWithSrc/test-data/test_fragment_packed_return.ll`
 
-重跑一条最小 round-trip：
+做了两层验证：
 
-- 输出：`build/semantics-validation/roundtrip/manual-test-fragment-packed-return-after-compare-fix`
-- 结果：`L1`，gate `PASS`
-- 这说明当前仓库状态下，这个最小 single-field packed return 样本已经不再被视作 `L3` blocker
+1. `corpus_replay_runner.py` 生成的 `generated.metal` 已恢复为：
+   - `struct Test_fragment_packed_Out { float4 color [[color(0)]]; };`
+   - `fragment Test_fragment_packed_Out test_fragment_packed(...)`
+2. 完整 round-trip 输出：
+- `build/semantics-validation/roundtrip/manual-test-fragment-packed-return-converter-first`
+- 结果为 **`L0`**，gate `PASS`
+
 
 ## 本轮实现内容
 
-本轮没有再去扩大 `IRToMSLConverter.swift` 的发射逻辑，而是把闭环补在 compare / gate 这一层：
+本轮这次没有再改 compare 规则，而是把修复落实在生成侧：
 
-- `Scripts/ir_canonical_compare.py`
-  - 新增 `_unwrap_single_field_aggregate_signature(...)`
-  - 新增 `_single_output_return_wrapper_equivalent(...)`
-  - 当且仅当满足下面条件时，不再把 `returnSignature` 文本差异判成 `L3`：
-    - original / regenerated 的 `outputSemantics` 完全一致
-    - 且只存在一个 output
-    - 且差异只是 `single-field wrapper <-> bare return type` 的形态变化
-- `Scripts/test_ir_canonical_compare.py`
-  - 新增 single-field return wrapper 的等价 / 非等价边界单测
+- `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift`
+  - 新增 `shouldUseEntryOutputStruct(...)`
+  - 新增 `unwrapSingleFieldAggregateIRType(...)`
+  - 对 single-output entry，不再一律降成裸返回类型；只有当 original IR 不是 wrapped return 时才维持原有裸返回策略
+  - 当 original IR 已经是 single-field aggregate return 时，保留 synthetic output struct 返回形态
+  - `generateEntryOutputStructDefinition(...)` 也同步改成：只有 entry 的最终返回类型确实选择了 synthetic struct 时才生成对应定义
 - `Scripts/test_ir_semantics_roundtrip_runner.py`
-  - 新增端到端 round-trip 回归，确认 `test_fragment_packed_return.ll` 会被降成非阻断 `L1`
+  - 新增 converter-first 回归：
+    - 检查 `test_fragment_packed_return.ll` 生成的 MSL 里确实恢复了 single-field output struct
+    - 检查完整 round-trip 后该样本为 `L0`
 - `Scripts/ir_semantics_roundtrip_runner.py`
-  - 收紧 `LOCAL_SHADERCORPUS_REPRESENTATIVE_CONTRACT`，移除已在最新 full-batch 中降到 `L1` 的 `1f5e65...` blocked 白名单
+  - 基于最新 converter-first full-batch 结果，再次收紧 `LOCAL_SHADERCORPUS_REPRESENTATIVE_CONTRACT`，移除已稳定降到 `L1` 的 `1f5e65...` blocked 白名单
 
 ## 单 case 验证结果
 
-本轮已完成三层最小验证：
+本轮已完成三层验证：
 
-1. `python3 -m unittest Scripts/test_ir_canonical_compare.py`
+1. `python3 -m unittest Scripts/test_ir_semantics_roundtrip_runner.py -k fragment_output_wrapper`
    - 通过
-2. `python3 -m unittest Scripts/test_ir_semantics_roundtrip_runner.py`
+2. `python3 Scripts/ir_semantics_roundtrip_runner.py --ll .../module.ll --output-root build/semantics-validation/roundtrip/cc-003-5-1-single-speedmobile-return-wrapper-083c-converter-first`
    - 通过
+   - `083c8443...` 从 `L3 -> L2`
+   - `blockedSamples = []`
 3. `python3 Scripts/ir_semantics_roundtrip_runner.py --ll .../test_fragment_packed_return.ll --output-root build/semantics-validation/roundtrip/manual-test-fragment-packed-return-after-compare-fix`
    - 通过
-   - 结果从 `L3 -> L1`
-   - `blockedSamples = []`
+   - 最小样本达到 **`L0`**
    - gate `PASS`
 
 ## 当前结论
 
 本轮已经可以明确下结论：
 
-- `CC-003.5` 里一大支 `entry 返回类型摘要变化` 不是 entry 输出语义真的变了
-- 它本质上是 **single-field wrapper return vs bare return** 的 compare 口径问题
-- 这类问题更适合在 `ir_canonical_compare.py` 做定向等价判定，而不是反过来强迫 converter 回到更重的 synthetic wrapper 发射
-- 在 compare 补齐后，原本大量 `L3` blocked 样本被重新释放成可继续分析的 `L2/L1` residual
+- `CC-003.5` 里这支高频 `entry 返回类型摘要变化` 并不需要先动 compare
+- 它至少有一大支是真实的 converter 选择问题：**single-field wrapped return 被过早塌成了裸返回类型**
+- 按 converter-first 修完之后，single-field return wrapper family 可以直接从生成侧被收敛掉
+- 在这个前提下，compare 继续保留原有更严格的 `returnSignature` 判定也能拿到正确收益
 
 ## 下一步建议
 
-既然这支高频 blocked family 已经被打散，下一步更值得继续分析的是：
+既然这支高频 blocked family 已经通过 converter-first 收敛，下一步更值得继续分析的是：
 
 - 仍然停留在 `L3` 的真实 `entry 参数类型摘要变化`
 - `模块级 addrspace 分布变化`
 - `控制流粗摘要变化`
 
-也就是当前最新 full-batch 里还没有被 `single-field return wrapper` 规则解释掉的 residual family。
+也就是当前最新 full-batch 里还没有被这次生成侧修复解释掉的 residual family。

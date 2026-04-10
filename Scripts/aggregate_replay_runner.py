@@ -27,6 +27,7 @@ import json
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +79,30 @@ def default_report_path(output_root: Path) -> Path:
     return (output_root / "aggregate-replay-summary.json").resolve()
 
 
+def aggregate_compile_harness_swift_path(root: Path) -> Path:
+    return root / "Scripts" / "metal_aggregate_compile_harness.swift"
+
+
+def build_aggregate_compile_harness_binary(root: Path, output_root: Path) -> Path:
+    harness_swift = aggregate_compile_harness_swift_path(root)
+    if not harness_swift.is_file():
+        raise RuntimeError(f"cannot find aggregate compile harness at {harness_swift}")
+
+    binary_path = (output_root / "_internal" / "metal_aggregate_compile_harness").resolve()
+    binary_path.parent.mkdir(parents=True, exist_ok=True)
+    command = ["swiftc", str(harness_swift), "-o", str(binary_path)]
+    subprocess.run(command, check=True, capture_output=True, text=True)
+    return binary_path
+
+
+def fast_math_mode_to_enabled(fast_math_mode: str | None) -> bool | None:
+    if fast_math_mode == "enable":
+        return True
+    if fast_math_mode == "disable":
+        return False
+    return None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="执行 ShaderCorpus replacement aggregate 离线 replay + compile 验证")
     parser.add_argument(
@@ -115,16 +140,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="即使存在 replay / aggregate / compile 失败也返回 0，便于先收集报告",
     )
     parser.add_argument(
+        "--compile-backend",
+        choices=["xcrun", "mtl-device"],
+        default="xcrun",
+        help="aggregate compile backend：`xcrun metal -c` 或 `MTLDevice.newLibraryWithSource(...)`，默认 xcrun",
+    )
+    parser.add_argument(
         "--metal-sdk",
         default="macosx",
-        help="`xcrun --sdk` 使用的 SDK 名称，默认 macosx",
+        help="`xcrun --sdk` 使用的 SDK 名称，默认 macosx（仅 `--compile-backend xcrun` 生效）",
     )
     parser.add_argument(
         "--metal-arg",
         action="append",
         dest="metal_args",
         default=[],
-        help="额外透传给 `xcrun metal` 的参数（可重复指定）",
+        help="额外透传给 compile backend 的参数；`mtl-device` 仅支持显式 fast-math override（可重复指定）",
     )
     parser.add_argument(
         "--skip-preflight",
@@ -611,13 +642,24 @@ def compare_aggregate_sources(current_path: Path, baseline_path: Path | None) ->
     return comparison
 
 
+def resolve_user_fast_math_override(user_metal_args: list[str] | None) -> str | None:
+    override_mode: str | None = None
+    for arg in user_metal_args or []:
+        if arg == "-ffast-math":
+            override_mode = "enable"
+        elif arg == "-fno-fast-math":
+            override_mode = "disable"
+    return override_mode
+
+
 def resolve_aggregate_compile_metal_args(
     original_ir_paths: list[Path],
     user_metal_args: list[str] | None,
 ) -> tuple[str | None, str, list[str], list[str]]:
     effective_args = list(user_metal_args or [])
-    if any(arg in replay_runner.EXPLICIT_FAST_MATH_METAL_ARGS for arg in effective_args):
-        return None, "user_override", [], effective_args
+    explicit_override_mode = resolve_user_fast_math_override(effective_args)
+    if explicit_override_mode is not None:
+        return explicit_override_mode, "user_override", [], effective_args
 
     inferred_modes = [replay_runner.infer_original_ir_fast_math_mode(path) for path in original_ir_paths]
     known_modes = [mode for mode in inferred_modes if mode is not None]
@@ -655,6 +697,12 @@ def compile_aggregate_source(
         "airPath": None,
         "success": False,
         "status": "skipped_aggregate_failed",
+        "compileBackend": args.compile_backend,
+        "backendReportPath": None,
+        "libraryFunctionNames": [],
+        "libraryFunctionCount": 0,
+        "usesExplicitCompileOptions": False,
+        "compileOptionsFastMathEnabled": None,
         "command": None,
         "returnCode": None,
         "elapsedSeconds": None,
@@ -693,15 +741,8 @@ def compile_aggregate_source(
     base_result["fastMathDecision"] = fast_math_decision
     base_result["inferredMetalArgs"] = inferred_args
     base_result["effectiveMetalArgs"] = effective_args
-
-    air_path = replay_runner.compiled_air_output_path(source_path).resolve()
-    air_path.parent.mkdir(parents=True, exist_ok=True)
-    if air_path.exists():
-        air_path.unlink()
-    base_result["airPath"] = str(air_path)
-
-    command = ["xcrun", "--sdk", args.metal_sdk, "metal", "-c", *effective_args, str(source_path), "-o", str(air_path)]
-    base_result["command"] = replay_runner.shell_join(command)
+    base_result["usesExplicitCompileOptions"] = fast_math_mode is not None
+    base_result["compileOptionsFastMathEnabled"] = fast_math_mode_to_enabled(fast_math_mode)
 
     if preflight_issues and not args.skip_preflight:
         base_result["status"] = "preflight_rejected"
@@ -714,12 +755,103 @@ def compile_aggregate_source(
         base_result["clusterTitle"] = cluster_title
         return base_result
 
+    if args.compile_backend == "mtl-device":
+        harness_binary_value = getattr(args, "aggregate_compile_harness_binary", None)
+        harness_binary = Path(harness_binary_value).expanduser().resolve() if harness_binary_value else None
+        if harness_binary is None or not harness_binary.is_file():
+            base_result["status"] = "compile_failed"
+            base_result["error"] = f"aggregate compile harness binary is missing: {harness_binary_value or 'unset'}"
+            cluster_key, cluster_category, cluster_title = replay_runner.derive_failure_cluster(
+                base_result["status"], [], preflight_issues, base_result["error"]
+            )
+            base_result["clusterKey"] = cluster_key
+            base_result["clusterCategory"] = cluster_category
+            base_result["clusterTitle"] = cluster_title
+            return base_result
+
+        report_path = source_path.with_name(f"{source_path.stem}.mtl-device.compile.json").resolve()
+        base_result["backendReportPath"] = str(report_path)
+        command = [
+            str(harness_binary),
+            "--source",
+            str(source_path),
+            "--report",
+            str(report_path),
+            "--fast-math-mode",
+            fast_math_mode or "default",
+        ]
+        base_result["command"] = replay_runner.shell_join(command)
+
+        start_time = time.perf_counter()
+        completed = subprocess.run(command, check=False, capture_output=True, text=True)
+        elapsed = time.perf_counter() - start_time
+        combined_output = "\n".join(part for part in [completed.stdout.strip(), completed.stderr.strip()] if part)
+
+        harness_payload: dict[str, Any] = {}
+        if report_path.is_file():
+            try:
+                harness_payload = json.loads(report_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                combined_output = "\n".join(
+                    part
+                    for part in [combined_output, f"invalid compile harness report {report_path}: {exc}"]
+                    if part
+                )
+
+        compiler_message = str(harness_payload.get("error") or "").strip()
+        diagnostics_input = compiler_message or combined_output
+        diagnostics = replay_runner.extract_compiler_diagnostics(diagnostics_input)
+        primary_diagnostic = replay_runner.select_primary_diagnostic(diagnostics)
+
+        base_result["returnCode"] = completed.returncode
+        base_result["elapsedSeconds"] = round(elapsed, 6)
+        base_result["stdout"] = replay_runner.truncate_text(completed.stdout)
+        base_result["stderr"] = replay_runner.truncate_text(completed.stderr)
+        base_result["compilerOutput"] = replay_runner.truncate_text(compiler_message or combined_output, limit=16000)
+        base_result["diagnostics"] = diagnostics
+        base_result["primaryDiagnostic"] = primary_diagnostic
+        base_result["libraryFunctionNames"] = [str(name) for name in (harness_payload.get("functionNames") or [])]
+        base_result["libraryFunctionCount"] = int(harness_payload.get("functionCount") or 0)
+        if isinstance(harness_payload.get("usesExplicitCompileOptions"), bool):
+            base_result["usesExplicitCompileOptions"] = harness_payload["usesExplicitCompileOptions"]
+        if "fastMathEnabled" in harness_payload:
+            base_result["compileOptionsFastMathEnabled"] = harness_payload.get("fastMathEnabled")
+        if primary_diagnostic is not None:
+            base_result["sourceContext"] = replay_runner.read_source_context(source_path, int(primary_diagnostic["line"]))
+
+        if harness_payload.get("success") is True and completed.returncode == 0:
+            base_result["status"] = "success"
+            base_result["success"] = True
+            return base_result
+
+        base_result["status"] = "compile_failed"
+        base_result["error"] = compiler_message or combined_output or f"mtl-device compile harness exited with status {completed.returncode}"
+        cluster_key, cluster_category, cluster_title = replay_runner.derive_failure_cluster(
+            base_result["status"], diagnostics, preflight_issues, base_result["error"]
+        )
+        base_result["clusterKey"] = cluster_key
+        base_result["clusterCategory"] = cluster_category
+        base_result["clusterTitle"] = cluster_title
+        return base_result
+
+    air_path = replay_runner.compiled_air_output_path(source_path).resolve()
+    air_path.parent.mkdir(parents=True, exist_ok=True)
+    if air_path.exists():
+        air_path.unlink()
+    base_result["airPath"] = str(air_path)
+
+    command = ["xcrun", "--sdk", args.metal_sdk, "metal", "-c", *effective_args, str(source_path), "-o", str(air_path)]
+    base_result["command"] = replay_runner.shell_join(command)
+
+    start_time = time.perf_counter()
     completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    elapsed = time.perf_counter() - start_time
     combined_output = "\n".join(part for part in [completed.stdout.strip(), completed.stderr.strip()] if part)
     diagnostics = replay_runner.extract_compiler_diagnostics(combined_output)
     primary_diagnostic = replay_runner.select_primary_diagnostic(diagnostics)
 
     base_result["returnCode"] = completed.returncode
+    base_result["elapsedSeconds"] = round(elapsed, 6)
     base_result["stdout"] = replay_runner.truncate_text(completed.stdout)
     base_result["stderr"] = replay_runner.truncate_text(completed.stderr)
     base_result["compilerOutput"] = replay_runner.truncate_text(combined_output, limit=16000)
@@ -914,6 +1046,7 @@ def build_report(
             "bundleIds": list(args.bundle_id),
             "limit": args.limit,
             "allowFailures": bool(args.allow_failures),
+            "compileBackend": args.compile_backend,
             "metalSDK": args.metal_sdk,
             "metalArgs": list(args.metal_args),
             "skipPreflight": bool(args.skip_preflight),
@@ -999,9 +1132,22 @@ def main() -> int:
     if shutil.which("swiftc") is None:
         print("error: cannot find swiftc in PATH", file=sys.stderr)
         return 2
-    if shutil.which("xcrun") is None:
+    if args.compile_backend == "xcrun" and shutil.which("xcrun") is None:
         print("error: cannot find xcrun in PATH", file=sys.stderr)
         return 2
+    if args.compile_backend == "mtl-device":
+        unsupported_metal_args = [
+            arg for arg in args.metal_args
+            if arg not in replay_runner.EXPLICIT_FAST_MATH_METAL_ARGS
+        ]
+        if unsupported_metal_args:
+            joined = ", ".join(unsupported_metal_args)
+            print(
+                "error: `--compile-backend mtl-device` only supports explicit fast-math overrides in `--metal-arg`: "
+                f"{joined}",
+                file=sys.stderr,
+            )
+            return 2
 
     root = repo_root()
     converter_swift = root / "Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift"
@@ -1011,6 +1157,16 @@ def main() -> int:
 
     output_root = Path(args.output_root).expanduser().resolve() if args.output_root else default_output_root(root).resolve()
     report_path = Path(args.report_file).expanduser().resolve() if args.report_file else default_report_path(output_root)
+    if args.compile_backend == "mtl-device":
+        try:
+            args.aggregate_compile_harness_binary = str(build_aggregate_compile_harness_binary(root, output_root))
+        except subprocess.CalledProcessError as exc:
+            detail = "\n".join(part for part in [exc.stdout.strip(), exc.stderr.strip()] if part) or str(exc)
+            print(f"error: failed to build aggregate compile harness: {detail}", file=sys.stderr)
+            return 2
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
     warnings: list[replay_runner.DiscoveryWarning] = []
 
     jobs = discover_jobs(args, output_root, warnings)

@@ -280,7 +280,7 @@ class AggregateReplayRunnerTests(unittest.TestCase):
                 "#include <metal_stdlib>\nusing namespace metal;\n\nptr bad_token = ptr(0);\n",
                 encoding="utf-8",
             )
-            args = argparse.Namespace(metal_sdk="macosx", metal_args=[], skip_preflight=False)
+            args = argparse.Namespace(compile_backend="xcrun", metal_sdk="macosx", metal_args=[], skip_preflight=False)
             aggregate_result = {"success": True, "sourcePath": str(source_path)}
 
             with mock.patch.object(aggregate_runner.subprocess, "run") as run_mock:
@@ -382,7 +382,96 @@ class AggregateReplayRunnerTests(unittest.TestCase):
             self.assertEqual(result["overallStatus"], "success")
             self.assertEqual(result["aggregate"]["dedupeSkippedModuleCount"], 1)
             self.assertEqual(result["compile"]["status"], "success")
+            self.assertEqual(result["compile"]["compileBackend"], "xcrun")
             self.assertTrue(Path(result["aggregate"]["sourcePath"]).is_file())
+
+    @unittest.skipUnless(sys.platform == "darwin" and shutil.which("swiftc"), "requires macOS Metal + swiftc")
+    def test_cli_compiles_aggregate_with_mtl_device_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            corpus_root = root / "ShaderCorpus"
+            bundle_root = corpus_root / "com.example.demo"
+            replacement_dir = bundle_root / "replacements" / "20260410_selector_cache"
+            replacement_dir.mkdir(parents=True, exist_ok=True)
+
+            for module_key in ["module-a", "module-b"]:
+                module_dir = bundle_root / "modules" / module_key
+                module_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(TEST_FRAGMENT_PACKED_RETURN_SAMPLE, module_dir / "module.ll")
+                write_json(
+                    module_dir / "module.meta.json",
+                    {
+                        "bundleId": "com.example.demo",
+                        "moduleKey": module_key,
+                        "selector": "newLibraryWithData:error:",
+                        "moduleSummary": f"summary-{module_key}",
+                    },
+                )
+
+            write_json(
+                replacement_dir / "replacement.meta.json",
+                {
+                    "bundleId": "com.example.demo",
+                    "selector": "newLibraryWithData:error:",
+                    "cacheKey": "cache-key",
+                    "timestamp": "2026-04-10T20:00:00Z",
+                    "moduleKeys": ["module-a", "module-b"],
+                },
+            )
+            (replacement_dir / "aggregate.generated.metal").write_text(
+                "#include <metal_stdlib>\nusing namespace metal;\n// runtime baseline placeholder\n",
+                encoding="utf-8",
+            )
+            write_jsonl(
+                bundle_root / "manifest.jsonl",
+                [
+                    {
+                        "event": "capture",
+                        "selector": "newLibraryWithData:error:",
+                        "cacheKey": "cache-key",
+                        "timestamp": "2026-04-10T20:00:00Z",
+                        "moduleKey": "module-a",
+                    },
+                    {
+                        "event": "capture",
+                        "selector": "newLibraryWithData:error:",
+                        "cacheKey": "cache-key",
+                        "timestamp": "2026-04-10T20:00:00Z",
+                        "moduleKey": "module-b",
+                    },
+                ],
+            )
+
+            output_root = root / "out"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(AGGREGATE_SCRIPT),
+                    "--corpus-root",
+                    str(corpus_root),
+                    "--bundle-id",
+                    "com.example.demo",
+                    "--compile-backend",
+                    "mtl-device",
+                    "--output-root",
+                    str(output_root),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("aggregate replay summary", completed.stdout)
+            report = json.loads((output_root / "aggregate-replay-summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["requestedInputs"]["compileBackend"], "mtl-device")
+            self.assertEqual(report["aggregateJobCount"], 1)
+            self.assertEqual(report["failedJobs"], 0)
+            result = report["results"][0]
+            self.assertEqual(result["overallStatus"], "success")
+            self.assertEqual(result["compile"]["status"], "success")
+            self.assertEqual(result["compile"]["compileBackend"], "mtl-device")
+            self.assertTrue(Path(result["compile"]["backendReportPath"]).is_file())
 
 
 if __name__ == "__main__":

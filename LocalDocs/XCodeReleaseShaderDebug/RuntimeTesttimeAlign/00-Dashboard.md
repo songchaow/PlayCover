@@ -13,13 +13,14 @@
 
 ## 主线任务
 
-- **当前主线**：继续推进 `RTA-001`；`RTA-001.2` 已完成，当前最高优先级切到 `RTA-001.3`，先为离线补齐贴近 runtime 的“多模块 aggregate + compile”验证入口，再继续下钻上游 `SemanticsValidation` 里的 `entry 参数` 残余高风险 family。
+- **当前主线**：继续推进 `RTA-001`；`RTA-001.3` 已完成，当前最高优先级切到 `RTA-001.4`，先把 Swift runtime / Python orchestration / 最小 Swift harness 的共用边界收稳，再继续下钻上游 `SemanticsValidation` 里的 `entry 参数` 残余高风险 family。
 - 当前已确认的关键事实：
   - runtime 真实路径是 `bitcode -> LLVMDisassembler -> IRToMSLConverter -> 多模块 aggregate -> newLibraryWithSource(..., options: MTLCompileOptions?)`
-  - 离线默认路径是 `module.ll -> IRToMSLConverter -> xcrun metal -c -> llvm-dis -> canonical compare`
+  - 离线默认路径仍有两条：`module.ll -> IRToMSLConverter -> xcrun metal -c -> llvm-dis -> canonical compare`，以及 `aggregate.generated.metal -> MTLDevice.newLibraryWithSource(...)` 的最小 harness compile
   - `RTA-001.1` 已完成：runtime 已能依据 original IR 中可判定且全模块一致的 `fast-math` posture，显式设置 `MTLCompileOptions.fastMathEnabled`
   - `RTA-001.2` 已完成：compile preflight 规则与 `fast-math` enable/disable option token 已收口到 `LibrarySourceInjectionSwizzles.swift` 内嵌 shared manifest；Swift runtime 直接使用，Python 离线脚本从同一源读取
-- 当前默认判断：**不要继续把离线 compile 结果直接当作 runtime 真值**；在完成 `RTA-001` 之前，后续 case 分析都要把这一层漂移计入风险。
+  - `RTA-001.3` 已完成：`Scripts/aggregate_replay_runner.py` 现在既能保留 `xcrun` backend 做 AIR / CLI 诊断，也能通过 `Scripts/metal_aggregate_compile_harness.swift` 走 `MTLDevice.newLibraryWithSource(...)`，离线复现 runtime 特有的 aggregate / dedupe / preflight / fast-math compile decision
+- 当前默认判断：**不要把 `xcrun metal -c` 结果直接当作 runtime 真值**；若目标是贴近 runtime compile 结论，应优先使用 `Scripts/aggregate_replay_runner.py --compile-backend mtl-device`，而 `xcrun` backend 继续作为 AIR / CLI 诊断补充入口。
 
 ## 构建与验证的方法
 
@@ -107,6 +108,8 @@
 - `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift`：runtime / offline 已共用的核心转换器
 - `Scripts/corpus_replay_runner.py`：离线 replay + compile posture 决策 + compile preflight 现状
 - `Scripts/aggregate_replay_runner.py`：当前 aggregate 形态下的默认离线验证入口
+- `Scripts/metal_aggregate_compile_harness.swift`：最小 runtime-like aggregate compile harness，直接调用 `MTLDevice.newLibraryWithSource(...)`
+- `Scripts/test_aggregate_replay_runner.py`：aggregate 入口的单元 / CLI 集成回归
 - `Scripts/ir_semantics_roundtrip_runner.py`：当前 round-trip / canonical compare 主入口
 - `BuildScripts/README.md`：标准构建与测试脚本说明
 

@@ -36,20 +36,21 @@
 
 ### 当前最新状态
 
-- 当前主线最新已完成 `CC-003.5`：围绕 `083c8443...` 等一支高频 `L3` 下钻后，重新确认真正缺口并不在 compare，而在 **`IRToMSLConverter.swift` 会把 original IR 里本就存在的 single-field wrapped return（如 `<{ <4 x half> }>`）过早塌成裸返回类型（如 `<4 x half>`）**
-- 实现上这轮严格按 converter-first 收敛，只改了生成侧：
-  - `IRToMSLConverter.swift` 新增 `shouldUseEntryOutputStruct(...)` / `unwrapSingleFieldAggregateIRType(...)`
-  - 对 single-output entry，不再一律降成裸返回；只有当 original IR 本来就是 bare return 时才保持原策略
-  - 同时补了 `Scripts/test_ir_semantics_roundtrip_runner.py` 的 converter-first 回归，并再次收紧 `LOCAL_SHADERCORPUS_REPRESENTATIVE_CONTRACT` 里已降到 `L1` 的 `1f5e65...`
+- 当前主线最新已完成 `CC-003.6`：围绕 `c6d1420a...`、`82d1eb85...`、`1cdc9318...` 这支高频 `L3` 下钻后，已经确认真正缺口并不在 compare，而在 **`IRToMSLConverter.swift` 对“哪些 constant buffer struct 应保留为引用 `&`”的判定过窄，导致 `_Foo_Type` / `cb_Foo_Type` 一类用户类型被错误发成 `const constant T*`，进而在 regenerated IR 中丢失 `dereferenceable(N)`**
+- 实现上这轮继续严格按 converter-first 收敛，只改了生成侧：
+  - `IRToMSLConverter.swift` 放宽 `isStructTypeName(...)` 的判定，不再只把“首字母大写”的类型名视为 struct
+  - `_ScreenSpaceShadowParams_Type`、`_DirectionalShadowBuffer_Type`、`cb_SSAOBlur_Type`、`cb_TAA_Type` 等用户类型因此重新走 `const constant T&` 路径
+  - 同时补了 `Scripts/test_ir_semantics_roundtrip_runner.py` 的最小 replay / round-trip 回归，并新增 `test_underscore_struct_reference.ll` 最小样本
 - 单 case 结果已经形成闭环：
-  - `cc-003-5-single-speedmobile-return-wrapper-083c-v1`：`L3`
-  - `cc-003-5-1-single-speedmobile-return-wrapper-083c-converter-first`：`L2`
-  - `manual-test-fragment-packed-return-after-compare-fix`：**`L0`**，gate `PASS`
-- full-batch 已出现大幅统计收益且无新增 `L3`：
-  - diagnostics `cc-003-5-1-diagnostics-20260410-converter-first-single-field-return`：`L1 9 / L2 140 / L3 4`
-  - corpus `cc-003-5-1-corpus-20260410-converter-first-single-field-return`：**`L1 176 / L2 191 / L3 70`**
-  - 相比 `CC-003.4.5.2`，共有 `142` 个 diagnostics 样本、`181` 个 corpus 样本移除了 `entry 返回类型摘要变化`
-- 因此当前最新状态可以概括为：**`single-field return wrapper` 这支高频 blocked family 已通过 converter-first 从源头收敛成可分析的 `L2/L1` residual；下一步应回到最新 canonical compare 报告，优先挑剩余仍为 `L3` 的真实 `entry 参数类型 / addrspace / CFG` 家族继续下钻。**
+  - `cc-003-6-single-c6d142-dereferenceable-reference`：`c6d1420a...` 从 `L3 -> L1`
+  - `entryComparison`：`L3 -> L0`
+  - `blockedSamples = []`，gate `PASS`
+  - 最小样本 `manual-underscore-struct-reference` 中 regenerated IR 保留 `dereferenceable(4)`
+- full-batch 已继续出现明确统计收益且无新增 `L3`：
+  - diagnostics `cc-003-6-diagnostics-20260410-dereferenceable-reference`：`L1 12 / L2 140 / L3 1`
+  - corpus `cc-003-6-corpus-20260410-dereferenceable-reference`：**`L1 186 / L2 197 / L3 54`**
+  - 相比 `CC-003.5`，共有 `3` 个 diagnostics 样本、`16` 个 corpus 样本移除了 `entry 参数类型摘要变化`
+- 因此当前最新状态可以概括为：**`constant struct reference / dereferenceable` 这支高频 blocked family 已通过 converter-first 从源头收敛；下一步应优先回到最新 canonical compare 报告，继续下钻剩余 `L3` 中的 `entry 输出语义摘要变化`、`模块级 addrspace 分布变化 + air intrinsic 使用变化`，以及 `entry 参数个数变化` family。**
 
 
 ## 当前默认流程
@@ -179,6 +180,7 @@
 | `CC-003.4.5.1` 先修 fallback 路径里 final merge / `ret` 被更早前驱提前递归发射的边界缺口 | DONE | `IRToMSLConverter.swift` 已只在 successor 其它前驱齐备时才 eager-emit，并有 `test_late_merge_fallback_order.ll` 回归覆盖；但 `91c46448...` 与 full-batch 均无统计变化 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
 | `CC-003.4.5.2` 继续下钻 `91c46448...` 中 `BB821 / BB845 / BB857 / BB1337 / BB1371` 的 nested fallback family | DONE | 已定位真正切口是 structured conditional 的 direct-to-merge arm 未补 phi edge；补齐后 `91c46448...` 从 `L2 -> L1`，nested common merge 最小样本与 full-batch 全部验证通过 | `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
 | `CC-003.5` 优先检查 `entry 返回类型摘要变化` 的高频 `L3` 家族 | DONE | 已确认其中一大支是 converter 把 original IR 的 single-field wrapped return 过早塌成 bare return 的真实实现问题；按 converter-first 修复后 diagnostics `L3 146 -> 4`、corpus `L3 251 -> 70`，且无新增 `L3` | `difference-analysis/single-field-return-wrapper/04-implementation-result.md` / `difference-analysis/single-field-return-wrapper/05-full-batch-compare.md` |
+| `CC-003.6` 优先检查 `entry 参数类型摘要变化` 的高频 `L3` 家族 | DONE | 已确认其中一大支不是 compare 噪声，而是 converter 对 constant buffer 用户 struct 的引用判定过窄；修复后 diagnostics `L3 4 -> 1`、corpus `L3 70 -> 54`，且无新增 `L3` | `difference-analysis/constant-struct-reference-dereferenceable/04-implementation-result.md` / `difference-analysis/constant-struct-reference-dereferenceable/05-full-batch-compare.md` |
 | `CC-004` 固化新的 case 分析模板 | TODO | 在 `difference-analysis/` 下沉淀一套稳定模板，确保后续每个 case 都按同样结构记录证据、结论与回归数据 | `difference-analysis/` |
 
 ## 任务执行规则
@@ -299,6 +301,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - **L2 compare 需要主动降噪**；更细的降噪对象与风险口径统一见 `04-L2-CanonicalCompareAndRiskGrading.md`（工作参考，当前主线推进**不必须读取**）
 - **resource metadata 的 `air.address_space` 显式化不应重复放大**；当函数参数 `addrspace` 摘要已一致时，这更像 compare 噪声，而不是 entry/resource 语义真的发生变化
 - **single-field output 先不要急着改 compare**；当 `outputSemantics` 一致但 `returnSignature` 出现 `wrapped -> bare` 漂移时，应先检查 converter 是否把 original IR 的 single-field wrapped return 过早塌平，只有排除生成侧后才考虑 compare 口径
+- **constant buffer struct 的 `&` / `*` 选择会直接影响 `dereferenceable(N)` 是否能 round-trip 保住**；当 `entry 参数类型摘要变化` 表现为 `ptr addrspace(2) dereferenceable(N) -> ptr addrspace(2)` 时，应优先检查 converter 是否把 `_Foo_Type` / `cb_Foo_Type` 这类用户 struct 误降成指针参数
 
 ## 参考信息
 
@@ -324,6 +327,8 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - `difference-analysis/resource-type-name-preservation/05-full-batch-compare.md`
 - `difference-analysis/single-field-return-wrapper/04-implementation-result.md`
 - `difference-analysis/single-field-return-wrapper/05-full-batch-compare.md`
+- `difference-analysis/constant-struct-reference-dereferenceable/04-implementation-result.md`
+- `difference-analysis/constant-struct-reference-dereferenceable/05-full-batch-compare.md`
 
 ### 相关实现与工具
 

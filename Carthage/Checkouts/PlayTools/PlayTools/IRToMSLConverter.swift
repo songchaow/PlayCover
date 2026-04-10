@@ -8341,15 +8341,25 @@ struct IRToMSLConverter {
         return mslParams.joined(separator: ", ")
     }
 
-    /// 判断类型名是否像是结构体（大写开头且不是 MSL 标准类型）
+    /// 判断类型名是否像是用户定义结构体。
+    ///
+    /// 这里不能只看首字母是否大写：真实 shader 中常见的 constant buffer 结构体名还会出现
+    /// `_ScreenSpaceShadowParams_Type`、`cb_SSAOBlur_Type` 这类前导下划线 / 小写前缀形式。
+    /// 只要它不是 MSL 标量/向量/纹理等内建类型，且呈现典型用户类型命名特征，
+    /// 都应视为结构体，以便在 constant buffer 上优先保留 `const constant T&`，
+    /// 让 round-trip 后的 AIR 继续保留 `dereferenceable(N)`。
     private static func isStructTypeName(_ name: String) -> Bool {
-        guard let first = name.first else { return false }
-        if !first.isUppercase { return false }
-        // 排除 MSL 标准类型
-        let standardTypes: Set<String> = [
-            "Float", "Half", "Int", "UInt", "Short", "UShort", "Char", "UChar", "Bool"
-        ]
-        return !standardTypes.contains(name)
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        guard !isMSLScalarOrVectorType(trimmed) else { return false }
+        guard trimmed != "sampler", !trimmed.hasPrefix("texture"), !trimmed.hasPrefix("atomic_") else {
+            return false
+        }
+        if trimmed.hasSuffix("_Type") {
+            return true
+        }
+        guard let firstLetter = trimmed.first(where: { $0.isLetter }) else { return false }
+        return firstLetter.isUppercase
     }
 
     /// 清理 texture 类型名，将 AIR access 限定符映射为 Metal 格式

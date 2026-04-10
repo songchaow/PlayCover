@@ -267,7 +267,7 @@ SHARED_COMPILE_DECISION_MANIFEST_SWIFT = (
     / "Checkouts"
     / "PlayTools"
     / "PlayTools"
-    / "LibrarySourceInjectionSwizzles.swift"
+    / "SharedCompilePlanner.swift"
 )
 SHARED_COMPILE_DECISION_MANIFEST_REGEX = re.compile(
     r'private static let sharedCompileDecisionManifestJSON = #"""(?P<payload>.*?)"""#',

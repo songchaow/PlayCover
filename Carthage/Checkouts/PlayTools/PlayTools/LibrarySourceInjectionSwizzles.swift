@@ -748,73 +748,6 @@ class LibrarySourceInjectionService {
         }
     }
 
-    private struct SharedCompileDecisionManifest: Decodable {
-        let schemaVersion: Int
-        let fastMath: SharedFastMathOptions
-        let replacementSourceValidationRules: [SharedReplacementSourceValidationRule]
-    }
-
-    private struct SharedFastMathOptions: Decodable {
-        let enableOption: String
-        let disableOption: String
-    }
-
-    private struct SharedReplacementSourceValidationRule: Decodable {
-        let reason: String
-        let pattern: String
-    }
-
-    private static let sharedCompileDecisionManifestJSON = #"""
-    {
-      "schemaVersion": 1,
-      "fastMath": {
-        "enableOption": "air.compile.fast_math_enable",
-        "disableOption": "air.compile.fast_math_disable"
-      },
-      "replacementSourceValidationRules": [
-        {
-          "reason": "LLVM vector syntax leaked into generated MSL",
-          "pattern": "<\\s*\\d+\\s+x\\s+"
-        },
-        {
-          "reason": "LLVM opaque pointer token leaked into generated MSL",
-          "pattern": "(^|[^A-Za-z0-9_])ptr([^A-Za-z0-9_]|$)"
-        },
-        {
-          "reason": "LLVM addrspace token leaked into generated MSL",
-          "pattern": "addrspace\\s*\\("
-        },
-        {
-          "reason": "LLVM SSA or struct token leaked into generated MSL",
-          "pattern": "%[A-Za-z0-9_\\.\\\"]+"
-        },
-        {
-          "reason": "LLVM raw integer type leaked into generated MSL",
-          "pattern": "(^|[^A-Za-z0-9_])(i1|i8|i16|i32|i64)([^A-Za-z0-9_]|$)"
-        },
-        {
-          "reason": "LLVM symbol token leaked into generated MSL",
-          "pattern": "@[A-Za-z0-9_\\.\\\"]+"
-        },
-        {
-          "reason": "LLVM placeholder token leaked into generated MSL",
-          "pattern": "\\b(?:undef|poison|zeroinitializer)\\b"
-        }
-      ]
-    }
-    """#
-
-    private static let sharedCompileDecisionManifest: SharedCompileDecisionManifest = {
-        guard let data = sharedCompileDecisionManifestJSON.data(using: .utf8) else {
-            fatalError("[PlayTools] LibrarySourceInjection: failed to encode shared compile decision manifest")
-        }
-        do {
-            return try JSONDecoder().decode(SharedCompileDecisionManifest.self, from: data)
-        } catch {
-            fatalError("[PlayTools] LibrarySourceInjection: failed to decode shared compile decision manifest — \(error)")
-        }
-    }()
-
     private enum AggregateReplacementFastMathMode: String {
         case enable
         case disable
@@ -836,8 +769,9 @@ class LibrarySourceInjectionService {
     }
 
     private func inferAggregateReplacementFastMathMode(from irText: String) -> AggregateReplacementFastMathMode? {
-        let hasDisable = irText.contains(Self.sharedCompileDecisionManifest.fastMath.disableOption)
-        let hasEnable = irText.contains(Self.sharedCompileDecisionManifest.fastMath.enableOption)
+        let manifest = SharedCompilePlanner.sharedCompileDecisionManifest
+        let hasDisable = irText.contains(manifest.fastMath.disableOption)
+        let hasEnable = irText.contains(manifest.fastMath.enableOption)
         if hasDisable && !hasEnable {
             return .disable
         }
@@ -1041,7 +975,7 @@ class LibrarySourceInjectionService {
     }
 
     private static let replacementSourceValidationRules: [ReplacementSourceValidationRule] = {
-        sharedCompileDecisionManifest.replacementSourceValidationRules.map {
+        SharedCompilePlanner.sharedCompileDecisionManifest.replacementSourceValidationRules.map {
             ReplacementSourceValidationRule(reason: $0.reason, pattern: $0.pattern)
         }
     }()

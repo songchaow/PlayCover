@@ -13,12 +13,12 @@
 
 ## 主线任务
 
-- **当前主线**：优先推进 `RTA-004`：把“从 `original IR` 推导 generated MSL 编译请求”的整条链收口成**单一实现**。目标不是统一执行 backend，而是让 runtime、`mtl-device` harness 与离线 `xcrun` backend 共同消费同一份 compile planner。方案见 `02-原始IR到CompileRequest共享方案.md`。
+- **当前主线**：继续推进 `RTA-004`：把“从 `original IR` 推导 generated MSL 编译请求”的整条链收口成**单一实现**。当前子任务优先 `RTA-004.3`：让 runtime 与 `mtl-device` harness 开始共同消费已经落地的 `SharedCompilePlanner.swift`。方案见 `02-原始IR到CompileRequest共享方案.md`。
 - 当前只保留几条最关键的控制面事实：
   - runtime 真实路径是 `bitcode -> LLVMDisassembler -> IRToMSLConverter -> 多模块 aggregate -> newLibraryWithSource(..., options: MTLCompileOptions?)`
   - 离线仍保留两条路径：`module.ll -> IRToMSLConverter -> xcrun metal -c -> llvm-dis -> canonical compare`，以及 `aggregate.generated.metal -> MTLDevice.newLibraryWithSource(...)` 的最小 harness compile
-  - 已完成的共享层主要是：shared manifest（`fast-math` token / preflight rule）与 compile summary 语义；差异边界见 `01-差异边界分类.md`
-  - **当前最大的剩余共享缺口**：`original IR -> compile request` 仍不是单一实现；runtime、`mtl-device` harness 与 Python `xcrun` backend 还各自维护一份 posture / arg inference
+  - 已完成的共享层主要是：shared manifest（`fast-math` token / preflight rule）、shared compile planner contract 与 compile summary 语义；差异边界见 `01-差异边界分类.md`
+  - **当前最大的剩余共享缺口**：`SharedCompilePlanner.swift` 已落地，但 runtime、`mtl-device` harness 与 Python `xcrun` backend 还没有全部切到消费 planner 输出，compile posture / arg inference 仍未真正只剩一份宿主实现
   - **默认判断**：不要把 `xcrun metal -c` 结果直接当作 runtime 真值；若目标是贴近 runtime compile 结论，应优先使用 `Scripts/aggregate_replay_runner.py --compile-backend mtl-device`
 
 ## 构建与验证的方法
@@ -77,12 +77,12 @@
 |---|---|---|---|
 | `RTA-001` 统一 runtime 与离线 compile decision 层 | DONE | runtime 与离线不再各自维护独立的 compile posture 决策；至少 `fast-math` 已共用同一套判断逻辑，并能分别映射到 `MTLCompileOptions` 与离线 metal args | 已完成 shared manifest、aggregate 验证入口、`mtl-device` / `xcrun` 边界收口 |
 | `RTA-002` 明确“必须对齐”和“有意保留”的差异边界 | DONE | 文档中能稳定回答：哪些差异必须继续收口，哪些属于 backend / 输入形态天然不同、无需强行统一 | 结论已整理到 `01-差异边界分类.md` |
-| `RTA-004` 收口 `original IR -> compile request` 的单一实现 | DOING | runtime、`mtl-device` harness 与 Python `xcrun` backend 不再各写一份 posture / arg inference；compile 规则修改时默认只需改一处 shared planner | 当前最高优先级 |
+| `RTA-004` 收口 `original IR -> compile request` 的单一实现 | DOING | runtime、`mtl-device` harness 与 Python `xcrun` backend 不再各写一份 posture / arg inference；compile 规则修改时默认只需改一处 shared planner | 当前主线仍在推进，下一步优先 `RTA-004.3` |
 | `RTA-004.1` 定义 shared compile planner contract 与迁移路线 | DONE | 文档能稳定回答：单一实现放哪、输入输出是什么、Python 如何消费、哪些逻辑仍留在 backend-specific 宿主 | 已整理到 `02-原始IR到CompileRequest共享方案.md` |
-| `RTA-004.2` 抽出 Swift 侧 shared compile planner | TODO | 新增独立 shared planner 源文件；semantic decision 与 backend projection 在同一处维护，runtime / harness 不再手写一份 fast-math 推导 | 建议先只迁现有 `fast-math` 规则 |
-| `RTA-004.3` 让 runtime 与 `mtl-device` harness 共同消费 shared planner | TODO | `LibrarySourceInjectionSwizzles.swift` 与 `metal_aggregate_compile_harness.swift` 不再各自维护 posture 推导，统一改为调用 shared planner | harness 构建时应把 shared planner Swift 文件一并编译 |
+| `RTA-004.2` 抽出 Swift 侧 shared compile planner | DONE | 新增独立 shared planner 源文件；manifest、semantic decision 与 backend projection contract 在同一处维护 | 已落地 `SharedCompilePlanner.swift`，并把 shared manifest 单一来源切到该文件 |
+| `RTA-004.3` 让 runtime 与 `mtl-device` harness 共同消费 shared planner | TODO | `LibrarySourceInjectionSwizzles.swift` 与 `metal_aggregate_compile_harness.swift` 不再各自维护 posture 推导，统一改为调用 shared planner | harness 构建时应把 shared planner Swift 文件一并编译；当前最高优先级子任务 |
 | `RTA-004.4` 让 Python `xcrun` backend 改为消费 planner 输出 | TODO | `corpus_replay_runner.py` / `aggregate_replay_runner.py` 不再维护 `resolve_compile_metal_args(...)` / `resolve_aggregate_compile_metal_args(...)` 一类推导逻辑，只消费 planner JSON plan | Python 继续保留 orchestration、diagnostics 与 baseline diff，但不再保留规则推导 |
-| `RTA-004.5` 补 shared planner 回归与跨 backend 一致性测试 | TODO | single-module / multi-module / user override / `xcrun` / `mtl-device` 的 plan 输出与 compile summary 字段都能稳定对齐 | 应覆盖 `fast_math_aligned` / `conflict` / `partial` / `unavailable` / `user_override` |
+| `RTA-004.5` 补 shared planner 回归与跨 backend 一致性测试 | TODO | single-module / multi-module / user override / `xcrun` / `mtl-device` 的 plan 输出与 compile summary 字段都能稳定对齐 | 已先补 `Scripts/test_shared_compile_planner.py` 作为最小 contract 回归入口；后续继续覆盖 `fast_math_aligned` / `conflict` / `partial` / `unavailable` / `user_override` |
 | `RTA-003` 在链路对齐后恢复上游高风险 case 推进 | BLOCKED | 在 `RTA-004` 完成后，再继续推进 `SemanticsValidation` 中剩余 `entry 参数` family 的 case-by-case 收敛 | 当前对应上游 `CC-003.9` |
 
 ## 踩坑与经验
@@ -106,6 +106,7 @@
 - `02-原始IR到CompileRequest共享方案.md`：shared compile planner 方案；实现 `RTA-004` 时优先读取
 - `SemanticsValidation/00-Dashboard.md`：上游风险主线、case 优先级与当前 residual 背景
 - `SemanticsValidation/02-总体技术路线.md`：分层模型、止损边界与自动化优先原则
+- `Carthage/Checkouts/PlayTools/PlayTools/SharedCompilePlanner.swift`：shared compile planner contract、shared manifest 与 fast-math 语义 / projection 单一实现
 - `Carthage/Checkouts/PlayTools/PlayTools/LibrarySourceInjectionSwizzles.swift`：runtime shader 替换 / aggregate / compile 主路径
 - `Carthage/Checkouts/PlayTools/PlayTools/LLVMDisassembler.swift`：runtime bitcode -> IR 反汇编路径与 host bridge 边界
 - `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift`：runtime / offline 已共用的核心转换器

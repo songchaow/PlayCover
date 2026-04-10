@@ -88,6 +88,7 @@
 		A1F9B3012F5A000100000001 /* BridgeListener.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F9B3032F5A000100000001 /* BridgeListener.swift */; };
 		A1F9B3022F5A000100000001 /* MetalCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F9B3042F5A000100000001 /* MetalCaptureService.swift */; };
 		A1F9B3052F5A000200000001 /* LibrarySourceInjectionSwizzles.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F9B3062F5A000200000001 /* LibrarySourceInjectionSwizzles.swift */; };
+		A1F9B30D2F5A000600000001 /* SharedCompilePlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F9B30E2F5A000600000001 /* SharedCompilePlanner.swift */; };
 		A1F9B3072F5A000300000001 /* MetallibParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F9B3082F5A000300000001 /* MetallibParser.swift */; };
 		A1F9B3092F5A000400000001 /* LLVMDisassembler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F9B30A2F5A000400000001 /* LLVMDisassembler.swift */; };
 		A1F9B30B2F5A000500000001 /* IRToMSLConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F9B30C2F5A000500000001 /* IRToMSLConverter.swift */; };
@@ -197,6 +198,7 @@
 		A1F9B3032F5A000100000001 /* BridgeListener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Bridge/BridgeListener.swift; sourceTree = "<group>"; };
 		A1F9B3042F5A000100000001 /* MetalCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalCaptureService.swift; sourceTree = "<group>"; };
 		A1F9B3062F5A000200000001 /* LibrarySourceInjectionSwizzles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySourceInjectionSwizzles.swift; sourceTree = "<group>"; };
+		A1F9B30E2F5A000600000001 /* SharedCompilePlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedCompilePlanner.swift; sourceTree = "<group>"; };
 		A1F9B3082F5A000300000001 /* MetallibParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetallibParser.swift; sourceTree = "<group>"; };
 		A1F9B30A2F5A000400000001 /* LLVMDisassembler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLVMDisassembler.swift; sourceTree = "<group>"; };
 		A1F9B30C2F5A000500000001 /* IRToMSLConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IRToMSLConverter.swift; sourceTree = "<group>"; };
@@ -465,6 +467,7 @@
 				AA719706287A44D200623C15 /* PlayCover.swift */,
 				A1F9B3042F5A000100000001 /* MetalCaptureService.swift */,
 				A1F9B3062F5A000200000001 /* LibrarySourceInjectionSwizzles.swift */,
+				A1F9B30E2F5A000600000001 /* SharedCompilePlanner.swift */,
 				A1F9B3082F5A000300000001 /* MetallibParser.swift */,
 				A1F9B30A2F5A000400000001 /* LLVMDisassembler.swift */,
 				A1F9B30C2F5A000500000001 /* IRToMSLConverter.swift */,
@@ -743,6 +746,7 @@
 				A1F9B3012F5A000100000001 /* BridgeListener.swift in Sources */,
 				A1F9B3022F5A000100000001 /* MetalCaptureService.swift in Sources */,
 				A1F9B3052F5A000200000001 /* LibrarySourceInjectionSwizzles.swift in Sources */,
+				A1F9B30D2F5A000600000001 /* SharedCompilePlanner.swift in Sources */,
 				A1F9B3072F5A000300000001 /* MetallibParser.swift in Sources */,
 				A1F9B3092F5A000400000001 /* LLVMDisassembler.swift in Sources */,
 				A1F9B30B2F5A000500000001 /* IRToMSLConverter.swift in Sources */,

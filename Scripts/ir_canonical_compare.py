@@ -263,6 +263,51 @@ def _module_has_optimizer_only_intrinsic_drift(original: dict[str, Any], regener
     return _air_intrinsic_family_set(original_intrinsics) == _air_intrinsic_family_set(regenerated_intrinsics)
 
 
+def _entry_has_small_vector_aggregate_shape_drift(
+    original_entry: dict[str, Any],
+    regenerated_entry: dict[str, Any],
+) -> bool:
+    semantic_keys = ("argSemantics", "resourceSemantics", "builtinSemantics", "outputSemantics")
+    for key in semantic_keys:
+        if original_entry.get(key) != regenerated_entry.get(key):
+            return False
+
+    if _normalize_air_intrinsic_counter(original_entry.get("airIntrinsicCalls")) != _normalize_air_intrinsic_counter(
+        regenerated_entry.get("airIntrinsicCalls")
+    ):
+        return False
+
+    lhs_cfg = original_entry.get("cfg") or {}
+    rhs_cfg = regenerated_entry.get("cfg") or {}
+    if int(lhs_cfg.get("basicBlockCount") or 0) != int(rhs_cfg.get("basicBlockCount") or 0):
+        return False
+    if (lhs_cfg.get("terminatorCounts") or {}) != (rhs_cfg.get("terminatorCounts") or {}):
+        return False
+    if int(lhs_cfg.get("phiCount") or 0) != int(rhs_cfg.get("phiCount") or 0):
+        return False
+
+    select_delta = abs(int(lhs_cfg.get("selectCount") or 0) - int(rhs_cfg.get("selectCount") or 0))
+    if select_delta > 1:
+        return False
+
+    lhs_families = original_entry.get("instructionFamilies") or {}
+    rhs_families = regenerated_entry.get("instructionFamilies") or {}
+    changed_keys = {
+        name
+        for name in sorted(set(lhs_families) | set(rhs_families))
+        if int(lhs_families.get(name, 0)) != int(rhs_families.get(name, 0))
+    }
+    if not changed_keys or not changed_keys <= {"aggregate", "arithmetic", "vector"}:
+        return False
+
+    arithmetic_delta = abs(int(lhs_families.get("arithmetic", 0)) - int(rhs_families.get("arithmetic", 0)))
+    aggregate_delta = abs(int(lhs_families.get("aggregate", 0)) - int(rhs_families.get("aggregate", 0)))
+    vector_delta = abs(int(lhs_families.get("vector", 0)) - int(rhs_families.get("vector", 0)))
+    total_delta = sum(abs(int(lhs_families.get(name, 0)) - int(rhs_families.get(name, 0))) for name in changed_keys)
+
+    return arithmetic_delta <= 4 and aggregate_delta <= 8 and vector_delta <= 16 and total_delta <= 24
+
+
 def _downgrade_optimizer_only_shape_drift(
     original: dict[str, Any],
     regenerated: dict[str, Any],
@@ -278,7 +323,13 @@ def _downgrade_optimizer_only_shape_drift(
         for key in sorted(set(original_entries) & set(regenerated_entries))
         if _entry_has_optimizer_only_intrinsic_drift(original_entries[key], regenerated_entries[key], shared_module_families)
     }
+    vector_aggregate_shape_only_entry_keys = {
+        key
+        for key in sorted(set(original_entries) & set(regenerated_entries))
+        if _entry_has_small_vector_aggregate_shape_drift(original_entries[key], regenerated_entries[key])
+    }
     module_only_intrinsic_drift = _module_has_optimizer_only_intrinsic_drift(original, regenerated)
+    downgraded_shape_only_entry_keys = optimizer_only_entry_keys | vector_aggregate_shape_only_entry_keys
 
     adjusted_builtin_differences: list[dict[str, Any]] = []
     for difference in builtin_comparison.get("differences") or []:
@@ -290,14 +341,14 @@ def _downgrade_optimizer_only_shape_drift(
     adjusted_cfg_differences: list[dict[str, Any]] = []
     for difference in cfg_comparison.get("differences") or []:
         updated = dict(difference)
-        if difference.get("subject") in optimizer_only_entry_keys:
+        if difference.get("subject") in downgraded_shape_only_entry_keys:
             updated["severity"] = "L1"
         adjusted_cfg_differences.append(updated)
 
     adjusted_instruction_differences: list[dict[str, Any]] = []
     for difference in instruction_family_comparison.get("differences") or []:
         updated = dict(difference)
-        if difference.get("subject") in optimizer_only_entry_keys:
+        if difference.get("subject") in downgraded_shape_only_entry_keys:
             updated["severity"] = "L1"
         adjusted_instruction_differences.append(updated)
 

@@ -75,16 +75,28 @@ final class InstallerServiceTests: XCTestCase {
     }
 
     private func makeThinMachO(architecture: FixtureMachOArchitecture) -> Data {
-        var header = Data()
-        header.append(contentsOf: [0xCF, 0xFA, 0xED, 0xFE]) // MH_MAGIC_64
-        header.append(contentsOf: littleEndianBytes(architecture.cputype))
-        header.append(contentsOf: littleEndianBytes(UInt32(0))) // cpusubtype
-        header.append(contentsOf: littleEndianBytes(UInt32(2))) // MH_EXECUTE
-        header.append(contentsOf: littleEndianBytes(UInt32(0))) // ncmds
-        header.append(contentsOf: littleEndianBytes(UInt32(0))) // sizeofcmds
-        header.append(contentsOf: littleEndianBytes(UInt32(0))) // flags
-        header.append(contentsOf: littleEndianBytes(UInt32(0))) // reserved
-        return header
+        let lcBuildVersion: UInt32 = 0x32
+        let platformIOS: UInt32 = 2
+
+        var binary = Data()
+        binary.append(contentsOf: [0xCF, 0xFA, 0xED, 0xFE]) // MH_MAGIC_64
+        binary.append(contentsOf: littleEndianBytes(architecture.cputype))
+        binary.append(contentsOf: littleEndianBytes(UInt32(0))) // cpusubtype
+        binary.append(contentsOf: littleEndianBytes(UInt32(2))) // MH_EXECUTE
+        binary.append(contentsOf: littleEndianBytes(UInt32(1))) // ncmds
+        binary.append(contentsOf: littleEndianBytes(UInt32(24))) // sizeofcmds
+        binary.append(contentsOf: littleEndianBytes(UInt32(0))) // flags
+        binary.append(contentsOf: littleEndianBytes(UInt32(0))) // reserved
+
+        binary.append(contentsOf: littleEndianBytes(lcBuildVersion))
+        binary.append(contentsOf: littleEndianBytes(UInt32(24))) // cmdsize
+        binary.append(contentsOf: littleEndianBytes(platformIOS))
+        binary.append(contentsOf: littleEndianBytes(UInt32(0x000E_0000))) // minos 14.0
+        binary.append(contentsOf: littleEndianBytes(UInt32(0x000E_0000))) // sdk 14.0
+        binary.append(contentsOf: littleEndianBytes(UInt32(0))) // ntools
+
+        binary.append(contentsOf: Array(repeating: UInt8(0), count: 16))
+        return binary
     }
 
     private func makeFatMachO(architectures: [FixtureMachOArchitecture]) -> Data {
@@ -349,7 +361,8 @@ final class InstallerServiceTests: XCTestCase {
         } catch let shellError as ShellError {
             XCTAssertTrue(
                 shellError.output.contains("object file format unrecognized")
-                    || shellError.output.contains("not signed"),
+                    || shellError.output.contains("not signed")
+                    || shellError.output.contains("strict validation"),
                 "Unexpected shell failure after preflight: \(shellError)"
             )
         }
@@ -397,7 +410,8 @@ final class InstallerServiceTests: XCTestCase {
         } catch let shellError as ShellError {
             XCTAssertTrue(
                 shellError.output.contains("object file format unrecognized")
-                    || shellError.output.contains("not signed"),
+                    || shellError.output.contains("not signed")
+                    || shellError.output.contains("strict validation"),
                 "Unexpected shell failure after fat binary slice extraction: \(shellError)"
             )
         }

@@ -460,6 +460,20 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def resolve_converter_swift_sources(root: Path) -> list[Path]:
+    converter_dir = root / "Carthage/Checkouts/PlayTools/PlayTools"
+    primary_source = (converter_dir / "IRToMSLConverter.swift").resolve()
+    if not primary_source.is_file():
+        raise RuntimeError(f"cannot find IRToMSLConverter.swift at {primary_source}")
+
+    extension_sources = sorted(
+        path.resolve()
+        for path in converter_dir.glob("IRToMSLConverter+*.swift")
+        if path.is_file()
+    )
+    return [primary_source, *extension_sources]
+
+
 def default_corpus_root() -> Path | None:
     candidate = Path.home() / "Library/Containers/io.playcover.PlayCover/ShaderCorpus"
     return candidate if candidate.is_dir() else None
@@ -662,12 +676,12 @@ def load_text_if_exists(path: Path | None) -> str | None:
         return None
 
 
-def build_runner_binary(temp_dir: Path, converter_swift: Path) -> Path:
+def build_runner_binary(temp_dir: Path, converter_swift_sources: list[Path]) -> Path:
     harness_path = temp_dir / "CorpusReplayMain.swift"
     binary_path = temp_dir / "corpus_replay_runner"
     harness_path.write_text(REPLAY_HARNESS_SWIFT, encoding="utf-8")
 
-    command = ["swiftc", str(converter_swift), str(harness_path), "-o", str(binary_path)]
+    command = ["swiftc", *(str(path) for path in converter_swift_sources), str(harness_path), "-o", str(binary_path)]
     subprocess.run(command, check=True, capture_output=True, text=True)
     return binary_path
 
@@ -1034,14 +1048,14 @@ def discover_jobs(
 
 def run_replay_jobs(
     jobs: list[ReplayJob],
-    converter_swift: Path,
+    converter_swift_sources: list[Path],
     report_path: Path,
 ) -> dict[str, Any]:
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="playcover-corpus-replay.") as temp_dir_raw:
         temp_dir = Path(temp_dir_raw)
-        runner_binary = build_runner_binary(temp_dir, converter_swift)
+        runner_binary = build_runner_binary(temp_dir, converter_swift_sources)
         raw_manifest_path = temp_dir / "replay-input.json"
         raw_report_path = temp_dir / "replay-output.json"
 
@@ -1919,6 +1933,7 @@ def enrich_report(
     jobs: list[ReplayJob],
     warnings: list[DiscoveryWarning],
     output_root: Path | None,
+    converter_swift_sources: list[Path] | None = None,
 ) -> dict[str, Any]:
     raw_results = {result["jobID"]: result for result in raw_report.get("results", [])}
 
@@ -1966,11 +1981,14 @@ def enrich_report(
             }
         )
 
+    resolved_converter_sources = [path.resolve() for path in (converter_swift_sources or [])]
+    primary_converter_source = resolved_converter_sources[0] if resolved_converter_sources else None
     return {
         "schemaVersion": 1,
         "generatedAt": utc_now_iso(),
         "tool": "Scripts/corpus_replay_runner.py",
-        "converterSwift": str(repo_root() / "Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift"),
+        "converterSwift": str(primary_converter_source) if primary_converter_source else str(repo_root() / "Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift"),
+        "converterSwiftSources": [str(path) for path in resolved_converter_sources],
         "outputRoot": str(output_root) if output_root else None,
         "totalJobs": len(jobs),
         "successfulJobs": success_count,
@@ -2079,9 +2097,10 @@ def main() -> int:
         return 2
 
     root = repo_root()
-    converter_swift = root / "Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift"
-    if not converter_swift.is_file():
-        print(f"error: cannot find IRToMSLConverter.swift at {converter_swift}", file=sys.stderr)
+    try:
+        converter_swift_sources = resolve_converter_swift_sources(root)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 2
 
     computed_output_root: Path | None = None
@@ -2108,8 +2127,8 @@ def main() -> int:
         print("error: no replay jobs discovered", file=sys.stderr)
         return 1
 
-    raw_report = run_replay_jobs(jobs, converter_swift, report_path)
-    enriched_report = enrich_report(raw_report, jobs, warnings, computed_output_root)
+    raw_report = run_replay_jobs(jobs, converter_swift_sources, report_path)
+    enriched_report = enrich_report(raw_report, jobs, warnings, computed_output_root, converter_swift_sources)
     if args.compile and compile_report_path is not None:
         compile_report = run_compile_jobs(enriched_report, args, compile_report_path)
         enriched_report = attach_compile_report(enriched_report, compile_report)

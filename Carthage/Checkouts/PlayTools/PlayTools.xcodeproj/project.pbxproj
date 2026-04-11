@@ -96,6 +96,12 @@
 		EEB248592B81D074000C230A /* PlayedAppleDB.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEB248582B81D074000C230A /* PlayedAppleDB.swift */; };
 		1A44AE24EDFE440EA5084DAE /* GuardedCapture.m in Sources */ = {isa = PBXBuildFile; fileRef = 1EB35123F04341FB8D73C9A4 /* GuardedCapture.m */; };
 		65F0486722224CA5B5A63B66 /* GuardedCapture.h in Headers */ = {isa = PBXBuildFile; fileRef = 4DB9490C1DD74E0E87EB6CE6 /* GuardedCapture.h */; };
+		1F96829EBD73478B858DF5B9 /* IRToMSLConverter+AirBuiltins.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CD22871C8E547E4ACE7380F /* IRToMSLConverter+AirBuiltins.swift */; };
+		6E45C41F63F54481BA6B3E2F /* IRToMSLConverter+Metadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53F8957CAC2B44CBBB2D3807 /* IRToMSLConverter+Metadata.swift */; };
+		C2C7EAD351234C9891CF7979 /* IRToMSLConverter+IRParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D858AF5A840403EA14991A6 /* IRToMSLConverter+IRParsing.swift */; };
+		35A2381564A24EF182BC4EE4 /* IRToMSLConverter+BodyTranslation.swift in Sources */ = {isa = PBXBuildFile; fileRef = BECB3CDFBBA6487489B90C79 /* IRToMSLConverter+BodyTranslation.swift */; };
+		19A87D2A13D34A66927B411A /* IRToMSLConverter+InstructionTranslation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AAD40FAA20942ECB61B6822 /* IRToMSLConverter+InstructionTranslation.swift */; };
+		F547C3FB8C95490598FBECFD /* IRToMSLConverter+CodeGeneration.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAE06609A0EE47D2B5BF104D /* IRToMSLConverter+CodeGeneration.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -207,6 +213,12 @@
 		EEB248582B81D074000C230A /* PlayedAppleDB.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayedAppleDB.swift; sourceTree = "<group>"; };
 		4DB9490C1DD74E0E87EB6CE6 /* GuardedCapture.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = GuardedCapture.h; sourceTree = "<group>"; };
 		1EB35123F04341FB8D73C9A4 /* GuardedCapture.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = GuardedCapture.m; sourceTree = "<group>"; };
+		5CD22871C8E547E4ACE7380F /* IRToMSLConverter+AirBuiltins.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "IRToMSLConverter+AirBuiltins.swift"; sourceTree = "<group>"; };
+		53F8957CAC2B44CBBB2D3807 /* IRToMSLConverter+Metadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "IRToMSLConverter+Metadata.swift"; sourceTree = "<group>"; };
+		5D858AF5A840403EA14991A6 /* IRToMSLConverter+IRParsing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "IRToMSLConverter+IRParsing.swift"; sourceTree = "<group>"; };
+		BECB3CDFBBA6487489B90C79 /* IRToMSLConverter+BodyTranslation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "IRToMSLConverter+BodyTranslation.swift"; sourceTree = "<group>"; };
+		1AAD40FAA20942ECB61B6822 /* IRToMSLConverter+InstructionTranslation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "IRToMSLConverter+InstructionTranslation.swift"; sourceTree = "<group>"; };
+		DAE06609A0EE47D2B5BF104D /* IRToMSLConverter+CodeGeneration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "IRToMSLConverter+CodeGeneration.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -471,6 +483,12 @@
 				A1F9B3082F5A000300000001 /* MetallibParser.swift */,
 				A1F9B30A2F5A000400000001 /* LLVMDisassembler.swift */,
 				A1F9B30C2F5A000500000001 /* IRToMSLConverter.swift */,
+				5CD22871C8E547E4ACE7380F /* IRToMSLConverter+AirBuiltins.swift */,
+				53F8957CAC2B44CBBB2D3807 /* IRToMSLConverter+Metadata.swift */,
+				5D858AF5A840403EA14991A6 /* IRToMSLConverter+IRParsing.swift */,
+				BECB3CDFBBA6487489B90C79 /* IRToMSLConverter+BodyTranslation.swift */,
+				1AAD40FAA20942ECB61B6822 /* IRToMSLConverter+InstructionTranslation.swift */,
+				DAE06609A0EE47D2B5BF104D /* IRToMSLConverter+CodeGeneration.swift */,
 				AA719705287A44D200623C15 /* PlayLoader.h */,
 				AA719702287A44D200623C15 /* PlayLoader.m */,
 				AA719708287A44D200623C15 /* PlayTools.h */,
@@ -750,6 +768,12 @@
 				A1F9B3072F5A000300000001 /* MetallibParser.swift in Sources */,
 				A1F9B3092F5A000400000001 /* LLVMDisassembler.swift in Sources */,
 				A1F9B30B2F5A000500000001 /* IRToMSLConverter.swift in Sources */,
+				1F96829EBD73478B858DF5B9 /* IRToMSLConverter+AirBuiltins.swift in Sources */,
+				6E45C41F63F54481BA6B3E2F /* IRToMSLConverter+Metadata.swift in Sources */,
+				C2C7EAD351234C9891CF7979 /* IRToMSLConverter+IRParsing.swift in Sources */,
+				35A2381564A24EF182BC4EE4 /* IRToMSLConverter+BodyTranslation.swift in Sources */,
+				19A87D2A13D34A66927B411A /* IRToMSLConverter+InstructionTranslation.swift in Sources */,
+				F547C3FB8C95490598FBECFD /* IRToMSLConverter+CodeGeneration.swift in Sources */,
 				954389CA2B392D7800B063BB /* DraggableButton.swift in Sources */,
 				9562D16D2AB505D4002C329D /* ControllerEventAdapter.swift in Sources */,
 				B444BB0D2F49C1D100ADCC5A /* ControllerFocus.m in Sources */,

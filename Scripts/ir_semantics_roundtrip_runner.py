@@ -1428,9 +1428,10 @@ def main() -> int:
         print("error: cannot find xcrun in PATH", file=sys.stderr)
         return 2
 
-    converter_swift = root / "Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift"
-    if not converter_swift.is_file():
-        print(f"error: cannot find IRToMSLConverter.swift at {converter_swift}", file=sys.stderr)
+    try:
+        converter_swift_sources = replay_runner.resolve_converter_swift_sources(root)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 2
 
     output_root = Path(args.output_root).expanduser().resolve() if args.output_root else default_output_root(root).resolve()
@@ -1461,8 +1462,8 @@ def main() -> int:
 
     prepare_roundtrip_jobs(jobs, output_root)
 
-    raw_replay_report = replay_runner.run_replay_jobs(jobs, converter_swift, replay_report_path)
-    replay_report = replay_runner.enrich_report(raw_replay_report, jobs, warnings, output_root)
+    raw_replay_report = replay_runner.run_replay_jobs(jobs, converter_swift_sources, replay_report_path)
+    replay_report = replay_runner.enrich_report(raw_replay_report, jobs, warnings, output_root, converter_swift_sources)
     replay_report["tool"] = "Scripts/ir_semantics_roundtrip_runner.py"
     replay_report["reportPath"] = str(replay_report_path)
 

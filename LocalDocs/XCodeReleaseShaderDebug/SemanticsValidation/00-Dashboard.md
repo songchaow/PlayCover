@@ -36,19 +36,18 @@
 
 ### 当前最新状态
 
-- 当前主线最新已完成 `CC-003.14`，确认 `CC-003.13` family 里还叠着第二处真实 converter 缺口：`air.discard_fragment` 没有被保成真实 fragment termination，而是被发成注释占位。
+- 当前主线最新已完成 `CC-003.15`，确认 `CC-003.14` 之后重复出现在 diagnostics / corpus 里的 shared `控制流粗摘要变化 + 指令族统计变化 + fast-math 相关属性变化` family 至少有一部分只是 compare 对低风险 shape drift 的放大。
 - 当前 full-batch 结果已进一步收敛为：
-  - diagnostics：`L1 143 / L2 10 / L3 0`
-  - corpus：`L1 354 / L2 83 / L3 0`
+  - diagnostics：`L1 145 / L2 8 / L3 0`
+  - corpus：`L1 355 / L2 82 / L3 0`
 - 当前 corpus / diagnostics 继续没有 `L3` blocked 样本。
-- `CC-003.14` 的结论已经明确：
-  - 代表 case `293ec561...` 的 compile posture 继续对齐，不是 planner / fast-math root cause
-  - `IRToMSLConverter.swift` 对 `air.discard_fragment()` 存在真实 lowering 缺口：旧版 generated MSL 只留下 `/* air.discard_fragment() */`，导致 regenerated AIR 丢失 `discard_fragment` 并把对应 CFG 线性化
-  - 修复后 `293ec561...` 的 `generated.metal` 已发出真实 `discard_fragment();`，`regenerated.ll` 也重新恢复 `air.discard_fragment: 2`
-  - 该代表 case 已从 `L2 -> L1`
-  - full-batch 上，corpus 顶层计数已经从 `L2 118 -> 83`，diagnostics 维持 `L2 10`，且没有新增 `L3` / blocked
-- 因此当前下一步应优先转向新的 shared residual family：
-  - `控制流粗摘要变化 + 指令族统计变化 + fast-math 相关属性变化`
+- `CC-003.15` 的结论已经明确：
+  - 代表 case `25eef20f...` 的 compile posture 继续对齐，不是 planner / fast-math root cause
+  - `IRToMSLConverter.swift` 没有出现新的 entry / builtin / CFG 语义缺口；真实问题在 `ir_canonical_compare.py` 对“同一 CFG + 一处额外 `select` + 小幅 `aggregate/vector` 物化重排”仍过度敏感
+  - 当前 shared family 的代表 shape 是：`basicBlockCount/terminatorCounts/phiCount` 保持一致，仅 `selectCount 7 -> 8`，同时 `aggregate 1 -> 6 / arithmetic 60 -> 55 / vector 108 -> 119`
+  - 修复后 `25eef20f...` 已从 `L2 -> L1`，`shouldEnterL3 = false`
+  - full-batch 上，diagnostics 顶层计数从 `L2 10 -> 8`，corpus 从 `L2 83 -> 82`，且没有新增 `L3` / blocked
+- 因此当前下一步应优先转向剩余更硬的 residual：
   - `指令族统计变化 + fast-math 相关属性变化 + 模块元数据 targetTriple 变化`
   - 以及 corpus 中唯一仍挂着 `entry 参数语义摘要变化; entry builtin / stage-in 摘要变化` 的 `823dcdf7...`
 
@@ -194,6 +193,7 @@
 | `CC-003.12` 优先检查 `CC-003.11` 收敛后 corpus 中剩余的 `instruction-family + fast-math + targetTriple` residual | DONE | 已确认其中一支 `CFG 不变 + scalar/vector/aggregate materialization` residual 的主要矛盾是 compare 对轻微物化重排过敏；代表 case `62316900...`、`2984b21c...`、`2629c34e...` 均 `L2 -> L1`，corpus `L2 129 -> 118`，diagnostics 维持 `L2 10` 且无新增 `L3` / blocked | `difference-analysis/scalar-vector-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-materialization-normalization/05-full-batch-compare.md` |
 | `CC-003.13` 优先检查 `CC-003.12` 收敛后 corpus 中剩余的 `module addrspace + air intrinsic` residual | DONE | 已确认其中一支 family 至少部分是 converter 对 `@__air_sampler_state` internal global 的 lowering 缺口；代表 case `293ec561...` 已重新对齐 sampler-state operand，为下一轮继续拆解同 family residual 提供了实现层证据 | `difference-analysis/sampler-state-global-preservation/04-implementation-result.md` / `difference-analysis/sampler-state-global-preservation/05-full-batch-compare.md` |
 | `CC-003.14` 优先检查 `CC-003.13` 收敛后同 family 中残留的 `discard_fragment + CFG` residual | DONE | 已确认 root cause 是 converter 把 `air.discard_fragment` 发成注释占位；修复后代表 case `293ec561...` 从 `L2 -> L1`，corpus `L2 118 -> 83`，diagnostics 维持 `L2 10`，且无新增 `L3` / blocked | `difference-analysis/fragment-discard-lowering/04-implementation-result.md` / `difference-analysis/fragment-discard-lowering/05-full-batch-compare.md` |
+| `CC-003.15` 优先检查 `CC-003.14` 收敛后 shared `控制流粗摘要变化 + 指令族统计变化 + fast-math` residual | DONE | 已确认其中一支 shared family 主要是 compare 对“同一 CFG + 一处额外 `select` + 小幅 vector/aggregate materialization 重排”过敏；代表 case `25eef20f...` 从 `L2 -> L1`，corpus `L2 83 -> 82`、diagnostics `L2 10 -> 8`，且无新增 `L3` / blocked | `difference-analysis/shared-cfg-shape-drift-normalization/04-implementation-result.md` / `difference-analysis/shared-cfg-shape-drift-normalization/05-full-batch-compare.md` |
 | `CC-004` 固化新的 case 分析模板 | TODO | 在 `difference-analysis/` 下沉淀一套稳定模板，确保后续每个 case 都按同样结构记录证据、结论与回归数据 | `difference-analysis/` |
 
 ## 任务执行规则
@@ -399,6 +399,8 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - `difference-analysis/fast-math-compile-posture/05-full-batch-compare.md`
 - `difference-analysis/fragment-discard-lowering/04-implementation-result.md`
 - `difference-analysis/fragment-discard-lowering/05-full-batch-compare.md`
+- `difference-analysis/shared-cfg-shape-drift-normalization/04-implementation-result.md`
+- `difference-analysis/shared-cfg-shape-drift-normalization/05-full-batch-compare.md`
 - `difference-analysis/scalar-vector-materialization-normalization/04-implementation-result.md`
 - `difference-analysis/scalar-vector-materialization-normalization/05-full-batch-compare.md`
 

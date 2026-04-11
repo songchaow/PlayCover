@@ -13,12 +13,12 @@
 
 ## 主线任务
 
-- **当前主线**：继续推进 `RTA-004`：把“从 `original IR` 推导 generated MSL 编译请求”的整条链收口成**单一实现**。`RTA-004.3`、`RTA-004.4` 与新增的 `RTA-004.5.1` 已完成；当前子任务仍是 `RTA-004.5.2`：继续补 shared planner 的 cross-backend compile summary 断言矩阵。本轮已补 `compile_aggregate_source(...)` 的 aggregate `xcrun` summary mock matrix，以及 `xcrun` / `mtl-device` 两条 CLI 上的 aligned-disable 端到端 summary 断言；下一步继续扩更完整 CLI 多场景覆盖。方案见 `02-原始IR到CompileRequest共享方案.md`。
+- **当前主线**：`RTA-004` 已完成收口。本轮把 aggregate `xcrun` / `mtl-device` 的 CLI 级 cross-backend compile summary reason-code matrix 补齐，`RTA-004.5.2`、`RTA-004.5` 与 `RTA-004` 同步完成；下一轮主线切回 `RTA-003`，继续推进 `SemanticsValidation` 中剩余 `entry 参数` family case。方案见 `02-原始IR到CompileRequest共享方案.md`。
 - 当前只保留几条最关键的控制面事实：
   - runtime 真实路径是 `bitcode -> LLVMDisassembler -> IRToMSLConverter -> 多模块 aggregate -> newLibraryWithSource(..., options: MTLCompileOptions?)`
   - 离线仍保留两条路径：`module.ll -> IRToMSLConverter -> xcrun metal -c -> llvm-dis -> canonical compare`，以及 `aggregate.generated.metal -> MTLDevice.newLibraryWithSource(...)` 的最小 harness compile
   - 已完成的共享层主要是：shared manifest（`fast-math` token / preflight rule）、shared compile planner contract、runtime / `mtl-device` harness 直连 planner，以及 Python `xcrun` backend 通过 `Scripts/shared_compile_planner_harness.swift` 消费 planner JSON plan；差异边界见 `01-差异边界分类.md`
-  - **当前最大的剩余共享缺口**：compile posture / arg inference 已基本只剩一份 Swift planner 实现；single-module / aggregate 的 compile summary 已补齐 `usesExplicitCompileOptions`、`compileOptionsFastMathEnabled` 与 `explicitOverrideSource` 契约；aggregate `xcrun` 入口的 summary mock matrix 与 aligned-disable CLI 端到端断言已补上，下一步主要继续扩 conflict / partial / unavailable / override 的 CLI 级 cross-backend 矩阵
+  - **当前共享层结论**：compile posture / arg inference 已稳定收口为单一 Swift planner；single-module / aggregate 的 compile summary 契约现已由 planner 单测、`mtl-device` harness 实测，以及 aggregate `xcrun` / `mtl-device` CLI cross-backend matrix 共同兜底
   - **默认判断**：不要把 `xcrun metal -c` 结果直接当作 runtime 真值；若目标是贴近 runtime compile 结论，应优先使用 `Scripts/aggregate_replay_runner.py --compile-backend mtl-device`
 
 ## 构建与验证的方法
@@ -101,6 +101,8 @@
 - **Swift harness 一旦改成和 shared planner 多文件联编，入口要用 `@main` 或其它显式 main 形式。** 单文件脚本式顶层 `do/catch` 在联编场景下会直接编译失败。
 - **如果上层 orchestrator 还会再次封装 compile 流程（例如 `ir_semantics_roundtrip_runner.py`），也必须显式预构建并传递 shared planner harness binary。** 只在底层 `corpus_replay_runner.py` 切到 planner 还不够，否则真实 CLI 主入口仍会在 compile 阶段报 `shared compile planner binary is missing`。
 - **复用现成 `.ll` 样本补 fast-math CLI 回归时，先确认样本是否已经自带 `air.compile.fast_math_enable/disable` token。** 若只是盲目追加另一种 token，很容易把预期的 aligned case 意外变成 conflict，导致端到端 summary 断言失真。
+- **补 aggregate CLI cross-backend 回归时，fixture 需要支持按模块覆写 fast-math marker。** 只做整包统一替换，最多只能稳定覆盖 aligned case，无法可靠构造 conflict / partial / unavailable 矩阵。
+- **通过 Python CLI 透传 `-ffast-math` / `-fno-fast-math` 这类以 `-` 开头的 `--metal-arg` 时，优先使用 `--metal-arg=<value>` 形式。** 否则参数解析层可能把它误判成新的选项，导致 CLI 级 user-override 回归失真。
 
 ## 参考信息
 

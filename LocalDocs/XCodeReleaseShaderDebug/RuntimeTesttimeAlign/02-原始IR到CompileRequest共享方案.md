@@ -215,18 +215,20 @@ Swift 侧的 runtime 主路径与 `mtl-device` harness 已经物理共用同一�
 
 Python 不再自己做 compile posture / arg inference，而是通过 `Scripts/shared_compile_planner_harness.swift` 调用 shared planner，再消费返回的 JSON plan。
 
-### 第 5 步：当前重点是补验证与防回退测试
+### 第 5 步：回归矩阵已覆盖当前 fast-math reason-code
 
-当前仍需持续补强的主要是三类回归：
+当前 shared planner 的防回退结构固定为三类回归：
 
 1. **planner 单元测试**
    - single-module enable / disable
-   - multi-module aligned / conflict / partial
+   - multi-module aligned / conflict / partial / unavailable
    - user override 优先级
 2. **harness 集成测试**
-   - `mtl-device` backend 消费 planner 输出后，report 字段仍保持一致
+   - `mtl-device` backend 消费 planner 输出后，report 字段与 reason-code matrix 保持一致
 3. **Python CLI 集成测试**
-   - single-module 与 aggregate 的 `xcrun` backend 在消费 planner 后，`fastMathMode` / `fastMathDecision` / `effectiveMetalArgs` 与当前期望一致
+   - aggregate `xcrun` / `mtl-device` 在 shared planner 驱动下，对 `aligned_enable / aligned_disable / conflict / partial / unavailable / user_override` 的 compile summary 字段保持一致
+
+后续若新增 compile posture 或调整 override 规则，应默认同时补齐这三层回归，而不是只改 planner 单元测试。
 
 ## 完成判定
 

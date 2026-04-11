@@ -50,6 +50,10 @@ VALID_AGGREGATE_SOURCE = (
     "kernel void main0(device float* output [[buffer(0)]]) { output[0] = 1.0f; }\n"
 )
 
+ENABLE_FAST_MATH_MARKER = "air.compile.fast_math_enable"
+DISABLE_FAST_MATH_MARKER = "air.compile.fast_math_disable"
+UNKNOWN_FAST_MATH_MARKER = "air.compile.fast_math_unknown"
+
 
 def run_aggregate_compile_harness(
     root: Path,
@@ -120,24 +124,140 @@ def make_shared_compile_plan(
     }
 
 
+def aggregate_compile_summary_cases(*, include_non_fast_math_user_args: bool = False) -> list[dict]:
+    unavailable_metal_args = ["-std=metal3.1"] if include_non_fast_math_user_args else []
+    return [
+        {
+            "name": "aligned_enable",
+            "original_ir_texts": [
+                f'!1 = !{{!"{ENABLE_FAST_MATH_MARKER}"}}\n',
+                f'!1 = !{{!"{ENABLE_FAST_MATH_MARKER}"}}\n',
+            ],
+            "module_fast_math_markers": [ENABLE_FAST_MATH_MARKER, ENABLE_FAST_MATH_MARKER],
+            "metal_args": [],
+            "expected_mode": "enable",
+            "expected_decision": "fast_math_aligned",
+            "expected_explicit": True,
+            "expected_fast_math_enabled": True,
+            "expected_inferred": ["-ffast-math"],
+            "expected_effective": ["-ffast-math"],
+            "expected_override_source": None,
+        },
+        {
+            "name": "aligned_disable",
+            "original_ir_texts": [
+                f'!1 = !{{!"{DISABLE_FAST_MATH_MARKER}"}}\n',
+                f'!1 = !{{!"{DISABLE_FAST_MATH_MARKER}"}}\n',
+            ],
+            "module_fast_math_markers": [DISABLE_FAST_MATH_MARKER, DISABLE_FAST_MATH_MARKER],
+            "metal_args": [],
+            "expected_mode": "disable",
+            "expected_decision": "fast_math_aligned",
+            "expected_explicit": True,
+            "expected_fast_math_enabled": False,
+            "expected_inferred": ["-fno-fast-math"],
+            "expected_effective": ["-fno-fast-math"],
+            "expected_override_source": None,
+        },
+        {
+            "name": "conflict",
+            "original_ir_texts": [
+                f'!1 = !{{!"{ENABLE_FAST_MATH_MARKER}"}}\n',
+                f'!1 = !{{!"{DISABLE_FAST_MATH_MARKER}"}}\n',
+            ],
+            "module_fast_math_markers": [ENABLE_FAST_MATH_MARKER, DISABLE_FAST_MATH_MARKER],
+            "metal_args": [],
+            "expected_mode": None,
+            "expected_decision": "fast_math_conflict",
+            "expected_explicit": False,
+            "expected_fast_math_enabled": None,
+            "expected_inferred": [],
+            "expected_effective": [],
+            "expected_override_source": None,
+        },
+        {
+            "name": "partial",
+            "original_ir_texts": [
+                f'!1 = !{{!"{ENABLE_FAST_MATH_MARKER}"}}\n',
+                f'!1 = !{{!"{UNKNOWN_FAST_MATH_MARKER}"}}\n',
+            ],
+            "module_fast_math_markers": [ENABLE_FAST_MATH_MARKER, UNKNOWN_FAST_MATH_MARKER],
+            "metal_args": [],
+            "expected_mode": None,
+            "expected_decision": "fast_math_partial",
+            "expected_explicit": False,
+            "expected_fast_math_enabled": None,
+            "expected_inferred": [],
+            "expected_effective": [],
+            "expected_override_source": None,
+        },
+        {
+            "name": "unavailable",
+            "original_ir_texts": [
+                f'!1 = !{{!"{UNKNOWN_FAST_MATH_MARKER}"}}\n',
+                f'!1 = !{{!"{UNKNOWN_FAST_MATH_MARKER}"}}\n',
+            ],
+            "module_fast_math_markers": [UNKNOWN_FAST_MATH_MARKER, UNKNOWN_FAST_MATH_MARKER],
+            "metal_args": unavailable_metal_args,
+            "expected_mode": None,
+            "expected_decision": "fast_math_unavailable",
+            "expected_explicit": False,
+            "expected_fast_math_enabled": None,
+            "expected_inferred": [],
+            "expected_effective": unavailable_metal_args,
+            "expected_override_source": None,
+        },
+        {
+            "name": "user_override",
+            "original_ir_texts": [
+                f'!1 = !{{!"{DISABLE_FAST_MATH_MARKER}"}}\n',
+                f'!1 = !{{!"{DISABLE_FAST_MATH_MARKER}"}}\n',
+            ],
+            "module_fast_math_markers": [DISABLE_FAST_MATH_MARKER, DISABLE_FAST_MATH_MARKER],
+            "metal_args": ["-ffast-math"],
+            "expected_mode": "enable",
+            "expected_decision": "user_override",
+            "expected_explicit": True,
+            "expected_fast_math_enabled": True,
+            "expected_inferred": [],
+            "expected_effective": ["-ffast-math"],
+            "expected_override_source": "user_metal_args",
+        },
+    ]
+
+
 def write_test_fragment_sample(path: Path, *, fast_math_marker: str | None = None) -> None:
     source_text = TEST_FRAGMENT_PACKED_RETURN_SAMPLE.read_text(encoding="utf-8")
     if fast_math_marker is not None:
-        source_text = source_text.replace("air.compile.fast_math_enable", fast_math_marker)
-        source_text = source_text.replace("air.compile.fast_math_disable", fast_math_marker)
+        source_text = source_text.replace(ENABLE_FAST_MATH_MARKER, fast_math_marker)
+        source_text = source_text.replace(DISABLE_FAST_MATH_MARKER, fast_math_marker)
     path.write_text(source_text, encoding="utf-8")
 
 
-def create_aggregate_cli_fixture(root: Path, *, fast_math_marker: str | None = None) -> Path:
+def create_aggregate_cli_fixture(
+    root: Path,
+    *,
+    fast_math_marker: str | None = None,
+    module_fast_math_markers: list[str | None] | None = None,
+) -> Path:
     corpus_root = root / "ShaderCorpus"
     bundle_root = corpus_root / "com.example.demo"
     replacement_dir = bundle_root / "replacements" / "20260410_selector_cache"
     replacement_dir.mkdir(parents=True, exist_ok=True)
 
-    for module_key in ["module-a", "module-b"]:
+    module_keys = ["module-a", "module-b"]
+    marker_values = (
+        list(module_fast_math_markers)
+        if module_fast_math_markers is not None
+        else [fast_math_marker] * len(module_keys)
+    )
+    if len(marker_values) != len(module_keys):
+        raise ValueError("module_fast_math_markers must match fixture module count")
+
+    for module_key, module_fast_math_marker in zip(module_keys, marker_values):
         module_dir = bundle_root / "modules" / module_key
         module_dir.mkdir(parents=True, exist_ok=True)
-        write_test_fragment_sample(module_dir / "module.ll", fast_math_marker=fast_math_marker)
+        write_test_fragment_sample(module_dir / "module.ll", fast_math_marker=module_fast_math_marker)
         write_json(
             module_dir / "module.meta.json",
             {
@@ -205,16 +325,42 @@ class AggregateReplayRunnerTests(unittest.TestCase):
         self.assertEqual(compile_result["effectiveMetalArgs"], expected_effective)
         self.assertEqual(compile_result.get("explicitOverrideSource"), expected_override_source)
 
+    def assert_case_compile_summary(self, compile_result: dict, case: dict) -> None:
+        self.assert_compile_summary(
+            compile_result,
+            expected_mode=case["expected_mode"],
+            expected_decision=case["expected_decision"],
+            expected_explicit=case["expected_explicit"],
+            expected_fast_math_enabled=case["expected_fast_math_enabled"],
+            expected_inferred=case["expected_inferred"],
+            expected_effective=case["expected_effective"],
+            expected_override_source=case["expected_override_source"],
+        )
+
+    @staticmethod
+    def compile_summary_snapshot(compile_result: dict) -> dict:
+        return {
+            "fastMathMode": compile_result.get("fastMathMode"),
+            "fastMathDecision": compile_result.get("fastMathDecision"),
+            "usesExplicitCompileOptions": compile_result.get("usesExplicitCompileOptions"),
+            "compileOptionsFastMathEnabled": compile_result.get("compileOptionsFastMathEnabled"),
+            "inferredMetalArgs": compile_result.get("inferredMetalArgs"),
+            "effectiveMetalArgs": compile_result.get("effectiveMetalArgs"),
+            "explicitOverrideSource": compile_result.get("explicitOverrideSource"),
+        }
+
     def run_aggregate_cli(
         self,
         root: Path,
         *,
         compile_backend: str,
         metal_args: list[str] | None = None,
+        module_fast_math_markers: list[str | None] | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], dict, dict]:
         corpus_root = create_aggregate_cli_fixture(
             root,
-            fast_math_marker="air.compile.fast_math_disable",
+            fast_math_marker=DISABLE_FAST_MATH_MARKER,
+            module_fast_math_markers=module_fast_math_markers,
         )
         output_root = root / f"out-{compile_backend}"
         command = [
@@ -230,7 +376,7 @@ class AggregateReplayRunnerTests(unittest.TestCase):
             str(output_root),
         ]
         for metal_arg in list(metal_args or []):
-            command.extend(["--metal-arg", metal_arg])
+            command.append(f"--metal-arg={metal_arg}")
 
         completed = subprocess.run(
             command,
@@ -643,112 +789,7 @@ class AggregateReplayRunnerTests(unittest.TestCase):
         run_mock.assert_not_called()
 
     def test_compile_aggregate_source_reads_shared_planner_summary_from_xcrun_backend(self) -> None:
-        enable_ir = '!1 = !{!"air.compile.fast_math_enable"}\n'
-        disable_ir = '!1 = !{!"air.compile.fast_math_disable"}\n'
-        unknown_ir = '; no compile options\n'
-        cases = [
-            {
-                "name": "aligned_enable",
-                "original_ir_texts": [enable_ir],
-                "metal_args": [],
-                "plan": make_shared_compile_plan(
-                    reason="fast_math_aligned",
-                    fast_math_mode="enable",
-                    inferred_metal_args=["-ffast-math"],
-                    effective_metal_args=["-ffast-math"],
-                    uses_explicit_compile_options=True,
-                    compile_options_fast_math_enabled=True,
-                ),
-                "expected_mode": "enable",
-                "expected_decision": "fast_math_aligned",
-                "expected_explicit": True,
-                "expected_fast_math_enabled": True,
-                "expected_inferred": ["-ffast-math"],
-                "expected_effective": ["-ffast-math"],
-                "expected_override_source": None,
-            },
-            {
-                "name": "conflict",
-                "original_ir_texts": [enable_ir, disable_ir],
-                "metal_args": [],
-                "plan": make_shared_compile_plan(
-                    reason="fast_math_conflict",
-                    fast_math_mode=None,
-                    inferred_metal_args=[],
-                    effective_metal_args=[],
-                    uses_explicit_compile_options=False,
-                    compile_options_fast_math_enabled=None,
-                ),
-                "expected_mode": None,
-                "expected_decision": "fast_math_conflict",
-                "expected_explicit": False,
-                "expected_fast_math_enabled": None,
-                "expected_inferred": [],
-                "expected_effective": [],
-                "expected_override_source": None,
-            },
-            {
-                "name": "partial",
-                "original_ir_texts": [enable_ir, unknown_ir],
-                "metal_args": [],
-                "plan": make_shared_compile_plan(
-                    reason="fast_math_partial",
-                    fast_math_mode=None,
-                    inferred_metal_args=[],
-                    effective_metal_args=[],
-                    uses_explicit_compile_options=False,
-                    compile_options_fast_math_enabled=None,
-                ),
-                "expected_mode": None,
-                "expected_decision": "fast_math_partial",
-                "expected_explicit": False,
-                "expected_fast_math_enabled": None,
-                "expected_inferred": [],
-                "expected_effective": [],
-                "expected_override_source": None,
-            },
-            {
-                "name": "unavailable",
-                "original_ir_texts": [unknown_ir],
-                "metal_args": ["-std=metal3.1"],
-                "plan": make_shared_compile_plan(
-                    reason="fast_math_unavailable",
-                    fast_math_mode=None,
-                    inferred_metal_args=[],
-                    effective_metal_args=["-std=metal3.1"],
-                    uses_explicit_compile_options=False,
-                    compile_options_fast_math_enabled=None,
-                ),
-                "expected_mode": None,
-                "expected_decision": "fast_math_unavailable",
-                "expected_explicit": False,
-                "expected_fast_math_enabled": None,
-                "expected_inferred": [],
-                "expected_effective": ["-std=metal3.1"],
-                "expected_override_source": None,
-            },
-            {
-                "name": "user_override",
-                "original_ir_texts": [disable_ir],
-                "metal_args": ["-ffast-math"],
-                "plan": make_shared_compile_plan(
-                    reason="user_override",
-                    fast_math_mode="enable",
-                    inferred_metal_args=[],
-                    effective_metal_args=["-ffast-math"],
-                    uses_explicit_compile_options=True,
-                    compile_options_fast_math_enabled=True,
-                    explicit_override_source="user_metal_args",
-                ),
-                "expected_mode": "enable",
-                "expected_decision": "user_override",
-                "expected_explicit": True,
-                "expected_fast_math_enabled": True,
-                "expected_inferred": [],
-                "expected_effective": ["-ffast-math"],
-                "expected_override_source": "user_metal_args",
-            },
-        ]
+        cases = aggregate_compile_summary_cases(include_non_fast_math_user_args=True)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -784,10 +825,20 @@ class AggregateReplayRunnerTests(unittest.TestCase):
                         self.assertEqual(command[-2], "-o")
                         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
+                    compile_plan = make_shared_compile_plan(
+                        reason=case["expected_decision"],
+                        fast_math_mode=case["expected_mode"],
+                        inferred_metal_args=case["expected_inferred"],
+                        effective_metal_args=case["expected_effective"],
+                        uses_explicit_compile_options=case["expected_explicit"],
+                        compile_options_fast_math_enabled=case["expected_fast_math_enabled"],
+                        explicit_override_source=case["expected_override_source"],
+                    )
+
                     with mock.patch.object(
                         aggregate_runner.replay_runner,
                         "resolve_shared_compile_plan",
-                        return_value=case["plan"],
+                        return_value=compile_plan,
                     ) as resolve_plan_mock:
                         with mock.patch.object(aggregate_runner.subprocess, "run", side_effect=fake_run):
                             compile_result = aggregate_runner.compile_aggregate_source(
@@ -809,214 +860,136 @@ class AggregateReplayRunnerTests(unittest.TestCase):
                     self.assertEqual(compile_result["status"], "success")
                     self.assertTrue(compile_result["success"])
                     self.assertEqual(compile_result["compileBackend"], "xcrun")
-                    self.assert_compile_summary(
-                        compile_result,
-                        expected_mode=case["expected_mode"],
-                        expected_decision=case["expected_decision"],
-                        expected_explicit=case["expected_explicit"],
-                        expected_fast_math_enabled=case["expected_fast_math_enabled"],
-                        expected_inferred=case["expected_inferred"],
-                        expected_effective=case["expected_effective"],
-                        expected_override_source=case["expected_override_source"],
+                    self.assert_case_compile_summary(compile_result, case)
+
+    def test_compile_aggregate_source_reads_compile_summary_from_mtl_device_harness_reason_code_matrix(self) -> None:
+        cases = aggregate_compile_summary_cases()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_path = root / "aggregate.replayed.generated.metal"
+            source_path.write_text(VALID_AGGREGATE_SOURCE, encoding="utf-8")
+            harness_binary = root / "metal_aggregate_compile_harness"
+            harness_binary.write_text("#!/bin/sh\n", encoding="utf-8")
+            harness_binary.chmod(0o755)
+
+            for case in cases:
+                with self.subTest(case=case["name"]):
+                    original_ir_paths: list[Path] = []
+                    for index, original_ir_text in enumerate(case["original_ir_texts"]):
+                        original_ir_path = root / f"{case['name']}-module-{index}.ll"
+                        original_ir_path.write_text(original_ir_text, encoding="utf-8")
+                        original_ir_paths.append(original_ir_path)
+
+                    args = argparse.Namespace(
+                        compile_backend="mtl-device",
+                        metal_sdk="macosx",
+                        metal_args=list(case["metal_args"]),
+                        skip_preflight=False,
+                        aggregate_compile_harness_binary=str(harness_binary),
+                    )
+                    aggregate_result = {"success": True, "sourcePath": str(source_path)}
+
+                    def fake_run(command: list[str], check: bool, capture_output: bool, text: bool) -> subprocess.CompletedProcess[str]:
+                        self.assertFalse(check)
+                        self.assertTrue(capture_output)
+                        self.assertTrue(text)
+                        self.assertEqual(Path(command[0]).resolve(), harness_binary.resolve())
+                        self.assertNotIn("--manifest-source", command)
+                        self.assertEqual(
+                            [command[index + 1] for index, value in enumerate(command[:-1]) if value == "--original-ir"],
+                            [str(path.resolve()) for path in original_ir_paths],
+                        )
+                        self.assertEqual(
+                            [command[index + 1] for index, value in enumerate(command[:-1]) if value == "--metal-arg"],
+                            list(case["metal_args"]),
+                        )
+                        report_path = Path(command[command.index("--report") + 1])
+                        report_payload = {
+                            "schemaVersion": 1,
+                            "success": True,
+                            "error": None,
+                            "functionNames": ["main0"],
+                            "functionCount": 1,
+                            "usesExplicitCompileOptions": case["expected_explicit"],
+                            "fastMathDecision": case["expected_decision"],
+                            "inferredMetalArgs": list(case["expected_inferred"]),
+                            "effectiveMetalArgs": list(case["expected_effective"]),
+                        }
+                        if case["expected_mode"] is not None:
+                            report_payload["fastMathMode"] = case["expected_mode"]
+                        if case["expected_fast_math_enabled"] is not None:
+                            report_payload["fastMathEnabled"] = case["expected_fast_math_enabled"]
+                        if case["expected_override_source"] is not None:
+                            report_payload["explicitOverrideSource"] = case["expected_override_source"]
+                        report_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
+                        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+                    with mock.patch.object(aggregate_runner.subprocess, "run", side_effect=fake_run):
+                        compile_result = aggregate_runner.compile_aggregate_source(
+                            aggregate_result,
+                            original_ir_paths,
+                            args,
+                            job_id=1,
+                            bundle_id="com.example.demo",
+                            replacement_key="replacement-key",
+                            module_keys=[path.stem for path in original_ir_paths],
+                        )
+
+                    self.assertEqual(compile_result["status"], "success")
+                    self.assertTrue(compile_result["success"])
+                    self.assertEqual(compile_result["compileBackend"], "mtl-device")
+                    self.assertEqual(compile_result["libraryFunctionNames"], ["main0"])
+                    self.assertEqual(compile_result["libraryFunctionCount"], 1)
+                    self.assert_case_compile_summary(compile_result, case)
+
+    @unittest.skipUnless(
+        sys.platform == "darwin" and shutil.which("swiftc") and shutil.which("xcrun"),
+        "requires macOS Metal + swiftc + xcrun",
+    )
+    def test_cli_compile_summary_reason_code_matrix_matches_across_backends(self) -> None:
+        cases = aggregate_compile_summary_cases()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            for case in cases:
+                with self.subTest(case=case["name"]):
+                    _, xcrun_report, xcrun_result = self.run_aggregate_cli(
+                        root / "xcrun" / case["name"],
+                        compile_backend="xcrun",
+                        metal_args=case["metal_args"],
+                        module_fast_math_markers=case["module_fast_math_markers"],
+                    )
+                    _, mtl_report, mtl_result = self.run_aggregate_cli(
+                        root / "mtl-device" / case["name"],
+                        compile_backend="mtl-device",
+                        metal_args=case["metal_args"],
+                        module_fast_math_markers=case["module_fast_math_markers"],
                     )
 
-    def test_compile_aggregate_source_reads_compile_decision_from_mtl_device_harness(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            source_path = root / "aggregate.replayed.generated.metal"
-            source_path.write_text(
-                "#include <metal_stdlib>\nusing namespace metal;\n\nkernel void main0(device float* output [[buffer(0)]]) { output[0] = 1.0f; }\n",
-                encoding="utf-8",
-            )
-            original_ir_path = root / "module-a.ll"
-            original_ir_path.write_text('!1 = !{!"air.compile.fast_math_disable"}\n', encoding="utf-8")
-            harness_binary = root / "metal_aggregate_compile_harness"
-            harness_binary.write_text("#!/bin/sh\n", encoding="utf-8")
-            harness_binary.chmod(0o755)
-            args = argparse.Namespace(
-                compile_backend="mtl-device",
-                metal_sdk="macosx",
-                metal_args=[],
-                skip_preflight=False,
-                aggregate_compile_harness_binary=str(harness_binary),
-            )
-            aggregate_result = {"success": True, "sourcePath": str(source_path)}
-
-            def fake_run(command: list[str], check: bool, capture_output: bool, text: bool) -> subprocess.CompletedProcess[str]:
-                self.assertFalse(check)
-                self.assertTrue(capture_output)
-                self.assertTrue(text)
-                self.assertNotIn("--manifest-source", command)
-                self.assertIn("--original-ir", command)
-                self.assertIn(str(original_ir_path.resolve()), command)
-                report_path = Path(command[command.index("--report") + 1])
-                report_path.write_text(
-                    json.dumps(
-                        {
-                            "schemaVersion": 1,
-                            "success": True,
-                            "error": None,
-                            "functionNames": ["main0"],
-                            "functionCount": 1,
-                            "usesExplicitCompileOptions": True,
-                            "fastMathEnabled": False,
-                            "fastMathMode": "disable",
-                            "fastMathDecision": "fast_math_aligned",
-                            "inferredMetalArgs": ["-fno-fast-math"],
-                            "effectiveMetalArgs": ["-fno-fast-math"],
-                        },
-                        indent=2,
-                    ),
-                    encoding="utf-8",
-                )
-                return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
-
-            with mock.patch.object(aggregate_runner.subprocess, "run", side_effect=fake_run):
-                compile_result = aggregate_runner.compile_aggregate_source(
-                    aggregate_result,
-                    [original_ir_path],
-                    args,
-                    job_id=1,
-                    bundle_id="com.example.demo",
-                    replacement_key="replacement-key",
-                    module_keys=["module-a"],
-                )
-
-        self.assertEqual(compile_result["status"], "success")
-        self.assertTrue(compile_result["success"])
-        self.assertEqual(compile_result["compileBackend"], "mtl-device")
-        self.assertEqual(compile_result["fastMathMode"], "disable")
-        self.assertEqual(compile_result["fastMathDecision"], "fast_math_aligned")
-        self.assertEqual(compile_result["inferredMetalArgs"], ["-fno-fast-math"])
-        self.assertEqual(compile_result["effectiveMetalArgs"], ["-fno-fast-math"])
-        self.assertEqual(compile_result["libraryFunctionNames"], ["main0"])
-        self.assertEqual(compile_result["libraryFunctionCount"], 1)
-        self.assertTrue(compile_result["usesExplicitCompileOptions"])
-        self.assertFalse(compile_result["compileOptionsFastMathEnabled"])
-
-    def test_compile_aggregate_source_reads_user_override_from_mtl_device_harness(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            source_path = root / "aggregate.replayed.generated.metal"
-            source_path.write_text(
-                "#include <metal_stdlib>\nusing namespace metal;\n\nkernel void main0(device float* output [[buffer(0)]]) { output[0] = 1.0f; }\n",
-                encoding="utf-8",
-            )
-            original_ir_path = root / "module-a.ll"
-            original_ir_path.write_text('!1 = !{!"air.compile.fast_math_disable"}\n', encoding="utf-8")
-            harness_binary = root / "metal_aggregate_compile_harness"
-            harness_binary.write_text("#!/bin/sh\n", encoding="utf-8")
-            harness_binary.chmod(0o755)
-            args = argparse.Namespace(
-                compile_backend="mtl-device",
-                metal_sdk="macosx",
-                metal_args=["-ffast-math"],
-                skip_preflight=False,
-                aggregate_compile_harness_binary=str(harness_binary),
-            )
-            aggregate_result = {"success": True, "sourcePath": str(source_path)}
-
-            def fake_run(command: list[str], check: bool, capture_output: bool, text: bool) -> subprocess.CompletedProcess[str]:
-                self.assertFalse(check)
-                self.assertTrue(capture_output)
-                self.assertTrue(text)
-                self.assertIn("--original-ir", command)
-                self.assertIn(str(original_ir_path.resolve()), command)
-                self.assertIn("--metal-arg", command)
-                metal_arg_index = command.index("--metal-arg")
-                self.assertEqual(command[metal_arg_index + 1], "-ffast-math")
-                report_path = Path(command[command.index("--report") + 1])
-                report_path.write_text(
-                    json.dumps(
-                        {
-                            "schemaVersion": 1,
-                            "success": True,
-                            "error": None,
-                            "functionNames": ["main0"],
-                            "functionCount": 1,
-                            "usesExplicitCompileOptions": True,
-                            "fastMathEnabled": True,
-                            "fastMathMode": "enable",
-                            "fastMathDecision": "user_override",
-                            "explicitOverrideSource": "user_metal_args",
-                            "inferredMetalArgs": [],
-                            "effectiveMetalArgs": ["-ffast-math"],
-                        },
-                        indent=2,
-                    ),
-                    encoding="utf-8",
-                )
-                return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
-
-            with mock.patch.object(aggregate_runner.subprocess, "run", side_effect=fake_run):
-                compile_result = aggregate_runner.compile_aggregate_source(
-                    aggregate_result,
-                    [original_ir_path],
-                    args,
-                    job_id=1,
-                    bundle_id="com.example.demo",
-                    replacement_key="replacement-key",
-                    module_keys=["module-a"],
-                )
-
-        self.assertEqual(compile_result["status"], "success")
-        self.assertTrue(compile_result["success"])
-        self.assertEqual(compile_result["compileBackend"], "mtl-device")
-        self.assertEqual(compile_result["fastMathMode"], "enable")
-        self.assertEqual(compile_result["fastMathDecision"], "user_override")
-        self.assertEqual(compile_result["inferredMetalArgs"], [])
-        self.assertEqual(compile_result["effectiveMetalArgs"], ["-ffast-math"])
-        self.assertTrue(compile_result["usesExplicitCompileOptions"])
-        self.assertTrue(compile_result["compileOptionsFastMathEnabled"])
-        self.assertEqual(compile_result["explicitOverrideSource"], "user_metal_args")
-
-    @unittest.skipUnless(shutil.which("swiftc") and shutil.which("xcrun"), "requires swiftc and xcrun")
-    def test_cli_rebuilds_duplicate_modules_and_compiles_aggregate(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            _, report, result = self.run_aggregate_cli(root, compile_backend="xcrun")
-
-            self.assertEqual(report["aggregateJobCount"], 1)
-            self.assertEqual(report["failedJobs"], 0)
-            self.assertEqual(result["overallStatus"], "success")
-            self.assertEqual(result["aggregate"]["dedupeSkippedModuleCount"], 1)
-            self.assertEqual(result["compile"]["status"], "success")
-            self.assertEqual(result["compile"]["compileBackend"], "xcrun")
-            self.assertTrue(Path(result["aggregate"]["sourcePath"]).is_file())
-            self.assert_compile_summary(
-                result["compile"],
-                expected_mode="disable",
-                expected_decision="fast_math_aligned",
-                expected_explicit=True,
-                expected_fast_math_enabled=False,
-                expected_inferred=["-fno-fast-math"],
-                expected_effective=["-fno-fast-math"],
-                expected_override_source=None,
-            )
-
-    @unittest.skipUnless(sys.platform == "darwin" and shutil.which("swiftc"), "requires macOS Metal + swiftc")
-    def test_cli_compiles_aggregate_with_mtl_device_backend(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            _, report, result = self.run_aggregate_cli(root, compile_backend="mtl-device")
-
-            self.assertEqual(report["requestedInputs"]["compileBackend"], "mtl-device")
-            self.assertEqual(report["aggregateJobCount"], 1)
-            self.assertEqual(report["failedJobs"], 0)
-            self.assertEqual(result["overallStatus"], "success")
-            self.assertEqual(result["compile"]["status"], "success")
-            self.assertEqual(result["compile"]["compileBackend"], "mtl-device")
-            self.assertTrue(Path(result["compile"]["backendReportPath"]).is_file())
-            self.assert_compile_summary(
-                result["compile"],
-                expected_mode="disable",
-                expected_decision="fast_math_aligned",
-                expected_explicit=True,
-                expected_fast_math_enabled=False,
-                expected_inferred=["-fno-fast-math"],
-                expected_effective=["-fno-fast-math"],
-                expected_override_source=None,
-            )
+                    self.assertEqual(xcrun_report["requestedInputs"]["compileBackend"], "xcrun")
+                    self.assertEqual(mtl_report["requestedInputs"]["compileBackend"], "mtl-device")
+                    self.assertEqual(xcrun_report["aggregateJobCount"], 1)
+                    self.assertEqual(mtl_report["aggregateJobCount"], 1)
+                    self.assertEqual(xcrun_report["failedJobs"], 0)
+                    self.assertEqual(mtl_report["failedJobs"], 0)
+                    self.assertEqual(xcrun_result["overallStatus"], "success")
+                    self.assertEqual(mtl_result["overallStatus"], "success")
+                    self.assertEqual(xcrun_result["aggregate"]["dedupeSkippedModuleCount"], 1)
+                    self.assertEqual(mtl_result["aggregate"]["dedupeSkippedModuleCount"], 1)
+                    self.assertEqual(xcrun_result["compile"]["status"], "success")
+                    self.assertEqual(mtl_result["compile"]["status"], "success")
+                    self.assertEqual(xcrun_result["compile"]["compileBackend"], "xcrun")
+                    self.assertEqual(mtl_result["compile"]["compileBackend"], "mtl-device")
+                    self.assertTrue(Path(xcrun_result["aggregate"]["sourcePath"]).is_file())
+                    self.assertTrue(Path(mtl_result["compile"]["backendReportPath"]).is_file())
+                    self.assert_case_compile_summary(xcrun_result["compile"], case)
+                    self.assert_case_compile_summary(mtl_result["compile"], case)
+                    self.assertEqual(
+                        self.compile_summary_snapshot(xcrun_result["compile"]),
+                        self.compile_summary_snapshot(mtl_result["compile"]),
+                    )
 
 
 if __name__ == "__main__":

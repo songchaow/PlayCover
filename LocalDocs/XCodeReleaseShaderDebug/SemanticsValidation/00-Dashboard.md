@@ -36,15 +36,16 @@
 
 ### 当前最新状态
 
-- 当前主线最新已完成 `CC-003.8`，`fast-math` compile posture family 已不再是当前 blocked ceiling。
+- 当前主线最新已完成 `CC-003.9`，`entry 参数` ghost family 已不再是当前 blocked ceiling。
 - 当前 full-batch 结果稳定收敛为：
   - diagnostics：`L1 13 / L2 140 / L3 0`
-  - corpus：`L1 222 / L2 208 / L3 7`
-- 当前剩余的 corpus `7` 个 `L3` 已全部收敛成同一支：
-  - `entry 参数个数变化`
-  - `entry 参数类型摘要变化`
-  - `entry 参数语义摘要变化`
-- 因此当前下一步应优先下钻 `CC-003.9` 这支 `entry 参数` family，其次再看 `模块级 addrspace 分布变化 + air intrinsic 使用变化` 的 residual。
+  - corpus：`L1 229 / L2 208 / L3 0`
+- 当前 corpus / diagnostics 都已经没有 `L3` blocked 样本。
+- `CC-003.9` 的结论已经明确：
+  - original IR 零输入 fragment 不应被 converter 凭空补出 `float4 position [[position]]`
+  - 这不是 compare 口径问题，而是一处 converter 默认 entry builtin 注入过宽
+  - 修复后 corpus 最后一支 `entry 参数个数变化 + entry 参数类型摘要变化 + entry 参数语义摘要变化` family 已整支清零
+- 因此当前下一步应优先下钻 `模块级 addrspace 分布变化 + air intrinsic 使用变化`，其次再看 `控制流粗摘要变化 + 指令族统计变化` 的 residual。
 
 
 ## 当前默认流程
@@ -173,7 +174,7 @@
 |---|---|---|---|
 | `CC-001` 建立 canonical-diff 驱动的新主线 | DOING | `00-Dashboard.md` 已完成重写，后续任务统一改用 case-by-case + full-batch 复跑口径 | 本文档 |
 | `CC-002` 收敛 `buffer-noalias` 这类 entry 参数对齐问题 | DONE | 已完成 `noalias -> __restrict` 闭环，并确认 full-batch 有统计收益且无新增 `L3` | `difference-analysis/buffer-noalias/04-implementation-result.md` / `difference-analysis/buffer-noalias/05-full-batch-compare.md` |
-| `CC-003` 归类 `buffer-noalias` 修复后剩余的高频 `L3/L2` 模式 | DOING | 已逐步收敛多支高频差异；当前主剩余问题已收敛到 `CC-003.9` 的 `entry 参数` family | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
+| `CC-003` 归类 `buffer-noalias` 修复后剩余的高频 `L3/L2` 模式 | DONE | 已逐步收敛多支高频差异，并完成 `CC-003.9`；当前 corpus / diagnostics 均已无 `L3` blocked 样本 | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
 | `CC-003.1` 参数/metadata compare 噪声归一化 | DONE | 已收掉 `air.address_space` 等一批 compare 噪声，共有样本出现 `L2 -> L1` 改善且无回归 | `difference-analysis/resource-metadata-addrspace/04-implementation-result.md` / `difference-analysis/resource-metadata-addrspace/05-full-batch-compare.md` |
 | `CC-003.2` 资源语义/命名保真修复 | DONE | 已修复资源类型名大小写保真问题，代表 case 降级，diagnostics 改善且无新增 `L3` | `difference-analysis/resource-type-name-preservation/04-implementation-result.md` / `difference-analysis/resource-type-name-preservation/05-full-batch-compare.md` |
 | `CC-003.3` intrinsic / lowering 残留收敛 | DONE | 已完成 vector / half lowering 收敛，并消除一支 instruction-family compare 噪声，full-batch 小幅改善 | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
@@ -182,7 +183,7 @@
 | `CC-003.6` constant buffer 用户 struct 引用判定修复 | DONE | 已修复 constant buffer 用户 struct 引用判定过窄问题，diagnostics / corpus `L3` 继续下降且无新增 `L3` | `difference-analysis/constant-struct-reference-dereferenceable/04-implementation-result.md` / `difference-analysis/constant-struct-reference-dereferenceable/05-full-batch-compare.md` |
 | `CC-003.7` 输出语义 invariant 保真修复 | DONE | 已补齐 `air.position` 的 `air.invariant` 保真；该 family 差异清零，但剩余风险随后暴露为 `fast-math` family | `difference-analysis/position-invariant-output/04-implementation-result.md` / `difference-analysis/position-invariant-output/05-full-batch-compare.md` |
 | `CC-003.8` fast-math compile posture family 修复 | DONE | 已补回 original IR 的 `fast_math_disable/enable` compile posture，corpus `L3 54 -> 7`、diagnostics `L3 1 -> 0`，且无新增 blocked | `difference-analysis/fast-math-compile-posture/04-implementation-result.md` / `difference-analysis/fast-math-compile-posture/05-full-batch-compare.md` |
-| `CC-003.9` 优先检查 `CC-003.8` 收敛后剩余的 `entry 参数` 高风险 family | TODO | 已确认 `CC-003.8` 收掉 compile posture family 后，corpus 剩余 `7` 个 `L3` 已全部收敛成 `entry 参数个数变化 + entry 参数类型摘要变化 + entry 参数语义摘要变化`；下一步需判断它更像真实参数建模缺口，还是 compare / metadata 口径问题 | `difference-analysis/fast-math-compile-posture/05-full-batch-compare.md` / `04-L2-CanonicalCompareAndRiskGrading.md` |
+| `CC-003.9` 优先检查 `CC-003.8` 收敛后剩余的 `entry 参数` 高风险 family | DONE | 已确认 root cause 是 fragment `[[position]]` 被误当成无条件默认 builtin；修复后 corpus `L3 7 -> 0`、`blockedSamples` 清零、diagnostics 继续保持 `L3 = 0` | `difference-analysis/fragment-entry-ghost-position/04-implementation-result.md` / `difference-analysis/fragment-entry-ghost-position/05-full-batch-compare.md` |
 | `CC-004` 固化新的 case 分析模板 | TODO | 在 `difference-analysis/` 下沉淀一套稳定模板，确保后续每个 case 都按同样结构记录证据、结论与回归数据 | `difference-analysis/` |
 
 ## 任务执行规则

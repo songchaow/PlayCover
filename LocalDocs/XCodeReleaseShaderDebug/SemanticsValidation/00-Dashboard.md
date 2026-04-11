@@ -36,19 +36,19 @@
 
 ### 当前最新状态
 
-- 当前主线最新已完成 `CC-003.11`，small `select + aggregate/vector` reshaping 已确认主要是 compare 口径问题，不再是当前 diagnostics residual ceiling。
+- 当前主线最新已完成 `CC-003.12`，corpus 中一支 `CFG 不变 + scalar/vector/aggregate materialization` reshaping 已确认主要是 compare 口径问题，不再是当前 corpus residual ceiling。
 - 当前 full-batch 结果稳定收敛为：
   - diagnostics：`L1 143 / L2 10 / L3 0`
-  - corpus：`L1 308 / L2 129 / L3 0`
+  - corpus：`L1 319 / L2 118 / L3 0`
 - 当前 corpus / diagnostics 都已经没有 `L3` blocked 样本。
-- `CC-003.11` 的结论已经明确：
-  - diagnostics 中高频的 `控制流粗摘要变化 + 指令族统计变化 + fast-math 相关属性变化` 并不都指向新的 converter 结构缺口
-  - 对 `083c8443...`、`1079c7c8...` 这类代表样本来说，generated MSL 已经保留真实 `if/else + phi` 结构
-  - 当前 residual 更像 aggregate/vector/select 的轻微形态重排，而不是 first-class 语义变化
-  - 修复后代表 case `083c8443...`、`1079c7c8...` 都从 `L2 -> L1`
-  - full-batch 上，diagnostics 中这支 `控制流粗摘要变化 + 指令族统计变化 + fast-math 相关属性变化` family 处于 `L2` 的样本从 `126 -> 2`
-  - corpus / diagnostics 顶层计数分别收敛到 `L2 129` 与 `L2 10`
-- 因此当前下一步应优先下钻 corpus 中剩余的 `指令族统计变化 + fast-math 相关属性变化 + 模块元数据 targetTriple 变化`，其次再看 diagnostics 中残留的少量 `模块级 air intrinsic 使用变化 + 控制流粗摘要变化` residual。
+- `CC-003.12` 的结论已经明确：
+  - corpus 中仍然残留的一支 `指令族统计变化 + fast-math 相关属性变化 + 模块元数据 targetTriple 变化` 并不都指向新的 converter 结构缺口
+  - 对 `62316900...`、`2984b21c...`、`2629c34e...` 这类代表样本来说，entry/resource/builtin/intrinsic 语义与 CFG 都已经对齐
+  - 当前 residual 更像 scalar/vector/aggregate materialization 的轻微形态重排，而不是新的 first-class 语义变化
+  - 修复后代表 case `62316900...`、`2984b21c...`、`2629c34e...` 都从 `L2 -> L1`
+  - full-batch 上，corpus 中这支 `指令族统计变化 + fast-math 相关属性变化 + 模块元数据 targetTriple 变化` family 处于 `L2` 的样本从 `43 -> 34`
+  - corpus / diagnostics 顶层计数分别收敛到 `L2 118` 与 `L2 10`
+- 因此当前下一步应优先下钻 corpus 中剩余的 `模块级 addrspace 分布变化 + 模块级 air intrinsic 使用变化 + 函数内 air intrinsic 调用统计变化`，其次再看 diagnostics 中残留的少量 `控制流粗摘要变化 + 指令族统计变化 + fast-math 相关属性变化` residual。
 
 
 ## 当前默认流程
@@ -189,7 +189,8 @@
 | `CC-003.9` 优先检查 `CC-003.8` 收敛后剩余的 `entry 参数` 高风险 family | DONE | 已确认 root cause 是 fragment `[[position]]` 被误当成无条件默认 builtin；修复后 corpus `L3 7 -> 0`、`blockedSamples` 清零、diagnostics 继续保持 `L3 = 0` | `difference-analysis/fragment-entry-ghost-position/04-implementation-result.md` / `difference-analysis/fragment-entry-ghost-position/05-full-batch-compare.md` |
 | `CC-003.10` 收敛 mixed CFG 下可恢复 nested merge 被整函数线性化的问题 | DONE | 已确认 root cause 是 structured emission 入口条件过窄；代表 case `ab9230...`、`0d2cd9...` 均 `L2 -> L1`，corpus `L2 208 -> 196`、diagnostics `L2 140 -> 135`，且无新增 `L3` / blocked | `difference-analysis/mixed-cfg-structured-emission/04-implementation-result.md` / `difference-analysis/mixed-cfg-structured-emission/05-full-batch-compare.md` |
 | `CC-003.11` 优先检查 `CC-003.10` 收敛后剩余的纯 `CFG / instruction-family / fast-math` residual | DONE | 已确认 diagnostics 高频 family 的主要矛盾是 compare 对小幅 `select + aggregate/vector` reshaping 过敏；代表 case `083c8443...`、`1079c7c8...` 均 `L2 -> L1`，corpus `L2 196 -> 129`、diagnostics `L2 135 -> 10`，且无新增 `L3` / blocked | `difference-analysis/vector-aggregate-shape-normalization/04-implementation-result.md` / `difference-analysis/vector-aggregate-shape-normalization/05-full-batch-compare.md` |
-| `CC-003.12` 优先检查 `CC-003.11` 收敛后 corpus 中剩余的 `instruction-family + fast-math + targetTriple` residual | TODO | 选出一支不再带 `entry/addrspace` 主差异、且 diagnostics 已不再高频重复的 corpus 代表 case，判断它更像 compare 口径问题还是新的 converter / lowering 缺口，并完成单 case + full-batch 闭环 | `difference-analysis/` |
+| `CC-003.12` 优先检查 `CC-003.11` 收敛后 corpus 中剩余的 `instruction-family + fast-math + targetTriple` residual | DONE | 已确认其中一支 `CFG 不变 + scalar/vector/aggregate materialization` residual 的主要矛盾是 compare 对轻微物化重排过敏；代表 case `62316900...`、`2984b21c...`、`2629c34e...` 均 `L2 -> L1`，corpus `L2 129 -> 118`，diagnostics 维持 `L2 10` 且无新增 `L3` / blocked | `difference-analysis/scalar-vector-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-materialization-normalization/05-full-batch-compare.md` |
+| `CC-003.13` 优先检查 `CC-003.12` 收敛后 corpus 中剩余的 `module addrspace + air intrinsic` residual | TODO | 选出一支以 `模块级 addrspace 分布变化; 模块级 air intrinsic 使用变化; 函数内 air intrinsic 调用统计变化` 为主差异的 corpus 代表 case，判断它更像 compare 口径问题还是新的 converter / lowering 缺口，并完成单 case + full-batch 闭环 | `difference-analysis/` |
 | `CC-004` 固化新的 case 分析模板 | TODO | 在 `difference-analysis/` 下沉淀一套稳定模板，确保后续每个 case 都按同样结构记录证据、结论与回归数据 | `difference-analysis/` |
 
 ## 任务执行规则
@@ -393,6 +394,8 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - `difference-analysis/position-invariant-output/05-full-batch-compare.md`
 - `difference-analysis/fast-math-compile-posture/04-implementation-result.md`
 - `difference-analysis/fast-math-compile-posture/05-full-batch-compare.md`
+- `difference-analysis/scalar-vector-materialization-normalization/04-implementation-result.md`
+- `difference-analysis/scalar-vector-materialization-normalization/05-full-batch-compare.md`
 
 ### 相关实现与工具
 

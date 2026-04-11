@@ -36,20 +36,20 @@
 
 ### 当前最新状态
 
-- 当前主线最新已完成 `CC-003.15`，确认 `CC-003.14` 之后重复出现在 diagnostics / corpus 里的 shared `控制流粗摘要变化 + 指令族统计变化 + fast-math 相关属性变化` family 至少有一部分只是 compare 对低风险 shape drift 的放大。
+- 当前主线最新已完成 `CC-003.16`，确认 corpus 中唯一仍挂着 `entry 参数语义摘要变化; entry builtin / stage-in 摘要变化` 的 `823dcdf7...` 不是 compare 口径噪声，而是 converter 没把 fragment `stage_in` 字段上的 user 语义与插值 qualifier 保真回发到 MSL。
 - 当前 full-batch 结果已进一步收敛为：
   - diagnostics：`L1 145 / L2 8 / L3 0`
-  - corpus：`L1 355 / L2 82 / L3 0`
+  - corpus：`L1 356 / L2 81 / L3 0`
 - 当前 corpus / diagnostics 继续没有 `L3` blocked 样本。
-- `CC-003.15` 的结论已经明确：
-  - 代表 case `25eef20f...` 的 compile posture 继续对齐，不是 planner / fast-math root cause
-  - `IRToMSLConverter.swift` 没有出现新的 entry / builtin / CFG 语义缺口；真实问题在 `ir_canonical_compare.py` 对“同一 CFG + 一处额外 `select` + 小幅 `aggregate/vector` 物化重排”仍过度敏感
-  - 当前 shared family 的代表 shape 是：`basicBlockCount/terminatorCounts/phiCount` 保持一致，仅 `selectCount 7 -> 8`，同时 `aggregate 1 -> 6 / arithmetic 60 -> 55 / vector 108 -> 119`
-  - 修复后 `25eef20f...` 已从 `L2 -> L1`，`shouldEnterL3 = false`
-  - full-batch 上，diagnostics 顶层计数从 `L2 10 -> 8`，corpus 从 `L2 83 -> 82`，且没有新增 `L3` / blocked
+- `CC-003.16` 的结论已经明确：
+  - 代表 case `823dcdf7...` 的 compile posture 继续对齐：`originalFastMathMode = enable`，`effectiveMetalArgs = -ffast-math`
+  - 修复前 `generated.metal` 里的 `XlatMtlMain_StageIn` 只有裸字段，丢失 `[[user(TEXCOORD*)]]` 与 `[[flat]] / [[center_perspective]]`，导致 regenerated AIR 把两路 `flat` 输入稳定漂成默认 `air.center + air.perspective`
+  - `IRToMSLConverter.swift` 现已从 AIR metadata 解析 `user(TEXCOORD*)` 与 `air.flat / air.center / air.perspective / air.no_perspective / air.centroid / air.sample`，并定向回发到 `stage_in` 字段属性
+  - 修复后 `823dcdf7...` 已从 `L2 -> L1`，`entryComparison = L0`、`builtinComparison = L0`、`shouldEnterL3 = false`
+  - full-batch 上，corpus 顶层计数从 `L2 82 -> 81`，diagnostics 维持 `L2 8`，且没有新增 `L3` / blocked
 - 因此当前下一步应优先转向剩余更硬的 residual：
   - `指令族统计变化 + fast-math 相关属性变化 + 模块元数据 targetTriple 变化`
-  - 以及 corpus 中唯一仍挂着 `entry 参数语义摘要变化; entry builtin / stage-in 摘要变化` 的 `823dcdf7...`
+  - `控制流粗摘要变化 + 指令族统计变化 + fast-math 相关属性变化`
 
 
 ## 当前默认流程
@@ -194,6 +194,7 @@
 | `CC-003.13` 优先检查 `CC-003.12` 收敛后 corpus 中剩余的 `module addrspace + air intrinsic` residual | DONE | 已确认其中一支 family 至少部分是 converter 对 `@__air_sampler_state` internal global 的 lowering 缺口；代表 case `293ec561...` 已重新对齐 sampler-state operand，为下一轮继续拆解同 family residual 提供了实现层证据 | `difference-analysis/sampler-state-global-preservation/04-implementation-result.md` / `difference-analysis/sampler-state-global-preservation/05-full-batch-compare.md` |
 | `CC-003.14` 优先检查 `CC-003.13` 收敛后同 family 中残留的 `discard_fragment + CFG` residual | DONE | 已确认 root cause 是 converter 把 `air.discard_fragment` 发成注释占位；修复后代表 case `293ec561...` 从 `L2 -> L1`，corpus `L2 118 -> 83`，diagnostics 维持 `L2 10`，且无新增 `L3` / blocked | `difference-analysis/fragment-discard-lowering/04-implementation-result.md` / `difference-analysis/fragment-discard-lowering/05-full-batch-compare.md` |
 | `CC-003.15` 优先检查 `CC-003.14` 收敛后 shared `控制流粗摘要变化 + 指令族统计变化 + fast-math` residual | DONE | 已确认其中一支 shared family 主要是 compare 对“同一 CFG + 一处额外 `select` + 小幅 vector/aggregate materialization 重排”过敏；代表 case `25eef20f...` 从 `L2 -> L1`，corpus `L2 83 -> 82`、diagnostics `L2 10 -> 8`，且无新增 `L3` / blocked | `difference-analysis/shared-cfg-shape-drift-normalization/04-implementation-result.md` / `difference-analysis/shared-cfg-shape-drift-normalization/05-full-batch-compare.md` |
+| `CC-003.16` 优先检查 corpus 中唯一残留的 `entry 参数语义摘要变化; entry builtin / stage-in 摘要变化` case | DONE | 已确认 root cause 是 converter 丢失 fragment `stage_in` 字段上的 `user(TEXCOORD*)` 与插值 qualifier；代表 case `823dcdf7...` 从 `L2 -> L1`，corpus `L2 82 -> 81`、diagnostics 维持 `L2 8`，且无新增 `L3` / blocked | `difference-analysis/fragment-stage-in-semantics-preservation/04-implementation-result.md` / `difference-analysis/fragment-stage-in-semantics-preservation/05-full-batch-compare.md` |
 | `CC-004` 固化新的 case 分析模板 | TODO | 在 `difference-analysis/` 下沉淀一套稳定模板，确保后续每个 case 都按同样结构记录证据、结论与回归数据 | `difference-analysis/` |
 
 ## 任务执行规则

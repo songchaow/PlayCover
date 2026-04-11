@@ -17,6 +17,7 @@ ROUNDTRIP_SCRIPT = SCRIPTS_DIR / "ir_semantics_roundtrip_runner.py"
 TEST_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_addrspace.ll"
 TEST_FRAGMENT_PACKED_RETURN_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_fragment_packed_return.ll"
 TEST_FRAGMENT_NO_ENTRY_INPUT_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_fragment_no_entry_input.ll"
+TEST_FRAGMENT_STAGE_IN_SEMANTICS_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_fragment_stage_in_semantics.ll"
 TEST_FRAGMENT_DISCARD_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_fragment_discard.ll"
 TEST_UNDERSCORE_STRUCT_REFERENCE_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_underscore_struct_reference.ll"
 TEST_VERTEX_POSITION_INVARIANT_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_vertex_position_invariant.ll"
@@ -1128,6 +1129,74 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             self.assertIn("fragment Test_fragment_no_entry_input_Out test_fragment_no_entry_input()", generated_msl)
             self.assertNotIn("[[position]]", generated_msl)
             self.assertIn("define <{ <4 x float>, <4 x float> }> @test_fragment_no_entry_input()", regenerated_ir)
+
+    @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
+    def test_corpus_replay_runner_preserves_fragment_stage_in_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            generated_path = Path(temp_dir) / "fragment-stage-in-semantics.generated.metal"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(REPO_ROOT / "Scripts" / "corpus_replay_runner.py"),
+                    "--ll",
+                    str(TEST_FRAGMENT_STAGE_IN_SEMANTICS_SAMPLE),
+                    "--output-file",
+                    str(generated_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("replay summary", completed.stdout)
+            generated_text = generated_path.read_text(encoding="utf-8")
+            self.assertIn("struct XlatMtlMain_StageIn {", generated_text)
+            self.assertIn("float2 TEXCOORD0 [[user(TEXCOORD0)]] [[center_perspective]];", generated_text)
+            self.assertIn("float4 TEXCOORD1 [[user(TEXCOORD1)]] [[flat]];", generated_text)
+            self.assertIn("float4 TEXCOORD2 [[user(TEXCOORD2)]] [[flat]];", generated_text)
+
+    @unittest.skipUnless(shutil.which("swiftc") and shutil.which("xcrun"), "requires swiftc and xcrun")
+    def test_roundtrip_runner_preserves_fragment_stage_in_semantics(self) -> None:
+        default_llvm_dis, _ = roundtrip_runner.resolve_llvm_dis_path()
+        if default_llvm_dis is None:
+            self.skipTest("requires llvm-dis")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir) / "fragment-stage-in-semantics"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(ROUNDTRIP_SCRIPT),
+                    "--ll",
+                    str(TEST_FRAGMENT_STAGE_IN_SEMANTICS_SAMPLE),
+                    "--output-root",
+                    str(output_root),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("semantics round-trip summary", completed.stdout)
+            compare_report = json.loads((output_root / "compare-summary.json").read_text(encoding="utf-8"))
+            risk_report = json.loads((output_root / "risk-report.json").read_text(encoding="utf-8"))
+            roundtrip_report = json.loads((output_root / "roundtrip-summary.json").read_text(encoding="utf-8"))
+            compare_result = compare_report["results"][0]
+            generated_msl = Path(roundtrip_report["results"][0]["generatedMSLPath"]).read_text(encoding="utf-8")
+            regenerated_ir = Path(roundtrip_report["results"][0]["regeneratedIRPath"]).read_text(encoding="utf-8")
+
+            self.assertEqual(compare_result["entryComparison"]["severity"], "L0")
+            self.assertFalse(any(item["reason"] == "entry 参数语义摘要变化" for item in compare_result["differences"]))
+            self.assertFalse(any(item["reason"] == "entry builtin / stage-in 摘要变化" for item in compare_result["differences"]))
+            self.assertEqual(risk_report["blockedSamples"], [])
+            self.assertIn("float2 TEXCOORD0 [[user(TEXCOORD0)]] [[center_perspective]];", generated_msl)
+            self.assertIn("float4 TEXCOORD1 [[user(TEXCOORD1)]] [[flat]];", generated_msl)
+            self.assertIn("float4 TEXCOORD2 [[user(TEXCOORD2)]] [[flat]];", generated_msl)
+            self.assertIn('!"user(TEXCOORD0)"', regenerated_ir)
+            self.assertIn('!"user(TEXCOORD1)"', regenerated_ir)
+            self.assertIn('!"air.flat"', regenerated_ir)
 
     @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
     def test_corpus_replay_runner_keeps_underscore_prefixed_constant_struct_as_reference(self) -> None:

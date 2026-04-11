@@ -153,6 +153,10 @@ struct IRToMSLConverter {
         let bufferIndex: Int?
         /// 属性标注（如 [[position]]、[[vertex_id]]、[[texture(N)]] 等）
         let attribute: String?
+        /// `stage_in` 字段上的语义标注（如 `user(TEXCOORD0)`）
+        let stageInAttribute: String?
+        /// AIR metadata 中记录的参数 qualifier（如 `air.flat` / `air.center` / `air.perspective`）
+        let qualifiers: [String]
         /// 指针信息（如果参数是指针类型）
         let pointerInfo: PointerInfo?
         /// 参数在原始 IR `define` 参数列表中的索引（来自 metadata）
@@ -1394,12 +1398,16 @@ struct IRToMSLConverter {
         let typeName: String
         /// MSL 参数名 (来自 "air.arg_name"): "positions", "uniforms" 等
         let argName: String
+        /// `user(TEXCOORD0)` 这类 stage-in 语义字符串
+        let stageInAttribute: String?
         /// buffer/texture/sampler 绑定索引 (来自 "air.location_index")
         let locationIndex: Int?
         /// 地址空间 (来自 "air.address_space")
         let addressSpace: Int?
         /// 是否只读 (有 "air.read" 标记)
         let isReadOnly: Bool
+        /// 参数 qualifier（如 `air.flat` / `air.center` / `air.perspective`）
+        let qualifiers: [String]
         /// 结构体字段信息（来自 "air.struct_type_info"），仅 buffer 参数有
         let structFieldInfo: [StructFieldInfo]
     }
@@ -1737,9 +1745,11 @@ struct IRToMSLConverter {
         // 扫描后续 token 提取 key-value 对
         var typeName = ""
         var argName = ""
+        var stageInAttribute: String?
         var locationIndex: Int?
         var addressSpace: Int?
         var isReadOnly = false
+        var qualifiers: [String] = []
         var structFieldInfo: [StructFieldInfo] = []
 
         var i = 2
@@ -1790,6 +1800,13 @@ struct IRToMSLConverter {
                     }
                 } else { i += 1 }
             default:
+                if token.hasPrefix("air.") && token != kind {
+                    qualifiers.append(token)
+                } else if stageInAttribute == nil,
+                          (kind == "air.fragment_input" || kind == "air.vertex_input"),
+                          token.contains("(") {
+                    stageInAttribute = token
+                }
                 i += 1
             }
         }
@@ -1799,9 +1816,11 @@ struct IRToMSLConverter {
             kind: kind,
             typeName: typeName,
             argName: argName.isEmpty ? "arg\(argIndex)" : argName,
+            stageInAttribute: stageInAttribute,
             locationIndex: locationIndex,
             addressSpace: addressSpace,
             isReadOnly: isReadOnly,
+            qualifiers: Array(Set(qualifiers)).sorted(),
             structFieldInfo: structFieldInfo
         )
     }
@@ -2983,6 +3002,8 @@ struct IRToMSLConverter {
                 addressSpace: addrSpace,
                 bufferIndex: meta.locationIndex,
                 attribute: attribute,
+                stageInAttribute: meta.stageInAttribute,
+                qualifiers: meta.qualifiers,
                 pointerInfo: ptrInfo,
                 irArgIndex: meta.argIndex,
                 kind: meta.kind,
@@ -3043,6 +3064,8 @@ struct IRToMSLConverter {
                 addressSpace: addrSpace,
                 bufferIndex: bindingIndex,
                 attribute: nil,
+                stageInAttribute: nil,
+                qualifiers: [],
                 pointerInfo: ptrInfo,
                 irArgIndex: index,
                 kind: nil,
@@ -3096,6 +3119,8 @@ struct IRToMSLConverter {
             addressSpace: nil,
             bufferIndex: nil,
             attribute: attribute,
+            stageInAttribute: nil,
+            qualifiers: [],
             pointerInfo: nil,
             irArgIndex: index,
             kind: kind,
@@ -3318,6 +3343,8 @@ struct IRToMSLConverter {
                     addressSpace: addrSpace,
                     bufferIndex: orphaned.locationIndex,
                     attribute: attribute,
+                    stageInAttribute: orphaned.stageInAttribute,
+                    qualifiers: orphaned.qualifiers,
                     pointerInfo: ptrInfo,
                     irArgIndex: index,
                     kind: orphaned.kind,
@@ -3353,6 +3380,8 @@ struct IRToMSLConverter {
                 addressSpace: addrSpace,
                 bufferIndex: bindingIndex,
                 attribute: nil,
+                stageInAttribute: nil,
+                qualifiers: [],
                 pointerInfo: ptrInfo,
                 irArgIndex: index,
                 kind: nil,
@@ -7993,6 +8022,63 @@ struct IRToMSLConverter {
         sanitizeTypeName(safeName) + "_StageIn"
     }
 
+    private static func interpolationAttribute(for param: ParsedParameter) -> String? {
+        let qualifierSet = Set(param.qualifiers)
+        if qualifierSet.contains("air.flat") {
+            return "[[flat]]"
+        }
+
+        let location: String?
+        if qualifierSet.contains("air.centroid") {
+            location = "centroid"
+        } else if qualifierSet.contains("air.sample") {
+            location = "sample"
+        } else if qualifierSet.contains("air.center") {
+            location = "center"
+        } else {
+            location = nil
+        }
+
+        let perspective: String?
+        if qualifierSet.contains("air.no_perspective") {
+            perspective = "no_perspective"
+        } else if qualifierSet.contains("air.perspective") {
+            perspective = "perspective"
+        } else {
+            perspective = nil
+        }
+
+        guard let location, let perspective else { return nil }
+        return "[[\(location)_\(perspective)]]"
+    }
+
+    private static func stageInFieldAttributes(for param: ParsedParameter) -> String {
+        var attributes: [String] = []
+
+        switch param.kind {
+        case "air.position":
+            attributes.append("[[position]]")
+        case "air.vertex_input":
+            if let location = param.bufferIndex {
+                attributes.append("[[attribute(\(location))]]")
+            }
+        case "air.fragment_input":
+            if let stageInAttribute = param.stageInAttribute,
+               !stageInAttribute.isEmpty {
+                attributes.append("[[\(stageInAttribute)]]")
+            }
+        default:
+            break
+        }
+
+        if let interpolation = interpolationAttribute(for: param) {
+            attributes.append(interpolation)
+        }
+
+        guard !attributes.isEmpty else { return "" }
+        return " " + attributes.joined(separator: " ")
+    }
+
     private static func generateStageInStructDefinition(
         for func_: ParsedShaderFunction,
         safeName: String
@@ -8011,22 +8097,8 @@ struct IRToMSLConverter {
         for param in stageParams {
             let fieldType = irScalarTypeToMSL(param.irType.isEmpty ? "float" : param.irType)
             let fieldName = sanitizeIdentifier(param.name, fallback: "arg\(param.irArgIndex ?? 0)", uppercaseFirst: false)
-
-            let attribute: String
-            switch param.kind {
-            case "air.position":
-                attribute = " [[position]]"
-            case "air.vertex_input":
-                if let location = param.bufferIndex {
-                    attribute = " [[attribute(\(location))]]"
-                } else {
-                    attribute = ""
-                }
-            default:
-                attribute = ""
-            }
-
-            lines.append("    \(fieldType) \(fieldName)\(attribute);")
+            let attributes = stageInFieldAttributes(for: param)
+            lines.append("    \(fieldType) \(fieldName)\(attributes);")
         }
         lines.append("};")
         return (structName, lines.joined(separator: "\n"))

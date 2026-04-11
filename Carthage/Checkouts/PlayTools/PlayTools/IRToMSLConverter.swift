@@ -8124,7 +8124,7 @@ struct IRToMSLConverter {
     private static func defaultBuiltinParam(for type: ShaderType) -> String {
         switch type {
         case .vertex: return "uint vid [[vertex_id]]"
-        case .fragment: return "float4 position [[position]]"
+        case .fragment: return ""
         case .kernel: return "uint tid [[thread_position_in_grid]]"
         case .helper: return ""
         }
@@ -8158,7 +8158,7 @@ struct IRToMSLConverter {
             func_.parameters,
             safeName: safeName,
             shaderType: .fragment,
-            defaultBuiltin: "float4 position [[position]]",
+            defaultBuiltin: "",
             fragmentReturnType: func_.returnType
         )
 

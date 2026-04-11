@@ -589,6 +589,210 @@ class IRCanonicalCompareTests(unittest.TestCase):
         self.assertEqual(comparison["riskLevel"], "L2")
         self.assertEqual(comparison["instructionFamilyComparison"]["severity"], "L2")
 
+    def test_compare_downgrades_small_scalar_vector_materialization_drift_to_l1(self) -> None:
+        original = self._make_optimizer_drift_summary(
+            module_intrinsics={
+                "air.clamp.f16": 2,
+                "air.convert.f.v2f32.f.v2f16": 4,
+                "air.convert.f.v3f16.f.v3f32": 2,
+                "air.convert.f.v3f32.f.v3f16": 4,
+                "air.convert.f.v4f32.f.v4f16": 1,
+                "air.dot.v3f32": 4,
+                "air.fabs.f16": 1,
+                "air.fast_fabs.f32": 3,
+                "air.fast_fmax.f32": 2,
+                "air.fast_fmin.f32": 2,
+                "air.fast_fract.f32": 1,
+                "air.fast_rsqrt.f32": 2,
+                "air.fast_sqrt.f32": 2,
+                "air.fma.f16": 3,
+                "air.fma.f32": 6,
+                "air.fma.v2f32": 4,
+                "air.fma.v3f16": 3,
+                "air.fma.v3f32": 6,
+                "air.fma.v4f32": 3,
+                "air.fmax.f16": 2,
+                "air.fmax.v2f16": 1,
+                "air.sample_texture_2d.v4f16": 2,
+            },
+            entry_intrinsics={
+                "air.clamp.f16": 2,
+                "air.convert.f.v2f32.f.v2f16": 4,
+                "air.convert.f.v3f16.f.v3f32": 2,
+                "air.convert.f.v3f32.f.v3f16": 4,
+                "air.convert.f.v4f32.f.v4f16": 1,
+                "air.dot.v3f32": 4,
+                "air.fabs.f16": 1,
+                "air.fast_fabs.f32": 3,
+                "air.fast_fmax.f32": 2,
+                "air.fast_fmin.f32": 2,
+                "air.fast_fract.f32": 1,
+                "air.fast_rsqrt.f32": 2,
+                "air.fast_sqrt.f32": 2,
+                "air.fma.f16": 3,
+                "air.fma.f32": 6,
+                "air.fma.v2f32": 4,
+                "air.fma.v3f16": 3,
+                "air.fma.v3f32": 6,
+                "air.fma.v4f32": 3,
+                "air.fmax.f16": 2,
+                "air.fmax.v2f16": 1,
+                "air.sample_texture_2d.v4f16": 2,
+            },
+            cfg={
+                "basicBlockCount": 1,
+                "terminatorCounts": {"ret": 1},
+                "phiCount": 0,
+                "selectCount": 0,
+            },
+            instruction_families={
+                "aggregate": 10,
+                "arithmetic": 48,
+                "call": 65,
+                "cast": 15,
+                "compare": 2,
+                "intrinsic": 65,
+                "memory": 56,
+                "vector": 83,
+            },
+        )
+        regenerated = self._make_optimizer_drift_summary(
+            module_intrinsics={
+                "air.clamp.f16": 2,
+                "air.convert.f.v2f32.f.v2f16": 4,
+                "air.convert.f.v3f16.f.v3f32": 2,
+                "air.convert.f.v3f32.f.v3f16": 4,
+                "air.convert.f.v4f32.f.v4f16": 1,
+                "air.dot.v3f32": 4,
+                "air.fabs.f16": 1,
+                "air.fast_fabs.f32": 3,
+                "air.fast_fmax.f32": 2,
+                "air.fast_fmin.f32": 2,
+                "air.fast_fract.f32": 1,
+                "air.fast_rsqrt.f32": 2,
+                "air.fast_sqrt.f32": 2,
+                "air.fma.f16": 3,
+                "air.fma.f32": 6,
+                "air.fma.v2f32": 4,
+                "air.fma.v3f16": 3,
+                "air.fma.v3f32": 6,
+                "air.fma.v4f32": 3,
+                "air.fmax.f16": 2,
+                "air.fmax.v2f16": 1,
+                "air.sample_texture_2d.v4f16": 2,
+            },
+            entry_intrinsics={
+                "air.clamp.f16": 2,
+                "air.convert.f.v2f32.f.v2f16": 4,
+                "air.convert.f.v3f16.f.v3f32": 2,
+                "air.convert.f.v3f32.f.v3f16": 4,
+                "air.convert.f.v4f32.f.v4f16": 1,
+                "air.dot.v3f32": 4,
+                "air.fabs.f16": 1,
+                "air.fast_fabs.f32": 3,
+                "air.fast_fmax.f32": 2,
+                "air.fast_fmin.f32": 2,
+                "air.fast_fract.f32": 1,
+                "air.fast_rsqrt.f32": 2,
+                "air.fast_sqrt.f32": 2,
+                "air.fma.f16": 3,
+                "air.fma.f32": 6,
+                "air.fma.v2f32": 4,
+                "air.fma.v3f16": 3,
+                "air.fma.v3f32": 6,
+                "air.fma.v4f32": 3,
+                "air.fmax.f16": 2,
+                "air.fmax.v2f16": 1,
+                "air.sample_texture_2d.v4f16": 2,
+            },
+            cfg={
+                "basicBlockCount": 1,
+                "terminatorCounts": {"ret": 1},
+                "phiCount": 0,
+                "selectCount": 0,
+            },
+            instruction_families={
+                "aggregate": 12,
+                "arithmetic": 42,
+                "call": 65,
+                "cast": 15,
+                "compare": 2,
+                "intrinsic": 65,
+                "memory": 56,
+                "vector": 81,
+            },
+        )
+
+        comparison = canonical_compare.compare_ir_summaries(original, regenerated)
+
+        self.assertEqual(comparison["riskLevel"], "L1")
+        self.assertEqual(comparison["cfgComparison"]["severity"], "L0")
+        self.assertEqual(comparison["instructionFamilyComparison"]["severity"], "L1")
+
+    def test_compare_keeps_l2_for_large_scalar_vector_materialization_drift(self) -> None:
+        original = self._make_optimizer_drift_summary(
+            module_intrinsics={
+                "air.convert.f.v3f32.f.v3f16": 3,
+                "air.fma.v3f32": 4,
+                "air.sample_texture_2d.v4f16": 1,
+            },
+            entry_intrinsics={
+                "air.convert.f.v3f32.f.v3f16": 3,
+                "air.fma.v3f32": 4,
+                "air.sample_texture_2d.v4f16": 1,
+            },
+            cfg={
+                "basicBlockCount": 1,
+                "terminatorCounts": {"ret": 1},
+                "phiCount": 0,
+                "selectCount": 0,
+            },
+            instruction_families={
+                "aggregate": 3,
+                "arithmetic": 57,
+                "call": 73,
+                "cast": 6,
+                "compare": 7,
+                "intrinsic": 73,
+                "memory": 52,
+                "vector": 102,
+            },
+        )
+        regenerated = self._make_optimizer_drift_summary(
+            module_intrinsics={
+                "air.convert.f.v3f32.f.v3f16": 3,
+                "air.fma.v3f32": 4,
+                "air.sample_texture_2d.v4f16": 1,
+            },
+            entry_intrinsics={
+                "air.convert.f.v3f32.f.v3f16": 3,
+                "air.fma.v3f32": 4,
+                "air.sample_texture_2d.v4f16": 1,
+            },
+            cfg={
+                "basicBlockCount": 1,
+                "terminatorCounts": {"ret": 1},
+                "phiCount": 0,
+                "selectCount": 0,
+            },
+            instruction_families={
+                "aggregate": 8,
+                "arithmetic": 46,
+                "call": 73,
+                "cast": 6,
+                "compare": 7,
+                "intrinsic": 73,
+                "memory": 52,
+                "vector": 108,
+            },
+        )
+
+        comparison = canonical_compare.compare_ir_summaries(original, regenerated)
+
+        self.assertEqual(comparison["riskLevel"], "L2")
+        self.assertEqual(comparison["cfgComparison"]["severity"], "L0")
+        self.assertEqual(comparison["instructionFamilyComparison"]["severity"], "L2")
+
     def test_assess_gate_result_warns_for_known_debt(self) -> None:
         samples = [
             {

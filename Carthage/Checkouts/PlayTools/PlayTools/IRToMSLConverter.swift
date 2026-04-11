@@ -3807,6 +3807,7 @@ struct IRToMSLConverter {
         var paramNames: [String: String] = [:]
         /// 函数参数类型映射
         var paramTypes: [String: String] = [:]
+        var emittedSamplerStateGlobals: Set<String> = []
         /// 当前函数的 MSL 返回类型
         var functionReturnType: String = ""
         var functionReturnFieldTypes: [String] = []
@@ -4000,9 +4001,11 @@ struct IRToMSLConverter {
         irParamList: String,
         structTypeDefs: [String: IRStructTypeDef] = [:],
         structFieldInfo: [String: [StructFieldInfo]] = [:],
-        forcedPointerArgIndices: Set<Int> = []
+        forcedPointerArgIndices: Set<Int> = [],
+        emittedSamplerStateGlobals: Set<String> = []
     ) -> [String] {
         let ctx = SSAContext()
+        ctx.emittedSamplerStateGlobals = emittedSamplerStateGlobals
         ctx.functionReturnType = func_.returnType
         ctx.functionReturnFieldTypes = func_.outputs.enumerated().map { index, output in
             entryOutputFieldType(for: output, index: index)
@@ -7028,10 +7031,9 @@ struct IRToMSLConverter {
         let s = operand.trimmingCharacters(in: .whitespaces)
 
         // E-006a2e10 → E-006g3: 处理全局 IR symbols (@...)
-        // - `@__air_sampler_state` 等 AIR 内部 symbol 仍映射到对应 sampler 参数
         // - 其他顶层全局常量（如 `@_ZL7ImmCB_0`）则保留为已发射到 MSL 的全局符号名
         if s.hasPrefix("@") {
-            if s.contains("sampler") {
+            if s.contains("sampler") && !ctx.emittedSamplerStateGlobals.contains(s) {
                 // 优先匹配 addrspace(2)（typed pointer 模式），fallback 再按 sampler 名称匹配
                 for (irParam, mslName) in ctx.paramNames {
                     if let irType = ctx.paramTypes[irParam],
@@ -7648,6 +7650,16 @@ struct IRToMSLConverter {
         irText: String = ""
     ) -> String {
         var lines: [String] = []
+        let emittedSamplerStateGlobals = Set(
+            globalConstants.compactMap { global in
+                renderSamplerStateDeclaration(
+                    irName: global.irName,
+                    irType: global.irType,
+                    initializer: global.initializer,
+                    usedBySampleCompare: false
+                ) == nil ? nil : global.irName
+            }
+        )
 
         // Header
         lines.append("//")
@@ -7815,7 +7827,8 @@ struct IRToMSLConverter {
             let funcCode = generateFunction(
                 func_, safeName: safeName,
                 structTypeDefs: structTypeDefs,
-                structFieldInfo: structFieldInfo
+                structFieldInfo: structFieldInfo,
+                emittedSamplerStateGlobals: emittedSamplerStateGlobals
             )
             lines.append(funcCode)
             lines.append("")
@@ -8016,14 +8029,16 @@ struct IRToMSLConverter {
         _ func_: ParsedShaderFunction,
         safeName: String,
         structTypeDefs: [String: IRStructTypeDef] = [:],
-        structFieldInfo: [String: [StructFieldInfo]] = [:]
+        structFieldInfo: [String: [StructFieldInfo]] = [:],
+        emittedSamplerStateGlobals: Set<String> = []
     ) -> String {
         // 如果有函数体 IR，尝试翻译为真实 MSL 语句（E-004e4a）
         if !func_.irBody.isEmpty {
             return generateFunctionWithBody(
                 func_, safeName: safeName,
                 structTypeDefs: structTypeDefs,
-                structFieldInfo: structFieldInfo
+                structFieldInfo: structFieldInfo,
+                emittedSamplerStateGlobals: emittedSamplerStateGlobals
             )
         }
         // 回退到 stub 生成
@@ -8035,7 +8050,8 @@ struct IRToMSLConverter {
         _ func_: ParsedShaderFunction,
         safeName: String,
         structTypeDefs: [String: IRStructTypeDef] = [:],
-        structFieldInfo: [String: [StructFieldInfo]] = [:]
+        structFieldInfo: [String: [StructFieldInfo]] = [:],
+        emittedSamplerStateGlobals: Set<String> = []
     ) -> String {
         let irParamList = extractIRParameterList(from: func_.irSignature)
         let forcedPointerArgIndices = collectArrayIndexedConstantStructBufferArgs(
@@ -8057,7 +8073,8 @@ struct IRToMSLConverter {
             func_, irParamList: irParamList,
             structTypeDefs: structTypeDefs,
             structFieldInfo: structFieldInfo,
-            forcedPointerArgIndices: forcedPointerArgIndices
+            forcedPointerArgIndices: forcedPointerArgIndices,
+            emittedSamplerStateGlobals: emittedSamplerStateGlobals
         )
 
         let shaderQualifier = func_.isEntryPoint ? func_.shaderType.rawValue : ""

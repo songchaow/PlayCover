@@ -27,6 +27,7 @@ TEST_UNCONDITIONAL_SUCCESSOR_GATING_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeRel
 TEST_STRUCTURED_MERGE_LATE_PREDECESSOR_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_structured_merge_late_predecessor.ll"
 TEST_NESTED_COMMON_MERGE_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_nested_common_merge.ll"
 TEST_NESTED_COMMON_MERGE_WITH_UNSTRUCTURED_TAIL_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_nested_common_merge_with_unstructured_tail.ll"
+TEST_SAMPLER_STATE_GLOBALS_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_sampler_state_globals.ll"
 
 import sys
 
@@ -1257,6 +1258,34 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             self.assertEqual(risk_report["blockedSamples"], [])
             self.assertIn("air.invariant", regenerated_ir)
             self.assertIn("float4 position [[position, invariant]];", generated_msl)
+
+    @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
+    def test_corpus_replay_runner_preserves_internal_sampler_state_globals(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            generated_path = Path(temp_dir) / "sampler-state-globals.generated.metal"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(REPO_ROOT / "Scripts" / "corpus_replay_runner.py"),
+                    "--ll",
+                    str(TEST_SAMPLER_STATE_GLOBALS_SAMPLE),
+                    "--output-file",
+                    str(generated_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("replay summary", completed.stdout)
+            generated_text = generated_path.read_text(encoding="utf-8")
+            self.assertIn("constexpr sampler __air_sampler_state(", generated_text)
+            self.assertIn("constexpr sampler __air_sampler_state_1(", generated_text)
+            self.assertIn("historyTexture.sample(__air_sampler_state, stageIn.TEXCOORD0)", generated_text)
+            self.assertIn("shadowTexture.sample_compare(__air_sampler_state_1, stageIn.TEXCOORD0,", generated_text)
+            self.assertNotIn("historyTexture.sample(shadowTexture", generated_text)
+            self.assertNotIn("sample_compare(historyTexture", generated_text)
 
     @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
     def test_corpus_replay_runner_preserves_phi_branch_structure(self) -> None:

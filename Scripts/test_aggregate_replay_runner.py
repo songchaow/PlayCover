@@ -84,7 +84,176 @@ def run_aggregate_compile_harness(
     return completed, report
 
 
+def make_shared_compile_plan(
+    *,
+    reason: str,
+    fast_math_mode: str | None,
+    inferred_metal_args: list[str],
+    effective_metal_args: list[str],
+    uses_explicit_compile_options: bool,
+    compile_options_fast_math_enabled: bool | None,
+    explicit_override_source: str | None = None,
+    requested_backend: str = "xcrun",
+) -> dict:
+    decision = {
+        "fastMathDecision": reason,
+        "reason": reason,
+        "usesExplicitCompileOptions": uses_explicit_compile_options,
+    }
+    if fast_math_mode is not None:
+        decision["fastMathMode"] = fast_math_mode
+    if compile_options_fast_math_enabled is not None:
+        decision["compileOptionsFastMathEnabled"] = compile_options_fast_math_enabled
+    if explicit_override_source is not None:
+        decision["explicitOverrideSource"] = explicit_override_source
+
+    return {
+        "requestedBackend": requested_backend,
+        "decision": decision,
+        "inferredMetalArgs": list(inferred_metal_args),
+        "effectiveMetalArgs": list(effective_metal_args),
+        "mtlCompileOptionsPayload": (
+            {"fastMathEnabled": compile_options_fast_math_enabled}
+            if compile_options_fast_math_enabled is not None
+            else None
+        ),
+    }
+
+
+def write_test_fragment_sample(path: Path, *, fast_math_marker: str | None = None) -> None:
+    source_text = TEST_FRAGMENT_PACKED_RETURN_SAMPLE.read_text(encoding="utf-8")
+    if fast_math_marker is not None:
+        source_text = source_text.replace("air.compile.fast_math_enable", fast_math_marker)
+        source_text = source_text.replace("air.compile.fast_math_disable", fast_math_marker)
+    path.write_text(source_text, encoding="utf-8")
+
+
+def create_aggregate_cli_fixture(root: Path, *, fast_math_marker: str | None = None) -> Path:
+    corpus_root = root / "ShaderCorpus"
+    bundle_root = corpus_root / "com.example.demo"
+    replacement_dir = bundle_root / "replacements" / "20260410_selector_cache"
+    replacement_dir.mkdir(parents=True, exist_ok=True)
+
+    for module_key in ["module-a", "module-b"]:
+        module_dir = bundle_root / "modules" / module_key
+        module_dir.mkdir(parents=True, exist_ok=True)
+        write_test_fragment_sample(module_dir / "module.ll", fast_math_marker=fast_math_marker)
+        write_json(
+            module_dir / "module.meta.json",
+            {
+                "bundleId": "com.example.demo",
+                "moduleKey": module_key,
+                "selector": "newLibraryWithData:error:",
+                "moduleSummary": f"summary-{module_key}",
+            },
+        )
+
+    write_json(
+        replacement_dir / "replacement.meta.json",
+        {
+            "bundleId": "com.example.demo",
+            "selector": "newLibraryWithData:error:",
+            "cacheKey": "cache-key",
+            "timestamp": "2026-04-10T20:00:00Z",
+            "moduleKeys": ["module-a", "module-b"],
+        },
+    )
+    (replacement_dir / "aggregate.generated.metal").write_text(
+        "#include <metal_stdlib>\nusing namespace metal;\n// runtime baseline placeholder\n",
+        encoding="utf-8",
+    )
+    write_jsonl(
+        bundle_root / "manifest.jsonl",
+        [
+            {
+                "event": "capture",
+                "selector": "newLibraryWithData:error:",
+                "cacheKey": "cache-key",
+                "timestamp": "2026-04-10T20:00:00Z",
+                "moduleKey": "module-a",
+            },
+            {
+                "event": "capture",
+                "selector": "newLibraryWithData:error:",
+                "cacheKey": "cache-key",
+                "timestamp": "2026-04-10T20:00:00Z",
+                "moduleKey": "module-b",
+            },
+        ],
+    )
+    return corpus_root
+
+
 class AggregateReplayRunnerTests(unittest.TestCase):
+    def assert_compile_summary(
+        self,
+        compile_result: dict,
+        *,
+        expected_mode: str | None,
+        expected_decision: str,
+        expected_explicit: bool,
+        expected_fast_math_enabled: bool | None,
+        expected_inferred: list[str],
+        expected_effective: list[str],
+        expected_override_source: str | None,
+    ) -> None:
+        self.assertEqual(compile_result.get("fastMathMode"), expected_mode)
+        self.assertEqual(compile_result["fastMathDecision"], expected_decision)
+        self.assertEqual(compile_result["usesExplicitCompileOptions"], expected_explicit)
+        self.assertEqual(compile_result.get("compileOptionsFastMathEnabled"), expected_fast_math_enabled)
+        self.assertEqual(compile_result["inferredMetalArgs"], expected_inferred)
+        self.assertEqual(compile_result["effectiveMetalArgs"], expected_effective)
+        self.assertEqual(compile_result.get("explicitOverrideSource"), expected_override_source)
+
+    def run_aggregate_cli(
+        self,
+        root: Path,
+        *,
+        compile_backend: str,
+        metal_args: list[str] | None = None,
+    ) -> tuple[subprocess.CompletedProcess[str], dict, dict]:
+        corpus_root = create_aggregate_cli_fixture(
+            root,
+            fast_math_marker="air.compile.fast_math_disable",
+        )
+        output_root = root / f"out-{compile_backend}"
+        command = [
+            "python3",
+            str(AGGREGATE_SCRIPT),
+            "--corpus-root",
+            str(corpus_root),
+            "--bundle-id",
+            "com.example.demo",
+            "--compile-backend",
+            compile_backend,
+            "--output-root",
+            str(output_root),
+        ]
+        for metal_arg in list(metal_args or []):
+            command.extend(["--metal-arg", metal_arg])
+
+        completed = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        report_path = output_root / "aggregate-replay-summary.json"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        result = report["results"][0]
+
+        if (
+            compile_backend == "mtl-device"
+            and result["compile"].get("error") == "failed to create system default Metal device"
+        ):
+            raise unittest.SkipTest("requires system default Metal device")
+
+        detail = "\n".join(part for part in [completed.stdout.strip(), completed.stderr.strip()] if part)
+        self.assertEqual(completed.returncode, 0, msg=detail)
+        self.assertIn("aggregate replay summary", completed.stdout)
+        return completed, report, result
+
     def test_resolve_manifest_capture_order_prefers_matching_capture_sequence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             bundle_root = Path(temp_dir) / "ShaderCorpus" / "com.example.demo"
@@ -189,6 +358,18 @@ class AggregateReplayRunnerTests(unittest.TestCase):
         unknown_ir = '; no compile options\n'
 
         cases = [
+            {
+                "name": "aligned_enable",
+                "original_ir_texts": [enable_ir],
+                "metal_args": [],
+                "expected_mode": "enable",
+                "expected_decision": "fast_math_aligned",
+                "expected_explicit": True,
+                "expected_fast_math_enabled": True,
+                "expected_inferred": ["-ffast-math"],
+                "expected_effective": ["-ffast-math"],
+                "expected_override_source": None,
+            },
             {
                 "name": "aligned_disable",
                 "original_ir_texts": [disable_ir],
@@ -461,6 +642,184 @@ class AggregateReplayRunnerTests(unittest.TestCase):
         self.assertGreater(compile_result["preflightIssueCount"], 0)
         run_mock.assert_not_called()
 
+    def test_compile_aggregate_source_reads_shared_planner_summary_from_xcrun_backend(self) -> None:
+        enable_ir = '!1 = !{!"air.compile.fast_math_enable"}\n'
+        disable_ir = '!1 = !{!"air.compile.fast_math_disable"}\n'
+        unknown_ir = '; no compile options\n'
+        cases = [
+            {
+                "name": "aligned_enable",
+                "original_ir_texts": [enable_ir],
+                "metal_args": [],
+                "plan": make_shared_compile_plan(
+                    reason="fast_math_aligned",
+                    fast_math_mode="enable",
+                    inferred_metal_args=["-ffast-math"],
+                    effective_metal_args=["-ffast-math"],
+                    uses_explicit_compile_options=True,
+                    compile_options_fast_math_enabled=True,
+                ),
+                "expected_mode": "enable",
+                "expected_decision": "fast_math_aligned",
+                "expected_explicit": True,
+                "expected_fast_math_enabled": True,
+                "expected_inferred": ["-ffast-math"],
+                "expected_effective": ["-ffast-math"],
+                "expected_override_source": None,
+            },
+            {
+                "name": "conflict",
+                "original_ir_texts": [enable_ir, disable_ir],
+                "metal_args": [],
+                "plan": make_shared_compile_plan(
+                    reason="fast_math_conflict",
+                    fast_math_mode=None,
+                    inferred_metal_args=[],
+                    effective_metal_args=[],
+                    uses_explicit_compile_options=False,
+                    compile_options_fast_math_enabled=None,
+                ),
+                "expected_mode": None,
+                "expected_decision": "fast_math_conflict",
+                "expected_explicit": False,
+                "expected_fast_math_enabled": None,
+                "expected_inferred": [],
+                "expected_effective": [],
+                "expected_override_source": None,
+            },
+            {
+                "name": "partial",
+                "original_ir_texts": [enable_ir, unknown_ir],
+                "metal_args": [],
+                "plan": make_shared_compile_plan(
+                    reason="fast_math_partial",
+                    fast_math_mode=None,
+                    inferred_metal_args=[],
+                    effective_metal_args=[],
+                    uses_explicit_compile_options=False,
+                    compile_options_fast_math_enabled=None,
+                ),
+                "expected_mode": None,
+                "expected_decision": "fast_math_partial",
+                "expected_explicit": False,
+                "expected_fast_math_enabled": None,
+                "expected_inferred": [],
+                "expected_effective": [],
+                "expected_override_source": None,
+            },
+            {
+                "name": "unavailable",
+                "original_ir_texts": [unknown_ir],
+                "metal_args": ["-std=metal3.1"],
+                "plan": make_shared_compile_plan(
+                    reason="fast_math_unavailable",
+                    fast_math_mode=None,
+                    inferred_metal_args=[],
+                    effective_metal_args=["-std=metal3.1"],
+                    uses_explicit_compile_options=False,
+                    compile_options_fast_math_enabled=None,
+                ),
+                "expected_mode": None,
+                "expected_decision": "fast_math_unavailable",
+                "expected_explicit": False,
+                "expected_fast_math_enabled": None,
+                "expected_inferred": [],
+                "expected_effective": ["-std=metal3.1"],
+                "expected_override_source": None,
+            },
+            {
+                "name": "user_override",
+                "original_ir_texts": [disable_ir],
+                "metal_args": ["-ffast-math"],
+                "plan": make_shared_compile_plan(
+                    reason="user_override",
+                    fast_math_mode="enable",
+                    inferred_metal_args=[],
+                    effective_metal_args=["-ffast-math"],
+                    uses_explicit_compile_options=True,
+                    compile_options_fast_math_enabled=True,
+                    explicit_override_source="user_metal_args",
+                ),
+                "expected_mode": "enable",
+                "expected_decision": "user_override",
+                "expected_explicit": True,
+                "expected_fast_math_enabled": True,
+                "expected_inferred": [],
+                "expected_effective": ["-ffast-math"],
+                "expected_override_source": "user_metal_args",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_path = root / "aggregate.replayed.generated.metal"
+            source_path.write_text(VALID_AGGREGATE_SOURCE, encoding="utf-8")
+
+            for case in cases:
+                with self.subTest(case=case["name"]):
+                    original_ir_paths: list[Path] = []
+                    for index, original_ir_text in enumerate(case["original_ir_texts"]):
+                        original_ir_path = root / f"{case['name']}-module-{index}.ll"
+                        original_ir_path.write_text(original_ir_text, encoding="utf-8")
+                        original_ir_paths.append(original_ir_path)
+
+                    args = argparse.Namespace(
+                        compile_backend="xcrun",
+                        metal_sdk="macosx",
+                        metal_args=list(case["metal_args"]),
+                        skip_preflight=False,
+                        shared_compile_planner_binary=str(root / "shared_compile_planner_harness"),
+                    )
+                    aggregate_result = {"success": True, "sourcePath": str(source_path)}
+
+                    def fake_run(command: list[str], check: bool, capture_output: bool, text: bool) -> subprocess.CompletedProcess[str]:
+                        self.assertFalse(check)
+                        self.assertTrue(capture_output)
+                        self.assertTrue(text)
+                        self.assertEqual(command[:5], ["xcrun", "--sdk", "macosx", "metal", "-c"])
+                        compile_arg_start = 5
+                        compile_arg_end = compile_arg_start + len(case["expected_effective"])
+                        self.assertEqual(command[compile_arg_start:compile_arg_end], case["expected_effective"])
+                        self.assertEqual(command[compile_arg_end], str(source_path.resolve()))
+                        self.assertEqual(command[-2], "-o")
+                        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+                    with mock.patch.object(
+                        aggregate_runner.replay_runner,
+                        "resolve_shared_compile_plan",
+                        return_value=case["plan"],
+                    ) as resolve_plan_mock:
+                        with mock.patch.object(aggregate_runner.subprocess, "run", side_effect=fake_run):
+                            compile_result = aggregate_runner.compile_aggregate_source(
+                                aggregate_result,
+                                original_ir_paths,
+                                args,
+                                job_id=1,
+                                bundle_id="com.example.demo",
+                                replacement_key="replacement-key",
+                                module_keys=[path.stem for path in original_ir_paths],
+                            )
+
+                    resolve_plan_mock.assert_called_once_with(
+                        original_ir_paths,
+                        list(case["metal_args"]),
+                        requested_backend="xcrun",
+                        shared_compile_planner_binary=args.shared_compile_planner_binary,
+                    )
+                    self.assertEqual(compile_result["status"], "success")
+                    self.assertTrue(compile_result["success"])
+                    self.assertEqual(compile_result["compileBackend"], "xcrun")
+                    self.assert_compile_summary(
+                        compile_result,
+                        expected_mode=case["expected_mode"],
+                        expected_decision=case["expected_decision"],
+                        expected_explicit=case["expected_explicit"],
+                        expected_fast_math_enabled=case["expected_fast_math_enabled"],
+                        expected_inferred=case["expected_inferred"],
+                        expected_effective=case["expected_effective"],
+                        expected_override_source=case["expected_override_source"],
+                    )
+
     def test_compile_aggregate_source_reads_compile_decision_from_mtl_device_harness(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -615,175 +974,49 @@ class AggregateReplayRunnerTests(unittest.TestCase):
     def test_cli_rebuilds_duplicate_modules_and_compiles_aggregate(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            corpus_root = root / "ShaderCorpus"
-            bundle_root = corpus_root / "com.example.demo"
-            replacement_dir = bundle_root / "replacements" / "20260410_selector_cache"
-            replacement_dir.mkdir(parents=True, exist_ok=True)
+            _, report, result = self.run_aggregate_cli(root, compile_backend="xcrun")
 
-            for module_key in ["module-a", "module-b"]:
-                module_dir = bundle_root / "modules" / module_key
-                module_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(TEST_FRAGMENT_PACKED_RETURN_SAMPLE, module_dir / "module.ll")
-                write_json(
-                    module_dir / "module.meta.json",
-                    {
-                        "bundleId": "com.example.demo",
-                        "moduleKey": module_key,
-                        "selector": "newLibraryWithData:error:",
-                        "moduleSummary": f"summary-{module_key}",
-                    },
-                )
-
-            write_json(
-                replacement_dir / "replacement.meta.json",
-                {
-                    "bundleId": "com.example.demo",
-                    "selector": "newLibraryWithData:error:",
-                    "cacheKey": "cache-key",
-                    "timestamp": "2026-04-10T20:00:00Z",
-                    "moduleKeys": ["module-a", "module-b"],
-                },
-            )
-            (replacement_dir / "aggregate.generated.metal").write_text(
-                "#include <metal_stdlib>\nusing namespace metal;\n// runtime baseline placeholder\n",
-                encoding="utf-8",
-            )
-            write_jsonl(
-                bundle_root / "manifest.jsonl",
-                [
-                    {
-                        "event": "capture",
-                        "selector": "newLibraryWithData:error:",
-                        "cacheKey": "cache-key",
-                        "timestamp": "2026-04-10T20:00:00Z",
-                        "moduleKey": "module-a",
-                    },
-                    {
-                        "event": "capture",
-                        "selector": "newLibraryWithData:error:",
-                        "cacheKey": "cache-key",
-                        "timestamp": "2026-04-10T20:00:00Z",
-                        "moduleKey": "module-b",
-                    },
-                ],
-            )
-
-            output_root = root / "out"
-            completed = subprocess.run(
-                [
-                    "python3",
-                    str(AGGREGATE_SCRIPT),
-                    "--corpus-root",
-                    str(corpus_root),
-                    "--bundle-id",
-                    "com.example.demo",
-                    "--output-root",
-                    str(output_root),
-                ],
-                cwd=REPO_ROOT,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-
-            self.assertIn("aggregate replay summary", completed.stdout)
-            report = json.loads((output_root / "aggregate-replay-summary.json").read_text(encoding="utf-8"))
             self.assertEqual(report["aggregateJobCount"], 1)
             self.assertEqual(report["failedJobs"], 0)
-            result = report["results"][0]
             self.assertEqual(result["overallStatus"], "success")
             self.assertEqual(result["aggregate"]["dedupeSkippedModuleCount"], 1)
             self.assertEqual(result["compile"]["status"], "success")
             self.assertEqual(result["compile"]["compileBackend"], "xcrun")
             self.assertTrue(Path(result["aggregate"]["sourcePath"]).is_file())
+            self.assert_compile_summary(
+                result["compile"],
+                expected_mode="disable",
+                expected_decision="fast_math_aligned",
+                expected_explicit=True,
+                expected_fast_math_enabled=False,
+                expected_inferred=["-fno-fast-math"],
+                expected_effective=["-fno-fast-math"],
+                expected_override_source=None,
+            )
 
     @unittest.skipUnless(sys.platform == "darwin" and shutil.which("swiftc"), "requires macOS Metal + swiftc")
     def test_cli_compiles_aggregate_with_mtl_device_backend(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            corpus_root = root / "ShaderCorpus"
-            bundle_root = corpus_root / "com.example.demo"
-            replacement_dir = bundle_root / "replacements" / "20260410_selector_cache"
-            replacement_dir.mkdir(parents=True, exist_ok=True)
+            _, report, result = self.run_aggregate_cli(root, compile_backend="mtl-device")
 
-            for module_key in ["module-a", "module-b"]:
-                module_dir = bundle_root / "modules" / module_key
-                module_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(TEST_FRAGMENT_PACKED_RETURN_SAMPLE, module_dir / "module.ll")
-                write_json(
-                    module_dir / "module.meta.json",
-                    {
-                        "bundleId": "com.example.demo",
-                        "moduleKey": module_key,
-                        "selector": "newLibraryWithData:error:",
-                        "moduleSummary": f"summary-{module_key}",
-                    },
-                )
-
-            write_json(
-                replacement_dir / "replacement.meta.json",
-                {
-                    "bundleId": "com.example.demo",
-                    "selector": "newLibraryWithData:error:",
-                    "cacheKey": "cache-key",
-                    "timestamp": "2026-04-10T20:00:00Z",
-                    "moduleKeys": ["module-a", "module-b"],
-                },
-            )
-            (replacement_dir / "aggregate.generated.metal").write_text(
-                "#include <metal_stdlib>\nusing namespace metal;\n// runtime baseline placeholder\n",
-                encoding="utf-8",
-            )
-            write_jsonl(
-                bundle_root / "manifest.jsonl",
-                [
-                    {
-                        "event": "capture",
-                        "selector": "newLibraryWithData:error:",
-                        "cacheKey": "cache-key",
-                        "timestamp": "2026-04-10T20:00:00Z",
-                        "moduleKey": "module-a",
-                    },
-                    {
-                        "event": "capture",
-                        "selector": "newLibraryWithData:error:",
-                        "cacheKey": "cache-key",
-                        "timestamp": "2026-04-10T20:00:00Z",
-                        "moduleKey": "module-b",
-                    },
-                ],
-            )
-
-            output_root = root / "out"
-            completed = subprocess.run(
-                [
-                    "python3",
-                    str(AGGREGATE_SCRIPT),
-                    "--corpus-root",
-                    str(corpus_root),
-                    "--bundle-id",
-                    "com.example.demo",
-                    "--compile-backend",
-                    "mtl-device",
-                    "--output-root",
-                    str(output_root),
-                ],
-                cwd=REPO_ROOT,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-
-            self.assertIn("aggregate replay summary", completed.stdout)
-            report = json.loads((output_root / "aggregate-replay-summary.json").read_text(encoding="utf-8"))
             self.assertEqual(report["requestedInputs"]["compileBackend"], "mtl-device")
             self.assertEqual(report["aggregateJobCount"], 1)
             self.assertEqual(report["failedJobs"], 0)
-            result = report["results"][0]
             self.assertEqual(result["overallStatus"], "success")
             self.assertEqual(result["compile"]["status"], "success")
             self.assertEqual(result["compile"]["compileBackend"], "mtl-device")
             self.assertTrue(Path(result["compile"]["backendReportPath"]).is_file())
+            self.assert_compile_summary(
+                result["compile"],
+                expected_mode="disable",
+                expected_decision="fast_math_aligned",
+                expected_explicit=True,
+                expected_fast_math_enabled=False,
+                expected_inferred=["-fno-fast-math"],
+                expected_effective=["-fno-fast-math"],
+                expected_override_source=None,
+            )
 
 
 if __name__ == "__main__":

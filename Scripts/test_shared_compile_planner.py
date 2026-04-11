@@ -104,6 +104,19 @@ class SharedCompilePlannerTests(unittest.TestCase):
         unknown_ir = '; no compile options\n'
         cases = [
             {
+                "name": "aligned_enable",
+                "requested_backend": "mtl-device",
+                "original_ir_texts": [enable_ir],
+                "user_metal_args": [],
+                "expected_reason": "fast_math_aligned",
+                "expected_mode": "enable",
+                "expected_inferred": ["-ffast-math"],
+                "expected_effective": ["-ffast-math"],
+                "expected_explicit": True,
+                "expected_fast_math_enabled": True,
+                "expected_override_source": None,
+            },
+            {
                 "name": "aligned_disable",
                 "requested_backend": "mtl-device",
                 "original_ir_texts": [disable_ir],

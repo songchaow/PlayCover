@@ -620,6 +620,14 @@ struct IRToMSLConverter {
             isMethodCall: false,
             description: "simdgroup_barrier(mem_flags)"
         ))
+        m.append(AirBuiltinMapping(
+            airPattern: "air.discard_fragment",
+            mslFunction: "discard_fragment",
+            category: .misc,
+            paramCount: 0,
+            isMethodCall: false,
+            description: "discard_fragment()"
+        ))
 
         // ── 纹理操作 ──
         // sample: air.sample_texture_{dim}.{type} → texture.sample(sampler, coord, ...)

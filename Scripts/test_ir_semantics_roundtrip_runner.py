@@ -17,6 +17,7 @@ ROUNDTRIP_SCRIPT = SCRIPTS_DIR / "ir_semantics_roundtrip_runner.py"
 TEST_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_addrspace.ll"
 TEST_FRAGMENT_PACKED_RETURN_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_fragment_packed_return.ll"
 TEST_FRAGMENT_NO_ENTRY_INPUT_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_fragment_no_entry_input.ll"
+TEST_FRAGMENT_DISCARD_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_fragment_discard.ll"
 TEST_UNDERSCORE_STRUCT_REFERENCE_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_underscore_struct_reference.ll"
 TEST_VERTEX_POSITION_INVARIANT_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_vertex_position_invariant.ll"
 TEST_PHI_BRANCH_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_phi_branch.ll"
@@ -1258,6 +1259,30 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             self.assertEqual(risk_report["blockedSamples"], [])
             self.assertIn("air.invariant", regenerated_ir)
             self.assertIn("float4 position [[position, invariant]];", generated_msl)
+
+    @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
+    def test_corpus_replay_runner_emits_real_fragment_discard(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            generated_path = Path(temp_dir) / "fragment-discard.generated.metal"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(REPO_ROOT / "Scripts" / "corpus_replay_runner.py"),
+                    "--ll",
+                    str(TEST_FRAGMENT_DISCARD_SAMPLE),
+                    "--output-file",
+                    str(generated_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("replay summary", completed.stdout)
+            generated_text = generated_path.read_text(encoding="utf-8")
+            self.assertIn("discard_fragment();", generated_text)
+            self.assertNotIn("/* air.discard_fragment() */", generated_text)
 
     @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
     def test_corpus_replay_runner_preserves_internal_sampler_state_globals(self) -> None:

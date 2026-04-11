@@ -4060,7 +4060,7 @@ struct IRToMSLConverter {
         }
 
         let blockLines = buildBasicBlockLineMap(bodyLines)
-        if hasSelfLoopConditionalBranch(ctx: ctx) || canEmitStructuredCFG(blockLines, ctx: ctx) {
+        if shouldEmitStructuredCFG(blockLines, ctx: ctx) {
             var emittedBlocks: Set<String> = []
             emitStructuredBasicBlock(
                 "entry",
@@ -4096,40 +4096,17 @@ struct IRToMSLConverter {
         return blocks
     }
 
-    private static func hasSelfLoopConditionalBranch(ctx: SSAContext) -> Bool {
-        for (label, block) in ctx.bbInfo {
-            guard case .conditional(_, let trueLabel, let falseLabel) = block.branch else {
-                continue
-            }
-            if trueLabel == label || falseLabel == label {
-                return true
-            }
-        }
-        return false
-    }
-
-    private static func canEmitStructuredCFG(_ blockLines: [String: [String]], ctx: SSAContext) -> Bool {
-        let conditionalBlocks = ctx.bbInfo.values.filter {
-            if case .conditional = $0.branch { return true }
-            return false
-        }
-        guard !conditionalBlocks.isEmpty else {
+    private static func shouldEmitStructuredCFG(_ blockLines: [String: [String]], ctx: SSAContext) -> Bool {
+        let blocksWithBranches = ctx.bbInfo.values.filter { $0.branch != nil }
+        guard !blocksWithBranches.isEmpty else {
             return false
         }
 
-        for block in conditionalBlocks {
-            guard case .conditional(_, let trueLabel, let falseLabel) = block.branch else {
-                continue
-            }
-            let trueBranch = ctx.bbInfo[trueLabel]?.branch
-            let falseBranch = ctx.bbInfo[falseLabel]?.branch
-            guard case .unconditional(let trueMerge)? = trueBranch,
-                  case .unconditional(let falseMerge)? = falseBranch,
-                  trueMerge == falseMerge,
-                  blockLines[trueLabel] != nil,
-                  blockLines[falseLabel] != nil,
-                  blockLines[trueMerge] != nil else {
-                return false
+        for block in blocksWithBranches {
+            for successor in successorLabels(for: block.label, ctx: ctx) {
+                guard blockLines[successor] != nil else {
+                    return false
+                }
             }
         }
 

@@ -26,6 +26,7 @@ TEST_LATE_MERGE_FALLBACK_ORDER_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseS
 TEST_UNCONDITIONAL_SUCCESSOR_GATING_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_unconditional_successor_gating.ll"
 TEST_STRUCTURED_MERGE_LATE_PREDECESSOR_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_structured_merge_late_predecessor.ll"
 TEST_NESTED_COMMON_MERGE_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_nested_common_merge.ll"
+TEST_NESTED_COMMON_MERGE_WITH_UNSTRUCTURED_TAIL_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_nested_common_merge_with_unstructured_tail.ll"
 
 import sys
 
@@ -1457,6 +1458,39 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             self.assertIn("phi_0 = 3.0", generated_text)
             self.assertIn("phi_1 = 4", generated_text)
             self.assertIn("phi_1 = phi_0", generated_text)
+            store_index = generated_text.index("*(output) = phi_1")
+            self.assertGreater(store_index, generated_text.index("phi_1 = 4"))
+            self.assertGreater(store_index, generated_text.index("phi_1 = phi_0"))
+            self.assertEqual(generated_text.count("return;"), 1)
+
+    @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
+    def test_corpus_replay_runner_keeps_nested_common_merge_when_later_cfg_is_unstructured(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            generated_path = Path(temp_dir) / "nested-common-merge-unstructured-tail.generated.metal"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(REPO_ROOT / "Scripts" / "corpus_replay_runner.py"),
+                    "--ll",
+                    str(TEST_NESTED_COMMON_MERGE_WITH_UNSTRUCTURED_TAIL_SAMPLE),
+                    "--output-file",
+                    str(generated_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("replay summary", completed.stdout)
+            generated_text = generated_path.read_text(encoding="utf-8")
+            self.assertGreaterEqual(generated_text.count("if ("), 2)
+            self.assertIn("phi_0 = 1", generated_text)
+            self.assertIn("phi_0 = 2", generated_text)
+            self.assertIn("phi_1 = phi_0", generated_text)
+            self.assertIn("phi_1 = 4", generated_text)
+            self.assertNotIn("// → BB20", generated_text)
+            self.assertNotIn("// → BB30", generated_text)
             store_index = generated_text.index("*(output) = phi_1")
             self.assertGreater(store_index, generated_text.index("phi_1 = 4"))
             self.assertGreater(store_index, generated_text.index("phi_1 = phi_0"))

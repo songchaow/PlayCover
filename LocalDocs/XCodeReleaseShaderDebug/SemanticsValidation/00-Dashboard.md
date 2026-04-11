@@ -36,31 +36,20 @@
 
 ### 当前最新状态
 
-- 当前主线最新已完成 `CC-003.8`：围绕 `CC-003.7` 之后暴露出来的高频 `L3` `fast-math 相关属性变化` 下钻后，已经确认真正缺口**不在 compare，也不在 converter emission 本身，而在 round-trip compile posture：compile `generated.metal` 时一直使用裸 `xcrun metal -c`，导致 original IR 中带 `air.compile.fast_math_disable` 的样本被稳定回编成 `air.compile.fast_math_enable`**
-- 实现上这轮没有继续放大 `IRToMSLConverter.swift`，而是只改 compile 阶段：
-  - `Scripts/corpus_replay_runner.py` 新增 `infer_original_ir_fast_math_mode(...)` / `resolve_compile_metal_args(...)`
-  - compile `generated.metal` 时会先读取 original IR：
-    - `air.compile.fast_math_disable -> -fno-fast-math`
-    - `air.compile.fast_math_enable -> -ffast-math`
-  - 若用户已经显式传入 fast-math 参数，则保持用户覆盖，不再自动追加
-  - compile 结果里开始记录 `originalFastMathMode` / `inferredMetalArgs` / `effectiveMetalArgs`
-  - 同时补了 `Scripts/test_ir_semantics_roundtrip_runner.py` 的 3 条 compile posture 回归
-- 单 case 结果已经形成闭环：
-  - `cc-003-8-single-d48165-fast-math-compile-posture` 中，代表样本 `d48165ab...`：`L3 -> L1`
-  - compile 命令已自动带出 `-fno-fast-math`
-  - regenerated IR 的 `compileOptions` 已重新对齐为 `air.compile.fast_math_disable`
-  - 剩余 fast-math 差异只剩 instruction-level residual，维持在 `L1`
-- full-batch 给出的结论非常关键：
-  - diagnostics `cc-003-8-diagnostics-20260410-fast-math-compile-posture`：`L1 13 / L2 140 / L3 0`
-  - corpus `cc-003-8-corpus-20260410-fast-math-compile-posture`：**`L1 222 / L2 208 / L3 7`**
-  - `blockedSamples` 集合对比：corpus **`54 -> 7`**、diagnostics **`1 -> 0`**
-  - 新增 blocked 回归：corpus `0`、diagnostics `0`
-- 因此当前最新状态可以概括为：**`fast-math` compile posture family 已经通过 round-trip compile 对齐被大幅收掉，它就是 `CC-003.7` 之后真正的 blocked 杠杆；修完之后，剩余的 corpus `7` 个 `L3` 已全部收敛成 `entry 参数个数变化 + entry 参数类型摘要变化 + entry 参数语义摘要变化` family。下一步不应继续放大 fast-math 方向，而应优先下钻这支 entry 参数 family，其次再看 `模块级 addrspace 分布变化 + air intrinsic 使用变化` 的 residual。**
+- 当前主线最新已完成 `CC-003.8`，`fast-math` compile posture family 已不再是当前 blocked ceiling。
+- 当前 full-batch 结果稳定收敛为：
+  - diagnostics：`L1 13 / L2 140 / L3 0`
+  - corpus：`L1 222 / L2 208 / L3 7`
+- 当前剩余的 corpus `7` 个 `L3` 已全部收敛成同一支：
+  - `entry 参数个数变化`
+  - `entry 参数类型摘要变化`
+  - `entry 参数语义摘要变化`
+- 因此当前下一步应优先下钻 `CC-003.9` 这支 `entry 参数` family，其次再看 `模块级 addrspace 分布变化 + air intrinsic 使用变化` 的 residual。
 
 
 ## 当前默认流程
 
-### Step 1：从 canonical compare 报告选下一个 case
+### Step 1：先从结构化报告选下一个 case
 
 默认优先级：
 
@@ -69,15 +58,19 @@
    - 差异模式在多个样本中重复出现的
    - 能映射到同一类参数 / resource / addrspace / builtin 语义的
    - 有希望通过一处实现改动同时改善多个样本的
-3. 暂不优先：
-   - 明显只是 target triple / data layout 记录项的
-   - 需要 live / 行为测试才能判断、但当前还没有低层证据的
+   - 已经能从 `compile-summary.json` / aggregate compile report 看到明确 compile posture 线索的
+3. 当前不优先：
+   - 明显只是 `target triple / data layout` 记录项的
+   - 仍然只能靠 `L3/L4 / live / GUI` 才能判断、且当前缺少低层证据的
 
 推荐输入：
 
 - `build/semantics-validation/roundtrip/*/compare-summary.json`
 - `build/semantics-validation/roundtrip/*/risk-report.json`
-- `build/semantics-validation/roundtrip/*/high-risk-samples.json`
+- `build/semantics-validation/roundtrip/*/compile-summary.json`
+- `build/semantics-validation/roundtrip/*/gate-summary.json`
+- `build/shader-aggregate-replay/*/aggregate-replay-summary.json`
+- aggregate 下各样本的 `*.compile.json`
 
 ### Step 2：先做 case 分析，再决定是否改实现
 
@@ -89,20 +82,26 @@
   - resource / builtin 摘要
   - addrspace
   - CFG / instruction family
-  - fast-math / module metadata
+  - fast-math / compile posture / module metadata
 - 这是“表达方式变化”还是“更像真实语义变化”
 - 这个差异更像来自：
-  - Apple 编译姿势
+  - compile posture / planner decision
   - emitted MSL 写法
   - metadata 建模不足
   - 参数映射错误
   - compare canonicalization 不对称
+- 当前 `compile-summary.json` 是否已经回答了：
+  - `originalFastMathMode`
+  - `inferredMetalArgs`
+  - `effectiveMetalArgs`
+- 若问题属于 aggregate / 多模块形态，`aggregate_replay_runner.py --compile-backend mtl-device` 的 compile report 是否已经给出更贴近 runtime 的结论
 - 如果修复，应该改哪一层最合适：
   - `IRToMSLConverter`
   - `ir_canonical_compare.py`
-  - round-trip runner / compile posture
+  - round-trip runner / compile posture / shared planner
+  - aggregate orchestration / runtime-like harness
 
-- **必须严格优先尝试修改 `IRToMSLConverter`实现来解决差异**。只有当反复尝试过修改IRToMSLConverter发现效果不好，才考虑修改 `ir_canonical_compare.py`
+- **必须严格优先尝试修改真正负责语义建模或 compile decision 的实现层。** 只有当反复验证后确认问题只是 compare 口径噪声，才考虑优先改 `ir_canonical_compare.py`。
 
 若这一步还没有明确判断，**不要急着改实现**。
 
@@ -119,6 +118,7 @@
 - 参数级 `noalias -> __restrict` 回放
 - compare 中某一类 alias / metadata 归一化
 - 参数建模里补一项 previously-missing 的 first-class 语义
+- compile posture / planner 里补一项明确的参数推断或 override 规则
 
 禁止一次混入多条彼此无关的修正。
 
@@ -128,16 +128,16 @@
 
 目的：先确认本轮改动确实命中了目标差异。
 
-典型动作：
+默认动作：
 
-- replay 单个 `.ll`
-- 编译生成的 `.metal`
-- 反汇编回 `.ll`
-- 对目标 case 重跑 canonical compare
+- 对单个 `.ll` 样本执行 `ir_semantics_roundtrip_runner.py`
+- 读取同轮 `compile-summary.json` / `compare-summary.json` / `risk-report.json` / `gate-summary.json`
+- 若问题涉及 aggregate / compile posture / runtime-like compile，再补 `aggregate_replay_runner.py --compile-backend mtl-device`
 
 要求回答：
 
 - 原来的那条差异是否消失 / 降级
+- compile posture 是否已经对齐
 - 是否引入新的更坏差异
 
 #### 4.2 full-batch 验证
@@ -152,7 +152,8 @@
 必须回答：
 
 - `L3` 数量是否下降
-- `L2` / `L3` 的共有样本口径下，是否真的改善
+- `blockedSamples` 是否减少
+- `L2 / L3` 的共有样本口径下，是否真的改善
 - 是否出现新的 `L3` 回归
 
 ### Step 5：把结果写回控制面
@@ -162,7 +163,8 @@
 - 当前分析的是哪一类差异
 - 该类差异的当前结论是什么
 - 是否已经落到实现改动
-- full-batch 风险数量变化如何
+- 单 case 与 full-batch 的关键证据是什么
+- 若涉及 compile posture / aggregate，结构化报告给出的结论是什么
 - 下一步最值得继续分析的 case 是什么
 
 ## TODO
@@ -204,10 +206,10 @@
 从高到低：
 
 1. **能让一批 `L3` 同时下降的差异模式**
-2. **已经在 `difference-analysis/` 有初始证据的模式**
-3. **单个 case 虽复杂，但明显指向参数建模 / emission 逻辑的问题**
+2. **已经在 `difference-analysis/`、`compile-summary.json` 或 aggregate compile report 中有初始证据的模式**
+3. **单个 case 虽复杂，但明显指向参数建模 / emission / compile posture 逻辑的问题**
 4. **纯 compare 口径问题**（如果它能明显降低误报，也值得做）
-5. **需要 live / 行为测试才能推进的问题**（当前不是主优先级）
+5. **只能靠 `L3/L4 / live` 才能推进的问题**（当前不纳入默认选题范围）
 
 ### 拆任务的规则
 
@@ -226,26 +228,69 @@
 
 ### 改实现前
 
-最低要求：
+按改动类型选择最低要求：
+
+- **纯文档 / 方法规范 / 路线整理改动**：更新文档并自检跨文档口径一致性，无需额外构建
+- **`compare` / `round-trip` / Python orchestration 改动**：
 
 ```bash
 python3 Scripts/test_ir_canonical_compare.py
 python3 Scripts/test_ir_semantics_roundtrip_runner.py
 ```
 
-### 单 case 验证
-
-按当前任务需要，组合使用：
+- **compile posture / shared planner / aggregate compile 相关改动**：
 
 ```bash
-python3 Scripts/corpus_replay_runner.py --ll <sample.ll> --output-file <sample.metal>
-xcrun metal -c -emit-llvm <sample.metal> -o <sample.bc>
-clang -S -emit-llvm -x ir <sample.bc> -o <sample.ll>
+python3 Scripts/test_shared_compile_planner.py
+python3 Scripts/test_aggregate_replay_runner.py
+python3 Scripts/test_ir_semantics_roundtrip_runner.py
+python3 Scripts/test_ir_canonical_compare.py
 ```
+
+- **Swift runtime / PlayTools / host bridge / compile decision 相关改动**：
+
+```bash
+./BuildScripts/build_and_install.sh
+```
+
+  若同时涉及 shared planner、aggregate compile 或 round-trip 逻辑，继续补跑对应 Python 回归。
+
+- **改动了工程文件**：
+
+```bash
+./BuildScripts/lint_pbxproj.sh
+```
+
+### 单 case 验证
+
+默认入口是：
+
+```bash
+python3 Scripts/ir_semantics_roundtrip_runner.py --ll <sample.ll> --output-root build/semantics-validation/roundtrip/<run-name>
+```
+
+单 case 默认应读取同轮产物：
+
+- `compile-summary.json`
+- `roundtrip-summary.json`
+- `compare-summary.json`
+- `risk-report.json`
+- `gate-summary.json`
+
+若问题涉及 aggregate / 多模块 / compile posture / runtime-like compile，默认补充：
+
+```bash
+python3 Scripts/aggregate_replay_runner.py --replacement-dir <replacement-dir> --output-root build/shader-aggregate-replay/<run-name> --compile-backend mtl-device --allow-failures
+```
+
+补充约束：
+
+- 裸 `xcrun metal -c` 只适合做孤立编译器 smoke，不替代默认单 case 入口
+- 若需要显式透传 fast-math 参数，优先使用 `--metal-arg=<value>` 形式
 
 ### full-batch 验证
 
-只要本轮改动影响 canonical compare、IR 参数建模、MSL emission、resource 语义、地址空间或其它可能改变风险分布的逻辑，收尾时默认执行：
+只要本轮改动影响 canonical compare、IR 参数建模、MSL emission、compile posture、shared planner、aggregate compile decision、resource 语义、地址空间或其它可能改变风险分布的逻辑，收尾时默认执行：
 
 ```bash
 python3 Scripts/ir_semantics_roundtrip_runner.py --corpus-root ~/Library/Containers/io.playcover.PlayCover/ShaderCorpus --allow-failures
@@ -255,8 +300,10 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 当前最重要的不是“有没有跑”，而是：
 
 - 新旧 `risk-report.json` 的 `L3` 数量如何变化
+- `blockedSamples` 是否减少
 - 共有样本口径下有没有实际改善
 - 有没有新增 `L3`
+- 若问题涉及 compile posture / aggregate，相关 `compile-summary.json` 或 `*.compile.json` 是否已经对齐
 
 ## 当前完成判定
 
@@ -278,10 +325,11 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 
 - `QQ飞车手游` 启动 smoke
 - host bridge registration acknowledgement 稳定性
-- `L3` 最小行为测试
-- 更重的 live / `.gputrace` 验证
+- `Scripts/ir_semantics_behavior_runner.py` 驱动的 `L3` 最小行为测试
+- 更重的 live / `.gputrace` / render-diff 验证
+- 任何需要真实 app 安装后人工点击、人工登录或长期占机的验证
 
-只有当某个具体 case 的证据已经逼近行为层，才再考虑升级到更高层验证。
+只有当某个具体 case 的低层结构化证据已经不足以回答问题，或用户明确要求进入更高层验证时，才再考虑升级。
 
 ## Agent 工作流程
 
@@ -300,19 +348,21 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 
 ## 踩坑与经验
 
-- **compile green 不等于语义等价**
-- **不要把“文本完全一样”误当成“语义一样”**；当前默认应以 canonical summary + 风险分级为主
-- **先做离线，再做 live**；在当前阶段，live 不是默认主战场
-- **优先把高频手工流程脚本化**；若无法脚本化，也不能默认把用户人工操作写成日常 gate
-- **主文档不要直接暴露会漂移的本机快照**：本机增强入口、历史批量快照、manifest 描述文字与局部样本数量都应下沉到参考文档，主文档只保留当前主线真正依赖的控制面事实
-- **非 preset 的默认输出目录必须避免碰撞**：当前离线路径允许 agent 近同时发起 corpus / diagnostics 等批量运行；默认输出目录若只按秒命名，会导致报告互相覆盖，因此默认目录需要追加唯一后缀
-- **L2 compare 需要主动降噪**；更细的降噪对象与风险口径统一见 `04-L2-CanonicalCompareAndRiskGrading.md`（工作参考，当前主线推进**不必须读取**）
-- **resource metadata 的 `air.address_space` 显式化不应重复放大**；当函数参数 `addrspace` 摘要已一致时，这更像 compare 噪声，而不是 entry/resource 语义真的发生变化
-- **single-field output 先不要急着改 compare**；当 `outputSemantics` 一致但 `returnSignature` 出现 `wrapped -> bare` 漂移时，应先检查 converter 是否把 original IR 的 single-field wrapped return 过早塌平，只有排除生成侧后才考虑 compare 口径
-- **constant buffer struct 的 `&` / `*` 选择会直接影响 `dereferenceable(N)` 是否能 round-trip 保住**；当 `entry 参数类型摘要变化` 表现为 `ptr addrspace(2) dereferenceable(N) -> ptr addrspace(2)` 时，应优先检查 converter 是否把 `_Foo_Type` / `cb_Foo_Type` 这类用户 struct 误降成指针参数
-- **`air.position` 的 `air.invariant` 不能在返回 metadata 解析阶段被吞掉**；当 `entry 输出语义摘要变化` 表现为 `kind=air.position|type=float4|qualifiers=air.invariant -> kind=air.position|type=float4` 时，应先检查 converter 是否保留了返回 qualifier，并把它发到 `[[position, invariant]]`
-- **修掉表层 `entry` 差异后要立刻复跑 full-batch 看 blocked 集合是否真的变化**；像 `air.invariant` 这类修复即使能把 corpus compare 中的 `entry 输出语义摘要变化 36 -> 0`，也可能只是把同一批 `L3` 暴露成更底层的 `fast-math` family，而不会直接降低 `L3` 计数
-- **original IR 里带 `air.compile.fast_math_disable` 的样本不能用裸 `xcrun metal -c` 回编**；默认 compile posture 若丢掉这条信息，会把 whole-module `compileOptions` 从 `disable` 漂成 `enable`，直接形成高频 `L3` fast-math family；应按 original IR 自动补 `-fno-fast-math`（enable 样本则显式补 `-ffast-math`），但若用户已显式传入 fast-math 参数，应尊重用户覆盖
+- **compile green 不等于语义等价。** 当前默认应以 `compile-summary.json + compare-summary.json + risk-report.json + gate-summary.json` 这组结构化报告为主，而不是只看命令成功与否。
+- **不要把 `xcrun metal -c` 的成功直接当成 runtime 真值。** 单模块 round-trip 是默认低成本入口；若问题涉及 aggregate / compile posture / runtime-like compile，优先补 `Scripts/aggregate_replay_runner.py --compile-backend mtl-device`。
+- **构建、重建、安装统一走 `BuildScripts/`。** 不要手写 `xcodebuild`、手工复制产物，也不要把人工安装步骤写回默认流程。
+- **优先读报告，不要优先读日志。** 报告用于回答“发生了什么”，日志只在报告仍不足以解释错误时才作为补充证据。
+- **优先把高频手工流程脚本化。** 若某条验证路径无法脚本化，它就不应成为默认 gate。
+- **主文档不要直接暴露会漂移的本机快照。** 本机增强入口、历史批量快照、manifest 描述文字与局部样本数量都应下沉到参考文档。
+- **非 preset 的默认输出目录必须避免碰撞。** 批量运行默认目录需要带唯一后缀，避免近同时运行互相覆盖。
+- **L2 compare 需要主动降噪。** 更细的降噪对象与风险口径统一见 `04-L2-CanonicalCompareAndRiskGrading.md`。
+- **resource metadata 的 `air.address_space` 显式化不应重复放大。** 当函数参数 `addrspace` 摘要已一致时，这更像 compare 噪声，而不是 entry/resource 语义真的发生变化。
+- **single-field output 先不要急着改 compare。** 当 `outputSemantics` 一致但 `returnSignature` 出现 `wrapped -> bare` 漂移时，应先检查 converter 是否把 original IR 的 single-field wrapped return 过早塌平。
+- **constant buffer struct 的 `&` / `*` 选择会直接影响 `dereferenceable(N)` 是否能 round-trip 保住。** 当 `entry 参数类型摘要变化` 表现为 `ptr addrspace(2) dereferenceable(N) -> ptr addrspace(2)` 时，应优先检查 converter 是否把 `_Foo_Type` / `cb_Foo_Type` 这类用户 struct 误降成指针参数。
+- **`air.position` 的 `air.invariant` 必须保留到返回 metadata 与 MSL 发射。** 当 `entry 输出语义摘要变化` 表现为 `kind=air.position|type=float4|qualifiers=air.invariant -> kind=air.position|type=float4` 时，应先检查 converter 是否保留了返回 qualifier，并把它发到 `[[position, invariant]]`。
+- **修掉表层 `entry` 差异后要立刻复跑 full-batch 看 `blockedSamples` 是否真的变化。** 表层差异消失，不代表顶层 `L3` 一定下降。
+- **compile posture 是一等证据。** 当前默认要优先读取 `originalFastMathMode`、`inferredMetalArgs`、`effectiveMetalArgs`，而不是靠人工回忆命令参数。
+- **若需要显式透传 fast-math 参数，优先使用 `--metal-arg=<value>`。** 这样可以避免参数解析层把 `-ffast-math` / `-fno-fast-math` 误判成新的选项。
 
 ## 参考信息
 

@@ -36,18 +36,21 @@
 
 ### 当前最新状态
 
-- 当前主线最新已完成 `CC-003.13`，确认 corpus 中一支 `module addrspace + air intrinsic` residual 至少部分是真实 converter 缺口，而不只是 compare 口径问题。
-- 当前 full-batch 结果继续稳定收敛为：
+- 当前主线最新已完成 `CC-003.14`，确认 `CC-003.13` family 里还叠着第二处真实 converter 缺口：`air.discard_fragment` 没有被保成真实 fragment termination，而是被发成注释占位。
+- 当前 full-batch 结果已进一步收敛为：
   - diagnostics：`L1 143 / L2 10 / L3 0`
-  - corpus：`L1 319 / L2 118 / L3 0`
-- 当前 corpus / diagnostics 都已经没有 `L3` blocked 样本。
-- `CC-003.13` 的结论已经明确：
-  - 代表 case `293ec561...` 的 compile posture 已经对齐，不是 planner / fast-math root cause
-  - `IRToMSLConverter.swift` 对 `@__air_sampler_state*` internal global 的 lowering 存在真实缺口：旧版 generated MSL 虽然发出 `constexpr sampler __air_sampler_state(...)`，但 `sample_compare` 仍错误绑定到 entry sampler 参数
-  - 修复后 `293ec561...` 的 `generated.metal` 与 `regenerated.ll` 已重新对齐 sampler-state operand，证明这支 family 至少部分是实现问题，而不是 compare noise
-  - 但这轮只命中该 family 的第一处 converter 缺口；single-case 与 full-batch 顶层计数都未继续下降，说明当前 residual 仍然叠着 `air.discard_fragment` / `fast_floor` / `fast_fract` / `fast_fmin` 等下一层机制
-  - full-batch 上，corpus / diagnostics 顶层计数仍保持 `L2 118` 与 `L2 10`，且没有新增 `L3` / blocked
-- 因此当前下一步应优先继续下钻这支 family 中 residual 仍然残留的 `模块级 air intrinsic 使用变化 + 函数内 air intrinsic 调用统计变化 + 控制流粗摘要变化`，重点看 emitted MSL 到 regenerated AIR 之间的 `discard_fragment` 与 fast math intrinsic reshaping；其次再看 diagnostics 中残留的 `控制流粗摘要变化 + 指令族统计变化 + fast-math 相关属性变化` residual。
+  - corpus：`L1 354 / L2 83 / L3 0`
+- 当前 corpus / diagnostics 继续没有 `L3` blocked 样本。
+- `CC-003.14` 的结论已经明确：
+  - 代表 case `293ec561...` 的 compile posture 继续对齐，不是 planner / fast-math root cause
+  - `IRToMSLConverter.swift` 对 `air.discard_fragment()` 存在真实 lowering 缺口：旧版 generated MSL 只留下 `/* air.discard_fragment() */`，导致 regenerated AIR 丢失 `discard_fragment` 并把对应 CFG 线性化
+  - 修复后 `293ec561...` 的 `generated.metal` 已发出真实 `discard_fragment();`，`regenerated.ll` 也重新恢复 `air.discard_fragment: 2`
+  - 该代表 case 已从 `L2 -> L1`
+  - full-batch 上，corpus 顶层计数已经从 `L2 118 -> 83`，diagnostics 维持 `L2 10`，且没有新增 `L3` / blocked
+- 因此当前下一步应优先转向新的 shared residual family：
+  - `控制流粗摘要变化 + 指令族统计变化 + fast-math 相关属性变化`
+  - `指令族统计变化 + fast-math 相关属性变化 + 模块元数据 targetTriple 变化`
+  - 以及 corpus 中唯一仍挂着 `entry 参数语义摘要变化; entry builtin / stage-in 摘要变化` 的 `823dcdf7...`
 
 
 ## 当前默认流程
@@ -189,7 +192,8 @@
 | `CC-003.10` 收敛 mixed CFG 下可恢复 nested merge 被整函数线性化的问题 | DONE | 已确认 root cause 是 structured emission 入口条件过窄；代表 case `ab9230...`、`0d2cd9...` 均 `L2 -> L1`，corpus `L2 208 -> 196`、diagnostics `L2 140 -> 135`，且无新增 `L3` / blocked | `difference-analysis/mixed-cfg-structured-emission/04-implementation-result.md` / `difference-analysis/mixed-cfg-structured-emission/05-full-batch-compare.md` |
 | `CC-003.11` 优先检查 `CC-003.10` 收敛后剩余的纯 `CFG / instruction-family / fast-math` residual | DONE | 已确认 diagnostics 高频 family 的主要矛盾是 compare 对小幅 `select + aggregate/vector` reshaping 过敏；代表 case `083c8443...`、`1079c7c8...` 均 `L2 -> L1`，corpus `L2 196 -> 129`、diagnostics `L2 135 -> 10`，且无新增 `L3` / blocked | `difference-analysis/vector-aggregate-shape-normalization/04-implementation-result.md` / `difference-analysis/vector-aggregate-shape-normalization/05-full-batch-compare.md` |
 | `CC-003.12` 优先检查 `CC-003.11` 收敛后 corpus 中剩余的 `instruction-family + fast-math + targetTriple` residual | DONE | 已确认其中一支 `CFG 不变 + scalar/vector/aggregate materialization` residual 的主要矛盾是 compare 对轻微物化重排过敏；代表 case `62316900...`、`2984b21c...`、`2629c34e...` 均 `L2 -> L1`，corpus `L2 129 -> 118`，diagnostics 维持 `L2 10` 且无新增 `L3` / blocked | `difference-analysis/scalar-vector-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-materialization-normalization/05-full-batch-compare.md` |
-| `CC-003.13` 优先检查 `CC-003.12` 收敛后 corpus 中剩余的 `module addrspace + air intrinsic` residual | DONE | 已确认其中一支 family 至少部分是 converter 对 `@__air_sampler_state` internal global 的 lowering 缺口；代表 case `293ec561...` 已重新对齐 sampler-state operand，full-batch 顶层计数维持 `corpus L2 118 / diagnostics L2 10` 且无新增 `L3` / blocked | `difference-analysis/sampler-state-global-preservation/04-implementation-result.md` / `difference-analysis/sampler-state-global-preservation/05-full-batch-compare.md` |
+| `CC-003.13` 优先检查 `CC-003.12` 收敛后 corpus 中剩余的 `module addrspace + air intrinsic` residual | DONE | 已确认其中一支 family 至少部分是 converter 对 `@__air_sampler_state` internal global 的 lowering 缺口；代表 case `293ec561...` 已重新对齐 sampler-state operand，为下一轮继续拆解同 family residual 提供了实现层证据 | `difference-analysis/sampler-state-global-preservation/04-implementation-result.md` / `difference-analysis/sampler-state-global-preservation/05-full-batch-compare.md` |
+| `CC-003.14` 优先检查 `CC-003.13` 收敛后同 family 中残留的 `discard_fragment + CFG` residual | DONE | 已确认 root cause 是 converter 把 `air.discard_fragment` 发成注释占位；修复后代表 case `293ec561...` 从 `L2 -> L1`，corpus `L2 118 -> 83`，diagnostics 维持 `L2 10`，且无新增 `L3` / blocked | `difference-analysis/fragment-discard-lowering/04-implementation-result.md` / `difference-analysis/fragment-discard-lowering/05-full-batch-compare.md` |
 | `CC-004` 固化新的 case 分析模板 | TODO | 在 `difference-analysis/` 下沉淀一套稳定模板，确保后续每个 case 都按同样结构记录证据、结论与回归数据 | `difference-analysis/` |
 
 ## 任务执行规则
@@ -393,6 +397,8 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - `difference-analysis/position-invariant-output/05-full-batch-compare.md`
 - `difference-analysis/fast-math-compile-posture/04-implementation-result.md`
 - `difference-analysis/fast-math-compile-posture/05-full-batch-compare.md`
+- `difference-analysis/fragment-discard-lowering/04-implementation-result.md`
+- `difference-analysis/fragment-discard-lowering/05-full-batch-compare.md`
 - `difference-analysis/scalar-vector-materialization-normalization/04-implementation-result.md`
 - `difference-analysis/scalar-vector-materialization-normalization/05-full-batch-compare.md`
 

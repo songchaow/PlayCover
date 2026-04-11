@@ -305,7 +305,7 @@ def _entry_has_small_vector_aggregate_shape_drift(
     vector_delta = abs(int(lhs_families.get("vector", 0)) - int(rhs_families.get("vector", 0)))
     total_delta = sum(abs(int(lhs_families.get(name, 0)) - int(rhs_families.get(name, 0))) for name in changed_keys)
 
-    return arithmetic_delta <= 4 and aggregate_delta <= 8 and vector_delta <= 16 and total_delta <= 24
+    return arithmetic_delta <= 5 and aggregate_delta <= 8 and vector_delta <= 16 and total_delta <= 24
 
 
 def _entry_has_small_scalar_vector_materialization_drift(

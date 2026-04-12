@@ -213,3 +213,115 @@
 ## 一句话总结
 
 **`CC-003.22` 的 converter 窄化修复带来了干净且可解释的统计收益：在 diagnostics 完全不回退、且没有新增高风险样本的前提下，corpus `L2 46 -> 45`、`L1 391 -> 392`，并把此前持续挂在 gate 顶部的 `c2cd49d0...` 从高风险集合中稳定移除。**
+
+## 追加：`CC-003.23` full-batch 对比
+
+### 对比批次
+
+### corpus full-batch
+
+- 旧结果：`build/semantics-validation/roundtrip/cc-003-23-full-corpus/risk-report.json`
+- 新结果：`build/semantics-validation/roundtrip/cc-003-23-final-full-corpus/risk-report.json`
+
+### diagnostics full-batch
+
+- 旧结果：`build/semantics-validation/roundtrip/cc-003-23-full-diagnostics/risk-report.json`
+- 新结果：`build/semantics-validation/roundtrip/cc-003-23-final-full-diagnostics/risk-report.json`
+
+## 顶层计数变化
+
+### corpus
+
+- 旧：`L1 = 392 / L2 = 45 / L3 = 0`
+- 新：`L1 = 405 / L2 = 32 / L3 = 0`
+
+直接看变化：
+
+- `L3`：`0 -> 0`，持平
+- `L2`：`45 -> 32`，减少 `13`
+- `L1`：`392 -> 405`，增加 `13`
+
+### diagnostics
+
+- 旧：`L1 = 153 / L2 = 0 / L3 = 0`
+- 新：`L1 = 153 / L2 = 0 / L3 = 0`
+
+直接看变化：
+
+- `L3`：`0 -> 0`，持平
+- `L2`：`0 -> 0`，持平
+- `L1`：`153 -> 153`，持平
+
+## 这轮 full-batch 说明了什么
+
+### 1. 目标 family 获得了真实且成批的统计收益
+
+新旧 `compare-summary.json` 对比后可以直接确认：
+
+- `指令族统计变化; 模块元数据 targetTriple 变化`：`8 -> 0`
+- `指令族统计变化; fast-math 相关属性变化; 模块元数据 targetTriple 变化`：`11 -> 6`
+
+并且本轮共净移除了 `13` 个 corpus `L2` 样本，说明这次 compare 收敛不是只命中单个 case，而是确实吸收了一批同 family residual。
+
+### 2. diagnostics 完全不回退
+
+新旧 diagnostics full-batch 对比显示：
+
+- `L2 / L3` 继续保持 `0`
+- 不存在新的 diagnostics residual family
+- `blockedSamples` 继续为空
+
+这说明本轮 vector-heavy compare 分支没有把问题重新扩散回 diagnostics。
+
+### 3. 没有新增 `L3` / blocked / 更坏 residual
+
+这轮新旧 full-batch 对比后可以直接确认：
+
+- corpus / diagnostics 的 `L3` 继续都是 `0`
+- `blockedSamples` 继续为空
+- 新批次没有出现新的更坏风险层级
+
+因此这轮收益是**净收益**，而不是把旧的 `L2` 换成新的 `L3` 或 blocked 回归。
+
+## 剩余 residual 如何理解
+
+### corpus
+
+本轮之后，corpus 剩余 `L2` 主要收缩为：
+
+1. `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化`：`12`
+2. `模块级 addrspace 分布变化; 指令族统计变化; fast-math 相关属性变化`：`9`
+3. `指令族统计变化; fast-math 相关属性变化; 模块元数据 targetTriple 变化`：`6`
+4. `模块级 addrspace 分布变化; 控制流粗摘要变化; 指令族统计变化`：`4`
+5. `模块级 addrspace 分布变化; 指令族统计变化; 模块元数据 targetTriple 变化`：`1`
+
+这说明：
+
+- same-CFG pure materialization 这条 residual 已进一步显著收窄
+- 当前主矛盾已经转回 shared CFG / addrspace 相关 family
+- 后续不应继续优先放宽 materialization compare，而应优先分析新的最高频 shared residual
+
+### diagnostics
+
+本轮之后，diagnostics 仍然没有 `L2 / L3` residual：
+
+- `L2 = 0`
+- `L3 = 0`
+- `blockedSamples = []`
+
+## 修复后下一步最值得继续分析的 case
+
+`CC-003.23` 收尾后，当前最值得继续下钻的是 corpus 中最高频的 shared residual：
+
+- `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化`
+- 当前计数：`12`
+- 可从 `e17ab0cb...` 这类代表样本开始
+
+原因是：
+
+- 当前它已经成为剩余 `L2` 中最大的重复 family
+- 它比继续扩大 materialization compare 更像需要回到 shared CFG / emission / compare 边界重新归因的一支 residual
+
+## 一句话总结
+
+**`CC-003.23` 的 vector-heavy compare 收敛带来了显著且干净的 full-batch 收益：在 diagnostics 完全不回退、且没有新增 `L3` / blocked 的前提下，corpus `L2 45 -> 32`、`L1 392 -> 405`，并把 same-CFG materialization 主线再向前推进了一大步。**

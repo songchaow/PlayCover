@@ -191,7 +191,8 @@
 | `CC-003.20` 优先检查当前剩余的 `instruction-family + fast-math + targetTriple` residual | DONE | same-CFG materialization residual 已继续收敛 | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
 | `CC-003.21` 优先检查 diagnostics 中剩余的纯 `instruction-family + fast-math + targetTriple` residual | DONE | diagnostics arithmetic-heavy residual 已清零 | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
 | `CC-003.22` 优先检查 corpus 中仍挂在 gate 顶部的 `module air intrinsic + instruction-family` residual | DONE | `c2cd49d0...` 的窄 `zext <N x i1> -> <N x i8>` lowering 缺口已补齐，corpus `L2 46 -> 45` | `difference-analysis/scalar-vector-cast-materialization-normalization/` |
-| `CC-003.23` 重跑 full-batch 并继续拆剩余 `L2/L3` residual | DOING | 已完成一轮最新 full-batch 复跑；若仍有值得处理的 `L2/L3` case，则按默认流程闭环一个最高优先级 case，必要时拆出子任务 | 本文档 |
+| `CC-003.23` 重跑 full-batch 并继续拆剩余 `L2/L3` residual | DONE | 已完成最新 full-batch 复跑，并闭环一支高频 vector-heavy materialization residual；`055fe879...` 单 case `L2 -> L1`，corpus `L2 45 -> 32` | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
+| `CC-003.24` 优先检查 corpus 中当前最高频的 `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化` family | DOING | 已从最新 full-batch 确认这支 shared residual 仍有 `12` 个样本；下一轮按默认流程挑一个代表 case 完成归因、单 case 验证与 full-batch 复跑 | 本文档 |
 
 ## 任务执行规则
 

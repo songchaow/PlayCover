@@ -385,8 +385,20 @@ def _entry_has_small_scalar_vector_materialization_drift(
         and cast_delta == 0
         and total_delta <= 41
     )
+    vector_heavy_materialization_drift = (
+        changed_keys == {"arithmetic", "vector"}
+        and arithmetic_delta <= 20
+        and aggregate_delta == 0
+        and vector_delta <= 30
+        and cast_delta == 0
+        and total_delta <= 38
+    )
 
-    return baseline_materialization_drift or arithmetic_heavy_materialization_drift
+    return (
+        baseline_materialization_drift
+        or arithmetic_heavy_materialization_drift
+        or vector_heavy_materialization_drift
+    )
 
 
 def _downgrade_optimizer_only_shape_drift(

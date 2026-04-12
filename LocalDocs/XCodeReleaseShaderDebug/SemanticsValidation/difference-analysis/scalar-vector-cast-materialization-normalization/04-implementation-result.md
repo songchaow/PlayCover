@@ -213,3 +213,77 @@
 ## 一句话结论
 
 **`CC-003.22` 已确认是 converter 的更窄 lowering 缺口：只要把 `zext <N x i1> -> <N x i8>` 收敛到 “直接消费者仅为 `shufflevector`” 这一条物化链上，既能稳定消掉 `c2cd49...` 的 `module air intrinsic + instruction-family` residual，又不会重新放大到此前 broad select 曾误伤的 `extractelement` / `insertelement` 家族。**
+
+## 追加：`CC-003.23` 实现结果
+
+## 本轮分析的差异类型
+
+本轮继续处理 `CC-003.22` 之后 corpus 中仍停在 `L2` 的一支高频 residual：
+
+- `指令族统计变化`
+- `fast-math 相关属性变化`
+- `模块元数据 targetTriple 变化`
+
+代表 case 选在：
+
+- `build/semantics-validation/roundtrip/cc-003-23-single-055fe-vector-heavy/`
+- 目标样本：`055fe879...`
+
+## 结论：这是 compare 边界仍偏窄，不是 converter / compile posture 回退
+
+重新下钻 `compare-summary.json` / `compile-summary.json` 后，当前证据链足够明确：
+
+- `cfg` 继续完全一致
+- `entry / resource / builtin / addrspace` 摘要继续完全一致
+- `compile-summary.json` 已明确给出：
+  - `originalFastMathMode = enable`
+  - `inferredMetalArgs = -ffast-math`
+  - `effectiveMetalArgs = -ffast-math`
+- 代表 case 的 `instructionFamilies` 漂移只剩：
+  - `arithmetic: 222 -> 202`
+  - `vector: 363 -> 381`
+  - `aggregate` / `cast` 完全不变
+
+因此当前 residual 更像是 **same-CFG 下的 vector-heavy materialization tradeoff**，而不是 emitted MSL、compile decision 或语义建模真的发生了新的回退。
+
+## 实现修改
+
+这轮继续只做了一处最小 compare 改动：
+
+### `Scripts/ir_canonical_compare.py`
+
+在已有 baseline / arithmetic-heavy 两条 materialization 窗口之外，补一条更窄的 vector-heavy 分支，仅覆盖当前这支 shared residual：
+
+- `changed_keys == {arithmetic, vector}`
+- `arithmetic <= 20`
+- `vector <= 30`
+- `aggregate == 0`
+- `cast == 0`
+- `totalDelta <= 38`
+
+也就是说，这轮不是继续无差别扩大 same-CFG materialization 窗口，而是只吸收 **无 `aggregate/cast` 漂移、且仍保持双项 arithmetic/vector tradeoff** 的更窄 family。
+
+### `Scripts/test_ir_canonical_compare.py`
+
+本轮同步补了两条 guardrail 单测：
+
+- `test_compare_downgrades_same_cfg_vector_heavy_materialization_drift_to_l1`
+- `test_compare_keeps_l2_for_same_cfg_vector_heavy_materialization_outside_window`
+
+## 单 case / 回归验证
+
+本轮已完成并通过：
+
+- `python3 Scripts/test_ir_canonical_compare.py`
+- `python3 Scripts/test_ir_semantics_roundtrip_runner.py`
+- `python3 Scripts/ir_semantics_roundtrip_runner.py --ll .../055fe879.../module.ll --output-root build/semantics-validation/roundtrip/cc-003-23-single-055fe-vector-heavy`
+
+关键结果：
+
+- `055fe879...` 单 case `riskCounts = L1 1 / L2 0 / L3 0`
+- `instructionFamilyComparison = L1`
+- compile posture 继续对齐，未引入新的更坏差异
+
+## 一句话结论
+
+**`CC-003.23` 已确认仍是 compare 口径问题：当 `cfg`、语义摘要与 compile posture 都继续一致，且 `aggregate/cast` 完全不漂移时，`055fe879...` 这类 same-CFG vector-heavy materialization tradeoff 不应继续顶成 `L2`；补齐这条更窄 compare 分支后，代表 case 已稳定从 `L2 -> L1`。**

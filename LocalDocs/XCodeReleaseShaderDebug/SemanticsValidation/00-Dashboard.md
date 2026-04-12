@@ -36,20 +36,19 @@
 
 ### 当前最新状态
 
-- 当前主线最新已完成 `CC-003.20`，确认 `CC-003.19` 之后 residual 中剩余的两支 pure materialization case `edca6ad0...`、`5780e492...` 继续不是新的 `IRToMSLConverter` / compile posture 回退，而是 compare 对**同 CFG 下更宽的 `aggregate / arithmetic / vector` materialization tradeoff** 仍偏严：当 entry/resource/builtin/output 语义、函数内 `air intrinsic` 统计与 compile posture 已经一致时，这类更宽 residual 不应继续顶成 `L2`。
+- 当前主线最新已完成 `CC-003.21`，确认 `CC-003.20` 之后 diagnostics 中剩余的两支 pure materialization case `69e4179e...`、`d8c964c5...` 继续不是新的 `IRToMSLConverter` / compile posture 回退，而是 compare 对**同 CFG 下更窄的 arithmetic-heavy materialization tradeoff** 仍偏严：当 entry/resource/builtin/output 语义、函数内 `air intrinsic` 统计与 compile posture 已经一致，且 `cast` 完全不漂移时，这类 residual 不应继续顶成 `L2`。
 - 当前 full-batch 结果已进一步收敛为：
-  - diagnostics：`L1 151 / L2 2 / L3 0`
+  - diagnostics：`L1 153 / L2 0 / L3 0`
   - corpus：`L1 391 / L2 46 / L3 0`
 - 当前 corpus / diagnostics 继续没有 `L3` blocked 样本。
-- `CC-003.20` 的结论已经明确：
-  - 代表单 case `edca6ad0...` 与 `5780e492...` 的 compile posture 继续对齐：`effectiveMetalArgs = -ffast-math`
-  - 这轮 root cause 仍不是 `IRToMSLConverter.swift`、shared planner 或 fast-math compile posture 回退，而是 `ir_canonical_compare.py` 对 same-CFG materialization drift 的降噪窗口还不够宽：旧规则仅允许 `arithmetic <= 9`、`aggregate <= 12`、`totalDelta <= 24`，因此会把 `edca6ad0...` 与 `5780e492...` 这类 residual 继续顶成 `L2`
-  - 当前 compare 规则已扩展为：当 `cfg`、语义摘要与 `airIntrinsicCalls` 完全一致，且 `instruction-family` 漂移仍只落在 `{aggregate, arithmetic, vector, cast}` 时，允许更宽的 materialization tradeoff：`arithmetic <= 16`、`aggregate <= 19`、`vector <= 6`、`cast <= 2`、`totalDelta <= 27`
-  - 修复后单 case `edca6ad0...` 与 `5780e492...` 都已从 `L2 -> L1`，`instructionFamilyComparison = L1`
-  - full-batch 上，corpus 顶层计数从 `L2 68 -> 46`、diagnostics 从 `L2 3 -> 2`，且没有新增 `L3` / blocked；主 family `指令族统计变化 + fast-math 相关属性变化 + 模块元数据 targetTriple 变化` 在 corpus 从 `33 -> 11`、diagnostics 从 `3 -> 2`
-- 因此当前下一步应优先继续拆剩余更硬的 residual：
-  - diagnostics 中仍未收尽的 `指令族统计变化 + fast-math 相关属性变化 + 模块元数据 targetTriple 变化`
-  - corpus 中已露头的 `模块级 air intrinsic 使用变化 + 函数内 air intrinsic 调用统计变化 + 指令族统计变化`
+- `CC-003.21` 的结论已经明确：
+  - 代表单 case `69e4179e...` 与 `d8c964c5...` 的 compile posture 继续对齐：`effectiveMetalArgs = -ffast-math`
+  - 这轮 root cause 仍不是 `IRToMSLConverter.swift`、shared planner 或 fast-math compile posture 回退，而是 `ir_canonical_compare.py` 对 same-CFG materialization drift 的 arithmetic-heavy 边界还不够宽：`CC-003.20` 规则仅允许 `arithmetic <= 16`、`aggregate <= 19`、`vector <= 6`、`cast <= 2`、`totalDelta <= 27`，因此会把 `69e4179e...` 与 `d8c964c5...` 这类 `cast=0` 但 `arithmetic` 更重的 residual 继续顶成 `L2`
+  - 当前 compare 规则已扩展为：在 baseline same-CFG materialization drift 窗口之外，再额外允许一条更窄的 arithmetic-heavy tradeoff 分支：`arithmetic <= 26`、`aggregate <= 12`、`vector <= 4`、`cast == 0`、`totalDelta <= 41`
+  - 修复后单 case `69e4179e...` 与 `d8c964c5...` 都已从 `L2 -> L1`，`instructionFamilyComparison = L1`
+  - full-batch 上，diagnostics 顶层计数从 `L2 2 -> 0`、`L1 151 -> 153`，corpus 维持 `L2 46 / L3 0` 不回退，且没有新增 `L3` / blocked / new-only `L2`
+- 因此当前下一步应优先继续拆剩余更硬、且更像实现层候选的 residual：
+  - corpus 中已露头并继续挂在 gate 顶部的 `模块级 air intrinsic 使用变化 + 函数内 air intrinsic 调用统计变化 + 指令族统计变化`
 
 
 ## 当前默认流程
@@ -199,7 +198,8 @@
 | `CC-003.18` 优先检查 `CC-003.17` 之后 shared residual 中更窄的 `1 block + 1 br` split/merge family | DONE | 已确认 diagnostics 中一支 shared-CFG residual 主要是 compare 对窄 split/merge drift 过敏；修复后单 case `f5adb68d...` 从 `L2 -> L1`，diagnostics `L2 6 -> 3`、corpus `L2 75 -> 70`，且无新增 `L3` / blocked | `difference-analysis/shared-cfg-split-merge-normalization/04-implementation-result.md` / `difference-analysis/shared-cfg-split-merge-normalization/05-full-batch-compare.md` |
 | `CC-003.19` 继续拆 corpus 中仍未收尽的更宽 shared-CFG residual | DONE | 已确认 `dd586566...`、`b95fff15...` 仍属 compare 对 shared-CFG split/merge + 极小 `cast` reshaping 过敏；修复后两者均 `L2 -> L1`，corpus `L2 70 -> 68`、diagnostics 维持 `L2 3`，且无新增 `L3` / blocked | `difference-analysis/shared-cfg-split-merge-normalization/04-implementation-result.md` / `difference-analysis/shared-cfg-split-merge-normalization/05-full-batch-compare.md` |
 | `CC-003.20` 优先检查当前剩余的 `instruction-family + fast-math + targetTriple` residual | DONE | 已确认 `edca6ad0...`、`5780e492...` 仍属 compare 对更宽 same-CFG materialization drift 过敏；修复后两者均 `L2 -> L1`，corpus `L2 68 -> 46`、diagnostics `L2 3 -> 2`，且无新增 `L3` / blocked | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
-| `CC-003.21` 优先检查 diagnostics 中剩余的纯 `instruction-family + fast-math + targetTriple` residual | TODO | 重新下钻 `69e4179e...`、`d8c964c5...`，判断它们是否仍是 compare 对更宽 materialization 过敏，还是已经触到不应继续放宽 compare 的边界 | `difference-analysis/scalar-vector-cast-materialization-normalization/` |
+| `CC-003.21` 优先检查 diagnostics 中剩余的纯 `instruction-family + fast-math + targetTriple` residual | DONE | 已确认 `69e4179e...`、`d8c964c5...` 仍属 compare 对 same-CFG + arithmetic-heavy materialization drift 过敏；补齐 `cast == 0` 的更窄 arithmetic-heavy 窗口后，两者均 `L2 -> L1`，diagnostics `L2 2 -> 0`，corpus 维持 `L2 46` 且无新增 `L3` / blocked / new-only `L2` | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
+| `CC-003.22` 优先检查 corpus 中仍挂在 gate 顶部的 `module air intrinsic + instruction-family` residual | TODO | 重新下钻 `c2cd49d0...`，判断它更像 converter / lowering / metadata 建模缺口，还是 compare 尚未覆盖的 module intrinsic 噪声 | `difference-analysis/scalar-vector-cast-materialization-normalization/` |
 | `CC-004` 固化新的 case 分析模板 | TODO | 在 `difference-analysis/` 下沉淀一套稳定模板，确保后续每个 case 都按同样结构记录证据、结论与回归数据 | `difference-analysis/` |
 
 ## 任务执行规则

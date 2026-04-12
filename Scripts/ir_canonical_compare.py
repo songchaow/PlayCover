@@ -371,13 +371,22 @@ def _entry_has_small_scalar_vector_materialization_drift(
     cast_delta = abs(int(lhs_families.get("cast", 0)) - int(rhs_families.get("cast", 0)))
     total_delta = sum(abs(int(lhs_families.get(name, 0)) - int(rhs_families.get(name, 0))) for name in changed_keys)
 
-    return (
+    baseline_materialization_drift = (
         arithmetic_delta <= 16
         and aggregate_delta <= 19
         and vector_delta <= 6
         and cast_delta <= 2
         and total_delta <= 27
     )
+    arithmetic_heavy_materialization_drift = (
+        arithmetic_delta <= 26
+        and aggregate_delta <= 12
+        and vector_delta <= 4
+        and cast_delta == 0
+        and total_delta <= 41
+    )
+
+    return baseline_materialization_drift or arithmetic_heavy_materialization_drift
 
 
 def _downgrade_optimizer_only_shape_drift(

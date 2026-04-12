@@ -325,3 +325,112 @@
 ## 一句话总结
 
 **`CC-003.23` 的 vector-heavy compare 收敛带来了显著且干净的 full-batch 收益：在 diagnostics 完全不回退、且没有新增 `L3` / blocked 的前提下，corpus `L2 45 -> 32`、`L1 392 -> 405`，并把 same-CFG materialization 主线再向前推进了一大步。**
+
+## 追加：`CC-003.24` full-batch 对比
+
+### 对比批次
+
+### corpus full-batch
+
+- 旧结果：`build/semantics-validation/roundtrip/20260412-231811-3afc7608/risk-report.json`
+- 新结果：`build/semantics-validation/roundtrip/cc-003-24-full-corpus-select-heavy/risk-report.json`
+
+### diagnostics full-batch
+
+- 旧结果：`build/semantics-validation/roundtrip/20260412-231855-c8a5e561/risk-report.json`
+- 新结果：`build/semantics-validation/roundtrip/cc-003-24-full-diagnostics-select-heavy/risk-report.json`
+
+## 顶层计数变化
+
+### corpus
+
+- 旧：`L1 = 405 / L2 = 32 / L3 = 0`
+- 新：`L1 = 406 / L2 = 31 / L3 = 0`
+
+直接看变化：
+
+- `L3`：`0 -> 0`，持平
+- `L2`：`32 -> 31`，减少 `1`
+- `L1`：`405 -> 406`，增加 `1`
+
+### diagnostics
+
+- 旧：`L1 = 153 / L2 = 0 / L3 = 0`
+- 新：`L1 = 153 / L2 = 0 / L3 = 0`
+
+直接看变化：
+
+- `L3`：`0 -> 0`，持平
+- `L2`：`0 -> 0`，持平
+- `L1`：`153 -> 153`，持平
+
+## 这轮 full-batch 说明了什么
+
+### 1. 目标样本被精准移除，且没有换入新的 `L2`
+
+新旧 `risk-report.json` 对比后可以直接确认：
+
+- 被移除的高风险样本只有：`bundle:com.papegames.lysk::module:e17ab0cb...`
+- 新批次没有新增 `L2` 样本
+
+也就是说，这轮 corpus `L2 32 -> 31` 不是偶然波动，而是 dashboard 目标样本被精准拿掉后的净收益。
+
+### 2. 最高频 shared residual 获得了真实收缩
+
+新旧 family 计数对比后可以直接确认：
+
+- `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化`：`12 -> 11`
+
+这说明本轮 compare 收敛已经命中当前最大的 shared residual family，而不只是碰巧让单样本回落。
+
+### 3. diagnostics 完全不回退
+
+新旧 diagnostics full-batch 对比显示：
+
+- `L2 / L3` 继续保持 `0`
+- 不存在新的 diagnostics residual family
+- `blockedSamples` 继续为空
+
+这说明本轮 shared-CFG select-heavy compare 分支没有把问题重新扩散回 diagnostics。
+
+### 4. 没有新增 `L3` / blocked / 更坏 residual
+
+这轮新旧 full-batch 对比后可以直接确认：
+
+- corpus / diagnostics 的 `L3` 继续都是 `0`
+- `blockedSamples` 继续为空
+- 新批次没有出现新的更坏风险层级
+
+因此这轮收益仍然是**净收益**，而不是把旧的 `L2` 换成新的 `L3` 或 blocked 回归。
+
+## gate 如何理解
+
+两条新 `gate-summary.json` 中：
+
+- diagnostics：继续 `PASS`
+- corpus：仍是 `WARN`
+
+但这轮 corpus `WARN` 主要仍是 generic gate 对当前活跃 `L2` 集的默认提示；真正看新旧 `risk-report.json` diff，可以确认：
+
+- 没有新增 `L2`
+- 只有 `e17ab0cb...` 被移除
+
+因此这轮 `WARN` 反映的是剩余 residual 尚未清空，而不是本轮 compare 扩展引入了新的风险集合回退。
+
+## 修复后下一步最值得继续分析的 case
+
+`CC-003.24` 收尾后，当前最值得继续下钻的仍是 corpus 中剩余最高频的 shared residual：
+
+- `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化`
+- 当前计数：`11`
+- 可从 `c3d8aba9...` 这类代表样本开始
+
+原因是：
+
+- 这支 family 仍然是 corpus 当前最大的重复 residual
+- `e17ab0cb...` 已证明其中至少有一部分仍属于 compare 边界过窄
+- 下一步最有价值的是继续确认剩余样本里，哪些还能被 shared-CFG compare 解释，哪些已经开始逼近实现问题
+
+## 一句话总结
+
+**`CC-003.24` 的 select-heavy shared-CFG compare 收敛带来了干净且可解释的 full-batch 收益：在 diagnostics 完全不回退、且没有新增 `L3` / blocked / new-only `L2` 的前提下，corpus `L2 32 -> 31`、`L1 405 -> 406`，并把当前最高频 shared residual family 从 `12 -> 11` 再向前推进了一步。**

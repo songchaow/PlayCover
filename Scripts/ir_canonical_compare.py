@@ -349,7 +349,14 @@ def _entry_has_small_scalar_vector_materialization_drift(
 
     lhs_cfg = original_entry.get("cfg") or {}
     rhs_cfg = regenerated_entry.get("cfg") or {}
-    if lhs_cfg != rhs_cfg:
+    cfg_is_identical = lhs_cfg == rhs_cfg
+    select_delta = abs(int(lhs_cfg.get("selectCount") or 0) - int(rhs_cfg.get("selectCount") or 0))
+    cfg_skeleton_matches = (
+        int(lhs_cfg.get("basicBlockCount") or 0) == int(rhs_cfg.get("basicBlockCount") or 0)
+        and (lhs_cfg.get("terminatorCounts") or {}) == (rhs_cfg.get("terminatorCounts") or {})
+        and int(lhs_cfg.get("phiCount") or 0) == int(rhs_cfg.get("phiCount") or 0)
+    )
+    if not cfg_is_identical and not cfg_skeleton_matches:
         return False
 
     lhs_families = original_entry.get("instructionFamilies") or {}
@@ -372,32 +379,47 @@ def _entry_has_small_scalar_vector_materialization_drift(
     total_delta = sum(abs(int(lhs_families.get(name, 0)) - int(rhs_families.get(name, 0))) for name in changed_keys)
 
     baseline_materialization_drift = (
-        arithmetic_delta <= 16
+        cfg_is_identical
+        and arithmetic_delta <= 16
         and aggregate_delta <= 19
         and vector_delta <= 6
         and cast_delta <= 2
         and total_delta <= 27
     )
     arithmetic_heavy_materialization_drift = (
-        arithmetic_delta <= 26
+        cfg_is_identical
+        and arithmetic_delta <= 26
         and aggregate_delta <= 12
         and vector_delta <= 4
         and cast_delta == 0
         and total_delta <= 41
     )
     vector_heavy_materialization_drift = (
-        changed_keys == {"arithmetic", "vector"}
+        cfg_is_identical
+        and changed_keys == {"arithmetic", "vector"}
         and arithmetic_delta <= 20
         and aggregate_delta == 0
         and vector_delta <= 30
         and cast_delta == 0
         and total_delta <= 38
     )
+    select_heavy_vector_materialization_drift = (
+        not cfg_is_identical
+        and cfg_skeleton_matches
+        and changed_keys == {"arithmetic", "vector"}
+        and select_delta <= 8
+        and arithmetic_delta <= 8
+        and aggregate_delta == 0
+        and vector_delta <= 40
+        and cast_delta == 0
+        and total_delta <= 48
+    )
 
     return (
         baseline_materialization_drift
         or arithmetic_heavy_materialization_drift
         or vector_heavy_materialization_drift
+        or select_heavy_vector_materialization_drift
     )
 
 

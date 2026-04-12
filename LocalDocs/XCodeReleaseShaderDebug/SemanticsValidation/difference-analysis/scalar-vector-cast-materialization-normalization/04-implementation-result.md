@@ -287,3 +287,87 @@
 ## 一句话结论
 
 **`CC-003.23` 已确认仍是 compare 口径问题：当 `cfg`、语义摘要与 compile posture 都继续一致，且 `aggregate/cast` 完全不漂移时，`055fe879...` 这类 same-CFG vector-heavy materialization tradeoff 不应继续顶成 `L2`；补齐这条更窄 compare 分支后，代表 case 已稳定从 `L2 -> L1`。**
+
+## 追加：`CC-003.24` 实现结果
+
+## 本轮分析的差异类型
+
+本轮继续处理 `CC-003.23` 之后 corpus 中仍然最高频的一支 shared residual：
+
+- `控制流粗摘要变化`
+- `指令族统计变化`
+- `fast-math 相关属性变化`
+
+代表 case 选在：
+
+- `build/semantics-validation/roundtrip/cc-003-24-single-e17ab0cb-select-heavy/`
+- 目标样本：`e17ab0cb...`
+
+## 结论：这是 compare 对 shared-CFG skeleton-preserved materialization drift 仍偏窄，不是 compile posture 回退
+
+重新下钻 `compare-summary.json` / `compile-summary.json` 后，当前证据链已经足够明确：
+
+- `entry / resource / builtin / output` 语义继续完全一致
+- `air intrinsic` 统计继续一致
+- `compile-summary.json` 继续显示：
+  - `originalFastMathMode = enable`
+  - `effectiveMetalArgs = -ffast-math`
+  - `fastMathDecision = fast_math_aligned`
+- 真正还停在 `L2` 的，是一类更窄的 shared-CFG residual：
+  - `basicBlockCount` 不变
+  - `terminatorCounts` 不变
+  - `phiCount` 不变
+  - 但 `selectCount: 7 -> 14`
+  - 同时 `arithmetic: 62 -> 55`
+  - `vector: 119 -> 153`
+  - `aggregate` / `cast` 完全不变
+  - `totalAbsoluteDelta = 41`
+
+因此这轮更像是 **CFG 骨架保持不变时的 select-heavy vector materialization tradeoff**，而不是 emitted MSL、compile decision 或语义建模真的发生了新的回退。
+
+## 实现修改
+
+这轮继续只做了一处最小 compare 改动：
+
+### `Scripts/ir_canonical_compare.py`
+
+在已有 baseline / arithmetic-heavy / vector-heavy 三条 materialization 窗口之外，再补一条更窄的 `select-heavy` shared-CFG 分支，仅覆盖当前这支 residual：
+
+- 不再要求 `lhs_cfg == rhs_cfg`
+- 但要求 `basicBlockCount`、`terminatorCounts`、`phiCount` 完全一致，也就是 **CFG skeleton matches**
+- 仍要求 `changed_keys == {arithmetic, vector}`
+- 仍要求 `aggregate == 0`
+- 仍要求 `cast == 0`
+- 新增约束：
+  - `selectDelta <= 8`
+  - `arithmeticDelta <= 8`
+  - `vectorDelta <= 40`
+  - `totalDelta <= 48`
+
+也就是说，这轮不是继续无差别放宽 shared-CFG compare，而是只吸收 **CFG 骨架不变 + selectCount 增长 + arithmetic/vector 双项重分配** 的更窄 family。
+
+### `Scripts/test_ir_canonical_compare.py`
+
+本轮同步补了两条 guardrail 单测：
+
+- `test_compare_downgrades_select_heavy_vector_materialization_drift_with_shared_cfg_skeleton_to_l1`
+- `test_compare_keeps_l2_for_select_heavy_vector_materialization_drift_outside_select_window`
+
+## 单 case / 回归验证
+
+本轮已完成并通过：
+
+- `python3 Scripts/test_ir_canonical_compare.py`
+- `python3 Scripts/test_ir_semantics_roundtrip_runner.py`
+- `python3 Scripts/ir_semantics_roundtrip_runner.py --ll .../e17ab0cb.../module.ll --output-root build/semantics-validation/roundtrip/cc-003-24-single-e17ab0cb-select-heavy`
+
+关键结果：
+
+- `e17ab0cb...` 单 case `riskCounts = L1 1 / L2 0 / L3 0`
+- `cfgComparison = L1`
+- `instructionFamilyComparison = L1`
+- compile posture 继续对齐，未引入新的更坏差异
+
+## 一句话结论
+
+**`CC-003.24` 已确认仍是 compare 口径问题：当 `cfg` 的 block / terminator / phi 骨架继续一致、语义摘要与 `air intrinsic` 统计不变、且 compile posture 仍然对齐时，`e17ab0cb...` 这类 shared-CFG select-heavy vector materialization drift 不应继续顶成 `L2`；补齐这条更窄 compare 分支后，代表 case 已稳定从 `L2 -> L1`。**

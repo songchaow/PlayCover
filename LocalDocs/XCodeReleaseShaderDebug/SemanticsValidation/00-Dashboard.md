@@ -194,7 +194,8 @@
 | `CC-003.22` 优先检查 corpus 中仍挂在 gate 顶部的 `module air intrinsic + instruction-family` residual | DONE | `c2cd49d0...` 的窄 `zext <N x i1> -> <N x i8>` lowering 缺口已补齐，corpus `L2 46 -> 45` | `difference-analysis/scalar-vector-cast-materialization-normalization/` |
 | `CC-003.23` 重跑 full-batch 并继续拆剩余 `L2/L3` residual | DONE | 已完成最新 full-batch 复跑，并闭环一支高频 vector-heavy materialization residual；`055fe879...` 单 case `L2 -> L1`，corpus `L2 45 -> 32` | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
 | `CC-003.24` 优先检查 corpus 中当前最高频的 `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化` family | DONE | 已确认 `e17ab0cb...` 属于 shared-CFG skeleton 保持不变但 `selectCount` 增长的 compare residual；单 case `L2 -> L1`，corpus `L2 32 -> 31` | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
-| `CC-003.25` 继续检查 corpus 中剩余最高频的 `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化` family | DOING | 当前该 family 仍有 `11` 个样本；下一轮优先从 `c3d8aba9...` 这类代表 case 开始，继续判断是 shared-CFG compare 边界还是实现问题 | 本文档 |
+| `CC-003.25` 继续检查 corpus 中剩余最高频的 `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化` family | DONE | 已确认 `c3d8aba9...` 属于 single-block ret-only 下 vector select scalarization 的 compare residual；单 case `L2 -> L1`，corpus `L2 31 -> 30` | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
+| `CC-003.26` 继续检查 corpus 中剩余最高频的 `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化` family | DOING | 当前该 family 仍有 `10` 个样本；下一轮优先从 `401761e8...` 这类更宽 shared-CFG case 开始，继续判断是 compare 边界还是实现问题 | 本文档 |
 
 ## 任务执行规则
 

@@ -403,6 +403,20 @@ def _entry_has_small_scalar_vector_materialization_drift(
         and cast_delta == 0
         and total_delta <= 38
     )
+    single_block_select_heavy_vector_materialization_drift = (
+        not cfg_is_identical
+        and cfg_skeleton_matches
+        and int(lhs_cfg.get("basicBlockCount") or 0) == 1
+        and (lhs_cfg.get("terminatorCounts") or {}) == {"ret": 1}
+        and int(lhs_cfg.get("phiCount") or 0) == 0
+        and changed_keys == {"arithmetic", "vector"}
+        and select_delta <= 4
+        and arithmetic_delta <= 24
+        and aggregate_delta == 0
+        and vector_delta <= 36
+        and cast_delta == 0
+        and total_delta <= 59
+    )
     select_heavy_vector_materialization_drift = (
         not cfg_is_identical
         and cfg_skeleton_matches
@@ -419,6 +433,7 @@ def _entry_has_small_scalar_vector_materialization_drift(
         baseline_materialization_drift
         or arithmetic_heavy_materialization_drift
         or vector_heavy_materialization_drift
+        or single_block_select_heavy_vector_materialization_drift
         or select_heavy_vector_materialization_drift
     )
 

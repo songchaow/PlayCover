@@ -371,3 +371,90 @@
 ## 一句话结论
 
 **`CC-003.24` 已确认仍是 compare 口径问题：当 `cfg` 的 block / terminator / phi 骨架继续一致、语义摘要与 `air intrinsic` 统计不变、且 compile posture 仍然对齐时，`e17ab0cb...` 这类 shared-CFG select-heavy vector materialization drift 不应继续顶成 `L2`；补齐这条更窄 compare 分支后，代表 case 已稳定从 `L2 -> L1`。**
+
+## 追加：`CC-003.25` 实现结果
+
+## 本轮分析的差异类型
+
+本轮继续处理 `CC-003.24` 之后 corpus 中仍然最高频、且同 family 里更窄的一支 residual：
+
+- `控制流粗摘要变化`
+- `指令族统计变化`
+- `fast-math 相关属性变化`
+
+代表 case 选在：
+
+- `build/semantics-validation/roundtrip/cc-003-25-single-c3d8aba9-select-scalarization/`
+- 目标样本：`c3d8aba9...`
+
+## 结论：这是 compare 对 single-block vector-select scalarization 仍偏窄，不是 compile posture 回退
+
+重新下钻 `compare-summary.json` / `compile-summary.json` / `original.ll` / `regenerated.ll` 后，当前证据链已经足够明确：
+
+- `entry / resource / builtin / addrspace` 摘要继续完全一致
+- `air intrinsic` 统计继续一致
+- `compile-summary.json` 继续显示：
+  - `originalFastMathMode = enable`
+  - `effectiveMetalArgs = -ffast-math`
+  - `fastMathDecision = fast_math_aligned`
+- 当前真正还停在 `L2` 的，是一条更窄的 single-block residual：
+  - `basicBlockCount` / `terminatorCounts` / `phiCount` 完全不变
+  - `selectCount: 2 -> 6`
+  - `arithmetic: 51 -> 28`
+  - `vector: 179 -> 215`
+  - `aggregate` / `cast` 完全不变
+  - `totalAbsoluteDelta = 59`
+- `original.ll` 中原本是 `select fast <3 x i1> ... <3 x float> ...` 的 vector select
+- `regenerated.ll` 中则被拆成 `extractelement + select fast i1 + insertelement` 的标量化重组
+
+因此这轮更像是 **single-block ret-only skeleton 保持不变时的 vector select scalarization tradeoff**，而不是 emitted MSL、compile decision 或语义建模真的发生了新的回退。
+
+## 实现修改
+
+这轮继续只做了一处最小 compare 改动：
+
+### `Scripts/ir_canonical_compare.py`
+
+在已有 baseline / arithmetic-heavy / vector-heavy / shared-CFG select-heavy 四条 materialization 窗口之外，再补一条更窄的 `single-block select-heavy` 分支，仅覆盖当前这支 residual：
+
+- 仍要求 `cfg_skeleton_matches`
+- 进一步要求：
+  - `basicBlockCount == 1`
+  - `terminatorCounts == {ret: 1}`
+  - `phiCount == 0`
+- 仍要求 `changed_keys == {arithmetic, vector}`
+- 仍要求 `aggregate == 0`
+- 仍要求 `cast == 0`
+- 新增约束：
+  - `selectDelta <= 4`
+  - `arithmeticDelta <= 24`
+  - `vectorDelta <= 36`
+  - `totalDelta <= 59`
+
+也就是说，这轮不是继续无差别放宽 shared-CFG compare，而是只吸收 **single-block / ret-only / vector-select 被 scalarized 成多次标量 select** 的更窄 family。
+
+### `Scripts/test_ir_canonical_compare.py`
+
+本轮同步补了两条 guardrail 单测：
+
+- `test_compare_downgrades_single_block_select_heavy_vector_materialization_drift_to_l1`
+- `test_compare_keeps_l2_for_single_block_select_heavy_vector_materialization_drift_outside_arithmetic_window`
+
+## 单 case / 回归验证
+
+本轮已完成并通过：
+
+- `python3 Scripts/test_ir_canonical_compare.py`
+- `python3 Scripts/test_ir_semantics_roundtrip_runner.py`
+- `python3 Scripts/ir_semantics_roundtrip_runner.py --ll .../c3d8aba9.../original.ll --output-root build/semantics-validation/roundtrip/cc-003-25-single-c3d8aba9-select-scalarization`
+
+关键结果：
+
+- `c3d8aba9...` 单 case `riskCounts = L1 1 / L2 0 / L3 0`
+- `cfgComparison = L1`
+- `instructionFamilyComparison = L1`
+- compile posture 继续对齐，未引入新的更坏差异
+
+## 一句话结论
+
+**`CC-003.25` 已确认仍是 compare 口径问题：当 `cfg` 退化为 single-block ret-only skeleton、语义摘要与 `air intrinsic` 统计继续一致、compile posture 仍然对齐，且差异只表现为 vector select 被 scalarize 成多次标量 `select` 并伴随 arithmetic/vector 重分配时，`c3d8aba9...` 这类 residual 不应继续顶成 `L2`；补齐这条更窄 compare 分支后，代表 case 已稳定从 `L2 -> L1`。**

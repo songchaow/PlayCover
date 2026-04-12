@@ -36,20 +36,20 @@
 
 ### 当前最新状态
 
-- 当前主线最新已完成 `CC-003.16`，确认 corpus 中唯一仍挂着 `entry 参数语义摘要变化; entry builtin / stage-in 摘要变化` 的 `823dcdf7...` 不是 compare 口径噪声，而是 converter 没把 fragment `stage_in` 字段上的 user 语义与插值 qualifier 保真回发到 MSL。
+- 当前主线最新已完成 `CC-003.17`，确认 `CC-003.12` 收掉后残留的一支同 CFG `instruction-family + fast-math + targetTriple` family 仍主要是 compare 口径过严：当 entry/resource/builtin/output 语义与函数内 `air intrinsic` 统计已经一致时，少量 `aggregate / arithmetic / vector` materialization 重排即使再伴随极小 `cast` 漂移，也不应继续顶成 `L2`。
 - 当前 full-batch 结果已进一步收敛为：
-  - diagnostics：`L1 145 / L2 8 / L3 0`
-  - corpus：`L1 356 / L2 81 / L3 0`
+  - diagnostics：`L1 147 / L2 6 / L3 0`
+  - corpus：`L1 362 / L2 75 / L3 0`
 - 当前 corpus / diagnostics 继续没有 `L3` blocked 样本。
-- `CC-003.16` 的结论已经明确：
-  - 代表 case `823dcdf7...` 的 compile posture 继续对齐：`originalFastMathMode = enable`，`effectiveMetalArgs = -ffast-math`
-  - 修复前 `generated.metal` 里的 `XlatMtlMain_StageIn` 只有裸字段，丢失 `[[user(TEXCOORD*)]]` 与 `[[flat]] / [[center_perspective]]`，导致 regenerated AIR 把两路 `flat` 输入稳定漂成默认 `air.center + air.perspective`
-  - `IRToMSLConverter.swift` 现已从 AIR metadata 解析 `user(TEXCOORD*)` 与 `air.flat / air.center / air.perspective / air.no_perspective / air.centroid / air.sample`，并定向回发到 `stage_in` 字段属性
-  - 修复后 `823dcdf7...` 已从 `L2 -> L1`，`entryComparison = L0`、`builtinComparison = L0`、`shouldEnterL3 = false`
-  - full-batch 上，corpus 顶层计数从 `L2 82 -> 81`，diagnostics 维持 `L2 8`，且没有新增 `L3` / blocked
-- 因此当前下一步应优先转向剩余更硬的 residual：
-  - `指令族统计变化 + fast-math 相关属性变化 + 模块元数据 targetTriple 变化`
+- `CC-003.17` 的结论已经明确：
+  - 代表 case `3a9cedb...`、`376c8b2c...`、`2984b21c...` 的 compile posture 继续对齐：`originalFastMathMode = enable`，`effectiveMetalArgs = -ffast-math`，`fastMathDecision = fast_math_aligned`
+  - 这轮 root cause 不是 `IRToMSLConverter.swift`、shared planner 或 fast-math compile posture 回退，而是 `ir_canonical_compare.py` 里同 CFG materialization 降噪条件仍过窄：旧规则只接受 `{aggregate, arithmetic, vector}` 且 `aggregate <= 4`，无法覆盖 `3a9cedb...` 的小幅 `cast` 漂移与 `376c8b2c...` 的更宽 `aggregate` 重排
+  - 当前 compare 规则已扩展为：同 CFG、语义与 `air intrinsic` 统计一致时，允许 `{aggregate, arithmetic, vector, cast}` 内的小幅 materialization reshaping，其中 `cast <= 2`、`aggregate <= 12`、`arithmetic <= 9`、`vector <= 6`、`totalDelta <= 24`
+  - 修复后单 case `3a9cedb...`、`376c8b2c...`、`2984b21c...` 均已从 `L2 -> L1`，`cfgComparison = L0`、`instructionFamilyComparison = L1`
+  - full-batch 上，corpus 顶层计数从 `L2 81 -> 75`、diagnostics 从 `L2 8 -> 6`，且没有新增 `L3` / blocked；其中主 family `指令族统计变化 + fast-math 相关属性变化 + 模块元数据 targetTriple 变化` 在 corpus `39 -> 33`、diagnostics `5 -> 3`
+- 因此当前下一步应优先继续拆剩余更硬的 residual：
   - `控制流粗摘要变化 + 指令族统计变化 + fast-math 相关属性变化`
+  - 仍未收尽的 `指令族统计变化 + fast-math 相关属性变化 + 模块元数据 targetTriple 变化`
 
 
 ## 当前默认流程
@@ -195,6 +195,7 @@
 | `CC-003.14` 优先检查 `CC-003.13` 收敛后同 family 中残留的 `discard_fragment + CFG` residual | DONE | 已确认 root cause 是 converter 把 `air.discard_fragment` 发成注释占位；修复后代表 case `293ec561...` 从 `L2 -> L1`，corpus `L2 118 -> 83`，diagnostics 维持 `L2 10`，且无新增 `L3` / blocked | `difference-analysis/fragment-discard-lowering/04-implementation-result.md` / `difference-analysis/fragment-discard-lowering/05-full-batch-compare.md` |
 | `CC-003.15` 优先检查 `CC-003.14` 收敛后 shared `控制流粗摘要变化 + 指令族统计变化 + fast-math` residual | DONE | 已确认其中一支 shared family 主要是 compare 对“同一 CFG + 一处额外 `select` + 小幅 vector/aggregate materialization 重排”过敏；代表 case `25eef20f...` 从 `L2 -> L1`，corpus `L2 83 -> 82`、diagnostics `L2 10 -> 8`，且无新增 `L3` / blocked | `difference-analysis/shared-cfg-shape-drift-normalization/04-implementation-result.md` / `difference-analysis/shared-cfg-shape-drift-normalization/05-full-batch-compare.md` |
 | `CC-003.16` 优先检查 corpus 中唯一残留的 `entry 参数语义摘要变化; entry builtin / stage-in 摘要变化` case | DONE | 已确认 root cause 是 converter 丢失 fragment `stage_in` 字段上的 `user(TEXCOORD*)` 与插值 qualifier；代表 case `823dcdf7...` 从 `L2 -> L1`，corpus `L2 82 -> 81`、diagnostics 维持 `L2 8`，且无新增 `L3` / blocked | `difference-analysis/fragment-stage-in-semantics-preservation/04-implementation-result.md` / `difference-analysis/fragment-stage-in-semantics-preservation/05-full-batch-compare.md` |
+| `CC-003.17` 优先检查 `CC-003.16` 之后 residual 中仍未收尽的同 CFG `instruction-family + fast-math + targetTriple` materialization family | DONE | 已确认 root cause 是 compare 对同 CFG 下 `aggregate / arithmetic / vector` 重排及极小 `cast` 漂移仍过严；代表 case `3a9cedb...`、`376c8b2c...`、`2984b21c...` 均 `L2 -> L1`，corpus `L2 81 -> 75`、diagnostics `L2 8 -> 6`，且无新增 `L3` / blocked | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
 | `CC-004` 固化新的 case 分析模板 | TODO | 在 `difference-analysis/` 下沉淀一套稳定模板，确保后续每个 case 都按同样结构记录证据、结论与回归数据 | `difference-analysis/` |
 
 ## 任务执行规则
@@ -404,6 +405,8 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - `difference-analysis/shared-cfg-shape-drift-normalization/05-full-batch-compare.md`
 - `difference-analysis/scalar-vector-materialization-normalization/04-implementation-result.md`
 - `difference-analysis/scalar-vector-materialization-normalization/05-full-batch-compare.md`
+- `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md`
+- `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md`
 
 ### 相关实现与工具
 

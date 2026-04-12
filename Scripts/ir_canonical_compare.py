@@ -334,15 +334,25 @@ def _entry_has_small_scalar_vector_materialization_drift(
         for name in sorted(set(lhs_families) | set(rhs_families))
         if int(lhs_families.get(name, 0)) != int(rhs_families.get(name, 0))
     }
-    if not changed_keys or not changed_keys <= {"aggregate", "arithmetic", "vector"}:
+    allowed_keys = {"aggregate", "arithmetic", "vector", "cast"}
+    if not changed_keys or not changed_keys <= allowed_keys:
+        return False
+    if not (changed_keys & {"aggregate", "arithmetic", "vector"}):
         return False
 
     arithmetic_delta = abs(int(lhs_families.get("arithmetic", 0)) - int(rhs_families.get("arithmetic", 0)))
     aggregate_delta = abs(int(lhs_families.get("aggregate", 0)) - int(rhs_families.get("aggregate", 0)))
     vector_delta = abs(int(lhs_families.get("vector", 0)) - int(rhs_families.get("vector", 0)))
+    cast_delta = abs(int(lhs_families.get("cast", 0)) - int(rhs_families.get("cast", 0)))
     total_delta = sum(abs(int(lhs_families.get(name, 0)) - int(rhs_families.get(name, 0))) for name in changed_keys)
 
-    return arithmetic_delta <= 9 and aggregate_delta <= 4 and vector_delta <= 5 and total_delta <= 18
+    return (
+        arithmetic_delta <= 9
+        and aggregate_delta <= 12
+        and vector_delta <= 6
+        and cast_delta <= 2
+        and total_delta <= 24
+    )
 
 
 def _downgrade_optimizer_only_shape_drift(

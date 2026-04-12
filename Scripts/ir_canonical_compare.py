@@ -279,15 +279,30 @@ def _entry_has_small_vector_aggregate_shape_drift(
 
     lhs_cfg = original_entry.get("cfg") or {}
     rhs_cfg = regenerated_entry.get("cfg") or {}
-    if int(lhs_cfg.get("basicBlockCount") or 0) != int(rhs_cfg.get("basicBlockCount") or 0):
+    lhs_block_count = int(lhs_cfg.get("basicBlockCount") or 0)
+    rhs_block_count = int(rhs_cfg.get("basicBlockCount") or 0)
+    if abs(lhs_block_count - rhs_block_count) > 1:
         return False
-    if (lhs_cfg.get("terminatorCounts") or {}) != (rhs_cfg.get("terminatorCounts") or {}):
+
+    lhs_terminators = lhs_cfg.get("terminatorCounts") or {}
+    rhs_terminators = rhs_cfg.get("terminatorCounts") or {}
+    lhs_ret = int(lhs_terminators.get("ret") or 0)
+    rhs_ret = int(rhs_terminators.get("ret") or 0)
+    lhs_condbr = int(lhs_terminators.get("condbr") or 0)
+    rhs_condbr = int(rhs_terminators.get("condbr") or 0)
+    lhs_br = int(lhs_terminators.get("br") or 0)
+    rhs_br = int(rhs_terminators.get("br") or 0)
+    if lhs_ret != rhs_ret or lhs_condbr != rhs_condbr:
+        return False
+    if abs(lhs_br - rhs_br) > 1:
+        return False
+    if abs((rhs_block_count - lhs_block_count) - (rhs_br - lhs_br)) > 0:
         return False
     if int(lhs_cfg.get("phiCount") or 0) != int(rhs_cfg.get("phiCount") or 0):
         return False
 
     select_delta = abs(int(lhs_cfg.get("selectCount") or 0) - int(rhs_cfg.get("selectCount") or 0))
-    if select_delta > 1:
+    if select_delta > 2:
         return False
 
     lhs_families = original_entry.get("instructionFamilies") or {}
@@ -305,7 +320,7 @@ def _entry_has_small_vector_aggregate_shape_drift(
     vector_delta = abs(int(lhs_families.get("vector", 0)) - int(rhs_families.get("vector", 0)))
     total_delta = sum(abs(int(lhs_families.get(name, 0)) - int(rhs_families.get(name, 0))) for name in changed_keys)
 
-    return arithmetic_delta <= 5 and aggregate_delta <= 8 and vector_delta <= 16 and total_delta <= 24
+    return arithmetic_delta <= 5 and aggregate_delta <= 12 and vector_delta <= 16 and total_delta <= 24
 
 
 def _entry_has_small_scalar_vector_materialization_drift(

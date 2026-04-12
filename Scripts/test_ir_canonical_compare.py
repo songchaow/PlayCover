@@ -705,6 +705,214 @@ class IRCanonicalCompareTests(unittest.TestCase):
         self.assertEqual(comparison["cfgComparison"]["severity"], "L1")
         self.assertEqual(comparison["instructionFamilyComparison"]["severity"], "L1")
 
+    def test_compare_downgrades_shared_cfg_split_merge_materialization_drift_to_l1(self) -> None:
+        original = self._make_optimizer_drift_summary(
+            module_intrinsics={
+                "air.clamp.v4f32": 1,
+                "air.convert.f.v2f32.f.v2f16": 6,
+                "air.convert.f.v4f32.f.v4f16": 2,
+                "air.dot.v4f32": 1,
+                "air.fast_fabs.f32": 1,
+                "air.fast_fmax.f32": 2,
+                "air.fast_fmin.f32": 2,
+                "air.fast_rsqrt.f32": 1,
+                "air.fast_sqrt.f32": 2,
+                "air.fma.f32": 9,
+                "air.fma.v2f32": 5,
+                "air.fma.v4f32": 3,
+                "air.sample_texture_2d.v4f16": 2,
+            },
+            entry_intrinsics={
+                "air.clamp.v4f32": 1,
+                "air.convert.f.v2f32.f.v2f16": 6,
+                "air.convert.f.v4f32.f.v4f16": 2,
+                "air.dot.v4f32": 1,
+                "air.fast_fabs.f32": 1,
+                "air.fast_fmax.f32": 2,
+                "air.fast_fmin.f32": 2,
+                "air.fast_rsqrt.f32": 1,
+                "air.fast_sqrt.f32": 2,
+                "air.fma.f32": 9,
+                "air.fma.v2f32": 5,
+                "air.fma.v4f32": 3,
+                "air.sample_texture_2d.v4f16": 2,
+            },
+            cfg={
+                "basicBlockCount": 20,
+                "terminatorCounts": {"br": 10, "condbr": 9, "ret": 1},
+                "phiCount": 7,
+                "selectCount": 7,
+            },
+            instruction_families={
+                "aggregate": 1,
+                "arithmetic": 35,
+                "call": 98,
+                "cast": 3,
+                "compare": 8,
+                "intrinsic": 98,
+                "memory": 44,
+                "vector": 86,
+            },
+        )
+        regenerated = self._make_optimizer_drift_summary(
+            module_intrinsics={
+                "air.clamp.v4f32": 1,
+                "air.convert.f.v2f32.f.v2f16": 6,
+                "air.convert.f.v4f32.f.v4f16": 2,
+                "air.dot.v4f32": 1,
+                "air.fast_fabs.f32": 1,
+                "air.fast_fmax.f32": 2,
+                "air.fast_fmin.f32": 2,
+                "air.fast_rsqrt.f32": 1,
+                "air.fast_sqrt.f32": 2,
+                "air.fma.f32": 9,
+                "air.fma.v2f32": 5,
+                "air.fma.v4f32": 3,
+                "air.sample_texture_2d.v4f16": 2,
+            },
+            entry_intrinsics={
+                "air.clamp.v4f32": 1,
+                "air.convert.f.v2f32.f.v2f16": 6,
+                "air.convert.f.v4f32.f.v4f16": 2,
+                "air.dot.v4f32": 1,
+                "air.fast_fabs.f32": 1,
+                "air.fast_fmax.f32": 2,
+                "air.fast_fmin.f32": 2,
+                "air.fast_rsqrt.f32": 1,
+                "air.fast_sqrt.f32": 2,
+                "air.fma.f32": 9,
+                "air.fma.v2f32": 5,
+                "air.fma.v4f32": 3,
+                "air.sample_texture_2d.v4f16": 2,
+            },
+            cfg={
+                "basicBlockCount": 21,
+                "terminatorCounts": {"br": 11, "condbr": 9, "ret": 1},
+                "phiCount": 7,
+                "selectCount": 7,
+            },
+            instruction_families={
+                "aggregate": 12,
+                "arithmetic": 34,
+                "call": 98,
+                "cast": 3,
+                "compare": 8,
+                "intrinsic": 98,
+                "memory": 44,
+                "vector": 93,
+            },
+        )
+
+        comparison = canonical_compare.compare_ir_summaries(original, regenerated)
+
+        self.assertEqual(comparison["riskLevel"], "L1")
+        self.assertEqual(comparison["cfgComparison"]["severity"], "L1")
+        self.assertEqual(comparison["instructionFamilyComparison"]["severity"], "L1")
+
+    def test_compare_downgrades_shared_cfg_split_merge_shape_drift_with_select_growth_to_l1(self) -> None:
+        original = self._make_optimizer_drift_summary(
+            module_intrinsics={
+                "air.clamp.f16": 1,
+                "air.convert.f.v2f32.f.v2f16": 10,
+                "air.convert.f.v3f32.f.v3f16": 2,
+                "air.fast_cos.f32": 1,
+                "air.fast_fabs.f32": 1,
+                "air.fast_fmax.f32": 1,
+                "air.fast_fmin.f32": 1,
+                "air.fast_fract.f32": 1,
+                "air.fast_sin.f32": 1,
+                "air.fma.f16": 2,
+                "air.fma.f32": 5,
+                "air.fma.v2f32": 7,
+                "air.sample_texture_2d.v4f16": 3,
+            },
+            entry_intrinsics={
+                "air.clamp.f16": 1,
+                "air.convert.f.v2f32.f.v2f16": 10,
+                "air.convert.f.v3f32.f.v3f16": 2,
+                "air.fast_cos.f32": 1,
+                "air.fast_fabs.f32": 1,
+                "air.fast_fmax.f32": 1,
+                "air.fast_fmin.f32": 1,
+                "air.fast_fract.f32": 1,
+                "air.fast_sin.f32": 1,
+                "air.fma.f16": 2,
+                "air.fma.f32": 5,
+                "air.fma.v2f32": 7,
+                "air.sample_texture_2d.v4f16": 3,
+            },
+            cfg={
+                "basicBlockCount": 8,
+                "terminatorCounts": {"br": 3, "condbr": 4, "ret": 1},
+                "phiCount": 2,
+                "selectCount": 4,
+            },
+            instruction_families={
+                "aggregate": 1,
+                "arithmetic": 44,
+                "call": 112,
+                "cast": 5,
+                "compare": 5,
+                "intrinsic": 112,
+                "memory": 52,
+                "vector": 86,
+            },
+        )
+        regenerated = self._make_optimizer_drift_summary(
+            module_intrinsics={
+                "air.clamp.f16": 1,
+                "air.convert.f.v2f32.f.v2f16": 10,
+                "air.convert.f.v3f32.f.v3f16": 2,
+                "air.fast_cos.f32": 1,
+                "air.fast_fabs.f32": 1,
+                "air.fast_fmax.f32": 1,
+                "air.fast_fmin.f32": 1,
+                "air.fast_fract.f32": 1,
+                "air.fast_sin.f32": 1,
+                "air.fma.f16": 2,
+                "air.fma.f32": 5,
+                "air.fma.v2f32": 7,
+                "air.sample_texture_2d.v4f16": 3,
+            },
+            entry_intrinsics={
+                "air.clamp.f16": 1,
+                "air.convert.f.v2f32.f.v2f16": 10,
+                "air.convert.f.v3f32.f.v3f16": 2,
+                "air.fast_cos.f32": 1,
+                "air.fast_fabs.f32": 1,
+                "air.fast_fmax.f32": 1,
+                "air.fast_fmin.f32": 1,
+                "air.fast_fract.f32": 1,
+                "air.fast_sin.f32": 1,
+                "air.fma.f16": 2,
+                "air.fma.f32": 5,
+                "air.fma.v2f32": 7,
+                "air.sample_texture_2d.v4f16": 3,
+            },
+            cfg={
+                "basicBlockCount": 9,
+                "terminatorCounts": {"br": 4, "condbr": 4, "ret": 1},
+                "phiCount": 2,
+                "selectCount": 6,
+            },
+            instruction_families={
+                "aggregate": 13,
+                "arithmetic": 41,
+                "call": 112,
+                "cast": 5,
+                "compare": 5,
+                "intrinsic": 112,
+                "memory": 52,
+                "vector": 92,
+            },
+        )
+
+        comparison = canonical_compare.compare_ir_summaries(original, regenerated)
+
+        self.assertEqual(comparison["riskLevel"], "L1")
+        self.assertEqual(comparison["cfgComparison"]["severity"], "L1")
+        self.assertEqual(comparison["instructionFamilyComparison"]["severity"], "L1")
+
     def test_compare_downgrades_small_scalar_vector_materialization_drift_to_l1(self) -> None:
         original = self._make_optimizer_drift_summary(
             module_intrinsics={

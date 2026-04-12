@@ -22,6 +22,7 @@ TEST_FRAGMENT_DISCARD_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebu
 TEST_UNDERSCORE_STRUCT_REFERENCE_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_underscore_struct_reference.ll"
 TEST_VERTEX_POSITION_INVARIANT_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_vertex_position_invariant.ll"
 TEST_INTRINSIC_VECTOR_ICMP_ZEXT_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_intrinsic_vector_icmp_zext.ll"
+TEST_VECTOR_SELECT_GLOBAL_GEP_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_vector_select_global_gep.ll"
 TEST_PHI_BRANCH_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_phi_branch.ll"
 TEST_PARTIAL_STRUCTURED_CFG_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_partial_structured_cfg.ll"
 TEST_ENTRY_PARTIAL_STRUCTURED_CFG_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_entry_partial_structured_cfg.ll"
@@ -1257,6 +1258,65 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             self.assertIn("select(uchar2(0), uchar2(1),", generated_msl)
             self.assertNotIn("@air.convert.u.v2i8.u.v2i1", regenerated_ir)
             self.assertFalse(any("air.convert.u.v2i8.u.v2i1" in json.dumps(item, ensure_ascii=False) for item in compare_result["differences"]))
+
+    @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
+    def test_corpus_replay_runner_uses_select_for_vector_condition_select(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            generated_path = Path(temp_dir) / "vector-select-global-gep.generated.metal"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(REPO_ROOT / "Scripts" / "corpus_replay_runner.py"),
+                    "--ll",
+                    str(TEST_VECTOR_SELECT_GLOBAL_GEP_SAMPLE),
+                    "--output-file",
+                    str(generated_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("replay summary", completed.stdout)
+            generated_text = generated_path.read_text(encoding="utf-8")
+            self.assertIn("select(", generated_text)
+            self.assertNotIn(" ? ", generated_text)
+
+    @unittest.skipUnless(shutil.which("swiftc") and shutil.which("xcrun"), "requires swiftc and xcrun")
+    def test_roundtrip_runner_preserves_vector_select_without_scalarizing_mask(self) -> None:
+        default_llvm_dis, _ = roundtrip_runner.resolve_llvm_dis_path()
+        if default_llvm_dis is None:
+            self.skipTest("requires llvm-dis")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir) / "vector-select-global-gep"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(ROUNDTRIP_SCRIPT),
+                    "--ll",
+                    str(TEST_VECTOR_SELECT_GLOBAL_GEP_SAMPLE),
+                    "--output-root",
+                    str(output_root),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("semantics round-trip summary", completed.stdout)
+            risk_report = json.loads((output_root / "risk-report.json").read_text(encoding="utf-8"))
+            roundtrip_report = json.loads((output_root / "roundtrip-summary.json").read_text(encoding="utf-8"))
+            generated_msl = Path(roundtrip_report["results"][0]["generatedMSLPath"]).read_text(encoding="utf-8")
+            regenerated_ir = Path(roundtrip_report["results"][0]["regeneratedIRPath"]).read_text(encoding="utf-8")
+
+            self.assertEqual(risk_report["blockedSamples"], [])
+            self.assertIn("select(", generated_msl)
+            self.assertNotIn(" ? ", generated_msl)
+            self.assertNotIn("extractelement <3 x i1>", regenerated_ir)
+            self.assertNotIn("select fast i1", regenerated_ir)
 
     @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
     def test_corpus_replay_runner_keeps_underscore_prefixed_constant_struct_as_reference(self) -> None:

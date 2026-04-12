@@ -149,13 +149,9 @@ extension IRToMSLConverter {
         let condDim = extractVectorDim(selectParts[0].type)
 
         if condDim > 1 {
-            let swizzles = (0..<condDim).map { vectorIndexToSwizzle($0) }
             let trueVector = "\(resultType)(\(valTrue))"
             let falseVector = "\(resultType)(\(valFalse))"
-            let components = swizzles.map { swizzle in
-                "(\(cond)).\(swizzle) ? (\(trueVector)).\(swizzle) : (\(falseVector)).\(swizzle)"
-            }
-            ctx.emitAutoAssign(lhs, expr: "\(resultType)(\(components.joined(separator: ", ")))", knownType: resultType)
+            ctx.emitAutoAssign(lhs, expr: "select(\(falseVector), \(trueVector), \(cond))", knownType: resultType)
             return
         }
 

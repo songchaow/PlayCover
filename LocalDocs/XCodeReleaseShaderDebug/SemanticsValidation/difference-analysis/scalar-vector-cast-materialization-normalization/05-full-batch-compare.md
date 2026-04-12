@@ -122,3 +122,94 @@
 ## 一句话总结
 
 **`CC-003.21` 的 compare 扩展带来了明确且干净的统计收益：在不新增 `L3` / blocked / new-only `L2`、且 corpus 完全不回退的前提下，diagnostics `L2 2 -> 0`、`L1 151 -> 153`，并把 dashboard 指向的 `69e4179e...` 与 `d8c964c5...` 两支 residual 全部稳定降到 `L1`。**
+
+## 追加：`CC-003.22` full-batch 对比
+
+### 对比批次
+
+### corpus full-batch
+
+- 旧结果：`build/semantics-validation/roundtrip/cc-003-21-full-corpus/risk-report.json`
+- 新结果：`build/semantics-validation/roundtrip/cc-003-22-full-corpus-shuffle-gated/risk-report.json`
+
+### diagnostics full-batch
+
+- 旧结果：`build/semantics-validation/roundtrip/cc-003-21-full-diagnostics/risk-report.json`
+- 新结果：`build/semantics-validation/roundtrip/cc-003-22-full-diagnostics-shuffle-gated/risk-report.json`
+
+## 顶层计数变化
+
+### corpus
+
+- 旧：`L1 = 391 / L2 = 46 / L3 = 0`
+- 新：`L1 = 392 / L2 = 45 / L3 = 0`
+
+直接看变化：
+
+- `L3`：`0 -> 0`，持平
+- `L2`：`46 -> 45`，减少 `1`
+- `L1`：`391 -> 392`，增加 `1`
+
+### diagnostics
+
+- 旧：`L1 = 153 / L2 = 0 / L3 = 0`
+- 新：`L1 = 153 / L2 = 0 / L3 = 0`
+
+直接看变化：
+
+- `L3`：`0 -> 0`，持平
+- `L2`：`0 -> 0`，持平
+- `L1`：`153 -> 153`，持平
+
+## 这轮 full-batch 说明了什么
+
+### 1. 目标 residual 已被真实移除
+
+比较 `high-risk-samples.json` 后可以直接确认：
+
+- 被移除的高风险样本只有：`bundle:com.miHoYo.Yuanshen::module:c2cd49d0...`
+- 新批次没有新增高风险样本
+
+也就是说，这轮 corpus `L2 46 -> 45` 不是偶然波动，而是 dashboard 目标样本被精准拿掉后的净收益。
+
+### 2. diagnostics 完全不回退
+
+新旧 diagnostics full-batch 对比显示：
+
+- `L2 / L3` 都继续保持 `0`
+- 不存在新的 diagnostics residual family
+
+这说明本轮 converter narrowing 没有把问题重新扩散回 diagnostics 代表集。
+
+### 3. broad patch 的 6 个回归没有回归
+
+和此前 broad `select(...)` 试探不同，这轮新策略只命中 `immediate users == { shufflevector }` 的极窄路径，因此：
+
+- 先前 `extractelement` / `insertelement` 家族引出的新增 `L2` 没有重新出现
+- corpus 风险集合没有出现新的 high-risk sample
+- `L3` / `blockedSamples` 继续保持稳定
+
+## gate 如何理解
+
+两条新 `gate-summary.json` 中：
+
+- diagnostics：继续 `PASS`
+- corpus：仍是 `WARN`，但顶层计数已经从 `L2 46 -> 45`
+
+同时，新旧高风险集合 diff 已明确显示：**真正发生的变化只有 `c2cd49...` 被移除**。因此这轮 `WARN` 反映的是剩余 residual 还未清空，而不是本轮修复引入了新的高风险集合回退。
+
+## 修复后下一步最值得继续分析的 case
+
+`CC-003.22` 收尾后，当前最高优先级 TODO 已回到：
+
+- `CC-004`：固化新的 case 分析模板
+
+原因是：
+
+- diagnostics 已持续保持 `L2 = 0 / L3 = 0`
+- corpus 中这支 `module air intrinsic + instruction-family` residual 已被收掉
+- 下一步更有价值的是把这轮 `A/B 归因 -> immediate-consumer narrowing -> single-case + full-batch` 的工作流沉淀成稳定模板
+
+## 一句话总结
+
+**`CC-003.22` 的 converter 窄化修复带来了干净且可解释的统计收益：在 diagnostics 完全不回退、且没有新增高风险样本的前提下，corpus `L2 46 -> 45`、`L1 391 -> 392`，并把此前持续挂在 gate 顶部的 `c2cd49d0...` 从高风险集合中稳定移除。**

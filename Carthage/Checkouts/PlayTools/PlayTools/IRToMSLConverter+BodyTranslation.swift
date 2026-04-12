@@ -62,6 +62,8 @@ extension IRToMSLConverter {
         /// 指针 SSA → 指向的元素 MSL 类型（如 "uint4"、"int"、"float2"）
         /// 用于 load/store 时检测 signedness mismatch 并插入 as_type<> bitcast
         var pointerElementTypes: [String: String] = [:]
+        /// SSA 结果的直接消费者 opcode 集合，用于极窄的 lowering 判定。
+        var immediateUserOpcodes: [String: Set<String>] = [:]
 
         // ── E-004e4b: CFG + phi 支持 ──
 
@@ -190,6 +192,16 @@ extension IRToMSLConverter {
             return false
         }
 
+        func recordImmediateUse(of ssaName: String, by opcode: String) {
+            let key = ssaName.trimmingCharacters(in: .whitespaces)
+            guard key.hasPrefix("%"), !opcode.isEmpty else { return }
+            immediateUserOpcodes[key, default: []].insert(opcode)
+        }
+
+        func immediateUsers(of ssaName: String) -> Set<String> {
+            immediateUserOpcodes[ssaName.trimmingCharacters(in: .whitespaces)] ?? []
+        }
+
         /// 记录一个 SSA 值的 MSL 表达式和类型
         func define(_ ssaName: String, expr: String, type: String = "") {
             values[ssaName] = expr
@@ -302,6 +314,7 @@ extension IRToMSLConverter {
 
         // ── 第一遍：预扫描 phi 节点和 CFG 结构 (E-004e4b) ──
         prescanPhiAndCFG(bodyLines, ctx: ctx)
+        prescanImmediateUsers(bodyLines, ctx: ctx)
 
         // 发射 phi 变量预声明（在函数体最前面）
         for decl in ctx.phiDeclarations {
@@ -921,6 +934,49 @@ extension IRToMSLConverter {
             let mslType = irScalarTypeToMSL(phi.irType)
             ctx.phiDeclarations.append("\(mslType) \(varName); // phi pre-decl")
         }
+    }
+
+    static func prescanImmediateUsers(_ lines: [String], ctx: SSAContext) {
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            guard let eqRange = trimmed.range(of: " = ") else { continue }
+            let rhs = String(trimmed[eqRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+            let opcode = instructionOpcodeForPrescan(rhs)
+            guard !opcode.isEmpty else { continue }
+            for operand in referencedSSAOperandsForPrescan(rhs) {
+                ctx.recordImmediateUse(of: operand, by: opcode)
+            }
+        }
+    }
+
+    static func instructionOpcodeForPrescan(_ rhs: String) -> String {
+        let tokens = rhs.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        guard let first = tokens.first else { return "" }
+        switch first {
+        case "tail", "musttail", "notail":
+            return tokens.dropFirst().first ?? first
+        default:
+            return first
+        }
+    }
+
+    static func referencedSSAOperandsForPrescan(_ text: String) -> [String] {
+        let source = String(text.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false).first ?? "")
+        guard let regex = try? NSRegularExpression(pattern: "%(?:\\\"[^\\\"]+\\\"|[-A-Za-z0-9_.$]+)") else {
+            return []
+        }
+
+        let nsSource = source as NSString
+        var seen: Set<String> = []
+        var results: [String] = []
+        for match in regex.matches(in: source, range: NSRange(location: 0, length: nsSource.length)) {
+            let value = nsSource.substring(with: match.range)
+            if seen.insert(value).inserted {
+                results.append(value)
+            }
+        }
+        return results
     }
 
     /// 解析基本块标签，返回标签名或 nil

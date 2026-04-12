@@ -971,7 +971,8 @@ extension IRToMSLConverter {
         let dstType = String(cleaned[toRange.upperBound...]).trimmingCharacters(in: .whitespaces)
 
         let srcParts = splitTypedOperands(srcPart, count: 1)
-        let srcVal = srcParts.isEmpty ? "0" : resolveIROperand(srcParts[0].value, ctx: ctx)
+        let srcOperand = srcParts.first
+        let srcVal = srcOperand.map { resolveIROperand($0.value, ctx: ctx) } ?? "0"
 
         let mslDstType: String
         switch opcode {
@@ -987,7 +988,33 @@ extension IRToMSLConverter {
             mslDstType = irScalarTypeToMSL(dstType)
         }
 
+        if opcode == "zext",
+           let srcType = srcOperand?.type,
+           shouldUseSelectForVectorBoolZExt(lhs: lhs, srcIRType: srcType, dstIRType: dstType, ctx: ctx) {
+            ctx.emitAutoAssign(
+                lhs,
+                expr: "select(\(mslDstType)(0), \(mslDstType)(1), \(srcVal))",
+                knownType: mslDstType
+            )
+            return
+        }
+
         ctx.emitAutoAssign(lhs, expr: "\(mslDstType)(\(srcVal))", knownType: mslDstType)
+    }
+
+    static func shouldUseSelectForVectorBoolZExt(lhs: String, srcIRType: String, dstIRType: String, ctx: SSAContext) -> Bool {
+        let srcType = srcIRType.trimmingCharacters(in: .whitespaces)
+        let dstType = dstIRType.trimmingCharacters(in: .whitespaces)
+        let srcDim = extractVectorDim(srcType)
+        guard srcDim > 1,
+              srcDim == extractVectorDim(dstType),
+              vectorElementIRType(srcType) == "i1",
+              vectorElementIRType(dstType) == "i8" else {
+            return false
+        }
+
+        let immediateUsers = ctx.immediateUsers(of: lhs)
+        return immediateUsers.count == 1 && immediateUsers.contains("shufflevector")
     }
 
     /// 将 IR 整数类型映射到带符号性语义的 MSL 类型。

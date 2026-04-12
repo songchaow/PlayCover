@@ -36,19 +36,19 @@
 
 ### 当前最新状态
 
-- 当前主线最新已完成 `CC-003.21`，确认 `CC-003.20` 之后 diagnostics 中剩余的两支 pure materialization case `69e4179e...`、`d8c964c5...` 继续不是新的 `IRToMSLConverter` / compile posture 回退，而是 compare 对**同 CFG 下更窄的 arithmetic-heavy materialization tradeoff** 仍偏严：当 entry/resource/builtin/output 语义、函数内 `air intrinsic` 统计与 compile posture 已经一致，且 `cast` 完全不漂移时，这类 residual 不应继续顶成 `L2`。
+- 当前主线最新已完成 `CC-003.22`，确认 corpus 中继续挂在 gate 顶部的 `c2cd49d0...` 不是 compare 对 module intrinsic 的纯噪声，而是 converter 在 `zext <N x i1> -> <N x i8>` 这条更窄 lowering 上仍有实现缺口：当结果直接进入 `shufflevector` 做 mask materialization 时，默认 `ucharN(boolN)` 会让 regenerated IR 漂回 `@air.convert.u.v2i8.u.v2i1`，从而继续顶出 `module air intrinsic + instruction-family` residual。
 - 当前 full-batch 结果已进一步收敛为：
   - diagnostics：`L1 153 / L2 0 / L3 0`
-  - corpus：`L1 391 / L2 46 / L3 0`
+  - corpus：`L1 392 / L2 45 / L3 0`
 - 当前 corpus / diagnostics 继续没有 `L3` blocked 样本。
-- `CC-003.21` 的结论已经明确：
-  - 代表单 case `69e4179e...` 与 `d8c964c5...` 的 compile posture 继续对齐：`effectiveMetalArgs = -ffast-math`
-  - 这轮 root cause 仍不是 `IRToMSLConverter.swift`、shared planner 或 fast-math compile posture 回退，而是 `ir_canonical_compare.py` 对 same-CFG materialization drift 的 arithmetic-heavy 边界还不够宽：`CC-003.20` 规则仅允许 `arithmetic <= 16`、`aggregate <= 19`、`vector <= 6`、`cast <= 2`、`totalDelta <= 27`，因此会把 `69e4179e...` 与 `d8c964c5...` 这类 `cast=0` 但 `arithmetic` 更重的 residual 继续顶成 `L2`
-  - 当前 compare 规则已扩展为：在 baseline same-CFG materialization drift 窗口之外，再额外允许一条更窄的 arithmetic-heavy tradeoff 分支：`arithmetic <= 26`、`aggregate <= 12`、`vector <= 4`、`cast == 0`、`totalDelta <= 41`
-  - 修复后单 case `69e4179e...` 与 `d8c964c5...` 都已从 `L2 -> L1`，`instructionFamilyComparison = L1`
-  - full-batch 上，diagnostics 顶层计数从 `L2 2 -> 0`、`L1 151 -> 153`，corpus 维持 `L2 46 / L3 0` 不回退，且没有新增 `L3` / blocked / new-only `L2`
-- 因此当前下一步应优先继续拆剩余更硬、且更像实现层候选的 residual：
-  - corpus 中已露头并继续挂在 gate 顶部的 `模块级 air intrinsic 使用变化 + 函数内 air intrinsic 调用统计变化 + 指令族统计变化`
+- `CC-003.22` 的结论已经明确：
+  - broad `select(ucharN(0), ucharN(1), boolN)` 虽能命中 `c2cd49...`，但会在 full-batch 上额外放大到 `extractelement` / `insertelement` 家族，因此不能直接恢复
+  - 真正需要补的是一条更窄的 converter 规则：仅当 `zext <N x i1> -> <N x i8>` 的**直接消费者集合仅包含 `shufflevector`** 时，才改发 `select(ucharN(0), ucharN(1), boolN)`
+  - 为此当前已在 `IRToMSLConverter+BodyTranslation.swift` 增加轻量 direct-user prescan，在 `translateIntCast(...)` 中按该 immediate-consumer 条件窄化启用 `select(...)`
+  - 单 case `c2cd49...` 已从 `L2 -> L1`，regenerated IR 中不再出现 `@air.convert.u.v2i8.u.v2i1`
+  - full-batch 上，corpus 顶层计数从 `L2 46 -> 45`、`L1 391 -> 392`，高风险集合只移除了 `c2cd49...` 且没有新增高风险样本；diagnostics 继续维持 `L2 0 / L3 0`
+- 因此当前下一步应优先从实现 case 收敛切回流程固化：
+  - `CC-004`：把当前这套 case-by-case 证据、A/B 归因、single-case + full-batch 收尾模板沉淀回 `difference-analysis/`
 
 
 ## 当前默认流程

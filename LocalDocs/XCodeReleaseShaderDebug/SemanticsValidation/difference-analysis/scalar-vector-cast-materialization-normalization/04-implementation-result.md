@@ -135,3 +135,81 @@
 ## 一句话结论
 
 **`CC-003.21` 已确认仍然是 compare 口径问题：当 CFG、语义摘要、`air intrinsic` 统计以及 compile posture 都继续一致，且 `cast` 完全不漂移时，`69e4179e...` 与 `d8c964c5...` 这类 arithmetic-heavy materialization tradeoff 也不应继续顶成 `L2`；补齐这一条更窄 compare 分支后，两支 diagnostics residual 均稳定从 `L2 -> L1`。**
+
+## 追加：`CC-003.22` 实现结果
+
+## 本轮分析的差异类型
+
+本轮继续处理 corpus 中唯一残留、且继续挂在 gate 顶部的实现层候选：
+
+- `模块级 air intrinsic 使用变化`
+- `函数内 air intrinsic 调用统计变化`
+- `指令族统计变化`
+
+代表 case 为：
+
+- `build/semantics-validation/roundtrip/cc-003-22-single-shuffle-gated/`
+- 目标样本：`c2cd49d0...`
+
+## 结论：这是 converter lowering 缺口，不是 compare 噪声
+
+重新下钻 `original.ll / generated.metal / regenerated.ll` 后，当前证据链已经足够明确：
+
+- 原始 IR 的关键链是 `fcmp <2 x float> -> zext <2 x i1> to <2 x i8> -> shufflevector -> and <4 x i8> -> icmp ne zeroinitializer`
+- 默认 `ucharN(boolN)` lowering 会让 regenerated IR 回到 `@air.convert.u.v2i8.u.v2i1`
+- 因为该 intrinsic 同时放大到 module-level intrinsic 统计与 instruction-family compare，`c2cd49...` 会继续停在 `L2`
+- 之前的 broad `select(ucharN(0), ucharN(1), boolN)` 虽能修掉单 case，但会误伤一批 `extractelement` / `insertelement` 消费链，因此不能直接恢复
+
+因此，这轮已经可以把 root cause 定性为：**converter 对“vector bool zext 后直接进入 `shufflevector` 的 mask materialization”缺少更窄 lowering 规则。**
+
+## 实现修改
+
+这轮继续只做一处最小实现收敛：
+
+### `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter+BodyTranslation.swift`
+
+新增一轮轻量 direct-user prescan：
+
+- 不引入完整 def-use 框架
+- 只在函数体翻译前记录 SSA 结果的**直接消费者 opcode 集合**
+- 目的是给 `translateIntCast(...)` 提供一个极窄、可控的 consumer gate
+
+### `Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter+InstructionTranslation.swift`
+
+把之前 broad 的想法收窄为：
+
+- 仅当 `opcode == zext`
+- 且源类型是 `<N x i1>`、目标类型是 `<N x i8>`
+- 且该 SSA 结果的 `immediate users == { shufflevector }`
+
+才改发：
+
+- `select(ucharN(0), ucharN(1), boolN)`
+
+其它消费模式（尤其 `extractelement` / `insertelement`）继续保持默认 `ucharN(boolN)`，避免 broad select 在 full-batch 中扩散。
+
+### 测试样本同步
+
+为了让回归样本真正覆盖本轮命中的 residual，本轮同时把：
+
+- `LocalDocs/XCodeReleaseShaderDebug/RoadE-HookMakeLibraryWithSrc/test-data/test_intrinsic_vector_icmp_zext.ll`
+
+更新为最小化的 `zext -> shufflevector -> and -> icmp ne` 物化链，并保留现有 Python 回归断言。
+
+## 单 case / 回归验证
+
+本轮已完成并通过：
+
+- `python3 Scripts/test_ir_semantics_roundtrip_runner.py`
+- `CODE_SIGN_IDENTITY='-' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES ./BuildScripts/build_and_install.sh`
+- `python3 Scripts/ir_semantics_roundtrip_runner.py --ll .../c2cd49.../original.ll --output-root build/semantics-validation/roundtrip/cc-003-22-single-shuffle-gated`
+
+关键结果：
+
+- 回归测试中的 `select(uchar2(0), uchar2(1), ...)` 断言重新通过
+- `c2cd49...` 单 case 已从 `L2 -> L1`
+- regenerated IR 中不再出现 `@air.convert.u.v2i8.u.v2i1`
+
+## 一句话结论
+
+**`CC-003.22` 已确认是 converter 的更窄 lowering 缺口：只要把 `zext <N x i1> -> <N x i8>` 收敛到 “直接消费者仅为 `shufflevector`” 这一条物化链上，既能稳定消掉 `c2cd49...` 的 `module air intrinsic + instruction-family` residual，又不会重新放大到此前 broad select 曾误伤的 `extractelement` / `insertelement` 家族。**

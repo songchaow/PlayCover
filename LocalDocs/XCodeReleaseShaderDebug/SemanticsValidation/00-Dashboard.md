@@ -4,20 +4,17 @@
 
 ## 当前主线
 
-> 当前只做一件事：**把 canonical compare 报告当成唯一任务入口，按 case-by-case 的方式逐个分析高风险差异，反推 `IRToMSLConverter` / round-trip 链路里是否存在真实实现问题；每次只收敛一个明确问题，修复后立即重跑 full-batch canonical compare，看整体风险数量是否下降。**
+> 当前只做一件事：**完成 `CC-004`，把已经证明有效的 canonical compare case-by-case 工作流、A/B 归因方法，以及 single-case + full-batch 收尾模板固化回 `difference-analysis/`；模板未固化前，不再继续扩新的主线 case。**
 
 后续控制面只围绕下面这条流程展开：
 
-1. 从 `compare-summary.json` / `risk-report.json` 里挑一个值得分析的高风险 case
-2. 逐项解释 canonical diff 到底在说什么
-3. 下钻原始 IR / regenerated IR / generated MSL，判断差异更像：
-   - compare 口径问题
-   - 编译姿势差异
-   - 反编译 / 参数建模 / emission 实现问题
-4. 如果判断是实现问题，做一次**最小而定向**的实现修改
-5. 先对单 case 验证，再重跑 full-batch canonical compare
-6. 只看一个问题：**风险数量有没有下降、有没有新的回归**
-7. 若任务过大，就拆成更小的 case 子任务；仍然一次只完成一个
+1. 回收 `CC-002` ~ `CC-003.22` 已验证过的证据结构与收尾口径
+2. 统一每个 case 需要回答的核心问题：差异是什么、来自哪一层、算 compare 噪声还是实现问题
+3. 统一单 case / full-batch 需要回填的最小证据集
+4. 统一“值得改实现”与“只应改 compare”的判定边界
+5. 统一任务收尾格式：结论、实现改动、风险计数变化、是否有回归
+6. 模板稳定后，再按该模板继续挑选下一个高风险 case
+7. 仍然一次只完成一个任务；若 `CC-004` 过大，就继续拆成更小的模板固化子任务
 
 ## 当前判断
 
@@ -33,22 +30,16 @@
 - **一个 case 一个 case 地做，不对着“最终完全等价”死磕**
 - **每次实现修改之后，必须重新看 full-batch 风险计数是否下降**
 - **没有统计收益的实现，不应轻易继续放大**
+- **刚完成一轮 case 收敛时，优先先固化方法和证据模板，再继续扩新 case**
 
 ### 当前最新状态
 
-- 当前主线最新已完成 `CC-003.22`，确认 corpus 中继续挂在 gate 顶部的 `c2cd49d0...` 不是 compare 对 module intrinsic 的纯噪声，而是 converter 在 `zext <N x i1> -> <N x i8>` 这条更窄 lowering 上仍有实现缺口：当结果直接进入 `shufflevector` 做 mask materialization 时，默认 `ucharN(boolN)` 会让 regenerated IR 漂回 `@air.convert.u.v2i8.u.v2i1`，从而继续顶出 `module air intrinsic + instruction-family` residual。
-- 当前 full-batch 结果已进一步收敛为：
+- `CC-003.22` 已完成：`c2cd49d0...` 已确认是 converter 在 `zext <N x i1> -> <N x i8>` 且结果直接进入 `shufflevector` 时的窄 lowering 缺口；补齐 direct-user prescan + 条件化 `select(ucharN(0), ucharN(1), boolN)` 后，单 case 已从 `L2 -> L1`
+- 当前 full-batch 收敛为：
   - diagnostics：`L1 153 / L2 0 / L3 0`
   - corpus：`L1 392 / L2 45 / L3 0`
-- 当前 corpus / diagnostics 继续没有 `L3` blocked 样本。
-- `CC-003.22` 的结论已经明确：
-  - broad `select(ucharN(0), ucharN(1), boolN)` 虽能命中 `c2cd49...`，但会在 full-batch 上额外放大到 `extractelement` / `insertelement` 家族，因此不能直接恢复
-  - 真正需要补的是一条更窄的 converter 规则：仅当 `zext <N x i1> -> <N x i8>` 的**直接消费者集合仅包含 `shufflevector`** 时，才改发 `select(ucharN(0), ucharN(1), boolN)`
-  - 为此当前已在 `IRToMSLConverter+BodyTranslation.swift` 增加轻量 direct-user prescan，在 `translateIntCast(...)` 中按该 immediate-consumer 条件窄化启用 `select(...)`
-  - 单 case `c2cd49...` 已从 `L2 -> L1`，regenerated IR 中不再出现 `@air.convert.u.v2i8.u.v2i1`
-  - full-batch 上，corpus 顶层计数从 `L2 46 -> 45`、`L1 391 -> 392`，高风险集合只移除了 `c2cd49...` 且没有新增高风险样本；diagnostics 继续维持 `L2 0 / L3 0`
-- 因此当前下一步应优先从实现 case 收敛切回流程固化：
-  - `CC-004`：把当前这套 case-by-case 证据、A/B 归因、single-case + full-batch 收尾模板沉淀回 `difference-analysis/`
+- 到当前为止，`CC-002` ~ `CC-003.22` 已把主线从“先清掉 blocked `L3`”推进到“剩余主要是 corpus 中可继续拆解的 `L2` residual”
+- 因此当前下一步应优先执行 `CC-004`：把 case 选择、归因、实现判定、single-case 验证、full-batch 收尾统一沉淀成稳定模板，作为后续继续拆 residual 的唯一入口
 
 
 ## 当前默认流程
@@ -175,32 +166,32 @@
 
 | 任务 | 状态 | 结束标准 | 详细文档 |
 |---|---|---|---|
-| `CC-001` 建立 canonical-diff 驱动的新主线 | DOING | `00-Dashboard.md` 已完成重写，后续任务统一改用 case-by-case + full-batch 复跑口径 | 本文档 |
-| `CC-002` 收敛 `buffer-noalias` 这类 entry 参数对齐问题 | DONE | 已完成 `noalias -> __restrict` 闭环，并确认 full-batch 有统计收益且无新增 `L3` | `difference-analysis/buffer-noalias/04-implementation-result.md` / `difference-analysis/buffer-noalias/05-full-batch-compare.md` |
-| `CC-003` 归类 `buffer-noalias` 修复后剩余的高频 `L3/L2` 模式 | DONE | 已逐步收敛多支高频差异，并完成 `CC-003.9`；当前 corpus / diagnostics 均已无 `L3` blocked 样本 | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
-| `CC-003.1` 参数/metadata compare 噪声归一化 | DONE | 已收掉 `air.address_space` 等一批 compare 噪声，共有样本出现 `L2 -> L1` 改善且无回归 | `difference-analysis/resource-metadata-addrspace/04-implementation-result.md` / `difference-analysis/resource-metadata-addrspace/05-full-batch-compare.md` |
-| `CC-003.2` 资源语义/命名保真修复 | DONE | 已修复资源类型名大小写保真问题，代表 case 降级，diagnostics 改善且无新增 `L3` | `difference-analysis/resource-type-name-preservation/04-implementation-result.md` / `difference-analysis/resource-type-name-preservation/05-full-batch-compare.md` |
-| `CC-003.3` intrinsic / lowering 残留收敛 | DONE | 已完成 vector / half lowering 收敛，并消除一支 instruction-family compare 噪声，full-batch 小幅改善 | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
-| `CC-003.4` addrspace / structured CFG family 收敛 | DONE | 已完成 `f26d322...` compare 降噪与 `91c46448...` structured CFG 回放闭环，相关子任务验证后均收敛到 `L1`，full-batch 持续下降且无新增 `L3` | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
-| `CC-003.5` single-field return wrapper 回放修复 | DONE | 已修复 wrapped return 过早塌缩问题，diagnostics / corpus `L3` 大幅下降且无新增 `L3` | `difference-analysis/single-field-return-wrapper/04-implementation-result.md` / `difference-analysis/single-field-return-wrapper/05-full-batch-compare.md` |
-| `CC-003.6` constant buffer 用户 struct 引用判定修复 | DONE | 已修复 constant buffer 用户 struct 引用判定过窄问题，diagnostics / corpus `L3` 继续下降且无新增 `L3` | `difference-analysis/constant-struct-reference-dereferenceable/04-implementation-result.md` / `difference-analysis/constant-struct-reference-dereferenceable/05-full-batch-compare.md` |
-| `CC-003.7` 输出语义 invariant 保真修复 | DONE | 已补齐 `air.position` 的 `air.invariant` 保真；该 family 差异清零，但剩余风险随后暴露为 `fast-math` family | `difference-analysis/position-invariant-output/04-implementation-result.md` / `difference-analysis/position-invariant-output/05-full-batch-compare.md` |
-| `CC-003.8` fast-math compile posture family 修复 | DONE | 已补回 original IR 的 `fast_math_disable/enable` compile posture，corpus `L3 54 -> 7`、diagnostics `L3 1 -> 0`，且无新增 blocked | `difference-analysis/fast-math-compile-posture/04-implementation-result.md` / `difference-analysis/fast-math-compile-posture/05-full-batch-compare.md` |
-| `CC-003.9` 优先检查 `CC-003.8` 收敛后剩余的 `entry 参数` 高风险 family | DONE | 已确认 root cause 是 fragment `[[position]]` 被误当成无条件默认 builtin；修复后 corpus `L3 7 -> 0`、`blockedSamples` 清零、diagnostics 继续保持 `L3 = 0` | `difference-analysis/fragment-entry-ghost-position/04-implementation-result.md` / `difference-analysis/fragment-entry-ghost-position/05-full-batch-compare.md` |
-| `CC-003.10` 收敛 mixed CFG 下可恢复 nested merge 被整函数线性化的问题 | DONE | 已确认 root cause 是 structured emission 入口条件过窄；代表 case `ab9230...`、`0d2cd9...` 均 `L2 -> L1`，corpus `L2 208 -> 196`、diagnostics `L2 140 -> 135`，且无新增 `L3` / blocked | `difference-analysis/mixed-cfg-structured-emission/04-implementation-result.md` / `difference-analysis/mixed-cfg-structured-emission/05-full-batch-compare.md` |
-| `CC-003.11` 优先检查 `CC-003.10` 收敛后剩余的纯 `CFG / instruction-family / fast-math` residual | DONE | 已确认 diagnostics 高频 family 的主要矛盾是 compare 对小幅 `select + aggregate/vector` reshaping 过敏；代表 case `083c8443...`、`1079c7c8...` 均 `L2 -> L1`，corpus `L2 196 -> 129`、diagnostics `L2 135 -> 10`，且无新增 `L3` / blocked | `difference-analysis/vector-aggregate-shape-normalization/04-implementation-result.md` / `difference-analysis/vector-aggregate-shape-normalization/05-full-batch-compare.md` |
-| `CC-003.12` 优先检查 `CC-003.11` 收敛后 corpus 中剩余的 `instruction-family + fast-math + targetTriple` residual | DONE | 已确认其中一支 `CFG 不变 + scalar/vector/aggregate materialization` residual 的主要矛盾是 compare 对轻微物化重排过敏；代表 case `62316900...`、`2984b21c...`、`2629c34e...` 均 `L2 -> L1`，corpus `L2 129 -> 118`，diagnostics 维持 `L2 10` 且无新增 `L3` / blocked | `difference-analysis/scalar-vector-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-materialization-normalization/05-full-batch-compare.md` |
-| `CC-003.13` 优先检查 `CC-003.12` 收敛后 corpus 中剩余的 `module addrspace + air intrinsic` residual | DONE | 已确认其中一支 family 至少部分是 converter 对 `@__air_sampler_state` internal global 的 lowering 缺口；代表 case `293ec561...` 已重新对齐 sampler-state operand，为下一轮继续拆解同 family residual 提供了实现层证据 | `difference-analysis/sampler-state-global-preservation/04-implementation-result.md` / `difference-analysis/sampler-state-global-preservation/05-full-batch-compare.md` |
-| `CC-003.14` 优先检查 `CC-003.13` 收敛后同 family 中残留的 `discard_fragment + CFG` residual | DONE | 已确认 root cause 是 converter 把 `air.discard_fragment` 发成注释占位；修复后代表 case `293ec561...` 从 `L2 -> L1`，corpus `L2 118 -> 83`，diagnostics 维持 `L2 10`，且无新增 `L3` / blocked | `difference-analysis/fragment-discard-lowering/04-implementation-result.md` / `difference-analysis/fragment-discard-lowering/05-full-batch-compare.md` |
-| `CC-003.15` 优先检查 `CC-003.14` 收敛后 shared `控制流粗摘要变化 + 指令族统计变化 + fast-math` residual | DONE | 已确认其中一支 shared family 主要是 compare 对“同一 CFG + 一处额外 `select` + 小幅 vector/aggregate materialization 重排”过敏；代表 case `25eef20f...` 从 `L2 -> L1`，corpus `L2 83 -> 82`、diagnostics `L2 10 -> 8`，且无新增 `L3` / blocked | `difference-analysis/shared-cfg-shape-drift-normalization/04-implementation-result.md` / `difference-analysis/shared-cfg-shape-drift-normalization/05-full-batch-compare.md` |
-| `CC-003.16` 优先检查 corpus 中唯一残留的 `entry 参数语义摘要变化; entry builtin / stage-in 摘要变化` case | DONE | 已确认 root cause 是 converter 丢失 fragment `stage_in` 字段上的 `user(TEXCOORD*)` 与插值 qualifier；代表 case `823dcdf7...` 从 `L2 -> L1`，corpus `L2 82 -> 81`、diagnostics 维持 `L2 8`，且无新增 `L3` / blocked | `difference-analysis/fragment-stage-in-semantics-preservation/04-implementation-result.md` / `difference-analysis/fragment-stage-in-semantics-preservation/05-full-batch-compare.md` |
-| `CC-003.17` 优先检查 `CC-003.16` 之后 residual 中仍未收尽的同 CFG `instruction-family + fast-math + targetTriple` materialization family | DONE | 已确认 root cause 是 compare 对同 CFG 下 `aggregate / arithmetic / vector` 重排及极小 `cast` 漂移仍过严；代表 case `3a9cedb...`、`376c8b2c...`、`2984b21c...` 均 `L2 -> L1`，corpus `L2 81 -> 75`、diagnostics `L2 8 -> 6`，且无新增 `L3` / blocked | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
-| `CC-003.18` 优先检查 `CC-003.17` 之后 shared residual 中更窄的 `1 block + 1 br` split/merge family | DONE | 已确认 diagnostics 中一支 shared-CFG residual 主要是 compare 对窄 split/merge drift 过敏；修复后单 case `f5adb68d...` 从 `L2 -> L1`，diagnostics `L2 6 -> 3`、corpus `L2 75 -> 70`，且无新增 `L3` / blocked | `difference-analysis/shared-cfg-split-merge-normalization/04-implementation-result.md` / `difference-analysis/shared-cfg-split-merge-normalization/05-full-batch-compare.md` |
-| `CC-003.19` 继续拆 corpus 中仍未收尽的更宽 shared-CFG residual | DONE | 已确认 `dd586566...`、`b95fff15...` 仍属 compare 对 shared-CFG split/merge + 极小 `cast` reshaping 过敏；修复后两者均 `L2 -> L1`，corpus `L2 70 -> 68`、diagnostics 维持 `L2 3`，且无新增 `L3` / blocked | `difference-analysis/shared-cfg-split-merge-normalization/04-implementation-result.md` / `difference-analysis/shared-cfg-split-merge-normalization/05-full-batch-compare.md` |
-| `CC-003.20` 优先检查当前剩余的 `instruction-family + fast-math + targetTriple` residual | DONE | 已确认 `edca6ad0...`、`5780e492...` 仍属 compare 对更宽 same-CFG materialization drift 过敏；修复后两者均 `L2 -> L1`，corpus `L2 68 -> 46`、diagnostics `L2 3 -> 2`，且无新增 `L3` / blocked | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
-| `CC-003.21` 优先检查 diagnostics 中剩余的纯 `instruction-family + fast-math + targetTriple` residual | DONE | 已确认 `69e4179e...`、`d8c964c5...` 仍属 compare 对 same-CFG + arithmetic-heavy materialization drift 过敏；补齐 `cast == 0` 的更窄 arithmetic-heavy 窗口后，两者均 `L2 -> L1`，diagnostics `L2 2 -> 0`，corpus 维持 `L2 46` 且无新增 `L3` / blocked / new-only `L2` | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
-| `CC-003.22` 优先检查 corpus 中仍挂在 gate 顶部的 `module air intrinsic + instruction-family` residual | TODO | 重新下钻 `c2cd49d0...`，判断它更像 converter / lowering / metadata 建模缺口，还是 compare 尚未覆盖的 module intrinsic 噪声 | `difference-analysis/scalar-vector-cast-materialization-normalization/` |
-| `CC-004` 固化新的 case 分析模板 | TODO | 在 `difference-analysis/` 下沉淀一套稳定模板，确保后续每个 case 都按同样结构记录证据、结论与回归数据 | `difference-analysis/` |
+| `CC-001` 建立 canonical-diff 驱动的新主线 | DONE | 主线文档已切换为 canonical-diff 驱动的 case-by-case + full-batch 口径 | 本文档 |
+| `CC-002` 收敛 `buffer-noalias` 这类 entry 参数对齐问题 | DONE | `buffer-noalias` 闭环完成，full-batch 已确认有统计收益 | `difference-analysis/buffer-noalias/04-implementation-result.md` / `difference-analysis/buffer-noalias/05-full-batch-compare.md` |
+| `CC-003` 归类 `buffer-noalias` 修复后剩余的高频 `L3/L2` 模式 | DONE | 高频 `L3/L2` family 已完成一轮系统收敛，主线已清到 `L3 = 0` | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
+| `CC-003.1` 参数/metadata compare 噪声归一化 | DONE | 参数 / metadata compare 噪声首轮归一化完成 | `difference-analysis/resource-metadata-addrspace/04-implementation-result.md` / `difference-analysis/resource-metadata-addrspace/05-full-batch-compare.md` |
+| `CC-003.2` 资源语义/命名保真修复 | DONE | 资源语义与命名保真已补齐 | `difference-analysis/resource-type-name-preservation/04-implementation-result.md` / `difference-analysis/resource-type-name-preservation/05-full-batch-compare.md` |
+| `CC-003.3` intrinsic / lowering 残留收敛 | DONE | intrinsic / lowering residual 首轮收敛完成 | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/` |
+| `CC-003.4` addrspace / structured CFG family 收敛 | DONE | addrspace / structured CFG family 已收敛到稳定口径 | `04-L2-CanonicalCompareAndRiskGrading.md` / `difference-analysis/phi-diamond-cfg-reconstruction/04-implementation-result.md` |
+| `CC-003.5` single-field return wrapper 回放修复 | DONE | single-field return wrapper 回放已修复 | `difference-analysis/single-field-return-wrapper/04-implementation-result.md` / `difference-analysis/single-field-return-wrapper/05-full-batch-compare.md` |
+| `CC-003.6` constant buffer 用户 struct 引用判定修复 | DONE | constant buffer 用户 struct 引用判定已修复 | `difference-analysis/constant-struct-reference-dereferenceable/04-implementation-result.md` / `difference-analysis/constant-struct-reference-dereferenceable/05-full-batch-compare.md` |
+| `CC-003.7` 输出语义 invariant 保真修复 | DONE | 输出 `invariant` 保真已补齐 | `difference-analysis/position-invariant-output/04-implementation-result.md` / `difference-analysis/position-invariant-output/05-full-batch-compare.md` |
+| `CC-003.8` fast-math compile posture family 修复 | DONE | fast-math compile posture 已重新对齐 | `difference-analysis/fast-math-compile-posture/04-implementation-result.md` / `difference-analysis/fast-math-compile-posture/05-full-batch-compare.md` |
+| `CC-003.9` 优先检查 `CC-003.8` 收敛后剩余的 `entry 参数` 高风险 family | DONE | fragment `[[position]]` ghost builtin 已修复 | `difference-analysis/fragment-entry-ghost-position/04-implementation-result.md` / `difference-analysis/fragment-entry-ghost-position/05-full-batch-compare.md` |
+| `CC-003.10` 收敛 mixed CFG 下可恢复 nested merge 被整函数线性化的问题 | DONE | mixed CFG nested merge 发射已收敛 | `difference-analysis/mixed-cfg-structured-emission/04-implementation-result.md` / `difference-analysis/mixed-cfg-structured-emission/05-full-batch-compare.md` |
+| `CC-003.11` 优先检查 `CC-003.10` 收敛后剩余的纯 `CFG / instruction-family / fast-math` residual | DONE | vector / aggregate shape compare 过敏已降噪 | `difference-analysis/vector-aggregate-shape-normalization/04-implementation-result.md` / `difference-analysis/vector-aggregate-shape-normalization/05-full-batch-compare.md` |
+| `CC-003.12` 优先检查 `CC-003.11` 收敛后 corpus 中剩余的 `instruction-family + fast-math + targetTriple` residual | DONE | scalar / vector materialization residual 已继续收敛 | `difference-analysis/scalar-vector-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-materialization-normalization/05-full-batch-compare.md` |
+| `CC-003.13` 优先检查 `CC-003.12` 收敛后 corpus 中剩余的 `module addrspace + air intrinsic` residual | DONE | sampler-state global lowering 缺口已补齐首轮 | `difference-analysis/sampler-state-global-preservation/04-implementation-result.md` / `difference-analysis/sampler-state-global-preservation/05-full-batch-compare.md` |
+| `CC-003.14` 优先检查 `CC-003.13` 收敛后同 family 中残留的 `discard_fragment + CFG` residual | DONE | `discard_fragment` lowering 已补齐 | `difference-analysis/fragment-discard-lowering/04-implementation-result.md` / `difference-analysis/fragment-discard-lowering/05-full-batch-compare.md` |
+| `CC-003.15` 优先检查 `CC-003.14` 收敛后 shared `控制流粗摘要变化 + 指令族统计变化 + fast-math` residual | DONE | shared CFG + shape drift residual 已继续降噪 | `difference-analysis/shared-cfg-shape-drift-normalization/04-implementation-result.md` / `difference-analysis/shared-cfg-shape-drift-normalization/05-full-batch-compare.md` |
+| `CC-003.16` 优先检查 corpus 中唯一残留的 `entry 参数语义摘要变化; entry builtin / stage-in 摘要变化` case | DONE | fragment `stage_in` 语义保真已补齐 | `difference-analysis/fragment-stage-in-semantics-preservation/04-implementation-result.md` / `difference-analysis/fragment-stage-in-semantics-preservation/05-full-batch-compare.md` |
+| `CC-003.17` 优先检查 `CC-003.16` 之后 residual 中仍未收尽的同 CFG `instruction-family + fast-math + targetTriple` materialization family | DONE | cast / materialization residual 已继续收敛 | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
+| `CC-003.18` 优先检查 `CC-003.17` 之后 shared residual 中更窄的 `1 block + 1 br` split/merge family | DONE | 窄 shared-CFG split/merge family 已收敛 | `difference-analysis/shared-cfg-split-merge-normalization/04-implementation-result.md` / `difference-analysis/shared-cfg-split-merge-normalization/05-full-batch-compare.md` |
+| `CC-003.19` 继续拆 corpus 中仍未收尽的更宽 shared-CFG residual | DONE | 更宽 shared-CFG residual 已继续收敛 | `difference-analysis/shared-cfg-split-merge-normalization/04-implementation-result.md` / `difference-analysis/shared-cfg-split-merge-normalization/05-full-batch-compare.md` |
+| `CC-003.20` 优先检查当前剩余的 `instruction-family + fast-math + targetTriple` residual | DONE | same-CFG materialization residual 已继续收敛 | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
+| `CC-003.21` 优先检查 diagnostics 中剩余的纯 `instruction-family + fast-math + targetTriple` residual | DONE | diagnostics arithmetic-heavy residual 已清零 | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
+| `CC-003.22` 优先检查 corpus 中仍挂在 gate 顶部的 `module air intrinsic + instruction-family` residual | DONE | `c2cd49d0...` 的窄 `zext <N x i1> -> <N x i8>` lowering 缺口已补齐，corpus `L2 46 -> 45` | `difference-analysis/scalar-vector-cast-materialization-normalization/` |
+| `CC-004` 固化新的 case 分析模板 | DOING | 在 `difference-analysis/` 下沉淀稳定模板，后续新 case 统一按同一证据与收尾口径推进 | `difference-analysis/` |
 
 ## 任务执行规则
 

@@ -4,130 +4,128 @@
 
 ### corpus full-batch
 
-- 旧结果：`build/semantics-validation/roundtrip/cc-003-16-full-corpus/risk-report.json`
-- 新结果：`build/semantics-validation/roundtrip/cc-003-17-final-full-corpus/risk-report.json`
+- 旧结果：`build/semantics-validation/roundtrip/20260412-134516-658749ab/risk-report.json`
+- 新结果：`build/semantics-validation/roundtrip/cc-003-20-full-corpus/risk-report.json`
 
 ### diagnostics full-batch
 
-- 旧结果：`build/semantics-validation/roundtrip/cc-003-16-full-diagnostics/risk-report.json`
-- 新结果：`build/semantics-validation/roundtrip/cc-003-17-final-full-diagnostics/risk-report.json`
+- 旧结果：`build/semantics-validation/roundtrip/20260412-134516-dd2b4154/risk-report.json`
+- 新结果：`build/semantics-validation/roundtrip/cc-003-20-full-diagnostics/risk-report.json`
 
 ## 顶层计数变化
 
 ### corpus
 
-- 旧：`L1 = 356 / L2 = 81 / L3 = 0`
-- 新：`L1 = 362 / L2 = 75 / L3 = 0`
+- 旧：`L1 = 369 / L2 = 68 / L3 = 0`
+- 新：`L1 = 391 / L2 = 46 / L3 = 0`
 
 直接看变化：
 
 - `L3`：`0 -> 0`，持平
-- `L2`：`81 -> 75`，减少 `6`
-- `L1`：`356 -> 362`，增加 `6`
+- `L2`：`68 -> 46`，减少 `22`
+- `L1`：`369 -> 391`，增加 `22`
 
 ### diagnostics
 
-- 旧：`L1 = 145 / L2 = 8 / L3 = 0`
-- 新：`L1 = 147 / L2 = 6 / L3 = 0`
+- 旧：`L1 = 150 / L2 = 3 / L3 = 0`
+- 新：`L1 = 151 / L2 = 2 / L3 = 0`
 
 直接看变化：
 
 - `L3`：`0 -> 0`，持平
-- `L2`：`8 -> 6`，减少 `2`
-- `L1`：`145 -> 147`，增加 `2`
+- `L2`：`3 -> 2`，减少 `1`
+- `L1`：`150 -> 151`，增加 `1`
 
 ## 共有样本口径下的收益
 
-### 1. 主 family `instruction-family + fast-math + targetTriple` 继续下降
+### 1. 主 family `instruction-family + fast-math + targetTriple` 明显继续下降
 
-对 `CC-003.16` 与本轮新批次对比后：
+对旧批次与本轮新批次对比后：
 
-- corpus 中这支 family：`39 -> 33`
-- diagnostics 中这支 family：`5 -> 3`
+- corpus 中这支 family：`33 -> 11`
+- diagnostics 中这支 family：`3 -> 2`
 
 也就是说，本轮净消掉了：
 
-- corpus：`6` 个该 family 的 `L2`
-- diagnostics：`2` 个该 family 的 `L2`
+- corpus：`22` 个该 family 的 `L2`
+- diagnostics：`1` 个该 family 的 `L2`
 
-### 2. 明确回落的代表样本
+### 2. 目标 case 已明确回落
 
-这轮从 `L2 -> L1` 的代表样本包括：
+这轮 dashboard 指向的两支 corpus residual 都已从 `L2 -> L1`：
 
-#### corpus
+- `edca6ad0...`
+- `5780e492...`
 
-- `3a9cedb...`（`com.miHoYo.Yuanshen`）
-- `40ad0ed7...`（`com.tencent.tmgp.speedmobile.db`）
-- `0967ecd5...`（`com.tencent.tmgp.speedmobile`）
-- `336727ca...`（`com.tencent.tmgp.speedmobile`）
-- `bb394bf7...`（`com.tencent.tmgp.speedmobile`）
-- `e96ae8db...`（`com.tencent.tmgp.speedmobile`）
+两支单 case 输出分别是：
 
-#### diagnostics
+- `build/semantics-validation/roundtrip/cc-003-20-single-edca6ad0-materialization-wide/risk-report.json`
+- `build/semantics-validation/roundtrip/cc-003-20-single-5780e492-materialization-wide/risk-report.json`
 
-- `376c8b2c...`（`com.tencent.tmgp.speedmobile`）
-- `b976c62f...`（`com.tencent.tmgp.speedmobile`）
+并且新 corpus full-batch `build/semantics-validation/roundtrip/cc-003-20-full-corpus/risk-report.json` 中，这两支 sample 已不再出现在 `samplesForL3` 列表里。
 
-### 3. 没有新增 `L3` / blocked / new-only L2 回归
+### 3. 没有新增 `L3` / blocked / shared-CFG 回退
 
 新旧风险集合对比后可以直接确认：
 
 - corpus：没有 `new-only` 的 `L2` 样本
 - diagnostics：没有 `new-only` 的 `L2` 样本
 - 两条 full-batch 的 `L3` 继续都是 `0`
-- `blockedSamples` 继续没有新增
+- `blockedSamples` 继续为空
 
-这说明本轮不是简单地“把一部分旧 `L2` 换成另一批新的 `L2`”，而是确实做到了**净下降且无回归**。
+因此这轮收益不是“换一批新的 `L2`”，而是主 family 的净下降。
 
 ## 其它 residual 如何理解
 
 ### corpus
 
-本轮之后，corpus 的剩余 `L2` 主要是：
+本轮之后，corpus 剩余 `L2` 主要是：
 
-1. `指令族统计变化; fast-math 相关属性变化; 模块元数据 targetTriple 变化`：`33`
-2. `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化`：`19`
+1. `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化`：`12`
+2. `指令族统计变化; fast-math 相关属性变化; 模块元数据 targetTriple 变化`：`11`
 3. `模块级 addrspace 分布变化; 指令族统计变化; fast-math 相关属性变化`：`9`
+4. `指令族统计变化; 模块元数据 targetTriple 变化`：`8`
 
 可以看到：
 
-- 我们刚处理的主 family 已明显下降，但还没有清零
-- shared CFG family 仍完整保留，说明它更像下一轮应优先拆的目标
-- `addrspace + instruction-family + fast-math` 这一支也没有被误吸进去，说明本轮规则仍保持了边界
+- 纯 materialization family 已从 corpus 主矛盾退到只剩 `11`
+- shared-CFG residual 仍有 `12`，说明 compare 在 CFG 侧已经接近边界后，新的优先项可能不再是继续无差别放宽 materialization
+- `c2cd49...` 这类 `module air intrinsic + instruction-family` residual 也仍然存在，应作为新的实现层候选
 
 ### diagnostics
 
-diagnostics 剩余的 `L2` 已收缩为两支：
+diagnostics 剩余 `L2` 只剩一支 family：
 
-1. `指令族统计变化; fast-math 相关属性变化; 模块元数据 targetTriple 变化`：`3`
-2. `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化`：`3`
+1. `指令族统计变化; fast-math 相关属性变化; 模块元数据 targetTriple 变化`：`2`
 
-这说明 diagnostics 里“纯 materialization + targetTriple”的那支 residual 也已经进一步收敛，但 shared CFG residual 还没有动到。
+当前两支 residual 是：
+
+- `69e4179e...`
+- `d8c964c5...`
+
+这说明 diagnostics 里的 shared-CFG residual 已经不再是当前主矛盾，继续拆纯 materialization 的剩余边界会更直接。
 
 ## gate 如何理解
 
 两条 full-batch 的 `gate-summary.json` 仍然是 `WARN`，但原因仍然不是 `L3` 或 blocked：
 
-- corpus：summary 指向 `...5780e492...`
-- diagnostics：summary 指向 `...1228fae7...`
+- corpus：summary 指向 `c2cd49d0...`
+- diagnostics：summary 指向 `69e4179e...`
 
-这仍然是 `allowedL2SampleKeys` / debt profile 没有随 residual 分布同步更新导致的提示，不是新增高风险回归。
+这仍然是 gate profile / allowed debt 没有同步更新的提示，不是新增 `L3` 或 blocked 回归。
 
 ## 修复后下一步最值得继续分析的 case
 
-当前最值得继续下钻的仍然是 shared CFG 这支 residual family：
+`CC-003.20` 完成后，当前最值得继续下钻的是剩余更硬的 residual 边界：
 
-- corpus：`dd586566...`、`b95fff15...`
-- diagnostics：`f5adb68d...`、`9b33afe9...`
+- diagnostics：`69e4179e...`、`d8c964c5...`
+- corpus：`c2cd49d0...`
 
-它们的共同标签仍是：
+其中：
 
-- `控制流粗摘要变化`
-- `指令族统计变化`
-- `fast-math 相关属性变化`
-
-与本轮已收掉的“同 CFG materialization” family 不同，这支 residual 还伴随 `basicBlockCount / br` 层面的轻微 split/merge 漂移，因此应该作为下一轮优先目标。
+- diagnostics 两支仍然属于纯 `instruction-family + fast-math + targetTriple` residual，适合继续判断 compare 还能否安全吸收
+- `c2cd49d0...` 已经带上 `module air intrinsic` 变化，更像下一轮应优先验证是否已触到实现层问题，而不是单纯继续放宽 compare
 
 ## 一句话总结
 
-**`CC-003.17` 证明这轮 compare 扩展有明确统计收益：在不新增 `L3` / blocked / new-only `L2` 的前提下，corpus `L2 81 -> 75`、diagnostics `L2 8 -> 6`，其中主 family `instruction-family + fast-math + targetTriple` 在 corpus `39 -> 33`、diagnostics `5 -> 3`。**
+**`CC-003.20` 的 compare 扩展带来了明确统计收益：在不新增 `L3` / blocked / new-only `L2` 的前提下，corpus `L2 68 -> 46`、diagnostics `L2 3 -> 2`，并把 dashboard 指向的 `edca6ad0...` 与 `5780e492...` 两支残留 case 全部稳定降到 `L1`。**

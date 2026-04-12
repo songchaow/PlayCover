@@ -296,6 +296,100 @@ class IRCanonicalCompareTests(unittest.TestCase):
         self.assertEqual(comparison["instructionFamilyComparison"]["severity"], "L1")
         self.assertEqual(comparison["instructionFamilyComparison"]["differenceCount"], 1)
 
+    def test_compare_downgrades_wider_scalar_vector_materialization_tradeoff_to_l1(self) -> None:
+        original = self._make_optimizer_drift_summary(
+            module_intrinsics={"air.fma.v3f32": 12, "air.sample_texture_2d.v4f16": 8},
+            entry_intrinsics={"air.fma.v3f32": 12, "air.sample_texture_2d.v4f16": 8},
+            cfg={
+                "basicBlockCount": 1,
+                "terminatorCounts": {"ret": 1},
+                "phiCount": 0,
+                "selectCount": 2,
+            },
+            instruction_families={
+                "aggregate": 10,
+                "arithmetic": 115,
+                "call": 105,
+                "cast": 25,
+                "compare": 2,
+                "intrinsic": 105,
+                "memory": 90,
+                "vector": 111,
+            },
+        )
+        regenerated = self._make_optimizer_drift_summary(
+            module_intrinsics={"air.fma.v3f32": 12, "air.sample_texture_2d.v4f16": 8},
+            entry_intrinsics={"air.fma.v3f32": 12, "air.sample_texture_2d.v4f16": 8},
+            cfg={
+                "basicBlockCount": 1,
+                "terminatorCounts": {"ret": 1},
+                "phiCount": 0,
+                "selectCount": 2,
+            },
+            instruction_families={
+                "aggregate": 12,
+                "arithmetic": 99,
+                "call": 105,
+                "cast": 25,
+                "compare": 2,
+                "intrinsic": 105,
+                "memory": 90,
+                "vector": 105,
+            },
+        )
+
+        comparison = canonical_compare.compare_ir_summaries(original, regenerated)
+
+        self.assertEqual(comparison["riskLevel"], "L1")
+        self.assertEqual(comparison["instructionFamilyComparison"]["severity"], "L1")
+
+    def test_compare_downgrades_wider_aggregate_materialization_drift_to_l1(self) -> None:
+        original = self._make_optimizer_drift_summary(
+            module_intrinsics={"air.fma.v2f32": 9, "air.sample_texture_2d.v4f16": 10},
+            entry_intrinsics={"air.fma.v2f32": 9, "air.sample_texture_2d.v4f16": 10},
+            cfg={
+                "basicBlockCount": 4,
+                "terminatorCounts": {"br": 2, "condbr": 1, "ret": 1},
+                "phiCount": 2,
+                "selectCount": 0,
+            },
+            instruction_families={
+                "aggregate": 2,
+                "arithmetic": 55,
+                "call": 77,
+                "cast": 2,
+                "compare": 3,
+                "intrinsic": 77,
+                "memory": 26,
+                "vector": 141,
+            },
+        )
+        regenerated = self._make_optimizer_drift_summary(
+            module_intrinsics={"air.fma.v2f32": 9, "air.sample_texture_2d.v4f16": 10},
+            entry_intrinsics={"air.fma.v2f32": 9, "air.sample_texture_2d.v4f16": 10},
+            cfg={
+                "basicBlockCount": 4,
+                "terminatorCounts": {"br": 2, "condbr": 1, "ret": 1},
+                "phiCount": 2,
+                "selectCount": 0,
+            },
+            instruction_families={
+                "aggregate": 21,
+                "arithmetic": 52,
+                "call": 77,
+                "cast": 2,
+                "compare": 3,
+                "intrinsic": 77,
+                "memory": 26,
+                "vector": 146,
+            },
+        )
+
+        comparison = canonical_compare.compare_ir_summaries(original, regenerated)
+
+        self.assertEqual(comparison["riskLevel"], "L1")
+        self.assertEqual(comparison["instructionFamilyComparison"]["severity"], "L1")
+
     def test_compare_downgrades_optimizer_only_intrinsic_family_drift_to_l1(self) -> None:
         original = self._make_optimizer_drift_summary(
             module_intrinsics={
@@ -1636,14 +1730,14 @@ class IRCanonicalCompareTests(unittest.TestCase):
                 "selectCount": 0,
             },
             instruction_families={
-                "aggregate": 8,
-                "arithmetic": 46,
+                "aggregate": 24,
+                "arithmetic": 40,
                 "call": 73,
                 "cast": 6,
                 "compare": 7,
                 "intrinsic": 73,
                 "memory": 52,
-                "vector": 108,
+                "vector": 110,
             },
         )
 

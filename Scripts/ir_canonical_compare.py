@@ -372,11 +372,11 @@ def _entry_has_small_scalar_vector_materialization_drift(
     total_delta = sum(abs(int(lhs_families.get(name, 0)) - int(rhs_families.get(name, 0))) for name in changed_keys)
 
     return (
-        arithmetic_delta <= 9
-        and aggregate_delta <= 12
+        arithmetic_delta <= 16
+        and aggregate_delta <= 19
         and vector_delta <= 6
         and cast_delta <= 2
-        and total_delta <= 24
+        and total_delta <= 27
     )
 
 

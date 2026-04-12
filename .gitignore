@@ -28,6 +28,12 @@
 !/Carthage/Checkouts/PlayTools/PlayTools/MetallibParser.swift
 !/Carthage/Checkouts/PlayTools/PlayTools/LLVMDisassembler.swift
 !/Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter.swift
+!/Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter+AirBuiltins.swift
+!/Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter+Metadata.swift
+!/Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter+IRParsing.swift
+!/Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter+BodyTranslation.swift
+!/Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter+InstructionTranslation.swift
+!/Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter+CodeGeneration.swift
 !/Carthage/Checkouts/PlayTools/PlayTools/Controls/
 /Carthage/Checkouts/PlayTools/PlayTools/Controls/*
 !/Carthage/Checkouts/PlayTools/PlayTools/Controls/Backend/

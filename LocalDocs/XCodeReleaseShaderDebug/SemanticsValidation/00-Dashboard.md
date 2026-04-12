@@ -36,19 +36,19 @@
 
 ### 当前最新状态
 
-- 当前主线最新已完成 `CC-003.17`，确认 `CC-003.12` 收掉后残留的一支同 CFG `instruction-family + fast-math + targetTriple` family 仍主要是 compare 口径过严：当 entry/resource/builtin/output 语义与函数内 `air intrinsic` 统计已经一致时，少量 `aggregate / arithmetic / vector` materialization 重排即使再伴随极小 `cast` 漂移，也不应继续顶成 `L2`。
+- 当前主线最新已完成 `CC-003.18`，确认 `CC-003.17` 之后剩余的一支 shared residual 中，至少有一类 diagnostics case 仍主要是 compare 对**窄 shared-CFG split/merge drift** 过敏：当 entry/resource/builtin/output 语义与函数内 `air intrinsic` 统计已经一致时，只多出 `1` 个 block、`1` 个 `br`，再伴随小幅 `aggregate / arithmetic / vector` materialization reshaping，不应继续顶成 `L2`。
 - 当前 full-batch 结果已进一步收敛为：
-  - diagnostics：`L1 147 / L2 6 / L3 0`
-  - corpus：`L1 362 / L2 75 / L3 0`
+  - diagnostics：`L1 150 / L2 3 / L3 0`
+  - corpus：`L1 367 / L2 70 / L3 0`
 - 当前 corpus / diagnostics 继续没有 `L3` blocked 样本。
-- `CC-003.17` 的结论已经明确：
-  - 代表 case `3a9cedb...`、`376c8b2c...`、`2984b21c...` 的 compile posture 继续对齐：`originalFastMathMode = enable`，`effectiveMetalArgs = -ffast-math`，`fastMathDecision = fast_math_aligned`
-  - 这轮 root cause 不是 `IRToMSLConverter.swift`、shared planner 或 fast-math compile posture 回退，而是 `ir_canonical_compare.py` 里同 CFG materialization 降噪条件仍过窄：旧规则只接受 `{aggregate, arithmetic, vector}` 且 `aggregate <= 4`，无法覆盖 `3a9cedb...` 的小幅 `cast` 漂移与 `376c8b2c...` 的更宽 `aggregate` 重排
-  - 当前 compare 规则已扩展为：同 CFG、语义与 `air intrinsic` 统计一致时，允许 `{aggregate, arithmetic, vector, cast}` 内的小幅 materialization reshaping，其中 `cast <= 2`、`aggregate <= 12`、`arithmetic <= 9`、`vector <= 6`、`totalDelta <= 24`
-  - 修复后单 case `3a9cedb...`、`376c8b2c...`、`2984b21c...` 均已从 `L2 -> L1`，`cfgComparison = L0`、`instructionFamilyComparison = L1`
-  - full-batch 上，corpus 顶层计数从 `L2 81 -> 75`、diagnostics 从 `L2 8 -> 6`，且没有新增 `L3` / blocked；其中主 family `指令族统计变化 + fast-math 相关属性变化 + 模块元数据 targetTriple 变化` 在 corpus `39 -> 33`、diagnostics `5 -> 3`
+- `CC-003.18` 的结论已经明确：
+  - 代表单 case `f5adb68d...` 的 compile posture 继续对齐：`effectiveMetalArgs = -ffast-math`
+  - 这轮 root cause 不是 `IRToMSLConverter.swift`、shared planner 或 fast-math compile posture 回退，而是 `ir_canonical_compare.py` 对 shared-CFG drift 的降噪边界仍偏窄：旧规则要求 `basicBlockCount` 与 `terminatorCounts` 完全一致，无法覆盖 `f5adb68d...` 的 `20 -> 21` block、`br 10 -> 11` 这类窄 split/merge
+  - 当前 compare 规则已扩展为：当 `condbr / ret / phiCount` 一致、`basicBlockCount` 最多相差 `1`、`br` 最多相差 `1`、`selectCount` 最多相差 `2`，且 `instruction-family` 漂移仍只落在 `{aggregate, arithmetic, vector}` 时，允许把这类 shared-CFG split/merge drift 降到 `L1`
+  - 修复后单 case `f5adb68d...` 已从 `L2 -> L1`，`cfgComparison = L1`、`instructionFamilyComparison = L1`
+  - full-batch 上，corpus 顶层计数从 `L2 75 -> 70`、diagnostics 从 `L2 6 -> 3`，且没有新增 `L3` / blocked；其中 shared family `控制流粗摘要变化 + 指令族统计变化 + fast-math 相关属性变化` 在 corpus `19 -> 14`、diagnostics `3 -> 0`
 - 因此当前下一步应优先继续拆剩余更硬的 residual：
-  - `控制流粗摘要变化 + 指令族统计变化 + fast-math 相关属性变化`
+  - corpus 中仍未收尽的 `控制流粗摘要变化 + 指令族统计变化 + fast-math 相关属性变化`
   - 仍未收尽的 `指令族统计变化 + fast-math 相关属性变化 + 模块元数据 targetTriple 变化`
 
 
@@ -196,6 +196,8 @@
 | `CC-003.15` 优先检查 `CC-003.14` 收敛后 shared `控制流粗摘要变化 + 指令族统计变化 + fast-math` residual | DONE | 已确认其中一支 shared family 主要是 compare 对“同一 CFG + 一处额外 `select` + 小幅 vector/aggregate materialization 重排”过敏；代表 case `25eef20f...` 从 `L2 -> L1`，corpus `L2 83 -> 82`、diagnostics `L2 10 -> 8`，且无新增 `L3` / blocked | `difference-analysis/shared-cfg-shape-drift-normalization/04-implementation-result.md` / `difference-analysis/shared-cfg-shape-drift-normalization/05-full-batch-compare.md` |
 | `CC-003.16` 优先检查 corpus 中唯一残留的 `entry 参数语义摘要变化; entry builtin / stage-in 摘要变化` case | DONE | 已确认 root cause 是 converter 丢失 fragment `stage_in` 字段上的 `user(TEXCOORD*)` 与插值 qualifier；代表 case `823dcdf7...` 从 `L2 -> L1`，corpus `L2 82 -> 81`、diagnostics 维持 `L2 8`，且无新增 `L3` / blocked | `difference-analysis/fragment-stage-in-semantics-preservation/04-implementation-result.md` / `difference-analysis/fragment-stage-in-semantics-preservation/05-full-batch-compare.md` |
 | `CC-003.17` 优先检查 `CC-003.16` 之后 residual 中仍未收尽的同 CFG `instruction-family + fast-math + targetTriple` materialization family | DONE | 已确认 root cause 是 compare 对同 CFG 下 `aggregate / arithmetic / vector` 重排及极小 `cast` 漂移仍过严；代表 case `3a9cedb...`、`376c8b2c...`、`2984b21c...` 均 `L2 -> L1`，corpus `L2 81 -> 75`、diagnostics `L2 8 -> 6`，且无新增 `L3` / blocked | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
+| `CC-003.18` 优先检查 `CC-003.17` 之后 shared residual 中更窄的 `1 block + 1 br` split/merge family | DONE | 已确认 diagnostics 中一支 shared-CFG residual 主要是 compare 对窄 split/merge drift 过敏；修复后单 case `f5adb68d...` 从 `L2 -> L1`，diagnostics `L2 6 -> 3`、corpus `L2 75 -> 70`，且无新增 `L3` / blocked | `difference-analysis/shared-cfg-split-merge-normalization/04-implementation-result.md` / `difference-analysis/shared-cfg-split-merge-normalization/05-full-batch-compare.md` |
+| `CC-003.19` 继续拆 corpus 中仍未收尽的更宽 shared-CFG residual | TODO | 重新下钻 `dd586566...`、`b95fff15...` 等仍为 `L2` 的 corpus case，判断它们是否仍属 compare 噪声，还是已碰到不应继续放宽 compare 的边界 | `difference-analysis/shared-cfg-split-merge-normalization/` |
 | `CC-004` 固化新的 case 分析模板 | TODO | 在 `difference-analysis/` 下沉淀一套稳定模板，确保后续每个 case 都按同样结构记录证据、结论与回归数据 | `difference-analysis/` |
 
 ## 任务执行规则

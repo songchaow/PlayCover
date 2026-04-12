@@ -202,13 +202,13 @@
 
 `CC-003.22` 收尾后，当前最高优先级 TODO 已回到：
 
-- `CC-004`：固化新的 case 分析模板
+- `CC-003.23`：按默认流程重跑 full-batch，确认是否仍有值得继续拆解的 `L2/L3` residual；若有，就只挑一个最高价值 case 继续闭环
 
 原因是：
 
 - diagnostics 已持续保持 `L2 = 0 / L3 = 0`
 - corpus 中这支 `module air intrinsic + instruction-family` residual 已被收掉
-- 下一步更有价值的是把这轮 `A/B 归因 -> immediate-consumer narrowing -> single-case + full-batch` 的工作流沉淀成稳定模板
+- 下一步更有价值的是先确认最新 residual 分布，再决定后续最值得继续推进的单 case
 
 ## 一句话总结
 

@@ -4,17 +4,17 @@
 
 ## 当前主线
 
-> 当前只做一件事：**完成 `CC-004`，把已经证明有效的 canonical compare case-by-case 工作流、A/B 归因方法，以及 single-case + full-batch 收尾模板固化回 `difference-analysis/`；模板未固化前，不再继续扩新的主线 case。**
+> 当前只做一件事：**按当前默认流程重跑 full-batch，确认 corpus / diagnostics 里是否还有值得优先处理的 `L2/L3` residual；若有，就只挑一个最高价值 case 按默认流程分析、修复、复跑，并在必要时拆成更小子任务。**
 
 后续控制面只围绕下面这条流程展开：
 
-1. 回收 `CC-002` ~ `CC-003.22` 已验证过的证据结构与收尾口径
-2. 统一每个 case 需要回答的核心问题：差异是什么、来自哪一层、算 compare 噪声还是实现问题
-3. 统一单 case / full-batch 需要回填的最小证据集
-4. 统一“值得改实现”与“只应改 compare”的判定边界
-5. 统一任务收尾格式：结论、实现改动、风险计数变化、是否有回归
-6. 模板稳定后，再按该模板继续挑选下一个高风险 case
-7. 仍然一次只完成一个任务；若 `CC-004` 过大，就继续拆成更小的模板固化子任务
+1. 先重跑 `ShaderCorpus` / `ShaderSourceDiagnostics` full-batch
+2. 读取 `compare-summary.json` / `risk-report.json` / `compile-summary.json` / `gate-summary.json`
+3. 确认当前是否还有新的或仍残留的 `L2/L3` 高风险 case
+4. 若有，就只挑一个最值得处理的 case，按默认流程完成归因
+5. 判断它更像 compare 口径问题、compile posture 差异，还是实现问题
+6. 若值得修，做一次最小而定向的修改，并完成 single-case + full-batch 复跑
+7. 若任务过大，就拆成更小的 residual 子任务；仍然一次只完成一个
 
 ## 当前判断
 
@@ -30,16 +30,16 @@
 - **一个 case 一个 case 地做，不对着“最终完全等价”死磕**
 - **每次实现修改之后，必须重新看 full-batch 风险计数是否下降**
 - **没有统计收益的实现，不应轻易继续放大**
-- **刚完成一轮 case 收敛时，优先先固化方法和证据模板，再继续扩新 case**
+- **每轮开始前先重跑 full-batch，再决定当前最值得处理的 residual case**
 
 ### 当前最新状态
 
 - `CC-003.22` 已完成：`c2cd49d0...` 已确认是 converter 在 `zext <N x i1> -> <N x i8>` 且结果直接进入 `shufflevector` 时的窄 lowering 缺口；补齐 direct-user prescan + 条件化 `select(ucharN(0), ucharN(1), boolN)` 后，单 case 已从 `L2 -> L1`
-- 当前 full-batch 收敛为：
+- 上一轮 full-batch 收敛为：
   - diagnostics：`L1 153 / L2 0 / L3 0`
   - corpus：`L1 392 / L2 45 / L3 0`
 - 到当前为止，`CC-002` ~ `CC-003.22` 已把主线从“先清掉 blocked `L3`”推进到“剩余主要是 corpus 中可继续拆解的 `L2` residual”
-- 因此当前下一步应优先执行 `CC-004`：把 case 选择、归因、实现判定、single-case 验证、full-batch 收尾统一沉淀成稳定模板，作为后续继续拆 residual 的唯一入口
+- 因此当前下一步应优先重新跑 full-batch，确认 residual 分布是否继续稳定；若仍有 `L2/L3` 值得处理，就按默认流程继续拆解并只闭环一个 case
 
 
 ## 当前默认流程
@@ -191,7 +191,7 @@
 | `CC-003.20` 优先检查当前剩余的 `instruction-family + fast-math + targetTriple` residual | DONE | same-CFG materialization residual 已继续收敛 | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
 | `CC-003.21` 优先检查 diagnostics 中剩余的纯 `instruction-family + fast-math + targetTriple` residual | DONE | diagnostics arithmetic-heavy residual 已清零 | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
 | `CC-003.22` 优先检查 corpus 中仍挂在 gate 顶部的 `module air intrinsic + instruction-family` residual | DONE | `c2cd49d0...` 的窄 `zext <N x i1> -> <N x i8>` lowering 缺口已补齐，corpus `L2 46 -> 45` | `difference-analysis/scalar-vector-cast-materialization-normalization/` |
-| `CC-004` 固化新的 case 分析模板 | DOING | 在 `difference-analysis/` 下沉淀稳定模板，后续新 case 统一按同一证据与收尾口径推进 | `difference-analysis/` |
+| `CC-003.23` 重跑 full-batch 并继续拆剩余 `L2/L3` residual | DOING | 已完成一轮最新 full-batch 复跑；若仍有值得处理的 `L2/L3` case，则按默认流程闭环一个最高优先级 case，必要时拆出子任务 | 本文档 |
 
 ## 任务执行规则
 

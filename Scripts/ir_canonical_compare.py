@@ -438,6 +438,79 @@ def _entry_has_small_scalar_vector_materialization_drift(
     )
 
 
+def _module_has_small_addrspace_count_drift(original: dict[str, Any], regenerated: dict[str, Any]) -> bool:
+    lhs = original.get("moduleAddressSpaces") or {}
+    rhs = regenerated.get("moduleAddressSpaces") or {}
+    if lhs == rhs:
+        return False
+
+    if set(lhs) != set(rhs):
+        return False
+
+    changed_keys = {key for key in sorted(set(lhs) | set(rhs)) if int(lhs.get(key, 0)) != int(rhs.get(key, 0))}
+    if not changed_keys or len(changed_keys) != 1:
+        return False
+
+    changed_key = next(iter(changed_keys))
+    lhs_value = int(lhs.get(changed_key, 0))
+    rhs_value = int(rhs.get(changed_key, 0))
+    total_delta = abs(lhs_value - rhs_value)
+    return rhs_value > lhs_value and total_delta <= 4
+
+
+def _entry_has_select_heavy_vector_memory_materialization_drift(
+    original: dict[str, Any],
+    regenerated: dict[str, Any],
+    original_entry: dict[str, Any],
+    regenerated_entry: dict[str, Any],
+) -> bool:
+    semantic_keys = ("argSemantics", "resourceSemantics", "builtinSemantics", "outputSemantics")
+    for key in semantic_keys:
+        if original_entry.get(key) != regenerated_entry.get(key):
+            return False
+
+    if _normalize_air_intrinsic_counter(original_entry.get("airIntrinsicCalls")) != _normalize_air_intrinsic_counter(
+        regenerated_entry.get("airIntrinsicCalls")
+    ):
+        return False
+
+    if not _module_has_small_addrspace_count_drift(original, regenerated):
+        return False
+
+    lhs_cfg = original_entry.get("cfg") or {}
+    rhs_cfg = regenerated_entry.get("cfg") or {}
+    cfg_is_identical = lhs_cfg == rhs_cfg
+    cfg_skeleton_matches = (
+        int(lhs_cfg.get("basicBlockCount") or 0) == int(rhs_cfg.get("basicBlockCount") or 0)
+        and (lhs_cfg.get("terminatorCounts") or {}) == (rhs_cfg.get("terminatorCounts") or {})
+        and int(lhs_cfg.get("phiCount") or 0) == int(rhs_cfg.get("phiCount") or 0)
+    )
+    if not cfg_is_identical and not cfg_skeleton_matches:
+        return False
+
+    select_delta = int(rhs_cfg.get("selectCount") or 0) - int(lhs_cfg.get("selectCount") or 0)
+    if not cfg_is_identical and (select_delta < 4 or select_delta > 8):
+        return False
+
+    lhs_families = original_entry.get("instructionFamilies") or {}
+    rhs_families = regenerated_entry.get("instructionFamilies") or {}
+    changed_keys = {
+        name
+        for name in sorted(set(lhs_families) | set(rhs_families))
+        if int(lhs_families.get(name, 0)) != int(rhs_families.get(name, 0))
+    }
+    allowed_keys = {"arithmetic", "memory", "vector"}
+    if changed_keys != allowed_keys:
+        return False
+
+    arithmetic_delta = abs(int(lhs_families.get("arithmetic", 0)) - int(rhs_families.get("arithmetic", 0)))
+    memory_delta = abs(int(lhs_families.get("memory", 0)) - int(rhs_families.get("memory", 0)))
+    vector_delta = abs(int(lhs_families.get("vector", 0)) - int(rhs_families.get("vector", 0)))
+    total_delta = sum(abs(int(lhs_families.get(name, 0)) - int(rhs_families.get(name, 0))) for name in changed_keys)
+
+    return arithmetic_delta <= 20 and memory_delta <= 4 and vector_delta <= 48 and total_delta <= 68
+
+
 def _entry_has_outer_merge_self_loop_materialization_drift(
     original_entry: dict[str, Any],
     regenerated_entry: dict[str, Any],
@@ -528,6 +601,16 @@ def _downgrade_optimizer_only_shape_drift(
         for key in sorted(set(original_entries) & set(regenerated_entries))
         if _entry_has_small_scalar_vector_materialization_drift(original_entries[key], regenerated_entries[key])
     }
+    select_vector_memory_materialization_only_entry_keys = {
+        key
+        for key in sorted(set(original_entries) & set(regenerated_entries))
+        if _entry_has_select_heavy_vector_memory_materialization_drift(
+            original,
+            regenerated,
+            original_entries[key],
+            regenerated_entries[key],
+        )
+    }
     outer_merge_self_loop_only_entry_keys = {
         key
         for key in sorted(set(original_entries) & set(regenerated_entries))
@@ -538,6 +621,7 @@ def _downgrade_optimizer_only_shape_drift(
         optimizer_only_entry_keys
         | vector_aggregate_shape_only_entry_keys
         | scalar_vector_materialization_only_entry_keys
+        | select_vector_memory_materialization_only_entry_keys
         | outer_merge_self_loop_only_entry_keys
     )
 

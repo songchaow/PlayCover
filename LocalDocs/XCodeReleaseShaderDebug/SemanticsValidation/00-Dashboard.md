@@ -375,6 +375,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - **若需要显式透传 fast-math 参数，优先使用 `--metal-arg=<value>`。** 这样可以避免参数解析层把 `-ffast-math` / `-fno-fast-math` 误判成新的选项。
 - **窄 self-loop 只能覆盖 escape-safe 的 loop header。** 若当前 BB 内定义的 SSA 还会在退出块之后继续被引用，就不能只靠 `while (true)` + `continue/break` 直接结构化；这类 case 需要先补“值如何出环”的显式物化/传递机制。
 - **不是所有 self-loop residual 都卡在 header 本身。** 若 exit block 不是“唯一退出后直接收束”，而是还要先消费 loop header 里定义的 SSA 再继续分叉/合流（如 `bff2e9e...` 的 `272` / `558`），当前窄 self-loop emitter 应继续拒绝命中；这类问题要单独按 `loop-exit value` 的显式物化 / 出环传递处理，而不是继续放宽 generic self-loop 结构化门控。
+- **仅凭 `stopBefore == exitLabel` + exit phi 出环还不够安全。** 首版 `outer-merge self-loop` 实现虽能让 `bff2e9e...` 两段 loop 恢复 `while (true)`，并把单 case `instruction-family totalAbsoluteDelta 33 -> 13`，但 full-batch 会重新引入 `a9fbcdf5...` / `70b330a1...` / `2aa10f98...`；后续必须先找出这些回归样本与 `bff2e9e...` 的 shape 差异，再考虑重新放开 gate。
 
 ## 参考信息
 

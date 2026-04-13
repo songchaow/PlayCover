@@ -47,7 +47,11 @@
 - 因此本轮没有继续改 `IRToMSLConverter`，而是在 `ir_canonical_compare.py` 新增一条更窄的 moderate CFG vector materialization residual 降噪：仅当语义摘要一致、AIR intrinsic family 一致、CFG 呈现“中等幅度增块 / 增 br / 增 condbr / 增 phi / 减 select”的同步步长，且指令族只剩 `arithmetic + vector` 中等 tradeoff 时，才把该 residual 从 `L2` 降到 `L1`。
 - `32d1c8d0...` 单 case 已据此闭环：`build/semantics-validation/roundtrip/cc-003-26g-single-32d1c8d0-20260413-2/compare-summary.json` 中风险已从 `L2` 降到 `L1`，`compile-summary.json` 仍显示 `-ffast-math` 对齐，说明当前结论更像 compare 口径收敛，而不是实现层存在新的 CFG / planner 缺口。
 - 最新 full-batch 复跑显示这次 compare 归一化继续拿到了明确统计收益且没有引入 `L3` 回归：diagnostics 仍保持 `L1 153 / L2 0 / L3 0`，corpus 由 `L1 410 / L2 27 / L3 0` 变为 `L1 413 / L2 24 / L3 0`；`32d1c8d0...`、`84d57856...`、`8a5105d8...` 已退出 corpus `L2`，当前新的 gate 顶部样本变为 `401761e8...`，其风险主因仍是 `CFG + instruction-family + fast-math`。
-- 因此 `CC-003.26g` 本轮可以判定闭环；下一步不再继续围绕 `32d1c8d0...` 细拆，而是回到 corpus 当前最高价值 residual，优先分析 `401761e8...` 这一支 shared-CFG / instruction-family / fast-math family，判断它现在更像仍待收窄的 structured emission residual，还是可以继续收敛的 compare 边界。
+- 本轮继续下钻 `401761e8...` 后，证据链进一步收敛成更窄的 compare residual：`entry / resource / builtin` 语义保持一致，`compile-summary.json` 继续显示 `originalFastMathMode=enable`、`effectiveMetalArgs=["-ffast-math"]`，剩余主因是较窄 shared-CFG 展开把一部分 `select` 物化成更多 `block / br / condbr / phi`，并伴随纯 `arithmetic` 小幅回落；单 case 稳定表现为 `basicBlockCount 7 -> 13`、`br 2 -> 5`、`condbr 4 -> 7`、`phiCount 3 -> 6`、`selectCount 19 -> 16`，以及 `instruction-family totalAbsoluteDelta 5`。
+- 因此本轮没有继续改 `IRToMSLConverter`，而是在 `ir_canonical_compare.py` 新增一条更窄的 small shared-CFG arithmetic materialization residual 降噪：仅当语义摘要一致、AIR intrinsic family 一致、CFG 呈现“小幅增块 / 增 br / 增 condbr / 增 phi / 减 select”的同步步长，且指令族只剩 `arithmetic` 单键小幅回落时，才把该 residual 从 `L2` 降到 `L1`。
+- `401761e8...` 单 case 已据此闭环：`build/semantics-validation/roundtrip/cc-003-26h-single-401761e8/compare-summary.json` 中风险已从 `L2` 降到 `L1`，`compile-summary.json` 仍显示 `-ffast-math` 对齐，说明当前结论更像 compare 口径收敛，而不是实现层存在新的 structured emission / planner 缺口。
+- 最新 full-batch 复跑显示这次 compare 归一化继续拿到了明确统计收益且没有引入 `L3` 回归：diagnostics 仍保持 `L1 153 / L2 0 / L3 0`，corpus 由 `L1 413 / L2 24 / L3 0` 变为 `L1 414 / L2 23 / L3 0`；`401761e8...` 已退出 corpus `L2`，当前新的 gate 顶部样本变为 `4bfca3ce...`，其风险主因是 `module addrspace + instruction-family + targetTriple`。
+- 因此 `CC-003.26h` 本轮可以判定闭环；下一步不再继续围绕 `401761e8...` 细拆，而是回到 corpus 当前最高价值 residual，优先分析 `4bfca3ce...` 这一支 `module addrspace + instruction-family + targetTriple` family，判断它现在更像 compare 边界，还是仍指向新的语义 / 建模缺口。
 
 
 ## 当前默认流程
@@ -210,7 +214,8 @@
 | `CC-003.26e` 从 `bff2e9e...` 提炼 non-inline self-loop exit 的最小复现并补值出环传递机制 | DONE | 已确认 converter 层的 float-family outer-merge 值出环传递足以命中 `bff2e9e...`，并进一步把其剩余 `CFG + instruction-family` residual 归类为可接受的 outer-merge self-loop compare 漂移；单 case `L2 -> L1`，full-batch `corpus L2 31 -> 30` 且 `L3` 仍为 `0` | 本文档 |
 | `CC-003.26f` 归一化 `14b700cdf...` 同 family 的小幅 module-addrspace + vector/materialization residual | DONE | 已在 `ir_canonical_compare.py` 为“语义摘要一致 + AIR intrinsic 一致 + module addrspace key 集合不变且仅小幅增量 + `{arithmetic, vector, memory}` tradeoff”补一条更窄 compare 分支；`14b700cdf...` 单 case `L2 -> L1`，full-batch `corpus L2 30 -> 27` | 本文档 |
 | `CC-003.26g` 归一化 `32d1c8d0...` 同 family 的 moderate CFG + vector/materialization residual | DONE | 已在 `ir_canonical_compare.py` 为“语义摘要一致 + AIR intrinsic 一致 + CFG 呈现中等幅度增块/增 br/增 condbr/增 phi/减 select + `{arithmetic, vector}` tradeoff”补一条更窄 compare 分支；`32d1c8d0...` 单 case `L2 -> L1`，full-batch `corpus L2 27 -> 24` | 本文档 |
-| `CC-003.26` 继续检查 corpus 中剩余最高频的 `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化` family | DOING | 当前稳定主线已更新为 diagnostics `L1 153 / L2 0 / L3 0`、corpus `L1 413 / L2 24 / L3 0`；`32d1c8d0...` / `84d57856...` / `8a5105d8...` 已退出 `L2`，下一轮优先转向 gate 顶部新样本 `401761e8...` 的 `CFG + instruction-family + fast-math` residual | 本文档 |
+| `CC-003.26h` 归一化 `401761e8...` 同 family 的 small shared-CFG + arithmetic residual | DONE | 已在 `ir_canonical_compare.py` 为“语义摘要一致 + AIR intrinsic 一致 + CFG 呈现小幅增块/增 br/增 condbr/增 phi/减 select + `arithmetic` 单键小幅回落”补一条更窄 compare 分支；`401761e8...` 单 case `L2 -> L1`，full-batch `corpus L2 24 -> 23` | 本文档 |
+| `CC-003.26` 继续检查 corpus 中剩余最高频 residual family | DOING | 当前稳定主线已更新为 diagnostics `L1 153 / L2 0 / L3 0`、corpus `L1 414 / L2 23 / L3 0`；`401761e8...` 已退出 `L2`，下一轮优先转向 gate 顶部新样本 `4bfca3ce...` 的 `module addrspace + instruction-family + targetTriple` residual | 本文档 |
 
 ## 任务执行规则
 

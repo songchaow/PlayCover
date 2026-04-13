@@ -2653,6 +2653,132 @@ class IRCanonicalCompareTests(unittest.TestCase):
         self.assertEqual(comparison["cfgComparison"]["severity"], "L2")
         self.assertEqual(comparison["instructionFamilyComparison"]["severity"], "L2")
 
+    def test_compare_downgrades_small_shared_cfg_arithmetic_materialization_drift_to_l1(self) -> None:
+        module_intrinsics = {
+            "air.convert.f.v3f32.f.v3f16": 14,
+            "air.dot.v2f32": 4,
+            "air.fast_clamp.v2f32": 2,
+            "air.fast_exp2.v2f32": 2,
+            "air.fast_exp2.v3f32": 2,
+            "air.fast_fabs.f32": 4,
+            "air.fast_fmax.f32": 8,
+            "air.fast_fmax.v2f32": 2,
+            "air.fast_fmin.f32": 4,
+            "air.fast_sqrt.f32": 6,
+            "air.fast_sqrt.v2f32": 2,
+            "air.fma.f32": 18,
+            "air.fma.v2f32": 8,
+            "air.fma.v3f32": 12,
+            "air.sample_texture_2d.v4f16": 4,
+        }
+        original = self._make_optimizer_drift_summary(
+            module_intrinsics=module_intrinsics,
+            entry_intrinsics=module_intrinsics,
+            cfg={
+                "basicBlockCount": 7,
+                "terminatorCounts": {"br": 2, "condbr": 4, "ret": 1},
+                "phiCount": 3,
+                "selectCount": 19,
+            },
+            instruction_families={
+                "aggregate": 1,
+                "arithmetic": 26,
+                "call": 42,
+                "compare": 12,
+                "intrinsic": 42,
+                "memory": 26,
+                "vector": 60,
+            },
+        )
+        regenerated = self._make_optimizer_drift_summary(
+            module_intrinsics=module_intrinsics,
+            entry_intrinsics=module_intrinsics,
+            cfg={
+                "basicBlockCount": 13,
+                "terminatorCounts": {"br": 5, "condbr": 7, "ret": 1},
+                "phiCount": 6,
+                "selectCount": 16,
+            },
+            instruction_families={
+                "aggregate": 1,
+                "arithmetic": 21,
+                "call": 42,
+                "compare": 12,
+                "intrinsic": 42,
+                "memory": 26,
+                "vector": 60,
+            },
+        )
+
+        comparison = canonical_compare.compare_ir_summaries(original, regenerated)
+
+        self.assertEqual(comparison["riskLevel"], "L1")
+        self.assertEqual(comparison["cfgComparison"]["severity"], "L1")
+        self.assertEqual(comparison["instructionFamilyComparison"]["severity"], "L1")
+
+    def test_compare_keeps_l2_for_small_shared_cfg_arithmetic_materialization_drift_outside_cfg_window(self) -> None:
+        module_intrinsics = {
+            "air.convert.f.v3f32.f.v3f16": 14,
+            "air.dot.v2f32": 4,
+            "air.fast_clamp.v2f32": 2,
+            "air.fast_exp2.v2f32": 2,
+            "air.fast_exp2.v3f32": 2,
+            "air.fast_fabs.f32": 4,
+            "air.fast_fmax.f32": 8,
+            "air.fast_fmax.v2f32": 2,
+            "air.fast_fmin.f32": 4,
+            "air.fast_sqrt.f32": 6,
+            "air.fast_sqrt.v2f32": 2,
+            "air.fma.f32": 18,
+            "air.fma.v2f32": 8,
+            "air.fma.v3f32": 12,
+            "air.sample_texture_2d.v4f16": 4,
+        }
+        original = self._make_optimizer_drift_summary(
+            module_intrinsics=module_intrinsics,
+            entry_intrinsics=module_intrinsics,
+            cfg={
+                "basicBlockCount": 7,
+                "terminatorCounts": {"br": 2, "condbr": 4, "ret": 1},
+                "phiCount": 3,
+                "selectCount": 19,
+            },
+            instruction_families={
+                "aggregate": 1,
+                "arithmetic": 26,
+                "call": 42,
+                "compare": 12,
+                "intrinsic": 42,
+                "memory": 26,
+                "vector": 60,
+            },
+        )
+        regenerated = self._make_optimizer_drift_summary(
+            module_intrinsics=module_intrinsics,
+            entry_intrinsics=module_intrinsics,
+            cfg={
+                "basicBlockCount": 15,
+                "terminatorCounts": {"br": 6, "condbr": 8, "ret": 1},
+                "phiCount": 7,
+                "selectCount": 15,
+            },
+            instruction_families={
+                "aggregate": 1,
+                "arithmetic": 21,
+                "call": 42,
+                "compare": 12,
+                "intrinsic": 42,
+                "memory": 26,
+                "vector": 60,
+            },
+        )
+
+        comparison = canonical_compare.compare_ir_summaries(original, regenerated)
+
+        self.assertEqual(comparison["riskLevel"], "L2")
+        self.assertEqual(comparison["cfgComparison"]["severity"], "L2")
+        self.assertEqual(comparison["instructionFamilyComparison"]["severity"], "L2")
+
     def test_compare_keeps_l2_for_outer_merge_self_loop_materialization_drift_when_phi_growth_is_too_small(self) -> None:
         module_intrinsics = {
             "air.convert.f.v3f32.f.v3f16": 14,

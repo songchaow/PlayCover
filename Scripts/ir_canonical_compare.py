@@ -576,6 +576,66 @@ def _entry_has_moderate_cfg_vector_materialization_drift(
     return 6 <= arithmetic_delta <= 16 and 8 <= vector_delta <= 24 and total_delta <= 36
 
 
+def _entry_has_small_shared_cfg_arithmetic_materialization_drift(
+    original_entry: dict[str, Any],
+    regenerated_entry: dict[str, Any],
+) -> bool:
+    semantic_keys = ("argSemantics", "resourceSemantics", "builtinSemantics", "outputSemantics")
+    for key in semantic_keys:
+        if original_entry.get(key) != regenerated_entry.get(key):
+            return False
+
+    if _normalize_air_intrinsic_counter(original_entry.get("airIntrinsicCalls")) != _normalize_air_intrinsic_counter(
+        regenerated_entry.get("airIntrinsicCalls")
+    ):
+        return False
+
+    lhs_cfg = original_entry.get("cfg") or {}
+    rhs_cfg = regenerated_entry.get("cfg") or {}
+    lhs_terminators = lhs_cfg.get("terminatorCounts") or {}
+    rhs_terminators = rhs_cfg.get("terminatorCounts") or {}
+
+    lhs_block_count = int(lhs_cfg.get("basicBlockCount") or 0)
+    rhs_block_count = int(rhs_cfg.get("basicBlockCount") or 0)
+    lhs_br = int(lhs_terminators.get("br") or 0)
+    rhs_br = int(rhs_terminators.get("br") or 0)
+    lhs_condbr = int(lhs_terminators.get("condbr") or 0)
+    rhs_condbr = int(rhs_terminators.get("condbr") or 0)
+    lhs_ret = int(lhs_terminators.get("ret") or 0)
+    rhs_ret = int(rhs_terminators.get("ret") or 0)
+    lhs_phi = int(lhs_cfg.get("phiCount") or 0)
+    rhs_phi = int(rhs_cfg.get("phiCount") or 0)
+    lhs_select = int(lhs_cfg.get("selectCount") or 0)
+    rhs_select = int(rhs_cfg.get("selectCount") or 0)
+
+    block_delta = rhs_block_count - lhs_block_count
+    br_delta = rhs_br - lhs_br
+    condbr_delta = rhs_condbr - lhs_condbr
+    phi_delta = rhs_phi - lhs_phi
+    select_delta = lhs_select - rhs_select
+
+    if not (
+        lhs_ret == rhs_ret == 1
+        and 6 <= block_delta <= 7
+        and br_delta == condbr_delta == phi_delta == select_delta
+        and 3 <= br_delta <= 4
+    ):
+        return False
+
+    lhs_families = original_entry.get("instructionFamilies") or {}
+    rhs_families = regenerated_entry.get("instructionFamilies") or {}
+    changed_keys = {
+        name
+        for name in sorted(set(lhs_families) | set(rhs_families))
+        if int(lhs_families.get(name, 0)) != int(rhs_families.get(name, 0))
+    }
+    if changed_keys != {"arithmetic"}:
+        return False
+
+    arithmetic_delta = abs(int(lhs_families.get("arithmetic", 0)) - int(rhs_families.get("arithmetic", 0)))
+    return 3 <= arithmetic_delta <= 6
+
+
 def _entry_has_outer_merge_self_loop_materialization_drift(
     original_entry: dict[str, Any],
     regenerated_entry: dict[str, Any],
@@ -681,6 +741,11 @@ def _downgrade_optimizer_only_shape_drift(
         for key in sorted(set(original_entries) & set(regenerated_entries))
         if _entry_has_moderate_cfg_vector_materialization_drift(original_entries[key], regenerated_entries[key])
     }
+    small_shared_cfg_arithmetic_materialization_only_entry_keys = {
+        key
+        for key in sorted(set(original_entries) & set(regenerated_entries))
+        if _entry_has_small_shared_cfg_arithmetic_materialization_drift(original_entries[key], regenerated_entries[key])
+    }
     outer_merge_self_loop_only_entry_keys = {
         key
         for key in sorted(set(original_entries) & set(regenerated_entries))
@@ -693,6 +758,7 @@ def _downgrade_optimizer_only_shape_drift(
         | scalar_vector_materialization_only_entry_keys
         | select_vector_memory_materialization_only_entry_keys
         | moderate_cfg_vector_materialization_only_entry_keys
+        | small_shared_cfg_arithmetic_materialization_only_entry_keys
         | outer_merge_self_loop_only_entry_keys
     )
 

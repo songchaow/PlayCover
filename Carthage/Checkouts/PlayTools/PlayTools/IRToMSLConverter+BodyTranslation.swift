@@ -508,6 +508,7 @@ extension IRToMSLConverter {
         let condValue: String
         let continueOnTrue: Bool
         let exitLabel: String
+        let exitsToStructuredMerge: Bool
     }
 
     static func findNarrowStructuredSelfLoopShape(
@@ -532,26 +533,41 @@ extension IRToMSLConverter {
             return nil
         }
 
-        if let stopLabel, exitLabel == stopLabel {
-            return nil
-        }
         guard blockLines[exitLabel] != nil,
               let currentInfo = ctx.bbInfo[currentLabel],
               currentInfo.predecessors.contains(where: { $0 != currentLabel }),
               let exitInfo = ctx.bbInfo[exitLabel] else {
             return nil
         }
-        guard exitInfo.predecessors.allSatisfy({ $0 == currentLabel }) else {
-            return nil
+        let exitsToStructuredMerge = stopLabel == exitLabel
+        if exitsToStructuredMerge {
+            guard exitInfo.predecessors.contains(currentLabel),
+                  exitInfo.predecessors.contains(where: { $0 != currentLabel }) else {
+                return nil
+            }
+            let outerMergePhiNodes = currentInfo.phiNodes + exitInfo.phiNodes
+            guard !outerMergePhiNodes.isEmpty,
+                  outerMergePhiNodes.allSatisfy({ supportsOuterMergeStructuredSelfLoopPhiType($0.irType) }) else {
+                return nil
+            }
+        } else {
+            guard exitInfo.predecessors.allSatisfy({ $0 == currentLabel }) else {
+                return nil
+            }
         }
         guard !collectPhiAssignments(forTarget: currentLabel, fromPred: currentLabel, ctx: ctx).isEmpty else {
+            return nil
+        }
+        if exitsToStructuredMerge,
+           collectPhiAssignments(forTarget: exitLabel, fromPred: currentLabel, ctx: ctx).isEmpty {
             return nil
         }
 
         let shape = StructuredSelfLoopShape(
             condValue: condValue,
             continueOnTrue: continueOnTrue,
-            exitLabel: exitLabel
+            exitLabel: exitLabel,
+            exitsToStructuredMerge: exitsToStructuredMerge
         )
         let inlineExit = canInlineStructuredSelfLoopExit(shape, stopBefore: stopLabel, ctx: ctx, blockLines: blockLines)
 
@@ -573,6 +589,10 @@ extension IRToMSLConverter {
                     continue
                 }
                 for line in lines {
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    if blockLabel == exitLabel, isPhiInstruction(trimmed) {
+                        continue
+                    }
                     let referenced = Set(referencedSSAOperandsForPrescan(line))
                     if !referenced.isDisjoint(with: currentDefs) {
                         return nil
@@ -624,6 +644,19 @@ extension IRToMSLConverter {
         }
 
         return true
+    }
+
+    static func supportsOuterMergeStructuredSelfLoopPhiType(_ irType: String) -> Bool {
+        let cleaned = irType.replacingOccurrences(of: " ", with: "")
+        if cleaned == "float" {
+            return true
+        }
+        guard cleaned.hasPrefix("<"),
+              cleaned.hasSuffix(">"),
+              cleaned.contains("xfloat") else {
+            return false
+        }
+        return !cleaned.contains("half") && !cleaned.contains("i")
     }
 
     static func emitStructuredSelfLoopBlock(
@@ -703,6 +736,10 @@ extension IRToMSLConverter {
         }
         ctx.indentLevel -= 1
         ctx.emit("}")
+
+        if shape.exitsToStructuredMerge {
+            return
+        }
 
         if inlineExit {
             emittedBlocks.insert(shape.exitLabel)

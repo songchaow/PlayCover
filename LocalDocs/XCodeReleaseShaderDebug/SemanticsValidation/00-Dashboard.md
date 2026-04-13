@@ -38,8 +38,10 @@
 - `CC-003.26d` 已完成：对 `bff2e9e...` 做了一轮单 case 结构化归因；`compile-summary.json` 显示 `originalFastMathMode=enable`、`effectiveMetalArgs=["-ffast-math"]`，compile posture 对齐，残留主因仍是 `fragment:xlatMtlMain` 的 `CFG + instruction-family`
 - `bff2e9e...` original IR 里有两段 self-loop header：`160 -> 160 / 272` 与 `446 -> 446 / 558`；但它们都不属于 `CC-003.26c` 已覆盖的“唯一退出后直接收束”shape：`272` 还会继续分叉到 `278 / 321`，`558` 还会继续分叉到 `563 / 607`
 - 更关键的是，这两段 loop header 在出环时仍需要把当前块内定义的值显式带到 exit/后续块：第一段至少涉及 `%195 / %264 / %268 / %269`，第二段至少涉及 `%550 / %554 / %555`；因此现有 `escape-safe` 窄 self-loop gating 会故意拒绝命中，generated MSL 里也确实没有恢复 `while (true)`
-- 单 case 结果与这个判断一致：regenerated IR 把 original 的 `basicBlockCount 14 / br 4 / condbr 9 / select 52` 扩成了 `33 / 15 / 17 / 42`，`instruction-family totalAbsoluteDelta = 33`；这更像“non-inline self-loop exit 的 loop-carried value 显式物化 / 出环传递”实现缺口，而不是 compare 口径噪声
-- 因此当前下一步不应继续放宽 generic self-loop emitter，也不应先改 compare；更合适的是把“non-inline self-loop exit 上的 loop-carried value 出环传递”拆成新的更小子任务，并优先为 `bff2e9e...` 提炼最小复现样本
+- `CC-003.26e` 已补出一版更窄的 `outer-merge self-loop` 值出环传递：仅当 loop header 的自边 phi 可回放、出环值只经 exit block phi 暴露，且当前/exit phi 类型均为 float-family 时，才允许在 `break` 前先写 exit phi，再把 shared exit 继续交给外层结构化 merge；同时已补 `test_self_loop_exit_merge_values.ll` 作为最小复现，并在 `Scripts/test_ir_semantics_roundtrip_runner.py` 加回归
+- `bff2e9e...` 单 case 已命中新机制：generated MSL 恢复了两段 `while (true)`，`compare-summary.json` 中 `instruction-family totalAbsoluteDelta` 已从 `33` 降到 `13`；但 canonical compare 仍停在 `L2`，当前 regenerated IR 仍为 `basicBlockCount 39 / br 17 / condbr 21 / select 42`
+- 最新 full-batch 复跑已确认这版 gate 没有重开 `CC-003.26b` 的 batch 回归：diagnostics 仍为 `L1 153 / L2 0 / L3 0`，corpus 重新稳定在 `L1 406 / L2 31 / L3 0`；也就是说，这一版只拿到了 `bff2e9e...` 的单 case 收益，还没有带来 corpus `L2` 统计净下降
+- 因此 `CC-003.26e` 还不能算闭环；下一步更合适的是继续只围绕 `bff2e9e...` 的剩余 `CFG + instruction-family` residual 做更细分拆，优先判断剩余差异更像 compare 口径问题，还是 loop-exit 后续 block 的结构化发射仍有缺口
 
 
 ## 当前默认流程
@@ -198,8 +200,9 @@
 | `CC-003.26b` 验证 generic `conditional self-loop` emitter 的 batch 收益边界 | DONE | 已确认显式 `while (true)` + `continue/break` 虽能让 `401761e8...` 单 case 重新编译成功并把 `instruction-family totalAbsoluteDelta 11 -> 5`，但 full-batch 反而使 corpus `L2 31 -> 35`，且新增 `6c9ba02f...` / `2aa10f98...` / `70b330a1...` / `a9fbcdf5...`，因此这版实现已回退 | 本文档 |
 | `CC-003.26c` 把 self-loop emitter 收窄到 escape-safe 的唯一退出 shape | DONE | 已仅对“self-edge phi 可回放 + 退出块唯一 + 当前块 SSA 不逃逸到非 inline 后续块”的 loop header 发射窄 `while (true)`；`401761e8...` 单 case `instruction-family totalAbsoluteDelta 11 -> 5`，`6c9ba02f...` 新增 compile 回归已消除，但 full-batch 仍无统计净收益 | 本文档 |
 | `CC-003.26d` 归因 `bff2e9e...` 为 non-inline self-loop exit 的值出环传递缺口 | DONE | 已确认 `bff2e9e...` 的两段 self-loop 都不属于当前 unique-exit / escape-safe shape；compile posture 已对齐，残留主因落在 loop-exit value 的显式物化 / 出环传递缺口，而不是 compare 噪声 | 本文档 |
-| `CC-003.26e` 从 `bff2e9e...` 提炼 non-inline self-loop exit 的最小复现并补值出环传递机制 | TODO | 提炼出最小复现样本，并完成一版不放宽 generic self-loop emitter 的出环物化机制；单 case 降级且 full-batch 无新增 `L3` 回归 | 本文档 |
-| `CC-003.26` 继续检查 corpus 中剩余最高频的 `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化` family | DOING | 当前稳定主线仍以 corpus `L2 31 / L3 0` 为口径；`bff2e9e...` 已确认不是当前 unique-exit self-loop 可覆盖 residual；下一轮优先推进 `CC-003.26e`，而不是继续放宽 generic self-loop emitter 或先改 compare | 本文档 |
+| `CC-003.26e.1` 先为 float-family outer-merge self-loop 补最小可回归的值出环传递 | DONE | 已补 `test_self_loop_exit_merge_values.ll` 最小复现；outer-merge self-loop 仅对 float-family phi shape 开 gate；`bff2e9e...` 单 case `instruction-family totalAbsoluteDelta 33 -> 13`，且 full-batch 重新稳定在 corpus `L2 31 / L3 0` | 本文档 |
+| `CC-003.26e` 从 `bff2e9e...` 提炼 non-inline self-loop exit 的最小复现并补值出环传递机制 | DOING | 已完成 float-family outer-merge self-loop 的首轮值出环传递，`bff2e9e...` 单 case 已明显收敛但仍停在 `L2`；下一轮需要继续拆剩余 `CFG + instruction-family` residual，而不是重新放宽 generic self-loop emitter | 本文档 |
+| `CC-003.26` 继续检查 corpus 中剩余最高频的 `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化` family | DOING | 当前稳定主线仍以 corpus `L2 31 / L3 0` 为口径；`CC-003.26e.1` 已确认 float-family outer-merge 值出环传递不会重开 batch 回归，下一轮继续只围绕 `bff2e9e...` 的剩余 residual 细拆，而不是切回 generic self-loop emitter 或先改 compare | 本文档 |
 
 ## 任务执行规则
 

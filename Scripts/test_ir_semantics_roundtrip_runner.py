@@ -28,6 +28,7 @@ TEST_PHI_VECTOR_CONSTANT_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderD
 TEST_PARTIAL_STRUCTURED_CFG_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_partial_structured_cfg.ll"
 TEST_ENTRY_PARTIAL_STRUCTURED_CFG_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_entry_partial_structured_cfg.ll"
 TEST_LATE_MERGE_FALLBACK_ORDER_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_late_merge_fallback_order.ll"
+TEST_SELF_LOOP_EXIT_MERGE_VALUES_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_self_loop_exit_merge_values.ll"
 TEST_UNCONDITIONAL_SUCCESSOR_GATING_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_unconditional_successor_gating.ll"
 TEST_STRUCTURED_MERGE_LATE_PREDECESSOR_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_structured_merge_late_predecessor.ll"
 TEST_NESTED_COMMON_MERGE_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_nested_common_merge.ll"
@@ -1737,6 +1738,35 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             self.assertGreater(store_index, continue_index)
             return_index = generated_text.index("return;")
             self.assertGreater(return_index, continue_index)
+
+    @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
+    def test_corpus_replay_runner_preserves_self_loop_exit_values_for_outer_merge(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            generated_path = Path(temp_dir) / "self-loop-exit-merge-values.generated.metal"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(REPO_ROOT / "Scripts" / "corpus_replay_runner.py"),
+                    "--ll",
+                    str(TEST_SELF_LOOP_EXIT_MERGE_VALUES_SAMPLE),
+                    "--output-file",
+                    str(generated_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("replay summary", completed.stdout)
+            generated_text = generated_path.read_text(encoding="utf-8")
+            self.assertIn("while (true) {", generated_text)
+            self.assertIn("phi_2 = t6; // phi from BB4", generated_text)
+            self.assertIn("phi_3 = t7; // phi from BB4", generated_text)
+            self.assertIn("break;", generated_text)
+            break_index = generated_text.index("break;")
+            self.assertGreater(generated_text.index("*(output) = phi_4"), break_index)
+            self.assertGreater(generated_text.index("return;"), break_index)
 
     @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
     def test_corpus_replay_runner_defers_structured_merge_until_external_predecessors_are_emitted(self) -> None:

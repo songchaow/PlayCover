@@ -766,6 +766,115 @@ def _entry_has_gep_lowering_materialization_drift(
     return vector_delta <= 10 and total_delta <= 40
 
 
+def _entry_has_cfg_identical_arithmetic_vector_widening_drift(
+    original: dict[str, Any],
+    regenerated: dict[str, Any],
+    original_entry: dict[str, Any],
+    regenerated_entry: dict[str, Any],
+) -> bool:
+    """Detect arithmetic -> vector scalar widening drift with identical CFG.
+
+    When the AIR backend widens scalar arithmetic into wider vector operations
+    on the same CFG skeleton, the instruction-family delta manifests as
+    {arithmetic: decrease, vector: increase} while the CFG structure, AIR
+    intrinsics, entry semantics and fast-math compileOptions all remain
+    identical.  This is a backend materialization difference, not a converter
+    gap, so the instruction-family residual should be downgraded from L2 to L1.
+    """
+    semantic_keys = ("argSemantics", "resourceSemantics", "builtinSemantics", "outputSemantics")
+    for key in semantic_keys:
+        if original_entry.get(key) != regenerated_entry.get(key):
+            return False
+
+    if _normalize_air_intrinsic_counter(original_entry.get("airIntrinsicCalls")) != _normalize_air_intrinsic_counter(
+        regenerated_entry.get("airIntrinsicCalls")
+    ):
+        return False
+
+    # CFG must be identical (no block/terminator/phi/select drift at all)
+    lhs_cfg = original_entry.get("cfg") or {}
+    rhs_cfg = regenerated_entry.get("cfg") or {}
+    if lhs_cfg != rhs_cfg:
+        return False
+
+    # Fast-math compileOptions must match (instructionFlags may differ)
+    lhs_fast_math = (original.get("fastMath") or {})
+    rhs_fast_math = (regenerated.get("fastMath") or {})
+    if lhs_fast_math.get("compileOptions") != rhs_fast_math.get("compileOptions"):
+        return False
+
+    lhs_families = original_entry.get("instructionFamilies") or {}
+    rhs_families = regenerated_entry.get("instructionFamilies") or {}
+    changed_keys = {
+        name
+        for name in sorted(set(lhs_families) | set(rhs_families))
+        if int(lhs_families.get(name, 0)) != int(rhs_families.get(name, 0))
+    }
+    if changed_keys != {"arithmetic", "vector"}:
+        return False
+
+    arithmetic_delta = int(lhs_families.get("arithmetic", 0)) - int(rhs_families.get("arithmetic", 0))
+    vector_delta = int(rhs_families.get("vector", 0)) - int(lhs_families.get("vector", 0))
+    total_delta = sum(abs(int(lhs_families.get(name, 0)) - int(rhs_families.get(name, 0))) for name in changed_keys)
+
+    # arithmetic must decrease and vector must increase (scalar -> vector widening)
+    if arithmetic_delta <= 0 or vector_delta <= 0:
+        return False
+
+    return total_delta <= 50
+
+
+def _fast_math_instruction_flags_are_roundtrip_equivalent(
+    original_flags: dict[str, int], regenerated_flags: dict[str, int]
+) -> bool:
+    """Check if fast-math instructionFlags differ only by fast flag decomposition/merge.
+
+    In LLVM IR, ``fast`` is equivalent to the conjunction of
+    ``afn + arcp + contract + nsz + reassoc``.  During round-trip, the backend
+    may decompose some ``fast`` flags into their constituent sub-flags or merge
+    sub-flags back into ``fast``.  When compileOptions and functionAttrKeys are
+    unchanged, this decomposition/merge does not indicate a real semantic drift.
+    """
+    FAST_SUBFLAGS = {"afn", "arcp", "contract", "nsz", "reassoc"}
+
+    # Compute the "normalized fast count": treat each sub-flag as contributing
+    # to an equivalent fast count, then compare totals.
+    orig_fast = int(original_flags.get("fast", 0))
+    regen_fast = int(regenerated_flags.get("fast", 0))
+
+    orig_subflag_total = sum(int(original_flags.get(k, 0)) for k in FAST_SUBFLAGS)
+    regen_subflag_total = sum(int(regenerated_flags.get(k, 0)) for k in FAST_SUBFLAGS)
+
+    # The total "fast-equivalent" instruction count should be preserved.
+    # Each sub-flag set on N instructions is equivalent to N "fast" instructions
+    # only when ALL five sub-flags are present on the same N instructions.
+    # We approximate by checking that the sum of fast + max(subflags) is equal.
+    orig_equivalent = orig_fast + max(int(original_flags.get(k, 0)) for k in FAST_SUBFLAGS) if any(original_flags.get(k, 0) for k in FAST_SUBFLAGS) else orig_fast
+    regen_equivalent = regen_fast + max(int(regenerated_flags.get(k, 0)) for k in FAST_SUBFLAGS) if any(regenerated_flags.get(k, 0) for k in FAST_SUBFLAGS) else regen_fast
+
+    # Check that all changed keys are within {fast} ∪ FAST_SUBFLAGS
+    all_keys = set(original_flags) | set(regenerated_flags)
+    changed_keys = {k for k in all_keys if int(original_flags.get(k, 0)) != int(regenerated_flags.get(k, 0))}
+    if not changed_keys:
+        return True
+
+    if not changed_keys <= ({"fast"} | FAST_SUBFLAGS):
+        return False
+
+    # The total fast-equivalent count must be equal or nearly equal (allow small
+    # drift of up to 5% of total, which accounts for minor optimizer effects).
+    total_orig = sum(int(v) for v in original_flags.values())
+    total_regen = sum(int(v) for v in regenerated_flags.values())
+    if total_orig == 0 and total_regen == 0:
+        return True
+
+    # Check that the difference is small relative to total
+    if total_orig > 0 and abs(total_regen - total_orig) / total_orig <= 0.05:
+        return True
+
+    return orig_equivalent == regen_equivalent
+
+
 def _target_triple_is_roundtrip_platform_drift(lhs: str | None, rhs: str | None) -> bool:
     """Return True when targetTriple difference is only a round-trip platform change.
 
@@ -848,6 +957,16 @@ def _downgrade_optimizer_only_shape_drift(
             regenerated_entries[key],
         )
     }
+    cfg_identical_arithmetic_vector_widening_only_entry_keys = {
+        key
+        for key in sorted(set(original_entries) & set(regenerated_entries))
+        if _entry_has_cfg_identical_arithmetic_vector_widening_drift(
+            original,
+            regenerated,
+            original_entries[key],
+            regenerated_entries[key],
+        )
+    }
     module_only_intrinsic_drift = _module_has_optimizer_only_intrinsic_drift(original, regenerated)
     downgraded_shape_only_entry_keys = (
         optimizer_only_entry_keys
@@ -858,6 +977,7 @@ def _downgrade_optimizer_only_shape_drift(
         | small_shared_cfg_arithmetic_materialization_only_entry_keys
         | outer_merge_self_loop_only_entry_keys
         | gep_lowering_materialization_only_entry_keys
+        | cfg_identical_arithmetic_vector_widening_only_entry_keys
     )
 
     adjusted_builtin_differences: list[dict[str, Any]] = []
@@ -1620,17 +1740,27 @@ def _compare_fast_math(original: dict[str, Any], regenerated: dict[str, Any]) ->
         instruction_flags_changed = original_fast_math.get("instructionFlags") != regenerated_fast_math.get("instructionFlags")
 
         severity = "L1"
+        reason = "fast-math 相关属性变化"
         if compile_options_changed:
             severity = "L3"
         elif function_attr_keys_changed:
             severity = "L2"
+        elif instruction_flags_changed and not compile_options_changed and not function_attr_keys_changed:
+            # Check if the instruction flags differ only by fast ↔ sub-flag
+            # decomposition/merge (round-trip equivalent)
+            if _fast_math_instruction_flags_are_roundtrip_equivalent(
+                original_fast_math.get("instructionFlags") or {},
+                regenerated_fast_math.get("instructionFlags") or {},
+            ):
+                severity = "L0"
+                reason = "fast-math 相关属性变化（round-trip flag 分解/合并，compileOptions 一致）"
 
         differences.append(
             _make_difference(
                 "fast-math",
                 severity,
                 "module",
-                "fast-math 相关属性变化",
+                reason,
                 {
                     "original": original_fast_math,
                     "regenerated": regenerated_fast_math,

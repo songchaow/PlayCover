@@ -420,6 +420,25 @@ extension IRToMSLConverter {
         ctx.currentBBLabel = label
 
         let lines = blockLines[label] ?? []
+        if let selfLoopShape = findNarrowStructuredSelfLoopShape(
+            currentLabel: label,
+            stopBefore: stopLabel,
+            ctx: ctx,
+            blockLines: blockLines
+        ) {
+            emitStructuredSelfLoopBlock(
+                label,
+                lines: lines,
+                shape: selfLoopShape,
+                stopBefore: stopLabel,
+                bodyLines: bodyLines,
+                blockLines: blockLines,
+                ctx: ctx,
+                emittedBlocks: &emittedBlocks
+            )
+            return
+        }
+
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty { continue }
@@ -483,6 +502,221 @@ extension IRToMSLConverter {
             }
             translateInstruction(trimmed, ctx: ctx)
         }
+    }
+
+    struct StructuredSelfLoopShape {
+        let condValue: String
+        let continueOnTrue: Bool
+        let exitLabel: String
+    }
+
+    static func findNarrowStructuredSelfLoopShape(
+        currentLabel: String,
+        stopBefore stopLabel: String?,
+        ctx: SSAContext,
+        blockLines: [String: [String]]
+    ) -> StructuredSelfLoopShape? {
+        guard case .conditional(let condValue, let trueLabel, let falseLabel)? = ctx.bbInfo[currentLabel]?.branch else {
+            return nil
+        }
+
+        let continueOnTrue: Bool
+        let exitLabel: String
+        if trueLabel == currentLabel, falseLabel != currentLabel {
+            continueOnTrue = true
+            exitLabel = falseLabel
+        } else if falseLabel == currentLabel, trueLabel != currentLabel {
+            continueOnTrue = false
+            exitLabel = trueLabel
+        } else {
+            return nil
+        }
+
+        if let stopLabel, exitLabel == stopLabel {
+            return nil
+        }
+        guard blockLines[exitLabel] != nil,
+              let currentInfo = ctx.bbInfo[currentLabel],
+              currentInfo.predecessors.contains(where: { $0 != currentLabel }),
+              let exitInfo = ctx.bbInfo[exitLabel] else {
+            return nil
+        }
+        guard exitInfo.predecessors.allSatisfy({ $0 == currentLabel }) else {
+            return nil
+        }
+        guard !collectPhiAssignments(forTarget: currentLabel, fromPred: currentLabel, ctx: ctx).isEmpty else {
+            return nil
+        }
+
+        let shape = StructuredSelfLoopShape(
+            condValue: condValue,
+            continueOnTrue: continueOnTrue,
+            exitLabel: exitLabel
+        )
+        let inlineExit = canInlineStructuredSelfLoopExit(shape, stopBefore: stopLabel, ctx: ctx, blockLines: blockLines)
+
+        var currentDefs: Set<String> = []
+        for line in blockLines[currentLabel] ?? [] {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard let eqRange = trimmed.range(of: " = ") else { continue }
+            let lhs = String(trimmed[..<eqRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+            if lhs.hasPrefix("%") {
+                currentDefs.insert(lhs)
+            }
+        }
+        if !currentDefs.isEmpty {
+            for (blockLabel, lines) in blockLines {
+                if blockLabel == currentLabel {
+                    continue
+                }
+                if inlineExit && blockLabel == exitLabel {
+                    continue
+                }
+                for line in lines {
+                    let referenced = Set(referencedSSAOperandsForPrescan(line))
+                    if !referenced.isDisjoint(with: currentDefs) {
+                        return nil
+                    }
+                }
+            }
+        }
+
+        return shape
+    }
+
+    static func canInlineStructuredSelfLoopExit(
+        _ shape: StructuredSelfLoopShape,
+        stopBefore stopLabel: String?,
+        ctx: SSAContext,
+        blockLines: [String: [String]]
+    ) -> Bool {
+        guard let stopLabel,
+              case .unconditional(let dest)? = ctx.bbInfo[shape.exitLabel]?.branch,
+              dest == stopLabel,
+              let exitLines = blockLines[shape.exitLabel] else {
+            return false
+        }
+
+        var exitDefs: Set<String> = []
+        for line in exitLines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard let eqRange = trimmed.range(of: " = ") else { continue }
+            let lhs = String(trimmed[..<eqRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+            if lhs.hasPrefix("%") {
+                exitDefs.insert(lhs)
+            }
+        }
+        guard !exitDefs.isEmpty else {
+            return true
+        }
+
+        for (blockLabel, lines) in blockLines where blockLabel != shape.exitLabel {
+            for line in lines {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if blockLabel == stopLabel, isPhiInstruction(trimmed) {
+                    continue
+                }
+                let referenced = Set(referencedSSAOperandsForPrescan(trimmed))
+                if !referenced.isDisjoint(with: exitDefs) {
+                    return false
+                }
+            }
+        }
+
+        return true
+    }
+
+    static func emitStructuredSelfLoopBlock(
+        _ label: String,
+        lines: [String],
+        shape: StructuredSelfLoopShape,
+        stopBefore stopLabel: String?,
+        bodyLines: [String],
+        blockLines: [String: [String]],
+        ctx: SSAContext,
+        emittedBlocks: inout Set<String>
+    ) {
+        let inlineExit = canInlineStructuredSelfLoopExit(shape, stopBefore: stopLabel, ctx: ctx, blockLines: blockLines)
+        let exitLines = blockLines[shape.exitLabel] ?? []
+
+        ctx.emit("while (true) {")
+        ctx.indentLevel += 1
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || isPhiInstruction(trimmed) {
+                continue
+            }
+            if trimmed.hasPrefix("br ") {
+                let cond = resolveIROperand(shape.condValue, ctx: ctx)
+                let selfAssignments = collectPhiAssignments(forTarget: label, fromPred: label, ctx: ctx)
+                let exitAssignments = collectPhiAssignments(forTarget: shape.exitLabel, fromPred: label, ctx: ctx)
+
+                func emitBreakBranch() {
+                    for assignment in exitAssignments {
+                        ctx.emit(assignment)
+                    }
+                    if inlineExit {
+                        let previousBBLabel = ctx.currentBBLabel
+                        ctx.currentBBLabel = shape.exitLabel
+                        for exitLine in exitLines {
+                            let exitTrimmed = exitLine.trimmingCharacters(in: .whitespaces)
+                            if exitTrimmed.isEmpty || isPhiInstruction(exitTrimmed) {
+                                continue
+                            }
+                            if exitTrimmed.hasPrefix("br ") {
+                                translateBr(exitTrimmed, ctx: ctx)
+                                continue
+                            }
+                            translateInstruction(exitTrimmed, ctx: ctx)
+                        }
+                        ctx.currentBBLabel = previousBBLabel
+                    }
+                    ctx.emit("break;")
+                }
+
+                ctx.emit("if (\(cond)) {")
+                ctx.indentLevel += 1
+                if shape.continueOnTrue {
+                    for assignment in selfAssignments {
+                        ctx.emit(assignment)
+                    }
+                    ctx.emit("continue;")
+                } else {
+                    emitBreakBranch()
+                }
+                ctx.indentLevel -= 1
+                ctx.emit("} else {")
+                ctx.indentLevel += 1
+                if shape.continueOnTrue {
+                    emitBreakBranch()
+                } else {
+                    for assignment in selfAssignments {
+                        ctx.emit(assignment)
+                    }
+                    ctx.emit("continue;")
+                }
+                ctx.indentLevel -= 1
+                ctx.emit("}")
+                break
+            }
+            translateInstruction(trimmed, ctx: ctx)
+        }
+        ctx.indentLevel -= 1
+        ctx.emit("}")
+
+        if inlineExit {
+            emittedBlocks.insert(shape.exitLabel)
+            return
+        }
+
+        emitStructuredBasicBlock(
+            shape.exitLabel,
+            stopBefore: stopLabel,
+            bodyLines: bodyLines,
+            blockLines: blockLines,
+            ctx: ctx,
+            emittedBlocks: &emittedBlocks
+        )
     }
 
     static func emitStructuredConditionalBranch(

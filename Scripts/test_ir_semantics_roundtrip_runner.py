@@ -1618,7 +1618,8 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             self.assertIn("} else {", generated_text)
             self.assertNotIn("// → BB3", generated_text)
             self.assertNotIn("// → BB4", generated_text)
-            self.assertIn("// → BB11", generated_text)
+            self.assertIn("while (true) {", generated_text)
+            self.assertIn("return;", generated_text)
 
     @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
     def test_corpus_replay_runner_keeps_emitting_blocks_after_entry_fallback_condbr(self) -> None:
@@ -1706,6 +1707,36 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             self.assertGreater(return_index, generated_text.index("phi_0 = 2"))
             self.assertGreater(return_index, generated_text.index("phi_0 = 3"))
             self.assertEqual(generated_text.count("return;"), 1)
+
+    @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
+    def test_corpus_replay_runner_preserves_narrow_self_loop_as_while_continue(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            generated_path = Path(temp_dir) / "narrow-self-loop.generated.metal"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(REPO_ROOT / "Scripts" / "corpus_replay_runner.py"),
+                    "--ll",
+                    str(TEST_LATE_MERGE_FALLBACK_ORDER_SAMPLE),
+                    "--output-file",
+                    str(generated_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("replay summary", completed.stdout)
+            generated_text = generated_path.read_text(encoding="utf-8")
+            self.assertIn("while (true) {", generated_text)
+            self.assertIn("phi_1 = t5; // phi from BB7", generated_text)
+            self.assertIn("continue;", generated_text)
+            continue_index = generated_text.index("continue;")
+            store_index = generated_text.index("*(output) = phi_2")
+            self.assertGreater(store_index, continue_index)
+            return_index = generated_text.index("return;")
+            self.assertGreater(return_index, continue_index)
 
     @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
     def test_corpus_replay_runner_defers_structured_merge_until_external_predecessors_are_emitted(self) -> None:

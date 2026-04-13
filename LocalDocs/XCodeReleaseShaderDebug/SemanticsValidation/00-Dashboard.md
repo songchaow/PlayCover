@@ -96,7 +96,7 @@
   - round-trip runner / compile posture / shared planner
   - aggregate orchestration / runtime-like harness
 
-- **必须严格优先尝试修改真正负责语义建模或 compile decision 的实现层。** 只有当反复验证后确认问题只是 compare 口径噪声，才考虑优先改 `ir_canonical_compare.py`。
+- **必须严格优先尝试修改真正负责语义建模或 compile decision 的实现层。** 只有当反复验证后确认converter层面的修复不靠谱，才考虑优先改 `ir_canonical_compare.py`。
 
 若这一步还没有明确判断，**不要急着改实现**。
 

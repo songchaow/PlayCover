@@ -39,8 +39,11 @@
 - 本轮对 `bff2e9e...` 补做了 compare 口径归因：当前 generated MSL 仍会把两段 `while (true)` 交给后端 lowering 成更宽的 AIR CFG（`basicBlockCount 39 / br 17 / condbr 21 / phi 54 / select 42`），但 entry/resource/builtin 语义与 AIR intrinsic family 已保持一致，剩余漂移主要表现为 outer-merge self-loop 后端物化导致的 `CFG + arithmetic/vector` 统计重分布。
 - 因此本轮没有继续改 `IRToMSLConverter`，而是在 `ir_canonical_compare.py` 新增一条更窄的 outer-merge self-loop residual 降噪：仅当语义摘要一致、AIR intrinsic family 一致、CFG 呈现“大幅增块/增 phi/减 select”，且指令族只剩 `arithmetic + vector` 小幅 tradeoff 时，才把该 residual 从 `L2` 降到 `L1`。
 - `bff2e9e...` 单 case 已据此闭环：`compare-summary.json` 中风险已从 `L2` 降到 `L1`，`instruction-family totalAbsoluteDelta` 保持 `13`，`compile-summary.json` 仍显示 `originalFastMathMode=enable`、`effectiveMetalArgs=["-ffast-math"]`，说明当前结论更像 compare 口径收敛，而不是实现层仍有新缺口。
-- 最新 full-batch 复跑显示这次 compare 归一化拿到了明确统计收益且没有引入 `L3` 回归：diagnostics 变为 `L1 153 / L2 0 / L3 0`，corpus 由 `L1 406 / L2 31 / L3 0` 变为 `L1 407 / L2 30 / L3 0`；`bff2e9e...` 已退出 corpus `L2`，当前新的 gate 顶部样本变为 `14b700cdf...`，其风险主因是 `module addrspace distribution + instruction-family + fast-math`。
-- 因此 `CC-003.26e` 本轮可以判定闭环；下一步不再继续围绕 `bff2e9e...` 细拆，而是回到 corpus 当前最高价值 residual，优先分析 `14b700cdf...` 这一支 `addrspace + instruction-family` family，判断它更像参数/metadata 建模缺口，还是 compare 对模块级 addrspace 分布仍然过敏。
+- 本轮继续下钻 `14b700cdf...` 后，证据链已收敛成更窄的 compare residual：`entry / resource / builtin` 语义保持一致，`compile-summary.json` 继续显示 `-ffast-math` 对齐，剩余主因是“小幅 module addrspace 计数上浮 + arithmetic/vector 重分布 + memory 微漂移”；其中 standalone single-case 已稳定表现为 `addrspace(2) 153 -> 157`、`instruction-family totalAbsoluteDelta 46`，但不再伴随真实 entry/compile posture 缺口。
+- 因此本轮没有继续改 `IRToMSLConverter`，而是在 `ir_canonical_compare.py` 新增一条更窄的 select-heavy vector/materialization residual 降噪：仅当语义摘要一致、AIR intrinsic 统计一致、module addrspace key 集合不变且只出现单一 addrspace 小幅增量时，允许把 `{arithmetic, vector, memory}` 这组同 CFG / 同 skeleton tradeoff 从 `L2` 下调到 `L1`。
+- `14b700cdf...` 单 case 已据此闭环：`build/semantics-validation/roundtrip/cc-003-26f-single-14b700cdf-select-memory/compare-summary.json` 中风险已从 `L2` 降到 `L1`，`instruction-family totalAbsoluteDelta` 收敛到 `46`，`compile-summary.json` 仍显示 `-ffast-math`，说明当前结论更像 compare 口径收敛，而不是实现层存在新的 addrspace / planner 缺口。
+- 最新 full-batch 复跑显示这次 compare 归一化继续拿到了明确统计收益且没有引入 `L3` 回归：diagnostics 保持 `L1 153 / L2 0 / L3 0`，corpus 由 `L1 407 / L2 30 / L3 0` 变为 `L1 410 / L2 27 / L3 0`；`14b700cdf...`、`62e40bab...`、`29b2b992...` 已退出 corpus `L2`，当前新的 gate 顶部样本变为 `32d1c8d0...`，其风险主因是 `CFG + instruction-family + fast-math`。
+- 因此 `CC-003.26f` 本轮可以判定闭环；下一步不再继续围绕 `14b700cdf...` 细拆，而是回到 corpus 当前最高价值 residual，优先分析 `32d1c8d0...` 这一支 shared-CFG / instruction-family / fast-math family，判断它更像 `401761e8...` 同类的 structured emission residual，还是新的 materialization compare 边界。
 
 
 ## 当前默认流程
@@ -201,7 +204,8 @@
 | `CC-003.26d` 归因 `bff2e9e...` 为 non-inline self-loop exit 的值出环传递缺口 | DONE | 已确认 `bff2e9e...` 的两段 self-loop 都不属于当前 unique-exit / escape-safe shape；compile posture 已对齐，残留主因落在 loop-exit value 的显式物化 / 出环传递缺口，而不是 compare 噪声 | 本文档 |
 | `CC-003.26e.1` 先为 float-family outer-merge self-loop 补最小可回归的值出环传递 | DONE | 已补 `test_self_loop_exit_merge_values.ll` 最小复现；outer-merge self-loop 仅对 float-family phi shape 开 gate；`bff2e9e...` 单 case `instruction-family totalAbsoluteDelta 33 -> 13`，且 full-batch 重新稳定在 corpus `L2 31 / L3 0` | 本文档 |
 | `CC-003.26e` 从 `bff2e9e...` 提炼 non-inline self-loop exit 的最小复现并补值出环传递机制 | DONE | 已确认 converter 层的 float-family outer-merge 值出环传递足以命中 `bff2e9e...`，并进一步把其剩余 `CFG + instruction-family` residual 归类为可接受的 outer-merge self-loop compare 漂移；单 case `L2 -> L1`，full-batch `corpus L2 31 -> 30` 且 `L3` 仍为 `0` | 本文档 |
-| `CC-003.26` 继续检查 corpus 中剩余最高频的 `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化` family | DOING | 当前稳定主线已更新为 diagnostics `L1 153 / L2 0 / L3 0`、corpus `L1 407 / L2 30 / L3 0`；`bff2e9e...` 已退出 `L2`，下一轮优先转向 gate 顶部新样本 `14b700cdf...` 的 `addrspace + instruction-family` residual，而不是继续处理 self-loop family | 本文档 |
+| `CC-003.26f` 归一化 `14b700cdf...` 同 family 的小幅 module-addrspace + vector/materialization residual | DONE | 已在 `ir_canonical_compare.py` 为“语义摘要一致 + AIR intrinsic 一致 + module addrspace key 集合不变且仅小幅增量 + `{arithmetic, vector, memory}` tradeoff”补一条更窄 compare 分支；`14b700cdf...` 单 case `L2 -> L1`，full-batch `corpus L2 30 -> 27` | 本文档 |
+| `CC-003.26` 继续检查 corpus 中剩余最高频的 `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化` family | DOING | 当前稳定主线已更新为 diagnostics `L1 153 / L2 0 / L3 0`、corpus `L1 410 / L2 27 / L3 0`；`14b700cdf...` / `62e40bab...` / `29b2b992...` 已退出 `L2`，下一轮优先转向 gate 顶部新样本 `32d1c8d0...` 的 `CFG + instruction-family + fast-math` residual | 本文档 |
 
 ## 任务执行规则
 

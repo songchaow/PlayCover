@@ -34,17 +34,12 @@
 
 ### 当前最新状态
 
-- `CC-003.26c` 已完成：在 `IRToMSLConverter+BodyTranslation.swift` 中补了一版**只覆盖极窄 shape** 的 `conditional self-loop` 发射；仅当 loop header 存在可回放的 self-edge phi、退出块只从当前 header 进入，且当前块内定义的 SSA 不会逃逸到非 inline 的后续块时，才把该 header 发成显式 `while (true) + continue/break`
-- 这轮最小实现修复包含两层约束：
-  - 对直接 `br` 到当前 merge 的唯一退出块，允许 inline 到 `break` 分支里，保住像 `401761e8...` 里 `%188 -> %192 -> %194` 这类 loop-exit value 链
-  - 若 loop header 内定义的 SSA 会逃逸到退出块之后的 block，则禁止命中这条窄 self-loop 路径；这是为避免重现 `6c9ba02f...` 里 `%286` 这类值在出环后失去作用域
-- `401761e8...` 单 case 已进一步收缩：generated MSL 已恢复显式 `while (true)`、`phi from BB156` 和 `phi from BB191`；regenerated IR 重新出现 self-loop header，`instruction-family totalAbsoluteDelta 11 -> 5`，但样本风险仍暂留 `L2`
-- 这轮中途暴露出的回归是：更宽的 self-loop shape 会让 `6c9ba02f...` 掉成 compile `L3`，根因不是 compare，而是 loop header 内定义的值在退出后续块继续被引用；在补上 escape-safe gating 后，`6c9ba02f...` 单 case 已回到 `L1`，新增 compile 回归清零
-- 最新 full-batch 重新稳定为：
-  - diagnostics：`L1 153 / L2 0 / L3 0`
-  - corpus：`L1 406 / L2 31 / L3 0`
-- 这轮 full-batch **仍然没有统计净收益**：`401761e8...` 虽然单 case 明确收缩，但 corpus 顶层 `L2/L3` 总量不变；`14b700cdf...` 仍是 gate summary 里的 `new L2 sample`，diagnostics 也继续完全不回退
-- 因此当前下一步仍不应回到 generic self-loop emitter，也不应先放宽 compare；更值得继续的方向是：优先看 `bff2e9e...` 是否也能拆出同样“唯一退出 + 无 SSA 逃逸”的更窄 loop shape，或者把“`loop-carried escaping values` 的显式物化/出环传递”单独拆成更小子任务
+- `CC-003.26c` 的窄 self-loop emitter 仍保持为当前稳定基线：它只覆盖“self-edge phi 可回放 + 退出块唯一 + 当前块 SSA 不逃逸到非 inline 后续块”的 loop header；最新 full-batch 重跑后，统计再次稳定为 diagnostics `L1 153 / L2 0 / L3 0`、corpus `L1 406 / L2 31 / L3 0`
+- `CC-003.26d` 已完成：对 `bff2e9e...` 做了一轮单 case 结构化归因；`compile-summary.json` 显示 `originalFastMathMode=enable`、`effectiveMetalArgs=["-ffast-math"]`，compile posture 对齐，残留主因仍是 `fragment:xlatMtlMain` 的 `CFG + instruction-family`
+- `bff2e9e...` original IR 里有两段 self-loop header：`160 -> 160 / 272` 与 `446 -> 446 / 558`；但它们都不属于 `CC-003.26c` 已覆盖的“唯一退出后直接收束”shape：`272` 还会继续分叉到 `278 / 321`，`558` 还会继续分叉到 `563 / 607`
+- 更关键的是，这两段 loop header 在出环时仍需要把当前块内定义的值显式带到 exit/后续块：第一段至少涉及 `%195 / %264 / %268 / %269`，第二段至少涉及 `%550 / %554 / %555`；因此现有 `escape-safe` 窄 self-loop gating 会故意拒绝命中，generated MSL 里也确实没有恢复 `while (true)`
+- 单 case 结果与这个判断一致：regenerated IR 把 original 的 `basicBlockCount 14 / br 4 / condbr 9 / select 52` 扩成了 `33 / 15 / 17 / 42`，`instruction-family totalAbsoluteDelta = 33`；这更像“non-inline self-loop exit 的 loop-carried value 显式物化 / 出环传递”实现缺口，而不是 compare 口径噪声
+- 因此当前下一步不应继续放宽 generic self-loop emitter，也不应先改 compare；更合适的是把“non-inline self-loop exit 上的 loop-carried value 出环传递”拆成新的更小子任务，并优先为 `bff2e9e...` 提炼最小复现样本
 
 
 ## 当前默认流程
@@ -202,7 +197,9 @@
 | `CC-003.26a` 修补 shared-CFG case 中 `phi incoming` 的向量常量 / 隐式 entry 保真缺口 | DONE | 已补齐 `phi [value, %label]` 的顶层解析与 `entry -> %3` 别名匹配；`401761e8...` 单 case 已从“final-merge 多条 incoming 丢失”收窄到只剩 loop-continue edge residual，但 full-batch 暂无统计净收益 | 本文档 |
 | `CC-003.26b` 验证 generic `conditional self-loop` emitter 的 batch 收益边界 | DONE | 已确认显式 `while (true)` + `continue/break` 虽能让 `401761e8...` 单 case 重新编译成功并把 `instruction-family totalAbsoluteDelta 11 -> 5`，但 full-batch 反而使 corpus `L2 31 -> 35`，且新增 `6c9ba02f...` / `2aa10f98...` / `70b330a1...` / `a9fbcdf5...`，因此这版实现已回退 | 本文档 |
 | `CC-003.26c` 把 self-loop emitter 收窄到 escape-safe 的唯一退出 shape | DONE | 已仅对“self-edge phi 可回放 + 退出块唯一 + 当前块 SSA 不逃逸到非 inline 后续块”的 loop header 发射窄 `while (true)`；`401761e8...` 单 case `instruction-family totalAbsoluteDelta 11 -> 5`，`6c9ba02f...` 新增 compile 回归已消除，但 full-batch 仍无统计净收益 | 本文档 |
-| `CC-003.26` 继续检查 corpus 中剩余最高频的 `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化` family | DOING | 当前稳定主线仍以 corpus `L2 31 / L3 0` 为口径；`401761e8...` 已在更窄 self-loop shape 上收缩，但暂未把顶层风险数拉低；下一轮优先继续看 `bff2e9e...`，并视情况拆出“`loop-carried escaping values` 的显式物化/出环传递”子任务 | 本文档 |
+| `CC-003.26d` 归因 `bff2e9e...` 为 non-inline self-loop exit 的值出环传递缺口 | DONE | 已确认 `bff2e9e...` 的两段 self-loop 都不属于当前 unique-exit / escape-safe shape；compile posture 已对齐，残留主因落在 loop-exit value 的显式物化 / 出环传递缺口，而不是 compare 噪声 | 本文档 |
+| `CC-003.26e` 从 `bff2e9e...` 提炼 non-inline self-loop exit 的最小复现并补值出环传递机制 | TODO | 提炼出最小复现样本，并完成一版不放宽 generic self-loop emitter 的出环物化机制；单 case 降级且 full-batch 无新增 `L3` 回归 | 本文档 |
+| `CC-003.26` 继续检查 corpus 中剩余最高频的 `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化` family | DOING | 当前稳定主线仍以 corpus `L2 31 / L3 0` 为口径；`bff2e9e...` 已确认不是当前 unique-exit self-loop 可覆盖 residual；下一轮优先推进 `CC-003.26e`，而不是继续放宽 generic self-loop emitter 或先改 compare | 本文档 |
 
 ## 任务执行规则
 
@@ -377,6 +374,7 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - **隐式 entry block 可能只在 phi incoming 里以数值标签出现。** 当前块名在发射阶段常叫 `entry`，但 original IR 的 incoming label 可能是 `%3` 这类未显式声明的入口别名；若不做 alias 匹配，`entry -> final-merge` 这条边上的 phi 赋值会漏发。
 - **若需要显式透传 fast-math 参数，优先使用 `--metal-arg=<value>`。** 这样可以避免参数解析层把 `-ffast-math` / `-fno-fast-math` 误判成新的选项。
 - **窄 self-loop 只能覆盖 escape-safe 的 loop header。** 若当前 BB 内定义的 SSA 还会在退出块之后继续被引用，就不能只靠 `while (true)` + `continue/break` 直接结构化；这类 case 需要先补“值如何出环”的显式物化/传递机制。
+- **不是所有 self-loop residual 都卡在 header 本身。** 若 exit block 不是“唯一退出后直接收束”，而是还要先消费 loop header 里定义的 SSA 再继续分叉/合流（如 `bff2e9e...` 的 `272` / `558`），当前窄 self-loop emitter 应继续拒绝命中；这类问题要单独按 `loop-exit value` 的显式物化 / 出环传递处理，而不是继续放宽 generic self-loop 结构化门控。
 
 ## 参考信息
 

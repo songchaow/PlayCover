@@ -22,6 +22,8 @@
 !/Carthage/Checkouts/PlayTools/PlayTools/PlaySettings.swift
 !/Carthage/Checkouts/PlayTools/PlayTools/PlayCover.swift
 !/Carthage/Checkouts/PlayTools/PlayTools/MetalCaptureService.swift
+!/Carthage/Checkouts/PlayTools/PlayTools/GuardedCapture.h
+!/Carthage/Checkouts/PlayTools/PlayTools/GuardedCapture.m
 !/Carthage/Checkouts/PlayTools/PlayTools/Controls/
 /Carthage/Checkouts/PlayTools/PlayTools/Controls/*
 !/Carthage/Checkouts/PlayTools/PlayTools/Controls/Backend/

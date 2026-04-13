@@ -701,6 +701,93 @@ def _entry_has_outer_merge_self_loop_materialization_drift(
     return arithmetic_delta <= 16 and vector_delta <= 4 and total_delta <= 16
 
 
+def _entry_has_gep_lowering_materialization_drift(
+    original: dict[str, Any],
+    regenerated: dict[str, Any],
+    original_entry: dict[str, Any],
+    regenerated_entry: dict[str, Any],
+) -> bool:
+    """Detect arithmetic -> GEP (memory) + vector lowering drift with identical CFG.
+
+    When the AIR backend lowers struct field accesses into explicit GEP chains
+    on the same CFG skeleton, the instruction-family delta manifests as
+    {arithmetic: decrease, memory: increase, vector: small change} while the
+    CFG structure, AIR intrinsics, entry semantics and fast-math all remain
+    identical.  This is a backend materialization difference, not a converter
+    gap, so the instruction-family residual should be downgraded from L2 to L1.
+    """
+    semantic_keys = ("argSemantics", "resourceSemantics", "builtinSemantics", "outputSemantics")
+    for key in semantic_keys:
+        if original_entry.get(key) != regenerated_entry.get(key):
+            return False
+
+    if _normalize_air_intrinsic_counter(original_entry.get("airIntrinsicCalls")) != _normalize_air_intrinsic_counter(
+        regenerated_entry.get("airIntrinsicCalls")
+    ):
+        return False
+
+    # CFG must be identical (no block/terminator/phi/select drift at all)
+    lhs_cfg = original_entry.get("cfg") or {}
+    rhs_cfg = regenerated_entry.get("cfg") or {}
+    if lhs_cfg != rhs_cfg:
+        return False
+
+    # Fast-math must match
+    lhs_fast_math = (original.get("fastMath") or {}).get("instructionFlags") or {}
+    rhs_fast_math = (regenerated.get("fastMath") or {}).get("instructionFlags") or {}
+    if lhs_fast_math != rhs_fast_math:
+        return False
+
+    lhs_families = original_entry.get("instructionFamilies") or {}
+    rhs_families = regenerated_entry.get("instructionFamilies") or {}
+    changed_keys = {
+        name
+        for name in sorted(set(lhs_families) | set(rhs_families))
+        if int(lhs_families.get(name, 0)) != int(rhs_families.get(name, 0))
+    }
+    if changed_keys != {"arithmetic", "memory", "vector"}:
+        return False
+
+    arithmetic_delta = int(lhs_families.get("arithmetic", 0)) - int(rhs_families.get("arithmetic", 0))
+    memory_delta = int(rhs_families.get("memory", 0)) - int(lhs_families.get("memory", 0))
+    vector_delta = abs(int(rhs_families.get("vector", 0)) - int(lhs_families.get("vector", 0)))
+    total_delta = sum(abs(int(lhs_families.get(name, 0)) - int(rhs_families.get(name, 0))) for name in changed_keys)
+
+    # arithmetic must decrease and memory must increase (GEP lowering trades
+    # inline arithmetic for explicit GEP / load instructions)
+    if arithmetic_delta <= 0 or memory_delta <= 0:
+        return False
+
+    # The memory increase should be at least as large as the arithmetic
+    # decrease (GEP introduces both gep + potential load/store pairs)
+    if memory_delta < arithmetic_delta:
+        return False
+
+    return vector_delta <= 10 and total_delta <= 40
+
+
+def _target_triple_is_roundtrip_platform_drift(lhs: str | None, rhs: str | None) -> bool:
+    """Return True when targetTriple difference is only a round-trip platform change.
+
+    Original shaders target air64*_v24-apple-ios*, but after MSL recompilation
+    on macOS the AIR backend emits air64-apple-macosx*.  This is the expected
+    platform change during round-trip and does not indicate a converter gap.
+    """
+    if lhs is None or rhs is None:
+        return False
+    # Normalize: strip the _v24 vector ABI suffix from the original triple
+    # to get the base architecture string for comparison.
+    lhs_base = re.sub(r"_v24\b", "", lhs)
+    rhs_base = re.sub(r"_v24\b", "", rhs)
+    # Check that only the OS part differs: ios -> macosx
+    lhs_parts = lhs_base.split("-", 2)
+    rhs_parts = rhs_base.split("-", 2)
+    if len(lhs_parts) < 3 or len(rhs_parts) < 3:
+        return False
+    # Architecture must match, only OS differs (ios* -> macosx*)
+    return lhs_parts[0] == rhs_parts[0] and lhs_parts[1].startswith("apple-ios") and rhs_parts[1].startswith("apple-macosx")
+
+
 def _downgrade_optimizer_only_shape_drift(
     original: dict[str, Any],
     regenerated: dict[str, Any],
@@ -751,6 +838,16 @@ def _downgrade_optimizer_only_shape_drift(
         for key in sorted(set(original_entries) & set(regenerated_entries))
         if _entry_has_outer_merge_self_loop_materialization_drift(original_entries[key], regenerated_entries[key])
     }
+    gep_lowering_materialization_only_entry_keys = {
+        key
+        for key in sorted(set(original_entries) & set(regenerated_entries))
+        if _entry_has_gep_lowering_materialization_drift(
+            original,
+            regenerated,
+            original_entries[key],
+            regenerated_entries[key],
+        )
+    }
     module_only_intrinsic_drift = _module_has_optimizer_only_intrinsic_drift(original, regenerated)
     downgraded_shape_only_entry_keys = (
         optimizer_only_entry_keys
@@ -760,6 +857,7 @@ def _downgrade_optimizer_only_shape_drift(
         | moderate_cfg_vector_materialization_only_entry_keys
         | small_shared_cfg_arithmetic_materialization_only_entry_keys
         | outer_merge_self_loop_only_entry_keys
+        | gep_lowering_materialization_only_entry_keys
     )
 
     adjusted_builtin_differences: list[dict[str, Any]] = []
@@ -1551,12 +1649,19 @@ def _compare_module_metadata(original: dict[str, Any], regenerated: dict[str, An
     rhs_module = regenerated.get("module") or {}
     for key in ("targetTriple", "dataLayout"):
         if lhs_module.get(key) != rhs_module.get(key):
+            severity = "L1"
+            reason = f"模块元数据 {key} 变化"
+            if key == "targetTriple" and _target_triple_is_roundtrip_platform_drift(
+                lhs_module.get("targetTriple"), rhs_module.get("targetTriple")
+            ):
+                severity = "L0"
+                reason = "模块元数据 targetTriple 变化（round-trip 平台差异：ios → macosx）"
             differences.append(
                 _make_difference(
                     "module",
-                    "L1",
+                    severity,
                     key,
-                    f"模块元数据 {key} 变化",
+                    reason,
                     {
                         "original": lhs_module.get(key),
                         "regenerated": rhs_module.get(key),

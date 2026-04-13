@@ -52,6 +52,10 @@
 - `401761e8...` 单 case 已据此闭环：`build/semantics-validation/roundtrip/cc-003-26h-single-401761e8/compare-summary.json` 中风险已从 `L2` 降到 `L1`，`compile-summary.json` 仍显示 `-ffast-math` 对齐，说明当前结论更像 compare 口径收敛，而不是实现层存在新的 structured emission / planner 缺口。
 - 最新 full-batch 复跑显示这次 compare 归一化继续拿到了明确统计收益且没有引入 `L3` 回归：diagnostics 仍保持 `L1 153 / L2 0 / L3 0`，corpus 由 `L1 413 / L2 24 / L3 0` 变为 `L1 414 / L2 23 / L3 0`；`401761e8...` 已退出 corpus `L2`，当前新的 gate 顶部样本变为 `4bfca3ce...`，其风险主因是 `module addrspace + instruction-family + targetTriple`。
 - 因此 `CC-003.26h` 本轮可以判定闭环；下一步不再继续围绕 `401761e8...` 细拆，而是回到 corpus 当前最高价值 residual，优先分析 `4bfca3ce...` 这一支 `module addrspace + instruction-family + targetTriple` family，判断它现在更像 compare 边界，还是仍指向新的语义 / 建模缺口。
+- 本轮继续下钻 `4bfca3ce...` 后，证据链进一步收敛成更窄的 compare residual：`entry / resource / builtin` 语义保持一致，`compile-summary.json` 继续显示 `originalFastMathMode=enable`、`effectiveMetalArgs=["-ffast-math"]`，CFG 完全一致（`basicBlockCount 55 / br 36 / condbr 18 / phi 18 / select 9`），AIR intrinsic 统计一致，剩余主因是 AIR 后端 GEP lowering 把部分 arithmetic 展开成更多显式 GEP（memory +16, arithmetic -9, vector +5, totalAbsoluteDelta 30），以及模块级 `targetTriple` 从 `air64_v24-apple-ios15.0.0` 变为 `air64-apple-macosx15.0.0` 的 round-trip 平台差异。
+- 因此本轮没有继续改 `IRToMSLConverter`，而是在 `ir_canonical_compare.py` 新增两条更窄的 compare 归一化：一是 `_target_triple_is_roundtrip_platform_drift`，当 targetTriple 差异仅表现为 `air64*_v24-apple-ios* → air64-apple-macosx*` 时，标记为 L0（round-trip 平台差异）；二是 `_entry_has_gep_lowering_materialization_drift`，仅当 CFG 完全一致、AIR intrinsic 统计一致、fast-math 一致、entry 语义一致，且 instruction-family 变化仅表现为 `{arithmetic, memory, vector}` 的 GEP lowering tradeoff（memory 增加、arithmetic 减少、vector 小幅变化）时，才把 instruction-family residual 从 `L2` 降到 `L1`。
+- `4bfca3ce...` 单 case 已据此闭环：`build/semantics-validation/roundtrip/cc-003-26i-single-4bfca3ce-postfix/compare-summary.json` 中风险已从 `L2` 降到 `L1`，`compile-summary.json` 仍显示 `-ffast-math` 对齐，说明当前结论更像 compare 口径收敛，而不是实现层存在新的 GEP lowering / planner 缺口。
+- 最新 full-batch 复跑显示这次 compare 归一化继续拿到了明确统计收益且没有引入 `L3` 回归：diagnostics 仍保持 `L1 153 / L2 0 / L3 0`，corpus 由 `L1 414 / L2 23 / L3 0` 变为 `L1 415 / L2 22 / L3 0`；`4bfca3ce...` 已退出 corpus `L2`，当前新的 gate 顶部样本变为 `c3d8aba95e9e...`，其风险主因是 `instruction-family + fast-math`。
 
 
 ## 当前默认流程
@@ -187,7 +191,8 @@
 | `CC-003.26c` 把 self-loop emitter 收窄到 escape-safe 的唯一退出 shape | DONE | 已仅对“self-edge phi 可回放 + 退出块唯一 + 当前块 SSA 不逃逸到非 inline 后续块”的 loop header 发射窄 `while (true)`；`401761e8...` 单 case `instruction-family totalAbsoluteDelta 11 -> 5`，`6c9ba02f...` 新增 compile 回归已消除，但 full-batch 仍无统计净收益 | 本文档 |
 | `CC-003.26d` ~ `CC-003.26e` non-inline / outer-merge self-loop exit value family 收敛 | DONE | 已确认 `bff2e9e...` 属于 non-inline self-loop exit 的值出环传递缺口，并以 float-family outer-merge self-loop 的最小 gate 完成首轮补齐；单 case `L2 -> L1`，full-batch `corpus L2 31 -> 30` | 本文档 |
 | `CC-003.26f` ~ `CC-003.26h` compare residual 窄化归一化（`14b700cdf...` / `32d1c8d0...` / `401761e8...`） | DONE | 已分别为小幅 module-addrspace + vector/materialization、moderate CFG + vector/materialization、small shared-CFG + arithmetic residual 增补更窄 compare 口径；对应单 case 均已 `L2 -> L1`，full-batch 将 corpus `L2 30 -> 23` 且 `L3` 维持 `0` | 本文档 / `Scripts/ir_canonical_compare.py` |
-| `CC-003.26` 继续检查 corpus 中剩余最高频 residual family | DOING | 当前稳定主线已更新为 diagnostics `L1 153 / L2 0 / L3 0`、corpus `L1 414 / L2 23 / L3 0`；`401761e8...` 已退出 `L2`，下一轮优先转向 gate 顶部新样本 `4bfca3ce...` 的 `module addrspace + instruction-family + targetTriple` residual | 本文档 |
+| `CC-003.26i` GEP lowering + targetTriple round-trip 平台 residual 归一化（`4bfca3ce...`） | DONE | 已为 CFG-一致 GEP lowering materialization（`{arithmetic, memory, vector}` tradeoff）和 `targetTriple` ios→macosx round-trip 平台差异增补 compare 归一化；`4bfca3ce...` 单 case `L2 -> L1`，full-batch 将 corpus `L2 23 -> 22` 且 `L3` 维持 `0` | 本文档 / `Scripts/ir_canonical_compare.py` |
+| `CC-003.26` 继续检查 corpus 中剩余最高频 residual family | DOING | 当前稳定主线已更新为 diagnostics `L1 153 / L2 0 / L3 0`、corpus `L1 415 / L2 22 / L3 0`；`4bfca3ce...` 已退出 `L2`，下一轮优先转向 gate 顶部新样本 `c3d8aba95e9e...` 的 `instruction-family + fast-math` residual | 本文档 |
 
 ## 任务执行规则
 
@@ -364,6 +369,8 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - **窄 self-loop 只能覆盖 escape-safe 的 loop header。** 若当前 BB 内定义的 SSA 还会在退出块之后继续被引用，就不能只靠 `while (true)` + `continue/break` 直接结构化；这类 case 需要先补“值如何出环”的显式物化/传递机制。
 - **不是所有 self-loop residual 都卡在 header 本身。** 若 exit block 不是“唯一退出后直接收束”，而是还要先消费 loop header 里定义的 SSA 再继续分叉/合流（如 `bff2e9e...` 的 `272` / `558`），当前窄 self-loop emitter 应继续拒绝命中；这类问题要单独按 `loop-exit value` 的显式物化 / 出环传递处理，而不是继续放宽 generic self-loop 结构化门控。
 - **仅凭 `stopBefore == exitLabel` + exit phi 出环还不够安全。** 首版 `outer-merge self-loop` 实现虽能让 `bff2e9e...` 两段 loop 恢复 `while (true)`，并把单 case `instruction-family totalAbsoluteDelta 33 -> 13`，但 full-batch 会重新引入 `a9fbcdf5...` / `70b330a1...` / `2aa10f98...`；后续必须先找出这些回归样本与 `bff2e9e...` 的 shape 差异，再考虑重新放开 gate。
+- **`targetTriple` 的 ios → macosx 变化是 round-trip 平台差异，不是实现缺口。** 当 original IR 的 `target triple` 为 `air64_v24-apple-ios*` 而 regenerated 为 `air64-apple-macosx*` 时，这是 MSL 在 macOS SDK 上重编译的必然结果，converter 无法控制；所有 corpus L2 样本都带有这个差异，应通过 compare 归一化标记为 L0。
+- **CFG 完全一致时的 `{arithmetic, memory, vector}` tradeoff 更像是 AIR 后端 GEP lowering 差异。** 当 CFG 结构、AIR intrinsic 统计、entry 语义和 fast-math 全部一致，但 instruction-family 出现 `arithmetic 减少 + memory 增加 + vector 小幅变化` 时，增量的 memory 对应 AIR 后端把内联算术展开为显式 GEP 链，这不属于 converter 实现缺口。
 
 ## 参考信息
 

@@ -24,6 +24,7 @@ TEST_VERTEX_POSITION_INVARIANT_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseS
 TEST_INTRINSIC_VECTOR_ICMP_ZEXT_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_intrinsic_vector_icmp_zext.ll"
 TEST_VECTOR_SELECT_GLOBAL_GEP_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_vector_select_global_gep.ll"
 TEST_PHI_BRANCH_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_phi_branch.ll"
+TEST_PHI_VECTOR_CONSTANT_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_phi_vector_constant.ll"
 TEST_PARTIAL_STRUCTURED_CFG_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_partial_structured_cfg.ll"
 TEST_ENTRY_PARTIAL_STRUCTURED_CFG_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_entry_partial_structured_cfg.ll"
 TEST_LATE_MERGE_FALLBACK_ORDER_SAMPLE = REPO_ROOT / "LocalDocs" / "XCodeReleaseShaderDebug" / "RoadE-HookMakeLibraryWithSrc" / "test-data" / "test_late_merge_fallback_order.ll"
@@ -1199,6 +1200,69 @@ class IRSemanticsRoundtripRunnerTests(unittest.TestCase):
             self.assertIn('!"user(TEXCOORD0)"', regenerated_ir)
             self.assertIn('!"user(TEXCOORD1)"', regenerated_ir)
             self.assertIn('!"air.flat"', regenerated_ir)
+
+    @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
+    def test_corpus_replay_runner_preserves_phi_vector_constant_assignments(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            generated_path = Path(temp_dir) / "phi-vector-constant.generated.metal"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(REPO_ROOT / "Scripts" / "corpus_replay_runner.py"),
+                    "--ll",
+                    str(TEST_PHI_VECTOR_CONSTANT_SAMPLE),
+                    "--output-file",
+                    str(generated_path),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("replay summary", completed.stdout)
+            generated_text = generated_path.read_text(encoding="utf-8")
+            self.assertIn("phi_0 = float2(0.0, 0.0); // phi from BB3", generated_text)
+            self.assertIn("phi_0 = float2(1.0, 2.0); // phi from BB4", generated_text)
+            self.assertNotIn("used uninitialized", completed.stderr)
+
+    @unittest.skipUnless(shutil.which("swiftc") and shutil.which("xcrun"), "requires swiftc and xcrun")
+    def test_roundtrip_runner_preserves_phi_vector_constant_incoming_values(self) -> None:
+        default_llvm_dis, _ = roundtrip_runner.resolve_llvm_dis_path()
+        if default_llvm_dis is None:
+            self.skipTest("requires llvm-dis")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir) / "phi-vector-constant"
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(ROUNDTRIP_SCRIPT),
+                    "--ll",
+                    str(TEST_PHI_VECTOR_CONSTANT_SAMPLE),
+                    "--output-root",
+                    str(output_root),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("semantics round-trip summary", completed.stdout)
+            roundtrip_report = json.loads((output_root / "roundtrip-summary.json").read_text(encoding="utf-8"))
+            compile_report = json.loads((output_root / "compile-summary.json").read_text(encoding="utf-8"))
+            generated_msl = Path(roundtrip_report["results"][0]["generatedMSLPath"]).read_text(encoding="utf-8")
+            regenerated_ir = Path(roundtrip_report["results"][0]["regeneratedIRPath"]).read_text(encoding="utf-8")
+            compiler_stderr = compile_report["results"][0]["stderr"]
+
+            self.assertIn("phi_0 = float2(0.0, 0.0); // phi from BB3", generated_msl)
+            self.assertIn("phi_0 = float2(1.0, 2.0); // phi from BB4", generated_msl)
+            self.assertNotIn("used uninitialized", compiler_stderr)
+            self.assertIn("select i1", regenerated_ir)
+            self.assertIn("<2 x float> zeroinitializer", regenerated_ir)
+            self.assertIn("<2 x float> <float 1.000000e+00, float 2.000000e+00>", regenerated_ir)
+            self.assertNotIn("select i1 %3, <2 x float> undef", regenerated_ir)
 
     @unittest.skipUnless(shutil.which("swiftc"), "requires swiftc")
     def test_corpus_replay_runner_uses_select_for_vector_bool_zext_to_uchar(self) -> None:

@@ -1770,11 +1770,14 @@ extension IRToMSLConverter {
         var assignments: [String] = []
 
         for phi in bbInfo.phiNodes {
-            // 找到来自 pred 的值
+            // 找到来自 pred 的值。LLVM 可能把隐式 entry block 记成数值标签（如 `%3`），
+            // 而发射阶段当前块仍叫 `entry`，这里做一次别名匹配。
             for (value, label) in phi.incoming {
-                if label == pred {
+                let isEntryAliasMatch = pred == "entry" && ctx.entryBlockAliases.contains(label)
+                if label == pred || isEntryAliasMatch {
                     let resolvedValue = resolveIROperand(value, ctx: ctx)
-                    assignments.append("\(phi.mslVarName) = \(resolvedValue); // phi from BB\(pred)")
+                    let commentPred = isEntryAliasMatch ? label : pred
+                    assignments.append("\(phi.mslVarName) = \(resolvedValue); // phi from BB\(commentPred)")
                     break
                 }
             }

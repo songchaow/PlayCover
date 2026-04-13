@@ -73,6 +73,8 @@ extension IRToMSLConverter {
         var phiVarNames: [String: String] = [:]
         /// 当前正在翻译的基本块标签
         var currentBBLabel: String = "entry"
+        /// LLVM 里隐式 entry block 可能在 phi incoming 中以数值标签出现（例如 `%3`），这里记录其别名。
+        var entryBlockAliases: Set<String> = []
         /// phi 变量声明语句（插入到函数体最前面）
         var phiDeclarations: [String] = []
 
@@ -864,6 +866,8 @@ extension IRToMSLConverter {
         var currentLabel = "entry"
         var allBBs: [String: BasicBlockInfo] = [:]
         allBBs["entry"] = BasicBlockInfo(label: "entry")
+        var declaredLabels: Set<String> = ["entry"]
+        var referencedPhiPredecessorLabels: Set<String> = []
 
         // 收集的 phi 信息（后续处理）
         var allPhis: [(bbLabel: String, phi: PhiInfo)] = []
@@ -875,6 +879,7 @@ extension IRToMSLConverter {
             // 基本块标签
             if let label = parseBBLabel(trimmed) {
                 currentLabel = label
+                declaredLabels.insert(label)
                 if allBBs[label] == nil {
                     allBBs[label] = BasicBlockInfo(label: label)
                 }
@@ -891,6 +896,9 @@ extension IRToMSLConverter {
                     if let phi = parsePhiInstruction(lhs: lhs, rhs: rhs, ctx: ctx) {
                         allPhis.append((bbLabel: currentLabel, phi: phi))
                         allBBs[currentLabel]?.phiNodes.append(phi)
+                        for (_, label) in phi.incoming {
+                            referencedPhiPredecessorLabels.insert(label)
+                        }
                     }
                     continue
                 }
@@ -922,6 +930,7 @@ extension IRToMSLConverter {
             }
         }
 
+        ctx.entryBlockAliases = referencedPhiPredecessorLabels.subtracting(declaredLabels)
         ctx.bbInfo = allBBs
 
         // 为每个 phi 分配 MSL 变量名并生成预声明
@@ -1009,30 +1018,14 @@ extension IRToMSLConverter {
         guard cleaned.hasPrefix("phi ") else { return nil }
         cleaned = String(cleaned.dropFirst(4)).trimmingCharacters(in: .whitespaces)
 
-        // 提取类型：到第一个 '[' 之前
+        // 提取类型：到第一个顶层 '[' 之前
         guard let firstBracket = cleaned.firstIndex(of: "[") else { return nil }
         let irType = String(cleaned[cleaned.startIndex..<firstBracket]).trimmingCharacters(in: .whitespaces)
 
-        // 解析所有 [value, %label] 对
-        var incoming: [(value: String, label: String)] = []
-        var remaining = String(cleaned[firstBracket...])
-
-        while let openBracket = remaining.firstIndex(of: "["),
-              let closeBracket = remaining.firstIndex(of: "]"),
-              openBracket < closeBracket {
-            let inner = remaining[remaining.index(after: openBracket)..<closeBracket]
-            let parts = inner.components(separatedBy: ",")
-            if parts.count >= 2 {
-                let value = parts[0].trimmingCharacters(in: .whitespaces)
-                var label = parts[1].trimmingCharacters(in: .whitespaces)
-                // 去掉 % 前缀
-                if label.hasPrefix("%") {
-                    label = String(label.dropFirst())
-                }
-                incoming.append((value: value, label: label))
-            }
-            remaining = String(remaining[remaining.index(after: closeBracket)...])
-        }
+        // 解析所有 [value, %label] 对。
+        // 这里不能直接按逗号拆，因为 value 可能本身就是 `<float 0.0, float 1.0>` 这类向量常量。
+        let clauses = extractPhiIncomingClauses(from: String(cleaned[firstBracket...]))
+        let incoming = clauses.compactMap { parsePhiIncomingClause($0) }
 
         guard !incoming.isEmpty else { return nil }
 
@@ -1046,6 +1039,74 @@ extension IRToMSLConverter {
             mslVarName: varName,
             incoming: incoming
         )
+    }
+
+    static func extractPhiIncomingClauses(from text: String) -> [String] {
+        var clauses: [String] = []
+        var depth = 0
+        var clauseStart: String.Index?
+        var index = text.startIndex
+
+        while index < text.endIndex {
+            let char = text[index]
+            if char == "[" {
+                if depth == 0 {
+                    clauseStart = text.index(after: index)
+                }
+                depth += 1
+            } else if char == "]" {
+                depth -= 1
+                if depth == 0, let clauseStart {
+                    clauses.append(String(text[clauseStart..<index]))
+                }
+            }
+            index = text.index(after: index)
+        }
+
+        return clauses
+    }
+
+    static func parsePhiIncomingClause(_ clause: String) -> (value: String, label: String)? {
+        let trimmed = clause.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let separator = lastTopLevelComma(in: trimmed) else { return nil }
+
+        let value = String(trimmed[..<separator]).trimmingCharacters(in: .whitespacesAndNewlines)
+        var label = String(trimmed[trimmed.index(after: separator)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        if label.hasPrefix("%") {
+            label = String(label.dropFirst())
+        }
+        guard !value.isEmpty, !label.isEmpty else { return nil }
+        return (value: value, label: label)
+    }
+
+    static func lastTopLevelComma(in text: String) -> String.Index? {
+        var angleDepth = 0
+        var braceDepth = 0
+        var squareDepth = 0
+        var parenDepth = 0
+        var lastComma: String.Index?
+        var index = text.startIndex
+
+        while index < text.endIndex {
+            let char = text[index]
+            switch char {
+            case "<": angleDepth += 1
+            case ">": angleDepth = max(0, angleDepth - 1)
+            case "{": braceDepth += 1
+            case "}": braceDepth = max(0, braceDepth - 1)
+            case "[": squareDepth += 1
+            case "]": squareDepth = max(0, squareDepth - 1)
+            case "(": parenDepth += 1
+            case ")": parenDepth = max(0, parenDepth - 1)
+            case "," where angleDepth == 0 && braceDepth == 0 && squareDepth == 0 && parenDepth == 0:
+                lastComma = index
+            default:
+                break
+            }
+            index = text.index(after: index)
+        }
+
+        return lastComma
     }
 
     /// 解析 br 指令

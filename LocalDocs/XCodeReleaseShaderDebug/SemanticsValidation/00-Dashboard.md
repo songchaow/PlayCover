@@ -34,13 +34,16 @@
 
 ### 当前最新状态
 
-- `CC-003.24` 已完成：`e17ab0cb...` 已确认是 compare 对“CFG 骨架保持不变、但 `selectCount` 增长并伴随 arithmetic/vector 重分配”的 shared residual 仍然过敏；在 `Scripts/ir_canonical_compare.py` 中补齐更窄的 `select-heavy vector materialization drift` 窗口后，单 case 已从 `L2 -> L1`
+- `CC-003.26a` 已完成：围绕 `401761e8...` 下钻后确认，当前 residual 里确实存在实现层缺口，不只是 compare 口径问题；`IRToMSLConverter` 会把 `phi incoming` 中的向量常量错误按逗号切碎，并漏掉隐式 entry block 的数值别名，导致 final-merge 的部分 zero-vector incoming 在 generated MSL / regenerated IR 中掉成 `undef`
+- 本轮已做的最小实现修复是：
+  - 在 `IRToMSLConverter+BodyTranslation.swift` 中改成按顶层括号层级解析 `phi [value, %label]`，保住 `<N x T>` / aggregate 常量 incoming
+  - 在 `IRToMSLConverter+InstructionTranslation.swift` 中补齐隐式 entry block 别名匹配，让 `entry -> %3` 这类 incoming 也能在 merge 前正确回放
+- `401761e8...` 单 case 已明确收缩：`BB16` / `BB110` / `BB3` 的 zero-vector incoming 都已恢复；当前 remaining root cause 只剩 loop-continue 边导致的更深 structured-CFG residual，样本风险仍暂留 `L2`
 - 最新 full-batch 收敛为：
   - diagnostics：`L1 153 / L2 0 / L3 0`
   - corpus：`L1 406 / L2 31 / L3 0`
-- 这轮 full-batch 的净收益是：corpus 中 `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化` family 从 `12 -> 11`，被精准移除的样本是 `e17ab0cb...`，且 diagnostics 完全不回退
-- 到当前为止，`CC-002` ~ `CC-003.24` 已把主线推进到“剩余主要是 corpus 中仍待继续拆解的 shared-CFG / addrspace `L2` residual”
-- 因此当前下一步应继续只挑一个新的最高价值 residual case，优先从剩余 `11` 个 `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化` 样本里再选一个代表继续闭环
+- 这轮 full-batch **没有统计净收益**：corpus 中 `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化` family 仍是 `10`；风险集合发生的是样本换位（移除 `611c7d4e...`，换入 `bff2e9e...`，同时 `c3d8aba9...` 在本轮再次出现），diagnostics 则继续完全不回退
+- 因此当前下一步不应再泛化放宽 compare，而应继续把 `CC-003.26` 收窄到“loop-continue / wider structured-CFG merge emission` 这条更深实现问题上，优先继续看 `401761e8...` 与同 family 的 `bff2e9e...`
 
 
 ## 当前默认流程
@@ -195,7 +198,8 @@
 | `CC-003.23` 重跑 full-batch 并继续拆剩余 `L2/L3` residual | DONE | 已完成最新 full-batch 复跑，并闭环一支高频 vector-heavy materialization residual；`055fe879...` 单 case `L2 -> L1`，corpus `L2 45 -> 32` | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
 | `CC-003.24` 优先检查 corpus 中当前最高频的 `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化` family | DONE | 已确认 `e17ab0cb...` 属于 shared-CFG skeleton 保持不变但 `selectCount` 增长的 compare residual；单 case `L2 -> L1`，corpus `L2 32 -> 31` | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
 | `CC-003.25` 继续检查 corpus 中剩余最高频的 `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化` family | DONE | 已确认 `c3d8aba9...` 属于 single-block ret-only 下 vector select scalarization 的 compare residual；单 case `L2 -> L1`，corpus `L2 31 -> 30` | `difference-analysis/scalar-vector-cast-materialization-normalization/04-implementation-result.md` / `difference-analysis/scalar-vector-cast-materialization-normalization/05-full-batch-compare.md` |
-| `CC-003.26` 继续检查 corpus 中剩余最高频的 `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化` family | DOING | 当前该 family 仍有 `10` 个样本；下一轮优先从 `401761e8...` 这类更宽 shared-CFG case 开始，继续判断是 compare 边界还是实现问题 | 本文档 |
+| `CC-003.26a` 修补 shared-CFG case 中 `phi incoming` 的向量常量 / 隐式 entry 保真缺口 | DONE | 已补齐 `phi [value, %label]` 的顶层解析与 `entry -> %3` 别名匹配；`401761e8...` 单 case 已从“final-merge 多条 incoming 丢失”收窄到只剩 loop-continue edge residual，但 full-batch 暂无统计净收益 | 本文档 |
+| `CC-003.26` 继续检查 corpus 中剩余最高频的 `控制流粗摘要变化; 指令族统计变化; fast-math 相关属性变化` family | DOING | 当前该 family 仍有 `10` 个样本；`401761e8...` 已明确不再是表层 `phi incoming` 丢失，而是更深的 loop-continue / wider structured-CFG merge emission 问题；下一轮优先继续看 `401761e8...` 与 `bff2e9e...` | 本文档 |
 
 ## 任务执行规则
 
@@ -366,6 +370,8 @@ python3 Scripts/ir_semantics_roundtrip_runner.py --diagnostics-root ~/Library/Co
 - **`air.position` 的 `air.invariant` 必须保留到返回 metadata 与 MSL 发射。** 当 `entry 输出语义摘要变化` 表现为 `kind=air.position|type=float4|qualifiers=air.invariant -> kind=air.position|type=float4` 时，应先检查 converter 是否保留了返回 qualifier，并把它发到 `[[position, invariant]]`。
 - **修掉表层 `entry` 差异后要立刻复跑 full-batch 看 `blockedSamples` 是否真的变化。** 表层差异消失，不代表顶层 `L3` 一定下降。
 - **compile posture 是一等证据。** 当前默认要优先读取 `originalFastMathMode`、`inferredMetalArgs`、`effectiveMetalArgs`，而不是靠人工回忆命令参数。
+- **`phi incoming` 不能直接按逗号粗切。** 当 incoming value 本身是 `<N x T>` / aggregate 常量时，必须按顶层括号层级找 `[value, %label]` 的分隔，否则 merge 前会静默丢掉一部分 incoming，并在 regenerated IR 里掉成 `undef`。
+- **隐式 entry block 可能只在 phi incoming 里以数值标签出现。** 当前块名在发射阶段常叫 `entry`，但 original IR 的 incoming label 可能是 `%3` 这类未显式声明的入口别名；若不做 alias 匹配，`entry -> final-merge` 这条边上的 phi 赋值会漏发。
 - **若需要显式透传 fast-math 参数，优先使用 `--metal-arg=<value>`。** 这样可以避免参数解析层把 `-ffast-math` / `-fno-fast-math` 误判成新的选项。
 
 ## 参考信息

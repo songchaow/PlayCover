@@ -19,6 +19,15 @@ import QuartzCore
 // because Swift forbids functions annotated with `returns_twice` (like sigsetjmp).
 // See GuardedCapture.h for the C API.
 
+@_silgen_name("PlayTools_installGPUToolsCaptureEarlyStubs")
+private func playToolsInstallGPUToolsCaptureEarlyStubsCShim()
+
+@_silgen_name("PlayTools_guardedStopCapture")
+private func playToolsGuardedStopCaptureCShim(_ block: @escaping @convention(block) () -> Void) -> Bool
+
+@_silgen_name("PlayTools_logGPUToolsCaptureClasses")
+private func playToolsLogGPUToolsCaptureClassesCShim()
+
 private final class CommandQueueDiscoverySwizzles: NSObject {
     @objc dynamic func pc_newCommandQueue() -> AnyObject? {
         let queue = self.pc_newCommandQueue()
@@ -246,7 +255,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         // GuardedCapture.m, which runs at dyld load time — before GPUToolsCapture's
         // CAMetalLayer hooks can trigger. This call is kept as a safety net in case
         // the constructor didn't run (e.g. if GuardedCapture.m is not compiled in).
-        PlayTools_installGPUToolsCaptureEarlyStubs()
+        playToolsInstallGPUToolsCaptureEarlyStubsCShim()
 
         // Verify stubs exist on NSObject (they should already be there from RC-014)
         let nsObjectClass: AnyClass = NSObject.self
@@ -504,7 +513,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         // when the trace context has no captured data (delayed dlopen mode
         // with apps whose Metal objects were created before library loading).
         if manager.isCapturing {
-            let stoppedCleanly = PlayTools_guardedStopCapture {
+            let stoppedCleanly = playToolsGuardedStopCaptureCShim {
                 manager.stopCapture()
             }
             if stoppedCleanly {
@@ -880,7 +889,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
     /// RC-015: Enumerate all ObjC classes that start with "Capture" (from GPUToolsCapture)
     /// Delegates to C implementation to avoid Swift runtime crashes during class enumeration
     private func logRC015CaptureClasses() {
-        PlayTools_logGPUToolsCaptureClasses()
+        playToolsLogGPUToolsCaptureClassesCShim()
     }
 
     /// RC-015: Detailed diagnostics run once per captureFrame call

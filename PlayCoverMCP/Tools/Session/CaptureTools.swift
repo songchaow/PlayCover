@@ -70,8 +70,8 @@ public enum CaptureTools {
                     ] as Any),
                     "capture_target": AnyCodable([
                         "type": "string",
-                        "enum": ["device", "scope"],
-                        "description": "Experimental capture target. 'device' captures all queues on the default Metal device; 'scope' uses a temporary MTLCaptureScope aligned to vsync boundaries. Default: 'device'."
+                        "enum": ["device", "scope", "queue", "queue_scope"],
+                        "description": "Experimental capture target. 'device' captures all queues on the default Metal device; 'scope' uses a temporary MTLCaptureScope aligned to vsync boundaries on the default device; 'queue' captures the most recently discovered runtime MTLCommandQueue; 'queue_scope' uses a temporary MTLCaptureScope bound to the most recently discovered runtime MTLCommandQueue. Current default when omitted: 'device'."
                     ] as Any),
                 ],
                 required: ["sessionId"]

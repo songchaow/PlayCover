@@ -42,6 +42,9 @@
 - 当前代码也已经证明这个偏差不是单纯操作失误：`PlayCoverMCP/Session/CaptureService.swift` 与 runtime `MetalCaptureService.swift` 的默认 target 都还是 `.device`，而 `queue` / `queue_scope` 虽然已经在 runtime / bridge / tests 中支持，却还没有成为默认路径。
 - 当前另一个高风险点是 queue 选择本身仍过于粗糙：runtime 只记录“被 swizzle 观察到的 queue”，实际选择时又直接取 `latestTrackedCommandQueue()`；这会把“最后创建的 queue”误当成“最值得 capture 的主 render queue”。
 - 当前 delayed `dlopen` 路径仍然是必须优先保留的兼容方案，但它本身也记录了一个核心代价：capture library 加载之前就创建的 Metal 对象不会被完整 proxy；这条机制非常符合“trace 可打开、也有部分 pass，但仍有一批 encoder 内容不完整”的症状。
+- 当前 `CTF-006` 已完成：`PlayCoverMCP/Tools/Session/CaptureTools.swift` 现已把 `capture_target` 的 schema 与说明同步到 `device` / `scope` / `queue` / `queue_scope` 四种真实支持值，不再把外部调用者误导到只剩 `device` / `scope`。
+- 当前这轮修改刻意**没有**改变 host / runtime 的默认 target；`CaptureFrameParams` 与 runtime fallback 仍保持 `.device`，因此 `CTF-007` 仍然是下一条最高优先级主线。
+- 当前默认验证已完成并通过：定向 MCP tests `47 tests passed, 0 failures`，`./BuildScripts/build_and_install.sh` 也已通过，因此本轮结论已经足够支持“工具暴露层不一致”这一项已闭环。
 - 当前默认下一步，不再扩散到更多 trace 检查脚本或更重的手工 Xcode 浏览，而是回到“当前最高价值主因”上：优先验证 **默认 target 仍是 `.device` / `.scope`** 是否就是当前 incomplete capture 的第一主因；若是，就先修默认 target 与工具暴露层，再决定是否继续做 queue ranking 或 preload 时机收敛。
 
 ## 当前默认流程
@@ -178,7 +181,7 @@
 | `CTF-003` 分离 replacement coverage 与 capture coverage 两条解释 | DONE | 已确认 source attribution 比旧 milestone 更丰富，因此 replacement 不是当前 incomplete capture 的首要解释 | 本文档 |
 | `CTF-004` 确认 runtime 已能发现真实 `CaptureMTLCommandQueue` | DONE | 已确认 capture status 中存在 tracked queue，且最新 tracked queue 为 `CaptureMTLCommandQueue` | 本文档 |
 | `CTF-005` 收敛当前最高优先级 issue 所在层级 | DONE | 已把当前首要嫌疑收敛到 capture target / queue 选择与 capture 挂载时机，而不是先修 converter 或 replacement 主链 | 本文档 |
-| `CTF-006` 修正 MCP 工具暴露层对 `queue` / `queue_scope` 的不完整暴露 | TODO | `CaptureTools.swift` 的 schema、默认说明与实际运行能力保持一致，不再把外部使用者误导到只剩 `device` / `scope` | 本文档 |
+| `CTF-006` 修正 MCP 工具暴露层对 `queue` / `queue_scope` 的不完整暴露 | DONE | `CaptureTools.swift` 的 schema、默认说明与实际运行能力保持一致，不再把外部使用者误导到只剩 `device` / `scope` | 本文档 |
 | `CTF-007` 验证默认 capture target 改为 `queue_scope` 的 live 收益 | TODO | 至少完成一次修复前后 live recapture 对照，并确认 fixed encoder 空壳现象是否减少 | 本文档 |
 | `CTF-008` 评估 `latestTrackedCommandQueue()` 是否足以代表真实主渲染 queue | TODO | 明确“最后创建的 queue”是否等于“最值得 capture 的 queue”；若不成立，需要再拆 queue ranking 子任务 | 本文档 |
 | `CTF-009` 评估 delayed preload / startup injection 时机是否仍造成部分 capture 缺口 | TODO | 明确 incomplete capture 是否仍主要由过晚的 capture library 加载导致；若是，需要再拆 preload 时机子任务 | 本文档 |
@@ -341,6 +344,7 @@ capture_metal_frame(..., capture_target=queue_scope)
 - **source attribution 变多，不等于 render encoder 已经完整。** replacement 侧 richer source 只能证明“至少部分替换 / 归因链路工作正常”，不能直接证明 capture target 已命中真实主渲染路径。
 - **默认 target 是一等证据。** 当前 `CaptureFrameParams` 与 runtime fallback 仍默认走 `.device`，这会直接影响所有现场验证的解释力。
 - **工具 schema 与真实能力不一致会把排查带偏。** 当解析层和 runtime 都已支持 `queue` / `queue_scope`，但对外 schema 仍只暴露 `device` / `scope` 时，使用者会被系统性误导到错误实验路径。
+- **即使修完工具暴露层，也不等于默认验证路径已切到 queue-bound capture。** 若 `CaptureFrameParams` 与 runtime fallback 仍保持 `.device`，下一步仍要通过 live 对照回答 `queue_scope` 是否比 `device` / `scope` 更接近真实 render 路径。
 - **`latestTrackedCommandQueue()` 不等于“主 render queue”。** 最后创建的 queue 只能说明“最近被看到”，不能说明“提交了最多真实渲染工作”。
 - **delayed `dlopen` 的价值是兼容性，不是完美覆盖。** 它避免了启动期崩溃，但也天然存在 pre-existing Metal objects 未被完整 proxy 的风险；当前 incomplete capture 的症状必须始终把这层代价纳入解释。
 - **scope begin / stop 是观察窗口，不是纯实现细节。** 若 begin 太晚、stop 太早，即便 trace 可打开，也会留下“前面若干 encoder 近空、后面后处理 pass 明显非空”的结构。

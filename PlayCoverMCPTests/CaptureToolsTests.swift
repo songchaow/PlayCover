@@ -496,6 +496,10 @@ final class CaptureToolsRegistrationTests: XCTestCase {
         XCTAssertNotNil(captureTool?.inputSchema.properties?["output_path"])
         XCTAssertNotNil(captureTool?.inputSchema.properties?["duration_ms"])
         XCTAssertNotNil(captureTool?.inputSchema.properties?["capture_target"])
+
+        let captureTargetProperty = captureTool?.inputSchema.properties?["capture_target"]?.value as? [String: Any]
+        let supportedTargets = captureTargetProperty?["enum"] as? [String]
+        XCTAssertEqual(supportedTargets, ["device", "scope", "queue", "queue_scope"])
     }
 
     func testGetCaptureStatusToolSchema() {

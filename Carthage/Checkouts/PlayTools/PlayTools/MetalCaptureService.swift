@@ -101,6 +101,19 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         var lastSeenAt: Date
         var discoveryCount: Int
 
+        var rankingScore: Int {
+            var score = discoveryCount * 10
+            let recencyMs = max(0, Int(Date().timeIntervalSince(lastSeenAt) * 1000.0))
+            score -= min(recencyMs / 100, 1_000)
+            if className.hasPrefix("Capture") {
+                score += 25
+            }
+            if let label, !label.isEmpty {
+                score += 5
+            }
+            return score
+        }
+
         var summary: String {
             [
                 "class=\(className)",
@@ -108,6 +121,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
                 "device=\(deviceName)",
                 "source=\(source)",
                 "discoveries=\(discoveryCount)",
+                "rankingScore=\(rankingScore)",
             ].joined(separator: ", ")
         }
     }
@@ -618,7 +632,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
             }
 
         case .queue, .queueScope:
-            guard let trackedQueue = latestTrackedCommandQueue() else {
+            guard let trackedQueue = preferredTrackedCommandQueue() else {
                 return .failure(
                     .trackedCommandQueueUnavailable(
                         target: target,
@@ -788,6 +802,22 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         return trackedCommandQueues.count
     }
 
+    private func preferredTrackedCommandQueue() -> TrackedCommandQueue? {
+        trackedQueueLock.lock()
+        defer { trackedQueueLock.unlock() }
+
+        let rankedQueues = trackedCommandQueueOrder.compactMap { trackedCommandQueues[$0] }
+        return rankedQueues.max { lhs, rhs in
+            if lhs.rankingScore != rhs.rankingScore {
+                return lhs.rankingScore < rhs.rankingScore
+            }
+            if lhs.lastSeenAt != rhs.lastSeenAt {
+                return lhs.lastSeenAt < rhs.lastSeenAt
+            }
+            return lhs.discoveryCount < rhs.discoveryCount
+        }
+    }
+
     private func latestTrackedCommandQueue() -> TrackedCommandQueue? {
         trackedQueueLock.lock()
         defer { trackedQueueLock.unlock() }
@@ -828,7 +858,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         let hasDefaultDevice = defaultDevice != nil
         let defaultDeviceName = defaultDevice?.name
         let defaultCaptureScope = state.captureManager?.defaultCaptureScope
-        let latestTrackedQueue = latestTrackedCommandQueue()
+        let latestTrackedQueue = preferredTrackedCommandQueue()
         let trackedQueueCount = trackedCommandQueueCount()
         let failureReason: String?
 

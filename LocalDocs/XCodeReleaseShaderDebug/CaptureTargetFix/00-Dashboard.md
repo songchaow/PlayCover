@@ -11,8 +11,8 @@
 - **`CTF-011` 的 fresh live recapture 已完成到“capture 与结构化摘要”层**：最新 fresh launch 可稳定 `launch_app -> create_session -> get_capture_status -> capture_metal_frame`，同轮 session 已返回 `supports_gpu_trace=true`、`gpuToolsCaptureLoaded=true`、`queueDiscoveryInstalled=true`、`trackedCommandQueues=4`，latest tracked queue 仍为 `CaptureMTLCommandQueue`。
 - **四组 target 对照已在 fresh session 下稳定落盘**：`device / scope / queue / queue_scope` 四个 target 都已成功启动 capture，并把 trace 落到 `~/Library/Containers/com.papegames.lysk/Data/Documents/Captures/ctf011-*.gputrace`；写到工作区路径失败的原因已确认只是 runtime 对该目录无写权限，而不是 capture 自身再次失效。
 - **当前 source attribution 结论**：`check_gputrace_sources.py` 显示四个 fresh trace 的 source attribution 基本同构，`queue_scope` 相比 `device` 只有很小幅的引用缺失改善；因此 early preload 修复已经先明显改善了“capture 是否可稳定启动并落盘”，但尚未仅靠这一轮 source summary 就证明 fixed encoder 空壳现象已经实质消失。
-- **当前阻塞点已转移到 Xcode replay / frame dump 入口**：fresh `ctf011-device.gputrace` 可被 Xcode 打开到文档窗口，但当前仍停在 `GPU Debug: inactive`，`xcode_gpu_ops.py open` 未找到 `Replay` 按钮，因此本轮尚未拿到新的 frame dump / `collect_cbs.py` 证据。
-- **下一步聚焦**：先收敛 fresh trace 在当前 Xcode 里的 replay 入口形态，恢复 `xcode_gpu_ops.py dump` 或等价的结构化 frame dump；在这一步恢复前，不继续扩大 queue ranking 或其它实现改动面。
+- **fresh Xcode replay / frame dump 入口已恢复**：本轮已修正 `xcode_gpu_ops.py open` 对当前 Xcode replay 入口的识别，fresh `ctf011-device.gputrace` 现可直接进入 `replay_done=true`、读到 `29` 个 `Command Buffer`，并成功执行 `xcode_gpu_ops.py dump -o /tmp/ctf011-device-dump`。
+- **fresh `collect_cbs.py` 结构化证据已补齐**：在同一份 fresh `ctf011-device.gputrace` 上重跑修复后的 `collect_cbs.py` 后，已生成 `/tmp/ctf011-device-cbs.json`，当前摘要为 `25` 个非空 `Command Buffer` 条目、首个 CB 有 `11` 个子节点；因此这轮已从“trace 能落盘”推进到“fresh replay 后的结构化 Navigator 证据可稳定导出”。
 
 后续控制面只围绕下面这条流程展开：
 
@@ -179,7 +179,7 @@
 | `CTF-008` 评估 `latestTrackedCommandQueue()` 是否足以代表真实主渲染 queue | DONE | 已确认当前实现只是在已发现 queue 中选择“最新一个”，没有基于提交量、活跃度或渲染负载的 ranking；因此它不足以稳定代表最值得 capture 的主 render queue，后续应拆到 queue ranking 子任务 | 本文档 |
 | `CTF-009` 收敛 queue ranking 策略，使 queue 选择更接近真实主渲染 queue | DONE | 已完成最小实现改动：把 queue 选择从“最新发现”收敛为轻量 ranking，综合最近观察时间、重复发现次数与 `Capture*` 代理特征；当前仍需后续 live 验证确认它是否真的改善固定空壳 encoder 现象 | 本文档 |
 | `CTF-010` 评估 delayed preload / startup injection 时机是否仍造成部分 capture 缺口 | DONE | 已确认当前 early preload 过去被 `shaderSourceReplacementEnabled` 错误门控，capture-only 场景仍会过晚 `dlopen`；当前已改为 `metalCaptureEnabled=true` 时统一在启动早期 preload，后续只需 fresh live recapture 验证结构化收益 | 本文档 |
-| `CTF-011` 执行 fresh live recapture 验证 early preload 修复收益 | DOING | 已完成 fresh launch、`get_capture_status`、`device/scope/queue/queue_scope` 四组 live capture 与 `check_gputrace_sources.py` 对照；待补 fresh trace 的 Xcode replay / frame dump 证据后，才能最终判断 fixed encoder 空壳现象是否实质减少 | 本文档 |
+| `CTF-011` 执行 fresh live recapture 验证 early preload 修复收益 | DONE | 已完成 fresh launch、`get_capture_status`、`device/scope/queue/queue_scope` 四组 live capture 与 `check_gputrace_sources.py` 对照，并已恢复 fresh trace 的 Xcode replay / frame dump / `collect_cbs.py` 结构化证据链；当前可继续基于 fresh dump 判断 fixed encoder 空壳现象是否实质减少 | 本文档 |
 
 ## 任务执行规则
 

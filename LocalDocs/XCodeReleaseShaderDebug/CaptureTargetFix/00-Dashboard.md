@@ -34,18 +34,13 @@
 
 ### 当前最新状态
 
-- 当前 `HEAD` 已完成一轮真实 live 复现：使用 `恋与深空`、`metalCaptureEnabled=true`、`injectMetalCaptureEnvironment=true`、`shaderSourceReplacementEnabled=true` 的问题态三开关，app 可以启动，`create_session` 能返回 `ready`，说明不是简单的“完全起不来”或“完全截不到”。
-- 当前问题 trace `~/Library/Containers/com.papegames.lysk/Data/Documents/Captures/capture_20260414_112740.gputrace` 已能在 Xcode 中打开；自动化导出已确认它至少包含 `3` 个 `Command Buffer`、固定重复的 render encoder 序列，以及真实 pipeline（如 `FinalBlit` / FSR / combine pass）。
-- 当前最关键的症状不是“trace 完全空”，而是**多个固定 encoder 槽位（例如 `4/6/7/9`）长期接近 `<0.01%`，而后面的 `10/11/12` 又明显非空**；这更像 capture 内容覆盖不完整，而不是 export 完全失败。
-- 当前 source-attribution 侧并不支持“replacement 完全失效”这条解释：从 `check_gputrace_sources.py` 的结果看，新 trace 的 source hash / valid MSL / referenced MSL 都明显多于旧 milestone trace，因此现在更像 capture 层问题，而不是 replacement 主链先天全坏。
-- 当前 runtime capture status 已明确暴露出一个高价值线索：`trackedCommandQueueCount=4`，且 `latestTrackedQueue=class=CaptureMTLCommandQueue`，说明真实 render queue 已经被发现；但默认 capture 路径仍然主要落在 `device` / `scope`，这与“trace 能开但很多 encoder 内容偏空”的症状高度一致。
-- 当前代码也已经证明这个偏差不是单纯操作失误：`PlayCoverMCP/Session/CaptureService.swift` 与 runtime `MetalCaptureService.swift` 的默认 target 都还是 `.device`，而 `queue` / `queue_scope` 虽然已经在 runtime / bridge / tests 中支持，却还没有成为默认路径。
-- 当前另一个高风险点是 queue 选择本身仍过于粗糙：runtime 只记录“被 swizzle 观察到的 queue”，实际选择时又直接取 `latestTrackedCommandQueue()`；这会把“最后创建的 queue”误当成“最值得 capture 的主 render queue”。
-- 当前 delayed `dlopen` 路径仍然是必须优先保留的兼容方案，但它本身也记录了一个核心代价：capture library 加载之前就创建的 Metal 对象不会被完整 proxy；这条机制非常符合“trace 可打开、也有部分 pass，但仍有一批 encoder 内容不完整”的症状。
-- 当前 `CTF-006` 已完成：`PlayCoverMCP/Tools/Session/CaptureTools.swift` 现已把 `capture_target` 的 schema 与说明同步到 `device` / `scope` / `queue` / `queue_scope` 四种真实支持值，不再把外部调用者误导到只剩 `device` / `scope`。
-- 当前这轮修改刻意**没有**改变 host / runtime 的默认 target；`CaptureFrameParams` 与 runtime fallback 仍保持 `.device`，因此 `CTF-007` 仍然是下一条最高优先级主线。
-- 当前默认验证已完成并通过：定向 MCP tests `47 tests passed, 0 failures`，`./BuildScripts/build_and_install.sh` 也已通过，因此本轮结论已经足够支持“工具暴露层不一致”这一项已闭环。
-- 当前默认下一步，不再扩散到更多 trace 检查脚本或更重的手工 Xcode 浏览，而是回到“当前最高价值主因”上：优先验证 **默认 target 仍是 `.device` / `.scope`** 是否就是当前 incomplete capture 的第一主因；若是，就先修默认 target 与工具暴露层，再决定是否继续做 queue ranking 或 preload 时机收敛。
+- 当前 `恋与深空` 的问题态已经明确：`.gputrace` 可以稳定落盘并被 Xcode 打开，但 capture 内容仍不完整；多个固定 render encoder 槽位（如 `4/6/7/9`）长期接近 `<0.01%`，而后续 `10/11/12` 又明显非空。
+- 当前结构化证据仍支持“这不是 replacement 主链完全失效”，而更像 **capture target / queue 命中 / capture 挂载时机** 三者之一仍未命中真正主因。
+- 当前 runtime 已经能发现真实 queue：`trackedCommandQueueCount=4`，且最新 tracked queue 为 `CaptureMTLCommandQueue`；因此“完全没发现真实渲染 queue”已经不是主矛盾。
+- 当前默认 capture 路径仍停留在 `device` / `scope`：`PlayCoverMCP/Session/CaptureService.swift` 与 runtime `MetalCaptureService.swift` 的默认 target 还没有切到 queue-bound 路径，这仍是当前最高优先级嫌疑点。
+- 当前 queue 选择策略仍然偏弱：runtime 仍直接依赖 `latestTrackedCommandQueue()`，它只能代表“最近被看到”，不能代表“最值得 capture 的主 render queue”。
+- 当前 delayed `dlopen` 兼容路径仍需保留，但它也依然可能带来 pre-existing Metal objects 未被完整 proxy 的残留风险，因此 preload / startup injection timing 仍是后续候选主因。
+- 当前下一步只聚焦一件事：先完成 `CTF-007`，验证把默认 target 收敛到 `queue_scope` 后，是否能在 live recapture 中减少固定 encoder 空壳现象；只有这一步没有给出收益时，才继续上探 `queue ranking` 或 `preload timing`。
 
 ## 当前默认流程
 

@@ -4,7 +4,7 @@
 
 ## 当前主线
 
-> 当前只做一件事：**围绕 `恋与深空` 当前可打开但内容不完整的 `.gputrace`，按默认流程先确认 capture target 选择、queue 发现与 capture 挂载时机这三层里哪一层最像主因，再只挑一个当前最靠近根因的最高价值问题做最小修复、复跑 live capture、更新控制面；若问题过大，就继续拆成更小子任务。**
+> 当前只做一件事：**围绕 `恋与深空` fresh live recapture 已确认的 early preload 收益，先判断当前 residual issue 更像 fresh trace 的 Xcode replay / frame dump 入口仍未稳定，还是 trace 内容本身依然不完整；在 fresh trace 的结构化 frame dump 恢复前，不继续放大新的实现改动面。**
 
 后续控制面只围绕下面这条流程展开：
 
@@ -34,10 +34,11 @@
 
 ### 当前最新状态
 
-- **当前已完成 `CTF-010` 判断与最小实现修复**：已确认 capture library preload 时机问题，并修复为 `metalCaptureEnabled=true` 时统一在启动早期执行，不再被 `shaderSourceReplacementEnabled` 错误门控。
-- **Xcode UI 自动化已完全恢复**：`xcode_gpu_ops.py` 可正常执行完整自动化流程，成功获取结构化 frame dump 产物。
-- **当前核心任务**：执行 fresh live recapture 验证，确认 early preload 修复是否实质减少 fixed encoder 空壳现象。
-- **下一步聚焦**：基于验证结果，决定是否继续升级 queue ranking 策略或推进其他优化。
+- **`CTF-011` 的 fresh live recapture 已完成到“capture 与结构化摘要”层**：最新 fresh launch 可稳定 `launch_app -> create_session -> get_capture_status -> capture_metal_frame`，同轮 session 已返回 `supports_gpu_trace=true`、`gpuToolsCaptureLoaded=true`、`queueDiscoveryInstalled=true`、`trackedCommandQueues=4`，latest tracked queue 仍为 `CaptureMTLCommandQueue`。
+- **四组 target 对照已在 fresh session 下稳定落盘**：`device / scope / queue / queue_scope` 四个 target 都已成功启动 capture，并把 trace 落到 `~/Library/Containers/com.papegames.lysk/Data/Documents/Captures/ctf011-*.gputrace`；写到工作区路径失败的原因已确认只是 runtime 对该目录无写权限，而不是 capture 自身再次失效。
+- **当前 source attribution 结论**：`check_gputrace_sources.py` 显示四个 fresh trace 的 source attribution 基本同构，`queue_scope` 相比 `device` 只有很小幅的引用缺失改善；因此 early preload 修复已经先明显改善了“capture 是否可稳定启动并落盘”，但尚未仅靠这一轮 source summary 就证明 fixed encoder 空壳现象已经实质消失。
+- **当前阻塞点已转移到 Xcode replay / frame dump 入口**：fresh `ctf011-device.gputrace` 可被 Xcode 打开到文档窗口，但当前仍停在 `GPU Debug: inactive`，`xcode_gpu_ops.py open` 未找到 `Replay` 按钮，因此本轮尚未拿到新的 frame dump / `collect_cbs.py` 证据。
+- **下一步聚焦**：先收敛 fresh trace 在当前 Xcode 里的 replay 入口形态，恢复 `xcode_gpu_ops.py dump` 或等价的结构化 frame dump；在这一步恢复前，不继续扩大 queue ranking 或其它实现改动面。
 ## 当前默认流程
 
 ### Step 1：先从结构化报告选下一个 case
@@ -177,7 +178,7 @@
 | `CTF-008` 评估 `latestTrackedCommandQueue()` 是否足以代表真实主渲染 queue | DONE | 已确认当前实现只是在已发现 queue 中选择“最新一个”，没有基于提交量、活跃度或渲染负载的 ranking；因此它不足以稳定代表最值得 capture 的主 render queue，后续应拆到 queue ranking 子任务 | 本文档 |
 | `CTF-009` 收敛 queue ranking 策略，使 queue 选择更接近真实主渲染 queue | DONE | 已完成最小实现改动：把 queue 选择从“最新发现”收敛为轻量 ranking，综合最近观察时间、重复发现次数与 `Capture*` 代理特征；当前仍需后续 live 验证确认它是否真的改善固定空壳 encoder 现象 | 本文档 |
 | `CTF-010` 评估 delayed preload / startup injection 时机是否仍造成部分 capture 缺口 | DONE | 已确认当前 early preload 过去被 `shaderSourceReplacementEnabled` 错误门控，capture-only 场景仍会过晚 `dlopen`；当前已改为 `metalCaptureEnabled=true` 时统一在启动早期 preload，后续只需 fresh live recapture 验证结构化收益 | 本文档 |
-| `CTF-011` 执行 fresh live recapture 验证 early preload 修复收益 | TODO | 基于 `CTF-010` 的 early preload 修复，执行完整 live capture 验证流程：fresh launch + 多 target 对照 + Xcode frame dump 分析，确认 fixed encoder 空壳现象是否实质减少 | 本文档 |
+| `CTF-011` 执行 fresh live recapture 验证 early preload 修复收益 | DOING | 已完成 fresh launch、`get_capture_status`、`device/scope/queue/queue_scope` 四组 live capture 与 `check_gputrace_sources.py` 对照；待补 fresh trace 的 Xcode replay / frame dump 证据后，才能最终判断 fixed encoder 空壳现象是否实质减少 | 本文档 |
 
 ## 任务执行规则
 
@@ -343,7 +344,8 @@ capture_metal_frame(..., capture_target=queue_scope)
 - **delayed `dlopen` 的价值是兼容性，不是完美覆盖。** 它避免了启动期崩溃，但也天然存在 pre-existing Metal objects 未被完整 proxy 的风险；当前 incomplete capture 的症状必须始终把这层代价纳入解释。
 - **scope begin / stop 是观察窗口，不是纯实现细节。** 若 begin 太晚、stop 太早，即便 trace 可打开，也会留下“前面若干 encoder 近空、后面后处理 pass 明显非空”的结构。
 - **优先把高频 target 对照流程固定下来。** 若默认验证永远只跑 `device` / `scope`，就无法回答 queue-bound capture 是否已经改善问题。
-- **Xcode UI 自动化阻塞要和 capture 主链故障分开记账。** 本轮 fresh live 已证明 `device/scope/queue/queue_scope` 四组 capture 都能成功落盘；当前卡住的是 `xcode_gpu_ops.py` 在 `show_navigator("Debug")` 的菜单点击超时，而不是 `queue_scope` 路径本身再次失效。
+- **Xcode UI 自动化阻塞要和 capture 主链故障分开记账。** 当前 fresh `CTF-011` live 已证明 `device/scope/queue/queue_scope` 四组 capture 都能成功启动并落盘；这轮真正卡住的是 fresh trace 打开后 Xcode 仍停在 `GPU Debug: inactive`，`xcode_gpu_ops.py open` 没有找到当前入口形态下的 `Replay` 按钮，而不是 queue-bound capture 本身再次失效。
+- **runtime 的输出路径权限会制造假阳性失败。** 当 `capture_metal_frame` 把 `output_path` 指到工作区目录时，本轮失败文本是“没有权限存到 `traces` 目录”；这类失败不能误判为 capture object / target 选择回退。若要做稳定 live 对照，优先把 trace 落到 app container 的 `Documents/Captures/` 或 runtime 默认目录。
 - **主文档不要直接暴露会漂移的本机截图或窗口状态。** 本机 trace 路径、Xcode dump 目录、局部截图说明都应尽量下沉到运行产物或参考文档。
 - **preload timing 不应再被 source attribution 专用门控绑死。** 若 `metalCaptureEnabled=true` 但 `shaderSourceReplacementEnabled=false` 时仍把 `dlopen` 推迟到 capture 请求瞬间，就会继续放大 pre-existing Metal objects 未被 proxy 的风险；更合理的最小策略是统一在 runtime 启动早期完成 capture library preload。
 

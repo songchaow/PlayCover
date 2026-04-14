@@ -62,6 +62,17 @@ def _cliclick_available() -> bool:
         return False
 
 
+def _press_keycode(keycode: int):
+    """向当前前台应用发送单个按键 keycode。"""
+    _activate_xcode()
+    subprocess.run(
+        ["osascript", "-e", f'tell application "System Events" to key code {keycode}'],
+        check=True,
+        timeout=5,
+    )
+    time.sleep(0.1)
+
+
 # ─────────────────────── JXA 脚本模板 ───────────────────────
 
 # 获取基础引用的 JXA 前缀 (每个脚本都需要)
@@ -175,6 +186,95 @@ class XcodeGPU:
         "ok";
         """)
 
+    def _get_navigator_row_metrics(self, index: int) -> dict:
+        """获取指定 Navigator 行及其 disclosure triangle 的几何信息。"""
+        result = _jxa(_JXA_NAV_OUTLINE + f"""
+        let rows = outline.rows();
+        if ({index} < 0 || {index} >= rows.length) {{
+            JSON.stringify({{exists: false, index: {index}}});
+        }} else {{
+            let row = rows[{index}];
+            let cell = row.uiElements[0];
+            let wp = win.attributes["AXPosition"].value();
+            let ws = win.attributes["AXSize"].value();
+            let rp = row.position();
+            let rs = row.size();
+            let text = "";
+            try {{
+                text = cell.staticTexts().map(s => s.value()).filter(v => v).join(" | ");
+            }} catch(e) {{}}
+
+            let hasDisc = false;
+            let expanded = false;
+            let discCenter = null;
+            try {{
+                let dts = cell.uiElements.whose({{role: "AXDisclosureTriangle"}});
+                if (dts.length > 0) {{
+                    let dt = dts[0];
+                    let dp = dt.position();
+                    let ds = dt.size();
+                    hasDisc = true;
+                    expanded = dt.value() === 1;
+                    discCenter = [Math.round(dp[0] + ds[0] / 2), Math.round(dp[1] + ds[1] / 2)];
+                }}
+            }} catch(e) {{}}
+
+            let rowCenter = [Math.round(rp[0] + rs[0] / 2), Math.round(rp[1] + rs[1] / 2)];
+            let margin = 2;
+            function inside(pt) {{
+                if (!pt) return false;
+                return pt[0] >= wp[0] + margin && pt[0] <= wp[0] + ws[0] - margin &&
+                       pt[1] >= wp[1] + margin && pt[1] <= wp[1] + ws[1] - margin;
+            }}
+
+            JSON.stringify({{
+                exists: true,
+                index: {index},
+                text: text,
+                selected: row.selected(),
+                has_disclosure: hasDisc,
+                expanded: expanded,
+                row_center: rowCenter,
+                disclosure_center: discCenter,
+                row_inside_window: inside(rowCenter),
+                disclosure_inside_window: inside(discCenter),
+                window_origin: wp,
+                window_size: ws
+            }});
+        }}
+        """)
+        return json.loads(result)
+
+    def _wait_for_row_expanded_state(self, index: int, expanded: bool,
+                                     attempts: int = 6, delay: float = 0.2) -> bool:
+        """等待指定行达到目标展开状态。"""
+        for _ in range(attempts):
+            try:
+                metrics = self._get_navigator_row_metrics(index)
+            except RuntimeError:
+                metrics = {"exists": False}
+            if metrics.get("exists") and metrics.get("expanded") == expanded:
+                return True
+            time.sleep(delay)
+        return False
+
+    def _safe_navigator_click(self, index: int, target: str, action: str):
+        """仅在点击目标位于 Xcode 窗口内时才执行 cliclick。"""
+        metrics = self._get_navigator_row_metrics(index)
+        if not metrics.get("exists"):
+            raise ValueError(f"Row {index} 不存在")
+
+        point = metrics.get(f"{target}_center")
+        if not point:
+            raise RuntimeError(f"Row {index} 缺少 {target} 点击坐标")
+        if not metrics.get(f"{target}_inside_window"):
+            raise RuntimeError(
+                f"Row {index} 的 {target} 坐标 {point} 位于 Xcode 窗口外，已跳过不安全点击"
+            )
+
+        _cliclick(f"{action}:{point[0]},{point[1]}")
+        time.sleep(self.delay)
+
     def select_navigator_row_by_text(self, text_prefix: str) -> int:
         """选中文本以 text_prefix 开头的行，返回行索引。"""
         rows = self.list_navigator_rows()
@@ -185,51 +285,52 @@ class XcodeGPU:
         raise ValueError(f"未找到以 '{text_prefix}' 开头的行")
 
     def expand_navigator_row(self, index: int):
-        """展开 Navigator 中指定行的 disclosure triangle (需要 cliclick)。"""
-        if not self._has_cliclick:
-            raise RuntimeError("需要 cliclick: brew install cliclick")
-        # 获取该行 disclosure triangle 的坐标
-        result = _jxa(_JXA_NAV_OUTLINE + f"""
-        let cell = outline.rows[{index}].uiElements[0];
-        let dts = cell.uiElements.whose({{role: "AXDisclosureTriangle"}});
-        if (dts.length === 0) {{ "none"; }}
-        else {{
-            let dt = dts[0];
-            if (dt.value() === 1) {{ "already_expanded"; }}
-            else {{
-                let p = dt.position(), s = dt.size();
-                Math.round(p[0]+s[0]/2) + "," + Math.round(p[1]+s[1]/2);
-            }}
-        }}
-        """)
-        if result == "none":
+        """展开 Navigator 中指定行的 disclosure triangle。"""
+        metrics = self._get_navigator_row_metrics(index)
+        if not metrics.get("exists"):
+            raise ValueError(f"Row {index} 不存在")
+        if not metrics.get("has_disclosure"):
             raise ValueError(f"Row {index} 没有 disclosure triangle")
-        if result == "already_expanded":
-            return  # 已经展开
-        _cliclick(f"c:{result}")
-        time.sleep(self.delay)
+        if metrics.get("expanded"):
+            return
+
+        self.select_navigator_row(index)
+        time.sleep(0.2)
+
+        _press_keycode(124)
+        if self._wait_for_row_expanded_state(index, True):
+            return
+
+        if not self._has_cliclick:
+            raise RuntimeError("展开失败，且未安装 cliclick 供坐标兜底: brew install cliclick")
+
+        self._safe_navigator_click(index, "disclosure", "c")
+        if not self._wait_for_row_expanded_state(index, True):
+            raise RuntimeError(f"Row {index} 展开失败")
 
     def collapse_navigator_row(self, index: int):
-        """折叠 Navigator 中指定行 (需要 cliclick)。"""
-        if not self._has_cliclick:
-            raise RuntimeError("需要 cliclick: brew install cliclick")
-        result = _jxa(_JXA_NAV_OUTLINE + f"""
-        let cell = outline.rows[{index}].uiElements[0];
-        let dts = cell.uiElements.whose({{role: "AXDisclosureTriangle"}});
-        if (dts.length === 0) {{ "none"; }}
-        else {{
-            let dt = dts[0];
-            if (dt.value() === 0) {{ "already_collapsed"; }}
-            else {{
-                let p = dt.position(), s = dt.size();
-                Math.round(p[0]+s[0]/2) + "," + Math.round(p[1]+s[1]/2);
-            }}
-        }}
-        """)
-        if result in ("none", "already_collapsed"):
+        """折叠 Navigator 中指定行。"""
+        metrics = self._get_navigator_row_metrics(index)
+        if not metrics.get("exists"):
+            raise ValueError(f"Row {index} 不存在")
+        if not metrics.get("has_disclosure"):
             return
-        _cliclick(f"c:{result}")
-        time.sleep(self.delay)
+        if not metrics.get("expanded"):
+            return
+
+        self.select_navigator_row(index)
+        time.sleep(0.2)
+
+        _press_keycode(123)
+        if self._wait_for_row_expanded_state(index, False):
+            return
+
+        if not self._has_cliclick:
+            raise RuntimeError("折叠失败，且未安装 cliclick 供坐标兜底: brew install cliclick")
+
+        self._safe_navigator_click(index, "disclosure", "c")
+        if not self._wait_for_row_expanded_state(index, False):
+            raise RuntimeError(f"Row {index} 折叠失败")
 
     def double_click_navigator_row(self, index: int):
         """双击 Navigator 中指定行 (需要 cliclick)。
@@ -239,17 +340,9 @@ class XcodeGPU:
         """
         if not self._has_cliclick:
             raise RuntimeError("需要 cliclick: brew install cliclick")
-        # 先 select 确保行在可视区域
         self.select_navigator_row(index)
         time.sleep(0.3)
-        # 获取行的中心坐标
-        result = _jxa(_JXA_NAV_OUTLINE + f"""
-        let row = outline.rows[{index}];
-        let p = row.position(), s = row.size();
-        Math.round(p[0] + s[0]/2) + "," + Math.round(p[1] + s[1]/2);
-        """)
-        _cliclick(f"dc:{result}")
-        time.sleep(self.delay)
+        self._safe_navigator_click(index, "row", "dc")
 
     # ═══════════════════ GPU Navigator Mode ═══════════════════
 
@@ -660,24 +753,127 @@ class XcodeGPU:
             time.sleep(1)
         return False
 
-    def _find_and_click_replay(self) -> bool:
-        """在概览页查找并点击 Replay 按钮。返回是否成功。"""
+    def _find_replay_candidates(self, max_elements: int = 1200) -> list[dict]:
+        """扫描窗口中可能的 replay 入口控件。"""
+        result = _jxa(_JXA_PREAMBLE + f"""
+        let all = win.entireContents();
+        let out = [];
+        let limit = Math.min(all.length, {max_elements});
+        for (let i = 0; i < limit; i++) {{
+            try {{
+                let el = all[i];
+                let role = "";
+                let name = "";
+                let desc = "";
+                let value = "";
+                let enabled = true;
+                try {{ role = el.role(); }} catch(e) {{}}
+                try {{ name = el.name() || ""; }} catch(e) {{}}
+                try {{ desc = el.description() || ""; }} catch(e) {{}}
+                try {{ value = "" + el.value(); }} catch(e) {{}}
+                try {{ enabled = el.enabled(); }} catch(e) {{}}
+                out.push({{
+                    index: i,
+                    role: role,
+                    name: name,
+                    description: desc,
+                    value: value,
+                    enabled: enabled
+                }});
+            }} catch(e) {{}}
+        }}
+        JSON.stringify(out);
+        """)
+        candidates = json.loads(result)
+
+        replay_pattern = re.compile(r"(replay|start replay|resume replay|open.*gpu|gpu debug)", re.IGNORECASE)
+        supported_roles = {
+            "AXButton", "AXMenuButton", "AXPopUpButton", "AXRadioButton", "AXMenuItem"
+        }
+        filtered: list[dict] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for item in candidates:
+            role = str(item.get("role") or "")
+            if role not in supported_roles:
+                continue
+            haystack = " | ".join(
+                str(item.get(key) or "") for key in ("name", "description", "value")
+            )
+            if not replay_pattern.search(haystack):
+                continue
+            key = (
+                role,
+                str(item.get("name") or ""),
+                str(item.get("description") or ""),
+                str(item.get("value") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            filtered.append(item)
+        return filtered
+
+    def get_replay_candidates(self, max_elements: int = 1200) -> list[dict]:
+        """公开当前窗口中与 replay 相关的候选控件，便于诊断 UI 漂移。"""
+        return self._find_replay_candidates(max_elements=max_elements)
+
+    def _click_replay_candidate(self, candidate: dict) -> bool:
+        """点击指定 replay 候选控件。"""
+        index = int(candidate["index"])
+        result = _jxa(_JXA_PREAMBLE + f"""
+        let all = win.entireContents();
+        let idx = {index};
+        if (idx >= all.length) {{
+            "out_of_range";
+        }} else {{
+            let el = all[idx];
+            try {{
+                if (!el.enabled || el.enabled()) {{
+                    el.click();
+                    delay({self.delay});
+                    "clicked";
+                }} else {{
+                    "disabled";
+                }}
+            }} catch(e) {{
+                "error: " + e;
+            }}
+        }}
+        """)
+        return result == "clicked"
+
+    def _find_and_click_replay(self) -> tuple[bool, list[dict]]:
+        """查找并尝试点击 replay 入口。返回是否成功及候选列表。"""
         try:
-            result = _jxa(_JXA_PREAMBLE + """
-            let all = win.entireContents();
-            for (let i = 0; i < Math.min(all.length, 200); i++) {
-                try {
-                    if (all[i].role() === "AXButton" && all[i].name() === "Replay") {
-                        all[i].click();
-                        "clicked";
-                    }
-                } catch(e) {}
-            }
-            "not_found";
-            """)
-            return "clicked" in result or result == "clicked"
+            candidates = self._find_replay_candidates()
+            if not candidates:
+                return False, []
+
+            priority_patterns = [
+                re.compile(r"^Replay$", re.IGNORECASE),
+                re.compile(r"Start Replay", re.IGNORECASE),
+                re.compile(r"Resume Replay", re.IGNORECASE),
+                re.compile(r"Replay", re.IGNORECASE),
+                re.compile(r"GPU Debug", re.IGNORECASE),
+            ]
+
+            def candidate_priority(candidate: dict) -> tuple[int, int]:
+                text = " | ".join(
+                    str(candidate.get(key) or "") for key in ("name", "description", "value")
+                )
+                for idx, pattern in enumerate(priority_patterns):
+                    if pattern.search(text):
+                        return (idx, int(candidate.get("index", 0)))
+                return (len(priority_patterns), int(candidate.get("index", 0)))
+
+            for candidate in sorted(candidates, key=candidate_priority):
+                if not candidate.get("enabled", True):
+                    continue
+                if self._click_replay_candidate(candidate):
+                    return True, candidates
+            return False, candidates
         except RuntimeError:
-            return False
+            return False, []
 
     def _wait_for_navigator_data(self, timeout: int = 30) -> bool:
         """等待 Navigator 中出现 Command Buffer 数据。"""
@@ -789,7 +985,8 @@ class XcodeGPU:
         status = {
             "success": False, "xcode_running": False,
             "navigator_ready": False, "replay_done": False,
-            "cb_count": 0, "analysis_ready": False, "message": ""
+            "cb_count": 0, "analysis_ready": False, "message": "",
+            "replay_candidates": []
         }
 
         # 1. 打开文件
@@ -819,10 +1016,44 @@ class XcodeGPU:
                 status["message"] = f"显示 Navigator 失败: {e}"
                 return status
 
-        # 4. 点击 Replay
-        if not self._find_and_click_replay():
-            status["message"] = "未找到 Replay 按钮"
-            return status
+        # 4. 若数据已存在，则不必再次点击 Replay
+        if self._wait_for_navigator_data(timeout=2):
+            status["replay_done"] = True
+        else:
+            clicked, candidates = self._find_and_click_replay()
+            status["replay_candidates"] = [
+                {
+                    "index": item.get("index"),
+                    "role": item.get("role"),
+                    "name": item.get("name"),
+                    "description": item.get("description"),
+                    "value": item.get("value"),
+                    "enabled": item.get("enabled"),
+                }
+                for item in candidates[:8]
+            ]
+            if not clicked:
+                if self._wait_for_navigator_data(timeout=2):
+                    status["replay_done"] = True
+                else:
+                    if status["replay_candidates"]:
+                        summary = "; ".join(
+                            filter(None, [
+                                " / ".join(
+                                    filter(None, [
+                                        str(item.get("role") or ""),
+                                        str(item.get("name") or ""),
+                                        str(item.get("description") or ""),
+                                        str(item.get("value") or ""),
+                                    ])
+                                )
+                                for item in status["replay_candidates"][:3]
+                            ])
+                        )
+                        status["message"] = f"未能点击 replay 入口，候选控件: {summary}"
+                    else:
+                        status["message"] = "未找到 replay 相关入口控件"
+                    return status
 
         # 5. 等待 CB 数据
         if not self._wait_for_navigator_data(timeout):
@@ -972,6 +1203,8 @@ def main():
     sub.add_parser("filters", help="读取 filter 状态")
     sub.add_parser("menu", help="显示 Debug 菜单")
     sub.add_parser("status", help="检查 Xcode 运行状态")
+    p = sub.add_parser("replay-candidates", help="列出当前窗口里的 replay 候选控件")
+    p.add_argument("-n", "--max", type=int, default=1200, help="最多扫描的 UI 元素数量")
 
     # 操作类命令
     p = sub.add_parser("open", help="打开 gputrace 文件并进入分析模式")
@@ -1031,6 +1264,8 @@ def main():
                 print(f"GPU Debug: {'active' if step_ok else 'inactive'}")
             except RuntimeError:
                 print("GPU Debug: unknown")
+    elif args.command == "replay-candidates":
+        print(json.dumps(gpu.get_replay_candidates(args.max), indent=2, ensure_ascii=False))
     elif args.command == "open":
         result = gpu.open_gputrace(
             args.path,

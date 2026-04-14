@@ -45,7 +45,8 @@
 - 当前 delayed `dlopen` 兼容路径仍需保留，但它也依然可能带来 pre-existing Metal objects 未被完整 proxy 的残留风险，因此 preload / startup injection timing 仍是后续候选主因。
 - **当前 `CTF-007` 的 Xcode UI 自动化阻塞已成功解除。** 通过修复辅助功能权限，`xcode_gpu_ops.py` 已能正常执行完整的自动化流程：成功加载 `.gputrace` 文件、点击 Replay 按钮、双击 Command Buffer 和 Render Encoder 激活 GPU 步进功能，并完成 frame dump 导出。
 - **已成功获取结构化 frame dump 产物**：包含 memory info、navigator API call 和 pipeline state 数据，为后续分析 fixed encoder 空壳现象提供关键证据。
-- 当前下一步聚焦：**优先评估 preload / startup injection timing 是否仍在 capture begin 前遗漏了关键 Metal objects；若该方向收益有限，再继续把 queue ranking 从 discovery-side heuristic 升级到更接近 command buffer activity 的证据。**
+- **本轮已完成 `CTF-010` 判断与最小实现修复。** 当前启动路径里，真正的 capture library preload 之前只在 `shaderSourceReplacementEnabled=true` 时才发生；若是 capture-only 场景，则 `libmtlcapture.dylib` 仍可能拖到首次 `getStatus()` / `captureFrame()` 才 `dlopen`，这会让更多 pre-existing Metal objects 先于 capture hook 创建，从而继续放大 incomplete capture 风险。为收敛这一 timing 缺口，当前已把 early preload 收敛为 `metalCaptureEnabled=true` 时统一在 `PlayCover.launch()` 早期执行，并保留原 source attribution 调用入口作为兼容 wrapper。
+- 当前下一步聚焦：**先做 fresh live recapture 验证，确认这个更早的 preload 是否实质减少固定空壳 encoder / 缺失引用；若收益仍有限，再继续把 queue ranking 从 discovery-side heuristic 升级到更接近 command buffer activity 的证据。**
 
 ## 当前默认流程
 
@@ -185,7 +186,7 @@
 | `CTF-007` 验证默认 capture target 改为 `queue_scope` 的 live 收益 | DONE | 已完成 fresh launch + `device/scope/queue/queue_scope` live recapture，对照显示 `queue_scope` 有小幅正向收益；已成功完成 Xcode UI 自动化，`xcode_gpu_ops.py dump` 成功导出 frame dump 产物，确认 GPU 步进功能已激活，为后续 fixed encoder 空壳现象分析提供结构化证据 | 本文档 |
 | `CTF-008` 评估 `latestTrackedCommandQueue()` 是否足以代表真实主渲染 queue | DONE | 已确认当前实现只是在已发现 queue 中选择“最新一个”，没有基于提交量、活跃度或渲染负载的 ranking；因此它不足以稳定代表最值得 capture 的主 render queue，后续应拆到 queue ranking 子任务 | 本文档 |
 | `CTF-009` 收敛 queue ranking 策略，使 queue 选择更接近真实主渲染 queue | DONE | 已完成最小实现改动：把 queue 选择从“最新发现”收敛为轻量 ranking，综合最近观察时间、重复发现次数与 `Capture*` 代理特征；当前仍需后续 live 验证确认它是否真的改善固定空壳 encoder 现象 | 本文档 |
-| `CTF-010` 评估 delayed preload / startup injection 时机是否仍造成部分 capture 缺口 | TODO | 明确 incomplete capture 是否仍主要由过晚的 capture library 加载导致；若是，需要再拆 preload 时机子任务 | 本文档 |
+| `CTF-010` 评估 delayed preload / startup injection 时机是否仍造成部分 capture 缺口 | DONE | 已确认当前 early preload 过去被 `shaderSourceReplacementEnabled` 错误门控，capture-only 场景仍会过晚 `dlopen`；当前已改为 `metalCaptureEnabled=true` 时统一在启动早期 preload，后续只需 fresh live recapture 验证结构化收益 | 本文档 |
 
 ## 任务执行规则
 
@@ -353,6 +354,7 @@ capture_metal_frame(..., capture_target=queue_scope)
 - **优先把高频 target 对照流程固定下来。** 若默认验证永远只跑 `device` / `scope`，就无法回答 queue-bound capture 是否已经改善问题。
 - **Xcode UI 自动化阻塞要和 capture 主链故障分开记账。** 本轮 fresh live 已证明 `device/scope/queue/queue_scope` 四组 capture 都能成功落盘；当前卡住的是 `xcode_gpu_ops.py` 在 `show_navigator("Debug")` 的菜单点击超时，而不是 `queue_scope` 路径本身再次失效。
 - **主文档不要直接暴露会漂移的本机截图或窗口状态。** 本机 trace 路径、Xcode dump 目录、局部截图说明都应尽量下沉到运行产物或参考文档。
+- **preload timing 不应再被 source attribution 专用门控绑死。** 若 `metalCaptureEnabled=true` 但 `shaderSourceReplacementEnabled=false` 时仍把 `dlopen` 推迟到 capture 请求瞬间，就会继续放大 pre-existing Metal objects 未被 proxy 的风险；更合理的最小策略是统一在 runtime 启动早期完成 capture library preload。
 
 ## 参考信息
 

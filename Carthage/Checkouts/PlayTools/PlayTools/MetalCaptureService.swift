@@ -348,16 +348,15 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         print("[PlayTools] MetalCaptureService initialized (delayed capture library loading enabled)")
     }
 
-    /// 在 `shaderSourceReplacementEnabled + metalCaptureEnabled` 同时开启时，
-    /// 需要在 runtime 早期就加载 GPUToolsCapture，确保后续 `makeLibrary(source:)`
-    /// 产生的 replacement library 能被 trace 导出链路观测到并写入 `.gputrace` bundle。
-    @objc @discardableResult public func prepareForLibrarySourceAttributionIfNeeded() -> Bool {
+    /// 在 `metalCaptureEnabled` 开启时，尽量在 runtime 启动早期就加载 GPUToolsCapture，
+    /// 降低 delayed `dlopen` 只在首次 `getStatus()` / `captureFrame()` 才触发时，
+    /// pre-existing Metal objects 已经创建完成而导致 capture coverage 不完整的风险。
+    ///
+    /// 当 `shaderSourceReplacementEnabled` 同时开启时，这个更早的 preload 也顺带满足
+    /// library source attribution 对加载时机的要求。
+    @objc @discardableResult public func prepareForEarlyCaptureIfNeeded() -> Bool {
         guard PlaySettings.shared.metalCaptureEnabled else {
-            logStatusProbe("prepareForLibrarySourceAttributionIfNeeded: skipped — metal capture disabled")
-            return false
-        }
-        guard PlaySettings.shared.shaderSourceReplacementEnabled else {
-            logStatusProbe("prepareForLibrarySourceAttributionIfNeeded: skipped — shader source replacement disabled")
+            logStatusProbe("prepareForEarlyCaptureIfNeeded: skipped — metal capture disabled")
             return false
         }
 
@@ -365,9 +364,14 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         let manager = currentCaptureManager()
         let supportsGPUTrace = manager?.supportsDestination(.gpuTraceDocument) ?? false
         logStatusProbe(
-            "prepareForLibrarySourceAttributionIfNeeded: loaded=\(loaded), captureManagerAvailable=\(manager != nil), supportsGPUTrace=\(supportsGPUTrace)"
+            "prepareForEarlyCaptureIfNeeded: loaded=\(loaded), captureManagerAvailable=\(manager != nil), supportsGPUTrace=\(supportsGPUTrace), shaderSourceReplacementEnabled=\(PlaySettings.shared.shaderSourceReplacementEnabled)"
         )
         return loaded
+    }
+
+    /// 兼容旧调用点：source attribution 仍复用统一的 early capture preload 路径。
+    @objc @discardableResult public func prepareForLibrarySourceAttributionIfNeeded() -> Bool {
+        prepareForEarlyCaptureIfNeeded()
     }
 
     /// 执行一次帧截取，输出 .gputrace 到指定路径

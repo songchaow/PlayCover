@@ -37,14 +37,16 @@ public class PlayCover: NSObject {
 
         let shouldPreloadCaptureForSourceAttribution =
             PlaySettings.shared.metalCaptureEnabled && PlaySettings.shared.shaderSourceReplacementEnabled
-        let capturePreloadedForSourceAttribution =
-            MetalCaptureService.shared.prepareForLibrarySourceAttributionIfNeeded()
+        let shouldPreloadCaptureEarly = PlaySettings.shared.metalCaptureEnabled
+        let capturePreloadedEarly =
+            MetalCaptureService.shared.prepareForEarlyCaptureIfNeeded()
         RuntimeLaunchDiagnostics.record(
             event: "playcover_capture_library_preload_checked",
             bundleId: runtimeBundleId,
             details: [
-                "needed": shouldPreloadCaptureForSourceAttribution ? "true" : "false",
-                "loaded": capturePreloadedForSourceAttribution ? "true" : "false",
+                "needed": shouldPreloadCaptureEarly ? "true" : "false",
+                "loaded": capturePreloadedEarly ? "true" : "false",
+                "sourceAttributionNeeded": shouldPreloadCaptureForSourceAttribution ? "true" : "false",
             ]
         )
 

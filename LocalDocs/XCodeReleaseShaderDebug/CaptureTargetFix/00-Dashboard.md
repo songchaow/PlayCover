@@ -2,9 +2,17 @@
 
 > **单一来源规则**：凡是任务状态、进展、优先级、TODO、完成判定与默认执行顺序，只在本文件维护；`01`~`08` 子文档只保留背景、方法、契约与历史归档，不重复记录动态控制面。
 
-## 当前主线
+## 当前主线（含最新状态）
 
 > 当前只做一件事：**围绕 `恋与深空` fresh live recapture 已确认的 early preload 收益，先判断当前 residual issue 更像 fresh trace 的 Xcode replay / frame dump 入口仍未稳定，还是 trace 内容本身依然不完整；在 fresh trace 的结构化 frame dump 恢复前，不继续放大新的实现改动面。**
+
+当前结论与最新状态统一如下：
+
+- **`CTF-011` 的 fresh live recapture 已完成到“capture 与结构化摘要”层**：最新 fresh launch 可稳定 `launch_app -> create_session -> get_capture_status -> capture_metal_frame`，同轮 session 已返回 `supports_gpu_trace=true`、`gpuToolsCaptureLoaded=true`、`queueDiscoveryInstalled=true`、`trackedCommandQueues=4`，latest tracked queue 仍为 `CaptureMTLCommandQueue`。
+- **四组 target 对照已在 fresh session 下稳定落盘**：`device / scope / queue / queue_scope` 四个 target 都已成功启动 capture，并把 trace 落到 `~/Library/Containers/com.papegames.lysk/Data/Documents/Captures/ctf011-*.gputrace`；写到工作区路径失败的原因已确认只是 runtime 对该目录无写权限，而不是 capture 自身再次失效。
+- **当前 source attribution 结论**：`check_gputrace_sources.py` 显示四个 fresh trace 的 source attribution 基本同构，`queue_scope` 相比 `device` 只有很小幅的引用缺失改善；因此 early preload 修复已经先明显改善了“capture 是否可稳定启动并落盘”，但尚未仅靠这一轮 source summary 就证明 fixed encoder 空壳现象已经实质消失。
+- **当前阻塞点已转移到 Xcode replay / frame dump 入口**：fresh `ctf011-device.gputrace` 可被 Xcode 打开到文档窗口，但当前仍停在 `GPU Debug: inactive`，`xcode_gpu_ops.py open` 未找到 `Replay` 按钮，因此本轮尚未拿到新的 frame dump / `collect_cbs.py` 证据。
+- **下一步聚焦**：先收敛 fresh trace 在当前 Xcode 里的 replay 入口形态，恢复 `xcode_gpu_ops.py dump` 或等价的结构化 frame dump；在这一步恢复前，不继续扩大 queue ranking 或其它实现改动面。
 
 后续控制面只围绕下面这条流程展开：
 
@@ -32,13 +40,6 @@
 - **没有结构化收益的实现，不应轻易继续放大**
 - **每轮开始前先重跑当前默认 capture 入口，再决定当前最值得处理的 residual issue**
 
-### 当前最新状态
-
-- **`CTF-011` 的 fresh live recapture 已完成到“capture 与结构化摘要”层**：最新 fresh launch 可稳定 `launch_app -> create_session -> get_capture_status -> capture_metal_frame`，同轮 session 已返回 `supports_gpu_trace=true`、`gpuToolsCaptureLoaded=true`、`queueDiscoveryInstalled=true`、`trackedCommandQueues=4`，latest tracked queue 仍为 `CaptureMTLCommandQueue`。
-- **四组 target 对照已在 fresh session 下稳定落盘**：`device / scope / queue / queue_scope` 四个 target 都已成功启动 capture，并把 trace 落到 `~/Library/Containers/com.papegames.lysk/Data/Documents/Captures/ctf011-*.gputrace`；写到工作区路径失败的原因已确认只是 runtime 对该目录无写权限，而不是 capture 自身再次失效。
-- **当前 source attribution 结论**：`check_gputrace_sources.py` 显示四个 fresh trace 的 source attribution 基本同构，`queue_scope` 相比 `device` 只有很小幅的引用缺失改善；因此 early preload 修复已经先明显改善了“capture 是否可稳定启动并落盘”，但尚未仅靠这一轮 source summary 就证明 fixed encoder 空壳现象已经实质消失。
-- **当前阻塞点已转移到 Xcode replay / frame dump 入口**：fresh `ctf011-device.gputrace` 可被 Xcode 打开到文档窗口，但当前仍停在 `GPU Debug: inactive`，`xcode_gpu_ops.py open` 未找到 `Replay` 按钮，因此本轮尚未拿到新的 frame dump / `collect_cbs.py` 证据。
-- **下一步聚焦**：先收敛 fresh trace 在当前 Xcode 里的 replay 入口形态，恢复 `xcode_gpu_ops.py dump` 或等价的结构化 frame dump；在这一步恢复前，不继续扩大 queue ranking 或其它实现改动面。
 ## 当前默认流程
 
 ### Step 1：先从结构化报告选下一个 case

@@ -389,7 +389,7 @@ public enum BridgeCommandName {
     /// Params (all optional):
     /// - `output_path` (String): custom `.gputrace` file path.
     /// - `duration_ms` (Int): capture duration in ms (default 100).
-    /// - `capture_target` (String): one of `device`, `scope`, `queue`, `queue_scope`.
+    /// - `capture_target` (String): one of `device`, `scope`, `queue`, `queue_scope`; defaults to `queue_scope` when omitted.
     ///
     /// Response data:
     /// - `output_path` (String): actual file path of the `.gputrace`.

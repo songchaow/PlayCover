@@ -12,7 +12,7 @@ final class CaptureParamsTests: XCTestCase {
         let params = CaptureFrameParams()
         XCTAssertNil(params.outputPath)
         XCTAssertEqual(params.durationMs, 100)
-        XCTAssertEqual(params.captureTarget, .device)
+        XCTAssertEqual(params.captureTarget, .queueScope)
     }
 
     func testCaptureFrameParamsCustomValues() {
@@ -42,7 +42,7 @@ final class CaptureParamsTests: XCTestCase {
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(CaptureFrameParams.self, from: data)
         XCTAssertEqual(decoded, original)
-        XCTAssertEqual(decoded.captureTarget, .device)
+        XCTAssertEqual(decoded.captureTarget, .queueScope)
     }
 }
 
@@ -565,7 +565,7 @@ final class CaptureToolsRegistrationTests: XCTestCase {
         XCTAssertNotNil(resp?.result)
         XCTAssertNil(resp?.error)
         XCTAssertEqual(fakeCaptureService.captureFrameCalls.first?.params.durationMs, 100)
-        XCTAssertEqual(fakeCaptureService.captureFrameCalls.first?.params.captureTarget, .device)
+        XCTAssertEqual(fakeCaptureService.captureFrameCalls.first?.params.captureTarget, .queueScope)
     }
 
     func testCaptureMetalFrameToolMissingSessionId() {

@@ -22,13 +22,13 @@ public struct CaptureFrameParams: Codable, Equatable, Sendable {
     public let outputPath: String?
     /// Capture duration in milliseconds (default: 100, enough for 1-2 frames at 60fps).
     public let durationMs: Int
-    /// Which capture target strategy to use for the runtime experiment.
+    /// Which capture target strategy to use for the runtime experiment. Defaults to queue_scope.
     public let captureTarget: CaptureTarget
 
     public init(
         outputPath: String? = nil,
         durationMs: Int = 100,
-        captureTarget: CaptureTarget = .device
+        captureTarget: CaptureTarget = .queueScope
     ) {
         self.outputPath = outputPath
         self.durationMs = durationMs

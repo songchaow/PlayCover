@@ -156,7 +156,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
     /// 在第几个 vsync 后才允许停止（至少等 2 个 vsync 确保覆盖完整 1 帧）
     private let minimumVsyncStopThreshold = 2
     /// 本次 capture 使用的 target 策略
-    private var activeCaptureTarget: CaptureTarget = .device
+    private var activeCaptureTarget: CaptureTarget = .queueScope
     /// scope 模式下的临时 capture scope
     private var activeCaptureScope: MTLCaptureScope?
     /// scope 模式是否已经在某个 vsync 上进入 beginScope
@@ -402,7 +402,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
             }
             captureTarget = parsedTarget
         } else {
-            captureTarget = .device
+            captureTarget = .queueScope
         }
 
         let normalizedDurationMs = max(1, durationMs)
@@ -656,7 +656,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         captureStartTime = 0
         vsyncCount = 0
         minimumCaptureDurationMs = 100
-        activeCaptureTarget = .device
+        activeCaptureTarget = .queueScope
         activeCaptureScope = nil
         hasBegunActiveCaptureScope = false
         // Note: lastCaptureWasEmptyTrace is NOT reset here — it persists

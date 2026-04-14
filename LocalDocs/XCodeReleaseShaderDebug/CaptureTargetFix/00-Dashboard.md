@@ -37,10 +37,12 @@
 - 当前 `恋与深空` 的问题态已经明确：`.gputrace` 可以稳定落盘并被 Xcode 打开，但 capture 内容仍不完整；多个固定 render encoder 槽位（如 `4/6/7/9`）长期接近 `<0.01%`，而后续 `10/11/12` 又明显非空。
 - 当前结构化证据仍支持“这不是 replacement 主链完全失效”，而更像 **capture target / queue 命中 / capture 挂载时机** 三者之一仍未命中真正主因。
 - 当前 runtime 已经能发现真实 queue：`trackedCommandQueueCount=4`，且最新 tracked queue 为 `CaptureMTLCommandQueue`；因此“完全没发现真实渲染 queue”已经不是主矛盾。
-- 当前默认 capture 路径仍停留在 `device` / `scope`：`PlayCoverMCP/Session/CaptureService.swift` 与 runtime `MetalCaptureService.swift` 的默认 target 还没有切到 queue-bound 路径，这仍是当前最高优先级嫌疑点。
+- **本轮已把默认 capture target 实现链路收敛到 `queue_scope`**：`PlayCoverMCP/Tools/Session/CaptureTools.swift`、`PlayCoverMCP/Session/CaptureService.swift` 与 runtime `MetalCaptureService.swift` 的 omitted-target fallback 已统一不再默认回退到 `device`。
+- **本轮离线验证已通过**：`./BuildScripts/build_and_install.sh` 成功，且 `CaptureParamsTests`、`CaptureToolsRegistrationTests`、`FakeCaptureServiceTests`、`CaptureServiceValidationTests` 定向测试通过，说明默认 target 变更已在 host / session / tool 层对齐。
+- 本轮额外读取了 `python3 Scripts/runtime_launch_diagnostics_summary.py --bundle-id com.papegames.lysk --limit 3`，但拿到的仍是既有 launch 记录，还**不能**作为“默认 target 改为 `queue_scope` 后 live 收益已确认”的证据。
 - 当前 queue 选择策略仍然偏弱：runtime 仍直接依赖 `latestTrackedCommandQueue()`，它只能代表“最近被看到”，不能代表“最值得 capture 的主 render queue”。
 - 当前 delayed `dlopen` 兼容路径仍需保留，但它也依然可能带来 pre-existing Metal objects 未被完整 proxy 的残留风险，因此 preload / startup injection timing 仍是后续候选主因。
-- 当前下一步只聚焦一件事：先完成 `CTF-007`，验证把默认 target 收敛到 `queue_scope` 后，是否能在 live recapture 中减少固定 encoder 空壳现象；只有这一步没有给出收益时，才继续上探 `queue ranking` 或 `preload timing`。
+- 当前下一步只聚焦一件事：**继续完成 `CTF-007` 的 fresh live recapture 对照**，确认默认 `queue_scope` 是否确实减少固定 encoder 空壳现象；只有这一步没有给出收益时，才继续上探 `queue ranking` 或 `preload timing`。
 
 ## 当前默认流程
 
@@ -177,7 +179,7 @@
 | `CTF-004` 确认 runtime 已能发现真实 `CaptureMTLCommandQueue` | DONE | 已确认 capture status 中存在 tracked queue，且最新 tracked queue 为 `CaptureMTLCommandQueue` | 本文档 |
 | `CTF-005` 收敛当前最高优先级 issue 所在层级 | DONE | 已把当前首要嫌疑收敛到 capture target / queue 选择与 capture 挂载时机，而不是先修 converter 或 replacement 主链 | 本文档 |
 | `CTF-006` 修正 MCP 工具暴露层对 `queue` / `queue_scope` 的不完整暴露 | DONE | `CaptureTools.swift` 的 schema、默认说明与实际运行能力保持一致，不再把外部使用者误导到只剩 `device` / `scope` | 本文档 |
-| `CTF-007` 验证默认 capture target 改为 `queue_scope` 的 live 收益 | TODO | 至少完成一次修复前后 live recapture 对照，并确认 fixed encoder 空壳现象是否减少 | 本文档 |
+| `CTF-007` 验证默认 capture target 改为 `queue_scope` 的 live 收益 | TODO | 已完成默认 target 实现收敛、构建安装与定向测试；仍需至少完成一次修复前后 fresh live recapture 对照，并确认 fixed encoder 空壳现象是否减少 | 本文档 |
 | `CTF-008` 评估 `latestTrackedCommandQueue()` 是否足以代表真实主渲染 queue | TODO | 明确“最后创建的 queue”是否等于“最值得 capture 的 queue”；若不成立，需要再拆 queue ranking 子任务 | 本文档 |
 | `CTF-009` 评估 delayed preload / startup injection 时机是否仍造成部分 capture 缺口 | TODO | 明确 incomplete capture 是否仍主要由过晚的 capture library 加载导致；若是，需要再拆 preload 时机子任务 | 本文档 |
 
@@ -337,9 +339,9 @@ capture_metal_frame(..., capture_target=queue_scope)
 
 - **`.gputrace` 能打开，不等于 capture 内容完整。** 当前默认应优先看 `Command Buffer` / encoder 结构、pipeline 名单与固定空壳槽位分布，而不是只看文件能否被 Xcode 打开。
 - **source attribution 变多，不等于 render encoder 已经完整。** replacement 侧 richer source 只能证明“至少部分替换 / 归因链路工作正常”，不能直接证明 capture target 已命中真实主渲染路径。
-- **默认 target 是一等证据。** 当前 `CaptureFrameParams` 与 runtime fallback 仍默认走 `.device`，这会直接影响所有现场验证的解释力。
+- **默认 target 是一等证据。** 本轮已把 `CaptureFrameParams` 与 runtime fallback 的 omitted-target 默认值收敛到 `.queue_scope`；但在 fresh live 对照落地前，不能把“实现已修改”等同于“capture 收益已验证”。
 - **工具 schema 与真实能力不一致会把排查带偏。** 当解析层和 runtime 都已支持 `queue` / `queue_scope`，但对外 schema 仍只暴露 `device` / `scope` 时，使用者会被系统性误导到错误实验路径。
-- **即使修完工具暴露层，也不等于默认验证路径已切到 queue-bound capture。** 若 `CaptureFrameParams` 与 runtime fallback 仍保持 `.device`，下一步仍要通过 live 对照回答 `queue_scope` 是否比 `device` / `scope` 更接近真实 render 路径。
+- **即使默认 target 已切到 queue-bound capture，也仍要靠 live 对照回答收益。** 若没有 fresh `device/scope` vs `queue/queue_scope` 的结构化对照，仍无法区分“默认值修正已命中主因”与“真正问题在 queue ranking / preload timing”。
 - **`latestTrackedCommandQueue()` 不等于“主 render queue”。** 最后创建的 queue 只能说明“最近被看到”，不能说明“提交了最多真实渲染工作”。
 - **delayed `dlopen` 的价值是兼容性，不是完美覆盖。** 它避免了启动期崩溃，但也天然存在 pre-existing Metal objects 未被完整 proxy 的风险；当前 incomplete capture 的症状必须始终把这层代价纳入解释。
 - **scope begin / stop 是观察窗口，不是纯实现细节。** 若 begin 太晚、stop 太早，即便 trace 可打开，也会留下“前面若干 encoder 近空、后面后处理 pass 明显非空”的结构。

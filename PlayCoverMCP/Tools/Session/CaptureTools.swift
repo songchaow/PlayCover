@@ -71,7 +71,7 @@ public enum CaptureTools {
                     "capture_target": AnyCodable([
                         "type": "string",
                         "enum": ["device", "scope", "queue", "queue_scope"],
-                        "description": "Experimental capture target. 'device' captures all queues on the default Metal device; 'scope' uses a temporary MTLCaptureScope aligned to vsync boundaries on the default device; 'queue' captures the most recently discovered runtime MTLCommandQueue; 'queue_scope' uses a temporary MTLCaptureScope bound to the most recently discovered runtime MTLCommandQueue. Current default when omitted: 'device'."
+                        "description": "Experimental capture target. 'device' captures all queues on the default Metal device; 'scope' uses a temporary MTLCaptureScope aligned to vsync boundaries on the default device; 'queue' captures the most recently discovered runtime MTLCommandQueue; 'queue_scope' uses a temporary MTLCaptureScope bound to the most recently discovered runtime MTLCommandQueue. Current default when omitted: 'queue_scope'."
                     ] as Any),
                 ],
                 required: ["sessionId"]
@@ -112,7 +112,7 @@ public enum CaptureTools {
                 }
                 captureTarget = parsedTarget
             } else {
-                captureTarget = .device
+                captureTarget = .queueScope
             }
 
             let params = CaptureFrameParams(

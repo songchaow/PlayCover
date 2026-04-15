@@ -24,12 +24,12 @@
 
 ## 主线任务
 
-- **当前最新进展**：fresh live recapture 已恢复到可稳定复用的证据链：`launch_app -> create_session -> get_capture_status -> capture_metal_frame` 可跑通，`device / scope / queue / queue_scope` 四组 target 都能成功落盘；fresh trace 的 Xcode replay、`xcode_gpu_ops.py dump` 与 `collect_cbs.py` 也已恢复。
+- **当前最新进展**：`CTF2-004` 已落地为可复用脚本链：`snapshot_capture_run.py` 现在会把 runtime launch diagnostics 一并固化到 snapshot，`capture_target_compare_runner.py` 则把同轮 `device` vs `queue_scope` 的双 snapshot + compare 报告串成标准入口；fresh live recapture 仍保持可稳定复用，`xcode_gpu_ops.py dump` 与 `collect_cbs.py` 证据链未回退。
 - **当前主判断**：问题已经不再像“capture/export failure”，而更像**成功 capture 之后仍存在部分内容残缺**；`queue_scope` 相比 `device` 只有小幅收益，还不足以单独证明主因就是 target 默认值。
-- **当前关键缺口**：虽然已有 source summary、frame dump 与 CB 结构化证据，但仍缺少一套稳定的、可复用的“同轮 target 对照 + snapshot 对照 + hollow encoder 对照”控制面，来回答残缺到底更像 target、queue ranking，还是 timing。
+- **当前关键缺口**：同轮 target 对照与 snapshot/compare 入口已经固化，但 hollow encoder 槽位仍缺少稳定的结构化对照口径；下一优先级转到回答“固定空壳 encoder 是否跨 target 同构”。
 - **当前 blocker**：现有 queue 选择仍主要基于 discovery-side proxy 线索，而不是 command-buffer activity 级别证据；因此即便 capture 命中了 `CaptureMTLCommandQueue`，也还不能证明命中了最值得截取的真实主渲染 queue。
 - **下一步默认规划**：
-  - 先固化同一路径下的 `device` vs `queue_scope` fresh snapshot 对照，保留 `.gputrace`、source summary、launch diagnostics 与 Xcode dump 的同轮证据。
+  - 先使用 `capture_target_compare_runner.py` 固化同一路径下的 `device` vs `queue_scope` fresh snapshot 对照，保留 `.gputrace`、source summary、launch diagnostics 与 compare 报告的同轮证据；若需要 hollow encoder 对照，再补跑对应 Xcode dump。
   - 再用 `collect_cbs.py` / Xcode dump 对照固定的 hollow encoder 槽位是否跨 target 仍然重复出现。
   - 若 hollow encoder 在 target 对照中基本同构，下一优先级切到 queue ranking 证据，而不是继续放大 target 默认值改动。
   - 若 timing 证据显示 preload / startup 时序仍与残缺程度相关，则拆出 preload timing 子任务单独推进。
@@ -69,6 +69,8 @@
 - `python3 Scripts/runtime_launch_diagnostics_summary.py --bundle-id com.papegames.lysk --limit 5 --json`
 - `python3 Scripts/check_gputrace_sources.py <trace.gputrace>`
 - `python3 Scripts/snapshot_capture_run.py --bundle-id <id> --label <label> --gputrace <trace.gputrace> --capture-target <target> --print-compare-path`
+- `python3 Scripts/capture_target_compare_runner.py finalize-pair --bundle-id <id> --pair-label <label> --device-gputrace <device.gputrace> --queue-scope-gputrace <queue_scope.gputrace>`
+- `python3 Scripts/capture_target_compare_runner.py compare-pair --bundle-id <id> --pair-label <label>`
 - `python3 Scripts/compare_capture_runs.py --run-a <snapshotA> --run-b <snapshotB>`
 - `python3 Scripts/analyze_capture_run_matrix.py --run <snapshotA> --run <snapshotB> ...`
 - `python3 LocalDocs/XCodeOperation/xcode_gpu_ops.py open <trace.gputrace>`
@@ -93,8 +95,8 @@
 | `CTF2-001` | DONE | 建立新的 residual-control dashboard，明确主问题从“capture 是否成功”切换为“capture 成功后内容为何仍残缺” | 本文档 |
 | `CTF2-002` | DONE | 确认 fresh live 证据链已恢复到可复用状态：capture status、四组 target 落盘、Xcode replay / dump、`collect_cbs.py` | 结论来自旧主线收尾 |
 | `CTF2-003` | DONE | 收敛当前三条一等候选主因：target、queue ranking、preload timing | 当前主线以此三轴推进 |
-| `CTF2-004` | DOING | 固化同一路径下 `device` vs `queue_scope` 的 snapshot 对照流程，确保同轮保留 trace、launch diagnostics、source summary 与 compare 入口 | 下一步默认从这里开始 |
-| `CTF2-005` | TODO | 建立 hollow encoder 槽位的结构化对照口径，回答“固定空壳 encoder 是否跨 target 同构” | 默认使用 Xcode dump + `collect_cbs.py` |
+| `CTF2-004` | DONE | 已把 runtime launch diagnostics 固化进 `snapshot_capture_run.py`，并新增 `capture_target_compare_runner.py` 标准化同轮 `device` vs `queue_scope` 的双 snapshot + compare 报告流程 | 默认对照入口已就位 |
+| `CTF2-005` | DOING | 建立 hollow encoder 槽位的结构化对照口径，回答“固定空壳 encoder 是否跨 target 同构” | 默认使用 Xcode dump + `collect_cbs.py` |
 | `CTF2-006` | TODO | 判断 queue ranking 是否仍缺少足够接近 command-buffer activity 的证据，并决定是否拆出 queue-activity 子任务 | 若 target 对照收益持续很小，则其优先级上升 |
 | `CTF2-007` | TODO | 判断 preload timing 是否仍与残缺程度相关，并决定是否拆出 timing 子任务 | 结合 launch diagnostics 与 snapshot 对照 |
 | `CTF2-008` | TODO | 若 target / queue / timing 都不能解释残缺，再重新评估是否需要把 replacement side 或其它观测口径拉回主线 | 当前明确不是默认优先项 |
@@ -122,6 +124,7 @@
 - `LocalDocs/XCodeOperation/README.md`：Xcode GPU 自动化入口、`xcode_gpu_ops.py` / `collect_cbs.py` 的使用前提与能力边界；需要做 Xcode 结构化验证时必须读取。
 - `Scripts/check_gputrace_sources.py`：当前 source attribution / coverage 检查入口。
 - `Scripts/snapshot_capture_run.py`：固化单轮 capture run 证据包的标准入口；后续若把 snapshot 对照流程固定下来，应优先引用它。
+- `Scripts/capture_target_compare_runner.py`：CTF2-004 的标准对照入口；用于同轮固化 `device` vs `queue_scope` 双 snapshot，并直接生成 compare 报告。
 - `Scripts/compare_capture_runs.py`：两轮 snapshot 的细粒度比较入口。
 - `Scripts/analyze_capture_run_matrix.py`：多轮 snapshot 的矩阵对照入口。
 - `Scripts/runtime_launch_diagnostics_summary.py`：launch / preload timing / bridge 结构化摘要入口。

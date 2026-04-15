@@ -24,14 +24,14 @@
 
 ## 主线任务
 
-- **当前最新进展**：`CTF2-006` 已完成第一轮收敛：基于 `ctf2-005-hollow-encoder-first-20260415b` 正式报告、`queue` / `queue_scope` 两份 snapshot meta、两份 `gputrace-source-summary.json`、两份 `cb_data.json`、两份 `navigator_api_call.json`，以及 `MetalCaptureService.swift` 当前 queue ranking 实现，已经可以把“是否还需要继续怀疑现有 queue ranking 证据不足”收敛为**需要**。当前证据链已经足以说明：现有 ranking 仍主要建立在 discovered queue 的代理特征上（`discoveryCount`、最近观察时间、`Capture*` 类名加权、label 存在性），而不是 command-buffer activity；与此同时，`queue` / `queue_scope` 在当前主样本中仍同时落到 empty-capture 分支，尚未提供可稳定 replay 的反证样本。
-- **当前主判断**：当前主问题已经从“queue ranking 要不要继续沿 discovery-side 轻量打分迭代”收敛成“必须补一层更贴近 command-buffer activity 的 queue 证据”。在当前主样本里，`queue` 与 `queue_scope` 虽然在 source summary 上与 `device` / `scope` 保持近似覆盖，且 `queue_scope` 仍可能有轻微引用改善，但这类 source attribution 改善并没有转化成可 replay 的 command buffer / render encoder 结构；因此当前更合理的解释是 **现有 queue ranking 仍停留在 discovery-side 代理证据，尚不足以证明命中的 queue 更接近真实渲染路径**。
-- **当前关键缺口**：当前缺的已经不是更多 target 边界对照，而是**能把 tracked queue 与后续 command-buffer / render-encoder activity 关联起来的证据层**。换句话说，target 边界问题已可单独解释；queue 这条线当前缺的是 activity-grade evidence，而不是再多一轮仅看 source summary 或 discovered queue 元数据的对照。
-- **当前 blocker**：仓库现有脚本虽然已经能稳定产出 launch diagnostics、source attribution、`cb_data.json`、`key_pass_details.json` 与 hollow encoder 对照，但还没有任何现成入口能把这些结构化产物直接回绑到某个 tracked queue 的提交活跃度上。因此在补出 queue-activity 证据前，默认不能再把当前 ranking 结果当成“更接近真实主渲染 queue”的闭环证据。
+- **当前最新进展**：`CTF2-011` 已完成第一轮实现收敛：当前已明确选择 **runtime 侧** 作为 queue-activity 证据层，而不是先在离线 `cb_data.json` / `key_pass_details.json` 上硬推 activity proxy。`MetalCaptureService.swift` 已补入轻量 per-queue activity 采样：在 tracked queue 发现后继续记录 command-buffer creation / commit 次数、最近 activity 时间、最近 command-buffer class，并通过 `get_capture_status` 暴露 `most_active_command_queue_*` 与 `tracked_command_queues` 结构化快照；与此同时，`snapshot_capture_run.py` 已支持把单轮 `get_capture_status` JSON 一并固化进 snapshot，形成可复用的 queue-activity 证据包入口。
+- **当前主判断**：`CTF2-011` 的关键决策已经从“runtime 还是离线更适合补 queue-activity evidence”收敛为 **应先以 runtime-side activity 为主证据层，离线结构化分析只继续承担 hollow encoder / source attribution / CB 结构对照**。原因是当前离线产物仍缺少能稳定回绑某个 tracked queue 的主键，而 runtime 侧已经天然掌握 tracked queue 生命周期与 command-buffer 提交活动，能以更小 diff 产出直接证据。
+- **当前关键缺口**：当前缺的已不再是 activity 计数本身，而是**用这层新 runtime evidence 去验证“当前 preferred queue 与 most-active queue 是否稳定一致，以及它们与 empty-capture 分支的关系”**。换句话说，证据层已落地，下一步应进入使用这层证据重新复核 ranking 是否真正更接近真实渲染路径。
+- **当前 blocker**：阻塞 `CTF2-011` 的“缺少标准入口把 tracked queue 与 activity 绑定起来”这一点已解除。当前剩余限制转为验证侧：若要回答 `queue` / `queue_scope` 为什么仍落到 empty-capture 分支，仍需要后续 fresh live 样本把新的 runtime queue-activity snapshot 与同轮 `.gputrace` / Xcode 结构化产物并排固化。
 - **下一步默认规划**：
   - 保留 `CTF2-010` 的当前结论：`scope` 多出的 `Command Buffer 29 / 9` 个槽位，应先按“capture 边界后移 / 多覆盖一个尾部 command buffer”处理；除非后续出现 overlap 内部结构分叉的新证据，否则不再把它当成未解释的主问题。
-  - 将 `CTF2-006` 按“现有 queue ranking 证据仍不足，需要拆出 queue-activity 子任务”收尾；除非后续出现新的 runtime-side activity 证据，否则不再把它当成未决判断题。
-  - 新的最高优先级改为补 queue-activity 证据层：优先判断应在 runtime 侧补轻量 per-queue activity 计数并 snapshot 固化，还是先在离线 `cb_data.json` / `key_pass_details.json` 侧补 activity proxy，并明确两者哪一层最接近当前主问题。
+  - 将 `CTF2-011` 按“runtime-side queue-activity 证据层已落地、snapshot 入口已可复用”收尾；除非后续发现 runtime 计数口径明显失真，否则不再回到“runtime vs 离线二选一”的判断题。
+  - 新的最高优先级改为利用这层新 evidence 复核 queue ranking：优先判断 `preferredTrackedCommandQueue()` 当前命中的 queue，是否持续等于 `most_active_command_queue_*` 所指向的 queue；若不一致，再决定 ranking 应如何吸收 activity 权重。
   - 继续把 `queue` 与 `queue_scope` 记为当前 empty-capture 分支；除非后续拿到新的 stable replay 证据，否则不要把它们重新并入 non-empty hollow encoder 对照。
   - 若 timing 证据显示 preload / startup 时序仍与尾部缺失程度相关，则拆出 preload timing 子任务单独推进。
   - 在结构化证据没有明显指向前，默认**不把 converter / replacement 主链重新拉回主线**。
@@ -69,7 +69,7 @@
 
 - `python3 Scripts/runtime_launch_diagnostics_summary.py --bundle-id com.papegames.lysk --limit 5 --json`
 - `python3 Scripts/check_gputrace_sources.py <trace.gputrace>`
-- `python3 Scripts/snapshot_capture_run.py --bundle-id <id> --label <label> --gputrace <trace.gputrace> --capture-target <target> --print-compare-path`
+- `python3 Scripts/snapshot_capture_run.py --bundle-id <id> --label <label> --gputrace <trace.gputrace> --capture-target <target> --capture-status-json <get_capture_status.json> --print-compare-path`
 - `python3 Scripts/capture_target_compare_runner.py finalize-pair --bundle-id <id> --pair-label <label> --device-gputrace <device.gputrace> --queue-scope-gputrace <queue_scope.gputrace>`
 - `python3 Scripts/capture_target_compare_runner.py compare-pair --bundle-id <id> --pair-label <label>`
 - `python3 Scripts/compare_capture_runs.py --run-a <snapshotA> --run-b <snapshotB>`
@@ -101,7 +101,8 @@
 | `CTF2-005` | DONE | 建立 hollow encoder 槽位的结构化对照口径，并产出首份 fresh live 报告 `ctf2-005-hollow-encoder-first-20260415b`；当前结论是 `device / scope` 的 overlap 槽位完全同构，`queue / queue_scope` 归入 empty-capture 分支 | 本轮已补齐四个 target 的 collection，并修正 empty 判定与百分比伪差异 |
 | `CTF2-010` | DONE | 解释 `scope` 相比 `device` 额外多出的 `Command Buffer 29 / 9` 个槽位：当前证据更支持 capture 边界后移 / 多覆盖一个尾部 command buffer，而不是 overlap 内部结构分叉 | 依据是 `261` 个 shared slots 完全同构、launch/source 摘要保持一致，且额外 `9` 个槽位全部集中在尾部新增的 `Command Buffer 29` |
 | `CTF2-006` | DONE | 已确认现有 queue ranking 仍主要依赖 discovery-side 代理特征，缺少 activity-grade evidence；已决定拆出 queue-activity 子任务继续推进 | 依据包括 `queue` / `queue_scope` 仍属 empty-capture 分支，以及 `MetalCaptureService.swift` 当前 ranking 尚未使用 command-buffer activity |
-| `CTF2-011` | TODO | 确定 queue-activity 证据应补在 runtime 侧还是离线结构化分析侧，并固化成可复用的标准入口 | 它接替 `CTF2-006` 成为当前新的最高优先级子任务 |
+| `CTF2-011` | DONE | 已确定 queue-activity 证据优先补在 runtime 侧，并已通过 `get_capture_status` + `snapshot_capture_run.py --capture-status-json` 固化成可复用入口 | 当前可直接把 per-queue creation / commit activity 与单轮 snapshot 绑定保存 |
+| `CTF2-012` | TODO | 使用新的 runtime queue-activity snapshot 复核当前 preferred queue 是否稳定等于 most-active queue，并据此决定 ranking 是否要吸收 activity 权重 | 它接替 `CTF2-011` 成为当前新的最高优先级子任务 |
 | `CTF2-007` | TODO | 判断 preload timing 是否仍与残缺程度相关，并决定是否拆出 timing 子任务 | 结合 launch diagnostics 与 snapshot 对照 |
 | `CTF2-008` | TODO | 若 target / queue / timing 都不能解释残缺，再重新评估是否需要把 replacement side 或其它观测口径拉回主线 | 当前明确不是默认优先项 |
 | `CTF2-009` | BLOCKED | 任何需要用户授权补设 Accessibility、手工登录 app、持续人工交互或工作区外动作的验证 | 触发时必须先获得用户确认 |
@@ -120,6 +121,8 @@
 - 若跨 target 对照里 `shared slots` 全部同构、`missing slots` 又只集中在尾部连续新增的一个 command buffer，那么应优先把它解释成 capture stop 边界 / 尾帧纳入窗口差异，而不是 overlap 内部结构分叉。
 - 当前 queue ranking 仍偏 discovery-side 代理证据；若缺少 command-buffer activity 级别证据，就不要过早断言“已命中主渲染 queue”。
 - source attribution 轻微改善并不能替代 queue-activity 证据；若 `queue` / `queue_scope` 仍拿不出可 replay 的 CB / RE 结构，就不要把 source summary 的小幅改善当成 ranking 已有效命中主渲染 queue。
+- 当前最值得长期保留的 queue-activity 证据，应优先来自 runtime 侧直接观察到的 tracked queue command-buffer creation / commit 活跃度；离线 `cb_data.json` / `key_pass_details.json` 更适合作为 replay 结构与 hollow encoder 对照，而不是单独承担 queue 归因主证据。
+- 若要把 queue-activity 证据带入后续对照，应优先把 `get_capture_status` 原始 JSON 与 `snapshot_capture_run.py --capture-status-json` 一起固化进单轮 snapshot；不要只在终端里留下口头摘要。
 - preload timing 的价值是缩小错过代理窗口的风险，不是天然保证所有 pre-existing Metal 对象都被完整纳入 capture。
 - 若对照样本没有被 snapshot 固化，后续很容易只剩口头结论，无法稳定比较 target / queue / timing 的收益。
 - 主文档只保留决策信息；长日志、单次 run 细节和大段命令输出应下沉到子文档或运行产物。

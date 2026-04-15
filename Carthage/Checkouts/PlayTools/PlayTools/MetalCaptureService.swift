@@ -34,7 +34,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         // RC-015: Log deep class info to diagnose GPUToolsCapture proxy wrapping
         if let obj = queue {
             let isaClass = NSStringFromClass(object_getClass(obj)!)
-            let typeClass = NSStringFromClass(type(of: obj) as! AnyClass)
+            let typeClass = NSStringFromClass(type(of: obj))
             let respondsToTraceStream = obj.responds(to: NSSelectorFromString("traceStream"))
             let classHierarchy = MetalCaptureService.classHierarchyString(of: obj)
             NSLog("[PlayTools] RC-015 newCommandQueue: isa=%@, type=%@, traceStream=%d, hierarchy=[%@]",
@@ -49,7 +49,7 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         // RC-015: Same deep diagnostics
         if let obj = queue {
             let isaClass = NSStringFromClass(object_getClass(obj)!)
-            let typeClass = NSStringFromClass(type(of: obj) as! AnyClass)
+            let typeClass = NSStringFromClass(type(of: obj))
             let respondsToTraceStream = obj.responds(to: NSSelectorFromString("traceStream"))
             let classHierarchy = MetalCaptureService.classHierarchyString(of: obj)
             NSLog("[PlayTools] RC-015 newCommandQueueWithMaxCount(%lu): isa=%@, type=%@, traceStream=%d, hierarchy=[%@]",
@@ -60,6 +60,31 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
             source: "newCommandQueueWithMaxCommandBufferCount(\(maxCommandBufferCount))"
         )
         return queue
+    }
+}
+
+private final class CommandQueueActivitySwizzles: NSObject {
+    @objc dynamic func pc_commandBuffer() -> AnyObject? {
+        let commandBuffer = self.pc_commandBuffer()
+        MetalCaptureService.shared.recordCreatedCommandBuffer(commandBuffer, queueCandidate: self, source: "commandBuffer")
+        return commandBuffer
+    }
+
+    @objc dynamic func pc_commandBufferWithUnretainedReferences() -> AnyObject? {
+        let commandBuffer = self.pc_commandBufferWithUnretainedReferences()
+        MetalCaptureService.shared.recordCreatedCommandBuffer(
+            commandBuffer,
+            queueCandidate: self,
+            source: "commandBufferWithUnretainedReferences"
+        )
+        return commandBuffer
+    }
+}
+
+private final class CommandBufferActivitySwizzles: NSObject {
+    @objc dynamic func pc_commit() {
+        self.pc_commit()
+        MetalCaptureService.shared.recordCommittedCommandBuffer(self)
     }
 }
 
@@ -100,6 +125,11 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         let firstSeenAt: Date
         var lastSeenAt: Date
         var discoveryCount: Int
+        var commandBufferCreationCount: Int
+        var commandBufferCommitCount: Int
+        var firstActivityAt: Date?
+        var lastActivityAt: Date?
+        var lastCommandBufferClassName: String?
 
         var rankingScore: Int {
             var score = discoveryCount * 10
@@ -114,6 +144,19 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
             return score
         }
 
+        var activityScore: Int {
+            var score = commandBufferCreationCount * 25
+            score += commandBufferCommitCount * 100
+            if let lastActivityAt {
+                let recencyMs = max(0, Int(Date().timeIntervalSince(lastActivityAt) * 1000.0))
+                score -= min(recencyMs / 100, 1_000)
+            }
+            if className.hasPrefix("Capture") {
+                score += 10
+            }
+            return score
+        }
+
         var summary: String {
             [
                 "class=\(className)",
@@ -123,6 +166,38 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
                 "discoveries=\(discoveryCount)",
                 "rankingScore=\(rankingScore)",
             ].joined(separator: ", ")
+        }
+
+        var activitySummary: String {
+            [
+                summary,
+                "commandBufferCreations=\(commandBufferCreationCount)",
+                "commandBufferCommits=\(commandBufferCommitCount)",
+                "activityScore=\(activityScore)",
+                "lastActivityAt=\(MetalCaptureService.describeOptionalDate(lastActivityAt))",
+                "lastCommandBufferClass=\(MetalCaptureService.describeOptionalString(lastCommandBufferClassName))",
+            ].joined(separator: ", ")
+        }
+
+        var statusDictionary: [String: Any] {
+            [
+                "source": source,
+                "class_name": className,
+                "label": label as Any,
+                "device_name": deviceName,
+                "first_seen_at": MetalCaptureService.iso8601String(firstSeenAt) as Any,
+                "last_seen_at": MetalCaptureService.iso8601String(lastSeenAt) as Any,
+                "discovery_count": discoveryCount,
+                "ranking_score": rankingScore,
+                "command_buffer_creation_count": commandBufferCreationCount,
+                "command_buffer_commit_count": commandBufferCommitCount,
+                "first_activity_at": MetalCaptureService.iso8601String(firstActivityAt) as Any,
+                "last_activity_at": MetalCaptureService.iso8601String(lastActivityAt) as Any,
+                "activity_score": activityScore,
+                "last_command_buffer_class_name": lastCommandBufferClassName as Any,
+                "summary": summary,
+                "activity_summary": activitySummary,
+            ]
         }
     }
 
@@ -150,6 +225,9 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
     private let trackedQueueLock = NSLock()
     private var trackedCommandQueues: [ObjectIdentifier: TrackedCommandQueue] = [:]
     private var trackedCommandQueueOrder: [ObjectIdentifier] = []
+    private let activitySwizzleLock = NSLock()
+    private var queueActivitySwizzledClasses: Set<ObjectIdentifier> = []
+    private var commandBufferCommitSwizzledClasses: Set<ObjectIdentifier> = []
     private var queueDiscoveryInstalled = false
 
     /// RC-013: Set to true when stopCapture recovered from SIGSEGV,
@@ -545,6 +623,25 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         recordTrackedCommandQueue(queue, source: source)
     }
 
+    fileprivate func recordCreatedCommandBuffer(_ candidate: AnyObject?, queueCandidate: AnyObject?, source: String) {
+        guard let commandBuffer = candidate as? MTLCommandBuffer else {
+            return
+        }
+        guard let queue = queueCandidate as? MTLCommandQueue else {
+            return
+        }
+        installCommandBufferCommitActivityIfNeeded(on: commandBuffer)
+        associateTrackedQueue(queue, with: commandBuffer)
+        recordTrackedCommandBufferCreation(commandBuffer, queue: queue, source: source)
+    }
+
+    fileprivate func recordCommittedCommandBuffer(_ candidate: AnyObject?) {
+        guard let commandBuffer = candidate as? MTLCommandBuffer else {
+            return
+        }
+        recordTrackedCommandBufferCommit(commandBuffer)
+    }
+
     private func invalidateStopTriggers() {
         displayLink?.invalidate()
         displayLink = nil
@@ -764,6 +861,8 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         let identifier = ObjectIdentifier(queue as AnyObject)
         let summary: String
 
+        installCommandQueueActivityIfNeeded(on: queue)
+
         trackedQueueLock.lock()
         if var existing = trackedCommandQueues[identifier] {
             existing.lastSeenAt = now
@@ -781,7 +880,12 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
                 deviceName: queue.device.name,
                 firstSeenAt: now,
                 lastSeenAt: now,
-                discoveryCount: 1
+                discoveryCount: 1,
+                commandBufferCreationCount: 0,
+                commandBufferCommitCount: 0,
+                firstActivityAt: nil,
+                lastActivityAt: nil,
+                lastCommandBufferClassName: nil
             )
             trackedCommandQueues[identifier] = trackedQueue
             trackedCommandQueueOrder.append(identifier)
@@ -820,6 +924,42 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
             }
             return lhs.discoveryCount < rhs.discoveryCount
         }
+    }
+
+    private func mostActiveTrackedCommandQueue() -> TrackedCommandQueue? {
+        trackedQueueLock.lock()
+        defer { trackedQueueLock.unlock() }
+
+        let rankedQueues = trackedCommandQueueOrder.compactMap { trackedCommandQueues[$0] }
+        return rankedQueues.max { lhs, rhs in
+            if lhs.activityScore != rhs.activityScore {
+                return lhs.activityScore < rhs.activityScore
+            }
+            let lhsActivity = lhs.lastActivityAt ?? lhs.lastSeenAt
+            let rhsActivity = rhs.lastActivityAt ?? rhs.lastSeenAt
+            if lhsActivity != rhsActivity {
+                return lhsActivity < rhsActivity
+            }
+            return lhs.commandBufferCommitCount < rhs.commandBufferCommitCount
+        }
+    }
+
+    private func trackedQueueStatusDictionaries() -> [[String: Any]] {
+        trackedQueueLock.lock()
+        defer { trackedQueueLock.unlock() }
+
+        return trackedCommandQueueOrder
+            .compactMap { trackedCommandQueues[$0] }
+            .sorted { lhs, rhs in
+                if lhs.activityScore != rhs.activityScore {
+                    return lhs.activityScore > rhs.activityScore
+                }
+                if lhs.rankingScore != rhs.rankingScore {
+                    return lhs.rankingScore > rhs.rankingScore
+                }
+                return lhs.lastSeenAt > rhs.lastSeenAt
+            }
+            .map(\.statusDictionary)
     }
 
     private func latestTrackedCommandQueue() -> TrackedCommandQueue? {
@@ -862,8 +1002,10 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         let hasDefaultDevice = defaultDevice != nil
         let defaultDeviceName = defaultDevice?.name
         let defaultCaptureScope = state.captureManager?.defaultCaptureScope
-        let latestTrackedQueue = preferredTrackedCommandQueue()
+        let preferredTrackedQueue = preferredTrackedCommandQueue()
+        let mostActiveTrackedQueue = mostActiveTrackedCommandQueue()
         let trackedQueueCount = trackedCommandQueueCount()
+        let trackedQueueSnapshots = trackedQueueStatusDictionaries()
         let failureReason: String?
 
         if !enabled {
@@ -888,7 +1030,8 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
             "defaultDeviceName=\(Self.describeOptionalString(defaultDeviceName))",
             "queueDiscoveryInstalled=\(state.queueDiscoveryInstalled)",
             "trackedCommandQueues=\(trackedQueueCount)",
-            "latestTrackedQueue=\(Self.describeOptionalString(latestTrackedQueue?.summary))",
+            "preferredTrackedQueue=\(Self.describeOptionalString(preferredTrackedQueue?.summary))",
+            "mostActiveTrackedQueue=\(Self.describeOptionalString(mostActiveTrackedQueue?.activitySummary))",
             "defaultCaptureScopeLabel=\(Self.describeOptionalString(defaultCaptureScope?.label))",
             "lastCaptureWasEmptyTrace=\(state.lastCaptureWasEmptyTrace)",
             "failureReason=\(failureReason ?? "none")",
@@ -907,10 +1050,15 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
             diagnosticSummary: diagnosticSummary,
             queueDiscoveryInstalled: state.queueDiscoveryInstalled,
             trackedCommandQueueCount: trackedQueueCount,
-            latestCommandQueueLabel: latestTrackedQueue?.label,
-            latestCommandQueueDeviceName: latestTrackedQueue?.deviceName,
-            latestCommandQueueClassName: latestTrackedQueue?.className,
-            defaultCaptureScopeLabel: defaultCaptureScope?.label
+            latestCommandQueueLabel: preferredTrackedQueue?.label,
+            latestCommandQueueDeviceName: preferredTrackedQueue?.deviceName,
+            latestCommandQueueClassName: preferredTrackedQueue?.className,
+            defaultCaptureScopeLabel: defaultCaptureScope?.label,
+            mostActiveCommandQueueLabel: mostActiveTrackedQueue?.label,
+            mostActiveCommandQueueDeviceName: mostActiveTrackedQueue?.deviceName,
+            mostActiveCommandQueueClassName: mostActiveTrackedQueue?.className,
+            mostActiveCommandQueueSummary: mostActiveTrackedQueue?.activitySummary,
+            trackedCommandQueues: trackedQueueSnapshots as NSArray
         )
     }
 
@@ -952,6 +1100,140 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         value ?? "nil"
     }
 
+    private static let iso8601Formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static func iso8601String(_ value: Date?) -> String? {
+        guard let value else { return nil }
+        return iso8601Formatter.string(from: value)
+    }
+
+    private static func describeOptionalDate(_ value: Date?) -> String {
+        iso8601String(value) ?? "nil"
+    }
+
+    private static var trackedQueueAssociationKey: UInt8 = 0
+
+    private func associateTrackedQueue(_ queue: MTLCommandQueue, with commandBuffer: MTLCommandBuffer) {
+        objc_setAssociatedObject(
+            commandBuffer as AnyObject,
+            &Self.trackedQueueAssociationKey,
+            queue,
+            .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+        )
+    }
+
+    private func trackedQueue(for commandBuffer: MTLCommandBuffer) -> MTLCommandQueue? {
+        objc_getAssociatedObject(commandBuffer as AnyObject, &Self.trackedQueueAssociationKey) as? MTLCommandQueue
+    }
+
+    private func installCommandQueueActivityIfNeeded(on queue: MTLCommandQueue) {
+        let queueClass: AnyClass = object_getClass(queue) ?? NSClassFromString(NSStringFromClass(type(of: queue)))!
+        let classIdentifier = ObjectIdentifier(queueClass)
+
+        activitySwizzleLock.lock()
+        let alreadyInstalled = queueActivitySwizzledClasses.contains(classIdentifier)
+        if !alreadyInstalled {
+            queueActivitySwizzledClasses.insert(classIdentifier)
+        }
+        activitySwizzleLock.unlock()
+
+        guard !alreadyInstalled else { return }
+
+        let installedCommandBuffer = swizzleInstanceMethod(
+            on: queueClass,
+            original: NSSelectorFromString("commandBuffer"),
+            swizzled: #selector(CommandQueueActivitySwizzles.pc_commandBuffer)
+        )
+        let installedCommandBufferWithUnretainedReferences = swizzleInstanceMethod(
+            on: queueClass,
+            original: NSSelectorFromString("commandBufferWithUnretainedReferences"),
+            swizzled: #selector(CommandQueueActivitySwizzles.pc_commandBufferWithUnretainedReferences)
+        )
+
+        logStatusProbe(
+            "queue activity swizzle install finished. queueClass=\(NSStringFromClass(queueClass)), commandBuffer=\(installedCommandBuffer), commandBufferWithUnretainedReferences=\(installedCommandBufferWithUnretainedReferences)"
+        )
+    }
+
+    private func installCommandBufferCommitActivityIfNeeded(on commandBuffer: MTLCommandBuffer) {
+        let commandBufferClass: AnyClass = object_getClass(commandBuffer) ?? NSClassFromString(NSStringFromClass(type(of: commandBuffer)))!
+        let classIdentifier = ObjectIdentifier(commandBufferClass)
+
+        activitySwizzleLock.lock()
+        let alreadyInstalled = commandBufferCommitSwizzledClasses.contains(classIdentifier)
+        if !alreadyInstalled {
+            commandBufferCommitSwizzledClasses.insert(classIdentifier)
+        }
+        activitySwizzleLock.unlock()
+
+        guard !alreadyInstalled else { return }
+
+        let installedCommit = swizzleInstanceMethod(
+            on: commandBufferClass,
+            original: NSSelectorFromString("commit"),
+            swizzled: #selector(CommandBufferActivitySwizzles.pc_commit)
+        )
+        logStatusProbe(
+            "command buffer activity swizzle install finished. commandBufferClass=\(NSStringFromClass(commandBufferClass)), commit=\(installedCommit)"
+        )
+    }
+
+    private func recordTrackedCommandBufferCreation(_ commandBuffer: MTLCommandBuffer, queue: MTLCommandQueue, source: String) {
+        let now = Date()
+        let identifier = ObjectIdentifier(queue as AnyObject)
+        let summary: String?
+
+        trackedQueueLock.lock()
+        if var trackedQueue = trackedCommandQueues[identifier] {
+            trackedQueue.commandBufferCreationCount += 1
+            trackedQueue.lastCommandBufferClassName = NSStringFromClass(type(of: commandBuffer))
+            if trackedQueue.firstActivityAt == nil {
+                trackedQueue.firstActivityAt = now
+            }
+            trackedQueue.lastActivityAt = now
+            trackedCommandQueues[identifier] = trackedQueue
+            summary = trackedQueue.activitySummary
+        } else {
+            summary = nil
+        }
+        trackedQueueLock.unlock()
+
+        if let summary {
+            logStatusProbe("tracked command buffer creation from \(source). \(summary)")
+        }
+    }
+
+    private func recordTrackedCommandBufferCommit(_ commandBuffer: MTLCommandBuffer) {
+        guard let queue = trackedQueue(for: commandBuffer) else { return }
+
+        let now = Date()
+        let identifier = ObjectIdentifier(queue as AnyObject)
+        let summary: String?
+
+        trackedQueueLock.lock()
+        if var trackedQueue = trackedCommandQueues[identifier] {
+            trackedQueue.commandBufferCommitCount += 1
+            trackedQueue.lastCommandBufferClassName = NSStringFromClass(type(of: commandBuffer))
+            if trackedQueue.firstActivityAt == nil {
+                trackedQueue.firstActivityAt = now
+            }
+            trackedQueue.lastActivityAt = now
+            trackedCommandQueues[identifier] = trackedQueue
+            summary = trackedQueue.activitySummary
+        } else {
+            summary = nil
+        }
+        trackedQueueLock.unlock()
+
+        if let summary {
+            logStatusProbe("tracked command buffer commit observed. \(summary)")
+        }
+    }
+
     // MARK: - RC-015: Deep diagnostics for GPUToolsCapture proxy investigation
 
     /// Walk the class hierarchy of an object and return as a string "ClassName -> SuperClass -> ..."
@@ -978,8 +1260,8 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         let impMaxAddr = methodMax.map { unsafeBitCast(method_getImplementation($0), to: UInt.self) } ?? 0
 
         // Check if CaptureMTLCommandQueue class exists (indicates GPUToolsCapture loaded)
-        let captureQueueClass = NSClassFromString("CaptureMTLCommandQueue")
-        let captureDeviceClass = NSClassFromString("CaptureMTLDevice")
+        let captureQueueClass: AnyClass? = NSClassFromString("CaptureMTLCommandQueue")
+        let captureDeviceClass: AnyClass? = NSClassFromString("CaptureMTLDevice")
         let gpuToolsCaptureLoaded = captureQueueClass != nil
 
         // Check the device's class hierarchy
@@ -1099,6 +1381,11 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
     @objc public let latestCommandQueueDeviceName: String?
     @objc public let latestCommandQueueClassName: String?
     @objc public let defaultCaptureScopeLabel: String?
+    @objc public let mostActiveCommandQueueLabel: String?
+    @objc public let mostActiveCommandQueueDeviceName: String?
+    @objc public let mostActiveCommandQueueClassName: String?
+    @objc public let mostActiveCommandQueueSummary: String?
+    @objc public let trackedCommandQueues: NSArray
 
     @objc public init(
         available: Bool,
@@ -1115,7 +1402,12 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         latestCommandQueueLabel: String?,
         latestCommandQueueDeviceName: String?,
         latestCommandQueueClassName: String?,
-        defaultCaptureScopeLabel: String?
+        defaultCaptureScopeLabel: String?,
+        mostActiveCommandQueueLabel: String?,
+        mostActiveCommandQueueDeviceName: String?,
+        mostActiveCommandQueueClassName: String?,
+        mostActiveCommandQueueSummary: String?,
+        trackedCommandQueues: NSArray
     ) {
         self.available = available
         self.supportsGPUTrace = supportsGPUTrace
@@ -1132,5 +1424,10 @@ private final class CommandQueueDiscoverySwizzles: NSObject {
         self.latestCommandQueueDeviceName = latestCommandQueueDeviceName
         self.latestCommandQueueClassName = latestCommandQueueClassName
         self.defaultCaptureScopeLabel = defaultCaptureScopeLabel
+        self.mostActiveCommandQueueLabel = mostActiveCommandQueueLabel
+        self.mostActiveCommandQueueDeviceName = mostActiveCommandQueueDeviceName
+        self.mostActiveCommandQueueClassName = mostActiveCommandQueueClassName
+        self.mostActiveCommandQueueSummary = mostActiveCommandQueueSummary
+        self.trackedCommandQueues = trackedCommandQueues
     }
 }

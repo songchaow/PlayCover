@@ -1048,6 +1048,21 @@ final class BridgeListener {
             if let defaultCaptureScopeLabel = status.defaultCaptureScopeLabel {
                 result["default_capture_scope_label"] = defaultCaptureScopeLabel
             }
+            if let mostActiveCommandQueueLabel = status.mostActiveCommandQueueLabel {
+                result["most_active_command_queue_label"] = mostActiveCommandQueueLabel
+            }
+            if let mostActiveCommandQueueDeviceName = status.mostActiveCommandQueueDeviceName {
+                result["most_active_command_queue_device_name"] = mostActiveCommandQueueDeviceName
+            }
+            if let mostActiveCommandQueueClassName = status.mostActiveCommandQueueClassName {
+                result["most_active_command_queue_class_name"] = mostActiveCommandQueueClassName
+            }
+            if let mostActiveCommandQueueSummary = status.mostActiveCommandQueueSummary {
+                result["most_active_command_queue_summary"] = mostActiveCommandQueueSummary
+            }
+            if status.trackedCommandQueues.count > 0 {
+                result["tracked_command_queues"] = status.trackedCommandQueues
+            }
             return ("ok", result)
 
         default:

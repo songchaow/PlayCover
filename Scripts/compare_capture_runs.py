@@ -570,6 +570,7 @@ def build_snapshot_context(run_input: RunInput, meta: dict[str, Any] | None) -> 
         "label": meta.get("label"),
         "captureTarget": meta.get("captureTarget"),
         "replacementMode": meta.get("replacementMode"),
+        "launchDiagnostics": meta.get("launchDiagnostics") if isinstance(meta.get("launchDiagnostics"), dict) else {},
         "gputraceSummary": gputrace_summary,
         "gputraceAttribution": gputrace_attribution,
         "visibleMSLHashes": visible_msl_hashes,
@@ -610,6 +611,42 @@ def compare_snapshot_context(run_a: RunInput, meta_a: dict[str, Any] | None, run
         "replacementMode.enabled",
         (context_a.get("replacementMode") or {}).get("enabled"),
         (context_b.get("replacementMode") or {}).get("enabled"),
+        differences,
+    )
+    compare_values(
+        "launchDiagnostics.summaryCount",
+        (context_a.get("launchDiagnostics") or {}).get("summaryCount"),
+        (context_b.get("launchDiagnostics") or {}).get("summaryCount"),
+        differences,
+    )
+    compare_values(
+        "launchDiagnostics.latestLastEvent",
+        (context_a.get("launchDiagnostics") or {}).get("latestLastEvent"),
+        (context_b.get("launchDiagnostics") or {}).get("latestLastEvent"),
+        differences,
+    )
+    compare_values(
+        "launchDiagnostics.latestLaunchSettings",
+        (context_a.get("launchDiagnostics") or {}).get("latestLaunchSettings"),
+        (context_b.get("launchDiagnostics") or {}).get("latestLaunchSettings"),
+        differences,
+    )
+    compare_values(
+        "launchDiagnostics.latestReachedStages",
+        (context_a.get("launchDiagnostics") or {}).get("latestReachedStages"),
+        (context_b.get("launchDiagnostics") or {}).get("latestReachedStages"),
+        differences,
+    )
+    compare_values(
+        "launchDiagnostics.latestMissingStages",
+        (context_a.get("launchDiagnostics") or {}).get("latestMissingStages"),
+        (context_b.get("launchDiagnostics") or {}).get("latestMissingStages"),
+        differences,
+    )
+    compare_values(
+        "launchDiagnostics.latestReplacementCounts",
+        (context_a.get("launchDiagnostics") or {}).get("latestReplacementCounts"),
+        (context_b.get("launchDiagnostics") or {}).get("latestReplacementCounts"),
         differences,
     )
     compare_values(
@@ -945,6 +982,16 @@ def print_summary(report: dict[str, Any]) -> None:
         capture_target_b = context_b.get("captureTarget") or "unspecified"
         if capture_target_a != "unspecified" or capture_target_b != "unspecified":
             print(f"capture target: runA={capture_target_a} runB={capture_target_b}")
+        launch_diagnostics_a = context_a.get("launchDiagnostics") or {}
+        launch_diagnostics_b = context_b.get("launchDiagnostics") or {}
+        if launch_diagnostics_a or launch_diagnostics_b:
+            print(
+                "launch diagnostics: "
+                f"runA={launch_diagnostics_a.get('summaryCount', 0)} summaries"
+                f"/{launch_diagnostics_a.get('latestLastEvent') or 'n/a'} "
+                f"runB={launch_diagnostics_b.get('summaryCount', 0)} summaries"
+                f"/{launch_diagnostics_b.get('latestLastEvent') or 'n/a'}"
+            )
         attributed_a = context_a.get("attributedVisibleMSLHashes", [])
         attributed_b = context_b.get("attributedVisibleMSLHashes", [])
         referenced_a = context_a.get("referencedValidMSLHashes", [])

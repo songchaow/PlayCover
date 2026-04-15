@@ -21,12 +21,25 @@ import argparse
 import json
 import plistlib
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
 from gputrace_attribution import build_gputrace_attribution
 from gputrace_sources import inspect_gputrace_dir
+from runtime_launch_diagnostics_summary import (
+    DEFAULT_ROOT as DEFAULT_RUNTIME_LAUNCH_DIAGNOSTICS_ROOT,
+    KEY_STAGE_ORDER,
+    aggregate_replacement_hotspots,
+    build_summary,
+    read_events,
+    read_manifest_entries,
+)
 
 
 DEFAULT_CONTAINER = Path.home() / "Library/Containers/io.playcover.PlayCover"
@@ -72,6 +85,22 @@ def parse_args() -> argparse.Namespace:
         "--capture-target",
         choices=("device", "scope", "queue", "queue_scope"),
         help="optional capture target metadata for this run snapshot",
+    )
+    parser.add_argument(
+        "--diagnostics-root",
+        default=str(DEFAULT_RUNTIME_LAUNCH_DIAGNOSTICS_ROOT),
+        help="RuntimeLaunchDiagnostics root (default: ~/Library/Containers/io.playcover.PlayCover/RuntimeLaunchDiagnostics)",
+    )
+    parser.add_argument(
+        "--launch-summary-limit",
+        type=int,
+        default=5,
+        help="how many recent processLaunchId groups to preserve in the snapshot (default: 5)",
+    )
+    parser.add_argument(
+        "--skip-launch-diagnostics",
+        action="store_true",
+        help="do not copy launch-events.jsonl or compute runtime launch diagnostics summaries",
     )
     return parser.parse_args()
 
@@ -121,14 +150,53 @@ def copy_optional_directory(source: Path, destination: Path) -> bool:
     return True
 
 
+def build_launch_summary_lines(bundle_id: str, summaries: list[dict[str, Any]]) -> list[str]:
+    lines = [f"bundleId: {bundle_id}"]
+    if not summaries:
+        lines.append("no launch diagnostics events found")
+        return lines
+
+    for index, summary in enumerate(summaries, start=1):
+        lines.append("")
+        lines.append(f"[{index}] processLaunchId={summary.get('processLaunchId')}")
+        lines.append(
+            f"  lastEvent={summary.get('lastEvent')} eventCount={summary.get('eventCount')} pid={summary.get('pid')}"
+        )
+        lines.append(f"  first={summary.get('firstTimestamp')}")
+        lines.append(f"  last ={summary.get('lastTimestamp')}")
+        reached = [name for name in KEY_STAGE_ORDER if summary.get("stages", {}).get(name)]
+        missing = [name for name in KEY_STAGE_ORDER if not summary.get("stages", {}).get(name)]
+        lines.append(f"  reachedStages={', '.join(reached) if reached else '(none)'}")
+        if missing:
+            lines.append(f"  missingStages={', '.join(missing)}")
+
+        launch_settings = summary.get("launchSettings") or {}
+        if launch_settings:
+            rendered_settings = ", ".join(
+                f"{key}={value}" for key, value in sorted(launch_settings.items())
+            )
+            lines.append(f"  launchSettings={rendered_settings}")
+
+        replacement_counts = (summary.get("replacement") or {}).get("counts") or {}
+        if replacement_counts:
+            rendered_counts = ", ".join(
+                f"{key}={value}" for key, value in sorted(replacement_counts.items())
+            )
+            lines.append(f"  replacementCounts={rendered_counts}")
+
+    return lines
+
+
 def main() -> int:
     args = parse_args()
     container = Path(args.container).expanduser().resolve()
     output_root = Path(args.output_root).expanduser().resolve()
+    diagnostics_root = Path(args.diagnostics_root).expanduser().resolve()
 
     corpus_bundle_dir = container / "ShaderCorpus" / args.bundle_id
     diagnostics_bundle_dir = container / "ShaderSourceDiagnostics" / args.bundle_id
     settings_path = container / "App Settings" / f"{args.bundle_id}.plist"
+    launch_events_path = diagnostics_root / args.bundle_id / "launch-events.jsonl"
 
     manifest_path = corpus_bundle_dir / "manifest.jsonl"
     modules_dir = corpus_bundle_dir / "modules"
@@ -157,6 +225,49 @@ def main() -> int:
         diagnostics_copied = copy_optional_directory(diagnostics_bundle_dir, snapshot_bundle_dir / "diagnostics")
     if settings_payload is not None:
         copy_required_file(settings_path, snapshot_bundle_dir / "app-settings" / settings_path.name)
+
+    launch_events_copied = False
+    launch_events: list[dict[str, Any]] = []
+    launch_summaries: list[dict[str, Any]] = []
+    launch_summary_text_path = None
+    launch_summary_json_path = None
+    replacement_hotspots: dict[str, Any] = {
+        "failureClusterCount": 0,
+        "failureClusters": [],
+        "failureSurfaceCount": 0,
+        "failureSurfaces": [],
+    }
+    if not args.skip_launch_diagnostics:
+        launch_events = read_events(launch_events_path)
+        manifest_entries = read_manifest_entries(manifest_path)
+        launch_summaries = build_summary(launch_events, max(args.launch_summary_limit, 1), manifest_entries)
+        replacement_hotspots = aggregate_replacement_hotspots(launch_summaries)
+        if launch_events_path.is_file():
+            launch_events_relative_path = Path("runtime-launch-diagnostics") / "launch-events.jsonl"
+            copy_required_file(launch_events_path, snapshot_bundle_dir / launch_events_relative_path)
+            launch_events_copied = True
+        launch_summary_json_path = Path("runtime-launch-diagnostics") / "launch-summary.json"
+        (snapshot_bundle_dir / launch_summary_json_path).parent.mkdir(parents=True, exist_ok=True)
+        (snapshot_bundle_dir / launch_summary_json_path).write_text(
+            json.dumps(
+                {
+                    "bundleId": args.bundle_id,
+                    "summaryCount": len(launch_summaries),
+                    "runs": launch_summaries,
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        launch_summary_text_path = Path("runtime-launch-diagnostics") / "launch-summary.txt"
+        (snapshot_bundle_dir / launch_summary_text_path).write_text(
+            "\n".join(build_launch_summary_lines(args.bundle_id, launch_summaries)) + "\n",
+            encoding="utf-8",
+        )
+
     gputrace_relative_path = None
     gputrace_attribution = None
     if gputrace_path is not None:
@@ -175,6 +286,7 @@ def main() -> int:
                 encoding="utf-8",
             )
 
+    latest_launch_summary = launch_summaries[0] if launch_summaries else None
     snapshot_meta = {
         "schemaVersion": 3,
         "capturedAt": datetime.now(timezone.utc).isoformat(),
@@ -195,6 +307,9 @@ def main() -> int:
             "replacementsPath": "replacements" if replacements_copied else None,
             "diagnosticsPath": "diagnostics" if diagnostics_copied else None,
             "settingsPath": f"app-settings/{settings_path.name}" if settings_payload is not None else None,
+            "launchEventsPath": "runtime-launch-diagnostics/launch-events.jsonl" if launch_events_copied else None,
+            "launchSummaryJsonPath": str(launch_summary_json_path) if launch_summary_json_path is not None else None,
+            "launchSummaryTextPath": str(launch_summary_text_path) if launch_summary_text_path is not None else None,
             "gputracePath": gputrace_relative_path,
             "gputraceSourceSummaryPath": "gputrace-source-summary.json" if gputrace_summary is not None else None,
             "gputraceAttributionIndexPath": "gputrace-attribution-index.json" if gputrace_attribution is not None else None,
@@ -204,6 +319,25 @@ def main() -> int:
             "moduleDirectoryCount": count_child_directories(modules_dir),
             "replacementDirectoryCount": count_child_directories(replacements_dir),
             "diagnosticEntryCount": count_child_entries(diagnostics_bundle_dir),
+        },
+        "launchDiagnostics": {
+            "eventCount": len(launch_events),
+            "summaryCount": len(launch_summaries),
+            "processLaunchIds": [
+                summary.get("processLaunchId") for summary in launch_summaries if summary.get("processLaunchId")
+            ],
+            "latestLastEvent": latest_launch_summary.get("lastEvent") if latest_launch_summary else None,
+            "latestLaunchSettings": latest_launch_summary.get("launchSettings") if latest_launch_summary else {},
+            "latestReachedStages": [
+                stage for stage in KEY_STAGE_ORDER if latest_launch_summary and latest_launch_summary.get("stages", {}).get(stage)
+            ],
+            "latestMissingStages": [
+                stage for stage in KEY_STAGE_ORDER if not latest_launch_summary or not latest_launch_summary.get("stages", {}).get(stage)
+            ],
+            "latestFailureCount": len(latest_launch_summary.get("noteworthyFailures") or []) if latest_launch_summary else 0,
+            "latestReplacementCounts": (latest_launch_summary.get("replacement") or {}).get("counts", {}) if latest_launch_summary else {},
+            "aggregatedReplacementFailureClusterCount": replacement_hotspots.get("failureClusterCount", 0),
+            "aggregatedReplacementFailureSurfaceCount": replacement_hotspots.get("failureSurfaceCount", 0),
         },
         "gputraceSummary": gputrace_summary,
         "gputraceAttribution": {
@@ -227,6 +361,7 @@ def main() -> int:
         f"modules={snapshot_meta['sourceSummary']['moduleDirectoryCount']} "
         f"replacements={snapshot_meta['sourceSummary']['replacementDirectoryCount']} "
         f"diagnostics={snapshot_meta['sourceSummary']['diagnosticEntryCount']} "
+        f"launchSummaries={snapshot_meta['launchDiagnostics']['summaryCount']} "
         f"replacementEnabled={snapshot_meta['replacementMode']['enabled']} "
         f"captureTarget={snapshot_meta['captureTarget'] or 'unspecified'} "
         f"gputraceMSL={snapshot_meta['gputraceSummary']['validMSLFiles'] if snapshot_meta['gputraceSummary'] else 'n/a'}"

@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import plistlib
 import shutil
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -143,11 +145,69 @@ def copy_required_file(source: Path, destination: Path) -> None:
     shutil.copy2(source, destination)
 
 
-def copy_optional_directory(source: Path, destination: Path) -> bool:
+def copy_bundle_with_ditto(source: Path, destination: Path) -> None:
+    if not source.exists():
+        raise SystemExit(f"required bundle not found: {source}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    completed = subprocess.run(["ditto", str(source), str(destination)], check=False)
+    if completed.returncode != 0:
+        raise SystemExit(f"ditto failed while copying bundle: {source}")
+
+
+def copy_optional_directory(source: Path, destination: Path) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "source": str(source),
+        "destination": str(destination),
+        "exists": source.is_dir(),
+        "copied": False,
+        "copiedFileCount": 0,
+        "copiedDirectoryCount": 0,
+        "errorCount": 0,
+        "errors": [],
+    }
     if not source.is_dir():
-        return False
-    shutil.copytree(source, destination)
-    return True
+        return report
+
+    def record_error(path: Path, error: OSError) -> None:
+        report["errors"].append(
+            {
+                "path": str(path),
+                "error": str(error),
+                "errno": getattr(error, "errno", None),
+            }
+        )
+
+    destination.mkdir(parents=True, exist_ok=True)
+    for root, dirs, files in os.walk(source, topdown=True, onerror=lambda error: record_error(Path(error.filename or source), error)):
+        root_path = Path(root)
+        relative_root = root_path.relative_to(source)
+        destination_root = destination / relative_root
+        destination_root.mkdir(parents=True, exist_ok=True)
+
+        kept_dirs: list[str] = []
+        for dir_name in dirs:
+            source_dir = root_path / dir_name
+            destination_dir = destination_root / dir_name
+            try:
+                destination_dir.mkdir(parents=True, exist_ok=True)
+                report["copiedDirectoryCount"] += 1
+                kept_dirs.append(dir_name)
+            except OSError as error:
+                record_error(source_dir, error)
+        dirs[:] = kept_dirs
+
+        for file_name in files:
+            source_file = root_path / file_name
+            destination_file = destination_root / file_name
+            try:
+                shutil.copy2(source_file, destination_file)
+                report["copiedFileCount"] += 1
+            except OSError as error:
+                record_error(source_file, error)
+
+    report["errorCount"] = len(report["errors"])
+    report["copied"] = report["copiedFileCount"] > 0 or report["copiedDirectoryCount"] > 0
+    return report
 
 
 def build_launch_summary_lines(bundle_id: str, summaries: list[dict[str, Any]]) -> list[str]:
@@ -219,10 +279,14 @@ def main() -> int:
 
     copy_required_file(manifest_path, snapshot_bundle_dir / "manifest.jsonl")
     shutil.copytree(modules_dir, snapshot_bundle_dir / "modules")
-    replacements_copied = copy_optional_directory(replacements_dir, snapshot_bundle_dir / "replacements")
-    diagnostics_copied = False
+    replacements_copy_report = copy_optional_directory(replacements_dir, snapshot_bundle_dir / "replacements")
+    diagnostics_copy_report = {
+        "copied": False,
+        "errorCount": 0,
+        "errors": [],
+    }
     if not args.skip_diagnostics:
-        diagnostics_copied = copy_optional_directory(diagnostics_bundle_dir, snapshot_bundle_dir / "diagnostics")
+        diagnostics_copy_report = copy_optional_directory(diagnostics_bundle_dir, snapshot_bundle_dir / "diagnostics")
     if settings_payload is not None:
         copy_required_file(settings_path, snapshot_bundle_dir / "app-settings" / settings_path.name)
 
@@ -272,7 +336,7 @@ def main() -> int:
     gputrace_attribution = None
     if gputrace_path is not None:
         gputrace_relative_path = f"gputrace/{gputrace_path.name}"
-        shutil.copytree(gputrace_path, snapshot_bundle_dir / gputrace_relative_path)
+        copy_bundle_with_ditto(gputrace_path, snapshot_bundle_dir / gputrace_relative_path)
         gputrace_summary_path = snapshot_bundle_dir / "gputrace-source-summary.json"
         gputrace_summary_path.write_text(
             json.dumps(gputrace_summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -304,8 +368,8 @@ def main() -> int:
         "copiedArtifacts": {
             "manifestPath": "manifest.jsonl",
             "modulesPath": "modules",
-            "replacementsPath": "replacements" if replacements_copied else None,
-            "diagnosticsPath": "diagnostics" if diagnostics_copied else None,
+            "replacementsPath": "replacements" if replacements_copy_report["copied"] else None,
+            "diagnosticsPath": "diagnostics" if diagnostics_copy_report["copied"] else None,
             "settingsPath": f"app-settings/{settings_path.name}" if settings_payload is not None else None,
             "launchEventsPath": "runtime-launch-diagnostics/launch-events.jsonl" if launch_events_copied else None,
             "launchSummaryJsonPath": str(launch_summary_json_path) if launch_summary_json_path is not None else None,
@@ -319,6 +383,10 @@ def main() -> int:
             "moduleDirectoryCount": count_child_directories(modules_dir),
             "replacementDirectoryCount": count_child_directories(replacements_dir),
             "diagnosticEntryCount": count_child_entries(diagnostics_bundle_dir),
+        },
+        "optionalArtifactCopy": {
+            "replacements": replacements_copy_report,
+            "diagnostics": diagnostics_copy_report,
         },
         "launchDiagnostics": {
             "eventCount": len(launch_events),
@@ -362,6 +430,7 @@ def main() -> int:
         f"replacements={snapshot_meta['sourceSummary']['replacementDirectoryCount']} "
         f"diagnostics={snapshot_meta['sourceSummary']['diagnosticEntryCount']} "
         f"launchSummaries={snapshot_meta['launchDiagnostics']['summaryCount']} "
+        f"copyWarnings={snapshot_meta['optionalArtifactCopy']['replacements']['errorCount'] + snapshot_meta['optionalArtifactCopy']['diagnostics']['errorCount']} "
         f"replacementEnabled={snapshot_meta['replacementMode']['enabled']} "
         f"captureTarget={snapshot_meta['captureTarget'] or 'unspecified'} "
         f"gputraceMSL={snapshot_meta['gputraceSummary']['validMSLFiles'] if snapshot_meta['gputraceSummary'] else 'n/a'}"

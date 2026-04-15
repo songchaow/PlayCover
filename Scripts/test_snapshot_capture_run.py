@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import plistlib
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SNAPSHOT_SCRIPT = REPO_ROOT / "Scripts" / "snapshot_capture_run.py"
+SNAPSHOT_SPEC = importlib.util.spec_from_file_location("snapshot_capture_run", SNAPSHOT_SCRIPT)
+assert SNAPSHOT_SPEC is not None and SNAPSHOT_SPEC.loader is not None
+snapshot_capture_run = importlib.util.module_from_spec(SNAPSHOT_SPEC)
+SNAPSHOT_SPEC.loader.exec_module(snapshot_capture_run)
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -99,6 +105,22 @@ def make_gputrace(trace_dir: Path, visible_hash: str) -> None:
 
 
 class SnapshotCaptureRunTests(unittest.TestCase):
+    def test_copy_bundle_with_ditto_uses_ditto_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "trace.gputrace"
+            destination = root / "snapshot" / "trace.gputrace"
+            make_gputrace(source, "0123456789ABCDEF")
+
+            with mock.patch.object(snapshot_capture_run.subprocess, "run") as run_mock:
+                run_mock.return_value = subprocess.CompletedProcess(
+                    args=["ditto", str(source), str(destination)],
+                    returncode=0,
+                )
+                snapshot_capture_run.copy_bundle_with_ditto(source, destination)
+
+            run_mock.assert_called_once_with(["ditto", str(source), str(destination)], check=False)
+
     def test_snapshot_capture_run_preserves_launch_diagnostics_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

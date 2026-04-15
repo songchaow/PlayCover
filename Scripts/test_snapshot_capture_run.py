@@ -104,6 +104,56 @@ def make_gputrace(trace_dir: Path, visible_hash: str) -> None:
     (trace_dir / "index").write_text(f"{visible_hash}\n", encoding="utf-8")
 
 
+def make_capture_status(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "available": True,
+                "supports_gpu_trace": True,
+                "enabled": True,
+                "diagnostic_summary": "enabled=true, trackedCommandQueues=2",
+                "queue_discovery_installed": True,
+                "tracked_command_queue_count": 2,
+                "latest_command_queue_label": "queue.discovery",
+                "latest_command_queue_device_name": "Apple M4",
+                "latest_command_queue_class_name": "CaptureMTLCommandQueue",
+                "most_active_command_queue_label": "queue.render.main",
+                "most_active_command_queue_device_name": "Apple M4",
+                "most_active_command_queue_class_name": "CaptureMTLCommandQueue",
+                "most_active_command_queue_summary": "class=CaptureMTLCommandQueue, commits=9",
+                "tracked_command_queues": [
+                    {
+                        "label": "queue.render.main",
+                        "class_name": "CaptureMTLCommandQueue",
+                        "device_name": "Apple M4",
+                        "source": "newCommandQueue",
+                        "discovery_count": 3,
+                        "ranking_score": 60,
+                        "command_buffer_creation_count": 12,
+                        "command_buffer_commit_count": 9,
+                        "activity_score": 1210,
+                    },
+                    {
+                        "label": "queue.upload",
+                        "class_name": "CaptureMTLCommandQueue",
+                        "device_name": "Apple M4",
+                        "source": "newCommandQueue",
+                        "discovery_count": 1,
+                        "ranking_score": 25,
+                        "command_buffer_creation_count": 1,
+                        "command_buffer_commit_count": 1,
+                        "activity_score": 125,
+                    },
+                ],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 class SnapshotCaptureRunTests(unittest.TestCase):
     def test_copy_bundle_with_ditto_uses_ditto_command(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -129,10 +179,12 @@ class SnapshotCaptureRunTests(unittest.TestCase):
             output_root = root / "snapshots"
             bundle_id = "com.example.demo"
             trace_dir = root / "demo.gputrace"
+            capture_status_path = root / "capture-status.json"
 
             make_container(container_root, bundle_id)
             make_launch_events(diagnostics_root, bundle_id)
             make_gputrace(trace_dir, "0123456789ABCDEF")
+            make_capture_status(capture_status_path)
 
             subprocess.run(
                 [
@@ -152,6 +204,8 @@ class SnapshotCaptureRunTests(unittest.TestCase):
                     "device",
                     "--gputrace",
                     str(trace_dir),
+                    "--capture-status-json",
+                    str(capture_status_path),
                 ],
                 cwd=REPO_ROOT,
                 check=True,
@@ -171,11 +225,17 @@ class SnapshotCaptureRunTests(unittest.TestCase):
             self.assertEqual(meta["launchDiagnostics"]["processLaunchIds"], ["launch-1"])
             self.assertEqual(meta["launchDiagnostics"]["latestLastEvent"], "playcover_launch_complete")
             self.assertEqual(meta["launchDiagnostics"]["latestLaunchSettings"]["metalCaptureEnabled"], True)
+            self.assertEqual(meta["captureStatus"]["trackedCommandQueueCount"], 2)
+            self.assertEqual(meta["captureStatus"]["mostActiveCommandQueueLabel"], "queue.render.main")
+            self.assertEqual(len(meta["captureStatus"]["trackedCommandQueues"]), 2)
             self.assertEqual(meta["copiedArtifacts"]["launchEventsPath"], "runtime-launch-diagnostics/launch-events.jsonl")
             self.assertEqual(meta["copiedArtifacts"]["launchSummaryJsonPath"], "runtime-launch-diagnostics/launch-summary.json")
+            self.assertEqual(meta["copiedArtifacts"]["captureStatusPath"], "capture-status/get_capture_status.json")
+            self.assertEqual(meta["copiedArtifacts"]["captureStatusSummaryPath"], "capture-status/queue-activity-summary.txt")
             self.assertEqual(launch_summary["summaryCount"], 1)
             self.assertEqual(launch_summary["runs"][0]["processLaunchId"], "launch-1")
             self.assertTrue((snapshot_dir / "runtime-launch-diagnostics" / "launch-summary.txt").is_file())
+            self.assertTrue((snapshot_dir / "capture-status" / "queue-activity-summary.txt").is_file())
 
 
 if __name__ == "__main__":

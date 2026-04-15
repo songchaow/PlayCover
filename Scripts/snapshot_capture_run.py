@@ -104,6 +104,10 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="do not copy launch-events.jsonl or compute runtime launch diagnostics summaries",
     )
+    parser.add_argument(
+        "--capture-status-json",
+        help="optional get_capture_status JSON file to preserve alongside the snapshot",
+    )
     return parser.parse_args()
 
 
@@ -152,6 +156,63 @@ def copy_bundle_with_ditto(source: Path, destination: Path) -> None:
     completed = subprocess.run(["ditto", str(source), str(destination)], check=False)
     if completed.returncode != 0:
         raise SystemExit(f"ditto failed while copying bundle: {source}")
+
+
+def load_capture_status_payload(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    if not path.is_file():
+        raise SystemExit(f"capture status JSON not found: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise SystemExit(f"unexpected capture status JSON root type at {path}")
+    return payload
+
+
+def build_capture_status_summary_lines(payload: dict[str, Any]) -> list[str]:
+    lines = [
+        f"available: {payload.get('available')}",
+        f"supports_gpu_trace: {payload.get('supports_gpu_trace')}",
+        f"queue_discovery_installed: {payload.get('queue_discovery_installed')}",
+        f"tracked_command_queue_count: {payload.get('tracked_command_queue_count')}",
+        f"latest_command_queue_label: {payload.get('latest_command_queue_label') or 'nil'}",
+        f"most_active_command_queue_label: {payload.get('most_active_command_queue_label') or 'nil'}",
+        f"most_active_command_queue_summary: {payload.get('most_active_command_queue_summary') or 'nil'}",
+    ]
+    tracked_queues = payload.get("tracked_command_queues")
+    if isinstance(tracked_queues, list) and tracked_queues:
+        lines.append("")
+        lines.append("tracked_command_queues:")
+        for index, item in enumerate(tracked_queues, start=1):
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                f"  [{index}] label={item.get('label') or 'nil'} class={item.get('class_name') or 'nil'} "
+                f"discoveries={item.get('discovery_count')} creates={item.get('command_buffer_creation_count')} "
+                f"commits={item.get('command_buffer_commit_count')} activity_score={item.get('activity_score')}"
+            )
+    return lines
+
+
+def build_capture_status_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
+    tracked_queues = payload.get("tracked_command_queues")
+    normalized_tracked_queues = tracked_queues if isinstance(tracked_queues, list) else []
+    return {
+        "available": payload.get("available"),
+        "supportsGpuTrace": payload.get("supports_gpu_trace"),
+        "enabled": payload.get("enabled"),
+        "diagnosticSummary": payload.get("diagnostic_summary"),
+        "queueDiscoveryInstalled": payload.get("queue_discovery_installed"),
+        "trackedCommandQueueCount": payload.get("tracked_command_queue_count"),
+        "latestCommandQueueLabel": payload.get("latest_command_queue_label"),
+        "latestCommandQueueDeviceName": payload.get("latest_command_queue_device_name"),
+        "latestCommandQueueClassName": payload.get("latest_command_queue_class_name"),
+        "mostActiveCommandQueueLabel": payload.get("most_active_command_queue_label"),
+        "mostActiveCommandQueueDeviceName": payload.get("most_active_command_queue_device_name"),
+        "mostActiveCommandQueueClassName": payload.get("most_active_command_queue_class_name"),
+        "mostActiveCommandQueueSummary": payload.get("most_active_command_queue_summary"),
+        "trackedCommandQueues": normalized_tracked_queues,
+    }
 
 
 def copy_optional_directory(source: Path, destination: Path) -> dict[str, Any]:
@@ -276,6 +337,8 @@ def main() -> int:
     settings_payload = load_settings_payload(settings_path)
     gputrace_path = Path(args.gputrace).expanduser().resolve() if args.gputrace else None
     gputrace_summary = inspect_gputrace_dir(gputrace_path) if gputrace_path is not None else None
+    capture_status_path = Path(args.capture_status_json).expanduser().resolve() if args.capture_status_json else None
+    capture_status_payload = load_capture_status_payload(capture_status_path)
 
     copy_required_file(manifest_path, snapshot_bundle_dir / "manifest.jsonl")
     shutil.copytree(modules_dir, snapshot_bundle_dir / "modules")
@@ -289,6 +352,17 @@ def main() -> int:
         diagnostics_copy_report = copy_optional_directory(diagnostics_bundle_dir, snapshot_bundle_dir / "diagnostics")
     if settings_payload is not None:
         copy_required_file(settings_path, snapshot_bundle_dir / "app-settings" / settings_path.name)
+    capture_status_relative_path = None
+    capture_status_summary_path = None
+    if capture_status_payload is not None and capture_status_path is not None:
+        capture_status_relative_path = Path("capture-status") / "get_capture_status.json"
+        copy_required_file(capture_status_path, snapshot_bundle_dir / capture_status_relative_path)
+        capture_status_summary_path = Path("capture-status") / "queue-activity-summary.txt"
+        (snapshot_bundle_dir / capture_status_summary_path).parent.mkdir(parents=True, exist_ok=True)
+        (snapshot_bundle_dir / capture_status_summary_path).write_text(
+            "\n".join(build_capture_status_summary_lines(capture_status_payload)) + "\n",
+            encoding="utf-8",
+        )
 
     launch_events_copied = False
     launch_events: list[dict[str, Any]] = []
@@ -352,7 +426,7 @@ def main() -> int:
 
     latest_launch_summary = launch_summaries[0] if launch_summaries else None
     snapshot_meta = {
-        "schemaVersion": 3,
+        "schemaVersion": 4,
         "capturedAt": datetime.now(timezone.utc).isoformat(),
         "bundleId": args.bundle_id,
         "label": args.label,
@@ -371,6 +445,8 @@ def main() -> int:
             "replacementsPath": "replacements" if replacements_copy_report["copied"] else None,
             "diagnosticsPath": "diagnostics" if diagnostics_copy_report["copied"] else None,
             "settingsPath": f"app-settings/{settings_path.name}" if settings_payload is not None else None,
+            "captureStatusPath": str(capture_status_relative_path) if capture_status_relative_path is not None else None,
+            "captureStatusSummaryPath": str(capture_status_summary_path) if capture_status_summary_path is not None else None,
             "launchEventsPath": "runtime-launch-diagnostics/launch-events.jsonl" if launch_events_copied else None,
             "launchSummaryJsonPath": str(launch_summary_json_path) if launch_summary_json_path is not None else None,
             "launchSummaryTextPath": str(launch_summary_text_path) if launch_summary_text_path is not None else None,
@@ -407,6 +483,7 @@ def main() -> int:
             "aggregatedReplacementFailureClusterCount": replacement_hotspots.get("failureClusterCount", 0),
             "aggregatedReplacementFailureSurfaceCount": replacement_hotspots.get("failureSurfaceCount", 0),
         },
+        "captureStatus": build_capture_status_snapshot(capture_status_payload) if capture_status_payload is not None else None,
         "gputraceSummary": gputrace_summary,
         "gputraceAttribution": {
             "visibleMSLFileCount": gputrace_attribution.get("visibleMSLFileCount") if gputrace_attribution is not None else None,

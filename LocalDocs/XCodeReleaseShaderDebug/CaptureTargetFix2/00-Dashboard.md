@@ -24,14 +24,15 @@
 
 ## 主线任务
 
-- **当前最新进展**：`CTF2-010` 已完成第一轮收敛：基于 `ctf2-005-hollow-encoder-first-20260415b` 的正式报告、`device` / `scope` 两份 snapshot meta、两份 launch diagnostics、两份 source summary，以及对应的 `cb_data.json` / `navigator_api_call.json`，当前已经能把“`scope` 比 `device` 多出 `Command Buffer 29 / 9` 个槽位”解释成**capture 边界在 `scope` 上多覆盖了一整个尾部 command buffer**，而不是 overlap 内部发生了新的槽位结构分叉。证据链包括：`device` / `scope` 的前 `261` 个槽位在 `(commandBufferIndex, slotOrdinal)` 上完全同构，launch settings 与 source coverage 都保持一致，而 `scope` 额外多出的 `9` 个槽位全部集中在尾部新增的 `Command Buffer 29`，其中仍保留完整的 `Render Encoder 0..9` + `presentDrawable` 尾部形态。
-- **当前主判断**：当前主问题已经从“`scope` 为何多 `9` 个槽位”收敛成“capture target 会不会让 capture 结束边界略微后移”。在当前主样本里，`device` 与 `scope` 的差异不再像 queue 那样体现为 replay/empty 分叉，也不体现为 overlap 内部的 render/compute 结构变化，而是体现为 `scope` 在与 `device` 完全相同的前 `29` 个 command buffer 之后，额外保留了一个完整尾部 command buffer。结合两份 snapshot 的 launch diagnostics 与 source summary 基本一致，当前更合理的解释是 **target 影响了 capture stop 边界或尾帧纳入窗口**，而不是 preload timing 或 source attribution 在这一轮样本里主导了 `device` vs `scope` 的差异。
-- **当前关键缺口**：`CTF2-010` 解决后，当前更值得追的已经不再是 target 边界本身，而是 `queue` / `queue_scope` 为什么仍会一起落到 empty-capture 分支，以及现有 queue-ranking 证据是否足够接近 command-buffer activity。换句话说，target 边界问题在当前主样本里已经有了可操作解释，但 queue 这条线仍缺少可稳定 replay 的主样本来判断“命中的 queue 是否真的更接近真实渲染路径”。
-- **当前 blocker**：`queue` 这条分支当前无法再被当成稳定的 non-empty replay 样本；同时它的原始容器 trace 直接打开路径也没有立即给出更稳定的反证，因此在 `queue` 重新被证明可稳定 replay 之前，默认不能再把它当作 queue-ranking 证据主样本。
+- **当前最新进展**：`CTF2-006` 已完成第一轮收敛：基于 `ctf2-005-hollow-encoder-first-20260415b` 正式报告、`queue` / `queue_scope` 两份 snapshot meta、两份 `gputrace-source-summary.json`、两份 `cb_data.json`、两份 `navigator_api_call.json`，以及 `MetalCaptureService.swift` 当前 queue ranking 实现，已经可以把“是否还需要继续怀疑现有 queue ranking 证据不足”收敛为**需要**。当前证据链已经足以说明：现有 ranking 仍主要建立在 discovered queue 的代理特征上（`discoveryCount`、最近观察时间、`Capture*` 类名加权、label 存在性），而不是 command-buffer activity；与此同时，`queue` / `queue_scope` 在当前主样本中仍同时落到 empty-capture 分支，尚未提供可稳定 replay 的反证样本。
+- **当前主判断**：当前主问题已经从“queue ranking 要不要继续沿 discovery-side 轻量打分迭代”收敛成“必须补一层更贴近 command-buffer activity 的 queue 证据”。在当前主样本里，`queue` 与 `queue_scope` 虽然在 source summary 上与 `device` / `scope` 保持近似覆盖，且 `queue_scope` 仍可能有轻微引用改善，但这类 source attribution 改善并没有转化成可 replay 的 command buffer / render encoder 结构；因此当前更合理的解释是 **现有 queue ranking 仍停留在 discovery-side 代理证据，尚不足以证明命中的 queue 更接近真实渲染路径**。
+- **当前关键缺口**：当前缺的已经不是更多 target 边界对照，而是**能把 tracked queue 与后续 command-buffer / render-encoder activity 关联起来的证据层**。换句话说，target 边界问题已可单独解释；queue 这条线当前缺的是 activity-grade evidence，而不是再多一轮仅看 source summary 或 discovered queue 元数据的对照。
+- **当前 blocker**：仓库现有脚本虽然已经能稳定产出 launch diagnostics、source attribution、`cb_data.json`、`key_pass_details.json` 与 hollow encoder 对照，但还没有任何现成入口能把这些结构化产物直接回绑到某个 tracked queue 的提交活跃度上。因此在补出 queue-activity 证据前，默认不能再把当前 ranking 结果当成“更接近真实主渲染 queue”的闭环证据。
 - **下一步默认规划**：
   - 保留 `CTF2-010` 的当前结论：`scope` 多出的 `Command Buffer 29 / 9` 个槽位，应先按“capture 边界后移 / 多覆盖一个尾部 command buffer”处理；除非后续出现 overlap 内部结构分叉的新证据，否则不再把它当成未解释的主问题。
+  - 将 `CTF2-006` 按“现有 queue ranking 证据仍不足，需要拆出 queue-activity 子任务”收尾；除非后续出现新的 runtime-side activity 证据，否则不再把它当成未决判断题。
+  - 新的最高优先级改为补 queue-activity 证据层：优先判断应在 runtime 侧补轻量 per-queue activity 计数并 snapshot 固化，还是先在离线 `cb_data.json` / `key_pass_details.json` 侧补 activity proxy，并明确两者哪一层最接近当前主问题。
   - 继续把 `queue` 与 `queue_scope` 记为当前 empty-capture 分支；除非后续拿到新的 stable replay 证据，否则不要把它们重新并入 non-empty hollow encoder 对照。
-  - 既然 `device` / `scope` 的 missing-slot 已可用 target 边界解释且不改变核心 overlap 结构，默认把 queue ranking 升为下一优先级，并判断是否需要拆出更贴近 command-buffer activity 的 queue 证据子任务。
   - 若 timing 证据显示 preload / startup 时序仍与尾部缺失程度相关，则拆出 preload timing 子任务单独推进。
   - 在结构化证据没有明显指向前，默认**不把 converter / replacement 主链重新拉回主线**。
 
@@ -99,7 +100,8 @@
 | `CTF2-004` | DONE | 已把 runtime launch diagnostics 固化进 `snapshot_capture_run.py`，并新增 `capture_target_compare_runner.py` 标准化同轮 `device` vs `queue_scope` 的双 snapshot + compare 报告流程 | 默认对照入口已就位 |
 | `CTF2-005` | DONE | 建立 hollow encoder 槽位的结构化对照口径，并产出首份 fresh live 报告 `ctf2-005-hollow-encoder-first-20260415b`；当前结论是 `device / scope` 的 overlap 槽位完全同构，`queue / queue_scope` 归入 empty-capture 分支 | 本轮已补齐四个 target 的 collection，并修正 empty 判定与百分比伪差异 |
 | `CTF2-010` | DONE | 解释 `scope` 相比 `device` 额外多出的 `Command Buffer 29 / 9` 个槽位：当前证据更支持 capture 边界后移 / 多覆盖一个尾部 command buffer，而不是 overlap 内部结构分叉 | 依据是 `261` 个 shared slots 完全同构、launch/source 摘要保持一致，且额外 `9` 个槽位全部集中在尾部新增的 `Command Buffer 29` |
-| `CTF2-006` | TODO | 判断 queue ranking 是否仍缺少足够接近 command-buffer activity 的证据，并决定是否拆出 queue-activity 子任务 | `CTF2-010` 已收敛后，它成为当前新的最高优先级子任务 |
+| `CTF2-006` | DONE | 已确认现有 queue ranking 仍主要依赖 discovery-side 代理特征，缺少 activity-grade evidence；已决定拆出 queue-activity 子任务继续推进 | 依据包括 `queue` / `queue_scope` 仍属 empty-capture 分支，以及 `MetalCaptureService.swift` 当前 ranking 尚未使用 command-buffer activity |
+| `CTF2-011` | TODO | 确定 queue-activity 证据应补在 runtime 侧还是离线结构化分析侧，并固化成可复用的标准入口 | 它接替 `CTF2-006` 成为当前新的最高优先级子任务 |
 | `CTF2-007` | TODO | 判断 preload timing 是否仍与残缺程度相关，并决定是否拆出 timing 子任务 | 结合 launch diagnostics 与 snapshot 对照 |
 | `CTF2-008` | TODO | 若 target / queue / timing 都不能解释残缺，再重新评估是否需要把 replacement side 或其它观测口径拉回主线 | 当前明确不是默认优先项 |
 | `CTF2-009` | BLOCKED | 任何需要用户授权补设 Accessibility、手工登录 app、持续人工交互或工作区外动作的验证 | 触发时必须先获得用户确认 |
@@ -117,6 +119,7 @@
 - source attribution 变丰富，只能证明部分链路恢复，不能直接证明 hollow encoder 已消失。
 - 若跨 target 对照里 `shared slots` 全部同构、`missing slots` 又只集中在尾部连续新增的一个 command buffer，那么应优先把它解释成 capture stop 边界 / 尾帧纳入窗口差异，而不是 overlap 内部结构分叉。
 - 当前 queue ranking 仍偏 discovery-side 代理证据；若缺少 command-buffer activity 级别证据，就不要过早断言“已命中主渲染 queue”。
+- source attribution 轻微改善并不能替代 queue-activity 证据；若 `queue` / `queue_scope` 仍拿不出可 replay 的 CB / RE 结构，就不要把 source summary 的小幅改善当成 ranking 已有效命中主渲染 queue。
 - preload timing 的价值是缩小错过代理窗口的风险，不是天然保证所有 pre-existing Metal 对象都被完整纳入 capture。
 - 若对照样本没有被 snapshot 固化，后续很容易只剩口头结论，无法稳定比较 target / queue / timing 的收益。
 - 主文档只保留决策信息；长日志、单次 run 细节和大段命令输出应下沉到子文档或运行产物。

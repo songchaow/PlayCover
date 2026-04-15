@@ -515,7 +515,10 @@ def build_snapshot_context(run_input: RunInput, meta: dict[str, Any] | None) -> 
         return {
             "hasSnapshotMeta": False,
             "label": None,
+            "captureTarget": None,
             "replacementMode": None,
+            "launchDiagnostics": {},
+            "captureStatus": {},
             "gputraceSummary": None,
             "gputraceAttribution": None,
             "visibleMSLHashes": [],
@@ -571,6 +574,7 @@ def build_snapshot_context(run_input: RunInput, meta: dict[str, Any] | None) -> 
         "captureTarget": meta.get("captureTarget"),
         "replacementMode": meta.get("replacementMode"),
         "launchDiagnostics": meta.get("launchDiagnostics") if isinstance(meta.get("launchDiagnostics"), dict) else {},
+        "captureStatus": meta.get("captureStatus") if isinstance(meta.get("captureStatus"), dict) else {},
         "gputraceSummary": gputrace_summary,
         "gputraceAttribution": gputrace_attribution,
         "visibleMSLHashes": visible_msl_hashes,
@@ -647,6 +651,42 @@ def compare_snapshot_context(run_a: RunInput, meta_a: dict[str, Any] | None, run
         "launchDiagnostics.latestReplacementCounts",
         (context_a.get("launchDiagnostics") or {}).get("latestReplacementCounts"),
         (context_b.get("launchDiagnostics") or {}).get("latestReplacementCounts"),
+        differences,
+    )
+    compare_values(
+        "captureStatus.trackedCommandQueueCount",
+        (context_a.get("captureStatus") or {}).get("trackedCommandQueueCount"),
+        (context_b.get("captureStatus") or {}).get("trackedCommandQueueCount"),
+        differences,
+    )
+    compare_values(
+        "captureStatus.preferredCommandQueueLabel",
+        (context_a.get("captureStatus") or {}).get("preferredCommandQueueLabel"),
+        (context_b.get("captureStatus") or {}).get("preferredCommandQueueLabel"),
+        differences,
+    )
+    compare_values(
+        "captureStatus.preferredCommandQueueSummary",
+        (context_a.get("captureStatus") or {}).get("preferredCommandQueueSummary"),
+        (context_b.get("captureStatus") or {}).get("preferredCommandQueueSummary"),
+        differences,
+    )
+    compare_values(
+        "captureStatus.mostActiveCommandQueueLabel",
+        (context_a.get("captureStatus") or {}).get("mostActiveCommandQueueLabel"),
+        (context_b.get("captureStatus") or {}).get("mostActiveCommandQueueLabel"),
+        differences,
+    )
+    compare_values(
+        "captureStatus.mostActiveCommandQueueSummary",
+        (context_a.get("captureStatus") or {}).get("mostActiveCommandQueueSummary"),
+        (context_b.get("captureStatus") or {}).get("mostActiveCommandQueueSummary"),
+        differences,
+    )
+    compare_values(
+        "captureStatus.queueSelectionAlignment",
+        (context_a.get("captureStatus") or {}).get("queueSelectionAlignment"),
+        (context_b.get("captureStatus") or {}).get("queueSelectionAlignment"),
         differences,
     )
     compare_values(
@@ -991,6 +1031,20 @@ def print_summary(report: dict[str, Any]) -> None:
                 f"/{launch_diagnostics_a.get('latestLastEvent') or 'n/a'} "
                 f"runB={launch_diagnostics_b.get('summaryCount', 0)} summaries"
                 f"/{launch_diagnostics_b.get('latestLastEvent') or 'n/a'}"
+            )
+        capture_status_a = context_a.get("captureStatus") or {}
+        capture_status_b = context_b.get("captureStatus") or {}
+        if capture_status_a or capture_status_b:
+            print(
+                "queue activity evidence: "
+                f"runA={capture_status_a.get('queueSelectionAlignment') or 'n/a'} "
+                f"preferred={capture_status_a.get('preferredCommandQueueLabel') or 'nil'} "
+                f"mostActive={capture_status_a.get('mostActiveCommandQueueLabel') or 'nil'} "
+                f"tracked={capture_status_a.get('trackedCommandQueueCount') or 0}, "
+                f"runB={capture_status_b.get('queueSelectionAlignment') or 'n/a'} "
+                f"preferred={capture_status_b.get('preferredCommandQueueLabel') or 'nil'} "
+                f"mostActive={capture_status_b.get('mostActiveCommandQueueLabel') or 'nil'} "
+                f"tracked={capture_status_b.get('trackedCommandQueueCount') or 0}"
             )
         attributed_a = context_a.get("attributedVisibleMSLHashes", [])
         attributed_b = context_b.get("attributedVisibleMSLHashes", [])

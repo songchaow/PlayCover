@@ -106,6 +106,10 @@ def add_finalize_target_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--gputrace", help="optional .gputrace directory for this target run")
     parser.add_argument(
+        "--capture-status-json",
+        help="optional get_capture_status JSON file for this target run",
+    )
+    parser.add_argument(
         "--latest-gputrace",
         action="store_true",
         help="use the newest .gputrace from the configured capture root",
@@ -125,9 +129,17 @@ def add_finalize_pair_args(parser: argparse.ArgumentParser) -> None:
     add_common_snapshot_args(parser)
     parser.add_argument("--device-gputrace", required=True, help="device target .gputrace directory")
     parser.add_argument(
+        "--device-capture-status-json",
+        help="optional get_capture_status JSON captured during the device-target run",
+    )
+    parser.add_argument(
         "--queue-scope-gputrace",
         required=True,
         help="queue_scope target .gputrace directory",
+    )
+    parser.add_argument(
+        "--queue-scope-capture-status-json",
+        help="optional get_capture_status JSON captured during the queue_scope run",
     )
     parser.add_argument(
         "--report-output",
@@ -220,6 +232,7 @@ def build_snapshot_command(
     skip_diagnostics: bool,
     skip_launch_diagnostics: bool,
     gputrace: str | None,
+    capture_status_json: str | None,
 ) -> list[str]:
     command = [
         sys.executable,
@@ -245,6 +258,8 @@ def build_snapshot_command(
         command.append("--skip-launch-diagnostics")
     if gputrace:
         command.extend(["--gputrace", gputrace])
+    if capture_status_json:
+        command.extend(["--capture-status-json", capture_status_json])
     return command
 
 
@@ -274,6 +289,7 @@ def finalize_target(args: argparse.Namespace) -> int:
         skip_diagnostics=args.skip_diagnostics,
         skip_launch_diagnostics=args.skip_launch_diagnostics,
         gputrace=str(gputrace_path) if gputrace_path is not None else None,
+        capture_status_json=args.capture_status_json,
     )
     run_command(command)
     snapshot_path = snapshot_bundle_dir(output_root, args.pair_label, args.capture_target, args.bundle_id)
@@ -312,9 +328,9 @@ def compare_pair(args: argparse.Namespace) -> int:
 
 def finalize_pair(args: argparse.Namespace) -> int:
     output_root = Path(args.output_root).expanduser().resolve()
-    for capture_target, gputrace in (
-        ("device", args.device_gputrace),
-        ("queue_scope", args.queue_scope_gputrace),
+    for capture_target, gputrace, capture_status_json in (
+        ("device", args.device_gputrace, args.device_capture_status_json),
+        ("queue_scope", args.queue_scope_gputrace, args.queue_scope_capture_status_json),
     ):
         command = build_snapshot_command(
             bundle_id=args.bundle_id,
@@ -327,6 +343,7 @@ def finalize_pair(args: argparse.Namespace) -> int:
             skip_diagnostics=args.skip_diagnostics,
             skip_launch_diagnostics=args.skip_launch_diagnostics,
             gputrace=str(Path(gputrace).expanduser().resolve()),
+            capture_status_json=capture_status_json,
         )
         run_command(command)
 

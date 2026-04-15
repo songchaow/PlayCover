@@ -175,9 +175,11 @@ def build_capture_status_summary_lines(payload: dict[str, Any]) -> list[str]:
         f"supports_gpu_trace: {payload.get('supports_gpu_trace')}",
         f"queue_discovery_installed: {payload.get('queue_discovery_installed')}",
         f"tracked_command_queue_count: {payload.get('tracked_command_queue_count')}",
-        f"latest_command_queue_label: {payload.get('latest_command_queue_label') or 'nil'}",
+        f"preferred_command_queue_label: {payload.get('preferred_command_queue_label') or payload.get('latest_command_queue_label') or 'nil'}",
+        f"preferred_command_queue_summary: {payload.get('preferred_command_queue_summary') or 'nil'}",
         f"most_active_command_queue_label: {payload.get('most_active_command_queue_label') or 'nil'}",
         f"most_active_command_queue_summary: {payload.get('most_active_command_queue_summary') or 'nil'}",
+        f"queue_selection_alignment: {payload.get('queue_selection_alignment') or 'nil'}",
     ]
     tracked_queues = payload.get("tracked_command_queues")
     if isinstance(tracked_queues, list) and tracked_queues:
@@ -207,10 +209,15 @@ def build_capture_status_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
         "latestCommandQueueLabel": payload.get("latest_command_queue_label"),
         "latestCommandQueueDeviceName": payload.get("latest_command_queue_device_name"),
         "latestCommandQueueClassName": payload.get("latest_command_queue_class_name"),
+        "preferredCommandQueueLabel": payload.get("preferred_command_queue_label") or payload.get("latest_command_queue_label"),
+        "preferredCommandQueueDeviceName": payload.get("preferred_command_queue_device_name") or payload.get("latest_command_queue_device_name"),
+        "preferredCommandQueueClassName": payload.get("preferred_command_queue_class_name") or payload.get("latest_command_queue_class_name"),
+        "preferredCommandQueueSummary": payload.get("preferred_command_queue_summary"),
         "mostActiveCommandQueueLabel": payload.get("most_active_command_queue_label"),
         "mostActiveCommandQueueDeviceName": payload.get("most_active_command_queue_device_name"),
         "mostActiveCommandQueueClassName": payload.get("most_active_command_queue_class_name"),
         "mostActiveCommandQueueSummary": payload.get("most_active_command_queue_summary"),
+        "queueSelectionAlignment": payload.get("queue_selection_alignment"),
         "trackedCommandQueues": normalized_tracked_queues,
     }
 
@@ -426,7 +433,7 @@ def main() -> int:
 
     latest_launch_summary = launch_summaries[0] if launch_summaries else None
     snapshot_meta = {
-        "schemaVersion": 4,
+        "schemaVersion": 5,
         "capturedAt": datetime.now(timezone.utc).isoformat(),
         "bundleId": args.bundle_id,
         "label": args.label,

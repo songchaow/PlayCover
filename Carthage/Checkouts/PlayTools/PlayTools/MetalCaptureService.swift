@@ -962,6 +962,24 @@ private final class CommandBufferActivitySwizzles: NSObject {
             .map(\.statusDictionary)
     }
 
+    private func queueSelectionAlignment(
+        preferredQueue: TrackedCommandQueue?,
+        mostActiveQueue: TrackedCommandQueue?
+    ) -> String {
+        switch (preferredQueue, mostActiveQueue) {
+        case (.none, .none):
+            return "both_missing"
+        case (.none, .some):
+            return "preferred_missing"
+        case (.some, .none):
+            return "most_active_missing"
+        case (.some(let preferredQueue), .some(let mostActiveQueue)):
+            let preferredIdentifier = ObjectIdentifier(preferredQueue.queue as AnyObject)
+            let mostActiveIdentifier = ObjectIdentifier(mostActiveQueue.queue as AnyObject)
+            return preferredIdentifier == mostActiveIdentifier ? "same_queue" : "different_queue"
+        }
+    }
+
     private func latestTrackedCommandQueue() -> TrackedCommandQueue? {
         trackedQueueLock.lock()
         defer { trackedQueueLock.unlock() }
@@ -1004,6 +1022,10 @@ private final class CommandBufferActivitySwizzles: NSObject {
         let defaultCaptureScope = state.captureManager?.defaultCaptureScope
         let preferredTrackedQueue = preferredTrackedCommandQueue()
         let mostActiveTrackedQueue = mostActiveTrackedCommandQueue()
+        let queueSelectionAlignment = queueSelectionAlignment(
+            preferredQueue: preferredTrackedQueue,
+            mostActiveQueue: mostActiveTrackedQueue
+        )
         let trackedQueueCount = trackedCommandQueueCount()
         let trackedQueueSnapshots = trackedQueueStatusDictionaries()
         let failureReason: String?
@@ -1032,6 +1054,7 @@ private final class CommandBufferActivitySwizzles: NSObject {
             "trackedCommandQueues=\(trackedQueueCount)",
             "preferredTrackedQueue=\(Self.describeOptionalString(preferredTrackedQueue?.summary))",
             "mostActiveTrackedQueue=\(Self.describeOptionalString(mostActiveTrackedQueue?.activitySummary))",
+            "queueSelectionAlignment=\(queueSelectionAlignment)",
             "defaultCaptureScopeLabel=\(Self.describeOptionalString(defaultCaptureScope?.label))",
             "lastCaptureWasEmptyTrace=\(state.lastCaptureWasEmptyTrace)",
             "failureReason=\(failureReason ?? "none")",
@@ -1053,11 +1076,16 @@ private final class CommandBufferActivitySwizzles: NSObject {
             latestCommandQueueLabel: preferredTrackedQueue?.label,
             latestCommandQueueDeviceName: preferredTrackedQueue?.deviceName,
             latestCommandQueueClassName: preferredTrackedQueue?.className,
+            preferredCommandQueueLabel: preferredTrackedQueue?.label,
+            preferredCommandQueueDeviceName: preferredTrackedQueue?.deviceName,
+            preferredCommandQueueClassName: preferredTrackedQueue?.className,
+            preferredCommandQueueSummary: preferredTrackedQueue?.summary,
             defaultCaptureScopeLabel: defaultCaptureScope?.label,
             mostActiveCommandQueueLabel: mostActiveTrackedQueue?.label,
             mostActiveCommandQueueDeviceName: mostActiveTrackedQueue?.deviceName,
             mostActiveCommandQueueClassName: mostActiveTrackedQueue?.className,
             mostActiveCommandQueueSummary: mostActiveTrackedQueue?.activitySummary,
+            queueSelectionAlignment: queueSelectionAlignment,
             trackedCommandQueues: trackedQueueSnapshots as NSArray
         )
     }
@@ -1380,11 +1408,16 @@ private final class CommandBufferActivitySwizzles: NSObject {
     @objc public let latestCommandQueueLabel: String?
     @objc public let latestCommandQueueDeviceName: String?
     @objc public let latestCommandQueueClassName: String?
+    @objc public let preferredCommandQueueLabel: String?
+    @objc public let preferredCommandQueueDeviceName: String?
+    @objc public let preferredCommandQueueClassName: String?
+    @objc public let preferredCommandQueueSummary: String?
     @objc public let defaultCaptureScopeLabel: String?
     @objc public let mostActiveCommandQueueLabel: String?
     @objc public let mostActiveCommandQueueDeviceName: String?
     @objc public let mostActiveCommandQueueClassName: String?
     @objc public let mostActiveCommandQueueSummary: String?
+    @objc public let queueSelectionAlignment: String
     @objc public let trackedCommandQueues: NSArray
 
     @objc public init(
@@ -1402,11 +1435,16 @@ private final class CommandBufferActivitySwizzles: NSObject {
         latestCommandQueueLabel: String?,
         latestCommandQueueDeviceName: String?,
         latestCommandQueueClassName: String?,
+        preferredCommandQueueLabel: String?,
+        preferredCommandQueueDeviceName: String?,
+        preferredCommandQueueClassName: String?,
+        preferredCommandQueueSummary: String?,
         defaultCaptureScopeLabel: String?,
         mostActiveCommandQueueLabel: String?,
         mostActiveCommandQueueDeviceName: String?,
         mostActiveCommandQueueClassName: String?,
         mostActiveCommandQueueSummary: String?,
+        queueSelectionAlignment: String,
         trackedCommandQueues: NSArray
     ) {
         self.available = available
@@ -1423,11 +1461,16 @@ private final class CommandBufferActivitySwizzles: NSObject {
         self.latestCommandQueueLabel = latestCommandQueueLabel
         self.latestCommandQueueDeviceName = latestCommandQueueDeviceName
         self.latestCommandQueueClassName = latestCommandQueueClassName
+        self.preferredCommandQueueLabel = preferredCommandQueueLabel
+        self.preferredCommandQueueDeviceName = preferredCommandQueueDeviceName
+        self.preferredCommandQueueClassName = preferredCommandQueueClassName
+        self.preferredCommandQueueSummary = preferredCommandQueueSummary
         self.defaultCaptureScopeLabel = defaultCaptureScopeLabel
         self.mostActiveCommandQueueLabel = mostActiveCommandQueueLabel
         self.mostActiveCommandQueueDeviceName = mostActiveCommandQueueDeviceName
         self.mostActiveCommandQueueClassName = mostActiveCommandQueueClassName
         self.mostActiveCommandQueueSummary = mostActiveCommandQueueSummary
+        self.queueSelectionAlignment = queueSelectionAlignment
         self.trackedCommandQueues = trackedCommandQueues
     }
 }

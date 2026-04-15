@@ -186,6 +186,14 @@ public struct CaptureStatusResult: Codable, Equatable, Sendable {
     public let latestCommandQueueDeviceName: String?
     /// Concrete runtime class name of the latest tracked command queue, if any.
     public let latestCommandQueueClassName: String?
+    /// Label of the queue currently preferred by runtime ranking, if any.
+    public let preferredCommandQueueLabel: String?
+    /// Device name of the queue currently preferred by runtime ranking, if any.
+    public let preferredCommandQueueDeviceName: String?
+    /// Concrete runtime class name of the queue currently preferred by runtime ranking, if any.
+    public let preferredCommandQueueClassName: String?
+    /// Human-readable summary of the queue currently preferred by runtime ranking, if any.
+    public let preferredCommandQueueSummary: String?
     /// Label of MTLCaptureManager.defaultCaptureScope, if any.
     public let defaultCaptureScopeLabel: String?
     /// Label of the queue with strongest command-buffer activity, if any.
@@ -196,6 +204,8 @@ public struct CaptureStatusResult: Codable, Equatable, Sendable {
     public let mostActiveCommandQueueClassName: String?
     /// Human-readable summary of the strongest activity queue, if any.
     public let mostActiveCommandQueueSummary: String?
+    /// Whether preferred queue selection currently matches the most-active queue identity.
+    public let queueSelectionAlignment: String?
     /// Per-queue runtime activity snapshots ordered by activity strength.
     public let trackedCommandQueues: [TrackedCommandQueueActivityResult]?
 
@@ -214,11 +224,16 @@ public struct CaptureStatusResult: Codable, Equatable, Sendable {
         latestCommandQueueLabel: String? = nil,
         latestCommandQueueDeviceName: String? = nil,
         latestCommandQueueClassName: String? = nil,
+        preferredCommandQueueLabel: String? = nil,
+        preferredCommandQueueDeviceName: String? = nil,
+        preferredCommandQueueClassName: String? = nil,
+        preferredCommandQueueSummary: String? = nil,
         defaultCaptureScopeLabel: String? = nil,
         mostActiveCommandQueueLabel: String? = nil,
         mostActiveCommandQueueDeviceName: String? = nil,
         mostActiveCommandQueueClassName: String? = nil,
         mostActiveCommandQueueSummary: String? = nil,
+        queueSelectionAlignment: String? = nil,
         trackedCommandQueues: [TrackedCommandQueueActivityResult]? = nil
     ) {
         self.available = available
@@ -235,11 +250,16 @@ public struct CaptureStatusResult: Codable, Equatable, Sendable {
         self.latestCommandQueueLabel = latestCommandQueueLabel
         self.latestCommandQueueDeviceName = latestCommandQueueDeviceName
         self.latestCommandQueueClassName = latestCommandQueueClassName
+        self.preferredCommandQueueLabel = preferredCommandQueueLabel
+        self.preferredCommandQueueDeviceName = preferredCommandQueueDeviceName
+        self.preferredCommandQueueClassName = preferredCommandQueueClassName
+        self.preferredCommandQueueSummary = preferredCommandQueueSummary
         self.defaultCaptureScopeLabel = defaultCaptureScopeLabel
         self.mostActiveCommandQueueLabel = mostActiveCommandQueueLabel
         self.mostActiveCommandQueueDeviceName = mostActiveCommandQueueDeviceName
         self.mostActiveCommandQueueClassName = mostActiveCommandQueueClassName
         self.mostActiveCommandQueueSummary = mostActiveCommandQueueSummary
+        self.queueSelectionAlignment = queueSelectionAlignment
         self.trackedCommandQueues = trackedCommandQueues
     }
 
@@ -280,6 +300,18 @@ public struct CaptureStatusResult: Codable, Equatable, Sendable {
         if let latestCommandQueueClassName {
             dict["latest_command_queue_class_name"] = latestCommandQueueClassName
         }
+        if let preferredCommandQueueLabel {
+            dict["preferred_command_queue_label"] = preferredCommandQueueLabel
+        }
+        if let preferredCommandQueueDeviceName {
+            dict["preferred_command_queue_device_name"] = preferredCommandQueueDeviceName
+        }
+        if let preferredCommandQueueClassName {
+            dict["preferred_command_queue_class_name"] = preferredCommandQueueClassName
+        }
+        if let preferredCommandQueueSummary {
+            dict["preferred_command_queue_summary"] = preferredCommandQueueSummary
+        }
         if let defaultCaptureScopeLabel {
             dict["default_capture_scope_label"] = defaultCaptureScopeLabel
         }
@@ -294,6 +326,9 @@ public struct CaptureStatusResult: Codable, Equatable, Sendable {
         }
         if let mostActiveCommandQueueSummary {
             dict["most_active_command_queue_summary"] = mostActiveCommandQueueSummary
+        }
+        if let queueSelectionAlignment {
+            dict["queue_selection_alignment"] = queueSelectionAlignment
         }
         if let trackedCommandQueues {
             dict["tracked_command_queues"] = trackedCommandQueues.map { $0.toDictionary() }
@@ -436,11 +471,16 @@ public final class CaptureService: CaptureServiceProtocol, Sendable {
         let latestCommandQueueLabel = resultDict?["latest_command_queue_label"] as? String
         let latestCommandQueueDeviceName = resultDict?["latest_command_queue_device_name"] as? String
         let latestCommandQueueClassName = resultDict?["latest_command_queue_class_name"] as? String
+        let preferredCommandQueueLabel = resultDict?["preferred_command_queue_label"] as? String
+        let preferredCommandQueueDeviceName = resultDict?["preferred_command_queue_device_name"] as? String
+        let preferredCommandQueueClassName = resultDict?["preferred_command_queue_class_name"] as? String
+        let preferredCommandQueueSummary = resultDict?["preferred_command_queue_summary"] as? String
         let defaultCaptureScopeLabel = resultDict?["default_capture_scope_label"] as? String
         let mostActiveCommandQueueLabel = resultDict?["most_active_command_queue_label"] as? String
         let mostActiveCommandQueueDeviceName = resultDict?["most_active_command_queue_device_name"] as? String
         let mostActiveCommandQueueClassName = resultDict?["most_active_command_queue_class_name"] as? String
         let mostActiveCommandQueueSummary = resultDict?["most_active_command_queue_summary"] as? String
+        let queueSelectionAlignment = resultDict?["queue_selection_alignment"] as? String
         let trackedCommandQueues = (resultDict?["tracked_command_queues"] as? [[String: Any]])?.map { item in
             TrackedCommandQueueActivityResult(
                 source: item["source"] as? String ?? "unknown",
@@ -477,11 +517,16 @@ public final class CaptureService: CaptureServiceProtocol, Sendable {
             latestCommandQueueLabel: latestCommandQueueLabel,
             latestCommandQueueDeviceName: latestCommandQueueDeviceName,
             latestCommandQueueClassName: latestCommandQueueClassName,
+            preferredCommandQueueLabel: preferredCommandQueueLabel,
+            preferredCommandQueueDeviceName: preferredCommandQueueDeviceName,
+            preferredCommandQueueClassName: preferredCommandQueueClassName,
+            preferredCommandQueueSummary: preferredCommandQueueSummary,
             defaultCaptureScopeLabel: defaultCaptureScopeLabel,
             mostActiveCommandQueueLabel: mostActiveCommandQueueLabel,
             mostActiveCommandQueueDeviceName: mostActiveCommandQueueDeviceName,
             mostActiveCommandQueueClassName: mostActiveCommandQueueClassName,
             mostActiveCommandQueueSummary: mostActiveCommandQueueSummary,
+            queueSelectionAlignment: queueSelectionAlignment,
             trackedCommandQueues: trackedCommandQueues
         )
     }

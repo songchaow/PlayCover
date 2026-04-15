@@ -1045,6 +1045,18 @@ final class BridgeListener {
             if let latestCommandQueueClassName = status.latestCommandQueueClassName {
                 result["latest_command_queue_class_name"] = latestCommandQueueClassName
             }
+            if let preferredCommandQueueLabel = status.preferredCommandQueueLabel {
+                result["preferred_command_queue_label"] = preferredCommandQueueLabel
+            }
+            if let preferredCommandQueueDeviceName = status.preferredCommandQueueDeviceName {
+                result["preferred_command_queue_device_name"] = preferredCommandQueueDeviceName
+            }
+            if let preferredCommandQueueClassName = status.preferredCommandQueueClassName {
+                result["preferred_command_queue_class_name"] = preferredCommandQueueClassName
+            }
+            if let preferredCommandQueueSummary = status.preferredCommandQueueSummary {
+                result["preferred_command_queue_summary"] = preferredCommandQueueSummary
+            }
             if let defaultCaptureScopeLabel = status.defaultCaptureScopeLabel {
                 result["default_capture_scope_label"] = defaultCaptureScopeLabel
             }
@@ -1060,6 +1072,7 @@ final class BridgeListener {
             if let mostActiveCommandQueueSummary = status.mostActiveCommandQueueSummary {
                 result["most_active_command_queue_summary"] = mostActiveCommandQueueSummary
             }
+            result["queue_selection_alignment"] = status.queueSelectionAlignment
             if status.trackedCommandQueues.count > 0 {
                 result["tracked_command_queues"] = status.trackedCommandQueues
             }

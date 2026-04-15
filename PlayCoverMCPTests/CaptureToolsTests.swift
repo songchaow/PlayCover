@@ -628,7 +628,26 @@ final class CaptureToolsRegistrationTests: XCTestCase {
             latestCommandQueueLabel: "main-render-queue",
             latestCommandQueueDeviceName: "Apple M4",
             latestCommandQueueClassName: "AGXMetalG17XFamilyCommandQueue",
-            defaultCaptureScopeLabel: "qqfc.default.scope"
+            defaultCaptureScopeLabel: "qqfc.default.scope",
+            mostActiveCommandQueueLabel: "main-render-queue",
+            mostActiveCommandQueueDeviceName: "Apple M4",
+            mostActiveCommandQueueClassName: "CaptureMTLCommandQueue",
+            mostActiveCommandQueueSummary: "class=CaptureMTLCommandQueue, commandBufferCommits=9",
+            trackedCommandQueues: [
+                TrackedCommandQueueActivityResult(
+                    source: "newCommandQueue",
+                    className: "CaptureMTLCommandQueue",
+                    label: "main-render-queue",
+                    deviceName: "Apple M4",
+                    discoveryCount: 2,
+                    rankingScore: 50,
+                    commandBufferCreationCount: 12,
+                    commandBufferCommitCount: 9,
+                    activityScore: 1200,
+                    summary: "class=CaptureMTLCommandQueue, label=main-render-queue",
+                    activitySummary: "class=CaptureMTLCommandQueue, commandBufferCommits=9"
+                )
+            ]
         ))
 
         let resp = callTool("get_capture_status", arguments: [
@@ -645,6 +664,10 @@ final class CaptureToolsRegistrationTests: XCTestCase {
         XCTAssertEqual(json["default_device_name"] as? String, "Apple M4")
         XCTAssertEqual(json["failure_reason"] as? String, "gpu_trace_document_unsupported")
         XCTAssertEqual(json["diagnostic_summary"] as? String, "enabled=true, captureManagerAvailable=true, supportsGPUTrace=false")
+        XCTAssertEqual(json["most_active_command_queue_label"] as? String, "main-render-queue")
+        let trackedQueues = try XCTUnwrap(json["tracked_command_queues"] as? [[String: Any]])
+        XCTAssertEqual(trackedQueues.count, 1)
+        XCTAssertEqual(trackedQueues[0]["command_buffer_commit_count"] as? Int, 9)
     }
 
     func testGetCaptureStatusToolMissingSessionId() {

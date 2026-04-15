@@ -3,6 +3,99 @@
 
 import Foundation
 
+public struct TrackedCommandQueueActivityResult: Codable, Equatable, Sendable {
+    public let source: String
+    public let className: String
+    public let label: String?
+    public let deviceName: String
+    public let firstSeenAt: String?
+    public let lastSeenAt: String?
+    public let discoveryCount: Int
+    public let rankingScore: Int
+    public let commandBufferCreationCount: Int
+    public let commandBufferCommitCount: Int
+    public let firstActivityAt: String?
+    public let lastActivityAt: String?
+    public let activityScore: Int
+    public let lastCommandBufferClassName: String?
+    public let summary: String?
+    public let activitySummary: String?
+
+    public init(
+        source: String,
+        className: String,
+        label: String? = nil,
+        deviceName: String,
+        firstSeenAt: String? = nil,
+        lastSeenAt: String? = nil,
+        discoveryCount: Int,
+        rankingScore: Int,
+        commandBufferCreationCount: Int,
+        commandBufferCommitCount: Int,
+        firstActivityAt: String? = nil,
+        lastActivityAt: String? = nil,
+        activityScore: Int,
+        lastCommandBufferClassName: String? = nil,
+        summary: String? = nil,
+        activitySummary: String? = nil
+    ) {
+        self.source = source
+        self.className = className
+        self.label = label
+        self.deviceName = deviceName
+        self.firstSeenAt = firstSeenAt
+        self.lastSeenAt = lastSeenAt
+        self.discoveryCount = discoveryCount
+        self.rankingScore = rankingScore
+        self.commandBufferCreationCount = commandBufferCreationCount
+        self.commandBufferCommitCount = commandBufferCommitCount
+        self.firstActivityAt = firstActivityAt
+        self.lastActivityAt = lastActivityAt
+        self.activityScore = activityScore
+        self.lastCommandBufferClassName = lastCommandBufferClassName
+        self.summary = summary
+        self.activitySummary = activitySummary
+    }
+
+    public func toDictionary() -> [String: Any] {
+        var dict: [String: Any] = [
+            "source": source,
+            "class_name": className,
+            "device_name": deviceName,
+            "discovery_count": discoveryCount,
+            "ranking_score": rankingScore,
+            "command_buffer_creation_count": commandBufferCreationCount,
+            "command_buffer_commit_count": commandBufferCommitCount,
+            "activity_score": activityScore,
+        ]
+        if let label {
+            dict["label"] = label
+        }
+        if let firstSeenAt {
+            dict["first_seen_at"] = firstSeenAt
+        }
+        if let lastSeenAt {
+            dict["last_seen_at"] = lastSeenAt
+        }
+        if let firstActivityAt {
+            dict["first_activity_at"] = firstActivityAt
+        }
+        if let lastActivityAt {
+            dict["last_activity_at"] = lastActivityAt
+        }
+        if let lastCommandBufferClassName {
+            dict["last_command_buffer_class_name"] = lastCommandBufferClassName
+        }
+        if let summary {
+            dict["summary"] = summary
+        }
+        if let activitySummary {
+            dict["activity_summary"] = activitySummary
+        }
+        return dict
+    }
+}
+
 // MARK: - Capture Command Parameters
 
 public enum CaptureTarget: String, Codable, Equatable, Sendable {
@@ -95,6 +188,16 @@ public struct CaptureStatusResult: Codable, Equatable, Sendable {
     public let latestCommandQueueClassName: String?
     /// Label of MTLCaptureManager.defaultCaptureScope, if any.
     public let defaultCaptureScopeLabel: String?
+    /// Label of the queue with strongest command-buffer activity, if any.
+    public let mostActiveCommandQueueLabel: String?
+    /// Device name of the queue with strongest command-buffer activity, if any.
+    public let mostActiveCommandQueueDeviceName: String?
+    /// Concrete runtime class name of the queue with strongest command-buffer activity, if any.
+    public let mostActiveCommandQueueClassName: String?
+    /// Human-readable summary of the strongest activity queue, if any.
+    public let mostActiveCommandQueueSummary: String?
+    /// Per-queue runtime activity snapshots ordered by activity strength.
+    public let trackedCommandQueues: [TrackedCommandQueueActivityResult]?
 
     public init(
         available: Bool,
@@ -111,7 +214,12 @@ public struct CaptureStatusResult: Codable, Equatable, Sendable {
         latestCommandQueueLabel: String? = nil,
         latestCommandQueueDeviceName: String? = nil,
         latestCommandQueueClassName: String? = nil,
-        defaultCaptureScopeLabel: String? = nil
+        defaultCaptureScopeLabel: String? = nil,
+        mostActiveCommandQueueLabel: String? = nil,
+        mostActiveCommandQueueDeviceName: String? = nil,
+        mostActiveCommandQueueClassName: String? = nil,
+        mostActiveCommandQueueSummary: String? = nil,
+        trackedCommandQueues: [TrackedCommandQueueActivityResult]? = nil
     ) {
         self.available = available
         self.supportsGpuTrace = supportsGpuTrace
@@ -128,6 +236,11 @@ public struct CaptureStatusResult: Codable, Equatable, Sendable {
         self.latestCommandQueueDeviceName = latestCommandQueueDeviceName
         self.latestCommandQueueClassName = latestCommandQueueClassName
         self.defaultCaptureScopeLabel = defaultCaptureScopeLabel
+        self.mostActiveCommandQueueLabel = mostActiveCommandQueueLabel
+        self.mostActiveCommandQueueDeviceName = mostActiveCommandQueueDeviceName
+        self.mostActiveCommandQueueClassName = mostActiveCommandQueueClassName
+        self.mostActiveCommandQueueSummary = mostActiveCommandQueueSummary
+        self.trackedCommandQueues = trackedCommandQueues
     }
 
     public func toDictionary() -> [String: Any] {
@@ -169,6 +282,21 @@ public struct CaptureStatusResult: Codable, Equatable, Sendable {
         }
         if let defaultCaptureScopeLabel {
             dict["default_capture_scope_label"] = defaultCaptureScopeLabel
+        }
+        if let mostActiveCommandQueueLabel {
+            dict["most_active_command_queue_label"] = mostActiveCommandQueueLabel
+        }
+        if let mostActiveCommandQueueDeviceName {
+            dict["most_active_command_queue_device_name"] = mostActiveCommandQueueDeviceName
+        }
+        if let mostActiveCommandQueueClassName {
+            dict["most_active_command_queue_class_name"] = mostActiveCommandQueueClassName
+        }
+        if let mostActiveCommandQueueSummary {
+            dict["most_active_command_queue_summary"] = mostActiveCommandQueueSummary
+        }
+        if let trackedCommandQueues {
+            dict["tracked_command_queues"] = trackedCommandQueues.map { $0.toDictionary() }
         }
         return dict
     }
@@ -309,6 +437,30 @@ public final class CaptureService: CaptureServiceProtocol, Sendable {
         let latestCommandQueueDeviceName = resultDict?["latest_command_queue_device_name"] as? String
         let latestCommandQueueClassName = resultDict?["latest_command_queue_class_name"] as? String
         let defaultCaptureScopeLabel = resultDict?["default_capture_scope_label"] as? String
+        let mostActiveCommandQueueLabel = resultDict?["most_active_command_queue_label"] as? String
+        let mostActiveCommandQueueDeviceName = resultDict?["most_active_command_queue_device_name"] as? String
+        let mostActiveCommandQueueClassName = resultDict?["most_active_command_queue_class_name"] as? String
+        let mostActiveCommandQueueSummary = resultDict?["most_active_command_queue_summary"] as? String
+        let trackedCommandQueues = (resultDict?["tracked_command_queues"] as? [[String: Any]])?.map { item in
+            TrackedCommandQueueActivityResult(
+                source: item["source"] as? String ?? "unknown",
+                className: item["class_name"] as? String ?? "unknown",
+                label: item["label"] as? String,
+                deviceName: item["device_name"] as? String ?? "unknown",
+                firstSeenAt: item["first_seen_at"] as? String,
+                lastSeenAt: item["last_seen_at"] as? String,
+                discoveryCount: item["discovery_count"] as? Int ?? 0,
+                rankingScore: item["ranking_score"] as? Int ?? 0,
+                commandBufferCreationCount: item["command_buffer_creation_count"] as? Int ?? 0,
+                commandBufferCommitCount: item["command_buffer_commit_count"] as? Int ?? 0,
+                firstActivityAt: item["first_activity_at"] as? String,
+                lastActivityAt: item["last_activity_at"] as? String,
+                activityScore: item["activity_score"] as? Int ?? 0,
+                lastCommandBufferClassName: item["last_command_buffer_class_name"] as? String,
+                summary: item["summary"] as? String,
+                activitySummary: item["activity_summary"] as? String
+            )
+        }
 
         return CaptureStatusResult(
             available: available,
@@ -325,7 +477,12 @@ public final class CaptureService: CaptureServiceProtocol, Sendable {
             latestCommandQueueLabel: latestCommandQueueLabel,
             latestCommandQueueDeviceName: latestCommandQueueDeviceName,
             latestCommandQueueClassName: latestCommandQueueClassName,
-            defaultCaptureScopeLabel: defaultCaptureScopeLabel
+            defaultCaptureScopeLabel: defaultCaptureScopeLabel,
+            mostActiveCommandQueueLabel: mostActiveCommandQueueLabel,
+            mostActiveCommandQueueDeviceName: mostActiveCommandQueueDeviceName,
+            mostActiveCommandQueueClassName: mostActiveCommandQueueClassName,
+            mostActiveCommandQueueSummary: mostActiveCommandQueueSummary,
+            trackedCommandQueues: trackedCommandQueues
         )
     }
 

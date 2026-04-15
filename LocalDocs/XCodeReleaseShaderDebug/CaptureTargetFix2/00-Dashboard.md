@@ -24,15 +24,15 @@
 
 ## 主线任务
 
-- **当前最新进展**：`CTF2-004` 的 snapshot/compare 入口已继续收敛：`snapshot_capture_run.py` 现在不仅会固化 runtime launch diagnostics，还会用 `ditto` 保留 `.gputrace` bundle 元数据，避免工作区 snapshot 中的 trace 因 `shutil.copytree()` 丢失包级元信息而在 Xcode 中落到 `NotConnected Device`；本轮已成功复现“原始 `ctf011-device.gputrace` 可 replay、`ditto` 拷贝版也可 replay”的闭环。与此同时，`CTF2-005` 已新增 `Scripts/capture_target_hollow_encoder_report.py`，把 collection 产物中的 `cb_data.json` / API navigator 结构归一化为跨 target 的 Render Encoder 槽位报告，并允许把 `queue_scope` 单列为 empty-capture 分支，不再和 `device / scope / queue` 混进同一条结构化结论。
-- **当前主判断**：问题已经进一步分成两类，而不只是“capture 后内容残缺”这一层：当前样本族里 `device / scope / queue` 都属于**可 replay、但内容仍不完整**；`queue_scope` 则至少在 `ctf011` 这轮 fresh 样本里表现为**能落盘、source summary 近似，但 Xcode replay 后拿不到 Command Buffer 的 empty-capture 分支**。因此 `queue_scope` 相比 `device` 的那点 source-summary 小幅收益，还不足以单独证明它更接近真实渲染路径。
-- **当前关键缺口**：同轮 target 对照与 snapshot/compare 入口已经固化，且“snapshot copy 破坏 trace”这类假阳性已被排除；下一优先级仍是 hollow encoder 槽位的结构化对照，但默认样本要先落在当前能稳定 replay 的 target（优先 `device` / `scope` / `queue`），把 `queue_scope` 单独记为 empty-capture 分支再分析。
-- **当前 blocker**：现有 queue 选择仍主要基于 discovery-side proxy 线索，而不是 command-buffer activity 级别证据；同时 `queue_scope` 这条分支当前又混入 empty-capture 现象，因此即便 capture 命中了 `CaptureMTLCommandQueue`，也还不能证明命中了最值得截取的真实主渲染 queue。
+- **当前最新进展**：`CTF2-005` 的第一轮 fresh live hollow encoder 对照已经实际跑通，而不再停留在脚本就位阶段：本轮先用现成的 `ctf011-device.gputrace` / `ctf011-queue_scope.gputrace` 跑通 `e006d_render_diff.py collect-run -> capture_target_hollow_encoder_report.py` 的最小闭环，随后又把容器里的 `ctf011-scope.gputrace` / `ctf011-queue.gputrace` snapshot 进工作区并补齐 collection。期间还额外修正了两个会污染结论的脚本口径：`xcode_gpu_ops.py` 现在会在打开 `.gputrace` 后确认切到目标文档窗口，避免多份 trace 并存时把后续 dump/collect 跑到错误窗口；`capture_target_hollow_encoder_report.py` 现在以 `cb_data.json` 槽位是否存在来判定 empty capture，并在签名里去掉 `Render Encoder ... | 0.57%` 这类时长百分比尾缀，避免把纯展示性时长差异误判成结构差异。
+- **当前主判断**：当前样本族已经不再是“`device / scope / queue` 都可 replay、`queue_scope` 单独 empty”这一个判断，而是进一步收敛成三层：`device` 与 `scope` 属于当前可稳定进入 hollow encoder 对照的 non-empty 样本；`queue` 与 `queue_scope` 在本轮工作区 snapshot + Xcode 结构化采集里都落到了 empty-capture 分支；在 `device` vs `scope` 的 non-empty 对照里，重叠部分的 `261` 个槽位签名完全一致，没有真正的槽位结构分叉，当前差异只剩 `scope` 额外多出的尾部 `Command Buffer 29 / 9` 个槽位。
+- **当前关键缺口**：首份正式报告 `ctf2-005-hollow-encoder-first-20260415b` 已经产出，但它同时把问题进一步缩窄成了两个更具体的子问题：其一，`scope` 为什么会比 `device` 多出最后一段 `9` 个槽位；其二，`queue` 为何会和 `queue_scope` 一起落到 empty-capture 分支。也就是说，当前更值得追的已经不是“hollow encoder 是否跨 target 普遍乱飘”，而是“non-empty overlap 已经同构后，尾部缺失/额外槽位到底由什么决定”。
+- **当前 blocker**：`queue` 这条分支当前无法再被当成稳定的 non-empty replay 样本；同时它的原始容器 trace 直接打开路径也没有立即给出更稳定的反证，因此在 `queue` 重新被证明可稳定 replay 之前，默认不能再把它当作 queue-ranking 证据主样本。
 - **下一步默认规划**：
-  - 先继续使用 `capture_target_compare_runner.py` 固化同轮 snapshot 对照，但默认把它当成 source summary / launch diagnostics 证据层；凡是要进入 Xcode dump / `collect_cbs.py` 的 hollow encoder 对照，优先改用当前能稳定 replay 的 `device` / `scope` / `queue` 样本。
-  - 再用 `collect_cbs.py` / Xcode dump 对照固定的 hollow encoder 槽位是否在这些 non-empty target 中仍然重复出现，并把 `queue_scope` 另记为 empty-capture 分支，而不是强行和 non-empty 样本混成同一条结构化对照链。
-  - 若 hollow encoder 在 target 对照中基本同构，下一优先级切到 queue ranking 证据，而不是继续放大 target 默认值改动。
-  - 若 timing 证据显示 preload / startup 时序仍与残缺程度相关，则拆出 preload timing 子任务单独推进。
+  - 先围绕 `device` vs `scope` 这组 non-empty 样本，解释 `scope` 额外多出的 `Command Buffer 29 / 9` 个槽位到底是多出了一段尾帧、capture 边界后移，还是其它 target 相关边界效应；在这一步没有收敛前，默认不直接升级到 queue ranking。
+  - 继续把 `queue` 与 `queue_scope` 记为当前 empty-capture 分支；除非后续拿到新的 stable replay 证据，否则不要把它们重新并入 non-empty hollow encoder 对照。
+  - 若 `device` / `scope` 的 missing-slot 原因能够被解释且不改变核心 overlap 结构，再判断 queue ranking 是否值得升为下一优先级；否则继续先处理 target 边界问题。
+  - 若 timing 证据显示 preload / startup 时序仍与尾部缺失程度相关，则拆出 preload timing 子任务单独推进。
   - 在结构化证据没有明显指向前，默认**不把 converter / replacement 主链重新拉回主线**。
 
 ## 构建与验证的方法
@@ -97,8 +97,9 @@
 | `CTF2-002` | DONE | 确认 fresh live 证据链已恢复到可复用状态：capture status、四组 target 落盘、Xcode replay / dump、`collect_cbs.py` | 结论来自旧主线收尾 |
 | `CTF2-003` | DONE | 收敛当前三条一等候选主因：target、queue ranking、preload timing | 当前主线以此三轴推进 |
 | `CTF2-004` | DONE | 已把 runtime launch diagnostics 固化进 `snapshot_capture_run.py`，并新增 `capture_target_compare_runner.py` 标准化同轮 `device` vs `queue_scope` 的双 snapshot + compare 报告流程 | 默认对照入口已就位 |
-| `CTF2-005` | DOING | 建立 hollow encoder 槽位的结构化对照口径，回答“固定空壳 encoder 是否跨 target 同构”；当前先限定在 `device / scope / queue` 这些 non-empty 样本内收敛，并把 `queue_scope` 单列为 empty-capture 分支 | collection 离线报告脚本已就位，下一步是把 fresh live 的 non-empty target 样本灌进去跑出首份报告 |
-| `CTF2-006` | TODO | 判断 queue ranking 是否仍缺少足够接近 command-buffer activity 的证据，并决定是否拆出 queue-activity 子任务 | 若 target 对照收益持续很小，则其优先级上升 |
+| `CTF2-005` | DONE | 建立 hollow encoder 槽位的结构化对照口径，并产出首份 fresh live 报告 `ctf2-005-hollow-encoder-first-20260415b`；当前结论是 `device / scope` 的 overlap 槽位完全同构，`queue / queue_scope` 归入 empty-capture 分支 | 本轮已补齐四个 target 的 collection，并修正 empty 判定与百分比伪差异 |
+| `CTF2-010` | TODO | 解释 `scope` 相比 `device` 额外多出的 `Command Buffer 29 / 9` 个槽位，到底是尾帧、capture 边界后移，还是其它 target 边界效应 | 这是当前主线的新最高优先级子任务 |
+| `CTF2-006` | TODO | 判断 queue ranking 是否仍缺少足够接近 command-buffer activity 的证据，并决定是否拆出 queue-activity 子任务 | 只有在 `CTF2-010` 不足以解释当前差异时才上升 |
 | `CTF2-007` | TODO | 判断 preload timing 是否仍与残缺程度相关，并决定是否拆出 timing 子任务 | 结合 launch diagnostics 与 snapshot 对照 |
 | `CTF2-008` | TODO | 若 target / queue / timing 都不能解释残缺，再重新评估是否需要把 replacement side 或其它观测口径拉回主线 | 当前明确不是默认优先项 |
 | `CTF2-009` | BLOCKED | 任何需要用户授权补设 Accessibility、手工登录 app、持续人工交互或工作区外动作的验证 | 触发时必须先获得用户确认 |
@@ -110,6 +111,9 @@
 - `queue_scope` 比 `device` 略好，不等于 target 已经找对；小幅改善和主因闭环是两回事。
 - `queue_scope` 的 source summary 即便比 `device` 略好，也可能和 empty-capture 分支并存；因此不能把“引用缺失少一点”直接当作“Xcode 里可分析内容更多”。
 - hollow encoder 对照必须先把 empty-capture 分支剥离；若把 `queue_scope` 和 `device / scope / queue` 强行混进同一批 slot 对照，结论会被 replay 能力差异污染。
+- 用 `navigator_api_call.json` 直接数 Render Encoder 很容易把非空样本误判成 empty，因为默认 dump 并不会先展开所有 CB；当前 empty-capture 口径应优先看 `cb_data.json` 是否真的抽到了槽位。
+- 做跨 target 的 slot 签名对照时，`Render Encoder ... | 0.57%` / `Compute Encoder ... | ≈ 0.01%` 这类时长百分比只是展示性噪声；如果不先归一化，就会把 overlap 完全一致的结构误报成大面积 differing slots。
+- 多份 `.gputrace` 同时在 Xcode 里打开时，后续 GUI 自动化不能默认依赖 `windows[0]` 就是目标 trace；必须先确认当前窗口已经切到目标文档，否则很容易把 dump/collect 跑到上一份 trace 的 Summary 页上。
 - source attribution 变丰富，只能证明部分链路恢复，不能直接证明 hollow encoder 已消失。
 - 当前 queue ranking 仍偏 discovery-side 代理证据；若缺少 command-buffer activity 级别证据，就不要过早断言“已命中主渲染 queue”。
 - preload timing 的价值是缩小错过代理窗口的风险，不是天然保证所有 pre-existing Metal 对象都被完整纳入 capture。

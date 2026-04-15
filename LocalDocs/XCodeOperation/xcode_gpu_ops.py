@@ -21,6 +21,7 @@ import json
 import time
 import os
 import re
+from pathlib import Path
 from typing import Optional
 
 
@@ -116,6 +117,50 @@ class XcodeGPU:
         JSON.stringify({title: title, position: pos, size: sz, document: doc});
         """)
         return json.loads(result)
+
+    def _document_uri(self, path: str) -> str:
+        """将本地路径规范化为 Xcode Accessibility 暴露的 file:// URI。"""
+        return Path(path).expanduser().resolve().as_uri()
+
+    def _raise_window_for_document(self, document_uri: str) -> bool:
+        """尝试把匹配指定文档 URI 的 Xcode 窗口切到前台。"""
+        result = _jxa(_JXA_PREAMBLE + f"""
+        const targetDoc = {json.dumps(document_uri, ensure_ascii=False)};
+        let matched = false;
+        let wins = xcode.windows();
+        for (let i = 0; i < wins.length; i++) {{
+            let candidate = wins[i];
+            let doc = "";
+            try {{ doc = candidate.attributes["AXDocument"].value() || ""; }} catch(e) {{}}
+            if (doc !== targetDoc) continue;
+            matched = true;
+            try {{
+                candidate.actions.byName("AXRaise").perform();
+            }} catch (raiseErr) {{
+                try {{
+                    candidate.attributes["AXMain"].setValue(true);
+                }} catch (mainErr) {{}}
+            }}
+            break;
+        }}
+        matched ? "matched" : "missing";
+        """)
+        if result == "matched":
+            _activate_xcode()
+        return result == "matched"
+
+    def _wait_for_document_window(self, document_uri: str, timeout: int = 10) -> bool:
+        """等待目标文档窗口成为当前前台窗口。"""
+        for _ in range(timeout):
+            try:
+                current_doc = str(self.get_window_info().get("document") or "")
+            except RuntimeError:
+                current_doc = ""
+            if current_doc == document_uri:
+                return True
+            self._raise_window_for_document(document_uri)
+            time.sleep(1)
+        return False
 
     def get_debug_menu_items(self) -> list[dict]:
         """获取 Debug 菜单所有项及其 enabled 状态。"""
@@ -994,7 +1039,9 @@ class XcodeGPU:
             status["message"] = f"文件不存在: {gputrace_path}"
             return status
 
-        subprocess.run(["open", "-a", "Xcode", gputrace_path],
+        resolved_gputrace = str(Path(gputrace_path).expanduser().resolve())
+        target_document_uri = self._document_uri(resolved_gputrace)
+        subprocess.run(["open", "-a", "Xcode", resolved_gputrace],
                        check=True, timeout=10)
 
         # 2. 等待 Xcode 启动
@@ -1003,6 +1050,10 @@ class XcodeGPU:
             return status
         status["xcode_running"] = True
         time.sleep(3)  # 额外等待窗口初始化
+
+        if not self._wait_for_document_window(target_document_uri, timeout=min(timeout, 15)):
+            status["message"] = f"未切换到目标 gputrace 窗口: {target_document_uri}"
+            return status
 
         # 3. 显示 Debug Navigator
         if show_navigator:

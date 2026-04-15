@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from e006d_render_diff import build_collection_summary, load_json
 
 
 SCHEMA_VERSION = 1
+DURATION_SUFFIX = re.compile(r"\s+\|\s+(?:≈\s*)?(?:<\s*)?\d+(?:\.\d+)?%$")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -66,6 +68,10 @@ def load_snapshot_meta(summary: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def normalize_slot_text(text: str) -> str:
+    return DURATION_SUFFIX.sub("", text).strip()
+
+
 def extract_slots(command_buffers: dict[str, Any]) -> list[dict[str, Any]]:
     slots: list[dict[str, Any]] = []
     for command_buffer_index, command_buffer in enumerate(command_buffers.get("commandBuffers", [])):
@@ -92,9 +98,11 @@ def extract_slots(command_buffers: dict[str, Any]) -> list[dict[str, Any]]:
                     trailing_children.append(trailing_text)
                 trailing_index += 1
 
+            normalized_render_encoder = normalize_slot_text(child_text)
+            normalized_trailing_children = [normalize_slot_text(item) for item in trailing_children]
             signature_payload = {
-                "renderEncoder": child_text,
-                "trailingChildren": trailing_children,
+                "renderEncoder": normalized_render_encoder,
+                "trailingChildren": normalized_trailing_children,
             }
             slots.append(
                 {
@@ -103,7 +111,9 @@ def extract_slots(command_buffers: dict[str, Any]) -> list[dict[str, Any]]:
                     "slotOrdinal": slot_ordinal,
                     "childIndex": child_index,
                     "renderEncoder": child_text,
+                    "normalizedRenderEncoder": normalized_render_encoder,
                     "trailingChildren": trailing_children,
+                    "normalizedTrailingChildren": normalized_trailing_children,
                     "signature": json.dumps(signature_payload, ensure_ascii=False, sort_keys=True),
                 }
             )
@@ -118,7 +128,8 @@ def build_collection_context(collection_dir: Path, forced_empty_targets: set[str
     capture_target = str(snapshot_meta.get("captureTarget") or metadata.get("runLabel") or collection_dir.name)
     api_summary = summary["apiCallNavigator"]
     slots = extract_slots(summary["commandBuffers"])
-    auto_empty = api_summary.get("commandBufferCount", 0) == 0 or api_summary.get("renderEncoderCount", 0) == 0
+    slot_count = len(slots)
+    auto_empty = api_summary.get("commandBufferCount", 0) == 0 or slot_count == 0
     branch_type = "empty-capture-branch" if auto_empty or capture_target in forced_empty_targets else "non-empty"
     return {
         "collectionDir": str(collection_dir),
@@ -132,7 +143,7 @@ def build_collection_context(collection_dir: Path, forced_empty_targets: set[str
             "renderEncoderCount": api_summary.get("renderEncoderCount", 0),
             "presentDrawableCount": api_summary.get("presentDrawableCount", 0),
         },
-        "slotCount": len(slots),
+        "slotCount": slot_count,
         "renderEncoderCounts": list(summary["commandBuffers"].get("renderEncoderCounts", [])),
         "slots": slots,
     }
@@ -241,6 +252,16 @@ def build_conclusion(targets: list[dict[str, Any]], slot_comparison: dict[str, A
                 "The compared non-empty targets expose the same Render Encoder slot structure, "
                 "so the current hollow-slot evidence is consistent with a cross-target isomorphic pattern."
                 f"{suffix}"
+            ),
+        }
+
+    if slot_comparison["differingSlotCount"] == 0 and slot_comparison["missingSlotCount"] > 0:
+        return {
+            "status": "shared-overlap-with-missing-slots-across-nonempty-targets",
+            "summary": (
+                "The compared non-empty targets share the same slot signatures wherever they overlap, "
+                "but one or more targets still have extra or missing slot ranges; inspect the missing slots "
+                "before escalating to queue-ranking evidence."
             ),
         }
 

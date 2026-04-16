@@ -24,14 +24,16 @@
 
 ## 主线任务
 
-- **当前最新进展**：`CTF2-012` 已先完成一轮“证据链显式化”收敛：`MetalCaptureService.swift` 现已把当前 **preferred tracked queue**、`most_active_command_queue_*` 与两者之间的 `queue_selection_alignment` 一并暴露到 `get_capture_status`；`snapshot_capture_run.py` 会把这层 preferred-vs-most-active 证据写入 `snapshot.meta.json` 与 `queue-activity-summary.txt`；`compare_capture_runs.py` 与 `capture_target_compare_runner.py` 也已补齐对应入口与摘要输出，能够在同轮 snapshot 对照里直接看见 queue 选择是否对齐 activity 主样本。
-- **当前主判断**：`CTF2-011` 的核心决策保持不变：queue-activity 主证据仍应优先来自 **runtime-side activity**，离线结构化分析继续承担 hollow encoder / source attribution / CB 结构对照。但 `CTF2-012` 现阶段不应在缺少 fresh live 样本前直接改 ranking；更合理的顺序是先把“preferred vs most-active 是否一致”固化进标准对照产物，再根据样本决定是否让 ranking 吸收 activity 权重。
-- **当前关键缺口**：当前缺的已不再是 schema 或导出入口，而是**至少一轮 fresh live 样本**：需要把同轮 `get_capture_status` JSON、`.gputrace`、launch diagnostics 与 Xcode 结构化产物并排固化，才能回答 preferred queue 是否稳定等于 most-active queue，以及这种偏差是否只出现在 empty-capture 分支。
-- **当前 blocker**：阻塞点已从“缺少 preferred-vs-most-active 的标准化证据出口”收敛为“尚未取得带新字段的 fresh live 对照样本”。若后续验证重新依赖用户登录、GUI 点选、Accessibility 或工作区外动作，仍需先得到用户确认。
+- **当前最新进展**：已完成首轮带新字段的 fresh live 对照样本 `ctf2-012-live-20260416a`：通过 MCP 实际启动 `com.papegames.lysk`、读取 live `get_capture_status`、分别采集 `device` / `queue_scope` 两份 fresh `.gputrace`，并用 `capture_target_compare_runner.py finalize-pair` 固化成标准 pair snapshot + compare 报告。当前同轮 `queue-activity-summary.txt` 与 compare 报告都显示：两侧均为 `tracked_command_queue_count=4`、`queue_selection_alignment=same_queue`，但 **4 个 tracked queue 的 `commandBufferCreations` / `commandBufferCommits` 全部仍为 `0`**，`preferred` 与 `most-active` 只是落在同一个“零 activity 并列样本”上；此外，两份 fresh trace 都能被 `check_gputrace_sources.py` 正常解析（`device` 缺失引用 `1266`，`queue_scope` 缺失引用 `1259`），但当前 `xcode_gpu_ops.py open` 仍无法把 Xcode 切到这轮 fresh trace 的目标文档窗口，因此同轮 Xcode dump / `collect_cbs.py` 证据尚未补齐。
+- **当前主判断**：`CTF2-011` 的核心决策保持不变：queue-activity 主证据仍应优先来自 **runtime-side activity**，离线结构化分析继续承担 hollow encoder / source attribution / CB 结构对照。本轮 fresh live 已证明“preferred vs most-active 的标准化出口”可真实跑通，但由于 activity 计数仍全 0，当前的 `same_queue` 还不能被解读为“ranking 已稳定命中主渲染 queue”，更不能据此直接把 activity 权重吸收到 ranking。
+- **当前关键缺口**：当前真正缺的已经收敛为两项：一是**至少一轮带非零 queue activity 的 fresh live 样本**，能够让 `most_active_command_queue_*` 真正反映 runtime commit / creation 活跃度；二是**同轮 fresh trace 的 Xcode 结构化产物**，至少要补上一份可 replay 的 dump 或 `cb_data.json`，才能回答 `same_queue` 是否仍同时出现在 empty-capture 分支。
+- **当前 blocker**：阻塞点已从“拿不到 fresh live 样本”转为“当前 fresh live 样本里的 queue activity 仍全 0，且 fresh 20260416 trace 尚未被 Xcode 自动化成功切到目标文档窗口”。若后续验证重新依赖用户登录、GUI 点选、Accessibility 或工作区外动作，仍需先得到用户确认。
 - **下一步默认规划**：
   - 保留 `CTF2-010` 的当前结论：`scope` 多出的 `Command Buffer 29 / 9` 个槽位，应先按“capture 边界后移 / 多覆盖一个尾部 command buffer”处理；除非后续出现 overlap 内部结构分叉的新证据，否则不再把它当成未解释的主问题。
   - 将 `CTF2-011` 按“runtime-side queue-activity 证据层已落地、snapshot 入口已可复用”收尾；除非后续发现 runtime 计数口径明显失真，否则不再回到“runtime vs 离线二选一”的判断题。
-  - 新的最高优先级保持为利用这层新 evidence 复核 queue ranking：优先采一轮 fresh live 样本，判断 `preferredTrackedCommandQueue()` 当前命中的 queue，是否持续等于 `most_active_command_queue_*` 所指向的 queue；若不一致，再决定 ranking 应如何吸收 activity 权重。
+  - 保持 `CTF2-012` 为当前最高优先级，但其子目标已从“先拿到 fresh live 样本”切换为：优先解释为什么本轮 fresh live 的 `preferred` / `most-active` 在 activity 全 0 时仍返回 `same_queue`，以及这种结果是否只出现在当前 near-empty / empty-capture 分支。
+  - 追加一个面向验证链路的子任务：先诊断 fresh `20260416` trace 为何脚本可解析、却仍未被 `xcode_gpu_ops.py open` 切到目标文档窗口；只有拿回同轮 Xcode dump / `collect_cbs.py` 证据后，才继续追问 `queue_scope` 是否仍应归入 empty-capture 分支。
+  - 若后续 capture status 终于出现非零 `commandBufferCreations` / `commandBufferCommits`，再回到“ranking 是否要吸收 activity 权重”的判断题；在此之前不要因为当前 `same_queue` 就改 ranking。
   - 继续把 `queue` 与 `queue_scope` 记为当前 empty-capture 分支；除非后续拿到新的 stable replay 证据，否则不要把它们重新并入 non-empty hollow encoder 对照。
   - 若 timing 证据显示 preload / startup 时序仍与尾部缺失程度相关，则拆出 preload timing 子任务单独推进。
   - 在结构化证据没有明显指向前，默认**不把 converter / replacement 主链重新拉回主线**。
@@ -103,8 +105,9 @@
 | `CTF2-010` | DONE | 解释 `scope` 相比 `device` 额外多出的 `Command Buffer 29 / 9` 个槽位：当前证据更支持 capture 边界后移 / 多覆盖一个尾部 command buffer，而不是 overlap 内部结构分叉 | 依据是 `261` 个 shared slots 完全同构、launch/source 摘要保持一致，且额外 `9` 个槽位全部集中在尾部新增的 `Command Buffer 29` |
 | `CTF2-006` | DONE | 已确认现有 queue ranking 仍主要依赖 discovery-side 代理特征，缺少 activity-grade evidence；已决定拆出 queue-activity 子任务继续推进 | 依据包括 `queue` / `queue_scope` 仍属 empty-capture 分支，以及 `MetalCaptureService.swift` 当前 ranking 尚未使用 command-buffer activity |
 | `CTF2-011` | DONE | 已确定 queue-activity 证据优先补在 runtime 侧，并已通过 `get_capture_status` + `snapshot_capture_run.py --capture-status-json` 固化成可复用入口 | 当前可直接把 per-queue creation / commit activity 与单轮 snapshot 绑定保存 |
-| `CTF2-012` | TODO | 使用新的 runtime queue-activity snapshot 复核当前 preferred queue 是否稳定等于 most-active queue，并据此决定 ranking 是否要吸收 activity 权重 | 当前标准证据出口已补齐；剩余工作是拿 fresh live 样本做验证 |
+| `CTF2-012` | TODO | 使用新的 runtime queue-activity snapshot 复核当前 preferred queue 是否稳定等于 most-active queue，并据此决定 ranking 是否要吸收 activity 权重 | 已取得首轮 fresh live pair `ctf2-012-live-20260416a`，但两侧 activity 仍全 0，当前 `same_queue` 不能直接当作命中主渲染 queue 的正证据 |
 | `CTF2-013` | DONE | 将 preferred-vs-most-active queue 对齐状态显式暴露到 `get_capture_status`、snapshot 元数据、compare 报告与 pair runner 标准入口 | 现在可直接在 snapshot / compare 产物里看 `queue_selection_alignment` 与两侧 queue 摘要 |
+| `CTF2-014` | TODO | 诊断 fresh `20260416` trace 为什么已能被脚本解析和 snapshot 固化，但 `xcode_gpu_ops.py open` 仍无法切到目标文档窗口 | 当前这一步直接阻塞同轮 Xcode dump / `collect_cbs.py` 结构化证据 |
 | `CTF2-007` | TODO | 判断 preload timing 是否仍与残缺程度相关，并决定是否拆出 timing 子任务 | 结合 launch diagnostics 与 snapshot 对照 |
 | `CTF2-008` | TODO | 若 target / queue / timing 都不能解释残缺，再重新评估是否需要把 replacement side 或其它观测口径拉回主线 | 当前明确不是默认优先项 |
 | `CTF2-009` | BLOCKED | 任何需要用户授权补设 Accessibility、手工登录 app、持续人工交互或工作区外动作的验证 | 触发时必须先获得用户确认 |
@@ -128,6 +131,8 @@
 - 若当前主问题是“preferred queue 是否真的跟 most-active queue 对齐”，不要再把 `latest_command_queue_*` 当成语义主字段；后续证据与脚本输出应优先读取显式的 `preferred_command_queue_*` 与 `queue_selection_alignment`。
 - preload timing 的价值是缩小错过代理窗口的风险，不是天然保证所有 pre-existing Metal 对象都被完整纳入 capture。
 - 若对照样本没有被 snapshot 固化，后续很容易只剩口头结论，无法稳定比较 target / queue / timing 的收益。
+- 通过 MCP 触发 app 内 `capture_metal_frame` 时，`output_path` 不能默认直接写到工作区；当前已确认 app sandbox 会拒绝把 `.gputrace` 直接落到仓库目录，更稳妥的做法仍是先让 trace 落到 app 自己的 `Documents/Captures`，再由 host 侧脚本做 snapshot / 复制。
+- fresh `.gputrace` 能被 `check_gputrace_sources.py` 正常解析，不等于 Xcode 自动化已经能成功切到该 trace 的目标文档窗口；当前 `20260416` fresh 样本就出现了“脚本层可解析，但 `xcode_gpu_ops.py open` 仍无法切窗”的新分叉，不能把这两层验证混为一谈。
 - 主文档只保留决策信息；长日志、单次 run 细节和大段命令输出应下沉到子文档或运行产物。
 
 ## 参考信息

@@ -122,6 +122,7 @@ def make_capture_status(path: Path) -> None:
                 "most_active_command_queue_device_name": "Apple M4",
                 "most_active_command_queue_class_name": "CaptureMTLCommandQueue",
                 "most_active_command_queue_summary": "class=CaptureMTLCommandQueue, commits=9",
+                "queue_selection_alignment": "inconclusive_zero_activity",
                 "tracked_command_queues": [
                     {
                         "label": "queue.render.main",
@@ -227,6 +228,7 @@ class SnapshotCaptureRunTests(unittest.TestCase):
             self.assertEqual(meta["launchDiagnostics"]["latestLaunchSettings"]["metalCaptureEnabled"], True)
             self.assertEqual(meta["captureStatus"]["trackedCommandQueueCount"], 2)
             self.assertEqual(meta["captureStatus"]["mostActiveCommandQueueLabel"], "queue.render.main")
+            self.assertEqual(meta["captureStatus"]["queueSelectionAlignment"], "inconclusive_zero_activity")
             self.assertEqual(len(meta["captureStatus"]["trackedCommandQueues"]), 2)
             self.assertEqual(meta["copiedArtifacts"]["launchEventsPath"], "runtime-launch-diagnostics/launch-events.jsonl")
             self.assertEqual(meta["copiedArtifacts"]["launchSummaryJsonPath"], "runtime-launch-diagnostics/launch-summary.json")

@@ -633,6 +633,7 @@ final class CaptureToolsRegistrationTests: XCTestCase {
             mostActiveCommandQueueDeviceName: "Apple M4",
             mostActiveCommandQueueClassName: "CaptureMTLCommandQueue",
             mostActiveCommandQueueSummary: "class=CaptureMTLCommandQueue, commandBufferCommits=9",
+            queueSelectionAlignment: "inconclusive_zero_activity",
             trackedCommandQueues: [
                 TrackedCommandQueueActivityResult(
                     source: "newCommandQueue",
@@ -665,6 +666,7 @@ final class CaptureToolsRegistrationTests: XCTestCase {
         XCTAssertEqual(json["failure_reason"] as? String, "gpu_trace_document_unsupported")
         XCTAssertEqual(json["diagnostic_summary"] as? String, "enabled=true, captureManagerAvailable=true, supportsGPUTrace=false")
         XCTAssertEqual(json["most_active_command_queue_label"] as? String, "main-render-queue")
+        XCTAssertEqual(json["queue_selection_alignment"] as? String, "inconclusive_zero_activity")
         let trackedQueues = try XCTUnwrap(json["tracked_command_queues"] as? [[String: Any]])
         XCTAssertEqual(trackedQueues.count, 1)
         XCTAssertEqual(trackedQueues[0]["command_buffer_commit_count"] as? Int, 9)

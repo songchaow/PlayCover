@@ -157,6 +157,10 @@ private final class CommandBufferActivitySwizzles: NSObject {
             return score
         }
 
+        var hasObservedCommandBufferActivity: Bool {
+            commandBufferCreationCount > 0 || commandBufferCommitCount > 0
+        }
+
         var summary: String {
             [
                 "class=\(className)",

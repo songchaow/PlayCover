@@ -129,6 +129,7 @@
 - 当前最值得长期保留的 queue-activity 证据，应优先来自 runtime 侧直接观察到的 tracked queue command-buffer creation / commit 活跃度；离线 `cb_data.json` / `key_pass_details.json` 更适合作为 replay 结构与 hollow encoder 对照，而不是单独承担 queue 归因主证据。
 - 若要把 queue-activity 证据带入后续对照，应优先把 `get_capture_status` 原始 JSON 与 `snapshot_capture_run.py --capture-status-json` 一起固化进单轮 snapshot；不要只在终端里留下口头摘要。
 - 若当前主问题是“preferred queue 是否真的跟 most-active queue 对齐”，不要再把 `latest_command_queue_*` 当成语义主字段；后续证据与脚本输出应优先读取显式的 `preferred_command_queue_*` 与 `queue_selection_alignment`。
+- 若所有 tracked queue 的 `commandBufferCreations` / `commandBufferCommits` 都仍为 `0`，`most-active` 只是在 zero-activity 并列样本里按退化排序挑出的队列；此时 `queue_selection_alignment` 必须读作 `inconclusive_zero_activity`，不能再把它当成 ranking 已命中主渲染 queue 的证据。
 - preload timing 的价值是缩小错过代理窗口的风险，不是天然保证所有 pre-existing Metal 对象都被完整纳入 capture。
 - 若对照样本没有被 snapshot 固化，后续很容易只剩口头结论，无法稳定比较 target / queue / timing 的收益。
 - 通过 MCP 触发 app 内 `capture_metal_frame` 时，`output_path` 不能默认直接写到工作区；当前已确认 app sandbox 会拒绝把 `.gputrace` 直接落到仓库目录，更稳妥的做法仍是先让 trace 落到 app 自己的 `Documents/Captures`，再由 host 侧脚本做 snapshot / 复制。

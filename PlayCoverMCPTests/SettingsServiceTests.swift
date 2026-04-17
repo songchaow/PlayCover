@@ -85,6 +85,7 @@ final class SettingsServiceTests: XCTestCase {
             "resizableAspectRatioHeight": 0,
             "blockSleepSpamming": false,
             "metalCaptureEnabled": false,
+            "shaderSourceReplacementEnabled": true,
         ]
         let data = try PropertyListSerialization.data(
             fromPropertyList: defaults, format: .xml, options: 0
@@ -101,7 +102,8 @@ final class SettingsServiceTests: XCTestCase {
         containerDir: URL,
         bundleId: String,
         keymapping: Bool = false,
-        sensitivity: Float = 75
+        sensitivity: Float = 75,
+        shaderSourceReplacementEnabled: Bool = true
     ) throws {
         var defaults: [String: Any] = [
             "bundleIdentifier": bundleId,
@@ -140,11 +142,65 @@ final class SettingsServiceTests: XCTestCase {
             "blockSleepSpamming": false,
             "metalCaptureEnabled": false,
             "injectMetalCaptureEnvironment": false,
+            "shaderSourceReplacementEnabled": shaderSourceReplacementEnabled,
         ]
         defaults["keymapping"] = keymapping
         defaults["sensitivity"] = sensitivity
         let data = try PropertyListSerialization.data(
             fromPropertyList: defaults, format: .xml, options: 0
+        )
+        let url = containerDir
+            .appendingPathComponent("App Settings")
+            .appendingPathComponent(bundleId)
+            .appendingPathExtension("plist")
+        try data.write(to: url)
+    }
+
+    private func createLegacySettingsWithoutShaderField(containerDir: URL, bundleId: String) throws {
+        let legacySettings: [String: Any] = [
+            "bundleIdentifier": bundleId,
+            "keymapping": true,
+            "sensitivity": Float(50),
+            "disableTimeout": false,
+            "iosDeviceModel": "iPad13,8",
+            "windowWidth": 1920,
+            "windowHeight": 1080,
+            "customScaler": 2.0,
+            "resolution": 1,
+            "aspectRatio": 1,
+            "notch": false,
+            "bypass": false,
+            "discordActivity": [
+                "enable": true,
+                "applicationID": "",
+                "details": "",
+                "state": "",
+                "image": "",
+            ],
+            "version": "3.0.0",
+            "playChain": true,
+            "playChainDebugging": false,
+            "inverseScreenValues": false,
+            "metalHUD": false,
+            "windowFixMethod": 0,
+            "injectIntrospection": false,
+            "rootWorkDir": true,
+            "noKMOnInput": true,
+            "enableScrollWheel": true,
+            "hideTitleBar": false,
+            "floatingWindow": false,
+            "checkMicPermissionSync": false,
+            "limitMotionUpdateFrequency": false,
+            "disableBuiltinMouse": false,
+            "resizableAspectRatioType": 0,
+            "resizableAspectRatioWidth": 0,
+            "resizableAspectRatioHeight": 0,
+            "blockSleepSpamming": false,
+            "metalCaptureEnabled": false,
+            "injectMetalCaptureEnvironment": false,
+        ]
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: legacySettings, format: .xml, options: 0
         )
         let url = containerDir
             .appendingPathComponent("App Settings")
@@ -178,6 +234,7 @@ final class SettingsServiceTests: XCTestCase {
         XCTAssertEqual(settings["bundleIdentifier"] as? String, "com.test.nodefaults")
         XCTAssertEqual(settings["windowWidth"] as? Int, 1920)
         XCTAssertEqual(settings["windowHeight"] as? Int, 1080)
+        XCTAssertEqual(settings["shaderSourceReplacementEnabled"] as? Bool, true)
     }
 
     func testGetSettingsReadsExistingFile() throws {
@@ -191,6 +248,20 @@ final class SettingsServiceTests: XCTestCase {
         XCTAssertEqual(settings["keymapping"] as? Bool, false)
         // sensitivity is Float, may be represented as Double after JSON round-trip
         XCTAssertEqual(settings["sensitivity"] as? Double, 75.0)
+    }
+
+    func testGetSettingsMergesMissingShaderSourceReplacementEnabledFromDefaults() throws {
+        let (appDir, containerDir) = try makeFixtureApp(bundleId: "com.test.legacy")
+        defer { cleanupFixture([appDir, containerDir]) }
+        try createLegacySettingsWithoutShaderField(
+            containerDir: containerDir,
+            bundleId: "com.test.legacy"
+        )
+
+        let service = makeService(appDir: appDir, containerDir: containerDir)
+        let settings = try service.getSettings(bundleId: "com.test.legacy")
+
+        XCTAssertEqual(settings["shaderSourceReplacementEnabled"] as? Bool, true)
     }
 
     func testGetSettingsThrowsForNonexistentApp() throws {
@@ -229,6 +300,23 @@ final class SettingsServiceTests: XCTestCase {
         XCTAssertEqual(settings["keymapping"] as? Bool, false)
         // Other fields preserved
         XCTAssertEqual(settings["sensitivity"] as? Double, 50.0)
+    }
+
+    func testUpdateSettingsPatchShaderSourceReplacementEnabled() throws {
+        let (appDir, containerDir) = try makeFixtureApp(bundleId: "com.test.shader")
+        defer { cleanupFixture([appDir, containerDir]) }
+        try createDefaultSettings(containerDir: containerDir, bundleId: "com.test.shader")
+
+        let service = makeService(appDir: appDir, containerDir: containerDir)
+        let result = try service.updateSettings(
+            bundleId: "com.test.shader",
+            changes: ["shaderSourceReplacementEnabled": false]
+        )
+
+        XCTAssertEqual(result.updatedFields, ["shaderSourceReplacementEnabled"])
+
+        let settings = try service.getSettings(bundleId: "com.test.shader")
+        XCTAssertEqual(settings["shaderSourceReplacementEnabled"] as? Bool, false)
     }
 
     func testUpdateSettingsPatchMultipleFields() throws {
@@ -392,6 +480,7 @@ final class SettingsServiceTests: XCTestCase {
             "blockSleepSpamming": false,
             "metalCaptureEnabled": true,
             "injectMetalCaptureEnvironment": true,
+            "shaderSourceReplacementEnabled": false,
         ]
 
         let result = try service.updateSettings(
@@ -407,6 +496,7 @@ final class SettingsServiceTests: XCTestCase {
         XCTAssertEqual(settings["disableTimeout"] as? Bool, true)
         XCTAssertEqual(settings["bypass"] as? Bool, true)
         XCTAssertEqual(settings["floatingWindow"] as? Bool, true)
+        XCTAssertEqual(settings["shaderSourceReplacementEnabled"] as? Bool, false)
     }
 
     // MARK: - Reset Settings Tests
@@ -414,13 +504,20 @@ final class SettingsServiceTests: XCTestCase {
     func testResetSettings() throws {
         let (appDir, containerDir) = try makeFixtureApp(bundleId: "com.test.reset")
         defer { cleanupFixture([appDir, containerDir]) }
-        try createCustomSettings(containerDir: containerDir, bundleId: "com.test.reset", keymapping: false, sensitivity: 75)
+        try createCustomSettings(
+            containerDir: containerDir,
+            bundleId: "com.test.reset",
+            keymapping: false,
+            sensitivity: 75,
+            shaderSourceReplacementEnabled: false
+        )
 
         let service = makeService(appDir: appDir, containerDir: containerDir)
 
         // Verify non-default values
         let before = try service.getSettings(bundleId: "com.test.reset")
         XCTAssertEqual(before["keymapping"] as? Bool, false)
+        XCTAssertEqual(before["shaderSourceReplacementEnabled"] as? Bool, false)
 
         // Reset
         let result = try service.resetSettings(bundleId: "com.test.reset")
@@ -431,6 +528,7 @@ final class SettingsServiceTests: XCTestCase {
         let after = try service.getSettings(bundleId: "com.test.reset")
         XCTAssertEqual(after["keymapping"] as? Bool, true)
         XCTAssertEqual(after["sensitivity"] as? Double, 50.0)
+        XCTAssertEqual(after["shaderSourceReplacementEnabled"] as? Bool, true)
     }
 
     func testResetSettingsForNewApp() throws {
@@ -444,6 +542,7 @@ final class SettingsServiceTests: XCTestCase {
         // File should now exist with defaults
         let settings = try service.getSettings(bundleId: "com.test.resetnew")
         XCTAssertEqual(settings["keymapping"] as? Bool, true)
+        XCTAssertEqual(settings["shaderSourceReplacementEnabled"] as? Bool, true)
     }
 
     func testResetSettingsThrowsForNonexistentApp() throws {
@@ -573,6 +672,7 @@ final class SettingsServiceTests: XCTestCase {
             "resizableAspectRatioHeight": 0,
             "blockSleepSpamming": false,
             "metalCaptureEnabled": false,
+            "shaderSourceReplacementEnabled": true,
         ]
         let otherData = try PropertyListSerialization.data(
             fromPropertyList: otherDefaults, format: .xml, options: 0

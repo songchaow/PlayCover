@@ -7,7 +7,8 @@ final class SettingsToolsAndResourcesTests: XCTestCase {
 
     private func makeFixtureApp(
         bundleId: String = "com.test.settings",
-        displayName: String = "SettingsApp"
+        displayName: String = "SettingsApp",
+        includeShaderSourceReplacementEnabled: Bool = true
     ) throws -> (appDir: URL, containerDir: URL) {
         let fm = FileManager.default
 
@@ -38,7 +39,7 @@ final class SettingsToolsAndResourcesTests: XCTestCase {
         try fm.createDirectory(at: settingsDir, withIntermediateDirectories: true)
 
         // Create default settings
-        let defaults: [String: Any] = [
+        var defaults: [String: Any] = [
             "bundleIdentifier": bundleId,
             "keymapping": true,
             "sensitivity": Float(50),
@@ -76,6 +77,9 @@ final class SettingsToolsAndResourcesTests: XCTestCase {
             "metalCaptureEnabled": false,
             "injectMetalCaptureEnvironment": false,
         ]
+        if includeShaderSourceReplacementEnabled {
+            defaults["shaderSourceReplacementEnabled"] = true
+        }
         let data = try PropertyListSerialization.data(
             fromPropertyList: defaults, format: .xml, options: 0
         )
@@ -183,6 +187,28 @@ final class SettingsToolsAndResourcesTests: XCTestCase {
         XCTAssertEqual(json["keymapping"] as? Bool, true)
         XCTAssertEqual(json["windowWidth"] as? Int, 1920)
         XCTAssertEqual(json["injectMetalCaptureEnvironment"] as? Bool, false)
+        XCTAssertEqual(json["shaderSourceReplacementEnabled"] as? Bool, true)
+    }
+
+    func testGetAppSettingsFillsMissingShaderSourceReplacementEnabled() throws {
+        let (appDir, containerDir) = try makeFixtureApp(
+            bundleId: "com.test.legacygetsettings",
+            includeShaderSourceReplacementEnabled: false
+        )
+        defer { cleanupFixture([appDir, containerDir]) }
+
+        let server = makeServer(appDir: appDir, containerDir: containerDir)
+        let text = try extractResultText(sendRequest(server, JSONRPCRequest(
+            id: .string("get-legacy"),
+            method: "tools/call",
+            params: try AnyCodable([
+                "name": "get_app_settings",
+                "arguments": ["bundleId": "com.test.legacygetsettings"],
+            ])
+        )))
+
+        let json = try JSONSerialization.jsonObject(with: Data(text.utf8)) as! [String: Any]
+        XCTAssertEqual(json["shaderSourceReplacementEnabled"] as? Bool, true)
     }
 
     func testGetAppSettingsMissingBundleId() throws {
@@ -227,7 +253,11 @@ final class SettingsToolsAndResourcesTests: XCTestCase {
                 "name": "update_app_settings",
                 "arguments": [
                     "bundleId": "com.test.updatesettings",
-                    "changes": ["keymapping": false, "sensitivity": 80]
+                    "changes": [
+                        "keymapping": false,
+                        "sensitivity": 80,
+                        "shaderSourceReplacementEnabled": false,
+                    ]
                 ]
             ])
         )))
@@ -237,6 +267,7 @@ final class SettingsToolsAndResourcesTests: XCTestCase {
         let updatedFields = json["updatedFields"] as! [String]
         XCTAssertTrue(updatedFields.contains("keymapping"))
         XCTAssertTrue(updatedFields.contains("sensitivity"))
+        XCTAssertTrue(updatedFields.contains("shaderSourceReplacementEnabled"))
 
         // Verify via get
         let getText = try extractResultText(sendRequest(server, JSONRPCRequest(
@@ -249,6 +280,7 @@ final class SettingsToolsAndResourcesTests: XCTestCase {
         )))
         let getJson = try JSONSerialization.jsonObject(with: Data(getText.utf8)) as! [String: Any]
         XCTAssertEqual(getJson["keymapping"] as? Bool, false)
+        XCTAssertEqual(getJson["shaderSourceReplacementEnabled"] as? Bool, false)
     }
 
     func testUpdateAppSettingsMissingChanges() throws {
@@ -301,7 +333,11 @@ final class SettingsToolsAndResourcesTests: XCTestCase {
                 "name": "update_app_settings",
                 "arguments": [
                     "bundleId": "com.test.resetsettings",
-                    "changes": ["keymapping": false, "bypass": true]
+                    "changes": [
+                        "keymapping": false,
+                        "bypass": true,
+                        "shaderSourceReplacementEnabled": false,
+                    ]
                 ]
             ])
         )))
@@ -332,6 +368,7 @@ final class SettingsToolsAndResourcesTests: XCTestCase {
         let getJson = try JSONSerialization.jsonObject(with: Data(getText.utf8)) as! [String: Any]
         XCTAssertEqual(getJson["keymapping"] as? Bool, true)
         XCTAssertEqual(getJson["bypass"] as? Bool, false)
+        XCTAssertEqual(getJson["shaderSourceReplacementEnabled"] as? Bool, true)
     }
 
     func testResetAppSettingsMissingBundleId() throws {
@@ -378,6 +415,27 @@ final class SettingsToolsAndResourcesTests: XCTestCase {
         let json = try JSONSerialization.jsonObject(with: Data(text.utf8)) as! [String: Any]
         XCTAssertEqual(json["bundleIdentifier"] as? String, "com.test.settingsresource")
         XCTAssertEqual(json["keymapping"] as? Bool, true)
+        XCTAssertEqual(json["shaderSourceReplacementEnabled"] as? Bool, true)
+    }
+
+    func testReadSettingsResourceFillsMissingShaderSourceReplacementEnabled() throws {
+        let (appDir, containerDir) = try makeFixtureApp(
+            bundleId: "com.test.legacysettingsresource",
+            includeShaderSourceReplacementEnabled: false
+        )
+        defer { cleanupFixture([appDir, containerDir]) }
+
+        let server = makeServer(appDir: appDir, containerDir: containerDir)
+        let text = try extractResourceText(sendRequest(server, JSONRPCRequest(
+            id: .string("res-read-legacy-settings"),
+            method: "resources/read",
+            params: try AnyCodable([
+                "uri": "playcover://apps/com.test.legacysettingsresource/settings",
+            ])
+        )))
+
+        let json = try JSONSerialization.jsonObject(with: Data(text.utf8)) as! [String: Any]
+        XCTAssertEqual(json["shaderSourceReplacementEnabled"] as? Bool, true)
     }
 
     func testReadSettingsResourceNotFound() throws {

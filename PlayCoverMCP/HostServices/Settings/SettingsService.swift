@@ -87,6 +87,25 @@ public final class SettingsService: Sendable {
             .appendingPathExtension("plist")
     }
 
+    private func mergedSettings(bundleId: String, storedSettings: [String: Any]) -> [String: Any] {
+        merge(defaults: defaultSettings(bundleId: bundleId), overrides: storedSettings)
+    }
+
+    private func merge(defaults: [String: Any], overrides: [String: Any]) -> [String: Any] {
+        var merged = defaults
+
+        for (key, overrideValue) in overrides {
+            if let defaultDictionary = merged[key] as? [String: Any],
+               let overrideDictionary = overrideValue as? [String: Any] {
+                merged[key] = merge(defaults: defaultDictionary, overrides: overrideDictionary)
+            } else {
+                merged[key] = overrideValue
+            }
+        }
+
+        return merged
+    }
+
     // MARK: - App Validation
 
     /// Verify that an app with the given bundleId exists in the Applications directory.
@@ -133,7 +152,7 @@ public final class SettingsService: Sendable {
         guard let dict = props as? [String: Any] else {
             throw SettingsError.decodingFailed("Settings file is not a dictionary")
         }
-        return dict
+        return mergedSettings(bundleId: bundleId, storedSettings: dict)
     }
 
     // MARK: - Update (Patch)
@@ -162,7 +181,7 @@ public final class SettingsService: Sendable {
             guard var dict = props as? [String: Any] else {
                 throw SettingsError.decodingFailed("Settings file is not a dictionary")
             }
-            settings = dict
+            settings = mergedSettings(bundleId: bundleId, storedSettings: dict)
         } else {
             settings = defaultSettings(bundleId: bundleId)
         }
@@ -176,6 +195,7 @@ public final class SettingsService: Sendable {
             "checkMicPermissionSync", "limitMotionUpdateFrequency",
             "disableBuiltinMouse", "blockSleepSpamming",
             "metalCaptureEnabled", "injectMetalCaptureEnvironment",
+            "shaderSourceReplacementEnabled",
         ]
         let validIntFields: Set<String> = [
             "windowWidth", "windowHeight", "resolution", "aspectRatio",
@@ -324,6 +344,7 @@ public final class SettingsService: Sendable {
             "blockSleepSpamming": false,
             "metalCaptureEnabled": false,
             "injectMetalCaptureEnvironment": false,
+            "shaderSourceReplacementEnabled": true,
         ]
     }
 }

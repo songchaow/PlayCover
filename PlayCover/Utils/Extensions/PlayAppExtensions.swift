@@ -9,6 +9,10 @@ import Foundation
 
 extension PlayApp {
     func loadDiscordIPC() {
+        guard !PlayApp.minimalStartupCompatBundleIdentifiers.contains(info.bundleIdentifier) else {
+            return
+        }
+
         if self.container.doesExist() {
             let appTmp = self.container.containerUrl.appendingPathComponent("Data")
                 .appendingPathComponent("tmp")

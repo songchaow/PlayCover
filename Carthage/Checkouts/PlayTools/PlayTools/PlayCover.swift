@@ -46,8 +46,16 @@ public class PlayCover: NSObject {
         PlayInput.shared.initialize()
         RuntimeLaunchDiagnostics.record(event: "playcover_input_initialized", bundleId: runtimeBundleId)
 
-        DiscordIPC.shared.initialize()
-        RuntimeLaunchDiagnostics.record(event: "playcover_discord_initialized", bundleId: runtimeBundleId)
+        if appliesMinimalStartupCompat {
+            RuntimeLaunchDiagnostics.record(
+                event: "playcover_discord_skipped",
+                bundleId: runtimeBundleId,
+                details: ["reason": "startup_compat_profile"]
+            )
+        } else {
+            DiscordIPC.shared.initialize()
+            RuntimeLaunchDiagnostics.record(event: "playcover_discord_initialized", bundleId: runtimeBundleId)
+        }
 
         // 初始化 Metal 截帧服务
         let shouldPreloadCaptureForSourceAttribution =

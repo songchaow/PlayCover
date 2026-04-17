@@ -123,7 +123,7 @@ class PlayApp: BaseApp {
 extension PlayApp {
     static let introspection: String = "/usr/lib/system/introspection"
     static let iosFrameworks: String = "/System/iOSSupport/System/Library/Frameworks"
-    private static let minimalStartupCompatBundleIdentifiers: Set<String> = ["com.tencent.ngr"]
+    static let minimalStartupCompatBundleIdentifiers: Set<String> = ["com.tencent.ngr"]
 
     /// Common Metal and capture related environment keys used in multiple places
     private static let metalEnvKeys: [String] = [

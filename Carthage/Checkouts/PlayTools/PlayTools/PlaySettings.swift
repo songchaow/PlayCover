@@ -5,6 +5,7 @@ let settings = PlaySettings.shared
 
 @objc public final class PlaySettings: NSObject {
     @objc public static let shared = PlaySettings()
+    private static let minimalStartupCompatBundleIds: Set<String> = ["com.tencent.ngr"]
 
     let bundleIdentifier = Bundle.main.infoDictionary?["CFBundleIdentifier"] as? String ?? ""
     let settingsUrl: URL
@@ -24,6 +25,14 @@ let settings = PlaySettings.shared
     }
 
     lazy var discordActivity = settingsData.discordActivity
+
+    lazy var appliesMinimalStartupCompat = Self.minimalStartupCompatBundleIds.contains(bundleIdentifier)
+
+    lazy var shouldInstallLibrarySourceInjection = !appliesMinimalStartupCompat
+
+    private func disableForMinimalStartupCompat(_ value: Bool) -> Bool {
+        appliesMinimalStartupCompat ? false : value
+    }
 
     lazy var keymapping = settingsData.keymapping
 
@@ -70,7 +79,7 @@ let settings = PlaySettings.shared
         }
     }()
 
-    @objc lazy var playChain = settingsData.playChain
+    @objc lazy var playChain = disableForMinimalStartupCompat(settingsData.playChain)
 
     @objc lazy var playChainDebugging = settingsData.playChainDebugging
 
@@ -78,7 +87,7 @@ let settings = PlaySettings.shared
 
     @objc lazy var customScaler = settingsData.customScaler
 
-    @objc lazy var rootWorkDir = settingsData.rootWorkDir
+    @objc lazy var rootWorkDir = disableForMinimalStartupCompat(settingsData.rootWorkDir)
 
     @objc lazy var noKMOnInput = settingsData.noKMOnInput
 
@@ -96,11 +105,11 @@ let settings = PlaySettings.shared
 
     @objc lazy var blockSleepSpamming = settingsData.blockSleepSpamming
 
-    @objc lazy var metalCaptureEnabled = settingsData.metalCaptureEnabled
+    @objc lazy var metalCaptureEnabled = disableForMinimalStartupCompat(settingsData.metalCaptureEnabled)
 
-    @objc lazy var injectMetalCaptureEnvironment = settingsData.injectMetalCaptureEnvironment
+    @objc lazy var injectMetalCaptureEnvironment = disableForMinimalStartupCompat(settingsData.injectMetalCaptureEnvironment)
 
-    @objc lazy var shaderSourceReplacementEnabled = settingsData.shaderSourceReplacementEnabled
+    @objc lazy var shaderSourceReplacementEnabled = disableForMinimalStartupCompat(settingsData.shaderSourceReplacementEnabled)
 }
 
 struct AppSettingsData: Codable {

@@ -14,7 +14,25 @@ public class PlayCover: NSObject {
     @objc static public func launch() {
         let runtimeBundleId = Bundle.main.bundleIdentifier
             ?? "playtools.runtime.\(ProcessInfo.processInfo.processIdentifier)"
+        let playSettings = PlaySettings.shared
+        let appliesMinimalStartupCompat = playSettings.appliesMinimalStartupCompat
         RuntimeLaunchDiagnostics.record(event: "playcover_launch_enter", bundleId: runtimeBundleId)
+
+        if appliesMinimalStartupCompat {
+            RuntimeLaunchDiagnostics.record(
+                event: "playcover_startup_compat_profile_applied",
+                bundleId: runtimeBundleId,
+                details: [
+                    "profile": "minimal-startup",
+                    "playChain": playSettings.playChain ? "true" : "false",
+                    "rootWorkDir": playSettings.rootWorkDir ? "true" : "false",
+                    "metalCaptureEnabled": playSettings.metalCaptureEnabled ? "true" : "false",
+                    "injectMetalCaptureEnvironment": playSettings.injectMetalCaptureEnvironment ? "true" : "false",
+                    "shaderSourceReplacementEnabled": playSettings.shaderSourceReplacementEnabled ? "true" : "false",
+                    "librarySourceInjectionEnabled": playSettings.shouldInstallLibrarySourceInjection ? "true" : "false",
+                ]
+            )
+        }
 
         quitWhenClose()
         RuntimeLaunchDiagnostics.record(event: "playcover_quit_observer_installed", bundleId: runtimeBundleId)
@@ -32,14 +50,26 @@ public class PlayCover: NSObject {
         RuntimeLaunchDiagnostics.record(event: "playcover_discord_initialized", bundleId: runtimeBundleId)
 
         // 初始化 Metal 截帧服务
-        MetalCaptureService.shared.initialize()
-        RuntimeLaunchDiagnostics.record(event: "playcover_metal_capture_initialized", bundleId: runtimeBundleId)
-
         let shouldPreloadCaptureForSourceAttribution =
-            PlaySettings.shared.metalCaptureEnabled && PlaySettings.shared.shaderSourceReplacementEnabled
-        let shouldPreloadCaptureEarly = PlaySettings.shared.metalCaptureEnabled
-        let capturePreloadedEarly =
-            MetalCaptureService.shared.prepareForEarlyCaptureIfNeeded()
+            playSettings.metalCaptureEnabled && playSettings.shaderSourceReplacementEnabled
+        let shouldPreloadCaptureEarly = playSettings.metalCaptureEnabled
+        let capturePreloadedEarly: Bool
+
+        if playSettings.metalCaptureEnabled {
+            MetalCaptureService.shared.initialize()
+            RuntimeLaunchDiagnostics.record(event: "playcover_metal_capture_initialized", bundleId: runtimeBundleId)
+            capturePreloadedEarly = MetalCaptureService.shared.prepareForEarlyCaptureIfNeeded()
+        } else {
+            capturePreloadedEarly = false
+            if appliesMinimalStartupCompat {
+                RuntimeLaunchDiagnostics.record(
+                    event: "playcover_metal_capture_skipped",
+                    bundleId: runtimeBundleId,
+                    details: ["reason": "startup_compat_profile"]
+                )
+            }
+        }
+
         RuntimeLaunchDiagnostics.record(
             event: "playcover_capture_library_preload_checked",
             bundleId: runtimeBundleId,
@@ -47,13 +77,22 @@ public class PlayCover: NSObject {
                 "needed": shouldPreloadCaptureEarly ? "true" : "false",
                 "loaded": capturePreloadedEarly ? "true" : "false",
                 "sourceAttributionNeeded": shouldPreloadCaptureForSourceAttribution ? "true" : "false",
+                "suppressedByCompatProfile": appliesMinimalStartupCompat ? "true" : "false",
             ]
         )
 
         // E-003 / E-004f3: 安装 makeLibrary swizzle（运行时 shader corpus 导出 + 源码替换入口）
         // 若启用了 capture + replacement，上面的 preload 必须先于 swizzle / replacement 发生。
-        LibrarySourceInjectionService.shared.installIfNeeded()
-        RuntimeLaunchDiagnostics.record(event: "playcover_library_injection_installed", bundleId: runtimeBundleId)
+        if playSettings.shouldInstallLibrarySourceInjection {
+            LibrarySourceInjectionService.shared.installIfNeeded()
+            RuntimeLaunchDiagnostics.record(event: "playcover_library_injection_installed", bundleId: runtimeBundleId)
+        } else if appliesMinimalStartupCompat {
+            RuntimeLaunchDiagnostics.record(
+                event: "playcover_library_injection_skipped",
+                bundleId: runtimeBundleId,
+                details: ["reason": "startup_compat_profile"]
+            )
+        }
 
         NSLog("%@", "[PlayTools] PlayCover.launch bundleId=\(runtimeBundleId)")
         RuntimeLaunchDiagnostics.record(event: "playcover_bridge_listener_start_requested", bundleId: runtimeBundleId)
@@ -70,19 +109,25 @@ public class PlayCover: NSObject {
             RuntimeLaunchDiagnostics.record(event: "playcover_bridge_listener_start_failed", bundleId: runtimeBundleId)
         }
 
-        if PlaySettings.shared.rootWorkDir {
+        if playSettings.rootWorkDir {
             // Change the working directory to / just like iOS
             FileManager.default.changeCurrentDirectoryPath("/")
             RuntimeLaunchDiagnostics.record(event: "playcover_working_directory_changed", bundleId: runtimeBundleId, details: ["cwd": "/"])
+        } else if appliesMinimalStartupCompat {
+            RuntimeLaunchDiagnostics.record(
+                event: "playcover_working_directory_preserved",
+                bundleId: runtimeBundleId,
+                details: ["cwd": FileManager.default.currentDirectoryPath]
+            )
         }
 
         RuntimeLaunchDiagnostics.record(
             event: "playcover_launch_complete",
             bundleId: runtimeBundleId,
             details: [
-                "injectMetalCaptureEnvironment": PlaySettings.shared.injectMetalCaptureEnvironment ? "true" : "false",
-                "metalCaptureEnabled": PlaySettings.shared.metalCaptureEnabled ? "true" : "false",
-                "shaderSourceReplacementEnabled": PlaySettings.shared.shaderSourceReplacementEnabled ? "true" : "false",
+                "injectMetalCaptureEnvironment": playSettings.injectMetalCaptureEnvironment ? "true" : "false",
+                "metalCaptureEnabled": playSettings.metalCaptureEnabled ? "true" : "false",
+                "shaderSourceReplacementEnabled": playSettings.shaderSourceReplacementEnabled ? "true" : "false",
             ]
         )
     }

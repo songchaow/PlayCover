@@ -123,6 +123,7 @@ class PlayApp: BaseApp {
 extension PlayApp {
     static let introspection: String = "/usr/lib/system/introspection"
     static let iosFrameworks: String = "/System/iOSSupport/System/Library/Frameworks"
+    private static let minimalStartupCompatBundleIdentifiers: Set<String> = ["com.tencent.ngr"]
 
     /// Common Metal and capture related environment keys used in multiple places
     private static let metalEnvKeys: [String] = [
@@ -165,6 +166,9 @@ extension PlayApp {
 
     func effectiveLaunchEnvironment() -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
+        let shouldInjectMetalCaptureEnvironment =
+            settings.settings.injectMetalCaptureEnvironment
+            && !PlayApp.minimalStartupCompatBundleIdentifiers.contains(info.bundleIdentifier)
 
         for key in Array(environment.keys) where key.hasPrefix("DYLD_") {
             environment.removeValue(forKey: key)
@@ -178,7 +182,7 @@ extension PlayApp {
         // Metal capture is now enabled via runtime dlopen() inside PlayTools'
         // MetalCaptureService — see RC-009 delayed injection.
 
-        if settings.settings.injectMetalCaptureEnvironment {
+        if shouldInjectMetalCaptureEnvironment {
             for (key, value) in PlayApp.injectedMetalCaptureEnvironment {
                 environment[key] = value
             }

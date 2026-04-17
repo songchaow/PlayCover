@@ -82,6 +82,8 @@ public final class LaunchService: Sendable {
         "DYLD_INSERT_LIBRARIES": "/usr/lib/libmtlcapture.dylib",
     ]
 
+    private static let minimalStartupCompatBundleIds: Set<String> = ["com.tencent.ngr"]
+
     /// The system library that enables `MTLCaptureManager.supportsDestination(.gpuTraceDocument)`.
     /// Xcode injects this automatically during GPU Frame Capture debug sessions.
     /// Without it, `supportsDestination(.gpuTraceDocument)` always returns `false`,
@@ -291,6 +293,10 @@ public final class LaunchService: Sendable {
     }
 
     private func shouldInjectMetalCaptureEnvironment(bundleId: String) -> Bool {
+        guard !Self.minimalStartupCompatBundleIds.contains(bundleId) else {
+            return false
+        }
+
         let settingsURL = appDirectory
             .deletingLastPathComponent()
             .appendingPathComponent("App Settings")

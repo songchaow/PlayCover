@@ -21,13 +21,13 @@
 
 - **当前结论**：`com.tencent.ngr` 的 **app-scoped 最小兼容启动 gate 已落地**。最新一轮验证中，即使把 `metalCaptureEnabled`、`injectMetalCaptureEnvironment`、`playChain`、`rootWorkDir` 人为改回 `true`，runtime 仍会记录 `playcover_startup_compat_profile_applied`，并把这一组高风险早期路径压成关闭态；但进程依旧在 `playcover_launch_complete` 之后很快崩溃，说明问题**不再主要卡在这组已知早期副作用是否被误打开**。
 - **当前已知事实**：2026-04-18 本地验证生成了新的 `NGR-2026-04-18-001136.ips`。对应的 `launch-events.jsonl` 显示：`playcover_metal_capture_skipped`、`playcover_library_injection_skipped`、`playcover_working_directory_preserved` 已出现，且 `playcover_library_injection_installed` 不再出现；但 `create_session` 仍超时，`list_sessions` 只看到 `disconnected`，新的 `.ips` 仍是主线程 `EXC_BAD_ACCESS / SIGSEGV`，faulting address 为 `0x0`，faulting frames 继续落在 `NGR` image 的早期 initializer 窗口。
-- **当前主线**：保留已落地的 `com.tencent.ngr` 最小兼容启动 gate，继续把“runtime 实际生效值”和“plist / MCP 设置值”分开看待；在此基础上，下一阶段要么补齐最小兼容档的自动化表达能力，要么继续向更深一层 bootstrap（`AKInterface`、`PlayScreen`、`PlayInput`、`DiscordIPC`）下钻。
-- **当前卡点**：虽然 startup gate 已经证明能把 `MetalCapture` / `library hook` / `rootWorkDir` 压掉，且代码路径上已对 `PlayChain` 做 app-scoped 屏蔽，但崩溃窗口没有实质离开 `NGR` 自身 early initializer；同时，现有自动化写入路径还不能完整表达这套最小兼容档，host/MCP 看到的原始 settings 也不等于 runtime 最终生效值，其中 `shaderSourceReplacementEnabled` 仍是最明显的缺口。
+- **当前主线**：保留已落地的 `com.tencent.ngr` 最小兼容启动 gate，并继续把“runtime 实际生效值”和“plist / MCP 设置值”分开看待；其中最小兼容档的 raw settings 自动化表达缺口已补到 `shaderSourceReplacementEnabled`，下一阶段应转入固定口径的 live 启动闭环验证，再决定是否继续向更深一层 bootstrap（`AKInterface`、`PlayScreen`、`PlayInput`、`DiscordIPC`）下钻。
+- **当前卡点**：虽然 startup gate 已经证明能把 `MetalCapture` / `library hook` / `rootWorkDir` 压掉，且代码路径上已对 `PlayChain` 做 app-scoped 屏蔽，但崩溃窗口没有实质离开 `NGR` 自身 early initializer；当前主要缺口已从 settings 自动化写入切换为 live 闭环验证：需要基于 clean minimal settings 再跑一轮“构建 → 启动 → session → launch diagnostics → `.ips`”对照，确认 faulting window 是否发生移动。
 - **下一步默认规划**：
-  1. 补 `com.tencent.ngr` 的 settings 自动化表达能力，把最小兼容档里被 runtime 强制压低的开关都纳入稳定写入/对照范围，尤其是 `shaderSourceReplacementEnabled`。
-  2. 继续沿用“构建 → 启动 → session → launch diagnostics → `.ips`”闭环，对 clean minimal settings 再做一轮固定口径验证。
-  3. 若崩溃窗口仍保持不变，再按顺序分层延迟或禁用 `AKInterface`、`PlayScreen`、`PlayInput`、`DiscordIPC` 等更深一层早期 bootstrap。
-  4. 只有当 PlayTools 已被最小化到近乎空载、崩溃仍保持同一 faulting window 时，才升级到 LLDB + 二进制意图分析 / patch。
+  1. 继续沿用“构建 → 启动 → session → launch diagnostics → `.ips`”闭环，对 clean minimal settings 再做一轮固定口径验证。
+  2. 若崩溃窗口仍保持不变，再按顺序分层延迟或禁用 `AKInterface`、`PlayScreen`、`PlayInput`、`DiscordIPC` 等更深一层早期 bootstrap。
+  3. 若分层关闭后 faulting window 仍不移动，再进入 LLDB / faulting instruction / crash window 归因。
+  4. 只有当 PlayTools 已被最小化到近乎空载、崩溃仍保持同一 faulting window 时，才升级到二进制意图分析 / patch。
 
 ## 构建与验证的方法
 
@@ -44,7 +44,7 @@
 
 ### 当前建议的最小兼容验证口径
 
-- 默认把 `metalCaptureEnabled=false`、`injectMetalCaptureEnvironment=false`、`shaderSourceReplacementEnabled=false`、`rootWorkDir=false`、`playChain=false` 视为 `com.tencent.ngr` 的优先隔离态；其中如果某项当前无法通过现有自动化接口可靠施加，应先补自动化能力。
+- 默认把 `metalCaptureEnabled=false`、`injectMetalCaptureEnvironment=false`、`shaderSourceReplacementEnabled=false`、`rootWorkDir=false`、`playChain=false` 视为 `com.tencent.ngr` 的优先隔离态；当前这些关键开关都应可通过现有 MCP 接口稳定写入 / 读取，但仍要把 host/plist 原始值与 runtime compat gate 压低后的实际生效值分开解读。
 - 只要本轮改动触及启动顺序、PlayTools 注入内容、settings 默认值、per-app gate、签名/重签或 app 包内二进制，就必须重新跑一轮完整的“构建 → 启动 → session → launch diagnostics → crash report”闭环。
 
 ### 需要用户确认后才能继续的事项
@@ -70,7 +70,7 @@
 |---|---|---|---|
 | HOK-001 | DONE | 复现 `com.tencent.ngr` 启动崩溃并固定第一轮基线证据（session / launch diagnostics / `.ips`） | 暂无；证据已体现在主线结论中 |
 | HOK-002 | DONE | 为 `com.tencent.ngr` 落地 app-scoped 最小兼容启动 gate；runtime 现已显式跳过 `MetalCapture` / `library hook`，显式保留 working directory，并在代码路径上压低 `PlayChain` 早期副作用 | 暂无；结果已体现在主线结论与 launch diagnostics 中 |
-| HOK-003 | TODO | 为 `com.tencent.ngr` 补齐最小兼容档的 settings 自动化表达能力，让被 runtime compat gate 压低的关键开关也能被稳定写入、读取和对照，尤其是 `shaderSourceReplacementEnabled` | 待建 |
+| HOK-003 | DONE | 已补齐 `com.tencent.ngr` 最小兼容档的 settings 自动化表达能力；MCP 现可稳定写入、读取、reset 并对照 `shaderSourceReplacementEnabled` 等关键开关，但 runtime 实际生效值仍需结合 launch diagnostics 判断 | 暂无；结果已体现在 MCP settings 覆盖与主线结论中 |
 | HOK-004 | TODO | 验证 `HOK-002 ~ HOK-003` 后的启动表现，并固化自动化对照脚本与 settle window 口径 | 待建 |
 | HOK-005 | TODO | 若仍崩溃，分层延迟或禁用 `AKInterface`、`PlayScreen`、`PlayInput`、`DiscordIPC` 等更深一层早期 bootstrap | 待建 |
 | HOK-006 | TODO | 做 LLDB / faulting instruction / crash window 归因，确认崩点是否仍固定在同一 `NGR` early initializer 路径 | 待建 |
@@ -83,6 +83,7 @@
 - `playcover_launch_complete` **不等于** app 已安全启动；`com.tencent.ngr` 当前就是在该事件之后很快崩溃。
 - `metal capture` 关闭并不自动等于“没有启动期 Metal / library hook 副作用”；对该 app 需要显式做 per-app 最小化处理。
 - `shaderSourceReplacementEnabled` 在 host/runtime 默认值里都偏向开启思路，不能想当然地把它当作“默认无影响”。
+- 现在可以通过 MCP 稳定写入 / 读取 `shaderSourceReplacementEnabled`，但这只代表 raw settings 已可自动化表达；是否真正命中 `com.tencent.ngr` 的最小兼容 gate，仍应优先看 `launch-events.jsonl`。
 - `session briefly ready -> disconnected` 与新的 `.ips` 搭配起来，是比“窗口看起来闪退”更稳定的自动化判定信号。
 - `playcover_startup_compat_profile_applied`、`playcover_metal_capture_skipped`、`playcover_library_injection_skipped`、`playcover_working_directory_preserved` 是本轮之后判断 `com.tencent.ngr` 最小兼容 gate 是否真正命中的首选证据；不要再只看 plist 里的原始布尔值。
 - 当前阶段的核心不是恢复全部 PlayCover 能力，而是先证明**最小兼容运行**能不能成立；能力恢复必须放在启动稳定之后。

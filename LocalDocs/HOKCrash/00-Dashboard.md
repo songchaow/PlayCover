@@ -42,62 +42,57 @@
 
 - **当前状态（HOK-015 / HOK-016-A / HOK-016-B / HOK-016-C.1 /
   HOK-016-C.X.1 / HOK-016-C.2.1 / HOK-016-C.2.2 / HOK-016-C.2.3 /
-  HOK-016-C.2.4 / HOK-016-C.2.5 已落地；HOK-016-C.2.6 当前主线）**：
-  HOK-015 `cmdline preseed` 在 PlayTools constructor 稳定命中，
-  218 条 inline `FCommandLine::Get()` guard 全部 fall-through。
-  HOK-016-A / B / C.1 已精确锁定 Create Failed 的外层触发链；
-  HOK-016-C.X.1 证伪"HOK-015 seed 值驱动"假设；HOK-016-C.2.1
-  / C.2.2 / C.2.3 证伪"sentinel `0x10e1eeef0` 未 bump" 假设；
-  HOK-016-C.2.4 证伪"失败点在 `0x10017f3c8`"，把真因锁定到
-  `0x10017f184` 内 `bl 0x1001cd114` 的字符串 lookup；
-  **HOK-016-C.2.5 进一步更正：rootB 不是"空红黑树"，而是被
-  reporter 在运行期 insert 过 2 个 entry，但这 2 个 entry 的
-  key 都不是 "main"**：
-  - readiness B 失败的直接输入：`0x10017f184` 内
-    `bl 0x1001cd114(rootB=0x10e184b18, "main" PascalString, 1)`
-    返回 0 → `0x10017f1e0 cbz x0 → fail_slot_2 → return 0`。
-  - rootB 的 insert 发生在 **reporter 调用链内部**（不是 dyld
-    static init）：`Scripts/hok016c25_ngr_rootB_watch.py` 在
-    NGR `main` 入口装 8-byte modify watchpoint，捕获到 2 次命
-    中，PC 均在 `0x1001cf020`（红黑树 insert writer）；Hit #1
-    backtrace 明确：frame #4 = `0x108877bd0 +692`（reporter 内
-    部、readiness B dispatcher 之前），frame #5..#9 = reporter
-    入口 +176 → MeyersSingleton → FactoryRegister →
-    QtsFileSystem_Init。
-  - `Scripts/hok016c2_ngr_sentinel_writer_scan.py --target-address
-    0x10e184b18`（离线直接 store 扫描）+
-    `Scripts/hok016c25_ngr_rootB_xref_scan.py`（离线 adrp+add
-    xref 扫描）证实：rootB 有 1 个合法的 static-constructor
-    writer（`0x1001cf20c` 在 `__init_offsets` 可达链里，负责
-    空容器初始化）和 94 个 helper 通过 x0 传参消费它；真正的
-    entry insert 不出现在直接 store 扫描里，而是通过 helper 完成。
-  - **"main" chunk 的预注册路径目前未知**——reporter 内部的 2 次
-    insert 的 key 不是 "main"；iOS 下有某段 iOS-specific 的预
-    注册代码更早填 "main"，macOS 下没触达。
+  HOK-016-C.2.4 / HOK-016-C.2.5 / HOK-016-C.2.6 已落地；
+  HOK-016-C.2.7 当前主线）**：HOK-015 `cmdline preseed` 在
+  PlayTools constructor 稳定命中，218 条 inline
+  `FCommandLine::Get()` guard 全部 fall-through。HOK-016-A / B /
+  C.1 已精确锁定 Create Failed 的外层触发链；HOK-016-C.X.1 证伪
+  "HOK-015 seed 值驱动"假设；HOK-016-C.2.1 / C.2.2 / C.2.3 证伪
+  "sentinel `0x10e1eeef0` 未 bump" 假设；HOK-016-C.2.4 把失败链
+  缩到 `0x10017f184`；**HOK-016-C.2.6 进一步更正：rootB 并不缺
+  `"main"` key，真正缺的是 `"main"` 对应对象下面的 `"1"`
+  二级子项**：
+  - `Scripts/hok016c26_ngr_main_literal_xref.py` 离线扫 NGR 二进制后，
+    **没有**找到与 dyld `__init_offsets` 可达链相交的 PascalString
+    `"main"` 预注册 literal/xref；仅命中与当前主线无关的 `__cstring`
+    `main` 文本。
+  - `Scripts/hok016c26_ngr_rootB_keys.py` +
+    `Scripts/hok016c26_lldb_rootb_key_watch.py` 的运行期 key-watch 证实：
+    reporter 内部 **第一次** rootB insert（`PC = 0x1001cf020`，
+    backtrace 仍是 `0x108877bd0 +692`）插入的 key 就是
+    PascalString `"main"`；insert 后 rootB header 变成单节点树
+    （两指针都指向新节点、count=1）。
+  - `0x10017f184` 内那次关键调用
+    `bl 0x1001cd114(rootB=0x10e184b18, "main", 1)` **返回非零**：
+    `0x10017f1dc` 处实测 `x0 = 0x137027a00`（非零），因此
+    `0x10017f1e0 cbz x0` **不是** 当前 run 的失败点。
+  - 真正把返回值翻成 0 的是后续的 `0x1001bd448`：其内部先调
+    `0x1001ba82c(mainChunk, "1")`，`0x1001bd588` 处实测 `x0 = 0`；
+    随后 `0x10017f29c` 处 `x0 = 0 / x19 = 0`，最终
+    `0x10432e074` 看到 `0x10017f184` 返回 0。
+  - `0x10017f1dc` 处对返回的 `mainChunk` 对象做快照：
+    `obj+0x60 = 0x0`，而 `0x1001ba82c` 正是从 `mainChunk+0x60`
+    起步做二级树 lookup；动态装到 `mainChunk+0x60` 的 watchpoint 在
+    failure 发生前 **0 hit**。即 reporter 插进 rootB 的 `main`
+    对象是**空壳对象**：名字已注册，但 `"1"` 子项树始终没被填充。
   - `hok014_ngr_alert_suppressed` 仍稳定触发 1 次，HOK-014 swizzle
     守住 UI。进程依然僵尸态。
 
-- **修复路线（优先级最高 → 最低；HOK-016-C.2.5 之后重新排）**：
-  1. `HOK-016-C.2.6`（**当前主线**）：**定位 "main" chunk 的预注
-     册路径**。静态路线：在 NGR 二进制扫 PascalString 字面量
-     `"main"`（4-byte length prefix = `04 00 00 00 00 00 00 00 6d
-     61 69 6e`）以及它的 adrp+add xref；看哪些 xref 函数与 dyld
-     `__init_offsets` 可达链相交。运行路线：扩大 C.2.5
-     watchpoint 范围——不仅监控 rootB[0..7]、也在每次 insert
-     命中时 dump 新 node 的 key 字段，对比看哪次 insert 的 key
-     真的是 "main"；若 "main" 的 insert 来自 reporter 路径以外
-     的函数，backtrace 即给出 registrar 入口。
-  2. `HOK-016-C.5`：若 C.2.6 能给出一个可重复的
-     `bl <insert_helper>(x0=rootB, x1="main" PascalString, ...)`
-     签名，PlayTools constructor 里按同样签名手动 invoke 一次；
-     这是最小侵入的修法。
-  3. `HOK-016-C.4`：若 insert 是 C++ template / lambda / 无法从
-     PlayTools 复制的复杂路径，fishhook interpose
-     `0x10017f184` / `0x1001cd114` 让 lookup 对 key "main" 强制
-     返回非零。
+- **修复路线（优先级最高 → 最低；HOK-016-C.2.6 之后重新排）**：
+  1. `HOK-016-C.2.7`（**当前主线**）：**定位 / 模拟 `mainChunk`
+     对象内部 `"1"` 子项的注册路径**。运行路线：继续围绕
+     `0x10017f184 → 0x1001bd448 → 0x1001ba82c(mainChunk, "1")`
+     追 `mainChunk+0x60` 二级树的 writer / constructor；静态路线：
+     反推 `0x1001ba82c` / `0x1001bd448` 的 callers 和对象构造路径，
+     找出谁本该把 `"1"` 注册到 `mainChunk` 下。
+  2. `HOK-016-C.5`：若 C.2.7 能给出可重复的 `mainChunk -> "1"`
+     注册签名（或完整的 `main` chunk 对象构造路径），PlayTools
+     constructor 里按同样签名补齐该二级注册；这是新的最小侵入修法。
+  3. `HOK-016-C.4`：若 `"1"` 子项注册路径过于复杂，fishhook
+     interpose `0x1001ba82c` / `0x1001bd448` 做诊断性强制成功，验证
+     只要 `mainChunk -> "1"` 闭合，进程是否能继续跑。
   4. `HOK-016-C.3`：终极野蛮方案——fishhook interpose
-     `0x108878534` 直接返回 1，跳过整条 readiness B。稳定性风险
-     极高。
+     `0x108878534` 直接返回 1，跳过整条 readiness B。稳定性风险极高。
   5. `HOK-016-C.6`：降级到 HOK-009 类型（需要用户介入）。
 
 - **已证伪路径**：
@@ -259,46 +254,39 @@
     plist 行为未变；HOK-010 self-heal 仍是改 settings 的正确入口。
   - 候选 E 磁盘备份仍在 `build/hok-007b-backups/*.bin`，日常不 apply。
 
-- **当前主线**：`HOK-016-C.2.6`——定位 **"main" chunk 的预注册路径**。
-  静态路线：在 NGR 二进制扫 PascalString 字面量 `"main"`（4-byte
-  length prefix = `04 00 00 00 00 00 00 00 6d 61 69 6e`）以及它的
-  adrp+add xref；看哪些 xref 函数与 dyld `__init_offsets` 可达链相
-  交。运行路线：扩大 C.2.5 watchpoint 覆盖——不仅监控 rootB[0..7]、
-  也在每次 insert 命中时 dump 新 node 的 key 字段；若 "main" 的
-  insert 来自 reporter 路径以外的函数，backtrace 即给出 registrar
-  入口。目标状态不变：`launch-events.jsonl` 里
+- **当前主线**：`HOK-016-C.2.7`——定位 **`mainChunk -> "1"`
+  二级子项的注册路径**。当前已知：rootB 里的 `"main"` key 本身能在
+  reporter 内部被插入并成功 lookup；失败发生在
+  `0x1001bd448` 内部对 `0x1001ba82c(mainChunk, "1")` 的二级 lookup。
+  目标状态不变：`launch-events.jsonl` 里
   `hok014_ngr_alert_suppressed` 事件**真正归零**；进程 `RSS ≥ 800MB` /
   线程数 ≥ 20 / 窗口在主屏内 / `%CPU` 持续 ≥ 5%。
 
-- **当前卡点**：reporter 运行期只 insert 了 2 个非-"main" entry；
-  "main" chunk 的 registrar 函数还未定位。iOS 下有某段 iOS-specific
-  的预注册代码更早填 "main"，macOS 下没触达——候选位置：(a) dyld
-  `__init_offsets` 的另一条 initializer（目前 C.2.5 离线扫描未发
-  现从 `__init_offsets` 可达的 "main" literal），(b) Objective-C
-  `+load` 方法，(c) `__mod_init_func` 等 constructor 段。
+- **当前卡点**：`mainChunk` 对象已经能拿到，但它是个**空壳对象**：
+  `0x10017f1dc` 处快照显示 `obj+0x60 = 0x0`，而
+  `0x1001ba82c(mainChunk, "1")` 正是从 `mainChunk+0x60` 起步做二级树
+  lookup；装到 `mainChunk+0x60` 的动态 watchpoint 在 failure 发生前
+  `0 hit`。也就是说缺失的不是 rootB 里的 `"main"`，而是
+  `mainChunk` 内部的 `"1"` 子注册 / 子树填充。
 
 - **下一步默认规划**：
-  1. `HOK-016-C.2.6`：先写
-     `Scripts/hok016c26_ngr_main_literal_xref.py`——离线扫
-     NGR `__TEXT` / `__DATA_CONST` / `__DATA` 里的 PascalString
-     `"main"` 字面量（`04 00 00 00 00 00 00 00 6d 61 69 6e ...`）
-     以及它的 adrp+add xref；产物
-     `build/hok-016c26-main-literal.json`。
-  2. 如果 C.2.6 离线直接给出候选 registrar，进入
-     `HOK-016-C.5`：PlayTools constructor 里直接调用同样签名的
-     insert helper 预注册 "main"。
-  3. 如果离线扫不出来，扩大 C.2.5 watchpoint 到 rootB 前 64 字节（
-     覆盖 insert 时写 leftmost / rightmost / count / new-node 的
-     所有位置），在每次命中时 dump 新 node 的 key；这能直接把
-     "main" insert 的 registrar 函数暴露出来。
-  4. 若上两步证实 insert 来自第三方 framework / Obj-C +load 且不
-     可模拟，进入 `HOK-016-C.4`：fishhook interpose
-     `bl 0x1001cd114` / `0x10017f184` / `0x10432dd98`。
-  5. `HOK-016-C.3` 保留作为最后兜底。
-  6. `HOK-016-D` live 验证标准不变：`hok014_ngr_alert_suppressed = 0`
+  1. `HOK-016-C.2.7`：围绕
+     `0x10017f184 → 0x1001bd448 → 0x1001ba82c(mainChunk, "1")`
+     继续做 live trace，把 `mainChunk` 对象的构造 / writer / 子树填充路
+     径钉死；优先抓 `mainChunk+0x60` / `0x1001ba82c` / `0x1001bd448`
+     相关 writer 或 constructor。
+  2. 若 C.2.7 能定位完整的 `mainChunk -> "1"` 注册路径，进入
+     `HOK-016-C.5`：PlayTools constructor 里补齐该二级注册，
+     而不是只往 rootB 塞 `"main"` 名字。
+  3. 若 C.2.7 证实 `mainChunk` 注册路径过于复杂，进入
+     `HOK-016-C.4`：fishhook interpose `0x1001ba82c` /
+     `0x1001bd448` 做诊断性强制成功，先验证二级子项闭合后进程能否继
+     续跑。
+  4. `HOK-016-C.3` 保留作为最后兜底。
+  5. `HOK-016-D` live 验证标准不变：`hok014_ngr_alert_suppressed = 0`
      + `%CPU/RSS/线程/窗口` 活跃度达标 + 无新 `NGR-*.ips`。
-  7. 只有 HOK-016 闭合，才把 HOK-014 正式降级为冷备安全网。
-  8. （可选后续）`HOK-008`：闭合 HOK-016 后，把完整验证链路固化成
+  6. 只有 HOK-016 闭合，才把 HOK-014 正式降级为冷备安全网。
+  7. （可选后续）`HOK-008`：闭合 HOK-016 后，把完整验证链路固化成
      单脚本。
 
 ## 构建与验证
@@ -397,11 +385,12 @@
 | HOK-016-C.2.2 | DONE（证伪） | 新增 `Scripts/hok016c2_ngr_sentinel_writer_scan.py` 做全 `__text` writer 扫描（`str/strb/strh/str.w`），并用 `Scripts/hok016c2_ngr_sentinel_probe.py` + `hok016c2_lldb_sentinel_watch.py` 运行期 probe。结果：**sentinel `0x10e1eeef0` = 0x05、全 `__text` 0 writer**，"sentinel 未 bump" 假设被证伪 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.2.3 | DONE | 新增 `Scripts/hok016c2_ngr_step_into_readinessB.py`，在 `0x108878534 +352 bl 0x10432dd98` 前 / 后及 `0x10432dd98` 入口设探针。结果：**`0x10432dd98` 被稳定 call 到，且返回 0**；readiness B 失败源从 sentinel 改写为 `0x10432dd98` 深层 lookup（HOK-016-C.2.4 进一步修正为 `0x10017f184` 而非 `0x10017f3c8`） | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.2.4 | DONE | 新增 `Scripts/hok016c24_ngr_readinessB_inner_args.py` + `Scripts/hok016c24_lldb_inner_probes.py`，分三轮实验（v2/v3/v4-5）在 `0x10432dd98` / `0x10017f184` / `0x10017f3c8` 装 ~30 个 Python callback BP。结论：**真正失败点是 `0x10017f184` 内 `bl 0x1001cd114(rootB=0x10e184b18, "main", 1)` 返回 0**——rootB 是空红黑树（sentinel 自指），没人注册过 key `"main"` 这个 chunk 名。先前 Dashboard "`0x10432dd98 → 0x10017f3c8`" 路径被证伪（f3c8 系列 BP 跨 run 0 命中）；C.5 path fixup 路线也被间接证伪（lookup key 是内部 PascalString 而非 FString 路径）。证据 `build/hok-016c24-readinessB-inner-args.json` | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.2.5 | DONE | 新增 `Scripts/hok016c25_ngr_rootB_xref_scan.py` + `Scripts/hok016c25_ngr_rootB_watch.py`；复用 `hok016c2_ngr_sentinel_writer_scan.py --target-address 0x10e184b18` 做离线直接 store 扫描（1 真 writer `0x1001cf314` = static init 空容器初始化、1 误报）+ 94 个 adrp+add xref 入 x0 的 helper 消费方 + LLDB watchpoint 在 NGR main 入口装 modify watchpoint 捕获到 2 次命中，PC 均在 `0x1001cf020`（红黑树 insert writer），backtrace 证实 insert 发生在 reporter 运行期内部（frame #4 = `0x108877bd0 +692`）。**关键结论更正**：rootB 不是"空红黑树"，而是被 reporter 内部 insert 过 2 个 entry，但 key 不是 "main"；"main" 预注册是 iOS-specific、macOS 下缺失。证据 `build/hok-016c25-rootB-writer.json` + `build/hok-016c25-rootB-xrefs.json` + `build/hok-016c25-rootB-watch.json` | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.2.6 | TODO（当前主线） | 定位 "main" chunk 的预注册路径：离线扫 NGR 二进制里 PascalString 字面量 `"main"`（4-byte length prefix = `04 00 00 00 00 00 00 00 6d 61 69 6e`）及其 adrp+add xref，看哪些 xref 函数在 `__init_offsets` 可达链上；运行期扩大 C.2.5 watchpoint 覆盖到 rootB 前 64 字节并在每次 insert 命中时 dump 新 node 的 key。目标：把 iOS-specific 的 "main" registrar 函数入口钉死，作为 C.5 修法的输入 | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.3 | DEFERRED | 终极野蛮方案：fishhook interpose `0x108878534` 直接返回 1，跳过整条 readiness B。稳定性风险极高，仅在 C.2.6/C.4/C.5 全部证伪时作为最后兜底 | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.4 | TODO | 若 C.2.6 证实 "main" registrar 不可模拟（第三方 framework / Obj-C +load / C++ template），fishhook interpose `0x10017f184` 或 `0x1001cd114` 让其对 key="main" 强制返回非零；先作为诊断验证"只要 rootB lookup 返回 1 进程就能继续跑" | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.5 | TODO | 若 C.2.6 定位到 "main" registrar 且可在 PlayTools constructor 中模拟其"注册 main entry" 行为，这是最小侵入修复。先前"pt_stat / NSBundle path fixup" 形式已被 C.2.4 间接证伪（lookup key 不是 FString 路径），此处意图改为"在 rootB 中模拟插入 main entry" | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.2.5 | DONE | 新增 `Scripts/hok016c25_ngr_rootB_xref_scan.py` + `Scripts/hok016c25_ngr_rootB_watch.py`；复用 `hok016c2_ngr_sentinel_writer_scan.py --target-address 0x10e184b18` 做离线直接 store 扫描（1 真 writer `0x1001cf314` = static init 空容器初始化、1 误报）+ 94 个 adrp+add xref 入 x0 的 helper 消费方 + LLDB watchpoint 在 NGR main 入口装 modify watchpoint 捕获到 reporter 内部 insert。**该轮最初关于“insert 的 key 不是 `main`”的判断已被 C.2.6 推翻**；保留其对 rootB writer / insert-helper 归因的证据价值。证据 `build/hok-016c25-rootB-writer.json` + `build/hok-016c25-rootB-xrefs.json` + `build/hok-016c25-rootB-watch.json` | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.2.6 | DONE | 新增 `Scripts/hok016c26_ngr_main_literal_xref.py` + `Scripts/hok016c26_ngr_rootB_keys.py` + `Scripts/hok016c26_lldb_rootb_key_watch.py`。离线扫描结果：**没有**找到与 dyld `__init_offsets` 可达链相交的 PascalString `"main"` 预注册 literal/xref；运行期 key-watch 结果：reporter 内部第一次 insert 的 key **就是** `"main"`，`0x10017f184` 内 `bl 0x1001cd114(rootB, "main", 1)` 也**返回非零**。**关键改写**：问题不再是 rootB 缺 `"main"`，而是 `mainChunk` 对象的 `obj+0x60` 二级树为空，导致后续 `0x1001ba82c(mainChunk, "1")` 返回 0。证据 `build/hok-016c26-main-literal.json` + `build/hok-016c26-rootB-keys.json` | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.2.7 | TODO（当前主线） | 定位 `mainChunk -> "1"` 二级子项的注册路径：继续围绕 `0x10017f184 → 0x1001bd448 → 0x1001ba82c(mainChunk, "1")` 做 live trace / 静态反推，把谁本该填 `mainChunk+0x60` 二级树钉死。当前已知：`0x10017f1dc` 处 `mainChunk` 非零，但 `obj+0x60 = 0x0`，动态 watchpoint 在 failure 前 `0 hit` | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.3 | DEFERRED | 终极野蛮方案：fishhook interpose `0x108878534` 直接返回 1，跳过整条 readiness B。稳定性风险极高，仅在 C.2.7/C.4/C.5 全部证伪时作为最后兜底 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.4 | TODO | 若 C.2.7 证实 `mainChunk -> "1"` 注册路径不可模拟（第三方 framework / Obj-C +load / C++ template），优先 fishhook interpose `0x1001ba82c` 或 `0x1001bd448` 做诊断性强制成功；先验证"只要 `mainChunk -> "1"` 闭合，进程就能继续跑" | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.5 | TODO | 若 C.2.7 定位到完整的 `mainChunk -> "1"` 注册 / 对象构造路径且可在 PlayTools constructor 中模拟，这是新的最小侵入修复。先前“只在 rootB 中模拟插入 `main` entry”已被 C.2.6 证伪为修得不够深 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.6 | DEFERRED | 若 C.2.6 最终指向必须由用户提供外部资源或登录态，才把问题降级到 HOK-009 类型（需要用户介入）。在此之前不主动走这条线 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-D | TODO | HOK-016-C 落地后 live 验证（`hok014_ngr_alert_suppressed = 0` + 进程活跃度指标 + 窗口可见性 + 无新 `NGR-*.ips`）；闭合后把 HOK-014 降级为冷备安全网 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-007C | DEFERRED | 下游 crash 的离线映射 + 可逆 patch；HOK-013/014 之后未观察到新 faulting callsite，当前无触发动机 | `HOK-007-二进制意图分析与callsite映射.md`（按需） |

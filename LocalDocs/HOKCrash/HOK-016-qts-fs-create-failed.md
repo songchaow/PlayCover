@@ -615,9 +615,95 @@ entry（C.2.5 watchpoint 命中证实），但它们不是 "main"。"main" 需
 要**由 iOS-specific 预注册代码填入**，macOS 下该路径没触达。
 
 下一步定位——"谁应该把 'main' entry 插入 rootB"——由 HOK-016-C.2.6
-处理。
+处理；**该问题随后被 C.2.6 进一步改写**，见下节。
 
-## 修复方向（HOK-016-C.2.5 之后重新排序）
+### HOK-016-C.2.6：`rootB -> "main"` 实际成功，真正缺的是 `mainChunk -> "1"`
+
+C.2.5 的关键误差是把 rootB 的失败停在了 **第一层**名字查找。C.2.6 用
+新的离线脚本 + 运行期 LLDB trace 把这条链继续往后推，结论是：
+
+1. **离线 `"main"` literal 扫描没有找到可用的 dyld registrar**。
+   `Scripts/hok016c26_ngr_main_literal_xref.py` 扫到的只有与当前主线无关的
+   `__cstring main` 文本（例如普通日志字符串 / ObjC method name），**没有**
+   找到与 `__init_offsets` 可达链相交的 PascalString `"main"` 预注册路径。
+   这条结果本身不能给出修法，但它排除了“磁盘里就有一个明确的 static
+   constructor 专门注册 `main`”这条最省事路线。产物
+   `build/hok-016c26-main-literal.json`。
+
+2. **reporter 内部第一次 insert 的 key 就是 `"main"`**。
+   `Scripts/hok016c26_ngr_rootB_keys.py` +
+   `Scripts/hok016c26_lldb_rootb_key_watch.py` 在 C.2.5 的 rootB watchpoint
+   基础上，直接读取新 node 的 `node+0x20` PascalString，实测：
+
+   - watchpoint hit @ `0x1001cf020`
+   - `x19 = rootB = 0x10e184b18`
+   - `x21 = newNode`
+   - `newNode+0x20 = 04 00 00 00 00 00 00 00 6d 61 69 6e 00 00 00 00`
+
+   即 reporter 不是“插了两个非-`main` entry”，而是**至少有一次插的就
+   是 `main`**。insert 之后 rootB header 变成单节点树（两个 ptr 都指向新节点，
+   count=1）。产物 `build/hok-016c26-rootB-keys.json`。
+
+3. **`0x10017f184` 内第一层 lookup 已经成功**。
+   在 `0x10017f1dc`（`bl 0x1001cd114` 返回后）设 BP，实测：
+
+   - `x0 = 0x137027a00`（非零；每次 run 地址不同）
+   - 因而 `0x10017f1e0 cbz x0` **不会**触发
+
+   这直接推翻了 C.2.4 / C.2.5 的旧结论“`bl 0x1001cd114(rootB, "main", 1)`
+   返回 0”。也就是说 **rootB 里的 `"main"` 名字查找已经闭合**。
+
+4. **失败发生在下一层：`0x1001bd448` 内的 `0x1001ba82c(mainChunk, "1")`**。
+   静态反汇编显示：
+
+   - `0x10017f290` 调 `0x1001bd448(x0 = mainChunk, x1 = entry+0x20 = "1", x2 = sp+0x28, x3 = sp+0x10)`
+   - `0x1001bd448 +0x13c` 调 `0x1001ba82c(x0 = mainChunk, x1 = "1")`
+   - `0x1001bd588` 处实测 `x0 = 0`
+   - 随后 `0x10017f29c` 处 `x0 = 0 / x19 = 0`
+   - 最终 `0x10432e074` 看到 `0x10017f184` 返回 0
+
+   也就是说真失败点不再是 `rootB -> "main"`，而是 **`mainChunk -> "1"`**
+   这层二级查找。
+
+5. **`mainChunk` 是个空壳对象：`obj+0x60 = 0x0` 且直到 failure 前都没人写它**。
+   对 `0x10017f1dc` 处返回的 `mainChunk` 对象做快照，实测：
+
+   - `obj+0x60 = 0x0`
+   - `obj+0xe0` 有非空数组边界（说明对象本身不是空指针）
+
+   而 `0x1001ba82c` 的静态逻辑正是：
+
+   - `mainChunk+0x60` 取一棵内部树的 root
+   - 用 key `"1"` 做 tree lookup
+   - 命中则返回 `match+0x30`
+   - miss 则直接返回 0
+
+   C.2.6 在 `mainChunk+0x60` 上临时装了动态 watchpoint；从对象出现到
+   readiness B failure 之间 **0 hit**。这证明 reporter 插到 rootB 里的
+   `main` 对象只是一个**名字已存在、但内部 `"1"` 子项树为空**的骨架对象。
+
+#### C.2.6 对根因链的改写
+
+新的真因链（覆盖 C.2.5 的“rootB 缺 `main`”说法）：
+
+```text
+reporter 内部 insert main 到 rootB
+  → rootB["main"] lookup succeeds
+  → 得到 mainChunk object
+  → mainChunk+0x60 secondary tree is NULL / never populated
+  → 0x1001ba82c(mainChunk, "1") returns 0
+  → 0x1001bd448 returns 0
+  → 0x10017f184 returns 0
+  → 0x10432dd98 returns 0
+  → readiness B fail
+  → "QtsFileSystem Create Failed!!"
+```
+
+因此，后续修复目标不再是“往 rootB 里补一个 `main` entry”，而是更精确的：
+**让 `mainChunk` 对象下面的 `"1"` 子注册闭合**，或者在更靠后的诊断点
+（`0x1001ba82c` / `0x1001bd448`）做 bundle-scoped 强制成功验证。
+
+## 修复方向（HOK-016-C.2.6 之后重新排序）
 
 HOK-016 的修复必须在 PlayTools 层 bundle-scoped、不动 NGR 二进制，可选
 方案按"影响面从小到大 / 风险从低到高"排：

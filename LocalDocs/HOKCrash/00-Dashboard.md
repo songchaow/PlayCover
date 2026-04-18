@@ -14,20 +14,20 @@
 - 对 `com.tencent.ngr` 的修复默认应为**按 bundle 精准生效**，不扩大为全局行为改动，除非后续证据证明全局改动安全且必要。
 - 对该 app 的默认兼容配置应把 `metal capture`、`startup injection`、`shader replacement` 视为**非必要能力**；它们不是日常 gate。
 - 默认优先级：**兼容配置 / 运行时最小化副作用** → **延迟或分层关闭早期 bootstrap** → **LLDB / faulting instruction 归因** → **app 二进制 patch**。
-- 不允许把“用户手工登录、手工点 UI、手工看窗口表现”作为日常验证 gate；这些只能作为例外步骤，且需先确认。
+- 不允许把"用户手工登录、手工点 UI、手工看窗口表现"作为日常验证 gate；这些只能作为例外步骤，且需先确认。
 - 主文档只保留决策信息、默认执行路径和高频复用经验；历史细节、长日志、反复试错过程必须下沉到子文档。
 
 ## 主线任务
 
-- **当前结论**：`HOK-004`、`HOK-005A`、`HOK-005B`、`HOK-005C`、`HOK-005D`、`HOK-006`、`HOK-007A` 均已完成。最新离线结果已证明：`0x10480df08` / `___lldb_unnamed_symbol272374 + 124` 这一 faulting callsite 在 `LLDB`、`.ips`、`instructionByteStream`、磁盘原始字节与 `__TEXT,__text` file offset 之间是一致的；当前问题依然稳定落在 `NGR` 自身 early initializer / dyld loader 路径，而不是 PlayTools bootstrap 顺序。
-- **当前已知事实**：2026-04-18 执行 `python3 Scripts/hok007_ngr_callsite_mapper.py` 产出结构化报告 `build/hok-007-ngr-callsite-report.json`。该报告从 `build/hok-006-ngr-lldb-report.json` 自动解析 concrete binary path `/Users/songdogwang/Library/Containers/io.playcover.PlayCover/Applications/com.tencent.ngr.app/NGR`，并对照 `NGR-2026-04-18-133909.ips` 确认：`faultPc=0x10480df08`、`.ips firstFrame.imageOffset=0x480df08`、`usedImage.base=0x100000000`、`fileOffset=0x480df08`，命中区段为 `__TEXT,__text`（`vmaddr=0x100004000`、`fileoff=0x4000`）。`instructionByteStream.beforePC` / `atPC` 与实际磁盘 `beforePCHex` / `atPCHex` 全量一致，faulting line 继续是 `ldr x8, [x19]`，且 `.ips` 与 LLDB register snapshot 中 `x19=0x0`、`faultAddress/far=0x0` 再次同时命中；`checks.beforePcBytesMatch=true`、`checks.atPcBytesMatch=true`、`checks.disassemblyMatchesFaultInstruction=true`、`checks.x19NullConfirmed=true`、`checks.overallPass=true` 全部命中。
-- **当前主线**：继续保留已落地的 `com.tencent.ngr` 最小兼容启动 gate 与 `AKInterface` 延迟补丁，把 `Scripts/hok004_ngr_startup_runner.py` 作为 baseline live 入口，把 `Scripts/hok006_ngr_lldb_runner.py` 作为 faulting instruction / backtrace 入口；当前主线已从 `HOK-007A` 切到 `HOK-007B`。默认下一步不再重复做地址映射，而是直接基于 `build/hok-007-ngr-callsite-report.json` 围绕 `0x10480df08` / `fileOffset=0x480df08` 设计一个最小可逆 patch 候选。
-- **当前卡点**：callsite / file offset / 原始字节映射已经收敛，但当前仍缺少“应该 guard 哪一层对象生命周期、以及最小可逆 patch 应落在 faulting load 本身还是更早一跳数据准备路径”的最终取舍。后续需要在不扩大 patch 面的前提下，选定一个最小字节 diff、可回滚、可重签的 patch 候选，并用 live 闭环验证 faulting window 是否移动。
+- **当前结论**：`HOK-004`、`HOK-005A`、`HOK-005B`、`HOK-005C`、`HOK-005D`、`HOK-006`、`HOK-007A`、`HOK-007B` 均已完成。最新离线+live 结果已证明：候选 E（`ldr x8,[x19]` → `b 0x10480df24`，只改 4 字节、可逆、可重签）已经成功把原 faulting window 从 `0x10480df08` / `far=0x0` 推开；HOK-004 baseline 10s settle 内 session 不再秒断、也没有新 `.ips`，HOK-006 LLDB 交叉运行在更长存活时间里观察到的新崩溃 `NGR-2026-04-18-154537.ips` 已迁移到 `pc=0x10915b114` / `imageOffset=0x4839d14` / `far=0x50`，与原 callsite 不同。
+- **当前已知事实**：2026-04-18 执行 `python3 Scripts/hok007b_ngr_patch_runner.py --apply` 成功将 NGR 的磁盘 sha256 从 `b0e109d7...` 改到 `7f6ae20c...`，`0x480df08` 处字节由 `680240f9` 改为 `07000014`，`llvm-objdump` 复核反汇编为 `b 0x10480df24`，`codesign -dvv` 继续为 `adhoc`。随后 `python3 Scripts/hok004_ngr_startup_runner.py --skip-build-install` 报告 `createSessionSucceeded=true`、`readyObservedDuringSettleWindow=true`、`disconnectedObservedDuringSettleWindow=false`、`newCrashReportsDetected=false`、`overallPass=true`。`python3 Scripts/hok006_ngr_lldb_runner.py --skip-build-install` 报告 `lldbStopObserved=false`、`faultingInstruction=None`，同轮出现的新 `.ips` 不再落在 `0x10480df08`。结构化产物：`build/hok-007b-ngr-patch-report.json`、`build/hok-007b-post-patch-hok004.json`、`build/hok-007b-post-patch-hok006.json`、`build/hok-007b-backups/hok-007b-b0e109d761a3eefb.bin`。
+- **当前主线**：继续保留已落地的 `com.tencent.ngr` 最小兼容启动 gate、`AKInterface` 延迟补丁，把 `Scripts/hok004_ngr_startup_runner.py` 作为 baseline live 入口，把 `Scripts/hok006_ngr_lldb_runner.py` 作为 faulting instruction / backtrace 入口，把 `Scripts/hok007b_ngr_patch_runner.py` 作为"当前已应用哪一层可逆 patch"的单一来源。主线已从 `HOK-007B` 推到 `HOK-007C`：围绕新出现的 downstream crash `0x10915b114` / `far=0x50` 再跑一轮 HOK-007A 风格的离线映射 + HOK-007B 风格的最小可逆 patch，而不是直接跳到 `HOK-008`。
+- **当前卡点**：候选 E 已经解决原 callsite，但下游 `0x10915b114` 依然是 null-ish 的 `far=0x50` 解引用；仍缺少对该新 callsite 的 `LLDB` / `.ips` / Mach-O / 磁盘字节一致性证据，以及对应的最小可逆 patch 设计。不应在无新映射证据前再叠加 patch 或放弃候选 E。
 - **下一步默认规划**：
-  1. 执行 `HOK-007B`：基于 `build/hok-007-ngr-callsite-report.json` 已固化的 `faultPc=0x10480df08`、`fileOffset=0x480df08`、`__TEXT,__text` 区段与 `ldr x8, [x19]` 窗口，只设计**一个**最小可逆 patch 候选。
-  2. patch 设计必须先明确 bytes diff、回滚方式与重签影响，优先考虑只覆盖当前空指针解引用或其紧邻依赖链，不扩大成无边界的全局 binary 改写。
-  3. 每次只做一层变动后，都重新跑一轮“构建 → 启动 → session → launch diagnostics → LLDB report → `.ips`”闭环，确认 `processLaunchId`、session 状态和 faulting window 是否发生移动。
-  4. 若首个最小可逆 patch 仍无法推动 faulting window 移动，再继续扩大到更深一层 `NGR` initializer / binary 意图分析；默认不回退去继续调 `HOK-005D` 时长，也不跳去做 `HOK-008`。
+  1. 执行 `HOK-007C`：复用 `Scripts/hok007_ngr_callsite_mapper.py` 的口径，把最新 `NGR-2026-04-18-154537.ips`（或后续复现时更新的 `.ips`）对齐到 `Scripts/hok006_ngr_lldb_runner.py` 输出，产出 `pc=0x10915b114` / `imageOffset=0x4839d14` / `far=0x50` 的新离线一致性报告。
+  2. 只有在新离线报告 `overallPass=true` 之后，才基于 `Scripts/hok007b_ngr_patch_runner.py` 的设计思路去加一个针对新 callsite 的最小可逆 patch 候选；候选 E 不回滚、`--revert` 仅在排障需要时使用。
+  3. 每次只再做一层变动后，重新跑一轮"构建 → 启动 → session → launch diagnostics → LLDB report → `.ips`"闭环，对比 faulting window 是否再次移动；不要同时改多层。
+  4. 若新 callsite 属于完全不同的模块或调用者，再复盘是否需要升级到 `HOK-008` 的脚本链整合；否则继续保留当前主线。
 
 ## 构建与验证的方法
 
@@ -45,7 +45,7 @@
 ### 当前建议的最小兼容验证口径
 
 - 默认把 `metalCaptureEnabled=false`、`injectMetalCaptureEnvironment=false`、`shaderSourceReplacementEnabled=false`、`rootWorkDir=false`、`playChain=false` 视为 `com.tencent.ngr` 的优先隔离态；当前这些关键开关都应可通过现有 MCP 接口稳定写入 / 读取，但仍要把 host/plist 原始值与 runtime compat gate 压低后的实际生效值分开解读。
-- 只要本轮改动触及启动顺序、PlayTools 注入内容、settings 默认值、per-app gate、签名/重签或 app 包内二进制，就必须重新跑一轮完整的“构建 → 启动 → session → launch diagnostics → crash report”闭环。
+- 只要本轮改动触及启动顺序、PlayTools 注入内容、settings 默认值、per-app gate、签名/重签或 app 包内二进制，就必须重新跑一轮完整的"构建 → 启动 → session → launch diagnostics → crash report"闭环。
 
 ### 需要用户确认后才能继续的事项
 
@@ -78,28 +78,33 @@
 | HOK-005D | DONE | 已对 `com.tencent.ngr` 落地 `AKInterface.initialize()` 的 `1.0s` app-scoped 延迟，并用 live 结果证明 crash 仍发生在 `AKInterface` 实际初始化之前；主线已转向 `HOK-006` | `LocalDocs/HOKCrash/HOK-005-深层bootstrap分层最小化.md` |
 | HOK-006 | DONE | 已补齐 LLDB 自动化入口与结构化证据链，并用 fresh live 确认崩点仍固定在同一 `NGR` early initializer 路径 | `LocalDocs/HOKCrash/HOK-006-LLDB归因与crash-window压缩.md` |
 | HOK-007A | DONE | 已建立 `0x10480df08` faulting callsite 的 `LLDB` / `.ips` / `instructionByteStream` / file bytes / `__TEXT,__text` file offset 一致性映射，并固化离线 mapper | `LocalDocs/HOKCrash/HOK-007-二进制意图分析与callsite映射.md` |
-| HOK-007B | TODO | 基于 `HOK-007A` 的离线映射结果，为当前 `ldr x8, [x19]` callsite 设计并验证一个最小可逆 patch 候选 | `LocalDocs/HOKCrash/HOK-007-二进制意图分析与callsite映射.md` |
+| HOK-007B | DONE | 已应用候选 E（`ldr x8,[x19]` → `b 0x10480df24`，4 字节可逆）并通过 HOK-004 baseline + HOK-006 交叉验证，faulting window 已从 `0x10480df08` / `far=0x0` 迁移到 `0x10915b114` / `far=0x50` | `LocalDocs/HOKCrash/HOK-007-二进制意图分析与callsite映射.md` |
+| HOK-007C | TODO | 为新出现的 downstream crash（`pc=0x10915b114` / `imageOffset=0x4839d14` / `far=0x50`）复刻 HOK-007A 离线一致性映射 + HOK-007B 最小可逆 patch | 待建（默认复用 `HOK-007-二进制意图分析与callsite映射.md` 作为入口，必要时再拆子文档） |
 | HOK-008 | TODO | 将构建、配置、启动、证据收集、结论汇总收敛成可重复的自动化脚本链路 | 待建 |
-| HOK-009 | BLOCKED | 需要用户账号/手工 UI 的后续验证（若未来必须验证“进入游戏后”行为） | 暂不执行；执行前必须先得到用户确认 |
+| HOK-009 | BLOCKED | 需要用户账号/手工 UI 的后续验证（若未来必须验证"进入游戏后"行为） | 暂不执行；执行前必须先得到用户确认 |
 
 ## 踩坑与经验
 
 - `playcover_launch_complete` **不等于** app 已安全启动；`com.tencent.ngr` 当前就是在该事件之后很快崩溃。
-- `metal capture` 关闭并不自动等于“没有启动期 Metal / library hook 副作用”；对该 app 需要显式做 per-app 最小化处理。
-- `shaderSourceReplacementEnabled` 在 host/runtime 默认值里都偏向开启思路，不能想当然地把它当作“默认无影响”。
+- `metal capture` 关闭并不自动等于"没有启动期 Metal / library hook 副作用"；对该 app 需要显式做 per-app 最小化处理。
+- `shaderSourceReplacementEnabled` 在 host/runtime 默认值里都偏向开启思路，不能想当然地把它当作"默认无影响"。
 - 现在可以通过 MCP 稳定写入 / 读取 `shaderSourceReplacementEnabled`，但这只代表 raw settings 已可自动化表达；是否真正命中 `com.tencent.ngr` 的最小兼容 gate，仍应优先看 `launch-events.jsonl`。
-- `session briefly ready -> disconnected`，以及像本轮这样 `runtime-* = disconnected` + `pending-* = starting` 持续停留的组合，都是比“窗口看起来闪退”更稳定的自动化判定信号。
+- `session briefly ready -> disconnected`，以及像本轮这样 `runtime-* = disconnected` + `pending-* = starting` 持续停留的组合，都是比"窗口看起来闪退"更稳定的自动化判定信号。
 - `playcover_startup_compat_profile_applied`、`playcover_metal_capture_skipped`、`playcover_library_injection_skipped`、`playcover_working_directory_preserved` 是本轮之后判断 `com.tencent.ngr` 最小兼容 gate 是否真正命中的首选证据；不要再只看 plist 里的原始布尔值。
-- `playcover_input_skipped` 且不存在对应 launch 的 `playcover_input_initialized`，是 `HOK-005B` 是否真正命中的首选证据；不要再用“猜测 PlayInput 应该没跑起来”替代 launch diagnostics。
-- `playcover_screen_skipped` 且不存在对应 launch 的 `playcover_screen_initialized`，是 `HOK-005C` 是否真正命中的首选证据；不要再用“猜测 PlayScreen 应该没有初始化”替代 launch diagnostics。
+- `playcover_input_skipped` 且不存在对应 launch 的 `playcover_input_initialized`，是 `HOK-005B` 是否真正命中的首选证据；不要再用"猜测 PlayInput 应该没跑起来"替代 launch diagnostics。
+- `playcover_screen_skipped` 且不存在对应 launch 的 `playcover_screen_initialized`，是 `HOK-005C` 是否真正命中的首选证据；不要再用"猜测 PlayScreen 应该没有初始化"替代 launch diagnostics。
 - 当前阶段的核心不是恢复全部 PlayCover 能力，而是先证明**最小兼容运行**能不能成立；能力恢复必须放在启动稳定之后。
 - 当前已没有证据表明 `PlayScreen` 或 `AKInterface` 是 `com.tencent.ngr` 秒崩的首个 faulting mover；若 `playcover_akinterface_delayed` 已出现、而同一 launch 仍未等到 `playcover_akinterface_initialize_started` / `playcover_akinterface_initialized` 就复现相同 `.ips` 签名，应直接进入 `HOK-006`，不要继续在 `HOK-005D` 上反复试时长。
 - GUI HTTP MCP 的 `tools/call` 在真实运行中可能返回 `text/event-stream` 包裹的 JSON，而不是裸 JSON；后续若继续沿用 HTTP runner，不要把 POST 响应想当然地按单一内容类型解析。
 - 对 `GUI HTTP MCP` 的长调用不要再默认套用固定 `5s` HTTP 超时；`create_session(timeout=10)`、`launch_app_with_lldb(timeoutSeconds=5)` 这类调用必须让 HTTP request timeout 与 tool 自身 timeout 对齐，否则拿到的只会是伪超时而不是真实运行结果。
-- `launch_app_with_lldb` 现在在 headless 模式下不再只回“launched”，而会在超时可控的前提下返回结构化 LLDB 证据；后续 HOK-006/HOK-007 自动化应优先消费 `lldb.stopReason`、`lldb.faultingFrame`、`lldb.faultingInstruction`、`lldb.backtrace` 与 `lldb.transcriptTail`，不要再把完整 transcript 仅当成人工阅读日志。
-- `launch_app_with_lldb` 返回里的 `timedOut=true` 不等于“没有抓到崩溃”；只要同一轮同时有 `didStop=true`、`faultingFrame`、`faultingInstruction` 与 `backtrace`，就说明 capture window 到期前已经拿到了足够的 LLDB 归因证据。
+- `launch_app_with_lldb` 现在在 headless 模式下不再只回"launched"，而会在超时可控的前提下返回结构化 LLDB 证据；后续 HOK-006/HOK-007 自动化应优先消费 `lldb.stopReason`、`lldb.faultingFrame`、`lldb.faultingInstruction`、`lldb.backtrace` 与 `lldb.transcriptTail`，不要再把完整 transcript 仅当成人工阅读日志。
+- `launch_app_with_lldb` 返回里的 `timedOut=true` 不等于"没有抓到崩溃"；只要同一轮同时有 `didStop=true`、`faultingFrame`、`faultingInstruction` 与 `backtrace`，就说明 capture window 到期前已经拿到了足够的 LLDB 归因证据。
 - `.ips` 的 `usedImage.base`、triggered thread `frames[0].imageOffset` 与 LLDB `faultPc` 可以直接交叉验证当前 callsite 是否已收敛到稳定 image offset；当三者一致时，后续 patch 设计应优先围绕该 image offset / file offset 展开，而不是继续只盯着 symbol 名称。
 - `.ips instructionByteStream` 记录的是磁盘小端字节序；它与 `llvm-objdump` 行内展示的 `f9400268` 这类 32-bit word 展示顺序不同。后续如果要做字节级 patch，必须以 `instructionByteStream` / 实际 binary bytes 为准，不能直接拿反汇编展示串做 diff。
+- 设计 ARM64 最小可逆 patch 时，不能只看 faulting PC 自己；必须沿反汇编窗口追到 `b`/`b.cc`/`cbz` 等控制流的跳转目标，确认后续基本块是否仍然会回到 faulting 指令上——`physx::PxVehicleConstraintShader::visualiseConstraint` 里 `0x10480dfa0` 路径最终 `b.ne 0x10480df00`，所以只改条件跳转是空操作。
+- 在 `NGR` 这类巨型 mach-o 上做 4 字节 patch，`codesign -f -s -` 就够了；不用再去改 embedded provisioning profile 或 framework 链，本轮 `--apply` 后 `codesign -dvv` 仍报 `adhoc` 即验证通过。
+- `Scripts/hok007b_ngr_patch_runner.py` 的 `--apply` / `--revert` 现在是"当前磁盘 NGR 处于哪一代 patch"的单一来源；对磁盘字节、备份目录、签名状态不要再另起手工流程，否则 dry-run 的一致性 gate 会误判。
+- 在应用候选 E 之后，`Scripts/hok006_ngr_lldb_runner.py` 可能会在更长存活时间里观察到**下游新 crash**（例如 `pc=0x10915b114` / `far=0x50`），不要把这类新 `.ips` 误判为候选 E 无效——必须先看 `pc` / `imageOffset` / `far` 是否已经离开原 `0x10480df08` / `far=0x0` 窗口。
 
 ## 参考信息
 
@@ -116,7 +121,8 @@
 - `Carthage/Checkouts/PlayTools/PlayTools/PlayCover.swift`：`PlayTools` 启动顺序与 `playcover_launch_complete` 前后的关键路径。
 - `LocalDocs/HOKCrash/HOK-005-深层bootstrap分层最小化.md`：当前 `HOK-005` 分层最小化子任务与每层 live 结论。
 - `LocalDocs/HOKCrash/HOK-006-LLDB归因与crash-window压缩.md`：`HOK-006` 的自动化入口、证据口径与后续 live handoff。
-- `LocalDocs/HOKCrash/HOK-007-二进制意图分析与callsite映射.md`：`HOK-007A` 的离线 callsite 映射入口、当前结论与 `HOK-007B` handoff。
+- `LocalDocs/HOKCrash/HOK-007-二进制意图分析与callsite映射.md`：`HOK-007A` 的离线 callsite 映射入口、`HOK-007B` 候选 E 的 patch 设计 / live 验证结论，以及 `HOK-007C` handoff。
+- `Scripts/hok007b_ngr_patch_runner.py`：当前已应用到 NGR 上的"候选 E"最小可逆 patch 的单一来源；`--apply` / `--revert` / `--dry-run` 与 `build/hok-007b-backups/` 备份、`build/hok-007b-ngr-patch-report.json` 报告都走同一口径。
 - `~/Library/Containers/io.playcover.PlayCover/RuntimeLaunchDiagnostics/com.tencent.ngr/launch-events.jsonl`：每轮 live 启动证据。
 - `~/Library/Logs/DiagnosticReports/NGR-*.ips`：系统崩溃报告；用于对照 faulting window 是否发生移动。
 - `LocalDocs/MCPFinal/04-接入与验证.md`：需要借用 MCP/自动化验证套路时再读。

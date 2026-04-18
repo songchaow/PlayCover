@@ -56,8 +56,47 @@
   - `x19NullConfirmed=true`
   - `checks.overallPass=true`
 
+### HOK-007B 落地内容
+
+- runner：`Scripts/hok007b_ngr_patch_runner.py`
+- 默认命令：
+  - dry-run（默认）：`python3 Scripts/hok007b_ngr_patch_runner.py`
+  - apply：`python3 Scripts/hok007b_ngr_patch_runner.py --apply`
+  - revert：`python3 Scripts/hok007b_ngr_patch_runner.py --revert`
+- 结构化报告：`build/hok-007b-ngr-patch-report.json`
+- 备份目录：`build/hok-007b-backups/hok-007b-<binarySha256Prefix>.bin`
+
+#### 选定的 patch 候选（候选 E：branch-to-epilogue）
+
+- file offset：`0x480df08`
+- 原指令 / 原字节（LE）：`ldr x8, [x19]` / `680240f9`
+- 替换指令 / patched 字节（LE）：`b 0x10480df24` / `07000014`
+- branch 距离：`0x10480df24 - 0x10480df08 = 0x1c`（7 条指令）
+- 语义：`0x10480df24` 是当前函数 epilogue 的 **stack cookie 校验 + 寄存器恢复 + `ret`**（见 `0x10480df24: ldur x8, [x29, #-0x48]` 一路走到 `0x10480df54: ret`）。由于 prologue 已经完整执行，跳到 epilogue 能保持 `sp` / `x29` / cookie 对称，把被空 `this` 触发的虚函数调用变成静默 no-op。
+- 选候选 E 而非其他候选的依据：
+  - 候选 A/B（把 `b.hs 0x10480dfa0` 改成无条件 `b`）不是真正的修复——后续大 buffer 分支 `0x10480dfe8: b.ge 0x10480dfac` / `0x10480dff4: b.ne 0x10480df00` 会把控制流重新送回 `0x10480df00`→`0x10480df08`，仍会命中同一 null deref。
+  - 候选 C/D（在函数入口或 `ldr x8,[x19]` 位置做 `cbz x0, ...` / `cbnz x19, ...`）需要至少 2 条指令才能保持后续 `ldr x8,[x8,#0x10]; blr x8` 的合法性，不满足"只改 4 字节"的最小约束。
+  - 候选 E 是唯一满足"**4 字节可逆、落在 faulting line 本身、跳点在同一函数内、不破坏栈帧对称性、不扩大影响面**"的候选。
+
+#### 安全/回滚/重签
+
+- 回滚：`--revert` 会使用 `build/hok-007b-backups/` 下最新 `.bin` 还原原 4 字节并重新 `codesign -f -s -`。
+- 重签：apply / revert 都会自动对 NGR 做 ad-hoc 重签（`codesign -f -s -`）；`--skip-codesign` 仅用于诊断，不应用于日常流程。
+- 幂等：`--apply` 遇到已 patched 状态时会报 `already-patched`；`--revert` 遇到已原样状态时报 `already-original`；任一状态不匹配时脚本拒绝写入，避免误改。
+
+### 2026-04-18 apply + live 闭环结果
+
+- 磁盘校验：
+  - pre-apply sha256 `b0e109d761a3eefb67e8cd6ad117ad60db8ce642642042ea6b285e21e3455211`
+  - post-apply sha256 `7f6ae20cf003475edff186e3f720741f33322787393f0235cc94aa247f9c8079`
+  - 实际反汇编：`10480df08: 14000007  b 0x10480df24`（与候选 E 设计完全一致）
+  - `codesign -dvv` 继续显示 `adhoc` 签名。
+- HOK-004 live baseline（`build/hok-007b-post-patch-hok004.json`）：`createSessionSucceeded=true`、`readyObservedDuringSettleWindow=true`、`disconnectedObservedDuringSettleWindow=false`、`newCrashReportsDetected=false`、`overallPass=true`。**patch 之后 10s settle window 内 session 不再秒断且没有新 `.ips`。**
+- HOK-006 live（`build/hok-007b-post-patch-hok006.json`）：LLDB capture window 内 `lldbStopObserved=false` / `faultingInstruction=None`；但在该轮更长的存活时间里观察到新 `.ips` `NGR-2026-04-18-154537.ips`，其 `pc=0x10915b114` / `imageOffset=0x4839d14` / `far=0x50`，**与 `0x10480df08` / `far=0x0` 属于完全不同的 callsite**。
+- 结论：候选 E 已经成功把原来的 faulting window（`ldr x8,[x19]` / `far=0x0`）绕过；后续崩溃已经迁移到下游另一处（`far=0x50`，疑似对象偏移 `0x50` 上的另一个 null 依赖链），不再是本文档跟踪的 callsite。
+
 ### 结论 / 下一步 handoff
 
-- `HOK-007A` 已完成：当前 crash callsite 的 `LLDB` / `.ips` / Mach-O / file bytes 一致性已被离线固化，后续不需要再先靠人工做地址与字节映射。
-- 下一步进入 `HOK-007B`：围绕 `0x10480df08` / `fileOffset=0x480df08` 设计**一个**最小可逆 patch 候选，并在真正改动前先写清楚 bytes diff、回滚方式与重签影响。
-- `HOK-007B` 完成任一 patch 候选后，仍必须回到 `Scripts/hok004_ngr_startup_runner.py` + `Scripts/hok006_ngr_lldb_runner.py` 跑完整闭环，确认 faulting window 是否移动；在此之前不要切去 `HOK-008`。
+- `HOK-007A` 已完成：callsite 映射被离线固化。
+- `HOK-007B` 已完成：候选 E（`ldr x8,[x19]` → `b 0x10480df24`）已应用并通过 HOK-004 baseline + HOK-006 交叉验证，faulting window 已移动到 `0x10915b114`（`far=0x50`）。
+- 下一步主线：回到 Dashboard，基于新的 downstream crash（`NGR-2026-04-18-154537.ips`）决定是否要为 `0x10915b114` 再做一次 HOK-007A 风格的离线映射 + HOK-007B 风格的最小可逆 patch；不要在没有新映射证据的情况下直接跳到 `HOK-008`。

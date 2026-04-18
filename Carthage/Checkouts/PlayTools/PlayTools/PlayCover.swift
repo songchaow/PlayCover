@@ -43,8 +43,16 @@ public class PlayCover: NSObject {
         PlayScreen.shared.initialize()
         RuntimeLaunchDiagnostics.record(event: "playcover_screen_initialized", bundleId: runtimeBundleId)
 
-        PlayInput.shared.initialize()
-        RuntimeLaunchDiagnostics.record(event: "playcover_input_initialized", bundleId: runtimeBundleId)
+        if appliesMinimalStartupCompat {
+            RuntimeLaunchDiagnostics.record(
+                event: "playcover_input_skipped",
+                bundleId: runtimeBundleId,
+                details: ["reason": "startup_compat_profile"]
+            )
+        } else {
+            PlayInput.shared.initialize()
+            RuntimeLaunchDiagnostics.record(event: "playcover_input_initialized", bundleId: runtimeBundleId)
+        }
 
         if appliesMinimalStartupCompat {
             RuntimeLaunchDiagnostics.record(

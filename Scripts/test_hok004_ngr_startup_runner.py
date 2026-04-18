@@ -83,6 +83,8 @@ class HOK004NGRStartupRunnerTests(unittest.TestCase):
         self.assertEqual(
             evaluation["missingRequired"],
             [
+                "playcover_input_skipped",
+                "playcover_discord_skipped",
                 "playcover_library_injection_skipped",
                 "playcover_working_directory_preserved",
                 "playcover_launch_complete",

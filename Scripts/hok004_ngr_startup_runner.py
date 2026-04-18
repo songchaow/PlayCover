@@ -66,13 +66,19 @@ MINIMAL_COMPAT_SETTINGS = {
 
 REQUIRED_COMPAT_EVENTS = [
     "playcover_startup_compat_profile_applied",
+    "playcover_input_skipped",
+    "playcover_discord_skipped",
     "playcover_metal_capture_skipped",
     "playcover_library_injection_skipped",
     "playcover_working_directory_preserved",
     "playcover_launch_complete",
 ]
 
-FORBIDDEN_COMPAT_EVENTS = ["playcover_library_injection_installed"]
+FORBIDDEN_COMPAT_EVENTS = [
+    "playcover_input_initialized",
+    "playcover_discord_initialized",
+    "playcover_library_injection_installed",
+]
 
 
 class MCPError(RuntimeError):

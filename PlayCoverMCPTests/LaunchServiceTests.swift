@@ -415,6 +415,93 @@ final class LaunchServiceTests: XCTestCase {
         XCTAssertTrue(options.preRunCommands.isEmpty)
         XCTAssertNil(options.dyldInitializersLogPath)
         XCTAssertFalse(options.isWatchpointMode)
+        // HOK-012-C: the default must leave watchpoint installation to the
+        // auto-injected pre-run script, i.e. `deferWatchpointInstall=false`.
+        XCTAssertFalse(options.deferWatchpointInstall)
+    }
+
+    /// HOK-012-C: `deferWatchpointInstall=true` flips the auto-install
+    /// behaviour but leaves every other HOK-012-B plumbing (watchpoint
+    /// mode gating by `watchAddress`, preRunCommands, dyld log path)
+    /// untouched. The flag is orthogonal to `watchAddress`: callers can
+    /// (and commonly do) set both so the watchpoint-mode stop→continue
+    /// loop engages while the actual `watchpoint set expression` line is
+    /// carried by a `preRunCommands` entry.
+    func testLLDBRunOptionsDeferWatchpointInstallIsOrthogonalToWatchMode() {
+        let deferred = LLDBRunOptions(
+            watchAddress: "0x10e2146f8",
+            watchSize: 8,
+            preRunCommands: [
+                #"breakpoint set --address 0x103a29b7c -C "watchpoint set expression -s 8 -- 0x10e2146f8" -C "continue" --auto-continue true --one-shot true"#
+            ],
+            dyldInitializersLogPath: "/tmp/dyld.log",
+            deferWatchpointInstall: true
+        )
+        XCTAssertTrue(deferred.isWatchpointMode)
+        XCTAssertTrue(deferred.deferWatchpointInstall)
+        XCTAssertEqual(deferred.preRunCommands.count, 1)
+        XCTAssertEqual(deferred.watchAddress, "0x10e2146f8")
+    }
+
+    /// HOK-012-C: the option must be forwarded to the headless runner
+    /// closure exactly as supplied, so the runner — which is the single
+    /// place that decides whether to auto-emit `watchpoint set expression` —
+    /// can actually observe the opt-in.
+    func testLaunchWithLLDBForwardsDeferWatchpointInstallToRunner() throws {
+        let (appDir, aliasDir) = try makeFixtureApp(
+            bundleId: "com.test.defer",
+            displayName: "DeferApp",
+            executableName: "DeferApp"
+        )
+        defer { cleanupFixture([appDir, aliasDir]) }
+
+        let expectedEvidence = LLDBLaunchEvidence(
+            processIdentifier: 5,
+            timedOut: true,
+            didStop: false,
+            terminationStatus: 0,
+            stopReason: nil,
+            signal: nil,
+            faultAddress: nil,
+            faultingThread: nil,
+            faultingFrame: nil,
+            faultingInstruction: nil,
+            backtrace: [],
+            transcript: "Process 5 launched",
+            transcriptTail: "Process 5 launched",
+            watchpointHits: [],
+            dyldInitializersLogPath: "/tmp/dyld-defer.log"
+        )
+
+        let service = LaunchService(
+            appDirectory: appDir,
+            aliasDirectory: aliasDir,
+            headlessLLDBRunner: { _, _, _, options in
+                XCTAssertTrue(options.deferWatchpointInstall)
+                XCTAssertEqual(options.watchAddress, "0x10e2146f8")
+                XCTAssertEqual(options.preRunCommands.count, 1)
+                XCTAssertTrue(options.preRunCommands[0].hasPrefix("breakpoint set --address 0x103a29b7c"))
+                return expectedEvidence
+            },
+            terminalLLDBRunner: { _, _ in
+                XCTFail("terminal runner should not be used in defer-watchpoint test")
+            }
+        )
+
+        _ = try service.launchAppWithLLDB(
+            bundleId: "com.test.defer",
+            withTerminalWindow: false,
+            timeoutSeconds: 5.0,
+            options: LLDBRunOptions(
+                watchAddress: "0x10e2146f8",
+                watchSize: 8,
+                preRunCommands: [
+                    #"breakpoint set --address 0x103a29b7c -C "watchpoint set expression -s 8 -- 0x10e2146f8" -C "continue" --auto-continue true --one-shot true"#
+                ],
+                dyldInitializersLogPath: "/tmp/dyld-defer.log",
+                deferWatchpointInstall: true
+            )
+        )
     }
 
     /// HOK-012-B: watchpoint mode should only engage when a non-empty

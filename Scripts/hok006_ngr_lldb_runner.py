@@ -60,6 +60,11 @@ DEFAULT_WATCH_ADDRESS = "0x10e2146f8"
 DEFAULT_WATCH_SIZE = 8
 DEFAULT_WATCHPOINT_REPORT = Path("build/hok-012-ngr-watchpoint-report.json")
 DEFAULT_DYLD_LOG = Path("build/hok-012-ngr-dyld-initializers.log")
+# HOK-012-C: default writer function used by the deferred-install
+# strategy; matches the singleton accessor located by HOK-011 whose
+# internal store writes `0x10e2146f8`. Callers can override via
+# `--writer-address`.
+DEFAULT_WRITER_ADDRESS = "0x103a29b7c"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -175,6 +180,32 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "HOK-012-B: structured JSON report listing watchpoint hits, stop reasons "
             "and backtrace snippets; written only when watchpoint mode is active."
+        ),
+    )
+    # HOK-012-C: deferred watchpoint install.
+    parser.add_argument(
+        "--defer-watchpoint-install",
+        action="store_true",
+        help=(
+            "HOK-012-C: do not auto-emit `watchpoint set expression …` before `run`. "
+            "Watchpoint-mode plumbing (stop→continue, hits parsing) still engages "
+            "as long as `--watch-address` is non-empty, but the actual install line "
+            "must be carried by `--pre-run-command` (or auto-generated via "
+            "`--writer-address`). Fixes the HOK-012-C.2 0-hit timing race where the "
+            "pre-run watchpoint was not armed in the child process early enough to "
+            "catch the first store."
+        ),
+    )
+    parser.add_argument(
+        "--writer-address",
+        default=None,
+        help=(
+            "HOK-012-C: when combined with `--defer-watchpoint-install`, auto-append "
+            "a `breakpoint set --address <writer> -C \"watchpoint set expression -s "
+            "<size> -- <addr>\" -C \"continue\" --auto-continue true --one-shot true` "
+            "entry to the pre-run script. Pass an empty value to disable the "
+            "auto-append (callers may still supply their own `--pre-run-command`). "
+            f"Default when defer mode is active: {DEFAULT_WRITER_ADDRESS}."
         ),
     )
     return parser
@@ -314,6 +345,35 @@ def main() -> int:
 
     watchpoint_report_path = Path(args.watchpoint_report).expanduser().resolve()
 
+    # HOK-012-C: resolve deferred install & writer-address before the
+    # report gets assembled so the top-level `configuration` block can
+    # surface the effective pre-run script verbatim.
+    defer_watchpoint_install = bool(args.defer_watchpoint_install)
+    if args.writer_address is None:
+        # Default: when defer mode is active and the caller did not
+        # explicitly pass `--writer-address`, auto-use the HOK-011
+        # singleton-accessor address. An empty caller-supplied value
+        # (below) disables the auto-append so callers can inject their
+        # own pre-run breakpoint command.
+        writer_address = DEFAULT_WRITER_ADDRESS if defer_watchpoint_install else ""
+    else:
+        writer_address = args.writer_address.strip()
+
+    if defer_watchpoint_install and watchpoint_mode_requested and writer_address:
+        # Auto-append the "breakpoint -> watchpoint" install line so the
+        # watchpoint is armed only once the chosen writer function is
+        # actually entered. `--auto-continue true` keeps the transcript
+        # free of a breakpoint stop (we only want watchpoint hits);
+        # `--one-shot true` keeps later calls of the same function from
+        # reinstalling the watchpoint.
+        size = watch_size
+        auto_command = (
+            f"breakpoint set --address {writer_address} "
+            f'-C "watchpoint set expression -s {size} -- {raw_watch_address}" '
+            f'-C "continue" --auto-continue true --one-shot true'
+        )
+        pre_run_commands = list(pre_run_commands) + [auto_command]
+
     report: dict[str, Any] = {
         "schemaVersion": 1,
         "generatedAt": utc_now_iso(),
@@ -337,6 +397,10 @@ def main() -> int:
             "preRunCommands": pre_run_commands,
             "dyldInitializersLogPath": str(dyld_log_path) if dyld_log_path else None,
             "watchpointReportPath": str(watchpoint_report_path),
+            # HOK-012-C: surface the deferred-install decision so the
+            # report is self-descriptive for later review.
+            "deferWatchpointInstall": defer_watchpoint_install,
+            "writerAddress": writer_address or None,
         },
         "paths": {
             "containerRoot": str(container_root),
@@ -476,6 +540,11 @@ def main() -> int:
                     launch_arguments["preRunCommands"] = pre_run_commands
                 if dyld_log_path is not None:
                     launch_arguments["dyldInitializersLogPath"] = str(dyld_log_path)
+                if defer_watchpoint_install:
+                    # HOK-012-C: only forward the flag when the caller
+                    # opted in, so the legacy MCP schema shape is 100%
+                    # preserved for HOK-012-B-style invocations.
+                    launch_arguments["deferWatchpointInstall"] = True
 
                 outcome = client.call_tool(
                     "launch_app_with_lldb",
@@ -670,6 +739,9 @@ def main() -> int:
                     "lldbTimeout": lldb_timeout,
                     "dyldInitializersLogPath": str(dyld_log_path) if dyld_log_path else None,
                     "sourceLldbReportPath": str(output_path),
+                    # HOK-012-C hand-off markers.
+                    "deferWatchpointInstall": defer_watchpoint_install,
+                    "writerAddress": writer_address or None,
                 },
                 "watchpoint": {
                     "hits": lldb_summary.get("watchpointHits") or [],
@@ -735,6 +807,7 @@ def main() -> int:
             f"faultingInstructionCaptured={report['checks']['lldbFaultingInstructionCaptured']} "
             f"backtraceCaptured={report['checks']['lldbBacktraceCaptured']} "
             f"watchpointMode={watchpoint_mode_requested} "
+            f"deferInstall={defer_watchpoint_install} "
             f"watchpointHits={watchpoint_artifact['hitCount']} "
             f"dyldLogBytes={dyld_log_artifact['byteCount']} "
             f"requiredCompatEventsPresent={report['checks']['requiredCompatEventsPresent']} "

@@ -95,6 +95,10 @@ public enum LaunchTools {
                     "dyldInitializersLogPath": AnyCodable([
                         "type": "string",
                         "description": "HOK-012-B: optional absolute path where the child process's stderr should be redirected via `process launch -e <path>`. Intended for capturing DYLD_PRINT_INITIALIZERS output so it can be correlated with watchpoint hits on the transcript. Parent directories are created automatically."
+                    ] as Any),
+                    "deferWatchpointInstall": AnyCodable([
+                        "type": "boolean",
+                        "description": "HOK-012-C: when true, the headless runner will NOT auto-emit `watchpoint set expression …` before `run`. Watchpoint-mode plumbing (stop→continue loop, watchpointHits parsing) still engages as long as watchAddress is set, but the caller becomes responsible for installing the watchpoint via a preRunCommands entry (typical pattern: `breakpoint set --address <writer> -C \"watchpoint set expression -s <size> -- <addr>\" -C \"continue\" --auto-continue true --one-shot true`). This shifts the watchpoint's armed moment from \"before run\" to \"after a chosen breakpoint fires\", fixing the HOK-012-C.2 0-hit timing race without altering legacy behaviour."
                     ] as Any)
                 ],
                 required: ["bundleId"]
@@ -136,12 +140,14 @@ public enum LaunchTools {
                 .compactMap { $0 as? String } ?? []
             let dyldInitializersLogPath = (args["dyldInitializersLogPath"] as? String)?
                 .trimmingCharacters(in: .whitespaces)
+            let deferWatchpointInstall = args["deferWatchpointInstall"] as? Bool ?? false
 
             let options = LLDBRunOptions(
                 watchAddress: (watchAddress?.isEmpty ?? true) ? nil : watchAddress,
                 watchSize: watchSize,
                 preRunCommands: preRunCommands,
-                dyldInitializersLogPath: (dyldInitializersLogPath?.isEmpty ?? true) ? nil : dyldInitializersLogPath
+                dyldInitializersLogPath: (dyldInitializersLogPath?.isEmpty ?? true) ? nil : dyldInitializersLogPath,
+                deferWatchpointInstall: deferWatchpointInstall
             )
 
             let result = try launchService.launchAppWithLLDB(

@@ -144,17 +144,32 @@ public struct LLDBRunOptions: Equatable, Sendable {
     /// LLDB; the runner only records the path and ensures the parent
     /// directory exists.
     public let dyldInitializersLogPath: String?
+    /// HOK-012-C: when `true`, the runner will NOT auto-emit
+    /// `watchpoint set expression …` before `run`. Watchpoint-mode
+    /// plumbing (stop→continue loop, `parseWatchpointHits`,
+    /// `watchpointHits` in the evidence) still engages as long as
+    /// `watchAddress` is set, but installing the watchpoint itself becomes
+    /// the caller's responsibility — typically via a `preRunCommands`
+    /// entry like `breakpoint set --address 0x… -C "watchpoint set expression -s 8 -- 0x…" -C "continue" --auto-continue true --one-shot true`.
+    /// This lets HOK-012-C push the watchpoint's "armed" moment from
+    /// "before `run`" (where it may miss early framework / `+load` stores
+    /// on macOS in practice) to "after a chosen breakpoint fires", while
+    /// leaving the legacy HOK-012-B behaviour completely intact for
+    /// callers that don't opt in.
+    public let deferWatchpointInstall: Bool
 
     public init(
         watchAddress: String? = nil,
         watchSize: Int = 8,
         preRunCommands: [String] = [],
-        dyldInitializersLogPath: String? = nil
+        dyldInitializersLogPath: String? = nil,
+        deferWatchpointInstall: Bool = false
     ) {
         self.watchAddress = watchAddress
         self.watchSize = watchSize
         self.preRunCommands = preRunCommands
         self.dyldInitializersLogPath = dyldInitializersLogPath
+        self.deferWatchpointInstall = deferWatchpointInstall
     }
 
     public static let `default` = LLDBRunOptions()
@@ -790,7 +805,8 @@ public final class LaunchService: Sendable {
                     preRunScript += trimmed + "\n"
                 }
             }
-            if watchpointMode, let address = options.watchAddress?.trimmingCharacters(in: .whitespaces),
+            if watchpointMode, !options.deferWatchpointInstall,
+               let address = options.watchAddress?.trimmingCharacters(in: .whitespaces),
                !address.isEmpty {
                 let size = max(options.watchSize, 1)
                 preRunScript += "watchpoint set expression -s \(size) -- \(address)\n"

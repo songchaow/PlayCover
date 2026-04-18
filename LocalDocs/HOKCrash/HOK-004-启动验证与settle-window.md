@@ -32,17 +32,21 @@
   - raw settings 回读与最小兼容档一致；
   - 本轮 `processLaunchId` 命中以下 compat 证据：
     - `playcover_startup_compat_profile_applied`
+    - `playcover_input_skipped`
+    - `playcover_discord_skipped`
     - `playcover_metal_capture_skipped`
     - `playcover_library_injection_skipped`
     - `playcover_working_directory_preserved`
     - `playcover_launch_complete`
-  - 本轮不存在 `playcover_library_injection_installed`；
+  - 本轮不存在 `playcover_input_initialized`、`playcover_discord_initialized` 与 `playcover_library_injection_installed`；
   - `create_session` 成功；
   - settle window 内 session 至少到过一次 `ready`，且不出现 `disconnected` / `closed`；
   - 同轮没有新增 `NGR-*.ips`。
 - 失败条件：以上任一条件不满足即失败；当前阶段无需再依赖人工观察窗口表现。
 
-### 2026-04-18 latest live 结果
+### 2026-04-18 HOK-004 完成时基线结果（历史快照）
+
+- 说明：本节保留 `HOK-004` 完成时的基线证据；`HOK-005A` 之后新增的 `DiscordIPC` / `PlayInput` 分层最小化 live 结果，以 `LocalDocs/HOKCrash/00-Dashboard.md` 与 `LocalDocs/HOKCrash/HOK-005-深层bootstrap分层最小化.md` 为准。
 
 - 全量首跑命令：`python3 Scripts/hok004_ngr_startup_runner.py`
 - 退出语义修正后的复跑命令：`python3 Scripts/hok004_ngr_startup_runner.py --skip-build-install`

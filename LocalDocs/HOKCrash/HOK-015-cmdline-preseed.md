@@ -153,12 +153,22 @@ uint8、或 buffer 容量不是 16384），报告里给出实际观察值，HOK-
 
 ### D7：与 HOK-014 的关系
 
-HOK-014 现在是**必要闭环**（没有它 alert 会挂 UI）；HOK-015 落地后：
+HOK-014 现在仍是**必要闭环**（没有它 alert 会挂 UI）；但在 HOK-016 闭合
+前，`hok014_ngr_alert_suppressed` 事件**是否为 0**已经不再能作为 HOK-015
+是否成功的判据，因为当前这 1 次 alert 来自 HOK-016 的 `QtsFileSystem
+Create Failed!!` 独立分支，而不是 UE4 `FCommandLine::Get()` fatal。
 
-- 观察期标准：`hok014_ngr_alert_suppressed` 事件次数 = **0**。
-- 若连续多轮 live 验证都是 0，HOK-014 降级为 **纯冷备安全网**（代码
-  保留，事件入口保留，但日常观测期望一次都不触发）。
-- HOK-014 不自动 revert——作为"UE4 未来可能在别的路径上弹 alert"的
+因此 HOK-015 落地后的正确口径是：
+
+- **HOK-015 自身成功**：`hok015_ngr_cmdline_preseed status=primed`
+  命中、UE4 `Attempting to get the command line but it hasn't been
+  initialized yet.` fatal **真正消失**、218 条 inline guard 都已
+  fall-through。
+- **HOK-014 仍保留为当前必要闭环**：在 HOK-016 根因消除前，
+  `hok014_ngr_alert_suppressed` 仍可能稳定 = 1；这不是 HOK-015 回归。
+- **只有 HOK-016-D 通过后**，HOK-014 才降级为纯冷备安全网（代码保留、
+  但日常观测期望 0 次触发）。
+- HOK-014 不自动 revert——作为"UE4 / NGR 未来在别的路径上弹 alert"的
   防御层，保留代码对后续维护成本近 0。
 
 ### D8：bundle-scoped gate
@@ -185,7 +195,7 @@ identifier = `com.tencent.ngr`）。其它 bundle 完全不走 HOK-015 路径。
 
 ## 验证口径
 
-### 第一轮：静态分析 + 写入落地
+### 第一轮：静态分析 + 写入落地（HOK-015 专属判据）
 
 前置：HOK-013、HOK-014 保持 apply；plist `rootWorkDir=1`；候选 E 保
 持 revert。
@@ -196,33 +206,46 @@ identifier = `com.tencent.ngr`）。其它 bundle 完全不走 HOK-015 路径。
 2. 按扫描结果写入 `PlayLoader.m` 宏；重建 PlayTools xcframework +
    重装 PlayCover。
 3. 自由启动 NGR（`launch_app`，不带 LLDB），等 60s。
-4. 判据（全部满足才视为第一轮通过）：
+4. **HOK-015 判据**（全部满足才视为 HOK-015 自身闭合）：
    - `launch-events.jsonl` 出现 `hok015_ngr_cmdline_preseed
      status=primed`，details 里 `bInitializedBefore=0` /
-     `bInitializedAfter=1` / `cmdlinePreview="../../../NGR/NGR.uproject"`；
+     `bInitializedAfter=1` /
+     `cmdlinePreview="../../../NGR/NGR.uproject"`；
    - 子进程 stderr / dyld log 里**不再出现** `Attempting to get the
      command line but it hasn't been initialized yet` 与
      `[UE4] Fatal error: [File:Unknown] [Line: 34]` 任何一条；
-   - `launch-events.jsonl` 里 `hok014_ngr_alert_suppressed` 事件
-     **次数 = 0**；
-   - `ps -p <pid>` 采样：`%CPU ≥ 5%` 持续 ≥ 30s，RSS ≥ 800MB，线程数
-     ≥ 20；
-   - `CGWindowListCopyWindowInfo` 读主窗口 bounds：与主屏 frame 有
-     非空交集（`bounds.x < screen.width && bounds.x + bounds.w > 0`
-     且 Y 同理），`kCGWindowMemoryUsage > 1_000_000`；
-   - `~/Library/Logs/DiagnosticReports/NGR-*.ips` 无新文件。
+   - `Scripts/hok016_ngr_qts_reporter_trace.py` / HOK-016-B 的寄存器
+     证据仍显示 reporter `x2 = 0x10e20107a`（即 HOK-015 preseed 的
+     CmdLine buffer），证明后续 QtsFS 路径继续消费的正是同一块
+     已初始化存储；
+   - **不要求**当前 `hok014_ngr_alert_suppressed = 0`，因为在 HOK-016
+     闭合前这 1 次 alert 仍可能由 QtsFS 独立路径稳定触发；
+   - **不要求**当前 `%CPU/RSS/窗口可见性` 达到最终目标，这些是 HOK-016-D
+     的 pass 条件，不是 HOK-015 的专属 pass 条件。
 
-### 第二轮：HOK-014 降级为冷备
+### 第二轮：与 HOK-016 的联动验证
 
-在连续 ≥ 3 轮第一轮判据全部通过后：
+HOK-015 闭合后，接下来的 live run 应满足：
+
+1. `hok015_ngr_cmdline_preseed status=primed` 仍然存在；
+2. `Attempting to get the command line ...` fatal 仍保持 **0**；
+3. 若 `hok014_ngr_alert_suppressed = 1` 且 message =
+   `"QtsFileSystem Create Failed!!"`，则归入 HOK-016，**不**回退 HOK-015；
+4. 若重新出现 UE4 cmdline fatal，才视为 HOK-015 回归。
+
+### 第三轮：HOK-014 降级为冷备（依赖 HOK-016-D）
+
+只有在 HOK-016-D 通过、`hok014_ngr_alert_suppressed` 真正归零之后：
 
 1. 把 Dashboard TODO 表里 HOK-014 的状态描述改成"DONE（冷备安全网）"；
    代码不动。
-2. 若后续某轮 `hok014_ngr_alert_suppressed > 0`，视为回归：立刻把该
-   轮 details（title/message）作为 HOK-015 / 下一个修复的输入材料，
-   不允许"容忍 alert 再次出现"。
+2. 若后续某轮再次出现 `hok014_ngr_alert_suppressed > 0`，先按 message
+   内容判断归属：
+   - UE4 cmdline fatal → 视为 HOK-015 回归；
+   - `QtsFileSystem Create Failed!!` 或其它 NGR 业务 alert → 视为
+     HOK-016 / 后续新任务的输入材料。
 
-### 第三轮：bundle-scoped gate 不影响其它 bundle
+### 第四轮：bundle-scoped gate 不影响其它 bundle
 
 - 其它已安装 bundle 的 `launch-events.jsonl` 里**不**出现
   `hok015_ngr_cmdline_preseed` 事件；
@@ -249,8 +272,9 @@ identifier = `com.tencent.ngr`）。其它 bundle 完全不走 HOK-015 路径。
 
 - `HOK-013-slot-preheat.md`：同一套路的最早落地、slide 计算 helper、
   bundle gate 复用。
-- `HOK-014-alert-suppressor.md`：HOK-014 swizzle 的实现；HOK-015 闭
-  合后 HOK-014 的定位从"必要闭环"降级为"冷备安全网"。
+- `HOK-014-alert-suppressor.md`：HOK-014 swizzle 的实现；只有在
+  HOK-016-D 通过之后，HOK-014 的定位才从"当前必要闭环"降级为"冷备安
+  全网"。
 - `HOK-011-静态初始化链分析.md`：`__common` 槽位扫描器套路。
 - `HOK-012-工具链与方法论归档.md`：LLDB watchpoint / abort-stop / 对
   话框污染 gate 的工具链；HOK-015-A 静态定位失败时可以用 watchpoint

@@ -397,7 +397,13 @@ class MCPHTTPClient:
             self._next_id += 1
         return request_id
 
-    def _post(self, payload: dict[str, Any], *, include_session: bool) -> tuple[int, dict[str, str], str]:
+    def _post(
+        self,
+        payload: dict[str, Any],
+        *,
+        include_session: bool,
+        request_timeout: float = 5.0,
+    ) -> tuple[int, dict[str, str], str]:
         body = json.dumps(payload).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
@@ -412,7 +418,7 @@ class MCPHTTPClient:
 
         request = urllib.request.Request(self.base_url, data=body, headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(request, timeout=5) as response:
+            with urllib.request.urlopen(request, timeout=request_timeout) as response:
                 return response.status, normalize_headers(response.headers), response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             return exc.code, normalize_headers(exc.headers), exc.read().decode("utf-8")
@@ -454,14 +460,24 @@ class MCPHTTPClient:
             raise MCPError(f"notifications/initialized failed with HTTP {status}: {clip_text(raw_body, limit=800)}")
         return {"httpStatus": status}
 
-    def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        request_timeout: float = 5.0,
+    ) -> dict[str, Any]:
         payload = {
             "jsonrpc": "2.0",
             "id": self._take_request_id(),
             "method": "tools/call",
             "params": {"name": name, "arguments": arguments},
         }
-        status, headers, raw_body = self._post(payload, include_session=True)
+        status, headers, raw_body = self._post(
+            payload,
+            include_session=True,
+            request_timeout=request_timeout,
+        )
         response_json: dict[str, Any] = {}
         if raw_body.strip():
             response_json = decode_mcp_response_json(raw_body, headers.get("content-type"))
@@ -746,6 +762,7 @@ def main() -> int:
                 outcome = client.call_tool(
                     "create_session",
                     {"bundleId": args.bundle_id, "timeout": create_session_timeout},
+                    request_timeout=max(create_session_timeout + 5.0, 15.0),
                 )
                 create_session_box["outcome"] = snapshot_tool_outcome(outcome)
                 parsed = outcome.get("parsed") if isinstance(outcome.get("parsed"), dict) else {}

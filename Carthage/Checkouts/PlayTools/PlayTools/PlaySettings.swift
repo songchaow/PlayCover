@@ -92,7 +92,16 @@ let settings = PlaySettings.shared
 
     @objc lazy var customScaler = settingsData.customScaler
 
-    @objc lazy var rootWorkDir = disableForMinimalStartupCompat(settingsData.rootWorkDir)
+    // HOK-010 (reopened after HOK-013 landed): `rootWorkDir` 不再被
+    // `disableForMinimalStartupCompat(...)` 无条件关闭。UE4 的
+    // `ue4commandline.txt` 里的 uproject 路径以 `../../../` 形式相对解析，
+    // iOS 下 cwd = `/` 能让 `../../../NGR/NGR.uproject` 落到 app bundle
+    // 内的 uproject；macOS 下若保持宿主 cwd（PlayCover.app 的启动目录），
+    // 相对路径会解析失败、UE4 会 `Fatal error: [File:Unknown] [Line: 34]`
+    // 并弹 NSAlert 阻塞 UI。`com.tencent.ngr` 的 plist 里
+    // `rootWorkDir=1`，直接透传即可；其它 app 不受影响（它们的 plist
+    // 默认 `rootWorkDir=0`）。
+    @objc lazy var rootWorkDir = settingsData.rootWorkDir
 
     @objc lazy var noKMOnInput = settingsData.noKMOnInput
 

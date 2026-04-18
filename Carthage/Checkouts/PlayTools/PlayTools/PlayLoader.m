@@ -14,6 +14,7 @@
 #import <dlfcn.h>
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
+#import <objc/runtime.h>
 
 @import MachO;
 
@@ -555,6 +556,131 @@ static void pt_ngr_preheat_slot_once(void) {
 }
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// HOK-014: 压制 `com.tencent.ngr` 启动期的 UIAlertController sheet modal。
+//
+// 背景：HOK-013 让 `0x10e2146f8` reader 安全跑过后，app 能进入主循环，但
+// UE4 iOS bootstrap 里有 3 次 `[UE4] Fatal error ... Attempting to get the
+// command line but it hasn't been initialized yet.`——这几次 fatal 并不
+// 终止进程（UE4 iOS 默认会继续跑到 `Init runtime finished`），但会通过
+// UIKitCore 构造 `UIAlertController` 并以 `presentViewController:` 投递
+// 到主 UIViewController。macOS 下 UIKitMac bridge 把 UIAlertController
+// 转成 `NSAlert` + sheet modal attach 到 parent window，UI 线程进入 sheet
+// modal session 再也不返回，表现为"窗口弹出但 app 卡住不响应"。
+//
+// 修复思路：bundle-scoped swizzle
+// `-[UIViewController presentViewController:animated:completion:]`，对
+// `com.tencent.ngr` 且被 present 的 VC 是 `UIAlertController` 时，**直接
+// 调 completion(nil) 返回**，不走 AppKit sheet 路径。这等价于 iOS 下
+// alert 被瞬间 dismiss——UE4 fatal 的 "Attempting to get the command line"
+// 实际上 **是 warning 级别**（UE4 iOS 会继续跑、command line 随后被
+// `Checking for command line in ... FOUND!` 正确读入），alert 只是 UI
+// 提示、不 present 不影响游戏逻辑。
+//
+// 该 swizzle **只对 `com.tencent.ngr` 生效**；其它 bundle 原 IMP 保持不变。
+// 诊断事件写到 `launch-events.jsonl`：`event=hok014_ngr_alert_suppressed`，
+// 含 `title` / `message` / `className`，方便事后 audit。
+// ---------------------------------------------------------------------------
+
+static IMP pt_ngr_original_presentViewController_IMP = NULL;
+
+typedef void (*pt_ngr_present_imp_t)(id, SEL, id, BOOL, id);
+
+static void pt_ngr_swizzled_presentViewController(id self, SEL _cmd,
+                                                  id viewControllerToPresent,
+                                                  BOOL animated,
+                                                  id completion) {
+    static Class alertClass = Nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        alertClass = NSClassFromString(@"UIAlertController");
+    });
+
+    if (alertClass != Nil
+        && viewControllerToPresent != nil
+        && [viewControllerToPresent isKindOfClass:alertClass]) {
+        // 记录被压制的 alert 的 title / message，供 launch-events.jsonl
+        // 事后 audit。使用 KVC 读 UIAlertController 的 `title` / `message`
+        // 属性避免直接引用 UIAlertController 类导致 linker 依赖。
+        NSString *title = nil;
+        NSString *message = nil;
+        @try {
+            id rawTitle = [viewControllerToPresent valueForKey:@"title"];
+            id rawMessage = [viewControllerToPresent valueForKey:@"message"];
+            if ([rawTitle isKindOfClass:[NSString class]]) { title = rawTitle; }
+            if ([rawMessage isKindOfClass:[NSString class]]) { message = rawMessage; }
+        } @catch (NSException *exception) {
+            title = nil; message = nil;
+        }
+
+        NSDictionary<NSString *, NSString *> *details = @{
+            @"className": NSStringFromClass([viewControllerToPresent class]) ?: @"",
+            @"title": title ?: @"",
+            @"message": message ?: @"",
+            @"animated": animated ? @"true" : @"false",
+        };
+        [PlayCover recordHOK014AlertSuppressedWithDetails:details];
+
+        NSLog(@"[PlayTools] HOK-014 alert-suppressed class=%@ title=%@ message=%@",
+              NSStringFromClass([viewControllerToPresent class]),
+              title ?: @"(nil)", message ?: @"(nil)");
+
+        // iOS 约定：completion 可以为 nil，present 成功后同步回调。这里
+        // 直接在当前线程调一次 completion(nil)，模拟"瞬间 present + 瞬间
+        // dismiss"。UE4 fatal alert 本身没注册 handler，completion==nil
+        // 走 no-op 分支。
+        if (completion != nil) {
+            void (^completionBlock)(void) = (void (^)(void))completion;
+            completionBlock();
+        }
+        return;
+    }
+
+    // 非 UIAlertController，走原 IMP。
+    if (pt_ngr_original_presentViewController_IMP != NULL) {
+        pt_ngr_present_imp_t orig =
+            (pt_ngr_present_imp_t)pt_ngr_original_presentViewController_IMP;
+        orig(self, _cmd, viewControllerToPresent, animated, completion);
+    }
+}
+
+static void pt_ngr_install_alert_suppressor_once(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // 复用 HOK-013 的 bundle gate——非 `com.tencent.ngr` 直接跳过。
+        if (!pt_ngr_should_preheat_slot()) {
+            return;
+        }
+
+        Class vcClass = NSClassFromString(@"UIViewController");
+        if (vcClass == Nil) {
+            NSLog(@"[PlayTools] HOK-014 install failed: UIViewController class not found");
+            return;
+        }
+
+        SEL sel = NSSelectorFromString(@"presentViewController:animated:completion:");
+        Method m = class_getInstanceMethod(vcClass, sel);
+        if (m == NULL) {
+            NSLog(@"[PlayTools] HOK-014 install failed: presentViewController: method not found");
+            return;
+        }
+
+        IMP originalIMP = method_getImplementation(m);
+        pt_ngr_original_presentViewController_IMP = originalIMP;
+
+        IMP newIMP = (IMP)pt_ngr_swizzled_presentViewController;
+        method_setImplementation(m, newIMP);
+
+        NSLog(@"[PlayTools] HOK-014 installed: -[UIViewController presentViewController:animated:completion:] swizzled for com.tencent.ngr");
+        NSDictionary<NSString *, NSString *> *details = @{
+            @"status": @"installed",
+            @"target": @"UIViewController.presentViewController:animated:completion:",
+        };
+        [PlayCover recordHOK014InstallDiagnosticWithDetails:details];
+    });
+}
+// ---------------------------------------------------------------------------
+
 @implementation PlayLoader
 
 static void __attribute__((constructor)) initialize(void) {
@@ -562,6 +688,11 @@ static void __attribute__((constructor)) initialize(void) {
     // `0x10e2146f8`。`pt_ngr_preheat_slot_once()` 内含 bundle-scoped
     // gate，非目标 bundle 会直接 return，不影响其它 app。
     pt_ngr_preheat_slot_once();
+
+    // HOK-014: 为 `com.tencent.ngr` 压制启动期的 UIAlertController sheet
+    // modal（UE4 fatal 触发的 "Attempting to get the command line..."
+    // alert）。bundle-scoped、幂等。
+    pt_ngr_install_alert_suppressor_once();
 
     [PlayCover launch];
     

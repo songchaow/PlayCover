@@ -177,6 +177,31 @@ public class PlayCover: NSObject {
         )
     }
 
+    /// HOK-014: 供 PlayLoader.m 的 `pt_ngr_install_alert_suppressor_once()`
+    /// 回调使用，把 swizzle 安装事件落盘到 `launch-events.jsonl`。
+    @objc static public func recordHOK014InstallDiagnostic(details: [String: String]) {
+        let runtimeBundleId = Bundle.main.bundleIdentifier
+            ?? "playtools.runtime.\(ProcessInfo.processInfo.processIdentifier)"
+        RuntimeLaunchDiagnostics.record(
+            event: "hok014_ngr_alert_suppressor_installed",
+            bundleId: runtimeBundleId,
+            details: details
+        )
+    }
+
+    /// HOK-014: 供 PlayLoader.m 的 `pt_ngr_swizzled_presentViewController`
+    /// 回调使用，每次拦截 UIAlertController present 时落一条事件，含
+    /// alert 的 title/message/className，便于事后 audit。
+    @objc static public func recordHOK014AlertSuppressed(details: [String: String]) {
+        let runtimeBundleId = Bundle.main.bundleIdentifier
+            ?? "playtools.runtime.\(ProcessInfo.processInfo.processIdentifier)"
+        RuntimeLaunchDiagnostics.record(
+            event: "hok014_ngr_alert_suppressed",
+            bundleId: runtimeBundleId,
+            details: details
+        )
+    }
+
     static public func quitWhenClose() {
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name(rawValue: "NSWindowWillCloseNotification"),

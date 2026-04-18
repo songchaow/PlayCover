@@ -88,7 +88,7 @@ class HOK004NGRStartupRunnerTests(unittest.TestCase):
                 "playcover_input_skipped",
                 "playcover_discord_skipped",
                 "playcover_library_injection_skipped",
-                "playcover_working_directory_preserved",
+                "playcover_working_directory_changed",
                 "playcover_launch_complete",
             ],
         )

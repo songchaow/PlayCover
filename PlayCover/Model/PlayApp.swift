@@ -79,6 +79,20 @@ class PlayApp: BaseApp {
 
             settings.sync()
 
+            // HOK-010 follow-up: 对 `minimalStartupCompatBundleIdentifiers`
+            // 强制 `rootWorkDir=true`。`settings.sync()` 之前可能因为 host
+            // 内存 stale / GUI 误配置导致 `rootWorkDir=false`，随后 didSet
+            // 会把 plist 覆盖回 false，让 runtime 的 `rootWorkDir` lazy var
+            // 读到 false、UE4 相对路径解析继承 PlayCover 宿主 cwd——引发
+            // `QtsFileSystem Create Failed!!` 的一系列 UE4 fallback。这里
+            // 做一次 self-healing：发现 false 就改成 true，didSet 同步写
+            // 回 plist，后续 PlayTools 的 `[PlaySettings shared].rootWorkDir`
+            // 会读到正确值。
+            if PlayApp.minimalStartupCompatBundleIdentifiers.contains(info.bundleIdentifier),
+               !settings.settings.rootWorkDir {
+                settings.settings.rootWorkDir = true
+            }
+
             if try !Entitlements.areEntitlementsValid(app: self) {
                 sign()
             }

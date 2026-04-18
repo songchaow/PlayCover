@@ -60,7 +60,11 @@ MINIMAL_COMPAT_SETTINGS = {
     "metalCaptureEnabled": False,
     "injectMetalCaptureEnvironment": False,
     "shaderSourceReplacementEnabled": False,
-    "rootWorkDir": False,
+    # HOK-010: `rootWorkDir=True` 让 PlayTools 把 cwd 改到 `/`，否则 UE4
+    # 相对路径会继承 PlayCover 宿主 cwd，触发 `QtsFileSystem Create Failed!!`
+    # 等 UE4 fallback。PlayApp.launch() 里对 minimalStartupCompat bundle
+    # 做 self-healing 保证这里固化的值真正落到 plist + runtime。
+    "rootWorkDir": True,
     "playChain": False,
 }
 
@@ -71,7 +75,8 @@ REQUIRED_COMPAT_EVENTS = [
     "playcover_discord_skipped",
     "playcover_metal_capture_skipped",
     "playcover_library_injection_skipped",
-    "playcover_working_directory_preserved",
+    # HOK-010 后 runtime 走 `rootWorkDir=true` 分支，事件名是 `_changed`。
+    "playcover_working_directory_changed",
     "playcover_launch_complete",
 ]
 

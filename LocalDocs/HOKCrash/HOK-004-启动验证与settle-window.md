@@ -19,7 +19,7 @@
     - `metalCaptureEnabled=false`
     - `injectMetalCaptureEnvironment=false`
     - `shaderSourceReplacementEnabled=false`
-    - `rootWorkDir=false`
+    - `rootWorkDir=true`（HOK-010 后的必须状态；让 UE4 的相对路径解析以 `/` 为基准）
     - `playChain=false`
   - `launch_app(com.tencent.ngr)`
   - `create_session(timeout=10)` 并在 `10s` settle window 内轮询 `list_sessions`
@@ -38,7 +38,7 @@
     - `playcover_discord_skipped`
     - `playcover_metal_capture_skipped`
     - `playcover_library_injection_skipped`
-    - `playcover_working_directory_preserved`
+    - `playcover_working_directory_changed`（HOK-010 后的正确分支；`_preserved` 是 `rootWorkDir=false` 的旧路径）
     - `playcover_launch_complete`
   - 本轮不存在 `playcover_input_initialized`、`playcover_discord_initialized` 与 `playcover_library_injection_installed`；
   - `create_session` 成功；

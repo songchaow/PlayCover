@@ -21,6 +21,8 @@
 /Carthage/Checkouts/PlayTools/PlayTools/*
 !/Carthage/Checkouts/PlayTools/PlayTools/PlaySettings.swift
 !/Carthage/Checkouts/PlayTools/PlayTools/PlayCover.swift
+!/Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m
+!/Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.h
 !/Carthage/Checkouts/PlayTools/PlayTools/MetalCaptureService.swift
 !/Carthage/Checkouts/PlayTools/PlayTools/GuardedCapture.h
 !/Carthage/Checkouts/PlayTools/PlayTools/GuardedCapture.m

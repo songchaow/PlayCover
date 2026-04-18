@@ -161,6 +161,22 @@ public class PlayCover: NSObject {
         shared.menuController = MenuController(with: menuBuilder)
     }
 
+    /// HOK-013: 供 PlayLoader.m 的 `pt_ngr_preheat_slot_once()` 回调使用，
+    /// 把 NGR `__common` slot 预热事件落盘到 `launch-events.jsonl`。
+    ///
+    /// 只在 `com.tencent.ngr` 进程内被调用（gate 在 C 侧），但这里仍以
+    /// `Bundle.main.bundleIdentifier` 作为事件 `bundleId`，保证
+    /// `RuntimeLaunchDiagnostics` 的 per-bundle 日志路径与其它事件一致。
+    @objc static public func recordHOK013PreheatDiagnostic(details: [String: String]) {
+        let runtimeBundleId = Bundle.main.bundleIdentifier
+            ?? "playtools.runtime.\(ProcessInfo.processInfo.processIdentifier)"
+        RuntimeLaunchDiagnostics.record(
+            event: "hok013_ngr_slot_preheat",
+            bundleId: runtimeBundleId,
+            details: details
+        )
+    }
+
     static public func quitWhenClose() {
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name(rawValue: "NSWindowWillCloseNotification"),

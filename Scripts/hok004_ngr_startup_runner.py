@@ -82,6 +82,10 @@ FORBIDDEN_COMPAT_EVENTS = [
     "playcover_library_injection_installed",
 ]
 
+AKINTERFACE_SCHEDULE_EVENT = "playcover_akinterface_delayed"
+AKINTERFACE_START_EVENT = "playcover_akinterface_initialize_started"
+AKINTERFACE_COMPLETE_EVENT = "playcover_akinterface_initialized"
+
 
 class MCPError(RuntimeError):
     pass
@@ -261,6 +265,50 @@ def evaluate_compat_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         "allForbiddenAbsent": not forbidden_present,
         "observedEventCount": len(event_names),
         "observedEvents": present_events,
+    }
+
+
+def summarize_akinterface_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+    schedule_events = [event for event in events if str(event.get("event") or "") == AKINTERFACE_SCHEDULE_EVENT]
+    start_events = [event for event in events if str(event.get("event") or "") == AKINTERFACE_START_EVENT]
+    completed_events = [event for event in events if str(event.get("event") or "") == AKINTERFACE_COMPLETE_EVENT]
+
+    schedule_event = schedule_events[-1] if schedule_events else None
+    start_event = start_events[-1] if start_events else None
+    completed_event = completed_events[-1] if completed_events else None
+
+    def extract_detail(event: dict[str, Any] | None, key: str) -> str | None:
+        if not isinstance(event, dict):
+            return None
+        value = event.get(key)
+        if value is not None:
+            return str(value)
+        details = event.get("details")
+        if not isinstance(details, dict):
+            return None
+        value = details.get(key)
+        return str(value) if value is not None else None
+
+    return {
+        "delayed": bool(schedule_event),
+        "scheduled": {
+            "present": bool(schedule_event),
+            "timestamp": schedule_event.get("timestamp") if isinstance(schedule_event, dict) else None,
+            "delaySeconds": extract_detail(schedule_event, "delaySeconds"),
+            "mode": extract_detail(schedule_event, "mode"),
+        },
+        "initializeStarted": {
+            "present": bool(start_event),
+            "timestamp": start_event.get("timestamp") if isinstance(start_event, dict) else None,
+            "delaySeconds": extract_detail(start_event, "delaySeconds"),
+            "mode": extract_detail(start_event, "mode"),
+        },
+        "initialized": {
+            "present": bool(completed_event),
+            "timestamp": completed_event.get("timestamp") if isinstance(completed_event, dict) else None,
+            "delaySeconds": extract_detail(completed_event, "delaySeconds"),
+            "mode": extract_detail(completed_event, "mode"),
+        },
     }
 
 
@@ -760,6 +808,7 @@ def main() -> int:
         )
         selected_events = events_for_process_launch_id(current_events, selected_process_launch_id)
         compat_evaluation = evaluate_compat_events(selected_events)
+        akinterface_summary = summarize_akinterface_events(selected_events)
         new_process_launch_ids = sorted(collect_process_launch_ids(current_events) - baseline_process_launch_ids)
         new_crash_reports = diff_new_crash_reports(baseline_reports, current_reports)
 
@@ -771,6 +820,7 @@ def main() -> int:
             "selectedRunSummary": selected_summary,
             "selectedRunEventCount": len(selected_events),
             "compatEvaluation": compat_evaluation,
+            "akInterface": akinterface_summary,
         }
         report["crashReports"] = {
             "baselineCount": len(baseline_reports),

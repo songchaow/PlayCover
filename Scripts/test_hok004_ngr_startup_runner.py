@@ -20,6 +20,7 @@ from hok004_ngr_startup_runner import (  # noqa: E402
     evaluate_compat_events,
     extract_installed_playcover_app_path,
     select_current_run_summary,
+    summarize_akinterface_events,
     summarize_session_polls,
 )
 
@@ -119,6 +120,36 @@ class HOK004NGRStartupRunnerTests(unittest.TestCase):
         self.assertTrue(summary["disconnectedObserved"])
         self.assertFalse(summary["closedObserved"])
         self.assertEqual(summary["pollCount"], 4)
+
+    def test_summarize_akinterface_events_reports_scheduled_and_initialized_states(self) -> None:
+        events = [
+            {
+                "event": "playcover_akinterface_delayed",
+                "timestamp": "2026-04-18T10:00:00Z",
+                "delaySeconds": "1.00",
+                "mode": "scheduled",
+            },
+            {
+                "event": "playcover_akinterface_initialize_started",
+                "timestamp": "2026-04-18T10:00:01Z",
+                "delaySeconds": "1.00",
+                "mode": "delayed",
+            },
+            {
+                "event": "playcover_akinterface_initialized",
+                "timestamp": "2026-04-18T10:00:01Z",
+                "delaySeconds": "1.00",
+                "mode": "delayed",
+            },
+        ]
+
+        summary = summarize_akinterface_events(events)
+
+        self.assertTrue(summary["delayed"])
+        self.assertEqual(summary["scheduled"]["delaySeconds"], "1.00")
+        self.assertEqual(summary["scheduled"]["mode"], "scheduled")
+        self.assertEqual(summary["initializeStarted"]["timestamp"], "2026-04-18T10:00:01Z")
+        self.assertTrue(summary["initialized"]["present"])
 
     def test_diff_new_crash_reports_ignores_historical_ips_files(self) -> None:
         baseline = [

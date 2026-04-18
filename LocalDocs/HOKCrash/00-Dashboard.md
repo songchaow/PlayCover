@@ -19,15 +19,21 @@
 
 ## 主线任务
 
-- **当前结论**：`HOK-004`、`HOK-005A`、`HOK-005B`、`HOK-005C`、`HOK-005D`、`HOK-006`、`HOK-007A`、`HOK-007B` 均已完成。最新离线+live 结果已证明：候选 E（`ldr x8,[x19]` → `b 0x10480df24`，只改 4 字节、可逆、可重签）已经成功把原 faulting window 从 `0x10480df08` / `far=0x0` 推开；HOK-004 baseline 10s settle 内 session 不再秒断、也没有新 `.ips`，HOK-006 LLDB 交叉运行在更长存活时间里观察到的新崩溃 `NGR-2026-04-18-154537.ips` 已迁移到 `pc=0x10915b114` / `imageOffset=0x4839d14` / `far=0x50`，与原 callsite 不同。
-- **当前已知事实**：2026-04-18 执行 `python3 Scripts/hok007b_ngr_patch_runner.py --apply` 成功将 NGR 的磁盘 sha256 从 `b0e109d7...` 改到 `7f6ae20c...`，`0x480df08` 处字节由 `680240f9` 改为 `07000014`，`llvm-objdump` 复核反汇编为 `b 0x10480df24`，`codesign -dvv` 继续为 `adhoc`。随后 `python3 Scripts/hok004_ngr_startup_runner.py --skip-build-install` 报告 `createSessionSucceeded=true`、`readyObservedDuringSettleWindow=true`、`disconnectedObservedDuringSettleWindow=false`、`newCrashReportsDetected=false`、`overallPass=true`。`python3 Scripts/hok006_ngr_lldb_runner.py --skip-build-install` 报告 `lldbStopObserved=false`、`faultingInstruction=None`，同轮出现的新 `.ips` 不再落在 `0x10480df08`。结构化产物：`build/hok-007b-ngr-patch-report.json`、`build/hok-007b-post-patch-hok004.json`、`build/hok-007b-post-patch-hok006.json`、`build/hok-007b-backups/hok-007b-b0e109d761a3eefb.bin`。
-- **当前主线**：继续保留已落地的 `com.tencent.ngr` 最小兼容启动 gate、`AKInterface` 延迟补丁，把 `Scripts/hok004_ngr_startup_runner.py` 作为 baseline live 入口，把 `Scripts/hok006_ngr_lldb_runner.py` 作为 faulting instruction / backtrace 入口，把 `Scripts/hok007b_ngr_patch_runner.py` 作为"当前已应用哪一层可逆 patch"的单一来源。主线已从 `HOK-007B` 推到 `HOK-007C`：围绕新出现的 downstream crash `0x10915b114` / `far=0x50` 再跑一轮 HOK-007A 风格的离线映射 + HOK-007B 风格的最小可逆 patch，而不是直接跳到 `HOK-008`。
-- **当前卡点**：候选 E 已经解决原 callsite，但下游 `0x10915b114` 依然是 null-ish 的 `far=0x50` 解引用；仍缺少对该新 callsite 的 `LLDB` / `.ips` / Mach-O / 磁盘字节一致性证据，以及对应的最小可逆 patch 设计。不应在无新映射证据前再叠加 patch 或放弃候选 E。
+- **当前结论**：`HOK-004`、`HOK-005A`、`HOK-005B`、`HOK-005C`、`HOK-005D`、`HOK-006`、`HOK-007A`、`HOK-007B` 均已完成。候选 E（`ldr x8,[x19]` → `b 0x10480df24`，4 字节可逆）已把原 dyld-era null deref 从 `0x10480df08` / `far=0x0` 绕开，app 已经可以跑到**游戏自己的 UI 层**，并弹出 `Message: QtsFileSystem Create Failed!!` 提示框；用户点 OK 后 app 退出，伴随新 `.ips`（`NGR-2026-04-18-154541.ips`，`far=0x30`）。`QtsFileSystem` 来自 `Frameworks/GCloud.framework`（见 `GCloudQtsPufferInterface.h`），是腾讯 GCloud 的文件系统子模块，它的创建失败几乎可以肯定是**当前强制把 `rootWorkDir=false`** 导致的——iOS 版 NGR 假设 cwd 是 `/`，而最小兼容 gate 当前显式保留了 macOS container 下的 cwd。
+- **当前已知事实**：
+  - `PlaySettings.swift` 中有 `@objc lazy var rootWorkDir = disableForMinimalStartupCompat(settingsData.rootWorkDir)`，`appliesMinimalStartupCompat` 对 `com.tencent.ngr` 恒为 true，因此 host 侧无论如何设置，runtime 都会看到 `rootWorkDir=false`。
+  - `PlayCover.swift` 在 `rootWorkDir=false` 分支只发 `playcover_working_directory_preserved` 事件，**不会** `chdir("/")`；在 `rootWorkDir=true` 分支才会 `FileManager.default.changeCurrentDirectoryPath("/")` 并发 `playcover_working_directory_changed`。
+  - `hok007b_ngr_patch_runner.py` 应用状态：`currentBytesHex=07000014`，`build/hok-007b-backups/hok-007b-b0e109d761a3eefb.bin` 存在，可用 `--revert` 回滚；不建议在 HOK-010 验证前回滚。
+  - 最新 `.ips`：`NGR-2026-04-18-154537.ips`（`pc=0x10915b114` / `far=0x50`）、`NGR-2026-04-18-154541.ips`（`far=0x30`），两者都明显不在原 `0x10480df08` / `far=0x0` 窗口。
+- **当前主线**：切换到 **`HOK-010`：把 `rootWorkDir` 从 `minimalStartupCompat` 的强制关闭清单里摘除**，让 `com.tencent.ngr` 继续走 `chdir("/")` 的 iOS 风格启动，以消除 `QtsFileSystem Create Failed!!`。二进制 patch 路线（`HOK-007C`：为 `0x10915b114` / `far=0x50` 再做一轮 callsite 映射与最小 patch）**暂时降优先级**，因为这个下游 null deref 几乎一定是 `QtsFileSystem` 创建失败后的 app 层空指针，修好 HOK-010 很可能直接把它一并消掉。
+- **当前卡点**：
+  - 未确认 `QtsFileSystem` 的具体失败原因是否 100% 等同于 cwd=`/`，还存在其它可能（如沙盒写权限、keychain、Puffer 校验），因此 HOK-010 的 live 验证必须拿 `launch-events.jsonl` 里新增的 `playcover_working_directory_changed` + 弹窗是否消失 + 新 `.ips` 是否继续减少一并判断。
+  - 最小兼容 gate 此前把"`playcover_working_directory_preserved`"列为正面证据，是**错的**；之后要同步把"到底哪些 compat event 属于正面证据"校准一次。
 - **下一步默认规划**：
-  1. 执行 `HOK-007C`：复用 `Scripts/hok007_ngr_callsite_mapper.py` 的口径，把最新 `NGR-2026-04-18-154537.ips`（或后续复现时更新的 `.ips`）对齐到 `Scripts/hok006_ngr_lldb_runner.py` 输出，产出 `pc=0x10915b114` / `imageOffset=0x4839d14` / `far=0x50` 的新离线一致性报告。
-  2. 只有在新离线报告 `overallPass=true` 之后，才基于 `Scripts/hok007b_ngr_patch_runner.py` 的设计思路去加一个针对新 callsite 的最小可逆 patch 候选；候选 E 不回滚、`--revert` 仅在排障需要时使用。
-  3. 每次只再做一层变动后，重新跑一轮"构建 → 启动 → session → launch diagnostics → LLDB report → `.ips`"闭环，对比 faulting window 是否再次移动；不要同时改多层。
-  4. 若新 callsite 属于完全不同的模块或调用者，再复盘是否需要升级到 `HOK-008` 的脚本链整合；否则继续保留当前主线。
+  1. 执行 `HOK-010`：把 `rootWorkDir` 从 `PlaySettings.disableForMinimalStartupCompat(...)` 链上摘除（改成直接读 `settingsData.rootWorkDir`，或者用 `appliesMinimalStartupCompat` 专门给它返回 `true`），同步调整 `hok004_ngr_startup_runner.py` 里 `MINIMAL_COMPAT_SETTINGS` / `REQUIRED_COMPAT_EVENTS`，让默认验证口径改成"期望 `playcover_working_directory_changed`，不期望 `playcover_working_directory_preserved`"。
+  2. `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh` + `./BuildScripts/build_and_install.sh` 后跑一次 `hok004_ngr_startup_runner.py` live 闭环，确认 `playcover_working_directory_changed` 出现、弹窗消失、session 不再 briefly ready→退出、无新同类 `.ips`。
+  3. 若 HOK-010 live 验证通过，再评估是否彻底关闭 HOK-007C；若 QtsFileSystem 弹窗确实消失但仍有 `far=0x50`/`far=0x30` 崩溃，则恢复 HOK-007C 优先级并用 `hok007_ngr_callsite_mapper.py` + `hok007b_ngr_patch_runner.py` 的同一套口径继续推进。
+  4. 任何情况下都**不要**先回滚候选 E；先证明 HOK-010 能独立收敛 QtsFileSystem 问题，再单独决定候选 E 的去留。
 
 ## 构建与验证的方法
 
@@ -44,7 +50,8 @@
 
 ### 当前建议的最小兼容验证口径
 
-- 默认把 `metalCaptureEnabled=false`、`injectMetalCaptureEnvironment=false`、`shaderSourceReplacementEnabled=false`、`rootWorkDir=false`、`playChain=false` 视为 `com.tencent.ngr` 的优先隔离态；当前这些关键开关都应可通过现有 MCP 接口稳定写入 / 读取，但仍要把 host/plist 原始值与 runtime compat gate 压低后的实际生效值分开解读。
+- 默认把 `metalCaptureEnabled=false`、`injectMetalCaptureEnvironment=false`、`shaderSourceReplacementEnabled=false`、`playChain=false` 视为 `com.tencent.ngr` 的优先隔离态。**`rootWorkDir` 不再属于"越小越好"——对 `com.tencent.ngr` 应保持 `rootWorkDir=true`**，否则 `QtsFileSystem`（`GCloud.framework`）会在 app UI 层弹 `QtsFileSystem Create Failed!!` 并退出。
+- host/plist 原始值与 runtime compat gate 压低后的实际生效值仍需分开解读；`PlaySettings.disableForMinimalStartupCompat(...)` 一旦摘除 `rootWorkDir`，host 侧的 `rootWorkDir=true` 才会真正落到 runtime。
 - 只要本轮改动触及启动顺序、PlayTools 注入内容、settings 默认值、per-app gate、签名/重签或 app 包内二进制，就必须重新跑一轮完整的"构建 → 启动 → session → launch diagnostics → crash report"闭环。
 
 ### 需要用户确认后才能继续的事项
@@ -78,8 +85,9 @@
 | HOK-005D | DONE | 已对 `com.tencent.ngr` 落地 `AKInterface.initialize()` 的 `1.0s` app-scoped 延迟，并用 live 结果证明 crash 仍发生在 `AKInterface` 实际初始化之前；主线已转向 `HOK-006` | `LocalDocs/HOKCrash/HOK-005-深层bootstrap分层最小化.md` |
 | HOK-006 | DONE | 已补齐 LLDB 自动化入口与结构化证据链，并用 fresh live 确认崩点仍固定在同一 `NGR` early initializer 路径 | `LocalDocs/HOKCrash/HOK-006-LLDB归因与crash-window压缩.md` |
 | HOK-007A | DONE | 已建立 `0x10480df08` faulting callsite 的 `LLDB` / `.ips` / `instructionByteStream` / file bytes / `__TEXT,__text` file offset 一致性映射，并固化离线 mapper | `LocalDocs/HOKCrash/HOK-007-二进制意图分析与callsite映射.md` |
-| HOK-007B | DONE | 已应用候选 E（`ldr x8,[x19]` → `b 0x10480df24`，4 字节可逆）并通过 HOK-004 baseline + HOK-006 交叉验证，faulting window 已从 `0x10480df08` / `far=0x0` 迁移到 `0x10915b114` / `far=0x50` | `LocalDocs/HOKCrash/HOK-007-二进制意图分析与callsite映射.md` |
-| HOK-007C | TODO | 为新出现的 downstream crash（`pc=0x10915b114` / `imageOffset=0x4839d14` / `far=0x50`）复刻 HOK-007A 离线一致性映射 + HOK-007B 最小可逆 patch | 待建（默认复用 `HOK-007-二进制意图分析与callsite映射.md` 作为入口，必要时再拆子文档） |
+| HOK-007B | DONE | 已应用候选 E（`ldr x8,[x19]` → `b 0x10480df24`，4 字节可逆）并通过 HOK-004 baseline + HOK-006 交叉验证，faulting window 已从 `0x10480df08` / `far=0x0` 迁移到 `0x10915b114` / `far=0x50`，app 已能跑到游戏 UI 层 | `LocalDocs/HOKCrash/HOK-007-二进制意图分析与callsite映射.md` |
+| HOK-010 | TODO | 把 `rootWorkDir` 从 `PlaySettings.disableForMinimalStartupCompat(...)` 摘除，让 `com.tencent.ngr` 保留 `chdir("/")`，以消除 `QtsFileSystem Create Failed!!` 弹窗；同步校准 `hok004_ngr_startup_runner.py` 的 required/forbidden compat events | 待建（默认直接在 `HOK-005-深层bootstrap分层最小化.md` 下增补一节，验证通过后再决定是否独立子文档） |
+| HOK-007C | DEFERRED | 为 `0x10915b114` / `far=0x50` / `NGR-2026-04-18-154541.ips` 的下游崩溃做 HOK-007A 离线映射 + HOK-007B 风格最小可逆 patch；**暂缓**，优先看 `HOK-010` 能否把这些下游崩溃一并消除 | `LocalDocs/HOKCrash/HOK-007-二进制意图分析与callsite映射.md` |
 | HOK-008 | TODO | 将构建、配置、启动、证据收集、结论汇总收敛成可重复的自动化脚本链路 | 待建 |
 | HOK-009 | BLOCKED | 需要用户账号/手工 UI 的后续验证（若未来必须验证"进入游戏后"行为） | 暂不执行；执行前必须先得到用户确认 |
 
@@ -90,7 +98,7 @@
 - `shaderSourceReplacementEnabled` 在 host/runtime 默认值里都偏向开启思路，不能想当然地把它当作"默认无影响"。
 - 现在可以通过 MCP 稳定写入 / 读取 `shaderSourceReplacementEnabled`，但这只代表 raw settings 已可自动化表达；是否真正命中 `com.tencent.ngr` 的最小兼容 gate，仍应优先看 `launch-events.jsonl`。
 - `session briefly ready -> disconnected`，以及像本轮这样 `runtime-* = disconnected` + `pending-* = starting` 持续停留的组合，都是比"窗口看起来闪退"更稳定的自动化判定信号。
-- `playcover_startup_compat_profile_applied`、`playcover_metal_capture_skipped`、`playcover_library_injection_skipped`、`playcover_working_directory_preserved` 是本轮之后判断 `com.tencent.ngr` 最小兼容 gate 是否真正命中的首选证据；不要再只看 plist 里的原始布尔值。
+- `playcover_startup_compat_profile_applied`、`playcover_metal_capture_skipped`、`playcover_library_injection_skipped` 是判断 `com.tencent.ngr` 最小兼容 gate 是否真正命中的首选证据；不要再只看 plist 里的原始布尔值。**`playcover_working_directory_preserved` 已不再是正面证据**——对 `com.tencent.ngr` 来说，必须看到 `playcover_working_directory_changed`（即 `chdir("/")`），否则 `QtsFileSystem` 会在 app UI 层失败。
 - `playcover_input_skipped` 且不存在对应 launch 的 `playcover_input_initialized`，是 `HOK-005B` 是否真正命中的首选证据；不要再用"猜测 PlayInput 应该没跑起来"替代 launch diagnostics。
 - `playcover_screen_skipped` 且不存在对应 launch 的 `playcover_screen_initialized`，是 `HOK-005C` 是否真正命中的首选证据；不要再用"猜测 PlayScreen 应该没有初始化"替代 launch diagnostics。
 - 当前阶段的核心不是恢复全部 PlayCover 能力，而是先证明**最小兼容运行**能不能成立；能力恢复必须放在启动稳定之后。
@@ -105,6 +113,9 @@
 - 在 `NGR` 这类巨型 mach-o 上做 4 字节 patch，`codesign -f -s -` 就够了；不用再去改 embedded provisioning profile 或 framework 链，本轮 `--apply` 后 `codesign -dvv` 仍报 `adhoc` 即验证通过。
 - `Scripts/hok007b_ngr_patch_runner.py` 的 `--apply` / `--revert` 现在是"当前磁盘 NGR 处于哪一代 patch"的单一来源；对磁盘字节、备份目录、签名状态不要再另起手工流程，否则 dry-run 的一致性 gate 会误判。
 - 在应用候选 E 之后，`Scripts/hok006_ngr_lldb_runner.py` 可能会在更长存活时间里观察到**下游新 crash**（例如 `pc=0x10915b114` / `far=0x50`），不要把这类新 `.ips` 误判为候选 E 无效——必须先看 `pc` / `imageOffset` / `far` 是否已经离开原 `0x10480df08` / `far=0x0` 窗口。
+- `NGR-*.ips` 不是失败原因的唯一来源；`com.tencent.ngr` 跑到 UI 层之后会优先用**自己的 MessageBox** 弹错（如 `QtsFileSystem Create Failed!!`），伴随的 `.ips` 往往是弹窗点 OK 后的 app 内部退出链，`far=0x30`/`far=0x50` 之类的下游 null deref 其实是 app 层被迫空跑的后果，不是真正的根因。
+- `QtsFileSystem` 属于 `Frameworks/GCloud.framework`（见 `GCloudQtsPufferInterface.h`）。它在 iOS 上默认按 `cwd="/"` 的假设构造路径；PlayCover 若把 `rootWorkDir` 强制关掉，这个模块会在 UI 层失败。因此 `com.tencent.ngr` 的"最小兼容"并不等于"所有 iOS 化开关都关"——`rootWorkDir=true` / `chdir("/")` 对它是**必需**的。
+- `PlaySettings.disableForMinimalStartupCompat(...)` 是一个以 bundleId 为单位的"一刀切"压低器，很容易顺手把本应保留的能力（如 `rootWorkDir`）一起压掉。新增最小兼容 gate 时必须逐开关列一遍"如果这项被关，是否会触发可观察的 app 层失败"，不要集体 default false。
 
 ## 参考信息
 
@@ -115,7 +126,7 @@
 ### 按需读取
 
 - `PlayCover/Model/AppSettings.swift`：host 侧 app 设置默认值与落盘路径。
-- `Carthage/Checkouts/PlayTools/PlayTools/PlaySettings.swift`：runtime 侧对同一份 settings 的读取方式与默认值。
+- `Carthage/Checkouts/PlayTools/PlayTools/PlaySettings.swift`：runtime 侧对同一份 settings 的读取方式与默认值；其中 `disableForMinimalStartupCompat(...)` / `minimalStartupCompatBundleIds` 是 `HOK-010` 的主改点，用来决定 `rootWorkDir` 等开关是否仍被"最小兼容 gate"强制关闭。
 - `PlayCover/Model/PlayApp.swift`：目标 app 启动环境、`DYLD_*` 清洗与 `injectMetalCaptureEnvironment` 逻辑。
 - `Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m`：PlayTools 的 dyld constructor / interpose 入口。
 - `Carthage/Checkouts/PlayTools/PlayTools/PlayCover.swift`：`PlayTools` 启动顺序与 `playcover_launch_complete` 前后的关键路径。
@@ -123,6 +134,7 @@
 - `LocalDocs/HOKCrash/HOK-006-LLDB归因与crash-window压缩.md`：`HOK-006` 的自动化入口、证据口径与后续 live handoff。
 - `LocalDocs/HOKCrash/HOK-007-二进制意图分析与callsite映射.md`：`HOK-007A` 的离线 callsite 映射入口、`HOK-007B` 候选 E 的 patch 设计 / live 验证结论，以及 `HOK-007C` handoff。
 - `Scripts/hok007b_ngr_patch_runner.py`：当前已应用到 NGR 上的"候选 E"最小可逆 patch 的单一来源；`--apply` / `--revert` / `--dry-run` 与 `build/hok-007b-backups/` 备份、`build/hok-007b-ngr-patch-report.json` 报告都走同一口径。
+- `~/Library/Containers/io.playcover.PlayCover/Applications/com.tencent.ngr.app/Frameworks/GCloud.framework/Headers/GCloudQtsPufferInterface.h`：`QtsFileSystem Create Failed!!` 对应的腾讯 GCloud 文件系统接口定义，确认该弹窗来自 app 内 GCloud 模块而不是 PlayCover/PlayTools。
 - `~/Library/Containers/io.playcover.PlayCover/RuntimeLaunchDiagnostics/com.tencent.ngr/launch-events.jsonl`：每轮 live 启动证据。
 - `~/Library/Logs/DiagnosticReports/NGR-*.ips`：系统崩溃报告；用于对照 faulting window 是否发生移动。
 - `LocalDocs/MCPFinal/04-接入与验证.md`：需要借用 MCP/自动化验证套路时再读。

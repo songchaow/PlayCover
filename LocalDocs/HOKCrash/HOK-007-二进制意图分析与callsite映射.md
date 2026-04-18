@@ -98,5 +98,6 @@
 ### 结论 / 下一步 handoff
 
 - `HOK-007A` 已完成：callsite 映射被离线固化。
-- `HOK-007B` 已完成：候选 E（`ldr x8,[x19]` → `b 0x10480df24`）已应用并通过 HOK-004 baseline + HOK-006 交叉验证，faulting window 已移动到 `0x10915b114`（`far=0x50`）。
-- 下一步主线：回到 Dashboard，基于新的 downstream crash（`NGR-2026-04-18-154537.ips`）决定是否要为 `0x10915b114` 再做一次 HOK-007A 风格的离线映射 + HOK-007B 风格的最小可逆 patch；不要在没有新映射证据的情况下直接跳到 `HOK-008`。
+- `HOK-007B` 已完成：候选 E（`ldr x8,[x19]` → `b 0x10480df24`）已应用并通过 HOK-004 baseline + HOK-006 交叉验证，faulting window 已移动到 `0x10915b114`（`far=0x50`），app 已能跑到游戏 UI 层。
+- **`HOK-007C`（下游 `0x10915b114` 的 callsite 映射 + patch）已在 Dashboard 中标记为 DEFERRED**：2026-04-18 观察到 app 在 UI 层弹出 `Message: QtsFileSystem Create Failed!!` 之后才退出，并伴随 `NGR-2026-04-18-154541.ips`（`far=0x30`）；`QtsFileSystem` 来自 `Frameworks/GCloud.framework`，其创建失败极大概率由当前最小兼容 gate 强制关闭 `rootWorkDir`（没有 `chdir("/")`）造成。主线因此改走 `HOK-010`：把 `rootWorkDir` 从 `PlaySettings.disableForMinimalStartupCompat(...)` 摘除，先证明是否能从源头让 `QtsFileSystem` 创建成功。
+- 候选 E 目前**不回滚**。若 `HOK-010` 之后仍有 `far=0x30`/`far=0x50` 之类 null deref 留存，再恢复 `HOK-007C` 优先级，用 `hok007_ngr_callsite_mapper.py` + `hok007b_ngr_patch_runner.py` 同一套口径继续推进；在此之前，不要直接跳到 `HOK-008`。

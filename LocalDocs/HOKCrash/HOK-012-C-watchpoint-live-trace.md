@@ -42,15 +42,16 @@ HOK-012-C.3-a live run 观察到的模式是：
 - 但在 5s / 20s 两档 `--lldb-timeout` 里 transcript 都**没有**出现 `Breakpoint 1.*hit` 或任何 `stop reason =` 行；
 - 超时后 `process interrupt` + `thread backtrace all` 在 2s 收尾窗口里来不及返回完整 backtrace。
 
-这类 run 的正确解读 **不是** "writer 函数在 app 生命周期内从未被调用"，而是 "writer 函数在 **LLDB 捕获窗口** 内未被调用"。判定 app 真实生命周期必须用 `NGR-*.ips` 的 `procLaunch` 与 `procExitAbsTime` 之差，不是 LLDB transcript 的时间戳。以 HOK-012-C.3-a 的两份 `.ips` 为例，两轮 app 生命周期都是约 32 秒；`--lldb-timeout 5 / 20` 只覆盖了前 16% / 63% 的生命周期，LLDB 超时后发 `process terminate` 但 app 此时可能已触发 UE4 `abort()` + Apple 崩溃对话框，子进程被挂在前台等用户点击，LLDB 早已 detach，bp / watchpoint 全部失效。
+这类 run 的正确解读 **不是** "writer 函数在 app 生命周期内从未被调用"，而是 "writer 函数在 **LLDB 捕获窗口** 内未被调用"；同时需要警惕："`NGR-*.ips` 里 `procLaunch → procExitAbsTime ≈ 32s`" **不是** app 的自然生命周期——UE4 `abort()` 弹出的 Apple 崩溃对话框会把进程挂在 signal handler 里等用户点 "Reopen / Close"，用户点击之前进程不会退出、也不会写 `.ips`；因此 `.ips` 里的"32s"其实就是用户点击时刻。不点 = UI 线程阻塞，app 永远不会自然崩溃，任何"延长 `--lldb-timeout`"的策略都抓不到 abort 现场。
 
-正确的后续动作不是退出 `0x103a29b7c`，而是：
+正确的后续动作不是退出 `0x103a29b7c`，也不是等对话框，而是：
 
-1. **先把 capture window 拉到覆盖完整生命周期**：用 `--lldb-timeout <T>`，其中 `T` 至少为 "最近一次 `NGR-*.ips` 的 `procExitAbsTime - procLaunch`" 加 5s 缓冲。
-2. **让 LLDB 在 UE4 `abort()` 前抢先停一次**：在 `preRunCommands` 里追加 `process handle -s true -n true -p false SIGABRT`，避免 Apple 崩溃对话框抢先 halt 进程。
-3. **给 writer bp 加 fallback 地址**：除了 `0x103a29b7c` 本身，再对 `0x107e5df10`（HOK-011 里 writer 的唯一 caller，Logger accessor）同时下 bp；任何一方先命中都能装 watchpoint。
-4. **把 `runLLDBHeadless` 的收尾 2s 窗口参数化**（HOK-012-C.3-b.2）：若前三步拿到了 stop 但 backtrace 被截断，把 `teardownTimeoutSeconds` 拉到 5–10s；若 stop 本身没拿到，把 capture window 拉满 `.ips` 生命周期再试。
-5. **必要时才复核 HOK-011 静态假设**：只有当 1–4 全部跑完、writer 与其唯一 caller 两个 bp 都在完整生命周期里未命中、且 `.ips` 崩点确实涉及 `0x10e2146f8` 的读取路径时，才需要回到 `Scripts/hok011_ngr_common_init_chain.py` 放宽扫描形式（`str` / `stp` / `sturh` / ARM64 memcpy helper 的间接 store）或补扫 NGR 主二进制的非 `__TEXT,__text` 段。
+1. **让 LLDB 抢在 Apple 崩溃对话框之前拦住 abort**：在 `preRunCommands` 里追加 `process handle -s true -n true -p false SIGABRT`。被拦住后对话框不会出现，LLDB 就有完全受控的 stop 现场。这是 b.1 的**唯一关键动作**，不做等于白做。
+2. **在 abort stop 上一次性取满需要的事实**：`thread backtrace all` + `memory read -s 8 -c 1 0x10e2146f8` + `breakpoint list`（看 `0x103a29b7c` / `0x107e5df10` 的 hit count）+ `watchpoint list`（看 slot 写入是否曾触发过 watchpoint）。`0x10e2146f8` 的当前值决定下一步分流：`0x0` 走 HOK-013（提前 touch Logger accessor）；非 0 指针走 b.4（多 writer bp fallback）；坏指针走"反查坏写入"。
+3. **把 `--lldb-timeout` 给到保守大值**（60s 够用）容纳 launch → abort 段。不需要与 `.ips` 的"32s"挂钩——那个数字依赖用户点击时刻。
+4. **把 `runLLDBHeadless` 的收尾 2s 窗口参数化**（HOK-012-C.3-b.2）：abort stop 需要发的命令比 watchpoint stop 多，2s 大概率不够；先放到 5–10s。
+5. **给 writer bp 加 fallback 地址**：除了 `0x103a29b7c` 本身，再对 `0x107e5df10`（HOK-011 里 writer 的唯一 caller，Logger accessor）同时下 bp；任何一方先命中都能装 watchpoint。
+6. **必要时才复核 HOK-011 静态假设**：只有当 1–5 全部跑完、writer 与其唯一 caller 两个 bp 在 abort stop 时 hit count 都是 0、但 `0x10e2146f8` 的当前值**非 0**，才需要回到 `Scripts/hok011_ngr_common_init_chain.py` 放宽扫描形式（`str` / `stp` / `sturh` / ARM64 memcpy helper 的间接 store）或补扫 NGR 主二进制的非 `__TEXT,__text` 段。
 
 ## HOK-012-C 的 CLI 最小参照
 
@@ -69,12 +70,15 @@ python3 Scripts/hok006_ngr_lldb_runner.py \
   --defer-watchpoint-install \
   --skip-build-install
 
-# deferred-install 覆盖完整 ~32s 生命周期（HOK-012-C.3-b.1 的默认命令）
+# deferred-install 覆盖到 UE4 abort 现场（HOK-012-C.3-b.3 的默认命令，依赖 b.1 把 SIGABRT 拦截写进 defer-mode 的 preRunCommands）
 python3 Scripts/hok006_ngr_lldb_runner.py \
   --watch-address 0x10e2146f8 --watch-size 8 \
   --defer-watchpoint-install \
-  --lldb-timeout 45 --settle-seconds 50 \
+  --lldb-timeout 60 --settle-seconds 65 \
   --skip-build-install
+# 注意：`--lldb-timeout` 是保守大值，不是"app 生命周期"。abort 被 LLDB 拦住
+# 后，后续一切推进都发生在 LLDB stop 现场，不需要等用户点对话框；不拦
+# SIGABRT 则 app 会被 Apple 崩溃对话框挂住 UI 线程、直到用户点击才真正退出。
 
 # deferred-install 时显式关闭 writer 自动 bp（完全由 --pre-run-command 控制）
 python3 Scripts/hok006_ngr_lldb_runner.py \

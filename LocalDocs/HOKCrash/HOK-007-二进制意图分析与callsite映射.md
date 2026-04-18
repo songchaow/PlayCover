@@ -99,5 +99,7 @@
 
 - `HOK-007A` 已完成：callsite 映射被离线固化。
 - `HOK-007B` 已完成：候选 E（`ldr x8,[x19]` → `b 0x10480df24`）已应用并通过 HOK-004 baseline + HOK-006 交叉验证，faulting window 已移动到 `0x10915b114`（`far=0x50`），app 已能跑到游戏 UI 层。
-- **`HOK-007C`（下游 `0x10915b114` 的 callsite 映射 + patch）已在 Dashboard 中标记为 DEFERRED**：2026-04-18 观察到 app 在 UI 层弹出 `Message: QtsFileSystem Create Failed!!` 之后才退出，并伴随 `NGR-2026-04-18-154541.ips`（`far=0x30`）；`QtsFileSystem` 来自 `Frameworks/GCloud.framework`，其创建失败极大概率由当前最小兼容 gate 强制关闭 `rootWorkDir`（没有 `chdir("/")`）造成。主线因此改走 `HOK-010`：把 `rootWorkDir` 从 `PlaySettings.disableForMinimalStartupCompat(...)` 摘除，先证明是否能从源头让 `QtsFileSystem` 创建成功。
-- 候选 E 目前**不回滚**。若 `HOK-010` 之后仍有 `far=0x30`/`far=0x50` 之类 null deref 留存，再恢复 `HOK-007C` 优先级，用 `hok007_ngr_callsite_mapper.py` + `hok007b_ngr_patch_runner.py` 同一套口径继续推进；在此之前，不要直接跳到 `HOK-008`。
+- **候选 E 的定位在 HOK-011 之后被重新认定为"症状 workaround"而非"根因修复"**：HOK-011 静态分析证明 faulting caller 读的那个 `__common` 槽位（`0x10e2146f8`）在 NGR 自身 `__init_offsets` 链中根本不会被任何入口 prime，真正的 prime 必须来自外部 framework/ObjC/跨 dylib 路径；候选 E 只是让 reader init 不再 crash，但槽位依然是 null，所以下游一连串依赖这个槽位的代码（`QtsFileSystem Create Failed!!`、`pc=0x10915b114 / far=0x50`、`NGR-2026-04-18-154541.ips / far=0x30`）仍会失败。
+- **`HOK-007C`（下游 `0x10915b114` 的 callsite 映射 + patch）继续 DEFERRED**：这些下游崩溃大概率是同一个 `__common` 槽位未初始化的连带结果，没必要一个个 patch；等 HOK-012 live-trace 拿到真正的 prime 路径后再复盘。
+- `HOK-010`（摘 `rootWorkDir` 的最小兼容 gate）继续 DEFERRED：`QtsFileSystem` 失败有可能是 cwd 问题，也有可能是同一个 `__common` 未初始化问题的连带；优先等 HOK-012 做出判断再定是否还要动 `rootWorkDir`。
+- 候选 E 目前**保持 apply 状态**，作为"让 app 在 HOK-012 期间能跑过 init 1563 观察后续"的兜底；只有当 HOK-012 需要对比"无 patch 时 dyld / watchpoint 行为"时才临时 `--revert`。

@@ -31,23 +31,26 @@
 | `watchpointHitCount >= 1` + `hit.backtrace` 指向 **libobjc + `+load`** | writer 来自 ObjC `+load` | H2（ObjC 类挑选顺序差异） |
 | `watchpointHitCount >= 1` + `hit.backtrace` 指向 `0x103a29f7c`（NGR 自身 writer） | writer 函数本身被触达 | 说明 `__cxa_guard` first-initialization 分支在本轮被走到；结合 `__init_offsets` 可达性重新评估 HOK-011 |
 | **`watchpointHitCount == 0` + pre-run 模式** + `didStop=true` 且 stop 指向下游 reader | watchpoint 装好前 slot 已被写，或 store 在 LLDB detach/attach 窗口外 | 切换到 deferred-install 模式重跑；这正是 HOK-012-B → HOK-012-C 的触发条件 |
-| **`watchpointHitCount == 0` + deferred-install 模式 + `--writer-address 0x103a29b7c`** + `lldbStopObserved=False`（bp 也未命中，transcript 里有 `Breakpoint 1: address = 0x103a29b7c` 但没有 `Breakpoint 1.*hit` 行） | writer 函数本身**根本未被调用**；意味着 HOK-011 的 "slot 的 writer 就是 `0x103a29f7c`" 假设被 live 证伪；slot 的真正 writer 必须在 NGR 外部（或走一条根本不经过 `0x103a29b7c` 的路径） | 不要再在 `0x103a29b7c` 层往下追；把注意力切到**直接读取 `0x10e2146f8` 的指令**——落到 HOK-007C 对 reader 的离线映射 |
+| **`watchpointHitCount == 0` + deferred-install 模式 + `--writer-address 0x103a29b7c`** + `lldbStopObserved=False`（bp 也未命中，transcript 里有 `Breakpoint 1: address = 0x103a29b7c` 但没有 `Breakpoint 1.*hit` 行） | writer 函数**在 LLDB 捕获窗口内**未被调用。判定它是否在 **app 真实生命周期** 内也没被调用，必须先把 `--lldb-timeout` 拉到覆盖 `NGR-*.ips` 里 `procLaunch → procExitAbsTime` 的完整时长（NGR 实测 ≈32s），再看 bp 是否命中。若完整 capture window 下仍 0 hit，才需要复核 HOK-011 的 "唯一 store 假设" | 先按"deferred-install 模式下 bp 未命中的正确读法"一节的 5 步推进，不要直接宣告 HOK-011 被证伪 |
 | `watchpointHitCount == 0` + `didStop=false`（超时） | 进程根本没跑到 reader | 检查 `dyldInitializersLogPath` 文件大小与 PlayTools diag 是否写全；可能是 `posix_spawn` 再拉起导致子进程环境没继承 |
 
 ## deferred-install 模式下"bp 未命中"的正确读法
 
-HOK-012-C.3 live run 观察到的模式是：
+HOK-012-C.3-a live run 观察到的模式是：
 - transcript 明确出现 `Breakpoint 1: address = 0x0000000103a29b7c`（说明 LLDB 成功把 bp 装到 writer 函数入口）；
 - `process launch -e` 成功拉起 child（有 `Process <pid> launched`、LANDSCAPE banner、PlayTools 的 `playcover_*` 事件、`[GPM] cpp constructor call`、ObjC 重复类警告，以及后续 `SceneExtension hook_frame` 循环）；
 - 但在 5s / 20s 两档 `--lldb-timeout` 里 transcript 都**没有**出现 `Breakpoint 1.*hit` 或任何 `stop reason =` 行；
 - 超时后 `process interrupt` + `thread backtrace all` 在 2s 收尾窗口里来不及返回完整 backtrace。
 
-这类 run 的正确解读是：**writer 函数 `0x103a29b7c` 在观察窗口内从未被 app 主动调用**。它不等价于"bp 装偏了"或"watchpoint 装入时机错了"；它说明 HOK-011 静态分析里"slot 的写入只可能来自 `0x103a29f7c`，而 `0x103a29f7c` 的唯一 caller 是 `0x103a29b7c`"这条逻辑链在 live 下不成立——slot 必须由某条**绕过 `0x103a29b7c`** 的路径写入（或者根本没被写入，reader 端读到 0 也能继续）。
+这类 run 的正确解读 **不是** "writer 函数在 app 生命周期内从未被调用"，而是 "writer 函数在 **LLDB 捕获窗口** 内未被调用"。判定 app 真实生命周期必须用 `NGR-*.ips` 的 `procLaunch` 与 `procExitAbsTime` 之差，不是 LLDB transcript 的时间戳。以 HOK-012-C.3-a 的两份 `.ips` 为例，两轮 app 生命周期都是约 32 秒；`--lldb-timeout 5 / 20` 只覆盖了前 16% / 63% 的生命周期，LLDB 超时后发 `process terminate` 但 app 此时可能已触发 UE4 `abort()` + Apple 崩溃对话框，子进程被挂在前台等用户点击，LLDB 早已 detach，bp / watchpoint 全部失效。
 
-当这种形态稳定出现至少两轮（5s + 20s），继续在 `0x103a29b7c` 层加 bp 不会带来新信息，应当退回到对 **reader** 的离线映射：
-1. 取 caller `__init_offsets[1563]` / `0x10460e2c0` 的实际反汇编窗口，看 `ldr x0, [0x10e2146f8]` 后下游还读了几层指针。
-2. 在 C.2 的 secondary fault `0x1047862bc`（`ldr w9, [x8, #0x30]`，Thread #10 NSThread 栈）上做 HOK-007A 风格 callsite 一致性映射：`faultingInstruction` + `instructionByteStream` 对齐 `.ips` 证据，确认这个 fault 与 `0x10e2146f8` 是同一 reader chain 还是下游 UE4 `QtsFileSystem` 分支。
-3. 若两条证据合流指向 HOK-010（`rootWorkDir` / `QtsFileSystem`），则候选 E 提升为长期方案，HOK-012 整体 DEFER，主线从 `0x10e2146f8` 切到 `rootWorkDir`。
+正确的后续动作不是退出 `0x103a29b7c`，而是：
+
+1. **先把 capture window 拉到覆盖完整生命周期**：用 `--lldb-timeout <T>`，其中 `T` 至少为 "最近一次 `NGR-*.ips` 的 `procExitAbsTime - procLaunch`" 加 5s 缓冲。
+2. **让 LLDB 在 UE4 `abort()` 前抢先停一次**：在 `preRunCommands` 里追加 `process handle -s true -n true -p false SIGABRT`，避免 Apple 崩溃对话框抢先 halt 进程。
+3. **给 writer bp 加 fallback 地址**：除了 `0x103a29b7c` 本身，再对 `0x107e5df10`（HOK-011 里 writer 的唯一 caller，Logger accessor）同时下 bp；任何一方先命中都能装 watchpoint。
+4. **把 `runLLDBHeadless` 的收尾 2s 窗口参数化**（HOK-012-C.3-b.2）：若前三步拿到了 stop 但 backtrace 被截断，把 `teardownTimeoutSeconds` 拉到 5–10s；若 stop 本身没拿到，把 capture window 拉满 `.ips` 生命周期再试。
+5. **必要时才复核 HOK-011 静态假设**：只有当 1–4 全部跑完、writer 与其唯一 caller 两个 bp 都在完整生命周期里未命中、且 `.ips` 崩点确实涉及 `0x10e2146f8` 的读取路径时，才需要回到 `Scripts/hok011_ngr_common_init_chain.py` 放宽扫描形式（`str` / `stp` / `sturh` / ARM64 memcpy helper 的间接 store）或补扫 NGR 主二进制的非 `__TEXT,__text` 段。
 
 ## HOK-012-C 的 CLI 最小参照
 
@@ -60,10 +63,17 @@ python3 Scripts/hok006_ngr_lldb_runner.py \
   --watch-address 0x10e2146f8 --watch-size 8 \
   --skip-build-install
 
-# deferred-install watchpoint（HOK-012-C，默认 writer = 0x103a29b7c）
+# deferred-install watchpoint（HOK-012-C.3-a，默认 writer = 0x103a29b7c）
 python3 Scripts/hok006_ngr_lldb_runner.py \
   --watch-address 0x10e2146f8 --watch-size 8 \
   --defer-watchpoint-install \
+  --skip-build-install
+
+# deferred-install 覆盖完整 ~32s 生命周期（HOK-012-C.3-b.1 的默认命令）
+python3 Scripts/hok006_ngr_lldb_runner.py \
+  --watch-address 0x10e2146f8 --watch-size 8 \
+  --defer-watchpoint-install \
+  --lldb-timeout 45 --settle-seconds 50 \
   --skip-build-install
 
 # deferred-install 时显式关闭 writer 自动 bp（完全由 --pre-run-command 控制）

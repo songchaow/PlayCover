@@ -70,15 +70,22 @@ python3 Scripts/hok006_ngr_lldb_runner.py \
   --defer-watchpoint-install \
   --skip-build-install
 
-# deferred-install 覆盖到 UE4 abort 现场（HOK-012-C.3-b.3 的默认命令，依赖 b.1 把 SIGABRT 拦截写进 defer-mode 的 preRunCommands）
+# deferred-install + SIGABRT 拦截 + 参数化 teardown（HOK-012-C.3-b 的默认形态）
+# `--intercept-sigabrt` 在 defer 模式下默认 ON；`--teardown-timeout` 在 defer 模式下默认 6.0s。
+# 下面的写法等价于"纯 defer + 60s lldb-timeout + 65s settle"，abort 被 LLDB 拦住
+# 后，后续一切推进都发生在 LLDB stop 现场，不需要等用户点对话框；不拦 SIGABRT 则
+# app 会被 Apple 崩溃对话框挂住 UI 线程、直到用户点击才真正退出。
 python3 Scripts/hok006_ngr_lldb_runner.py \
   --watch-address 0x10e2146f8 --watch-size 8 \
   --defer-watchpoint-install \
   --lldb-timeout 60 --settle-seconds 65 \
   --skip-build-install
-# 注意：`--lldb-timeout` 是保守大值，不是"app 生命周期"。abort 被 LLDB 拦住
-# 后，后续一切推进都发生在 LLDB stop 现场，不需要等用户点对话框；不拦
-# SIGABRT 则 app 会被 Apple 崩溃对话框挂住 UI 线程、直到用户点击才真正退出。
+
+# 如果需要显式关闭 SIGABRT 拦截（不推荐，仅用于回归 defer-without-intercept 的旧形态）：
+python3 Scripts/hok006_ngr_lldb_runner.py \
+  --watch-address 0x10e2146f8 --watch-size 8 \
+  --defer-watchpoint-install --no-intercept-sigabrt \
+  --skip-build-install
 
 # deferred-install 时显式关闭 writer 自动 bp（完全由 --pre-run-command 控制）
 python3 Scripts/hok006_ngr_lldb_runner.py \
@@ -87,6 +94,15 @@ python3 Scripts/hok006_ngr_lldb_runner.py \
   --pre-run-command 'breakpoint set --shlib GCloudCore --name load -C "watchpoint set expression -s 8 -- 0x10e2146f8" -C "continue" --auto-continue true --one-shot true' \
   --skip-build-install
 ```
+
+## SIGABRT 拦截下 abort-stop 的自动证据采集
+
+`runLLDBHeadless` 在 watchpoint 模式下对每一次新出现的 `stop reason =` 行都做一次分流：
+
+- 行内含 `"watchpoint "` 字样：继续走 HOK-012-B 的 legacy 序列 `thread backtrace` + `frame variable` + `continue`，把 stop 当成普通 writer 命中、不打断采集。
+- 行内**不含** `"watchpoint "` 字样（典型是 `signal SIGABRT` 被 `process handle -s true -n true -p false SIGABRT` 拦住）：改发 `thread backtrace all` + `frame variable` + `memory read -s 8 -c 1 <watchAddress>`（仅当 `watchAddress` 非空时）+ `breakpoint list` + `watchpoint list` + `continue`。
+
+这一改动保持 watchpoint-hit 的采集逻辑与 HOK-012-B 完全一致，只在"非 watchpoint 的 stop"——也就是被 SIGABRT 拦截的 abort 现场——上附加 slot 读取与 bp / watchpoint 汇总，使 abort 一次停住就能同时回答"slot 当前值多少"、"writer bp 命中几次"、"watchpoint 曾否触发"。整套序列的执行时间会超过 HOK-012-B 原硬编码的 2.0s 收尾窗口，因此必须配合 HOK-012-C.3-b.2 的 `LLDBRunOptions.teardownTimeoutSeconds` 放大（默认 2.0 保持 legacy，defer 模式由 `hok006_ngr_lldb_runner.py` 自动拉到 6.0s）。
 
 ## dyld log 交叉对齐规则
 

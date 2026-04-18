@@ -418,6 +418,23 @@ final class LaunchServiceTests: XCTestCase {
         // HOK-012-C: the default must leave watchpoint installation to the
         // auto-injected pre-run script, i.e. `deferWatchpointInstall=false`.
         XCTAssertFalse(options.deferWatchpointInstall)
+        // HOK-012-C.3-b.2: the default teardown window stays at the
+        // legacy 2.0s so pre-HOK-012-C callers get the historical
+        // `process interrupt → quit` drain time.
+        XCTAssertEqual(options.teardownTimeoutSeconds, 2.0, accuracy: 0.0001)
+    }
+
+    /// HOK-012-C.3-b.2: the teardown window is caller-controllable and
+    /// can be raised to cover the richer abort-stop handler introduced
+    /// by HOK-012-C.3-b.1 (`memory read` / `breakpoint list` /
+    /// `watchpoint list`). A sub-default (e.g. 0.0) is clamped to the
+    /// minimum so the runner never skips the teardown entirely.
+    func testLLDBRunOptionsTeardownTimeoutIsCallerControllable() {
+        let wide = LLDBRunOptions(teardownTimeoutSeconds: 7.5)
+        XCTAssertEqual(wide.teardownTimeoutSeconds, 7.5, accuracy: 0.0001)
+
+        let clamped = LLDBRunOptions(teardownTimeoutSeconds: 0.0)
+        XCTAssertGreaterThan(clamped.teardownTimeoutSeconds, 0.0)
     }
 
     /// HOK-012-C: `deferWatchpointInstall=true` flips the auto-install

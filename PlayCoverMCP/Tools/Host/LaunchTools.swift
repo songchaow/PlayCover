@@ -99,6 +99,10 @@ public enum LaunchTools {
                     "deferWatchpointInstall": AnyCodable([
                         "type": "boolean",
                         "description": "HOK-012-C: when true, the headless runner will NOT auto-emit `watchpoint set expression …` before `run`. Watchpoint-mode plumbing (stop→continue loop, watchpointHits parsing) still engages as long as watchAddress is set, but the caller becomes responsible for installing the watchpoint via a preRunCommands entry (typical pattern: `breakpoint set --address <writer> -C \"watchpoint set expression -s <size> -- <addr>\" -C \"continue\" --auto-continue true --one-shot true`). This shifts the watchpoint's armed moment from \"before run\" to \"after a chosen breakpoint fires\", fixing the HOK-012-C.2 0-hit timing race without altering legacy behaviour."
+                    ] as Any),
+                    "teardownTimeoutSeconds": AnyCodable([
+                        "type": "number",
+                        "description": "HOK-012-C.3-b.2: how long (in seconds) the headless runner waits for the LLDB child to finish its teardown script (`process interrupt\\nthread backtrace all\\n…\\nquit\\n`) after the outer capture window elapses. Default 2.0 preserves legacy HOK-006/HOK-012-B behaviour. Raise to 5–10s when the abort-intercept stop handler (HOK-012-C.3-b.1) may run extra `memory read` / `breakpoint list` / `watchpoint list` commands that do not fit in the 2s window."
                     ] as Any)
                 ],
                 required: ["bundleId"]
@@ -141,13 +145,26 @@ public enum LaunchTools {
             let dyldInitializersLogPath = (args["dyldInitializersLogPath"] as? String)?
                 .trimmingCharacters(in: .whitespaces)
             let deferWatchpointInstall = args["deferWatchpointInstall"] as? Bool ?? false
+            // HOK-012-C.3-b.2: optional teardown window (keeps legacy 2.0s
+            // when omitted). Accept both integer and floating-point inputs
+            // so callers can pass `5` or `5.0`.
+            let teardownTimeoutSeconds: Double = {
+                if let doubleValue = args["teardownTimeoutSeconds"] as? Double {
+                    return doubleValue
+                }
+                if let intValue = args["teardownTimeoutSeconds"] as? Int {
+                    return Double(intValue)
+                }
+                return 2.0
+            }()
 
             let options = LLDBRunOptions(
                 watchAddress: (watchAddress?.isEmpty ?? true) ? nil : watchAddress,
                 watchSize: watchSize,
                 preRunCommands: preRunCommands,
                 dyldInitializersLogPath: (dyldInitializersLogPath?.isEmpty ?? true) ? nil : dyldInitializersLogPath,
-                deferWatchpointInstall: deferWatchpointInstall
+                deferWatchpointInstall: deferWatchpointInstall,
+                teardownTimeoutSeconds: teardownTimeoutSeconds
             )
 
             let result = try launchService.launchAppWithLLDB(

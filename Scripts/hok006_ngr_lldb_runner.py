@@ -208,6 +208,48 @@ def build_parser() -> argparse.ArgumentParser:
             f"Default when defer mode is active: {DEFAULT_WRITER_ADDRESS}."
         ),
     )
+    # HOK-012-C.3-b.1: always let LLDB intercept SIGABRT so UE4 `abort()`
+    # stops in the LLDB layer before the Apple crash dialog pins the UI
+    # thread. The flag is opt-out (default on in defer mode) so legacy
+    # HOK-012-B runs remain unaffected.
+    parser.add_argument(
+        "--intercept-sigabrt",
+        dest="intercept_sigabrt",
+        action="store_true",
+        default=None,
+        help=(
+            "HOK-012-C.3-b.1: prepend `process handle -s true -n true -p false "
+            "SIGABRT` to the pre-run script so UE4 `abort()` is caught inside "
+            "LLDB instead of by the Apple crash dialog. Default: ON when "
+            "`--defer-watchpoint-install` is active, OFF otherwise."
+        ),
+    )
+    parser.add_argument(
+        "--no-intercept-sigabrt",
+        dest="intercept_sigabrt",
+        action="store_false",
+        help=(
+            "HOK-012-C.3-b.1: disable the SIGABRT interception even in "
+            "deferred-install mode (not recommended — the Apple crash "
+            "dialog will then block the child on abort())."
+        ),
+    )
+    # HOK-012-C.3-b.2: the MCP-side teardown window used to be hard coded
+    # to 2.0s. Abort-intercept runs (b.1) emit a richer stop handler that
+    # needs 5–10s to finish draining `thread backtrace all` / `memory
+    # read` / `breakpoint list` / `watchpoint list`, so expose it.
+    parser.add_argument(
+        "--teardown-timeout",
+        type=float,
+        default=None,
+        help=(
+            "HOK-012-C.3-b.2: seconds the headless LLDB runner waits for "
+            "the teardown script to complete after the capture window "
+            "elapses. Default: 6.0s when `--defer-watchpoint-install` is "
+            "active (covers the abort-intercept stop handler), 2.0s "
+            "otherwise (legacy HOK-006/HOK-012-B behaviour)."
+        ),
+    )
     return parser
 
 
@@ -359,6 +401,32 @@ def main() -> int:
     else:
         writer_address = args.writer_address.strip()
 
+    # HOK-012-C.3-b.1: resolve SIGABRT interception. Default is ON when
+    # defer mode is active (because the abort-intercept path is the only
+    # reliable way to observe UE4 fatal in a scripted run — the Apple
+    # crash dialog otherwise blocks the UI thread indefinitely), OFF
+    # when defer mode is inactive (legacy HOK-012-B semantics).
+    if args.intercept_sigabrt is None:
+        intercept_sigabrt = defer_watchpoint_install
+    else:
+        intercept_sigabrt = bool(args.intercept_sigabrt)
+
+    # HOK-012-C.3-b.2: resolve teardown timeout. 6s covers the richer
+    # abort-stop handler under defer mode; legacy runs keep the 2s
+    # behaviour from before HOK-012-C.3-b.
+    if args.teardown_timeout is None:
+        teardown_timeout = 6.0 if defer_watchpoint_install else 2.0
+    else:
+        teardown_timeout = max(float(args.teardown_timeout), 0.1)
+
+    if intercept_sigabrt:
+        # Put the SIGABRT handler BEFORE any breakpoint / watchpoint
+        # install line so UE4 `abort()` is always caught in LLDB even if
+        # the child fires abort earlier than the first writer bp.
+        pre_run_commands = [
+            "process handle -s true -n true -p false SIGABRT"
+        ] + list(pre_run_commands)
+
     if defer_watchpoint_install and watchpoint_mode_requested and writer_address:
         # Auto-append the "breakpoint -> watchpoint" install line so the
         # watchpoint is armed only once the chosen writer function is
@@ -401,6 +469,11 @@ def main() -> int:
             # report is self-descriptive for later review.
             "deferWatchpointInstall": defer_watchpoint_install,
             "writerAddress": writer_address or None,
+            # HOK-012-C.3-b: surface the SIGABRT interception decision and
+            # teardown window so the report captures the exact observation
+            # geometry used for the run.
+            "interceptSigabrt": intercept_sigabrt,
+            "teardownTimeoutSeconds": teardown_timeout,
         },
         "paths": {
             "containerRoot": str(container_root),
@@ -545,11 +618,16 @@ def main() -> int:
                     # opted in, so the legacy MCP schema shape is 100%
                     # preserved for HOK-012-B-style invocations.
                     launch_arguments["deferWatchpointInstall"] = True
+                # HOK-012-C.3-b.2: forward the teardown window only when
+                # it differs from the MCP default (2.0s) to keep legacy
+                # tool-call shapes intact.
+                if abs(teardown_timeout - 2.0) > 1e-6:
+                    launch_arguments["teardownTimeoutSeconds"] = teardown_timeout
 
                 outcome = client.call_tool(
                     "launch_app_with_lldb",
                     launch_arguments,
-                    request_timeout=max(lldb_timeout + 15.0, 20.0),
+                    request_timeout=max(lldb_timeout + teardown_timeout + 15.0, 20.0),
                 )
                 launch_box["rawOutcome"] = outcome
                 launch_box["outcome"] = snapshot_tool_outcome(outcome)
@@ -742,6 +820,11 @@ def main() -> int:
                     # HOK-012-C hand-off markers.
                     "deferWatchpointInstall": defer_watchpoint_install,
                     "writerAddress": writer_address or None,
+                    # HOK-012-C.3-b markers: the run's observation
+                    # geometry is only interpretable when paired with
+                    # these two values.
+                    "interceptSigabrt": intercept_sigabrt,
+                    "teardownTimeoutSeconds": teardown_timeout,
                 },
                 "watchpoint": {
                     "hits": lldb_summary.get("watchpointHits") or [],
@@ -808,6 +891,8 @@ def main() -> int:
             f"backtraceCaptured={report['checks']['lldbBacktraceCaptured']} "
             f"watchpointMode={watchpoint_mode_requested} "
             f"deferInstall={defer_watchpoint_install} "
+            f"interceptSigabrt={intercept_sigabrt} "
+            f"teardownTimeout={teardown_timeout:.1f}s "
             f"watchpointHits={watchpoint_artifact['hitCount']} "
             f"dyldLogBytes={dyld_log_artifact['byteCount']} "
             f"requiredCompatEventsPresent={report['checks']['requiredCompatEventsPresent']} "

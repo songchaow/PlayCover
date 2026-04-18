@@ -157,19 +157,33 @@ public struct LLDBRunOptions: Equatable, Sendable {
     /// leaving the legacy HOK-012-B behaviour completely intact for
     /// callers that don't opt in.
     public let deferWatchpointInstall: Bool
+    /// HOK-012-C.3-b.2: how long (in seconds) the headless runner waits
+    /// for the LLDB child to complete its teardown script (`process
+    /// interrupt\nthread backtrace all\n…\nquit\n`) after the outer
+    /// capture window elapses. Historically hard-coded to `2.0`, which
+    /// was fine for legacy quick-crash runs but not enough for the
+    /// SIGABRT-intercept path introduced by HOK-012-C.3-b: abort-style
+    /// stops need several extra commands (`memory read`, `breakpoint
+    /// list`, `watchpoint list`) and a full all-thread backtrace that
+    /// routinely exceed the 2s window. Callers probing abort stops
+    /// should raise this to 5–10s; legacy callers keep the pre-HOK-012
+    /// value.
+    public let teardownTimeoutSeconds: TimeInterval
 
     public init(
         watchAddress: String? = nil,
         watchSize: Int = 8,
         preRunCommands: [String] = [],
         dyldInitializersLogPath: String? = nil,
-        deferWatchpointInstall: Bool = false
+        deferWatchpointInstall: Bool = false,
+        teardownTimeoutSeconds: TimeInterval = 2.0
     ) {
         self.watchAddress = watchAddress
         self.watchSize = watchSize
         self.preRunCommands = preRunCommands
         self.dyldInitializersLogPath = dyldInitializersLogPath
         self.deferWatchpointInstall = deferWatchpointInstall
+        self.teardownTimeoutSeconds = max(teardownTimeoutSeconds, 0.1)
     }
 
     public static let `default` = LLDBRunOptions()
@@ -775,10 +789,54 @@ public final class LaunchService: Sendable {
                         let searchStart = lastHandledStopOffset ?? transcript.startIndex
                         if let stopRange = transcript.range(of: "stop reason =", range: searchStart..<transcript.endIndex) {
                             lastHandledStopOffset = stopRange.upperBound
-                            sendLLDBCommands(
-                                "thread backtrace\nframe variable\ncontinue\n",
-                                to: inputPipe.fileHandleForWriting
-                            )
+                            // HOK-012-C.3-b.1: classify the stop. The line
+                            // slice from `stopRange.lowerBound` to the next
+                            // newline is the actual `stop reason = …` line;
+                            // a watchpoint hit contains `watchpoint `
+                            // (space-suffixed, since LLDB prints
+                            // `watchpoint 1`). Anything else (typically
+                            // `signal SIGABRT` once the abort-intercept
+                            // preRunCommand is active) gets the richer
+                            // evidence script so we can read the slot
+                            // value, writer bp hit counts and watchpoint
+                            // list in one go. Legacy HOK-012-B behaviour
+                            // on watchpoint-hit stops is preserved
+                            // verbatim.
+                            let lineEnd = transcript.range(
+                                of: "\n",
+                                range: stopRange.upperBound..<transcript.endIndex
+                            )?.lowerBound ?? transcript.endIndex
+                            let stopLine = String(transcript[stopRange.lowerBound..<lineEnd])
+                            if stopLine.contains("watchpoint ") {
+                                sendLLDBCommands(
+                                    "thread backtrace\nframe variable\ncontinue\n",
+                                    to: inputPipe.fileHandleForWriting
+                                )
+                            } else {
+                                // Abort-style (typically SIGABRT) stop in
+                                // watchpoint mode: snapshot every thread,
+                                // read the watched slot so its current
+                                // value is on transcript regardless of
+                                // whether the watchpoint ever fired, then
+                                // dump breakpoint/watchpoint hit counts so
+                                // the caller can tell "bp hit 0 times"
+                                // from "bp never installed". `memory read`
+                                // is only emitted when `watchAddress` is
+                                // non-empty; otherwise the commands are
+                                // independent of the slot address and
+                                // safe to send unconditionally.
+                                var abortScript = "thread backtrace all\nframe variable\n"
+                                if let addr = options.watchAddress?
+                                    .trimmingCharacters(in: .whitespaces),
+                                    !addr.isEmpty {
+                                    abortScript += "memory read -s 8 -c 1 \(addr)\n"
+                                }
+                                abortScript += "breakpoint list\nwatchpoint list\ncontinue\n"
+                                sendLLDBCommands(
+                                    abortScript,
+                                    to: inputPipe.fileHandleForWriting
+                                )
+                            }
                         }
                     } else {
                         if !legacyStopHandled && transcript.contains("stop reason =") {
@@ -844,7 +902,14 @@ public final class LaunchService: Sendable {
                     "process interrupt\nthread backtrace all\ndisassemble --pc --count 8\nregister read\nquit\n",
                     to: inputPipe.fileHandleForWriting
                 )
-                if completion.wait(timeout: .now() + 2.0) == .timedOut {
+                // HOK-012-C.3-b.2: the teardown window used to be hard
+                // coded to 2.0 seconds. That is enough for legacy fault
+                // captures but not for SIGABRT-intercept runs where the
+                // stop handler on an abort also sends `memory read` /
+                // `breakpoint list` / `watchpoint list`; we now respect
+                // the caller-supplied `options.teardownTimeoutSeconds`
+                // (default 2.0 to preserve legacy behaviour).
+                if completion.wait(timeout: .now() + options.teardownTimeoutSeconds) == .timedOut {
                     process.terminate()
                     _ = completion.wait(timeout: .now() + 1.0)
                 }

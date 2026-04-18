@@ -1,6 +1,6 @@
 ## HOK-007 二进制意图分析与 callsite 映射
 
-> 本文只沉淀 HOK-007 的**离线 callsite 映射工具**、**patch 候选设计与选择理由**、**安全/回滚/重签口径**与 HOK-011 之后对"候选 E 属于症状 workaround 而非根因修复"这一**技术定位**。任务状态、apply 与 live 闭环结论、下游 `far=0x50` 之类 crash 是否继续跟踪，以 `LocalDocs/HOKCrash/00-Dashboard.md` 为准。
+> 本文只沉淀 HOK-007 的**离线 callsite 映射工具**、**patch 候选设计与选择理由**、**安全/回滚/重签口径**以及**候选 E 作为症状 workaround 的技术定位**。任务状态、apply 与 live 闭环结论、下游 `far=0x50` 之类 crash 是否继续跟踪，以 `LocalDocs/HOKCrash/00-Dashboard.md` 为准。
 
 ### 目标
 
@@ -61,9 +61,8 @@
 - 幂等：`--apply` 遇到已 patched 状态时报 `already-patched`；`--revert` 遇到已原样状态时报 `already-original`；任一状态不匹配时脚本拒绝写入，避免误改。
 - `Scripts/hok007b_ngr_patch_runner.py` 是"磁盘 NGR 当前处于哪一代 patch"的唯一来源；不要另起手工流程。
 
-### 候选 E 的技术定位（HOK-011 后的更新）
+### 候选 E 的技术定位
 
-- HOK-011 的全二进制静态分析证明：faulting caller 读取的 `__common` 槽位 `0x10e2146f8` 在 NGR 自身 `__init_offsets` 链中不可达——真正 prime 它的代码必须来自外部 embedded framework / ObjC `+load` / 跨 dylib static ctor 链。
-- 因此候选 E 本质是"让 NGR 的 reader init 跨过 null deref"的 workaround，**没有**改变 `0x10e2146f8` 的最终 null 状态。
-- 候选 E 之后 app 会暴露依赖同一批 `__common` 槽位的下游问题（例如 `QtsFileSystem Create Failed!!`、`pc=0x10915b114 / far=0x50`、`far=0x30` 等）；这些**不是**候选 E 本身的缺陷，而是 HOK-012 要用 live-trace 锁定 writer 的原因。
+- 候选 E 是 faulting reader 侧的**最小可逆 workaround**，不是根因修复。HOK-011 的全二进制静态分析证明：faulting caller 读取的 `__common` 槽位 `0x10e2146f8` 在 NGR 自身 `__init_offsets` 链中不可达——真正 prime 它的代码必然存在于**外部 embedded framework / ObjC `+load` / 跨 dylib static ctor 链**。候选 E 让 NGR 的 reader init 跨过 null deref，但**不改变** `0x10e2146f8` 的 null 状态。
+- 因此候选 E apply 后 app 会暴露依赖同一批 `__common` 槽位的下游问题（例如 `QtsFileSystem Create Failed!!`、`pc=0x10915b114 / far=0x50`、`far=0x30` 等）；这些**不是**候选 E 本身的缺陷，而是 HOK-012 要用 live-trace 锁定 writer 的原因。
 - 详见 `LocalDocs/HOKCrash/HOK-011-静态初始化链分析.md`。

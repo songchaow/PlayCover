@@ -40,8 +40,16 @@ public class PlayCover: NSObject {
         AKInterface.initialize()
         RuntimeLaunchDiagnostics.record(event: "playcover_akinterface_initialized", bundleId: runtimeBundleId)
 
-        PlayScreen.shared.initialize()
-        RuntimeLaunchDiagnostics.record(event: "playcover_screen_initialized", bundleId: runtimeBundleId)
+        if appliesMinimalStartupCompat {
+            RuntimeLaunchDiagnostics.record(
+                event: "playcover_screen_skipped",
+                bundleId: runtimeBundleId,
+                details: ["reason": "startup_compat_profile"]
+            )
+        } else {
+            PlayScreen.shared.initialize()
+            RuntimeLaunchDiagnostics.record(event: "playcover_screen_initialized", bundleId: runtimeBundleId)
+        }
 
         if appliesMinimalStartupCompat {
             RuntimeLaunchDiagnostics.record(

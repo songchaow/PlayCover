@@ -164,11 +164,35 @@ extension PlayApp {
     /// making programmatic `.gputrace` export impossible.
     private static let gpuToolsCaptureLibrary = "/usr/lib/libmtlcapture.dylib"
 
+    /// HOK-012-A: diagnostic environment injected only for bundles in
+    /// `minimalStartupCompatBundleIdentifiers`. These variables are
+    /// **bundle-scoped** and cause dyld to print a full initializer chain to
+    /// stderr so a follow-up live-trace can correlate the writer of a
+    /// `__common` slot (currently `0x10e2146f8`) against a concrete image.
+    ///
+    /// Rationale (see `LocalDocs/HOKCrash/HOK-011-静态初始化链分析.md`): NGR's own
+    /// `__init_offsets` chain cannot reach the writer of that slot; the writer
+    /// must live in an external embedded framework (or an ObjC `+load`). To
+    /// identify *which* image primes the slot in a real launch we need the
+    /// dyld initializer log in the same run as the LLDB watchpoint; setting
+    /// `DYLD_PRINT_INITIALIZERS=1` is the cheapest way to get that ordering.
+    ///
+    /// `DYLD_PRINT_APIS=0` is declared explicitly (rather than omitted) to
+    /// guarantee that even if the parent Terminal has it set to `1`, the
+    /// child process does not get flooded by unrelated dyld API traces that
+    /// would overwhelm the transcript and hide the initializer lines.
+    private static let minimalStartupCompatDiagnosticEnvironment: [String: String] = [
+        "DYLD_PRINT_INITIALIZERS": "1",
+        "DYLD_PRINT_APIS": "0",
+    ]
+
     func effectiveLaunchEnvironment() -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
+        let isMinimalStartupCompat =
+            PlayApp.minimalStartupCompatBundleIdentifiers.contains(info.bundleIdentifier)
         let shouldInjectMetalCaptureEnvironment =
             settings.settings.injectMetalCaptureEnvironment
-            && !PlayApp.minimalStartupCompatBundleIdentifiers.contains(info.bundleIdentifier)
+            && !isMinimalStartupCompat
 
         for key in Array(environment.keys) where key.hasPrefix("DYLD_") {
             environment.removeValue(forKey: key)
@@ -184,6 +208,17 @@ extension PlayApp {
 
         if shouldInjectMetalCaptureEnvironment {
             for (key, value) in PlayApp.injectedMetalCaptureEnvironment {
+                environment[key] = value
+            }
+        }
+
+        // HOK-012-A: for minimalStartupCompat bundles we need dyld to announce
+        // the full initializer chain so a follow-up live-trace can correlate the
+        // writer of `0x10e2146f8` against a concrete image. This is a
+        // bundle-scoped diagnostic opt-in; it does not alter any injection
+        // behaviour and only produces stderr logging.
+        if isMinimalStartupCompat {
+            for (key, value) in PlayApp.minimalStartupCompatDiagnosticEnvironment {
                 environment[key] = value
             }
         }

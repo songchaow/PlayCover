@@ -141,6 +141,23 @@ public final class LaunchService: Sendable {
 
     private static let minimalStartupCompatBundleIds: Set<String> = ["com.tencent.ngr"]
 
+    /// HOK-012-A: diagnostic environment injected only for bundles in
+    /// `minimalStartupCompatBundleIds`. Mirrors
+    /// `PlayApp.minimalStartupCompatDiagnosticEnvironment`; both host paths
+    /// (GUI `PlayApp` and MCP `LaunchService`) must set the same vars or the
+    /// `launch_app` vs `launch_app_with_lldb` launches will diverge.
+    ///
+    /// `DYLD_PRINT_INITIALIZERS=1` makes dyld log every initializer to stderr;
+    /// this is the evidence we need to correlate the writer of a `__common`
+    /// slot (currently `0x10e2146f8`) against a concrete image during a
+    /// live-trace run. `DYLD_PRINT_APIS=0` is set explicitly to prevent a
+    /// parent-shell override from flooding the transcript and hiding the
+    /// initializer lines.
+    static let minimalStartupCompatDiagnosticEnvironment: [String: String] = [
+        "DYLD_PRINT_INITIALIZERS": "1",
+        "DYLD_PRINT_APIS": "0",
+    ]
+
     /// The system library that enables `MTLCaptureManager.supportsDestination(.gpuTraceDocument)`.
     /// Xcode injects this automatically during GPU Frame Capture debug sessions.
     /// Without it, `supportsDestination(.gpuTraceDocument)` always returns `false`,
@@ -335,10 +352,15 @@ public final class LaunchService: Sendable {
 
     // MARK: - Environment
 
-    private func effectiveLaunchEnvironment(bundleId: String) -> [String: String] {
+    /// Build the launch environment applied to every child process that this
+    /// service starts. Internal visibility (rather than `private`) is
+    /// intentional so that unit tests can validate the environment composition
+    /// without having to drive a real child process.
+    func effectiveLaunchEnvironment(bundleId: String) -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
 
         let injectCapture = shouldInjectMetalCaptureEnvironment(bundleId: bundleId)
+        let isMinimalStartupCompat = Self.minimalStartupCompatBundleIds.contains(bundleId)
 
         // When metal capture env injection is enabled, do NOT clear DYLD_* keys
         // because we need DYLD_INSERT_LIBRARIES to load libmtlcapture.dylib at
@@ -358,6 +380,19 @@ public final class LaunchService: Sendable {
 
         if injectCapture {
             for (key, value) in Self.injectedMetalCaptureEnvironment {
+                environment[key] = value
+            }
+        }
+
+        // HOK-012-A: opt-in dyld initializer logging for minimalStartupCompat
+        // bundles. Applied last so it wins over any earlier DYLD_* removal;
+        // note that when `injectCapture` is true the parent DYLD_* keys are
+        // preserved but the set of minimalStartupCompat bundles and the set
+        // of metal-capture bundles is currently disjoint (NGR is excluded
+        // from metal capture), so there is no conflict between the two
+        // injection paths.
+        if isMinimalStartupCompat {
+            for (key, value) in Self.minimalStartupCompatDiagnosticEnvironment {
                 environment[key] = value
             }
         }

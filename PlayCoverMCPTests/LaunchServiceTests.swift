@@ -362,6 +362,32 @@ final class LaunchServiceTests: XCTestCase {
         XCTAssertTrue(service.aliasDirectory.path.contains("PlayCover"))
     }
 
+    // MARK: - HOK-012-A: minimalStartupCompat diagnostic env
+
+    /// HOK-012-A: for `com.tencent.ngr` the launch environment must carry
+    /// `DYLD_PRINT_INITIALIZERS=1` so dyld's initializer chain is visible in
+    /// both `launch_app` and `launch_app_with_lldb` transcripts.
+    func testEffectiveLaunchEnvironmentInjectsDyldInitializersForMinimalStartupCompatBundle() throws {
+        let service = LaunchService(
+            appDirectory: URL(fileURLWithPath: "/tmp/nonexistent"),
+            aliasDirectory: URL(fileURLWithPath: "/tmp/nonexistent_alias")
+        )
+        let env = service.effectiveLaunchEnvironment(bundleId: "com.tencent.ngr")
+        XCTAssertEqual(env["DYLD_PRINT_INITIALIZERS"], "1")
+        XCTAssertEqual(env["DYLD_PRINT_APIS"], "0")
+    }
+
+    /// HOK-012-A: the diagnostic env must NOT leak to unrelated bundles.
+    func testEffectiveLaunchEnvironmentDoesNotInjectDyldInitializersForOtherBundles() throws {
+        let service = LaunchService(
+            appDirectory: URL(fileURLWithPath: "/tmp/nonexistent"),
+            aliasDirectory: URL(fileURLWithPath: "/tmp/nonexistent_alias")
+        )
+        let env = service.effectiveLaunchEnvironment(bundleId: "com.example.other")
+        XCTAssertNil(env["DYLD_PRINT_INITIALIZERS"])
+        XCTAssertNil(env["DYLD_PRINT_APIS"])
+    }
+
     // MARK: - Multiple Apps
 
     func testResolveAppAmongMultipleApps() throws {

@@ -19,7 +19,7 @@
 
 ## 主线任务
 
-- **当前结论**：`HOK-004`、`HOK-005A`、`HOK-005B`、`HOK-005C`、`HOK-005D`、`HOK-006`、`HOK-007A`、`HOK-007B`、`HOK-011`（静态分析阶段）均已完成。经过 HOK-011 的深度静态分析，之前在 HOK-007B 做的"候选 E = 在 faulting `ldr x8, [x19]` 处无条件跳 epilogue"已被重新认识为**掩盖症状的 workaround**，而真正的根因是 `com.tencent.ngr` 的 dyld static initializer 链在 macOS/PlayCover 下**没按 iOS 上应有的顺序运行**：faulting caller（`__init_offsets[1563]` / `0x10460e2c0`）直接 `ldr x0, [0x10e2146f8]`，假设该槽位已被更早的代码填好；但静态分析（`Scripts/hok011_ngr_common_init_chain.py` + 全二进制逆向 call graph）证明**NGR 自己的 `__init_offsets` 链路中没有任何入口能传递调用到写该槽位的 lazy accessor `0x103a29b7c`**，因此该槽位只可能由外部机制（embedded Framework initializer / ObjC `+load` / 跨 dylib 静态构造链）预先填充。
+- **当前结论**：`HOK-004`、`HOK-005A`、`HOK-005B`、`HOK-005C`、`HOK-005D`、`HOK-006`、`HOK-007A`、`HOK-007B`、`HOK-011`（静态分析阶段）、`HOK-012-A`（bundle-scoped `DYLD_PRINT_INITIALIZERS=1` 注入）均已完成。经过 HOK-011 的深度静态分析，之前在 HOK-007B 做的"候选 E = 在 faulting `ldr x8, [x19]` 处无条件跳 epilogue"已被重新认识为**掩盖症状的 workaround**，而真正的根因是 `com.tencent.ngr` 的 dyld static initializer 链在 macOS/PlayCover 下**没按 iOS 上应有的顺序运行**：faulting caller（`__init_offsets[1563]` / `0x10460e2c0`）直接 `ldr x0, [0x10e2146f8]`，假设该槽位已被更早的代码填好；但静态分析（`Scripts/hok011_ngr_common_init_chain.py` + 全二进制逆向 call graph）证明**NGR 自己的 `__init_offsets` 链路中没有任何入口能传递调用到写该槽位的 lazy accessor `0x103a29b7c`**，因此该槽位只可能由外部机制（embedded Framework initializer / ObjC `+load` / 跨 dylib 静态构造链）预先填充。HOK-012-A 已在 host 侧（`PlayApp` 与 MCP `LaunchService` 两处 `effectiveLaunchEnvironment`）补齐 bundle-scoped `DYLD_PRINT_INITIALIZERS=1` / `DYLD_PRINT_APIS=0` 注入；只作用于 `minimalStartupCompatBundleIdentifiers`，对其它 app 无副作用。
 - **当前已知事实**：
   - faulting PC `0x10480df08`，`x19 = 0`，语义是从未被初始化的空指针 deref；直接由 caller `ldr x0, [0x10e2146f8]` 把 null 传进来。
   - `0x10e2146f8` 位于 `__DATA,__common`，dyld 只做零初始化；`dyld_info -fixups` 没有 bind/rebase 条目。
@@ -27,20 +27,22 @@
   - 反向 BFS 调用图（仅在 NGR 自身 __text 内的 `bl` 边上）从 `0x107e5df10` 出发**无法到达任何 __init_offsets 入口**——该 slot 的 writer 在 NGR 自身 initializer 链中不可达。
   - `DYLD_PRINT_INITIALIZERS=1` 直接裸跑 NGR 主二进制时，dyld 输出同时伴随 **ObjC 重复类警告**：`PxFrameworkLoader`、`AReachability`、`PxDyLibFrameworkLoader` 分别在两个 image 中同时声明；iOS vs macOS 对重复类的挑选顺序不同，是 iOS 行为差异的一个非常强的候选。
   - `Scripts/hok007b_ngr_patch_runner.py` 当前状态：已 re-apply 候选 E（`currentBytesHex=07000014`），backup `build/hok-007b-backups/hok-007b-b0e109d761a3eefb.bin` 保留；HOK-012 期间先保留 patch，确保 app 能跑过 index 1563 从而观察到下游 writer 真的被谁触发。
+  - HOK-012-A 已落地：host 侧 `PlayApp.minimalStartupCompatDiagnosticEnvironment` / MCP 侧 `LaunchService.minimalStartupCompatDiagnosticEnvironment` 都是 `{"DYLD_PRINT_INITIALIZERS": "1", "DYLD_PRINT_APIS": "0"}`；`launch_app` 与 `launch_app_with_lldb` 两条启动路径共用同一套注入语义，单元测试（`LaunchServiceTests` 18 个全过，其中 2 个 HOK-012-A 新增）覆盖 inject/non-inject 分支。
   - 结构化证据：`build/hok-007-ngr-callsite-report.json`（HOK-007A 一致性）、`build/hok-007b-ngr-patch-report.json`（HOK-007B apply 状态）、`build/hok-011-ngr-common-init-chain-report.json`（HOK-011 扫描报告）、`build/hok-011-analysis-notes.json`（HOK-011 深度静态分析 hand-off）。
-- **当前主线**：切换到 **`HOK-012`：基于 HOK-011 的静态结论做 live-trace**——在候选 E patch 仍 apply 的前提下，让 NGR 真跑起来，用 `DYLD_PRINT_INITIALIZERS=1` + LLDB watchpoint（watch `0x10e2146f8`）观察**到底是哪个 image 的哪个 initializer 触发了 writer**。拿到这个信息后才能从 3 个已分类的假设（H1 framework init 回调 NGR、H2 ObjC `+load`、H3 跨 dylib static ctor 链）中锁定真相，并决定是**对齐 iOS 行为**（例如在 PlayTools 里强制提前调一次 Logger accessor，或调整 ObjC 重复类挑选顺序）还是**接受候选 E 作为长期 workaround**。
+- **当前主线**：继续 **`HOK-012-B`：基于 HOK-012-A 已就位的 env 注入，扩展 LLDB 自动化到 watchpoint 层面**——在候选 E patch 仍 apply 的前提下，让 NGR 真跑起来，用 LLDB watchpoint（watch `0x10e2146f8`）观察**到底是哪个 image 的哪个 initializer 触发了 writer**；stderr 端则通过 `log stream` / 子进程重定向收集 `DYLD_PRINT_INITIALIZERS=1` 的完整输出。拿到这个信息后才能从 3 个已分类的假设（H1 framework init 回调 NGR、H2 ObjC `+load`、H3 跨 dylib static ctor 链）中锁定真相，并决定是**对齐 iOS 行为**（例如在 PlayTools 里强制提前调一次 Logger accessor，或调整 ObjC 重复类挑选顺序）还是**接受候选 E 作为长期 workaround**。
 - **当前卡点**：
-  - NGR 需要 iOS framework 链接才能正常启动；裸跑 `DYLD_PRINT_INITIALIZERS=1 NGR` 只能看到系统 dylib 的一小段初始化序列，跑不到目标 caller。必须通过 PlayCover 正常启动流程才能观察到完整链。
-  - PlayCover 目前没有"按 bundle 注入诊断环境变量"的现成入口；HOK-012 第一步需要在 `PlayApp.swift` 加一个临时的 minimalStartupCompat-bundle-scoped `DYLD_PRINT_INITIALIZERS` 注入点（改 1~2 行 Swift），并通过 `BuildScripts/build_and_install.sh` 重新安装 PlayCover。
-  - `hok006_ngr_lldb_runner.py` 当前在 capture 到 fault 就停；HOK-012 需要让 LLDB 运行**前置 watchpoint + continue**，直到 watchpoint 触发或 process 退出；需要扩展该 runner（不改现有行为，新增 `--watch-address` / `--no-stop-on-fault`）。
+  - `launch_app_with_lldb` 现有实现只会在 `stop reason =` 出现后抓 backtrace 就退出；HOK-012-B 需要在 `run` 之前下 `watchpoint set expression -s 8 -- 0x10e2146f8`、并在命中时继续抓 backtrace（而非首个 stop 就 quit），再 `continue` 直到目标时刻再收尾。
+  - 子进程 stderr（含 `DYLD_PRINT_INITIALIZERS` 输出）当前不会经过 MCP 返回；HOK-012-B 要决定是在 LLDB 路径里顺带 tee stderr（通过 LLDB 的 `process launch -o <file> -e <file>`），还是在 `NSWorkspace` 启动路径里把 stderr 转发到可读取位置。
+  - `hok006_ngr_lldb_runner.py` 当前只把 `launch_app_with_lldb` 的 single-stop 证据落盘；HOK-012-B 需要扩展 `--watch-address` / `--watch-size` 参数并把 watchpoint 命中事件结构化输出（hit image / hit function / caller chain / thread）。
 - **下一步默认规划**：
-  1. 执行 `HOK-012-A`：在 `PlayCover/Model/PlayApp.swift` 的 `effectiveLaunchEnvironment()` 下增加 "minimalStartupCompat 下自动注入 `DYLD_PRINT_INITIALIZERS=1`、`DYLD_PRINT_APIS=0`（只开 initializer 一项以限制输出）"，只对 `com.tencent.ngr` 生效；重建安装后跑一次 `Scripts/hok004_ngr_startup_runner.py`，把 NGR 进程的 stderr（通过 `os_log` 或 `launchctl print` 等现有机制）抓成离线产物。
-  2. 执行 `HOK-012-B`：扩展 `Scripts/hok006_ngr_lldb_runner.py`，支持在 `launch_app_with_lldb` 之前下一个 `watchpoint set expression -- 0x10e2146f8`（8 字节写）；确认 watchpoint 被哪个 image 的哪段代码命中，把命中的 image / 函数入口 / caller 写入结构化报告。
-  3. 根据 HOK-012-A/B 拿到的真实 writer，判断是：
+  1. 执行 `HOK-012-B.1`：在 `PlayCoverMCP/HostServices/Launch/LaunchService.swift` 的 headless LLDB runner 里新增可选参数 `watchAddress` + `watchSize`（以及 `preRunCommands`），保持现有行为作为默认分支；同步扩展 `launch_app_with_lldb` 的 MCP schema。
+  2. 执行 `HOK-012-B.2`：扩展 `Scripts/hok006_ngr_lldb_runner.py`，新增 `--watch-address 0x10e2146f8 --watch-size 8`；把 watchpoint 命中结构化写入 `build/hok-012-ngr-watchpoint-report.json`。
+  3. 执行 `HOK-012-B.3`：把 `launch_app_with_lldb` 的子进程 stderr 收集到可读文件，用以交叉对齐 `DYLD_PRINT_INITIALIZERS=1` 日志与 watchpoint 命中时间戳；结果落到 `build/hok-012-ngr-dyld-initializers.log`。
+  4. 根据 HOK-012-B.1–B.3 拿到的真实 writer，判断是：
      - **H1**：某个 framework initializer 有 NGR 内部函数调用回 NGR（通过 dlsym 或直接链接）→ HOK-013 方向变成"在 PlayTools 里手动预触发同一个函数"。
      - **H2**：某个 ObjC `+load` → HOK-013 方向是"确认 iOS ObjC 类挑选策略，看是否需要 PlayTools 在注入时把 `PxDyLibFrameworkLoader` 等重复类的挑选顺序对齐 iOS"。
      - **H3**：framework 的 C++ static ctor → HOK-013 方向是"让 dyld 初始化顺序把该 framework 在 NGR `__init_offsets[1563]` 之前 load（例如通过 `DYLD_INSERT_LIBRARIES` 提前 dlopen）"。
-  4. 若 HOK-012-A/B 拿到的结果无法支持 H1/H2/H3 任一假设，则候选 E 成为长期方案，主线回到 QtsFileSystem + `rootWorkDir` 路径（HOK-010），不再继续追 `0x10e2146f8`。
+  5. 若 HOK-012-B 拿到的结果无法支持 H1/H2/H3 任一假设，则候选 E 成为长期方案，主线回到 QtsFileSystem + `rootWorkDir` 路径（HOK-010），不再继续追 `0x10e2146f8`。
 
 ## 构建与验证的方法
 
@@ -96,10 +98,11 @@
 | HOK-006 | DONE | LLDB 自动化入口 + 结构化证据链（含 31 帧 backtrace）；崩点稳定固定在 `NGR` early initializer 路径 | `LocalDocs/HOKCrash/HOK-006-LLDB归因与crash-window压缩.md` |
 | HOK-007A | DONE | `0x10480df08` faulting callsite 的 `LLDB` / `.ips` / `instructionByteStream` / file bytes / `__TEXT,__text` file offset 一致性映射 | `LocalDocs/HOKCrash/HOK-007-二进制意图分析与callsite映射.md` |
 | HOK-007B | DONE | 候选 E（`ldr x8,[x19]` → `b 0x10480df24`，4 字节可逆）已 apply；app 能跨过原 faulting window 抵达游戏 UI 层；候选 E 被重新标记为**症状 workaround**，不是根因修复 | `LocalDocs/HOKCrash/HOK-007-二进制意图分析与callsite映射.md` |
-| HOK-011 | DONE | 离线定位 `0x10e2146f8` 的 writer/reader 关系；**证明 NGR 自身 `__init_offsets` 链无法 prime 该 slot**，真正的 prime 必来自外部 framework/ObjC/跨 dylib 路径；顺带发现 3 组 ObjC 重复类警告 | `LocalDocs/HOKCrash/HOK-011-静态初始化链分析.md`（本轮新增） |
-| HOK-012 | TODO | 基于 HOK-011 的静态结论做 live-trace：bundle-scoped `DYLD_PRINT_INITIALIZERS=1` 注入 + LLDB watchpoint `0x10e2146f8`，定位真正写该 slot 的 image/函数，区分 H1/H2/H3 假设 | 待建（默认直接在 `HOK-011-静态初始化链分析.md` 里续写 "live-trace handoff" 小节，证据收敛后再拆独立子文档） |
-| HOK-010 | DEFERRED | 把 `rootWorkDir` 从 `PlaySettings.disableForMinimalStartupCompat(...)` 摘除以消除 `QtsFileSystem Create Failed!!`；**暂缓**，等 HOK-012 的结果出来再评估 | 暂无 |
-| HOK-007C | DEFERRED | 为下游 crash（`0x10915b114` / `far=0x50`）做 HOK-007A 离线映射 + HOK-007B 风格最小可逆 patch；**暂缓**，等 HOK-012 / HOK-010 结果 | `LocalDocs/HOKCrash/HOK-007-二进制意图分析与callsite映射.md` |
+| HOK-011 | DONE | 离线定位 `0x10e2146f8` 的 writer/reader 关系；**证明 NGR 自身 `__init_offsets` 链无法 prime 该 slot**，真正的 prime 必来自外部 framework/ObjC/跨 dylib 路径；顺带发现 3 组 ObjC 重复类警告 | `LocalDocs/HOKCrash/HOK-011-静态初始化链分析.md` |
+| HOK-012-A | DONE | 在 `PlayApp.effectiveLaunchEnvironment()` 与 MCP `LaunchService.effectiveLaunchEnvironment()` 两侧落地 bundle-scoped `DYLD_PRINT_INITIALIZERS=1` / `DYLD_PRINT_APIS=0` 注入；两处共用 `minimalStartupCompatDiagnosticEnvironment` 语义，仅对 `minimalStartupCompatBundleIdentifiers` 生效；`LaunchServiceTests` 新增 2 个单元测试覆盖 inject/non-inject 分支，18 个测试全过；`BuildScripts/build_and_install.sh` 构建+安装+ad-hoc 签名成功 | `LocalDocs/HOKCrash/HOK-011-静态初始化链分析.md`（live-trace handoff 小节） |
+| HOK-012-B | TODO | 扩展 `launch_app_with_lldb` 支持 `watchAddress` / `watchSize` / `preRunCommands`，并让子进程 stderr（含 `DYLD_PRINT_INITIALIZERS=1` 输出）可被结构化收集；扩展 `Scripts/hok006_ngr_lldb_runner.py` 新增 `--watch-address` / `--watch-size`；产出 `build/hok-012-ngr-watchpoint-report.json` + `build/hok-012-ngr-dyld-initializers.log` | 待建；建议沿用 `HOK-011-静态初始化链分析.md` 的 handoff 小节，证据收敛后拆独立子文档 |
+| HOK-010 | DEFERRED | 把 `rootWorkDir` 从 `PlaySettings.disableForMinimalStartupCompat(...)` 摘除以消除 `QtsFileSystem Create Failed!!`；**暂缓**，等 HOK-012-B 的结果出来再评估 | 暂无 |
+| HOK-007C | DEFERRED | 为下游 crash（`0x10915b114` / `far=0x50`）做 HOK-007A 离线映射 + HOK-007B 风格最小可逆 patch；**暂缓**，等 HOK-012-B / HOK-010 结果 | `LocalDocs/HOKCrash/HOK-007-二进制意图分析与callsite映射.md` |
 | HOK-008 | TODO | 将构建、配置、启动、证据收集、结论汇总收敛成可重复的自动化脚本链路 | 待建 |
 | HOK-009 | BLOCKED | 需要用户账号/手工 UI 的后续验证（若未来必须验证"进入游戏后"行为） | 暂不执行；执行前必须先得到用户确认 |
 
@@ -127,6 +130,8 @@
 - `dyld_info -inits` 才是官方的 initializer 列表来源；手工 parse `__init_offsets` 必须和它对齐数量才算解析正确。
 - `DYLD_PRINT_INITIALIZERS=1` 直接裸跑 NGR 主二进制只会看到系统 dylib 的前几段初始化序列就退出，但**伴随的 ObjC 重复类警告**（`PxFrameworkLoader`、`AReachability`、`PxDyLibFrameworkLoader`）是"iOS vs macOS 类挑选策略差异"这个问题域的首次强证据，不要忽略。
 - ObjC 重复类在 macOS vs iOS 上的**挑选规则不同**（主要是 dylib 加载顺序影响 `objc_registerClassPair` 的胜者）；这是 HOK-012 live-trace 必须显式观察的点。
+- `effectiveLaunchEnvironment` 在 host 侧存在**两份实现**：`PlayCover/Model/PlayApp.swift`（GUI 启动路径）和 `PlayCoverMCP/HostServices/Launch/LaunchService.swift`（MCP `launch_app` / `launch_app_with_lldb` 路径）。对 `minimalStartupCompatBundleIdentifiers` 的任何 env 改动**必须同时写到两份**，否则 `launch_app` 和 `launch_app_with_lldb` 的行为会偏离；HOK-012-A 已把 `DYLD_PRINT_INITIALIZERS=1` / `DYLD_PRINT_APIS=0` 两侧对齐，并用 `LaunchServiceTests` 覆盖 inject/non-inject 两条分支。
+- 给 `minimalStartupCompat` bundle 打开 `DYLD_PRINT_INITIALIZERS=1` 时，**同时显式置 `DYLD_PRINT_APIS=0`** 是必要的——否则若父终端之前 export 过 `DYLD_PRINT_APIS=1`，子进程会被 dyld API 的洪水淹没，initializer 日志就读不到了。这个技巧在 HOK-012-B 的 stderr 抓取里必须保留。
 
 ## 参考信息
 
@@ -137,7 +142,8 @@
 ### 按需读取
 
 - `PlayCover/Model/AppSettings.swift`：host 侧 app 设置默认值与落盘路径。
-- `PlayCover/Model/PlayApp.swift`：目标 app 启动环境、`DYLD_*` 清洗与 `injectMetalCaptureEnvironment` 逻辑；`effectiveLaunchEnvironment()` 是 `HOK-012-A` 注入 `DYLD_PRINT_INITIALIZERS=1` 的目标点。
+- `PlayCover/Model/PlayApp.swift`：目标 app 启动环境、`DYLD_*` 清洗与 `injectMetalCaptureEnvironment` 逻辑；`effectiveLaunchEnvironment()` 是 `HOK-012-A` 注入 `DYLD_PRINT_INITIALIZERS=1` 的目标点（已落地，见 `minimalStartupCompatDiagnosticEnvironment`）。
+- `PlayCoverMCP/HostServices/Launch/LaunchService.swift`：MCP 侧 `launch_app` / `launch_app_with_lldb` 的启动环境组装入口；同步维护着 `minimalStartupCompatDiagnosticEnvironment` 常量；`HOK-012-B` 的 watchpoint / preRunCommands 扩展应在这个文件里做。
 - `Carthage/Checkouts/PlayTools/PlayTools/PlaySettings.swift`：runtime 侧对同一份 settings 的读取方式与默认值；`disableForMinimalStartupCompat(...)` / `minimalStartupCompatBundleIds` 是 `HOK-010` 的主改点，`HOK-012` 暂不触发。
 - `Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m`：PlayTools 的 dyld constructor / interpose 入口。
 - `Carthage/Checkouts/PlayTools/PlayTools/PlayCover.swift`：`PlayTools` 启动顺序与 `playcover_launch_complete` 前后的关键路径。

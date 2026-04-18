@@ -352,65 +352,230 @@ PlayTools），完全在 LLDB Python callback 里动态改写
 (return w19=0)`、`bl 0x1001cd114(x0=@0x10e184b18, x1=x8+0x10, w2=1)`
 后 `cbz x0, fail_slot_2 (return w19=0)`。也就是说**`0x10017f3c8`
 本身也是一条 lookup + acquire pattern**，macOS 下在 `bl 0x1001ac168`
-或 `bl 0x1001cd114` 之一的返回值上就已经失败。
+或 `bl 0x1001cd114` 之一的返回值上就已经失败——**这条假设在
+HOK-016-C.2.4 中被修正：`0x10017f3c8` 实际上在当前 run 中不可达；
+真正被调用并返回 0 的是 `0x10017f184`**。见下一节。
 
-### 当前根因链（HOK-016-C.2.3 对 Dashboard 的改写）
+### HOK-016-C.2.4：真正的失败决定点是 `0x10017f184`，不是 `0x10017f3c8`
 
-新的 8+层失败链：
+`Scripts/hok016c24_ngr_readinessB_inner_args.py` +
+`Scripts/hok016c24_lldb_inner_probes.py` 分三轮实验（v2 / v3 /
+v4-5）给 `0x10432dd98` 全函数装 ~30 个 Python callback BP，**把"到
+底从哪条 early-exit 返回 0"彻底钉死**。
+
+#### 完整控制流（跨 run 稳定）
+
+```
+0x10432dd98 entry
+  x0 = this (QtsFS instance)
+  x1 = 0x1 (mode)
+  x2 = FString*("../../../NGR/Content/paks")      ← cooked 资源相对路径
+  x3 = FString*("/Users/songdogwang/Library/NGR/Saved/Paks")  ← 容器内绝对路径
+
++0x00..0x40  FString::Printf("%d", x1=1)  →  sp+0x38 内 FString = "1"
+
++0x48..0x54  ldr w22, [sp,#0x40] (=2, FString "1" 的 Num incl. NUL)
+             ldr w8,  [0x10f0df000 + 0xc08] (=2, "decision" global)
+             cmp w22, w8  →  EQ  →  b.eq 0x10432df8c
+
++0x1F8 (0x10432df8c): 进入 alt-path
+  cmp w22, #0x2 (=2) → NOT lt → fallthrough
+  ldr x0, [sp+0x38] (= Printf 出的 FString data ptr)
+  ldr x1, [0x10f0df000 + 0xc00] (=另一个 global)
+  bl  0x1047482ac(x0=printf_str, x1=global_c00)  →  w0
+  cbnz w0, 0x10432ddfc                           →  看 w0
+    ↓ (w0 == 0 的实际观察情形；实测 w0 非零也会回到 de10)
+  b   0x10432de10
+
++0x78..0xF8 (0x10432de10..de88): 两次 FString 包装 +
+             两次 bl 0x104826068 (某个 TMap/TSet 插入或查找)
+
++0x11C 第一次 vtable blr  (x8 @ [x19+0x60] -> +0xf8)  →  x21 = return (=0x1)
++0x13C 第二次 vtable blr  (相同 vtable -> +0xf8)      →  x20 = return (=0x0)
++0x14C bl  0x104329c18  (构造 uint key)               →  w1 stored to [sp+0x14]
++0x154 cbnz w21, 0x10432dfac                          ←  w21=1 → jump dfac
+
++0x214 (0x10432dfac): cbz w20, 0x10432e06c            ←  w20=0 → jump e06c
+
++0x2D4 (0x10432e06c):
+  mov x0, x1 (=0 here, see v4 probe at 10432e06c)
+  bl 0x10017f184(x0=0)                               ←  核心 lookup 调用
+  tbnz w0, #0, 0x10432dfbc                           ←  实测 bit0=0 → fallthrough
+
++0x2E0..0x2FC: ldr x0, [x19+0x60]; ldr x8,[x0]; blr [x8+0x190]
+             再次 vtable 派发 (logging / classifier)
++0x2F8 ldrb sentinel; cmp #2; b.lo 0x10432e058 (不跳，因为 sentinel=5)
++0x30C bl  0x10432e194 (logging)
++0x310 b   0x10432e058
+
++0x2C0 (0x10432e058): mov w19, #0x0                   ←  **FAIL_EXIT_A 就地**
++0x2C4 b   0x10432df38 → epilogue → return 0
+```
+
+#### `0x10017f184` 内部（与 `0x10017f3c8` 同构但目标不同）
+
+```
+0x10017f184 entry
+  x0 = key (int)  ; v4 实测 x0 = 0
+  mov x1, x0     ; save as int-key for later lookup
+
++0x30   adrp x8, 0x10e184000; ldr x0, [x8, #0x9f0]   ; rootA
+        add  x8, sp, #0x20                            ; out slot
++0x38   bl   0x1001ac168(x0=rootA, x1=key=0, x8=out)
++0x3C   ldr  x8, [sp, #0x20]                          ; entry ptr
++0x40   cbz  x8, 0x10017f2f0                          ; lookup A miss → fail_slot_1
+
++0x44..0x50 add x1, x8, #0x10   ; x1 = entry+0x10 = PascalString header
+           adrp x0, 0x10e184000; add x0, x0, #0xb18 ; rootB = 0x10e184b18
+           mov  w2, #0x1
++0x54   bl   0x1001cd114(x0=rootB, x1=entry+0x10, w2=1)
++0x58   mov  x19, x0                                  ; return value
++0x5C   cbz  x0, 0x10017f2bc                          ; lookup B miss → fail_slot_2
+```
+
+#### `entry+0x10` 的真实结构（PascalString，**不是 FString**）
+
+v4-5 run 在 `0x10017f1d8` 抓的 hex48：
+
+```
+entry+0x10 hex: 04 00 00 00 00 00 00 00 | 6d 61 69 6e 00 00 00 00 | ...
+                length=4                 | 'm' 'a' 'i' 'n' \0\0\0\0
+entry+0x20 hex: 01 00 00 00 00 00 00 00 | 31 00 00 00 00 00 00 00
+                length=1                 | '1'  \0\0\0\0\0\0\0
+entry+0x30 hex: 01 01 00 00 00 00 00 00 ; flags?
+```
+
+也就是说 entry 里记着 **name = "main"**，**chunk signature = "1"**。
+HOK-016-C.2.4 前的假设"x1 指向 FString" 是错的——它是一个在线
+PascalString (`[length: u64][chars: N][padding]`) 结构，被 lookup B
+当作字符串 key 使用。
+
+#### rootB 状态与失败直接原因
+
+v5 run `f184_before_bl2` 抓的 `rootB_hdr` (32 bytes @ `0x10e184b18`)：
+
+```
+10 3e 33 16 01 00 00 00 | 10 3e 33 16 01 00 00 00 |
+01 00 00 00 00 00 00 00 | 00 00 00 00 00 00 00 00
+```
+
+解读：`*rootB = 0x116333e10`，`*(rootB+0x8) = 0x116333e10`（自指
+sentinel），`count = 0x01`。典型的**空红黑树 sentinel 自指**结构，
+count=1 通常是 nil-node 本身被计入容量或 sentinel reservation。
+**运行期观察到的 bl 0x1001cd114 调用 v5 的 x0(rootB)=`0x10e184b18`**
+（与静态分析一致），该容器在 lookup 到 key "main" 时**返回 0
+（lookup B miss）**。
+
+#### HOK-016-C.2.4 收尾结论
+
+- 真因**不在** `0x10017f3c8`：`probe_inner_entry` / 其 7 个 BP 在 v3/
+  v4/v5 run **0 次命中**，说明整条 HOK-016-C.2.3 里"bl 0x10432dd98 内
+  部 `+412 bl 0x10017f3c8`" 路径实际上是**死代码**（该路径要求
+  `0x10432df0c cbz w20, 0x10432df34` 走 success 或 `0x10432df18 bl
+  0x10017faa0` 返回非零 → 跳 dfec → 再经 `b.lo sentinel` 路径返回
+  success；两条都不是当前 run 的实际走向）。
+- 真因**就在** `0x10017f184`：它和 `0x10017f3c8` 共享同一个 lookup
+  模板（adrp → ldr root → bl 0x1001ac168 → cbz → bl 0x1001cd114 →
+  cbz），但用的是 `sp+0x20` 而不是 `sp+0x60`，且入参是一个 int key
+  = 0；`bl 0x1001ac168` 查 rootA 能找到 "main/1" 的 entry，但
+  `bl 0x1001cd114` 拿 entry+0x10 的 PascalString "main" 去 rootB 查
+  **查不到**（rootB 是一个 sentinel-self-loop 的空红黑树），于是返
+  回 0。
+- 这把 HOK-016-C.2.x 系列的 "readiness B 失败 = rootB 空" 的判定
+  精确到了**具体 key = "main"**；**修复方向收敛为**：在
+  `0x10017f184` 的 bl 0x1001cd114 **之前**让 rootB 里有 "main"
+  PascalString entry，或直接拦截 `0x10017f184` / `0x10432dd98` 让
+  它返回 1。
+- 资源路径 FString `../../../NGR/Content/paks` 与
+  `/Users/songdogwang/Library/NGR/Saved/Paks` **只是 0x10432dd98 的
+  两个参数**，没有被 `bl 0x10017f184` 实际使用——它们只在更早的路径
+  （b.eq 10432df8c 之前）才会被 `bl 0x10432b734` 当成 key 使用。因
+  此 **HOK-016-C.5 (pt_stat / NSBundle swizzle path fixup) 不是治
+  本方向**，这条线在 C.2.4 被间接证伪。
+
+产物：`build/hok-016c24-readinessB-inner-args.json` (= v5 run 的副
+本，保留完整 transcript + summary)。
+
+### 当前根因链（HOK-016-C.2.4 对 Dashboard 的改写）
+
+新的真因链（最终形态，HOK-016-C.2.4 v4/v5 跨 run 稳定）：
 
 ```
 NSThread worker
  → 0x103a227d0 MessagingInit
- → 0x107e5c970 QtsFS_InitWrapper          (cbnz w0, fatal)
- → 0x103a29fa0 QtsFileSystem_Init         (writes 0x10e2146f8)
+ → 0x107e5c970 QtsFS_InitWrapper            (cbnz w0, fatal)
+ → 0x103a29fa0 QtsFileSystem_Init           (writes 0x10e2146f8)
  → 0x107e5df4c FactoryRegister
  → 0x103a29bec MeyersSingleton  (vtable[0x30] blr)
- → 0x108879164 reporter                   (+176 bl 0x108877bd0; tbz w0)
- → 0x108877bd0 +908 bl 0x108878534        (readiness B dispatcher)
- → 0x108878534 +352 bl 0x10432dd98        (readiness B data-verify)
- → 0x10432dd98 +412 bl 0x10017f3c8        (Qtsk::STGlobalMemData lookup)
- → 0x10017f3c8 +... bl 0x1001ac168 / 0x1001cd114   ← macOS 下某一处返回失败
+ → 0x108879164 reporter                     (+176 bl 0x108877bd0; tbz w0)
+ → 0x108877bd0 +908 bl 0x108878534          (readiness B dispatcher)
+ → 0x108878534 +352 bl 0x10432dd98          (readiness B data-verify)
+ → 0x10432dd98 +36  FString::Printf("%d", 1) → "1"
+ → 0x10432dd98 +54  cmp w22, decision_c08=2 → EQ → b.eq 0x10432df8c
+ → 0x10432df8c ... → fallback 回到 0x10432de10
+ → 0x10432de10 .. vtable[0x60]+0xf8 (x21=1) + 又一次 vtable[0x60]+0xf8 (x20=0)
+ → 0x10432deec cbnz w21=1 → 0x10432dfac
+ → 0x10432dfac cbz w20=0 → 0x10432e06c
+ → 0x10432e06c mov x0,x1 (=0); bl 0x10017f184(x0=0)
+   → 0x10017f184 rootA lookup for int key=0 → 命中 (entry 存在)
+   → entry+0x10 = PascalString [length:u64=4][chars:"main"\0\0\0\0]
+   → bl 0x1001cd114(rootB=0x10e184b18, entry+0x10 = "main", w2=1)
+   → rootB 是 sentinel 自指的**空容器**（header: ptr ptr 0x01 0x00） → 返回 0
+   → 0x10017f1e0 cbz x0 → 0x10017f2bc (fail_slot_2) → f184 返回 w0=0
+ → 0x10432e074 tbnz w0,#0 不跳 → fallthrough → 0x10432e058 mov w19,#0
+ → 0x10432dd98 返回 0
+ → 0x108878534 readiness B fail
+ → reporter "Create Failed!!"
 ```
 
-即 **根因不在 sentinel，也不在 cmdline，也不在 stub object**：它是
-Qtsk 子系统对 `__common @ 0x10e1849f0`（`0x10017f3c8` 入口 adrp 读
-的全局指针）及关联 `0x10e184b18` 全局表所做的一次运行期
-lookup/acquire，在 macOS 下返回失败。**"这是 macOS 特有的失败" 本身
-已经确认；真正的"为什么 iOS 过 / macOS 不过" 的差异定位下沉到
-HOK-016-C.2.4 及之后**。
+**根因不在资源路径**（v5 抓到的 FString x2 = `"../../../NGR/Content/paks"` /
+x3 = `"/.../Library/NGR/Saved/Paks"` 虽然出现在入口寄存器里，但
+`0x10017f184` 的 lookup 用的是内部 "main" PascalString，**不是这两个
+路径**）；**根因在 `0x10e184b18` 指向的 rootB red-black tree 是空的** —
+在 macOS 下没有人往里面注册 "main" 这个 chunk 名，导致 QtsFileSystem
+初始化第二段 readiness check 永远 fail。
 
-## 修复方向（尚未落地；HOK-016-C.2.3 之后重新排序）
+即 **根因不在 sentinel，也不在 cmdline，也不在 stub object，也不在资源
+路径**：它是 Qtsk 子系统对 `__common @ 0x10e184b18` 这一张 name→chunk
+红黑树所做的一次运行期字符串 lookup，在 macOS 下该表完全没被填充。
+**这是 macOS 特有的初始化缺失**；真正的下一步定位——"谁应该填 rootB"
+以及"为什么 macOS 下 writer 没被调用"——由 HOK-016-C.2.5 处理。
+
+## 修复方向（HOK-016-C.2.4 之后重新排序）
 
 HOK-016 的修复必须在 PlayTools 层 bundle-scoped、不动 NGR 二进制，可选
 方案按"影响面从小到大 / 风险从低到高"排：
 
-1. **(C.2.4) 继续下探 `0x10017f3c8` 内部两个关键 bl 的失败点**（当前方
-   向）：在 `bl 0x1001ac168` / `bl 0x1001cd114` 前后设探针，抓它们
-   的**输入 FString**（通常是 Qtsk 资源/文件名），以理解 macOS 下查
-   哪个资源失败。只有了解"查什么"才能选出"修哪条 path" 的具体
-   interpose 方案。如果参数里出现具体文件名（比如 cooked data pack、
-   `.pak` / `.utoc` / `.ucas` / `.uexp` / `.ubulk`），则回到
-   `pt_stat`/`pt_access` path-fixup 的方案。
-2. **(C.3) fishhook interpose `0x108878534` 直接返回 1**：最野蛮但最
-   直接。跳过整个 readiness B 检查，让 `0x108877bd0` 直接进入正常
-   分支、reporter 直接不触发。风险极高：QtsFS 子系统后续会以"未真
-   正就绪"的假设访问数据，可能立刻或稍后引发更深的 crash。**仅作为
-   诊断验证路径**（证明"只要 readiness B = 1 进程就能继续跑"），不
-   作为最终落地方案。
-3. **(C.4) fishhook interpose `0x10432dd98` 或 `0x10017f3c8` 直接返回
-   1**：比 C.3 更深更局部，但同样是"跳过失败"，不是"修失败"。也仅
-   作为诊断路径存在。
-4. **(C.5) path fixup / NSBundle pathForResource swizzle**：若 C.2.4
-   证实失败是在查一个确实存在于 iOS cooked build 但在 macOS 下被
-   PlayCover 容器布局绊倒的资源（典型表现：`Resources/` 下可以找
-   到但相对路径被 cwd 化错了，或者 `NSBundle mainBundle` 指向位置
-   不对），则 PlayTools 层对 `pt_stat` / `pt_access` /
-   `-[NSBundle pathForResource:ofType:]` 的 swizzle 是最干净的修复
-   路径。HOK-010 已经把 cwd 修成 `/`（rootWorkDir=true），这条路径
-   的证据可以对照 `playcover_working_directory_changed` 事件。
-5. **(C.6) 降级结论**：若 C.2.4 证实失败必须由用户提供外部资源
-   （登录后的 cooked data pack 等），则 HOK-016 升级到 HOK-009 类
-   型（需要用户介入）。
+1. **(C.2.5) 定位 rootB writer，判断为何 macOS 下没被 fire**（当前方
+   向）：对 `0x10e184b18` 做全 `__text` ARM64 定长扫描（复用
+   `Scripts/hok016c2_ngr_sentinel_writer_scan.py` 框架；把 target 从
+   `0x10e1eeef0` 换成 `0x10e184b18`，覆盖 `str/stp/strb/strh/str.w`
+   等全部写入模式），找到"往 rootB 插 entry" 的函数；反向 BFS 到
+   `__init_offsets` 可达性；若找到 writer 是某个 initializer，用
+   LLDB watchpoint 监控它**是否**被调用（iOS 应被调用、macOS 应没
+   有）。
+2. **(C.5) 对 `0x10017f184` / `0x10432dd98` 做局部 interpose，让它返
+   回成功**：在确认失败不会引入二次 crash 的前提下，这是最小侵入的
+   兜底方案；PlayTools 通过 fishhook 或 dyld interpose 把 lookup 结
+   果包成"假装命中 main chunk"。但**需要先搞清楚 rootB 的 entry 被
+   谁消费**——如果消费方还会做 FString 访问，伪造返回会立即二次崩。
+   C.2.5 是前置。
+3. **(C.4) fishhook interpose `0x10432dd98` 让 it 直接返回 1**：更
+   粗粒度但同样"跳过失败"，风险高（readiness B 之后的 subsystem 会
+   以"已就绪"假设访问未初始化数据）。
+4. **(C.3) fishhook interpose `0x108878534` 直接返回 1**：野蛮方案
+   保留作为最后兜底。
+5. **(C.6) 降级**：若 rootB writer 在 macOS 下不可达源于缺失的外部
+   资源/用户态，则升级到 HOK-009（需要用户介入）。
+
+已证伪路径：
+
+- **(~~C.5 pt_stat/NSBundle path fixup~~，间接证伪)**：HOK-016-C.2.4
+  抓到 rootB 的 lookup key 是内部 PascalString "main"（chunk 名），
+  而不是 FString 路径；进 `0x10017f184` 的 x0 参数是 int(=0)；
+  `0x10432dd98` 入口拿到的两个 FString 路径实际没被
+  `0x1001ac168` / `0x1001cd114` 消费。pt_stat 之类 syscall 级 fixup
+  不能修复"rootB 中缺 name entry"。这条方案从主线降级为备胎。
 
 已证伪路径：
 
@@ -430,12 +595,15 @@ HOK-016 的修复必须在 PlayTools 层 bundle-scoped、不动 NGR 二进制，
 
 所有方向都必须保留 HOK-013 / HOK-014 / HOK-015 作为安全网，落地之前先
 在 `build/hok-016-*.json` / `build/hok-016c-*.json` /
-`build/hok-016c2-*.json` / `build/hok-016cx-*.json` 记录证据；落地
-后的验证口径见 Dashboard "HOK-016-D 判据"（`hok014_ngr_alert_suppressed
-= 0` / 进程活跃度 / 窗口可见性 / 无新 `NGR-*.ips`）。
+`build/hok-016c2-*.json` / `build/hok-016c24-*.json` /
+`build/hok-016cx-*.json` 记录证据；落地后的验证口径见 Dashboard
+"HOK-016-D 判据"（`hok014_ngr_alert_suppressed = 0` / 进程活跃度 /
+窗口可见性 / 无新 `NGR-*.ips`）。
 
-**下一步默认推进顺序**：C.2.4 `0x10017f3c8` 内部 FString 参数抓取
-→ 根据参数语义在 C.3 / C.4 / C.5 中选形式 → C.6 降级（末选）。
+**下一步默认推进顺序**：C.2.5（对 `0x10e184b18` 做全 `__text` writer
+扫描 + `__init_offsets` 反向 BFS） → 根据 writer 是否可达决定
+C.5（interpose 注入 "main" entry） / C.4（更粗粒度 interpose
+0x10432dd98） / C.3（最后兜底） → C.6 降级（末选）。
 
 ## 参考
 

@@ -40,117 +40,124 @@
 
 ## 主线任务
 
-- **当前状态（距离最终目标还差关键一步）**：candidate E 已 revert、
-  HOK-013/010/014 让 app **进程不崩、窗口存在**、60s 长跑无新
-  `NGR-*.ips`。但深入观察证明 app **没有真正活着**：
-  - UE4 在 `Checking for command line in ue4commandline.txt ... FOUND!`
-    **之前** 就有代码读 `FCommandLine::Get()`，在 command line 未初始
-    化时 UE4 打出 3 条 `[UE4] Fatal error: [File:Unknown] [Line: 34]
-    Attempting to get the command line but it hasn't been initialized
-    yet.`。
-  - UE4 fatal handler 接着：(a) 构造 `UIAlertController` 标题
-    `"Message"` 消息 `"QtsFileSystem Create Failed!!"`，（iOS 上会
-    sheet modal 挂住 UI 线程；macOS 上被 HOK-014 压制成 `completion(nil)`）；
-    (b) set `GIsRequestingExit=true`，让 UE4 GameThread 自然退出 tick
-    loop。
-  - 现象：进程 state=`S`、~2% CPU、RSS 333MB（UE4 真正跑起来应 ≥1GB）、
-    线程 10 个全部 sleep、主窗口 bounds `(72, -1007, 1478, 859)` 完全
-    在可见屏幕之外（主屏 `frame=(0,0,1728,1117)`），`kCGWindowMemoryUsage=2288
-    B` 说明没有实际内容被绘制——**僵尸存活状态**。
-  - HOK-014 只消除了"用户看到错误对话框"这一步，但 UE4 主动 exit 的
-    根因没被处理。**这违反最终目标里"没有 Fatal / 没有错误对话框"的
-    硬性要求**。
+- **当前状态（HOK-015 已落地、下一步根因已暴露）**：HOK-015 `cmdline
+  preseed` 已在 PlayTools constructor 落地且 live 验证 `status=primed`
+  （`bInitializedBefore=0 → bInitializedAfter=1` /
+  `cmdlinePreview="../../../NGR/NGR.uproject"` / `slide=0x44f0000`）。
+  但 live run 暴露了一个**与 Dashboard 早期假设不一致的事实**：
+  - `hok014_ngr_alert_suppressed` 事件 **仍然触发 1 次**，title=`Message`、
+    message=`QtsFileSystem Create Failed!!` —— 即使 HOK-015 把 UE4
+    `FCommandLine` bInitialized 预置为 true（离线定位也证明 NGR 里所有
+    218 条 inline `FCommandLine::Get()` guard 都已走 normal path）。
+  - 意味着 **"QtsFileSystem Create Failed" 并不是 UE4
+    `FCommandLine::Get()` fatal 路径的下游**。它来自 **NGR 自研的
+    `QtsFileSystem`（腾讯 NGR 的 VFS 初始化层）自己的失败**——静态上，
+    该字符串位于 `__ustring` `0x10c09d070`，在 NGR 二进制里**只有 1
+    个 adrp+add xref**（`0x1088792d4`，error reporter 函数内部），上
+    游 caller 走 virtual dispatch / 函数指针，离线反向一步追不到。
+  - 进程依然表现为"僵尸存活"：peak CPU 瞬间到 ~59%（说明 UE4 确实启
+    动了主线程一段时间），但随后 `%CPU → 0`、RSS 停在 332MB、线程
+    数 11、`state=S`、主窗口在屏幕外；60s 无新 `.ips`，HOK-014
+    swizzle 依然守住 UI（用户仍然看不到 dialog，但 app 没真正活着）。
+  - **修正**：Dashboard 之前把 `QtsFileSystem Create Failed` 归在"UE4
+    fatal handler (a)"名下。实际上那条路径需要重新独立归因——它和
+    HOK-013 / HOK-015 的 UE4 bootstrap 修复完全不在同一条 call graph
+    上。
 
-- **当前兜底链路**（不再是闭合方案，是达到"根因修复"前的临时网）：
-  1. `HOK-013`：PlayTools constructor 最早时刻为 `0x10e2146f8` 写入
-     stub object，让 NGR dyld initializer 里 `ldr x8, [x19]; ldr x8,
-     [x8, #0x10]; blr x8` reader 链安全 no-op。（`HOK-013-slot-preheat.md`）
-  2. `HOK-010`：`PlaySettings.rootWorkDir` 从
-     `disableForMinimalStartupCompat(...)` 摘除 + `PlayApp.launch()`
-     self-heal 强制 NGR 的 `rootWorkDir=true`，让 UE4 相对路径以 `/`
-     为基准。（`HOK-014-alert-suppressor.md` 合并说明）
-  3. `HOK-014`：PlayTools swizzle `-[UIViewController
-     presentViewController:animated:completion:]`，对 `UIAlertController`
-     实例直接调 `completion(nil)` 返回。**HOK-015 落地后应降级为安全
-     网**，正常情况下这个 swizzle 一次都不该触发。（`HOK-014-alert-suppressor.md`）
+- **当前兜底链路**（全部 apply，顺序按 PlayTools constructor 内执行序）：
+  1. `HOK-013`：为 `0x10e2146f8`（UE4 GLog 实例 slot）写入 stub object，
+     让所有 dyld initializer 里 reader 链安全 no-op。
+     （`HOK-013-slot-preheat.md`）
+  2. `HOK-015`：为 `FCommandLine::bCommandLineInitialized`
+     （`0x10e201078`）+ `FCommandLine::CmdLine`（`0x10e20107a`, UTF-16-LE
+     `TCHAR[16384]`）预写 `bInitialized=1` 与种子字符串
+     `"../../../NGR/NGR.uproject"`，让 218 条 inline
+     `FCommandLine::Get()` guard 的 `TBZ w?, #0, <fatal>` 都 fall-through。
+     （`HOK-015-cmdline-preseed.md`）
+  3. `HOK-010`：`PlaySettings.rootWorkDir` 透传 + `PlayApp.launch()`
+     self-heal，让 `com.tencent.ngr` 的 cwd 为 `/`。
+     （`HOK-014-alert-suppressor.md` 合并说明）
+  4. `HOK-014`：PlayTools swizzle
+     `-[UIViewController presentViewController:animated:completion:]`，
+     对 `UIAlertController` 直接 `completion(nil)` 返回；**HOK-015
+     闭合后的观测期望本来是"零触发"，但因 QtsFileSystem Create
+     Failed 的独立 fatal 路径，日常仍会触发 1 次**。在 HOK-016
+     根因消除前，HOK-014 继续承担"用户看不到错误对话框"硬性要求的
+     防线。（`HOK-014-alert-suppressor.md`）
 
-  HOK-007B 候选 E（NGR app 二进制 4 字节 patch）已 **revert**，HOK-013
-  已替代它作为 slot 预热兜底；不再纳入日常链路。
+  HOK-007B 候选 E（NGR app 二进制 4 字节 patch）已 **revert**。
+  HOK-013 + HOK-015 不再依赖它。
 
-- **当前已知事实**（维护仍需要的几条）：
-  - `FCommandLine::Get()` early-read fatal 的 marker 字符串：
-    `"Attempting to get the command line but it hasn't been initialized
-    yet."`（在 NGR 二进制里常量存在，HOK-015-A 的扫描入口）。UE4 在
-    `Checking for command line in ue4commandline.txt ... FOUND!` **之前**
-    约 141ms 里有代码命中这条 fatal 3 次——早读者候选：`GCloudCore
-    addObserver` / `PluginReportLifecycle init` / 其它 SDK static
-    initializer。
-  - Fatal 触发 UE4 `UIAlertController(title="Message",
-    message="QtsFileSystem Create Failed!!")` + set
-    `GIsRequestingExit=true`；后者让 UE4 GameThread 自然 exit tick
-    loop，解释了当前"进程活着但不干活"的僵尸态。
-  - `0x10e2146f8` 的 writer 是 `0x103a29c60`（不是 HOK-011 最初标的
-    `0x103a29b7c`，那是相邻的 Logger dispatch wrapper）；NGR 自身
-    `__init_offsets` 反向 BFS 不可达。HOK-013 之后**不再依赖识别实际
-    writer** 就能让 reader 安全跨过。
-  - `effectiveLaunchEnvironment` 在 host 侧有**两份实现**（
-    `PlayCover/Model/PlayApp.swift` GUI 路径 +
-    `PlayCoverMCP/HostServices/Launch/LaunchService.swift` MCP 路径）；
-    对 `minimalStartupCompatBundleIdentifiers` 的任何 env 改动必须
-    同时写两份。`minimalStartupCompatDiagnosticEnvironment` 的
-    `DYLD_PRINT_INITIALIZERS=1` / `DYLD_PRINT_APIS=0` 已两侧对齐。
-  - PlayCover GUI 端 `AppSettings.settings` 有 `didSet → encode()`，
-    启动 app 时 `settings.sync()` 会触发写回 plist；HOK-010 已在
-    `PlayApp.launch()` 里对 NGR self-heal
-    `settings.settings.rootWorkDir=true`，避免 stale 内存把 plist
-    改回 false。
-  - 候选 E patch runner：`Scripts/hok007b_ngr_patch_runner.py`，当前
-    `state=original`；`build/hok-007b-backups/*.bin` 保留作为历史备
-    份，日常不 apply。
+- **当前已知事实**（维护仍需要的）：
+  - UE4 iOS `TCHAR` 是 `uint16_t`，fatal marker 字符串
+    `"Attempting to get the command line but it hasn't been
+    initialized yet."` 在 NGR 二进制里以 **UTF-16-LE** 存在
+    `__TEXT,__ustring` 段 `0x10c12d70a`，不是 ASCII。HOK-015-A
+    `Scripts/hok015_ngr_cmdline_locator.py` 据此编码扫描。
+  - `FCommandLine::bCommandLineInitialized` 的 reader 模式是**218 条**
+    inline 副本（UE4 UE4.25+ arm64 inline `FCommandLine::Get()`）：
+    ```
+    adrp xB, <page(bInitialized)>
+    ldrb wB, [xB, #0x78]
+    tbz  wB, #0, <fatal_branch>
+    adrp xC, <page(CmdLine)>
+    add  xC, xC, #0x7a
+    ```
+    182/218 条指向 NGR 主 UE4 的 `0x10e201078` / `0x10e20107a`；其余
+    落到第三方 framework（GCloud / MSDK 等）里自己的 UE4 派生，不在
+    HOK-015 干预范围内，也不影响兼容启动。
+  - "QtsFileSystem Create Failed!!" 字符串在 NGR 二进制里仅**1 个
+    xref**（error reporter `0x1088792d4`）；其调用者是 virtual
+    dispatch / 函数指针（静态 BL/B 零匹配）。HOK-016 需要通过 LLDB
+    运行期追踪或反向 UE4 subsystem init 顺序定位其上游业务逻辑。
+  - `effectiveLaunchEnvironment` 两份实现（GUI + MCP）依然需同步；
+    目前对 HOK-013 / HOK-015 没有新增 env 要求。
+  - PlayCover GUI `AppSettings.settings` 的 `didSet → encode()` 写回
+    plist 行为未变；HOK-010 self-heal 仍是改 settings 的正确入口。
+  - 候选 E 磁盘备份仍在 `build/hok-007b-backups/*.bin`，日常不 apply。
 
-- **当前主线**：`HOK-015`——在 PlayTools 层消除 **UE4 cmdline early-read
-  fatal** 的根因。方案架构与 HOK-013 一致（PlayTools `__attribute__((constructor))`
-  最早时刻预写 NGR `__common` 槽位），目标是让 `FCommandLine::Get()` 在
-  任意早期调用都读到**已初始化的合法 cmdline**，从而：
-  - UE4 `Fatal error` 从不触发；
-  - UE4 不构造 `UIAlertController`（HOK-014 swizzle 变成纯冷备）；
-  - `GIsRequestingExit` 保持 false，GameThread 正常跑进主 tick loop；
-  - app 真正"活着"，窗口被 UE4 正常摆位、RSS/CPU 达到 UE4 游戏典型
-    量级。
-
-  **约束**：完全在 PlayCover/PlayTools 层、bundle-scoped 到
-  `com.tencent.ngr`、不动 NGR app 二进制。
+- **当前主线**：`HOK-016`——定位并消除
+  `QtsFileSystem Create Failed!!` 的根因。目标状态：`launch-events.jsonl`
+  里 `hok014_ngr_alert_suppressed` 事件次数 **真正归零**；进程
+  `RSS ≥ 800MB` / 线程数 ≥ 20 / 窗口在主屏内 / `%CPU` 持续 ≥ 5%。
+  方法：
+  - 静态：反向跟踪 `0x1088792d4` 所在 reporter 函数的 vtable / 函数
+    指针消费点（可参考 HOK-011 的 __common slot writer 扫描器套
+    路），定位 `QtsFileSystem::Create` / `QtsFileSystem::Init` 的入
+    口，看其 failure 条件是什么（路径不存在？`access()`/`stat()`
+    返回 -1？一个 iOS-only 的 sandbox container path？）。
+  - 运行期：`launch_app_with_lldb`（HOK-006 runner 的
+    `--defer-watchpoint-install` 路径）在 `0x1088792d4` 设 BP 抓到
+    命中瞬间 backtrace + `x0..x8` 全状态；再沿 backtrace 反溯真正
+    的 failure 点。
+  - 约束同 HOK-015：bundle-scoped、PlayTools 层、不动 NGR 二进制、
+    失败时无副作用。
 
 - **当前卡点**：无。
 
 - **下一步默认规划**：
-  1. `HOK-015-A`（静态定位）：复用 `Scripts/hok011_ngr_common_init_chain.py`
-     风格的扫描器，在 NGR 二进制里定位：
-     - `"Attempting to get the command line but it hasn't been
-       initialized yet"` 字符串的 xref → UE4 `FCommandLine::Get` 的
-       fatal 分支；
-     - 相邻 `ldrb` / `strb` 序列指向的 `bInitialized` bool slot；
-     - cmdline char buffer 的起始地址 + 容量；
-     输出 `build/hok-015-cmdline-slots.json`。
-  2. `HOK-015-B`（PlayTools 落地）：`PlayLoader.m` 新增
-     `pt_ngr_preseed_cmdline_once()`，在 `pt_ngr_preheat_slot_once()`
-     之后、`pt_ngr_install_alert_suppressor_once()` 之前调用；
-     `dispatch_once` 幂等；bundle gate 复用 `pt_ngr_should_preheat_slot()`；
-     预写内容 = `"../../../NGR/NGR.uproject"` 与 `bInitialized=true`；
-     诊断事件 `hok015_ngr_cmdline_preseed`。
-  3. `HOK-015-C`（live 验证）判据（全部满足才视为闭合）：
-     - `launch-events.jsonl` 出现 `hok015_ngr_cmdline_preseed status=primed`；
-     - 子进程 stderr / dyld log 里**不再出现** `Attempting to get the
-       command line but it hasn't been initialized yet` / `Fatal error:
-       [File:Unknown]`；
-     - `hok014_ngr_alert_suppressed` 事件次数 = **0**；
-     - 自由启动 60s 后：进程 `%CPU ≥ 5%`、RSS ≥ 800MB、线程数 ≥ 20；
-     - 主窗口 bounds 与主屏 frame 有非空交集（窗口在可见区域内）；
+  1. `HOK-016-A`：用 `Scripts/hok006_ngr_lldb_runner.py` 自动化
+     在 `0x1088792d4` 设 BP，结合 `--pre-run-command 'breakpoint
+     set --address 0x1088792d4'`，收集 backtrace + 寄存器状态，
+     落 `build/hok-016-qts-fs-create-failed.json`。
+  2. `HOK-016-B`：根据 backtrace 定位 `QtsFileSystem::Create`
+     入口函数，静态反汇编看 failure 条件（预计落在 `mkdir` /
+     `access` / `stat` 路径检查）。
+  3. `HOK-016-C`：在 PlayTools 层做 bundle-scoped 修复——最可能
+     的形态是在 `pt_stat` / `pt_access` 的 filename fixup 里
+     增加 NGR 特定路径映射；或直接 swizzle `QtsFileSystem::Create`
+     vtable 入口返回 success。具体由静态 + LLDB 证据决定。
+  4. `HOK-016-D`：live 验证判据（全部满足才视为闭合，替换本文
+     当前的"主线任务"状态）：
+     - `hok014_ngr_alert_suppressed` 事件 **次数 = 0**；
+     - `hok015_ngr_cmdline_preseed status=primed` 事件仍然存在；
+     - 进程 `%CPU ≥ 5%` 持续 ≥ 30s、RSS ≥ 800MB、线程数 ≥ 20；
+     - 主窗口 bounds 与主屏 frame 有非空交集、`kCGWindowMemoryUsage
+       > 1_000_000`；
      - 无新 `NGR-*.ips`。
-  4. 只有 HOK-015 全部通过，才把 HOK-014 正式降级为安全网（保留代码、
-     保留事件入口，但日常观测期望"一次都不触发"）。
-  5. （可选后续）`HOK-008`：HOK-015 闭合后再把完整验证链路固化成单
-     脚本。
+  5. 只有 HOK-016 闭合，才把 HOK-014 正式降级为冷备安全网。
+  6. （可选后续）`HOK-008`：闭合 HOK-016 后，把完整验证链路固化成
+     单脚本。
 
 ## 构建与验证
 

@@ -557,6 +557,184 @@ static void pt_ngr_preheat_slot_once(void) {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// HOK-015: Preseed `com.tencent.ngr` 的 UE4 `FCommandLine` 存储，消除
+// `Attempting to get the command line but it hasn't been initialized yet.`
+// fatal 的根因。
+//
+// 背景（见 LocalDocs/HOKCrash/00-Dashboard.md / HOK-015 子文档）：
+//   - HOK-013 / HOK-014 之后，app 不再秒崩，但 UE4 GameThread 没有真正跑起
+//     来：NGR 二进制里有约 218 条 inline `FCommandLine::Get()`
+//     （UE4.25+ arm64 代码序列为
+//         adrp xB, <page(bInitialized)>
+//         ldrb wB, [xB, #0x78]
+//         tbz  wB, #0, <fatal_branch>
+//         adrp xC, <page(CmdLine)>
+//         add  xC, xC, #0x7a
+//     ），其中 182/218 条指向主 UE4 `FCommandLine` 的 bInitialized 槽
+//     `0x10e201078` 与 CmdLine buffer `0x10e20107a`。UE4 `ue4commandline.txt`
+//     被读入之前，这些 inline 序列里只要任意一条被命中就会打 3 条 Fatal、
+//     构造 UIAlertController、set `GIsRequestingExit=true`，GameThread
+//     随后退出。
+//   - HOK-015-A 离线报告 `build/hok-015-cmdline-slots.json` 已经给出
+//     bInitialized / CmdLine 的 unslid vmaddr 与 marker 字符串
+//     `0x10c12d70a`；HOK-015-B 就是把 PlayTools constructor 的"预写槽位"
+//     套路（HOK-013 已落地的 `pt_ngr_find_main_image` / slide 计算 / bundle
+//     gate）复用到 FCommandLine 存储上。
+//
+// 修复思路：
+//   1. dispatch_once + bundle gate，只对 `com.tencent.ngr` 执行一次。
+//   2. 通过 `pt_ngr_find_main_image()` 复用 HOK-013 的 slide 计算；若
+//      unslid __TEXT vmaddr 与 HOK-015-A 锁定值不一致，直接放弃（不 touch
+//      任何内存），让 HOK-013 / HOK-014 兜底。
+//   3. 先把种子字符串 `"../../../NGR/NGR.uproject\0"` 按 UTF-16-LE（UE4
+//      iOS `TCHAR=uint16_t`）写入 CmdLine buffer；再 `__sync_synchronize()`
+//      发 release fence；最后置 `bInitialized=1`。顺序保证：任何读者在
+//      观察到 `bInitialized=true` 时 buffer 一定是有效的。
+//   4. 写入前先读 `bInitialized` 当前值：若已非 0，写 `already-initialized`
+//      事件直接 return（UE4 本尊已 init，不要覆盖）。
+//
+// 写入后，218 条 inline `FCommandLine::Get()` 中主线 182 条在 ldrb 读到
+// 1、tbz 不 taken → 直接走 normal path 返回 CmdLine；UE4 `FError` 完全不
+// 触发；`UIAlertController` 不构造；`GIsRequestingExit` 保持 false；
+// GameThread 正常进入主 tick loop。
+//
+// 约束：
+//   - **仅对 `com.tencent.ngr` 生效**（复用 `pt_ngr_should_preheat_slot()`
+//     的 bundle gate）。
+//   - 只 touch 一次：`dispatch_once`。
+//   - 失败时 no-op：任何一步不成功就静默放行（HOK-014 作为安全网继续守
+//     UI）。
+//   - 诊断事件 `hok015_ngr_cmdline_preseed` 落到 `launch-events.jsonl`，
+//     字段含 `status` / `bInitializedAddr` / `cmdlineBufferAddr` /
+//     `bInitializedBefore` / `bInitializedAfter` / `cmdlinePreview` /
+//     `slide`。
+// ---------------------------------------------------------------------------
+
+// HOK-015-A 输出的 unslid vmaddr（基准 __TEXT.vmaddr = 0x100000000）。
+//   - NGR_UE4_CMDLINE_BINITIALIZED_UNSLID: 0x10e201078，1-byte bool。
+//   - NGR_UE4_CMDLINE_BUFFER_UNSLID:       0x10e20107a，UTF-16-LE TCHAR 数组起点。
+#define NGR_UE4_CMDLINE_BINITIALIZED_UNSLID 0x10e201078ULL
+#define NGR_UE4_CMDLINE_BUFFER_UNSLID       0x10e20107aULL
+// 种子值：与 NGR iOS 打包时的 `ue4commandline.txt` 内容一致。这个字符串
+// 仅作为"合法占位"，UE4 随后在 `Checking for command line in ... FOUND!`
+// 路径里会重新调用 FCommandLine::Set 覆盖 buffer、但此时 bInitialized
+// 已为真，不再经过 fatal 分支。
+#define NGR_UE4_CMDLINE_SEED_UTF8           "../../../NGR/NGR.uproject"
+
+// 把 UTF-8 字符串按 UTF-16-LE 写入 dst（含 trailing NUL）。仅处理 ASCII
+// 子集——种子字符串是纯 ASCII，不需要完整 UTF-8→UTF-16 转换。
+// 返回写入的 TCHAR 数（含 NUL）。
+static size_t pt_ngr_write_tchar_ascii(uint8_t *dst, const char *src) {
+    size_t n = 0;
+    while (src[n] != '\0') {
+        dst[n * 2]     = (uint8_t)src[n];
+        dst[n * 2 + 1] = 0x00;
+        n++;
+    }
+    // trailing NUL (2 bytes for TCHAR)
+    dst[n * 2]     = 0x00;
+    dst[n * 2 + 1] = 0x00;
+    return n + 1;
+}
+
+static void pt_ngr_log_cmdline_preseed_event(const char *status,
+                                             uint64_t bInitializedAddr,
+                                             uint64_t cmdlineBufferAddr,
+                                             uint32_t bInitializedBefore,
+                                             uint32_t bInitializedAfter,
+                                             uint64_t slide,
+                                             const char *cmdlinePreview) {
+    NSLog(@"[PlayTools] HOK-015 cmdline-preseed: status=%s "
+          @"bInitializedAddr=0x%llx cmdlineBufferAddr=0x%llx "
+          @"before=%u after=%u slide=0x%llx preview=\"%s\"",
+          status ?: "", bInitializedAddr, cmdlineBufferAddr,
+          bInitializedBefore, bInitializedAfter, slide,
+          cmdlinePreview ?: "");
+    NSDictionary<NSString *, NSString *> *details = @{
+        @"status": status ? [NSString stringWithUTF8String:status] : @"",
+        @"bInitializedAddr": [NSString stringWithFormat:@"0x%llx", bInitializedAddr],
+        @"cmdlineBufferAddr": [NSString stringWithFormat:@"0x%llx", cmdlineBufferAddr],
+        @"bInitializedBefore": [NSString stringWithFormat:@"%u", bInitializedBefore],
+        @"bInitializedAfter": [NSString stringWithFormat:@"%u", bInitializedAfter],
+        @"slide": [NSString stringWithFormat:@"0x%llx", slide],
+        @"cmdlinePreview": cmdlinePreview ? [NSString stringWithUTF8String:cmdlinePreview] : @"",
+    };
+    [PlayCover recordHOK015CmdlinePreseedWithDetails:details];
+}
+
+static void pt_ngr_preseed_cmdline_once(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // 复用 HOK-013 的 bundle gate——非 `com.tencent.ngr` 直接跳过。
+        if (!pt_ngr_should_preheat_slot()) {
+            return;
+        }
+
+        const struct mach_header_64 *mh = NULL;
+        uint64_t unslidTextVMAddr = 0;
+        if (!pt_ngr_find_main_image(&mh, &unslidTextVMAddr)) {
+            pt_ngr_log_cmdline_preseed_event("main-image-not-found",
+                                             NGR_UE4_CMDLINE_BINITIALIZED_UNSLID,
+                                             NGR_UE4_CMDLINE_BUFFER_UNSLID,
+                                             0, 0, 0, "");
+            return;
+        }
+
+        uint64_t slide = (uint64_t)(uintptr_t)mh - unslidTextVMAddr;
+        if (unslidTextVMAddr != NGRSLOT_PREHEAT_TEXT_VMADDR) {
+            // NGR 重链接后 __TEXT.vmaddr 可能变化；HOK-015-A 定位结果不再
+            // 可靠，直接放弃预写。
+            pt_ngr_log_cmdline_preseed_event("unexpected-text-vmaddr",
+                                             NGR_UE4_CMDLINE_BINITIALIZED_UNSLID,
+                                             NGR_UE4_CMDLINE_BUFFER_UNSLID,
+                                             0, 0, slide, "");
+            return;
+        }
+
+        uintptr_t bInitRuntimeAddr = (uintptr_t)(NGR_UE4_CMDLINE_BINITIALIZED_UNSLID + slide);
+        uintptr_t cmdlineRuntimeAddr = (uintptr_t)(NGR_UE4_CMDLINE_BUFFER_UNSLID + slide);
+
+        uint8_t bInitBefore = 0;
+        memcpy(&bInitBefore, (void *)bInitRuntimeAddr, 1);
+        if (bInitBefore != 0) {
+            // UE4 本尊已经初始化（理论上 PlayTools constructor 时不应发生）；
+            // 不要覆盖。
+            pt_ngr_log_cmdline_preseed_event("already-initialized",
+                                             (uint64_t)bInitRuntimeAddr,
+                                             (uint64_t)cmdlineRuntimeAddr,
+                                             bInitBefore, bInitBefore,
+                                             slide, "");
+            return;
+        }
+
+        // 1. 先写 CmdLine buffer（UTF-16-LE）。种子字符串是纯 ASCII + NUL，
+        //    长度 = (25 chars + NUL) * 2 bytes = 52 bytes，远小于 UE4
+        //    MaxCommandLineSize*sizeof(TCHAR) = 16384*2 = 32768 bytes。
+        const char *seedUtf8 = NGR_UE4_CMDLINE_SEED_UTF8;
+        pt_ngr_write_tchar_ascii((uint8_t *)cmdlineRuntimeAddr, seedUtf8);
+
+        // 2. release fence：保证任何读者在看到 bInitialized=1 时 buffer 已
+        //    稳定可见。clang 对 AArch64 下 __sync_synchronize() 会发 `dmb ish`。
+        __sync_synchronize();
+
+        // 3. 置 bInitialized = 1。
+        uint8_t one = 1;
+        memcpy((void *)bInitRuntimeAddr, &one, 1);
+
+        uint8_t bInitAfter = 0;
+        memcpy(&bInitAfter, (void *)bInitRuntimeAddr, 1);
+
+        const char *status = (bInitAfter == 1) ? "primed" : "write-verify-failed";
+        pt_ngr_log_cmdline_preseed_event(status,
+                                         (uint64_t)bInitRuntimeAddr,
+                                         (uint64_t)cmdlineRuntimeAddr,
+                                         bInitBefore, bInitAfter,
+                                         slide, seedUtf8);
+    });
+}
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // HOK-014: 压制 `com.tencent.ngr` 启动期的 UIAlertController sheet modal。
 //
 // 背景：HOK-013 让 `0x10e2146f8` reader 安全跑过后，app 能进入主循环，但
@@ -689,9 +867,16 @@ static void __attribute__((constructor)) initialize(void) {
     // gate，非目标 bundle 会直接 return，不影响其它 app。
     pt_ngr_preheat_slot_once();
 
+    // HOK-015: 在 NGR 的任何 inline `FCommandLine::Get()` 被命中之前预写
+    // UE4 cmdline 存储（bInitialized=1 + CmdLine buffer = seed string）。
+    // bundle-scoped、幂等。消除 "Attempting to get the command line..." fatal
+    // 的根因，HOK-014 swizzle 观察期望从此为"零触发"。
+    pt_ngr_preseed_cmdline_once();
+
     // HOK-014: 为 `com.tencent.ngr` 压制启动期的 UIAlertController sheet
     // modal（UE4 fatal 触发的 "Attempting to get the command line..."
-    // alert）。bundle-scoped、幂等。
+    // alert）。HOK-015 落地后该 swizzle 在日常启动应**一次都不触发**，
+    // 保留作为安全网。bundle-scoped、幂等。
     pt_ngr_install_alert_suppressor_once();
 
     [PlayCover launch];

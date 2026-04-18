@@ -202,6 +202,24 @@ public class PlayCover: NSObject {
         )
     }
 
+    /// HOK-015: 供 PlayLoader.m 的 `pt_ngr_preseed_cmdline_once()` 回调
+    /// 使用，把 UE4 FCommandLine 预写事件落盘到 `launch-events.jsonl`。
+    ///
+    /// 只在 `com.tencent.ngr` 进程内被调用（gate 在 C 侧）。事件字段：
+    /// `status` (`primed` / `already-initialized` / `unexpected-text-vmaddr`
+    /// / `main-image-not-found` / `write-verify-failed`)、
+    /// `bInitializedAddr` / `cmdlineBufferAddr`（runtime 地址）、
+    /// `bInitializedBefore` / `bInitializedAfter` / `slide` / `cmdlinePreview`。
+    @objc static public func recordHOK015CmdlinePreseed(details: [String: String]) {
+        let runtimeBundleId = Bundle.main.bundleIdentifier
+            ?? "playtools.runtime.\(ProcessInfo.processInfo.processIdentifier)"
+        RuntimeLaunchDiagnostics.record(
+            event: "hok015_ngr_cmdline_preseed",
+            bundleId: runtimeBundleId,
+            details: details
+        )
+    }
+
     static public func quitWhenClose() {
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name(rawValue: "NSWindowWillCloseNotification"),

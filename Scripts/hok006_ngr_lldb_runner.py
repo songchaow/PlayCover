@@ -280,6 +280,10 @@ def summarize_lldb_evidence(evidence: dict[str, Any] | None) -> dict[str, Any]:
             "watchpointHits": [],
             "watchpointHitCount": 0,
             "dyldInitializersLogPath": None,
+            "blockingDialogWindows": [],
+            "blockingDialogCount": 0,
+            "residualProcessesKilled": [],
+            "residualProcessesKilledCount": 0,
         }
 
     backtrace = evidence.get("backtrace") if isinstance(evidence.get("backtrace"), list) else []
@@ -306,6 +310,29 @@ def summarize_lldb_evidence(evidence: dict[str, Any] | None) -> dict[str, Any]:
             }
         )
 
+    # HOK-012-C.3-b.0: dialog detection + residual-kill from MCP evidence.
+    raw_dialogs = evidence.get("blockingDialogWindows") if isinstance(evidence.get("blockingDialogWindows"), list) else []
+    normalized_dialogs: list[dict[str, Any]] = []
+    for dialog in raw_dialogs:
+        if not isinstance(dialog, dict):
+            continue
+        normalized_dialogs.append(
+            {
+                "ownerPID": dialog.get("ownerPID"),
+                "ownerName": dialog.get("ownerName"),
+                "windowName": dialog.get("windowName"),
+                "windowLayer": dialog.get("windowLayer"),
+                "alpha": dialog.get("alpha"),
+                "isOnscreen": dialog.get("isOnscreen"),
+                "boundsX": dialog.get("boundsX"),
+                "boundsY": dialog.get("boundsY"),
+                "boundsWidth": dialog.get("boundsWidth"),
+                "boundsHeight": dialog.get("boundsHeight"),
+            }
+        )
+    raw_killed = evidence.get("residualProcessesKilled") if isinstance(evidence.get("residualProcessesKilled"), list) else []
+    normalized_killed = [int(pid) for pid in raw_killed if isinstance(pid, (int, float))]
+
     return {
         "present": True,
         "timedOut": bool(evidence.get("timedOut")),
@@ -323,6 +350,10 @@ def summarize_lldb_evidence(evidence: dict[str, Any] | None) -> dict[str, Any]:
         "watchpointHits": normalized_hits,
         "watchpointHitCount": len(normalized_hits),
         "dyldInitializersLogPath": evidence.get("dyldInitializersLogPath"),
+        "blockingDialogWindows": normalized_dialogs,
+        "blockingDialogCount": len(normalized_dialogs),
+        "residualProcessesKilled": normalized_killed,
+        "residualProcessesKilledCount": len(normalized_killed),
     }
 
 
@@ -339,6 +370,13 @@ def evaluate_lldb_capture(summary: dict[str, Any]) -> dict[str, Any]:
         and bool(summary.get("faultingFrame"))
         and bool(summary.get("faultingInstruction"))
         and int(summary.get("backtraceDepth") or 0) > 0,
+        # HOK-012-C.3-b.0: a non-empty `blockingDialogWindows` means the
+        # inferior was frozen behind an NSAlert during evidence
+        # collection — every slot/bp/watchpoint reading in this run is
+        # contaminated. Callers must treat this as a hard-fail, not a
+        # warning.
+        "blockingDialogDetected": int(summary.get("blockingDialogCount") or 0) > 0,
+        "residualProcessesKilled": int(summary.get("residualProcessesKilledCount") or 0) > 0,
     }
 
 
@@ -349,6 +387,10 @@ def determine_overall_pass(checks: dict[str, Any]) -> bool:
         and checks.get("forbiddenCompatEventsAbsent")
         and checks.get("lldbEvidencePresent")
         and checks.get("lldbAutomationReady")
+        # HOK-012-C.3-b.0: contamination gate — any modal dialog
+        # blocking the inferior forces overallPass to False regardless
+        # of the other checks, because the evidence cannot be trusted.
+        and not checks.get("lldbBlockingDialogDetected")
     )
 
 
@@ -783,6 +825,11 @@ def main() -> int:
             "lldbFaultingInstructionCaptured": lldb_capture["faultingInstructionCaptured"],
             "lldbBacktraceCaptured": lldb_capture["backtraceCaptured"],
             "lldbAutomationReady": lldb_capture["automationReady"],
+            # HOK-012-C.3-b.0: dialog-detection & residual-kill surface
+            # into the top-level checks dict so CI / agent downstream
+            # can read them without re-opening `launch.lldb`.
+            "lldbBlockingDialogDetected": lldb_capture["blockingDialogDetected"],
+            "lldbResidualProcessesKilled": lldb_capture["residualProcessesKilled"],
             "newCrashReportsDetected": bool(new_crash_reports),
         }
         report["checks"]["overallPass"] = determine_overall_pass(report["checks"])
@@ -895,6 +942,8 @@ def main() -> int:
             f"teardownTimeout={teardown_timeout:.1f}s "
             f"watchpointHits={watchpoint_artifact['hitCount']} "
             f"dyldLogBytes={dyld_log_artifact['byteCount']} "
+            f"blockingDialogs={lldb_summary.get('blockingDialogCount', 0)} "
+            f"residualPIDsKilled={lldb_summary.get('residualProcessesKilledCount', 0)} "
             f"requiredCompatEventsPresent={report['checks']['requiredCompatEventsPresent']} "
             f"forbiddenCompatEventsAbsent={report['checks']['forbiddenCompatEventsAbsent']} "
             f"overallPass={report['checks']['overallPass']}"

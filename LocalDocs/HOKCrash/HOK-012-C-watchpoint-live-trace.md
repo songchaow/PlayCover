@@ -95,6 +95,22 @@ python3 Scripts/hok006_ngr_lldb_runner.py \
   --skip-build-install
 ```
 
+## 对话框污染 gate（所有 live run 的强制前置条件）
+
+`com.tencent.ngr` 启动后会**自主弹出一个 modal 对话框**（结构是普通 `NSWindow` + 自管 modal event loop，`windowLayer=0`，不是 `NSAlert`），弹出之后 UI 线程陷入 app 自己的 modal loop，其他线程继续跑但永不前进——典型表现是 `SceneExtension hook_frame` 被稳态循环打印，transcript 完全空转 60s 都不出现 `stop reason = `，一切看起来"健康"其实是冻结。**在这种冻结状态下从 LLDB 取到的任何 `memory read` / `breakpoint list` / `watchpoint list` 都是快照而不是 live 行为**，不能用来证实或反驳 HOK-011 的静态结论。因此 HOK-012 的每一轮 watchpoint live run，退出前必须强制走一次对话框检测 + 残留进程强杀，并把"检测到对话框"当成本轮证据全部作废的 hard-fail。
+
+实现层面（`LaunchService.runLLDBHeadless` 收尾阶段）：
+
+1. 解析 transcript 得到 child 直接 inferior PID（`parseProcessIdentifier` 现成）；
+2. `/bin/ps -axo pid=,ppid=` 遍历全系统进程，从 root PID 做闭包得到**子进程孙进程**全集（NGR 会派生 helper XPC 服务，光看直接 child 不够）；
+3. `CGWindowListCopyWindowInfo(.optionOnScreenOnly | .excludeDesktopElements, kCGNullWindowID)` 枚举所有 on-screen 窗口，按 `kCGWindowOwnerPID ∈ descendants` + `alpha ≥ 0.05` 过滤，得到 `BlockingDialogInfo` 列表（含 `ownerName` / `windowName` / `windowLayer` / `bounds`）；
+4. 对 descendants 里每一个仍 alive 的 PID 调 `kill(pid, SIGKILL)`，记录实际被 signal 的 PID 到 `residualProcessesKilled`；
+5. `LLDBLaunchEvidence` 新增两个字段暴露结果；`launch_app_with_lldb` JSON response 透出；Python runner 侧 `determine_overall_pass` 在 `blockingDialogDetected=True` 时强制 `overallPass=False`、exit 非零；summary 行含 `blockingDialogs=…` / `residualPIDsKilled=…` 供目视识别。
+
+**不要**把"检测到的窗口一定是对话框"当成前提。实测 b.0 的端到端验证里一轮 capture 同时看到 2 个 NGR 窗口：一个 260×204 小窗（极可能是对话框）和一个 1478×859 主窗。两者都不应该在 LLDB capture 窗口结束时还处于"被 LLDB 看着仍 running"状态——任何 NGR 窗口残留在屏幕上，本身就意味着 LLDB 没把 app 停在期望的 stop 点上，本轮证据都不可信。因此当前判据"属于 NGR PID + onscreen + alpha≥0.05"就是最保守正确的，不要继续细分 modal vs 普通窗口。
+
+检测到对话框后的正确动作**不是**重跑 live run（重跑还是会污染），而是往前走 b.3 的"对话框弹出前拦截 bp"设计：在 `preRunCommands` 里补 `-[NSApplication runModalForWindow:]` / `-[NSWindow orderFront:]` / `CGSOrderWindow` 等候选 symbol 的 bp，让 LLDB 在对话框动手 order window front 之前就把 app 停下来，由 b.1 的 abort-stop handler 一次性取 slot / bp / watchpoint 证据；捕获到后如果 `lldbBlockingDialogDetected=False`，才是一轮合法 live 证据。
+
 ## SIGABRT 拦截下 abort-stop 的自动证据采集
 
 `runLLDBHeadless` 在 watchpoint 模式下对每一次新出现的 `stop reason =` 行都做一次分流：

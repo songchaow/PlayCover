@@ -247,6 +247,34 @@ public enum LaunchTools {
             if let logPath = evidence.dyldInitializersLogPath {
                 lldbData["dyldInitializersLogPath"] = logPath
             }
+            // HOK-012-C.3-b.0: surface dialog detection + forced-kill
+            // outcome so scripts (Scripts/hok006_ngr_lldb_runner.py)
+            // can downgrade overallPass when a modal alert was
+            // blocking the inferior during evidence collection.
+            if !evidence.blockingDialogWindows.isEmpty {
+                lldbData["blockingDialogWindows"] = evidence.blockingDialogWindows.map { dialog -> [String: Any] in
+                    var entry: [String: Any] = [
+                        "ownerPID": dialog.ownerPID,
+                        "windowLayer": dialog.windowLayer,
+                        "alpha": dialog.alpha,
+                        "isOnscreen": dialog.isOnscreen,
+                        "boundsX": dialog.boundsX,
+                        "boundsY": dialog.boundsY,
+                        "boundsWidth": dialog.boundsWidth,
+                        "boundsHeight": dialog.boundsHeight,
+                    ]
+                    if let ownerName = dialog.ownerName {
+                        entry["ownerName"] = ownerName
+                    }
+                    if let windowName = dialog.windowName {
+                        entry["windowName"] = windowName
+                    }
+                    return entry
+                }
+            }
+            if !evidence.residualProcessesKilled.isEmpty {
+                lldbData["residualProcessesKilled"] = evidence.residualProcessesKilled
+            }
             data["lldb"] = lldbData
         }
         guard let jsonData = try? JSONSerialization.data(

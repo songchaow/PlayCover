@@ -521,6 +521,94 @@ final class LaunchServiceTests: XCTestCase {
         )
     }
 
+    /// HOK-012-C.3-b.0: `LLDBLaunchEvidence` must expose the new dialog
+    /// detection and residual-kill fields; the default values must stay
+    /// empty so pre-HOK-012-C.3-b.0 JSON consumers continue to decode.
+    func testLLDBLaunchEvidenceCarriesDialogAndResidualKillFields() {
+        let dialog = BlockingDialogInfo(
+            ownerPID: 12345,
+            ownerName: "NGR",
+            windowName: "",
+            windowLayer: 8,
+            alpha: 1.0,
+            isOnscreen: true,
+            boundsX: 100,
+            boundsY: 200,
+            boundsWidth: 400,
+            boundsHeight: 150
+        )
+        let evidence = LLDBLaunchEvidence(
+            processIdentifier: 12345,
+            timedOut: true,
+            didStop: false,
+            terminationStatus: 0,
+            stopReason: nil,
+            signal: nil,
+            faultAddress: nil,
+            faultingThread: nil,
+            faultingFrame: nil,
+            faultingInstruction: nil,
+            backtrace: [],
+            transcript: "",
+            transcriptTail: "",
+            blockingDialogWindows: [dialog],
+            residualProcessesKilled: [12345, 12346]
+        )
+        XCTAssertEqual(evidence.blockingDialogWindows.count, 1)
+        XCTAssertEqual(evidence.blockingDialogWindows.first, dialog)
+        XCTAssertEqual(evidence.residualProcessesKilled, [12345, 12346])
+
+        // Backwards compatibility: default-initialized evidence has
+        // both arrays empty, so legacy consumers don't have to
+        // decide "0-dialog vs missing-field".
+        let legacy = LLDBLaunchEvidence(
+            processIdentifier: 0,
+            timedOut: false,
+            didStop: false,
+            terminationStatus: 0,
+            stopReason: nil,
+            signal: nil,
+            faultAddress: nil,
+            faultingThread: nil,
+            faultingFrame: nil,
+            faultingInstruction: nil,
+            backtrace: [],
+            transcript: "",
+            transcriptTail: ""
+        )
+        XCTAssertTrue(legacy.blockingDialogWindows.isEmpty)
+        XCTAssertTrue(legacy.residualProcessesKilled.isEmpty)
+    }
+
+    /// HOK-012-C.3-b.0: `parseLLDBEvidence` must thread the dialog and
+    /// residual-kill inputs into the evidence unchanged, so the runner
+    /// can snapshot them from CoreGraphics and `kill(2)` right before
+    /// building the struct without any extra marshalling step.
+    func testParseLLDBEvidenceForwardsDialogAndResidualKillInputs() {
+        let dialog = BlockingDialogInfo(
+            ownerPID: 99,
+            ownerName: "NGR",
+            windowName: nil,
+            windowLayer: 8,
+            alpha: 1.0,
+            isOnscreen: true,
+            boundsX: 0,
+            boundsY: 0,
+            boundsWidth: 400,
+            boundsHeight: 150
+        )
+        let evidence = LaunchService.parseLLDBEvidence(
+            transcript: "Process 99 launched: 'x' (arm64)\n",
+            timedOut: true,
+            terminationStatus: 0,
+            blockingDialogWindows: [dialog],
+            residualProcessesKilled: [99]
+        )
+        XCTAssertEqual(evidence.processIdentifier, 99)
+        XCTAssertEqual(evidence.blockingDialogWindows, [dialog])
+        XCTAssertEqual(evidence.residualProcessesKilled, [99])
+    }
+
     /// HOK-012-B: watchpoint mode should only engage when a non-empty
     /// `watchAddress` is set; empty / whitespace-only strings fall back to
     /// the legacy flow so accidental empty CLI arguments don't hang the

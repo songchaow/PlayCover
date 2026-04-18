@@ -83,6 +83,25 @@ public struct LLDBLaunchEvidence: Codable, Equatable, Sendable {
     /// stderr was redirected (when `dyldInitializersLogPath` was supplied);
     /// `nil` when stderr redirection was not used.
     public let dyldInitializersLogPath: String?
+    /// HOK-012-C.3-b.0: blocking modal windows owned by the inferior
+    /// process (or any surviving descendants thereof) at the end of the
+    /// capture window. `com.tencent.ngr` is known to pop a non-fatal
+    /// `QtsFileSystem Create Failed!!` modal `NSAlert` that keeps the
+    /// UI thread spinning on `-[NSApplication runModalForWindow:]`
+    /// — the watchpoint-mode transcript then looks "healthy" even
+    /// though every slot / bp / watchpoint reading is taken while the
+    /// app is frozen behind that alert. A non-empty array here means
+    /// this run's evidence is contaminated and `overallPass` must be
+    /// downgraded accordingly. Empty array = no modal alert detected
+    /// (or the inferior already exited before the snapshot).
+    public let blockingDialogWindows: [BlockingDialogInfo]
+    /// HOK-012-C.3-b.0: PIDs that were still alive at the end of the
+    /// capture window and were force-killed (`SIGKILL`) by the runner
+    /// to prevent the next run from inheriting a stuck child holding a
+    /// modal `NSAlert`. The first entry, when present, is the direct
+    /// `process launch` child; additional entries are descendants that
+    /// lldb was not tracking (e.g. helpers spawned by the inferior).
+    public let residualProcessesKilled: [Int32]
 
     public init(
         processIdentifier: Int32?,
@@ -99,7 +118,9 @@ public struct LLDBLaunchEvidence: Codable, Equatable, Sendable {
         transcript: String,
         transcriptTail: String,
         watchpointHits: [WatchpointHit] = [],
-        dyldInitializersLogPath: String? = nil
+        dyldInitializersLogPath: String? = nil,
+        blockingDialogWindows: [BlockingDialogInfo] = [],
+        residualProcessesKilled: [Int32] = []
     ) {
         self.processIdentifier = processIdentifier
         self.timedOut = timedOut
@@ -116,6 +137,64 @@ public struct LLDBLaunchEvidence: Codable, Equatable, Sendable {
         self.transcriptTail = transcriptTail
         self.watchpointHits = watchpointHits
         self.dyldInitializersLogPath = dyldInitializersLogPath
+        self.blockingDialogWindows = blockingDialogWindows
+        self.residualProcessesKilled = residualProcessesKilled
+    }
+}
+
+/// HOK-012-C.3-b.0: structured description of a single blocking modal
+/// window observed via `CGWindowListCopyWindowInfo`. All fields are
+/// Codable/Equatable/Sendable so the evidence can round-trip through
+/// MCP JSON without any extra glue.
+public struct BlockingDialogInfo: Codable, Equatable, Sendable {
+    /// PID of the process that owns the window. Matches the inferior
+    /// (or one of its descendants) when the dialog is blocking it.
+    public let ownerPID: Int32
+    /// Process name as reported by CoreGraphics (`kCGWindowOwnerName`).
+    public let ownerName: String?
+    /// Window title (may be empty for `NSAlert`; some apps do not set
+    /// it). `kCGWindowName` — requires screen-recording permission on
+    /// macOS 10.15+ for full content, but empty/nil is still a useful
+    /// signal when combined with `ownerPID`.
+    public let windowName: String?
+    /// `kCGWindowLayer`. Modal `NSAlert` typically runs at
+    /// `NSModalPanelWindowLevel` (8) or higher; normal app windows
+    /// run at 0. This is the single most reliable modal discriminator.
+    public let windowLayer: Int
+    /// `kCGWindowAlpha`. Fully transparent windows (alpha ≈ 0) are
+    /// typically layout helpers and should not count as "blocking".
+    public let alpha: Double
+    /// `kCGWindowIsOnscreen`. True when the window is actually
+    /// visible on-screen (as opposed to off-screen caches).
+    public let isOnscreen: Bool
+    /// Bounding box in screen coordinates.
+    public let boundsX: Double
+    public let boundsY: Double
+    public let boundsWidth: Double
+    public let boundsHeight: Double
+
+    public init(
+        ownerPID: Int32,
+        ownerName: String?,
+        windowName: String?,
+        windowLayer: Int,
+        alpha: Double,
+        isOnscreen: Bool,
+        boundsX: Double,
+        boundsY: Double,
+        boundsWidth: Double,
+        boundsHeight: Double
+    ) {
+        self.ownerPID = ownerPID
+        self.ownerName = ownerName
+        self.windowName = windowName
+        self.windowLayer = windowLayer
+        self.alpha = alpha
+        self.isOnscreen = isOnscreen
+        self.boundsX = boundsX
+        self.boundsY = boundsY
+        self.boundsWidth = boundsWidth
+        self.boundsHeight = boundsHeight
     }
 }
 
@@ -604,7 +683,9 @@ public final class LaunchService: Sendable {
         timedOut: Bool,
         terminationStatus: Int32,
         watchpointHits: [WatchpointHit] = [],
-        dyldInitializersLogPath: String? = nil
+        dyldInitializersLogPath: String? = nil,
+        blockingDialogWindows: [BlockingDialogInfo] = [],
+        residualProcessesKilled: [Int32] = []
     ) -> LLDBLaunchEvidence {
         let lines = transcript.split(whereSeparator: \.isNewline).map(String.init)
         // HOK-012-B: in watchpoint mode the transcript contains many
@@ -658,7 +739,9 @@ public final class LaunchService: Sendable {
             transcript: transcript,
             transcriptTail: transcriptTail(transcript),
             watchpointHits: watchpointHits,
-            dyldInitializersLogPath: dyldInitializersLogPath
+            dyldInitializersLogPath: dyldInitializersLogPath,
+            blockingDialogWindows: blockingDialogWindows,
+            residualProcessesKilled: residualProcessesKilled
         )
     }
 
@@ -729,6 +812,140 @@ public final class LaunchService: Sendable {
         } catch {
             return
         }
+    }
+
+    /// HOK-012-C.3-b.0: enumerate windows owned by `rootPid` or any of
+    /// its still-alive descendants via `CGWindowListCopyWindowInfo`. No
+    /// special entitlement or TCC permission is required for the filter
+    /// fields we use (`kCGWindowOwnerPID`, `kCGWindowLayer`,
+    /// `kCGWindowIsOnscreen`, `kCGWindowAlpha`); on macOS 10.15+ the
+    /// `kCGWindowName` field may be redacted for non-owned apps without
+    /// screen-recording permission, but PID + layer alone is enough to
+    /// tell "is a modal dialog blocking the inferior" apart from "no
+    /// dialog at all". Only windows that are (a) on-screen, (b) alpha
+    /// ≥ 0.05, and (c) layer ≥ 0 (filters out screen-saver / tooltip
+    /// off-screen caches) are returned.
+    private static func enumerateBlockingDialogs(ownedBy pids: Set<Int32>) -> [BlockingDialogInfo] {
+        guard !pids.isEmpty else { return [] }
+        let options = CGWindowListOption(arrayLiteral: .optionOnScreenOnly, .excludeDesktopElements)
+        guard let raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return []
+        }
+        var dialogs: [BlockingDialogInfo] = []
+        for entry in raw {
+            guard let ownerPIDAny = entry[kCGWindowOwnerPID as String] as? NSNumber else { continue }
+            let ownerPID = Int32(truncating: ownerPIDAny)
+            guard pids.contains(ownerPID) else { continue }
+            let layer = (entry[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
+            let alpha = (entry[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1.0
+            // Screen-saver / off-screen caches are filtered by
+            // `.optionOnScreenOnly` above; here we still drop fully
+            // transparent helper windows to avoid false positives.
+            guard alpha >= 0.05 else { continue }
+            let isOnscreen = (entry[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue ?? true
+            let ownerName = entry[kCGWindowOwnerName as String] as? String
+            let windowName = entry[kCGWindowName as String] as? String
+            var bx = 0.0, by = 0.0, bw = 0.0, bh = 0.0
+            if let boundsDict = entry[kCGWindowBounds as String] as? [String: CGFloat] {
+                bx = Double(boundsDict["X"] ?? 0)
+                by = Double(boundsDict["Y"] ?? 0)
+                bw = Double(boundsDict["Width"] ?? 0)
+                bh = Double(boundsDict["Height"] ?? 0)
+            } else if let dictRef = entry[kCGWindowBounds as String] {
+                // Sometimes CoreGraphics returns a CFDictionary that
+                // does not bridge cleanly; fall through with zeros.
+                _ = dictRef
+            }
+            dialogs.append(
+                BlockingDialogInfo(
+                    ownerPID: ownerPID,
+                    ownerName: ownerName,
+                    windowName: windowName,
+                    windowLayer: layer,
+                    alpha: alpha,
+                    isOnscreen: isOnscreen,
+                    boundsX: bx,
+                    boundsY: by,
+                    boundsWidth: bw,
+                    boundsHeight: bh
+                )
+            )
+        }
+        return dialogs
+    }
+
+    /// HOK-012-C.3-b.0: find the LLDB child's direct inferior PID (the
+    /// `NGR` process, not LLDB itself) plus any surviving descendants,
+    /// using `sysctl` via `Process` on `/bin/ps`. Returns a set suitable
+    /// for passing to `enumerateBlockingDialogs`.
+    ///
+    /// We intentionally do NOT parse LLDB's transcript for "Process N
+    /// launched" here — the caller already has that pid via
+    /// `parseProcessIdentifier`. Instead we walk `ps -axo pid,ppid` and
+    /// union the inferior's PID with every process whose parent chain
+    /// traces back to it; this also catches helpers (e.g. XPC services)
+    /// the inferior spawned.
+    private static func descendantPIDs(of rootPID: Int32) -> Set<Int32> {
+        guard rootPID > 0 else { return [] }
+        // `ps -axo pid=,ppid=` prints one `<pid> <ppid>` pair per line,
+        // no header. Stable across every macOS release.
+        let ps = Process()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["-axo", "pid=,ppid="]
+        let pipe = Pipe()
+        ps.standardOutput = pipe
+        ps.standardError = Pipe()
+        do {
+            try ps.run()
+        } catch {
+            return [rootPID]
+        }
+        ps.waitUntilExit()
+        let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
+        let text = String(data: data, encoding: .utf8) ?? ""
+        var parentOf: [Int32: Int32] = [:]
+        for line in text.split(whereSeparator: \.isNewline) {
+            let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+                .filter { !$0.isEmpty }
+            guard parts.count >= 2,
+                  let pid = Int32(parts[0]),
+                  let ppid = Int32(parts[1]) else {
+                continue
+            }
+            parentOf[pid] = ppid
+        }
+        var result: Set<Int32> = [rootPID]
+        var changed = true
+        while changed {
+            changed = false
+            for (pid, ppid) in parentOf where result.contains(ppid) && !result.contains(pid) {
+                result.insert(pid)
+                changed = true
+            }
+        }
+        return result
+    }
+
+    /// HOK-012-C.3-b.0: force-kill every PID in `pids` with `SIGKILL`.
+    /// Used at the end of a headless LLDB run to guarantee the next
+    /// run does not inherit a frozen child holding a modal `NSAlert`.
+    /// Returns the subset of PIDs that were actually alive (and thus
+    /// signaled) right before the kill; PIDs that were already gone
+    /// are skipped silently.
+    @discardableResult
+    private static func forceKillResidualPIDs(_ pids: [Int32]) -> [Int32] {
+        var killed: [Int32] = []
+        for pid in pids {
+            guard pid > 0 else { continue }
+            // `kill(pid, 0)` is the POSIX idiom for "is this pid still
+            // alive and signalable by us" — returns 0 when yes,
+            // -1/ESRCH when the process is gone.
+            if kill(pid, 0) == 0 {
+                _ = kill(pid, SIGKILL)
+                killed.append(pid)
+            }
+        }
+        return killed
     }
 
     /// Launch an executable under LLDB in headless mode and collect automation-grade evidence.
@@ -928,12 +1145,36 @@ public final class LaunchService: Sendable {
             let watchpointHits = watchpointMode
                 ? parseWatchpointHits(transcript: capturedTranscript)
                 : []
+
+            // HOK-012-C.3-b.0: before we declare the run finished,
+            // snapshot any still-visible modal window owned by the
+            // inferior (or its descendants), then force-kill the
+            // whole subtree. Without this, `com.tencent.ngr`'s
+            // non-fatal `NSAlert` keeps blocking the UI thread on
+            // `-[NSApplication runModalForWindow:]` while lldb
+            // thinks "the process is still running fine" — every
+            // `memory read` / `breakpoint list` / `watchpoint list`
+            // reading taken in that state is contaminated. The
+            // snapshot is taken FIRST so a non-empty result means
+            // "this run was contaminated"; the kill then happens
+            // unconditionally so the next run starts clean.
+            let inferiorPID = parseProcessIdentifier(from: capturedTranscript) ?? 0
+            let dialogPIDs = descendantPIDs(of: inferiorPID)
+            let blockingDialogs = inferiorPID > 0
+                ? enumerateBlockingDialogs(ownedBy: dialogPIDs)
+                : []
+            let killedPIDs = inferiorPID > 0
+                ? forceKillResidualPIDs(Array(dialogPIDs).sorted())
+                : []
+
             let evidence = parseLLDBEvidence(
                 transcript: capturedTranscript,
                 timedOut: timedOut,
                 terminationStatus: process.terminationStatus,
                 watchpointHits: watchpointHits,
-                dyldInitializersLogPath: options.dyldInitializersLogPath
+                dyldInitializersLogPath: options.dyldInitializersLogPath,
+                blockingDialogWindows: blockingDialogs,
+                residualProcessesKilled: killedPIDs
             )
             if process.terminationStatus != 0,
                evidence.processIdentifier == nil,

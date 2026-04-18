@@ -78,11 +78,28 @@ public enum LaunchTools {
                     "timeoutSeconds": AnyCodable([
                         "type": "number",
                         "description": "Headless LLDB timeout before interrupting and summarizing the session (default: 5.0 seconds). Ignored when withTerminalWindow=true"
+                    ] as Any),
+                    "watchAddress": AnyCodable([
+                        "type": "string",
+                        "description": "HOK-012-B: optional data watchpoint target address (hex string like `0x10e2146f8`). When supplied, the headless runner installs a watchpoint before `run` and keeps the process alive on each hit, collecting backtrace snapshots until the overall timeout elapses. Ignored when withTerminalWindow=true."
+                    ] as Any),
+                    "watchSize": AnyCodable([
+                        "type": "number",
+                        "description": "HOK-012-B: byte size of the watchpoint region (default: 8). Only used when watchAddress is set."
+                    ] as Any),
+                    "preRunCommands": AnyCodable([
+                        "type": "array",
+                        "description": "HOK-012-B: optional array of LLDB commands executed once the target is loaded but before the child process is launched (e.g. additional breakpoints). Each array entry becomes one LLDB command line.",
+                        "items": ["type": "string"]
+                    ] as Any),
+                    "dyldInitializersLogPath": AnyCodable([
+                        "type": "string",
+                        "description": "HOK-012-B: optional absolute path where the child process's stderr should be redirected via `process launch -e <path>`. Intended for capturing DYLD_PRINT_INITIALIZERS output so it can be correlated with watchpoint hits on the transcript. Parent directories are created automatically."
                     ] as Any)
                 ],
                 required: ["bundleId"]
             ),
-            description: "Launch a PlayCover-managed iOS application under LLDB for debugging. Can optionally open a Terminal window.",
+            description: "Launch a PlayCover-managed iOS application under LLDB for debugging. Can optionally open a Terminal window, and in headless mode can install a data watchpoint / redirect child stderr for HOK-012-B live-trace work.",
             title: "Launch App with LLDB"
         )
         server.toolRegistry.register(tool)
@@ -99,10 +116,39 @@ public enum LaunchTools {
 
             let withTerminalWindow = args["withTerminalWindow"] as? Bool ?? false
             let timeoutSeconds = args["timeoutSeconds"] as? Double ?? 5.0
+
+            // HOK-012-B: optional watchpoint / preRunCommands / stderr
+            // redirection. All fields default to `LLDBRunOptions.default`
+            // (legacy stop -> quit behaviour) so callers who do not ask
+            // for HOK-012-B features keep the old transcript shape.
+            let watchAddress = (args["watchAddress"] as? String)?
+                .trimmingCharacters(in: .whitespaces)
+            let watchSize: Int = {
+                if let intValue = args["watchSize"] as? Int {
+                    return intValue
+                }
+                if let doubleValue = args["watchSize"] as? Double {
+                    return Int(doubleValue)
+                }
+                return 8
+            }()
+            let preRunCommands: [String] = (args["preRunCommands"] as? [Any])?
+                .compactMap { $0 as? String } ?? []
+            let dyldInitializersLogPath = (args["dyldInitializersLogPath"] as? String)?
+                .trimmingCharacters(in: .whitespaces)
+
+            let options = LLDBRunOptions(
+                watchAddress: (watchAddress?.isEmpty ?? true) ? nil : watchAddress,
+                watchSize: watchSize,
+                preRunCommands: preRunCommands,
+                dyldInitializersLogPath: (dyldInitializersLogPath?.isEmpty ?? true) ? nil : dyldInitializersLogPath
+            )
+
             let result = try launchService.launchAppWithLLDB(
                 bundleId: bundleId,
                 withTerminalWindow: withTerminalWindow,
-                timeoutSeconds: timeoutSeconds
+                timeoutSeconds: timeoutSeconds,
+                options: options
             )
             return CallToolResult(content: [.text(content: formatLaunchResult(result))])
         }
@@ -146,6 +192,37 @@ public enum LaunchTools {
             }
             if let faultingInstruction = evidence.faultingInstruction {
                 lldbData["faultingInstruction"] = faultingInstruction
+            }
+            // HOK-012-B: surface watchpoint hits and stderr log path so MCP
+            // consumers (e.g. `Scripts/hok006_ngr_lldb_runner.py`) can
+            // structure watchpoint evidence without re-parsing the
+            // transcript.
+            if !evidence.watchpointHits.isEmpty {
+                lldbData["watchpointHits"] = evidence.watchpointHits.map { hit -> [String: Any] in
+                    var entry: [String: Any] = [
+                        "index": hit.index,
+                        "backtrace": hit.backtrace,
+                    ]
+                    if let stopReason = hit.stopReason {
+                        entry["stopReason"] = stopReason
+                    }
+                    if let thread = hit.thread {
+                        entry["thread"] = thread
+                    }
+                    if let frame = hit.frame {
+                        entry["frame"] = frame
+                    }
+                    if let oldValue = hit.oldValue {
+                        entry["oldValue"] = oldValue
+                    }
+                    if let newValue = hit.newValue {
+                        entry["newValue"] = newValue
+                    }
+                    return entry
+                }
+            }
+            if let logPath = evidence.dyldInitializersLogPath {
+                lldbData["dyldInitializersLogPath"] = logPath
             }
             data["lldb"] = lldbData
         }

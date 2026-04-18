@@ -55,6 +55,11 @@ from runtime_launch_diagnostics_summary import build_summary  # noqa: E402
 DEFAULT_WAIT_TIMEOUT = 20.0
 DEFAULT_LLDB_TIMEOUT = 5.0
 DEFAULT_OUTPUT = Path("build/hok-006-ngr-lldb-report.json")
+# HOK-012-B: watchpoint + dyld initializer log defaults.
+DEFAULT_WATCH_ADDRESS = "0x10e2146f8"
+DEFAULT_WATCH_SIZE = 8
+DEFAULT_WATCHPOINT_REPORT = Path("build/hok-012-ngr-watchpoint-report.json")
+DEFAULT_DYLD_LOG = Path("build/hok-012-ngr-dyld-initializers.log")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -125,6 +130,53 @@ def build_parser() -> argparse.ArgumentParser:
         default=str(DEFAULT_OUTPUT),
         help="structured JSON report output path under build/",
     )
+    # HOK-012-B: opt-in watchpoint mode.
+    parser.add_argument(
+        "--watch-address",
+        default=None,
+        help=(
+            "HOK-012-B: optional data watchpoint target (hex string like `0x10e2146f8`). "
+            "When provided the MCP `launch_app_with_lldb` call installs a watchpoint "
+            "before `run`, collects backtraces on every hit, and keeps the process "
+            "alive until the lldb-timeout elapses. "
+            f"Pass `--watch-address {DEFAULT_WATCH_ADDRESS}` to reproduce the HOK-012 "
+            "default target slot."
+        ),
+    )
+    parser.add_argument(
+        "--watch-size",
+        type=int,
+        default=DEFAULT_WATCH_SIZE,
+        help=f"HOK-012-B: watchpoint byte size (default: {DEFAULT_WATCH_SIZE}).",
+    )
+    parser.add_argument(
+        "--pre-run-command",
+        action="append",
+        default=[],
+        help=(
+            "HOK-012-B: extra LLDB command to execute once the target is loaded but "
+            "before the child process is launched; may be repeated. Typical use is "
+            "`--pre-run-command \"breakpoint set --name <sym>\"`."
+        ),
+    )
+    parser.add_argument(
+        "--dyld-log",
+        default=None,
+        help=(
+            "HOK-012-B: absolute path where the child process's stderr should be "
+            "redirected (captures `DYLD_PRINT_INITIALIZERS=1` output). "
+            f"Passing an empty value disables redirection. Default when watchpoint "
+            f"mode is active: {DEFAULT_DYLD_LOG}."
+        ),
+    )
+    parser.add_argument(
+        "--watchpoint-report",
+        default=str(DEFAULT_WATCHPOINT_REPORT),
+        help=(
+            "HOK-012-B: structured JSON report listing watchpoint hits, stop reasons "
+            "and backtrace snippets; written only when watchpoint mode is active."
+        ),
+    )
     return parser
 
 
@@ -152,12 +204,34 @@ def summarize_lldb_evidence(evidence: dict[str, Any] | None) -> dict[str, Any]:
             "backtraceDepth": 0,
             "backtraceHead": [],
             "transcriptTail": "",
+            "watchpointHits": [],
+            "watchpointHitCount": 0,
+            "dyldInitializersLogPath": None,
         }
 
     backtrace = evidence.get("backtrace") if isinstance(evidence.get("backtrace"), list) else []
     transcript_tail = str(evidence.get("transcriptTail") or "")
     if not transcript_tail:
         transcript_tail = clip_text(str(evidence.get("transcript") or ""), limit=4000)
+
+    raw_hits = evidence.get("watchpointHits") if isinstance(evidence.get("watchpointHits"), list) else []
+    normalized_hits: list[dict[str, Any]] = []
+    for hit in raw_hits:
+        if not isinstance(hit, dict):
+            continue
+        hit_backtrace = hit.get("backtrace") if isinstance(hit.get("backtrace"), list) else []
+        normalized_hits.append(
+            {
+                "index": hit.get("index"),
+                "stopReason": hit.get("stopReason"),
+                "thread": hit.get("thread"),
+                "frame": hit.get("frame"),
+                "oldValue": hit.get("oldValue"),
+                "newValue": hit.get("newValue"),
+                "backtrace": hit_backtrace,
+                "backtraceDepth": len(hit_backtrace),
+            }
+        )
 
     return {
         "present": True,
@@ -173,6 +247,9 @@ def summarize_lldb_evidence(evidence: dict[str, Any] | None) -> dict[str, Any]:
         "backtraceDepth": len(backtrace),
         "backtraceHead": backtrace[:8],
         "transcriptTail": transcript_tail,
+        "watchpointHits": normalized_hits,
+        "watchpointHitCount": len(normalized_hits),
+        "dyldInitializersLogPath": evidence.get("dyldInitializersLogPath"),
     }
 
 
@@ -216,6 +293,27 @@ def main() -> int:
     poll_interval = max(float(args.poll_interval), 0.1)
     create_session_timeout = max(float(args.create_session_timeout), 0.1)
 
+    # HOK-012-B: normalize watchpoint CLI inputs. An empty `--watch-address`
+    # string means "legacy mode"; a non-empty value switches the MCP call
+    # into watchpoint mode and implicitly enables the default dyld log path
+    # unless the caller overrode `--dyld-log` (which can also be an empty
+    # string to explicitly disable the redirection).
+    raw_watch_address = (args.watch_address or "").strip()
+    watchpoint_mode_requested = bool(raw_watch_address)
+    watch_size = max(int(args.watch_size), 1)
+    pre_run_commands = [cmd for cmd in (args.pre_run_command or []) if cmd.strip()]
+
+    if args.dyld_log is None:
+        # Default: enable redirection iff the caller asked for watchpoint mode.
+        dyld_log_path: Path | None = (
+            Path(DEFAULT_DYLD_LOG).expanduser().resolve() if watchpoint_mode_requested else None
+        )
+    else:
+        raw_dyld_log = args.dyld_log.strip()
+        dyld_log_path = Path(raw_dyld_log).expanduser().resolve() if raw_dyld_log else None
+
+    watchpoint_report_path = Path(args.watchpoint_report).expanduser().resolve()
+
     report: dict[str, Any] = {
         "schemaVersion": 1,
         "generatedAt": utc_now_iso(),
@@ -231,6 +329,14 @@ def main() -> int:
             "buildConfiguration": args.configuration,
             "skipBuildInstall": bool(args.skip_build_install),
             "outputPath": str(output_path),
+            # HOK-012-B: surface the watchpoint configuration so the
+            # top-level report is self-descriptive.
+            "watchpointModeRequested": watchpoint_mode_requested,
+            "watchAddress": raw_watch_address or None,
+            "watchSize": watch_size if watchpoint_mode_requested else None,
+            "preRunCommands": pre_run_commands,
+            "dyldInitializersLogPath": str(dyld_log_path) if dyld_log_path else None,
+            "watchpointReportPath": str(watchpoint_report_path),
         },
         "paths": {
             "containerRoot": str(container_root),
@@ -353,13 +459,27 @@ def main() -> int:
 
         def run_launch() -> None:
             try:
+                launch_arguments: dict[str, Any] = {
+                    "bundleId": args.bundle_id,
+                    "withTerminalWindow": False,
+                    "timeoutSeconds": lldb_timeout,
+                }
+                # HOK-012-B: forward the watchpoint / preRunCommands /
+                # dyld-log options to the MCP tool only when they are
+                # actually set, so default legacy invocations keep the
+                # previous argument shape (and reproduce the exact same
+                # MCP tool-call recorded in HOK-006 evidence).
+                if watchpoint_mode_requested:
+                    launch_arguments["watchAddress"] = raw_watch_address
+                    launch_arguments["watchSize"] = watch_size
+                if pre_run_commands:
+                    launch_arguments["preRunCommands"] = pre_run_commands
+                if dyld_log_path is not None:
+                    launch_arguments["dyldInitializersLogPath"] = str(dyld_log_path)
+
                 outcome = client.call_tool(
                     "launch_app_with_lldb",
-                    {
-                        "bundleId": args.bundle_id,
-                        "withTerminalWindow": False,
-                        "timeoutSeconds": lldb_timeout,
-                    },
+                    launch_arguments,
                     request_timeout=max(lldb_timeout + 15.0, 20.0),
                 )
                 launch_box["rawOutcome"] = outcome
@@ -521,6 +641,89 @@ def main() -> int:
         report["checks"]["overallPass"] = determine_overall_pass(report["checks"])
         report["checks"]["exitCode"] = determine_exit_code(report["checks"]["overallPass"])
 
+        # HOK-012-B: write the standalone watchpoint report and attach a
+        # dyld-log summary. Only emit the watchpoint report when the run
+        # was actually started in watchpoint mode, otherwise we would
+        # overwrite the previous HOK-012 evidence with an empty document.
+        watchpoint_artifact: dict[str, Any] = {
+            "written": False,
+            "path": str(watchpoint_report_path),
+            "hitCount": 0,
+        }
+        dyld_log_artifact: dict[str, Any] = {
+            "path": str(dyld_log_path) if dyld_log_path else None,
+            "exists": False,
+            "byteCount": 0,
+            "initializerLineCount": 0,
+            "tail": "",
+        }
+        if watchpoint_mode_requested:
+            watch_payload: dict[str, Any] = {
+                "schemaVersion": 1,
+                "generatedAt": utc_now_iso(),
+                "bundleId": args.bundle_id,
+                "workflow": "hok-012-ngr-watchpoint",
+                "configuration": {
+                    "watchAddress": raw_watch_address,
+                    "watchSize": watch_size,
+                    "preRunCommands": pre_run_commands,
+                    "lldbTimeout": lldb_timeout,
+                    "dyldInitializersLogPath": str(dyld_log_path) if dyld_log_path else None,
+                    "sourceLldbReportPath": str(output_path),
+                },
+                "watchpoint": {
+                    "hits": lldb_summary.get("watchpointHits") or [],
+                    "hitCount": int(lldb_summary.get("watchpointHitCount") or 0),
+                    "didStop": bool(lldb_summary.get("didStop")),
+                    "stopReason": lldb_summary.get("stopReason"),
+                    "timedOut": bool(lldb_summary.get("timedOut")),
+                    "processIdentifier": lldb_summary.get("processIdentifier"),
+                },
+            }
+            write_report(watchpoint_report_path, watch_payload)
+            watchpoint_artifact.update(
+                {
+                    "written": True,
+                    "hitCount": watch_payload["watchpoint"]["hitCount"],
+                }
+            )
+            print(f"watchpoint report written: {watchpoint_report_path}")
+
+        if dyld_log_path is not None:
+            try:
+                if dyld_log_path.exists():
+                    raw_bytes = dyld_log_path.read_bytes()
+                    text = raw_bytes.decode("utf-8", errors="replace")
+                    lines = text.splitlines()
+                    # dyld uses a stable `dyld[pid]:` prefix for initializer
+                    # log lines; count those explicitly so the caller can
+                    # tell the difference between "child wrote some stderr"
+                    # and "DYLD_PRINT_INITIALIZERS actually fired".
+                    init_count = sum(
+                        1 for line in lines if "dyld" in line and "initializer" in line.lower()
+                    )
+                    # Limit the inline tail to keep the top-level report
+                    # small; the full log stays on disk for later analysis.
+                    tail = "\n".join(lines[-80:])
+                    dyld_log_artifact.update(
+                        {
+                            "exists": True,
+                            "byteCount": len(raw_bytes),
+                            "initializerLineCount": init_count,
+                            "tail": clip_text(tail, limit=4000),
+                        }
+                    )
+            except Exception as log_error:  # pragma: no cover - defensive
+                dyld_log_artifact["error"] = {
+                    "type": type(log_error).__name__,
+                    "message": str(log_error),
+                }
+
+        report["artifacts"] = {
+            "watchpointReport": watchpoint_artifact,
+            "dyldInitializersLog": dyld_log_artifact,
+        }
+
         write_report(output_path, report)
         print(f"report written: {output_path}")
         print(
@@ -531,6 +734,9 @@ def main() -> int:
             f"lldbStopObserved={report['checks']['lldbStopObserved']} "
             f"faultingInstructionCaptured={report['checks']['lldbFaultingInstructionCaptured']} "
             f"backtraceCaptured={report['checks']['lldbBacktraceCaptured']} "
+            f"watchpointMode={watchpoint_mode_requested} "
+            f"watchpointHits={watchpoint_artifact['hitCount']} "
+            f"dyldLogBytes={dyld_log_artifact['byteCount']} "
             f"requiredCompatEventsPresent={report['checks']['requiredCompatEventsPresent']} "
             f"forbiddenCompatEventsAbsent={report['checks']['forbiddenCompatEventsAbsent']} "
             f"overallPass={report['checks']['overallPass']}"

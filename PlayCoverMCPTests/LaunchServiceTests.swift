@@ -310,9 +310,11 @@ final class LaunchServiceTests: XCTestCase {
         let service = LaunchService(
             appDirectory: appDir,
             aliasDirectory: aliasDir,
-            headlessLLDBRunner: { executable, _, timeoutSeconds in
+            headlessLLDBRunner: { executable, _, timeoutSeconds, options in
                 XCTAssertEqual(executable.lastPathComponent, "LLDBApp")
                 XCTAssertEqual(timeoutSeconds, 2.5, accuracy: 0.001)
+                // Default (legacy) invocation path: no HOK-012-B options.
+                XCTAssertEqual(options, LLDBRunOptions.default)
                 return expectedEvidence
             },
             terminalLLDBRunner: { _, _ in
@@ -329,6 +331,167 @@ final class LaunchServiceTests: XCTestCase {
         XCTAssertEqual(result.method, "lldb-headless")
         XCTAssertEqual(result.lldb, expectedEvidence)
         XCTAssertTrue(result.lldb?.timedOut ?? false)
+    }
+
+    // MARK: - HOK-012-B: watchpoint / preRunCommands / dyldInitializersLogPath
+
+    /// HOK-012-B: `launchAppWithLLDB` must forward watchpoint options to the
+    /// headless runner unchanged; the runner closure is the contract
+    /// boundary, so the assertions live on the closure's captured `options`.
+    func testLaunchWithLLDBForwardsWatchpointOptionsToRunner() throws {
+        let (appDir, aliasDir) = try makeFixtureApp(
+            bundleId: "com.test.watch",
+            displayName: "WatchApp",
+            executableName: "WatchApp"
+        )
+        defer { cleanupFixture([appDir, aliasDir]) }
+
+        let capturedHit = WatchpointHit(
+            index: 0,
+            stopReason: "watchpoint 1",
+            thread: "1",
+            frame: "frame #0: 0x1 App`writer + 0",
+            backtrace: ["frame #0: 0x1 App`writer + 0"],
+            oldValue: "old value: 0x0",
+            newValue: "new value: 0x2000"
+        )
+        let expectedEvidence = LLDBLaunchEvidence(
+            processIdentifier: 7,
+            timedOut: true,
+            didStop: true,
+            terminationStatus: 0,
+            stopReason: "watchpoint 1",
+            signal: nil,
+            faultAddress: nil,
+            faultingThread: "1",
+            faultingFrame: "frame #0: 0x1 App`writer + 0",
+            faultingInstruction: nil,
+            backtrace: ["frame #0: 0x1 App`writer + 0"],
+            transcript: "Process 7 launched",
+            transcriptTail: "Process 7 launched",
+            watchpointHits: [capturedHit],
+            dyldInitializersLogPath: "/tmp/dyld-init.log"
+        )
+
+        let service = LaunchService(
+            appDirectory: appDir,
+            aliasDirectory: aliasDir,
+            headlessLLDBRunner: { _, _, _, options in
+                XCTAssertEqual(options.watchAddress, "0x10e2146f8")
+                XCTAssertEqual(options.watchSize, 8)
+                XCTAssertEqual(options.preRunCommands, ["breakpoint set --name foo"])
+                XCTAssertEqual(options.dyldInitializersLogPath, "/tmp/dyld-init.log")
+                XCTAssertTrue(options.isWatchpointMode)
+                return expectedEvidence
+            },
+            terminalLLDBRunner: { _, _ in
+                XCTFail("terminal runner should not be used in watchpoint test")
+            }
+        )
+
+        let result = try service.launchAppWithLLDB(
+            bundleId: "com.test.watch",
+            withTerminalWindow: false,
+            timeoutSeconds: 5.0,
+            options: LLDBRunOptions(
+                watchAddress: "0x10e2146f8",
+                watchSize: 8,
+                preRunCommands: ["breakpoint set --name foo"],
+                dyldInitializersLogPath: "/tmp/dyld-init.log"
+            )
+        )
+
+        XCTAssertEqual(result.lldb?.watchpointHits.count, 1)
+        XCTAssertEqual(result.lldb?.watchpointHits.first, capturedHit)
+        XCTAssertEqual(result.lldb?.dyldInitializersLogPath, "/tmp/dyld-init.log")
+    }
+
+    /// HOK-012-B: `LLDBRunOptions.default` must preserve legacy semantics —
+    /// no watchpoint, no stderr redirection.
+    func testLLDBRunOptionsDefaultIsLegacyBehaviour() {
+        let options = LLDBRunOptions.default
+        XCTAssertNil(options.watchAddress)
+        XCTAssertEqual(options.watchSize, 8)
+        XCTAssertTrue(options.preRunCommands.isEmpty)
+        XCTAssertNil(options.dyldInitializersLogPath)
+        XCTAssertFalse(options.isWatchpointMode)
+    }
+
+    /// HOK-012-B: watchpoint mode should only engage when a non-empty
+    /// `watchAddress` is set; empty / whitespace-only strings fall back to
+    /// the legacy flow so accidental empty CLI arguments don't hang the
+    /// runner waiting for watchpoint hits that will never arrive.
+    func testLLDBRunOptionsWatchpointModeRequiresNonEmptyAddress() {
+        XCTAssertFalse(LLDBRunOptions(watchAddress: "").isWatchpointMode)
+        XCTAssertFalse(LLDBRunOptions(watchAddress: "   ").isWatchpointMode)
+        XCTAssertTrue(LLDBRunOptions(watchAddress: "0x1000").isWatchpointMode)
+    }
+
+    /// HOK-012-B: the watchpoint-segment parser must split the transcript
+    /// by each `stop reason = watchpoint` line, and attach the first
+    /// `frame #0:` / `old value:` / `new value:` lines under each segment.
+    func testParseWatchpointHitsSplitsSegmentsAndExtractsValues() {
+        let transcript = """
+        (lldb) run
+        Process 100 launched
+        Watchpoint 1 hit:
+        old value: 0x0000000000000000
+        new value: 0x0000000100000000
+        Process 100 stopped
+        * thread #3, queue = 'com.example.a', stop reason = watchpoint 1
+          * frame #0: 0x0000000100001000 App`writer_a + 0
+            frame #1: 0x0000000100002000 App`caller_a + 44
+        (lldb) continue
+        Watchpoint 1 hit:
+        old value: 0x0000000100000000
+        new value: 0x0000000200000000
+        Process 100 stopped
+        * thread #7, queue = 'com.example.b', stop reason = watchpoint 1
+          * frame #0: 0x0000000100003000 App`writer_b + 0
+            frame #1: 0x0000000100004000 App`caller_b + 12
+        """
+
+        let hits = LaunchService.parseWatchpointHits(transcript: transcript)
+
+        XCTAssertEqual(hits.count, 2)
+        XCTAssertEqual(hits[0].index, 0)
+        XCTAssertEqual(hits[0].thread, "3")
+        XCTAssertEqual(hits[0].stopReason, "watchpoint 1")
+        XCTAssertEqual(hits[0].frame, "* frame #0: 0x0000000100001000 App`writer_a + 0")
+        XCTAssertEqual(hits[0].backtrace.count, 2)
+        XCTAssertEqual(hits[1].index, 1)
+        XCTAssertEqual(hits[1].thread, "7")
+        XCTAssertEqual(hits[1].frame, "* frame #0: 0x0000000100003000 App`writer_b + 0")
+        XCTAssertEqual(hits[1].backtrace.count, 2)
+    }
+
+    /// HOK-012-B: `parseLLDBEvidence` should not be fooled by watchpoint
+    /// stop lines into reporting a false "fault". When both watchpoint and
+    /// non-watchpoint stops appear, the fault fields must describe the
+    /// non-watchpoint stop (i.e. the real crash), not the watchpoint.
+    func testParseLLDBEvidencePrefersNonWatchpointStopForFaultFields() {
+        let transcript = """
+        Process 1 launched
+        * thread #2, queue = 'com.example.a', stop reason = watchpoint 1
+          * frame #0: 0x1 App`writer + 0
+        (lldb) continue
+        * thread #3, queue = 'com.example.b', stop reason = EXC_BAD_ACCESS (code=1, address=0x0)
+          * frame #0: 0x2 App`crasher + 0
+        App`crasher:
+        ->  0x2 <+0>: ldr x8, [x0]
+        """
+
+        let evidence = LaunchService.parseLLDBEvidence(
+            transcript: transcript,
+            timedOut: false,
+            terminationStatus: 0,
+            watchpointHits: LaunchService.parseWatchpointHits(transcript: transcript)
+        )
+
+        XCTAssertEqual(evidence.faultingThread, "3")
+        XCTAssertEqual(evidence.faultAddress, "0x0")
+        XCTAssertTrue(evidence.stopReason?.contains("EXC_BAD_ACCESS") ?? false)
+        XCTAssertEqual(evidence.watchpointHits.count, 1)
     }
 
     // MARK: - LaunchError Tests

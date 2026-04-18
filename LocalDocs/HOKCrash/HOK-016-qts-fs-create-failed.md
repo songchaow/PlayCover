@@ -142,48 +142,151 @@ LLDB 运行期 backtrace/register 捕获器。wrapper 调用
 legacy schema）+ `build/hok-016-qts-reporter-summary.json`（HOK-016-B 专
 属 summary，含 `checks.overallPass` 判定）。
 
+### `Scripts/hok016c_ngr_qts_w0_trace.py`
+
+HOK-016-C.1 的最小 runner。封装 `hok006` runner，在 `0x108877bd0` 的两条
+`tbz w0, #0, <fail>` 判定点前设 auto-continue BP 抓 `register read x0`，
+在失败 sink 设 hard-stop BP 终结 run。BP 地址完全由 HOK-016-A/B 定位
+固化；**不动 NGR 二进制、不改 PlayTools 代码**。产物
+`build/hok-016c-w0-trace.json`。
+
+### `Scripts/hok016cx_lldb_cmdline_override.py` + `Scripts/hok016cx_ngr_seed_experiment.py`
+
+HOK-016-C.X.1 seed 替换实验。**不改任何代码**（不动 NGR、不动
+PlayTools），完全在 LLDB Python callback 里动态改写
+`FCommandLine::CmdLine` UTF-16-LE buffer 为候选值，然后观察
+`0x108877bd0` 的 `+912 tbz` 前 w0 是否翻转为 1。
+
+- `hok016cx_lldb_cmdline_override.py`：LLDB Python 模块；
+  `rewrite_cmdline_on_hit` BP 回调 runtime 解析 NGR image slide、
+  `process.WriteMemory` 写 seed UTF-16-LE + 2-byte null terminator 到
+  `0x10e20107a`、并重置 `bInitialized=1 @ 0x10e201078`（幂等防御）。
+- `hok016cx_ngr_seed_experiment.py`：实验 driver；4 候选 seed 顺序跑
+  （`empty` / `project` = `"NGR"` / `ue4cmdfile` = `"../../../NGR/ue4commandline.txt"` /
+  `uproject` = baseline `"../../../NGR/NGR.uproject"`），每个 seed
+  单独跑一轮 hok006 runner、抓 `w0@+900` / `w0@+912` / UE4
+  "Project file not found" 计数 / failure sink 计数，汇总到
+  `build/hok-016cx-summary.json`。
+
+关键 LLDB 语法踩坑：`breakpoint set` **不支持** `--script-type python
+-F <func>` 形式（会报 `unknown or ambiguous option`）；必须拆成两
+步 —— 先 `breakpoint set ...`，紧接 `breakpoint command add -s python
+-F <func>`（默认对最后创建的 BP 操作，两条命令之间不能插入其它
+`breakpoint set`）。
+
+#### 实验结果（证伪 "HOK-015 seed 驱动 QtsFS 失败"）
+
+| seed | UE4 "Project file not found" | w0@+900 | w0@+912 | failSink 命中次数 |
+|---|---|---|---|---|
+| `empty`      | 0 | 0x1 | **0x0** | 3 |
+| `project`    | 0 | 0x1 | **0x0** | 3 |
+| `ue4cmdfile` | 0 | 0x1 | **0x0** | 3 |
+| `uproject`   | 1 | 0x1 | **0x0** | 3 |
+
+关键观察：
+
+1. **所有 4 种 seed 下 `w0@+912 = 0`**——`0x108878534` 返回 0 与
+   cmdline 内容**无关**。
+2. `empty` / `project` / `ue4cmdfile` 三种 seed 确实消除了 UE4 的
+   `[UE4] Project file not found` log，但这**不影响** QtsFS 的失败
+   路径。
+3. QtsFS 的 Create Failed sink 在全部 4 种 seed 下各触发 3 次，分布
+   无变化。
+
+结论：HOK-016-C.X（换 HOK-015 seed value）**已被证伪**。下一步必须进
+入 `0x108878534` 的内部深度分析（HOK-016-C.2）。
+
+跨 run 稳定观察（transcript 采集到的关键片段）：
+
+1. UE4 自身 stderr：`[UE4] Project file not found: ../../../NGR/NGR.uproject`
+2. `(lldb)  register read x0` → `x0 = 0x0000000000000001`  ← `+900 tbz` 前：readiness A (`0x108876a94`) 返回 **1 / ok**
+3. `(lldb)  register read x0` → `x0 = 0x0000000000000000`  ← `+912 tbz` 前：readiness B (`0x108878534`) 返回 **0 / fail**
+4. `stop reason = breakpoint 3.1` @ `0x108878124` (+1364 failure sink)
+   backtrace 与 HOK-016-B 完全一致；`x19` = QtsFS `this`、
+   `x24` = `0x10e1ee000`（QtsFS 全局 subsystem readiness 表基址，
+   `x24->0xef0` 是 sentinel byte）。
+
 ## 已知真因判定
 
-- **不是 cmdline 内容问题**：reporter 的 x2 参数是 CmdLine buffer 没
-  错，但这条字符串只是 UE_LOG 的 format context，QtsFS 的 fail/success
-  不由 cmdline 内容决定。
-- **不是 HOK-015 preseed 做错**：HOK-015 `bInitializedBefore=0 →
-  bInitializedAfter=1` 在每一轮 `launch-events.jsonl` 都稳定出现；frame 5
-  的 FCommandLine inline guard `ldrb 0x103a227bc; tbz 0x103a227c0, +588`
-  也顺利 fall-through 到 normal path。
-- **真正的判定点是 `0x108877bd0` 函数的返回值**：reporter `+176 bl
-  0x108877bd0; +180 tbz w0, #0, +364`。w0==0 时走 "Create Failed!!"
-  分支，最终通过 `0x10432f490` 构造 UIAlertController 并 present 到主
-  VC（被 HOK-014 swizzle 压到 UI 外，但 reporter 本身仍走完 fatal 流、
-  最终把 `QtsFileSystem::Init` 的 w0 改成 0 返给 frame 4；frame 4 `cbnz w0, +32` 走 tail-call fatal 路径，GameThread 退出）。
+- **HOK-015 seed 内容与 `0x108878534` 的返回值无关**（HOK-016-C.X.1
+  已证伪）：`empty` / `project` / `ue4cmdfile` / `uproject` 4 种 seed
+  下 `0x108877bd0 +912 tbz` 前 w0 **恒等于 0**，failure sink 命中
+  次数恒等于 3。换 seed 能消除 UE4 `[UE4] Project file not found`
+  log，但 QtsFS 的 Create Failed 路径不变。
+- **reporter 的 x2 参数是 CmdLine buffer**（HOK-016-B 寄存器跨 run 稳
+  定）——但这条字符串是 UE_LOG 的 format context，并不是
+  `0x108877bd0` 的判定输入本身。Create Failed 的**直接根因**是
+  `+908 bl 0x108878534; +912 tbz w0, #0, +1364` 里 **`0x108878534`
+  返回 0**。
+- **`0x108878534` 是 "QtsFileSystem readiness check B"**——入口 544 字
+  节栈、`adrp x22, 22902; ldrb w8, [x22, #0xef0]` 读 subsystem
+  readiness sentinel、`+352 bl 0x10432dd98` 做更深层的路径/资源比对。
+  HOK-016-C.1 尝试过在 `0x10432dd98` 入口设 BP 但 0 次命中——说明
+  `0x108878534` 在更早就决定返回 0（大概率就是 `+48 ldrb [x22, #0xef0]`
+  或相邻 sentinel-based check 命中 "subsystem 未就绪" 的早退分支，
+  还没调到 `0x10432dd98`）。
+- **"readiness A 成功 / readiness B 失败" 的分布跨 run 稳定**：HOK-016-C.1
+  / C.X.1 transcript 里 `+900 tbz` 之前 `x0=0x1`、`+912 tbz` 之前
+  `x0=0x0`。排除了"偶然性资源竞争"假设，指向**确定性的 sentinel /
+  资源布局问题**。
+- **真凶最可能在 `0x108878534` 入口 sentinel 早退分支**：`+48 ldrb
+  [x22, #0xef0]`、`+52 cmp w8, #0x4`、`+56 b.lo +64`——若 `x22->0xef0
+  < 4` 走 skip 分支。这个 sentinel 与 `0x108877bd0 +1364 ldrb
+  [x24, #0xef0]; cmp w8, #0x2` 读的是**同一 global byte**
+  (`0x10e1eeef0`)。也就是说一个全局 subsystem readiness level
+  byte 决定了整条路径。HOK-016-C.2 的重点是定位**谁 bump 这个 byte**
+  （在 iOS 上由什么 initializer 提前 bump 到 >=4，而在 macOS 上没有
+  bump）。
 
 ## 修复方向（尚未落地；保留记录供后续决策）
 
 HOK-016 的修复必须在 PlayTools 层 bundle-scoped、不动 NGR 二进制，可选
-方案按"影响面从小到大"排：
+方案按"影响面从小到大 / 风险从低到高"排：
 
-1. **(C.2) 静态深入 `0x108877bd0`**：继续反汇编 + LLDB BP 逐条扫它内部
-   的 syscall / dylib 调用（`stat` / `open` / `access` / `fopen` /
-   `NSFileManager`），确认它到底在检查什么——最可能是 **iOS-only 的
-   sandbox 路径或 iOS-only 的 NSBundle 资源键**；
-2. **(C.3) PlayTools 层 path fixup**：若 C.2 证实它调某条 syscall 查
-   iOS sandbox 路径，则在 PlayTools 的 `pt_stat` / `pt_access` filename
-   映射层对 `com.tencent.ngr` 追加 NGR 特定路径映射（沿用现有
-   `rootWorkDir` 透传的同一套体制），让同一 syscall 返回合法值；
-3. **(C.4) symbolic `0x108877bd0` swizzle**（兜底）：若 C.2 证实失败
-   由 C++ 内部检查（非 syscall）驱动，用 fishhook/dyld interpose 在
-   `0x108877bd0` 的入口注入 `return 1`。这等价于 HOK-007B 的二进制
-   patch 但以 PlayTools 运行期形式体现——**有 app 稳定性风险**（可能
-   让 NGR 之后用到未初始化 的 QtsFS 内部状态），需要同时扫 C.2 的静态
-   side-effect 才能安全采用；
-4. **(C.5) 降级结论**：若 C.2 证实失败是必须由用户提供外部资源（例如
-   登录后的 cooked data pack），则 HOK-016 升级到 HOK-009 类型（需要
-   用户介入）。
+1. **(C.2, 当前主线) 定位 sentinel `0x10e1eeef0` 的 writer 链**：
+   两处关键 readness 分支都读 `0x10e1eeef0`（
+   `0x108878534 +48 ldrb [x22, #0xef0]; +52 cmp w8, #0x4; +56 b.lo
+   +64` 和 `0x108877bd0 +1364 ldrb [x24, #0xef0]; +1368 cmp w8, #0x2`）。
+   先用 HOK-011 的 `Scripts/hok011_ngr_common_init_chain.py`
+   `--target-address 0x10e1eeef0` 离线扫 writer；若 writer 在 NGR
+   自身 `__init_offsets` 上不可达（如 HOK-011 观察到的 `0x10e2146f8`
+   情况），再用 LLDB watchpoint `watchpoint set expression -s 1 --
+   0x10e1eeef0 + slide` 运行期追 writer。关键问题：iOS 上谁 bump 这
+   个 byte 到 >= 4？（疑似某个 iOS-only framework 的 `+load` 或
+   `__init_offsets` 里的 initializer。）
+2. **(C.3) PlayTools 层 sentinel 预 bump**：若 C.2 证实 sentinel 在
+   iOS 上由某 initializer bump 而 macOS 上缺这一步，PlayTools
+   constructor 可以直接预写 `sentinel >= 4` 到 `0x10e1eeef0`（沿用
+   HOK-013 的 `pt_ngr_find_main_image` + slide + bundle gate 套
+   路）。**有风险**：若 sentinel 代表 "QtsFS initialization level"，
+   跳过 bump 该 writer 执行的真正初始化可能让后面用到未就绪的
+   QtsFS 子系统。必须配合 C.2 的 side-effect 扫描才能安全采用。
+3. **(C.4) `0x108878534` 或更底层函数 symbolic interpose**：若
+   C.2 证实真正的初始化步骤由某个具体函数承担（而非 sentinel
+   bump），用 fishhook / dyld interpose 直接 hook 该函数让其走
+   等价于 iOS 的 normal path。
+4. **(C.5) PlayTools 层 path fixup**（可能已失效）：若 sentinel bump
+   的 writer 本身因 syscall/NSBundle 查找失败而跳过，那 `pt_stat` /
+   `pt_access` / `-[NSBundle pathForResource:ofType:]` swizzle 仍然
+   是一条备选修复路径。
+5. **(C.6) 降级结论**：若 C.2 证实失败必须由用户提供外部资源
+   （登录后的 cooked data pack 等），则 HOK-016 升级到 HOK-009 类
+   型（需要用户介入）。
+
+已证伪路径：
+- **(~~C.X, 已证伪~~) HOK-015 seed value 替换**：HOK-016-C.X.1 实
+  验证明换 seed 只影响 UE4 `Project file not found` log，不影响
+  `0x108878534` 的 w0 返回值（恒 0）。保留证据
+  `build/hok-016cx-summary.json` + 4 份 per-seed trace。
 
 所有方向都必须保留 HOK-013 / HOK-014 / HOK-015 作为安全网，落地之前先
-在 `build/hok-016-*.json` 记录证据；落地后的验证口径见 Dashboard
-"HOK-016-D 判据"（`hok014_ngr_alert_suppressed = 0` / 进程活跃度 / 窗
-口可见性 / 无新 `NGR-*.ips`）。
+在 `build/hok-016-*.json` / `build/hok-016c-*.json` /
+`build/hok-016cx-*.json` 记录证据；落地后的验证口径见 Dashboard
+"HOK-016-D 判据"（`hok014_ngr_alert_suppressed = 0` / 进程活跃度 /
+窗口可见性 / 无新 `NGR-*.ips`）。
+
+**下一步默认推进顺序**：C.2 sentinel writer 定位 → 根据定位结果在
+C.3 / C.4 中选形式 → C.5 路径 fixup（兜底）→ C.6 降级（末选）。
 
 ## 参考
 

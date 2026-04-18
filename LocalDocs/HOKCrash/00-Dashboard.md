@@ -40,29 +40,56 @@
 
 ## 主线任务
 
-- **当前状态（HOK-015 / HOK-016-A / HOK-016-B 已落地；HOK-016-C 未决）**：
-  HOK-015 `cmdline preseed` 在 PlayTools constructor 稳定命中
-  （`bInitializedBefore=0 → bInitializedAfter=1` /
-  `cmdlinePreview="../../../NGR/NGR.uproject"` / `slide=0x44f0000`），
+- **当前状态（HOK-015 / HOK-016-A / HOK-016-B / HOK-016-C.1 /
+  HOK-016-C.X.1 已落地；HOK-016-C.2 当前主线）**：
+  HOK-015 `cmdline preseed` 在 PlayTools constructor 稳定命中，
   218 条 inline `FCommandLine::Get()` guard 全部 fall-through。
-  HOK-016-A 静态定位 + HOK-016-B LLDB backtrace 已精确锁定
-  `QtsFileSystem Create Failed` 的触发链与判定点——仅剩 "为何
-  `0x108877bd0` 返回 w0=0" 这一内部业务分支待定。
-  - `hok014_ngr_alert_suppressed` 仍稳定触发 1 次，`title=Message` /
-    `message=QtsFileSystem Create Failed!!`。
-  - **判定点**：reporter `0x108879164 +180: tbz w0, #0, +364`，其中 w0
-    是 `+176: bl 0x108877bd0` 的返回值。w0=0 直接跳到 Create Failed
-    分支；`0x108877bd0` 是一个 544 字节栈的大函数，语义为 NGR QtsFS
-    "资源根目录/VFS 可用性初始化"，目前尚未确定它到底在检查什么
-    （iOS-only 路径 / iOS-only NSBundle 资源 / 某个 reflection check）。
-  - 进程仍表现为"僵尸存活"（peak CPU ~59% 瞬间 → 掉到 0.2%、RSS 332MB、
-    线程 11、窗口离屏、60s 无新 `.ips`），HOK-014 swizzle 守住 UI。
-  - **修正**：`QtsFileSystem Create Failed` 不是 UE4
-    `FCommandLine::Get()` fatal 的下游，而是 NGR 自研 `QtsFileSystem`
-    自己的初始化失败；但**它所在函数 frame 3 `0x103a29c60 +796: str x0, [x8, #0x6f8]`
-    恰好就是 HOK-011 全二进制扫描找到的 `0x10e2146f8` 唯一 writer**，即
-    HOK-013 的 stub 会被这条路径真正覆盖；HOK-013 / HOK-015 在 HOK-016
-    的触发点之前守住安全读，前提被 HOK-016 依赖。
+  HOK-016-A / B / C.1 已精确锁定 Create Failed 的触发链与分支判定
+  点；HOK-016-C.X.1 的 4 种 seed 替换实验**证伪**了"HOK-015 seed
+  值驱动 QtsFS 失败"的假设：
+  - Create Failed 分支唯一入口：`0x108877bd0 +908: bl 0x108878534;
+    +912: tbz w0,#0,+1364`；跨 run / 跨 seed 稳定 **w0@+912=0**。
+  - 另一判定 `+896 bl 0x108876a94; +900 tbz w0,#0,+1332` 的
+    w0 **=1**（readiness A 成功）。
+  - **真凶最可能是 sentinel `0x10e1eeef0`**：两处失败分支都读
+    `[x22/x24, #0xef0]`（x22 / x24 = `0x10e1ee000`，属 NGR
+    `__common`）。`0x108878534 +48 ldrb; +52 cmp w8,#0x4; +56 b.lo
+    skip` 是典型的 sentinel early-exit；`0x108877bd0 +1364 ldrb;
+    +1368 cmp w8,#0x2` 是 late-exit cleanup。iOS 上某 initializer
+    很可能提前把 sentinel bump 到 >= 4，macOS 下缺这一步。
+  - UE4 自身 stderr 的 `[UE4] Project file not found: ../../../NGR/NGR.uproject`
+    虽然与 HOK-015 seed 相关，但与 QtsFS Create Failed 路径**无因
+    果关联**（seed 换成 `empty`/`project`/`ue4cmdfile` 消除 log 后
+    failure sink 仍各命中 3 次）。
+  - `hok014_ngr_alert_suppressed` 仍稳定触发 1 次，HOK-014 swizzle
+    守住 UI。进程依然僵尸态（peak CPU ~59% → 0.2%、RSS 332MB、
+    线程 11、窗口离屏、60s 无新 `.ips`）。
+
+- **修复路线（优先级最高 → 最低）**：
+  1. `HOK-016-C.2`（**当前主线**）：**定位 sentinel `0x10e1eeef0` 的
+     writer 链**。先用
+     `python3 Scripts/hok011_ngr_common_init_chain.py --target-address 0x10e1eeef0`
+     离线扫 `__text` 中 adrp+add+str 的写入点；若 writer 在 NGR
+     自身 `__init_offsets` 上不可达（复用 HOK-011 路径），再用
+     LLDB watchpoint 运行期捕获真实 writer 来源（哪个 image /
+     哪个 initializer）。
+  2. `HOK-016-C.3`：若 C.2 证实 sentinel 在 iOS 上被某 initializer
+     bump 而 macOS 上缺这一步，PlayTools constructor 预 bump
+     `0x10e1eeef0 >= 4`（沿 HOK-013 的 slide + bundle gate 套路）。
+     **有风险**：需要同步扫 C.2 的 side-effect，否则可能让后面用到
+     未真正就绪的 QtsFS 子系统。
+  3. `HOK-016-C.4`：若 C.2 证实初始化由某个具体函数承担，用
+     fishhook / dyld interpose 对该函数做 "等价于 iOS 的 normal
+     path" 的注入。
+  4. `HOK-016-C.5`：若 sentinel 真正的 writer 因 syscall/NSBundle
+     查找失败而跳过，则退到 `pt_stat` / `pt_access` /
+     `-[NSBundle pathForResource:ofType:]` path fixup。
+  5. `HOK-016-C.6`：降级到 HOK-009 类型（需要用户介入）。
+
+- **已证伪路径**：~~HOK-016-C.X~~（HOK-015 seed 替换）
+  —— HOK-016-C.X.1 在 4 种 seed 下 `w0@+912` 恒 = 0、failure sink
+  命中恒 = 3；证据保留在 `build/hok-016cx-summary.json` +
+  `build/hok-016cx-{empty,project,ue4cmdfile,uproject}-trace.json`。
 
 - **当前兜底链路**（全部 apply，顺序按 PlayTools constructor 内执行序）：
   1. `HOK-013`：为 `0x10e2146f8`（UE4 GLog 实例 slot）写入 stub object，
@@ -137,8 +164,34 @@
     `"QtsFileSystem Create Failed!!"` 的 UIAlertController（经
     `0x10432f490`），然后 reporter 把自身返回值设为 0 给 frame 1，
     frame 4 `cbnz w0, +32` 走 tail-call fatal 路径，UE4 GameThread 退
-    出，进程落入僵尸态。HOK-016-C 的任务就是查清 `0x108877bd0` 的
-    返回值由什么决定。
+    出，进程落入僵尸态。
+  - **HOK-016-C.1 w0 trace（`Scripts/hok016c_ngr_qts_w0_trace.py`）
+    稳定观察**：
+    * `0x108877bd0 +900: tbz` 前 w0 = **1**（readiness A
+      `0x108876a94` 返回 ok）；
+    * `0x108877bd0 +912: tbz` 前 w0 = **0**（readiness B
+      `0x108878534` 返回 fail）；
+    * `+1364` failure sink 每轮 ~3 次命中；`x24 = 0x10e1ee000`（QtsFS
+      subsystem readiness 全局表基址，`x24->0xef0` 是 sentinel byte）。
+    * `0x108878534` 内部 `0x10432dd98` 入口 BP 0 次命中——说明
+      `0x108878534` 在更早（`+48 ldrb [x22, #0xef0]` 或邻近
+      sentinel-based early check）就决定返回 0。
+  - **UE4 自身 stderr 关键 log（与 QtsFS 失败无因果关联）**：
+    HOK-016-C.1 transcript 稳定捕获
+    `[UE4] Project file not found: ../../../NGR/NGR.uproject` ——
+    UE4 main 用 `FCommandLine::GetProjectFile()` 得到 HOK-015 seed 值
+    后 `FPaths::FileExists()` 返回 false。HOK-016-C.X.1 的 4 种 seed
+    替换实验已证明：消除这条 log（seed = `empty`/`project`/
+    `ue4cmdfile`）**不**改变 `0x108878534` 的返回值、也不减少
+    failure sink 命中次数。故 UE4 "Project file not found" 与
+    QtsFS Create Failed 是**独立**的两条路径。
+  - **真凶最可能是 sentinel `0x10e1eeef0`**：`0x108878534 +48`
+    （`ldrb [x22,#0xef0]; cmp w8,#0x4; b.lo +64`）与
+    `0x108877bd0 +1364`（`ldrb [x24,#0xef0]; cmp w8,#0x2`）读的是
+    **同一 global byte**（x22/x24 = `0x10e1ee000`）。也就是说 iOS 上
+    某 initializer 提前把 sentinel bump 到 >=4，而 macOS/PlayCover
+    下没有 bump，`0x108878534` 从早退分支直接返回 0。HOK-016-C.2 的
+    核心任务就是定位这个 sentinel 的 writer 并理解 iOS 上谁 bump 它。
   - "QtsFileSystem Create Failed!!" 字符串在 NGR 二进制里仅**1 个
     xref**（`0x1088792d4`，与 "init Failed!!" 的 `0x108879248` 同属
     reporter `0x108879164`）；其调用者是 vtable[0x30] virtual
@@ -151,48 +204,36 @@
     plist 行为未变；HOK-010 self-heal 仍是改 settings 的正确入口。
   - 候选 E 磁盘备份仍在 `build/hok-007b-backups/*.bin`，日常不 apply。
 
-- **当前主线**：`HOK-016-C`——查清 `0x108877bd0` 为何返回 w0=0，并选定
-  PlayTools 层 bundle-scoped 的修复形式。目标状态：`launch-events.jsonl`
-  里 `hok014_ngr_alert_suppressed` 事件次数 **真正归零**；进程
-  `RSS ≥ 800MB` / 线程数 ≥ 20 / 窗口在主屏内 / `%CPU` 持续 ≥ 5%。
-  方法：
-  - 静态：继续反汇编 `0x108877bd0`（`___lldb_unnamed_symbol1166736`）
-    内部的每一条 BL，确认它调用的 syscall / Foundation API / NGR
-    内部 C++ 方法是否涉及 iOS-only 路径 / iOS-only bundle key。
-  - 运行期：在 `0x108877bd0` 入口设 BP（已验证 `--shlib NGR --address`
-    module-relative 格式命中稳定；参考 `Scripts/hok016_ngr_qts_reporter_trace.py`
-    的 BP 设置模式），命中后串联激活 `stat` / `open` / `access` /
-    `fopen` / `NSFileManager` 相关 BP（当前一次尝试 `breakpoint
-    disable ... -C 'breakpoint enable'` 的动态 enable 链未成功；
-    HOK-016-C 的下一步需要改用 Python LLDB script action 或者直接
-    裸激活 + backtrace filter）。
-  - 约束同 HOK-015：bundle-scoped、PlayTools 层、不动 NGR 二进制、
-    失败时无副作用。
+- **当前主线**：`HOK-016-C.2`——定位 sentinel `0x10e1eeef0` 的 writer
+  链，查清 iOS 上谁 bump 这个 byte 到 >=4 而 macOS 上缺的是哪一步。
+  目标状态：`launch-events.jsonl` 里 `hok014_ngr_alert_suppressed`
+  事件次数 **真正归零**；进程 `RSS ≥ 800MB` / 线程数 ≥ 20 /
+  窗口在主屏内 / `%CPU` 持续 ≥ 5%。方法：
+  - 离线：`python3 Scripts/hok011_ngr_common_init_chain.py
+    --target-address 0x10e1eeef0`（HOK-011 扫描器已原生支持
+    `--target-address` 参数切换）→ 如果 writer 在 `__init_offsets`
+    上可达，直接看 writer 宿主 / 所在 image；如果不可达（像
+    `0x10e2146f8` 情况），继续用全二进制 __text 扫 adrp+add+str。
+  - 运行期：LLDB watchpoint `watchpoint set expression -s 1 --
+    0x10e1eeef0 + <slide>`，跨 iOS-only framework（GCloud /
+    MSDK / PixUI 等）捕获 writer 瞬间的 backtrace。
 
-- **当前卡点**：无（HOK-016-A / HOK-016-B 已产出稳定证据；HOK-016-C
-  只需选定修复形式并落地）。
+- **当前卡点**：无（HOK-016-A / B / C.1 / C.X.1 都产出稳定证据；
+  HOK-016-C.2 主要任务是**sentinel writer 定位**，预期 1-2 轮
+  离线 + 1 轮 LLDB watchpoint 即可得出结论）。
 
 - **下一步默认规划**：
-  1. `HOK-016-C.1`：**深入静态 + 动态 `0x108877bd0`**——用
-     `Scripts/hok016_ngr_qts_reporter_trace.py` 的 BP 模板（
-     `breakpoint set --shlib NGR --address 0x108877bd0`）加上
-     Python LLDB scripted breakpoint，当 `0x108877bd0` 入口命中时
-     动态 enable `stat` / `open` / `access` / `fopen` / `-[NSBundle
-     pathForResource:ofType:]` 这一批 BP、做完 30 秒 observation 后
-     disable；落 `build/hok-016c-qts-init-syscalls.json`。目的：判定
-     `0x108877bd0` 返回 0 的触发条件究竟是 iOS sandbox 路径、iOS
-     NSBundle 键、还是纯 C++ 内部 reflection check。
-  2. `HOK-016-C.2`：根据 C.1 的真因分类选定修复形态：
-     - 若是 iOS-only 路径 → PlayTools `pt_stat` / `pt_access`
-       filename fixup 追加 NGR 特定路径映射；
-     - 若是 iOS-only NSBundle 键 → PlayTools 层 swizzle
-       `-[NSBundle pathForResource:ofType:]` 做 key 补齐；
-     - 若是纯 C++ 内部 check → 通过 PlayTools fishhook 对
-       `0x108877bd0` 的入口做符号化 interpose 返回 1（有风险，仅作
-       兜底，且必须扫完 C.1 的 syscall 路径确认无 side-effect 依赖）。
-  3. `HOK-016-C.3`：PlayTools 侧落地实现（复用 HOK-013/015 的 bundle
-     gate 与 slide 计算），bundle-scoped、幂等、失败 no-op。
-  4. `HOK-016-D` live 验证判据（全部满足才视为闭合、取代本文主线状态）：
+  1. `HOK-016-C.2.1`：跑
+     `python3 Scripts/hok011_ngr_common_init_chain.py --target-address 0x10e1eeef0`，
+     输出 `build/hok-016c2-sentinel-writer.json`；核对 writer 宿主
+     函数与所属 image。
+  2. `HOK-016-C.2.2`：若 writer 可达 `__init_offsets`，直接看它在
+     iOS 上的语义；若不可达，走 LLDB watchpoint run（复用
+     `hok006` runner 的 `--defer-watchpoint-install` +
+     `--writer-address` 套路）。
+  3. `HOK-016-C.3`：根据 C.2 结论选实现形态（PlayTools 预 bump
+     sentinel / fishhook interpose / path fixup 三选一）。
+  4. `HOK-016-D` live 验证：
      - `hok014_ngr_alert_suppressed` 事件 **次数 = 0**；
      - `hok015_ngr_cmdline_preseed status=primed` 事件仍然存在；
      - 进程 `%CPU ≥ 5%` 持续 ≥ 30s、RSS ≥ 800MB、线程数 ≥ 20；
@@ -293,7 +334,11 @@
 | HOK-015 | DONE | 在 PlayTools 层预写 NGR `FCommandLine` 存储（`bInitialized=true` + cmdline char buffer = `"../../../NGR/NGR.uproject"`），消除 UE4 early-read fatal 根因。218 条 inline `FCommandLine::Get()` guard 全部 fall-through；HOK-014 alert 观察期 HOK-016 未闭合前仍为 1（由 QtsFS Create Failed 独立路径触发，与 HOK-015 语义无关） | `HOK-015-cmdline-preseed.md` |
 | HOK-016-A | DONE | 离线静态定位 `QtsFileSystem` 字符串家族 + reporter 函数入口（`Scripts/hok016_ngr_qts_locator.py`，产物 `build/hok-016-qts-fs-static.json`）。结果：`"Create Failed!!"` / `"init Failed!!"` / `"Create failed."` 各 1 条 UTF-16-LE xref；前两条 xref 共属 reporter `0x108879164`，walk-back stp-prologue 与 xref 一致 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-B | DONE | 运行期 LLDB 在 reporter 入口 + 家族 xref 设 BP 抓 backtrace + x0..x8（`Scripts/hok016_ngr_qts_reporter_trace.py`，产物 `build/hok-016-qts-reporter-lldb.json` / `build/hok-016-qts-reporter-summary.json`）。锁定完整 8 层调用链（frame 0 = `0x108879164` vtable[0x30] 方法、frame 3 = HOK-011 `0x10e2146f8` 真 writer、frame 7 = Foundation NSThread）与 Create Failed 分支判定点（`0x108877bd0` 返回 0 时触发）；x2 严格匹配 HOK-015 preseed 的 CmdLine buffer。**绝对 VA BP 在 ASLR 下不命中，必须用 `--shlib NGR --address <unslid>` 格式** | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C | TODO（当前主线） | 查清 `0x108877bd0` 为何返回 w0=0（syscall / NSBundle / 纯 C++ reflection），并选定 PlayTools 层 bundle-scoped 修复（`pt_stat` fixup / `-[NSBundle pathForResource:ofType:]` swizzle / fishhook interpose）；按 HOK-016 子文档 C.1..C.4 推进 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.1 | DONE | 运行期追踪 `0x108877bd0` 的失败分支 w0 来源（`Scripts/hok016c_ngr_qts_w0_trace.py`，产物 `build/hok-016c-w0-trace.json`）。稳定结论：**w0@+900=1 / w0@+912=0 / `0x108878534` 是失败源 / `0x10432dd98` BP 0 次命中**。同一 transcript 稳定捕获 UE4 自身 log `[UE4] Project file not found: ../../../NGR/NGR.uproject` | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.X | DONE（证伪） | HOK-015 seed 替换实验（`Scripts/hok016cx_lldb_cmdline_override.py` + `Scripts/hok016cx_ngr_seed_experiment.py`，产物 `build/hok-016cx-{summary,empty,project,ue4cmdfile,uproject}-*.json`）。LLDB Python BP 动态改写 `FCommandLine::CmdLine` 为 4 种候选值，`w0@+912` 恒 = 0、failure sink 命中恒 = 3 —— **"seed 内容驱动 QtsFS 失败" 假设被证伪**。**踩坑固化**：`breakpoint set` 不支持 `--script-type python -F`；Python callback 必须拆成 `breakpoint set` + 紧邻的 `breakpoint command add -s python -F <func>` 两步（默认对最后创建的 BP 操作，两步之间不能插入其它 `breakpoint set`） | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.2 | TODO（当前主线） | 定位 sentinel `0x10e1eeef0` 的 writer 链（`0x108878534 +48` 和 `0x108877bd0 +1364` 都读 `[x22/x24, #0xef0]`，x22/x24=`0x10e1ee000`）。先用 `python3 Scripts/hok011_ngr_common_init_chain.py --target-address 0x10e1eeef0` 离线扫；若 `__init_offsets` 不可达则走 LLDB watchpoint 运行期捕获真实 writer 所属 image | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.3 | TODO | 根据 C.2 结论选实现形态：PlayTools 预 bump sentinel / fishhook interpose `0x108878534` / `pt_stat` path fixup。有稳定性风险路径需配合 side-effect 扫描 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.4 | DEFERRED | `0x108878534` 或更早 sentinel setter 符号化 interpose 返回 1。等价 HOK-007B 的二进制 patch 的运行期形式，有 app 稳定性风险 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-D | TODO | HOK-016-C 落地后 live 验证（`hok014_ngr_alert_suppressed = 0` + 进程活跃度指标 + 窗口可见性 + 无新 `NGR-*.ips`）；闭合后把 HOK-014 降级为冷备安全网 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-007C | DEFERRED | 下游 crash 的离线映射 + 可逆 patch；HOK-013/014 之后未观察到新 faulting callsite，当前无触发动机 | `HOK-007-二进制意图分析与callsite映射.md`（按需） |
 | HOK-008 | TODO | 把"revert 候选 E → `rootWorkDir=1` → 启动 → 证据采集 → pass 判定"固化成单脚本；替代现在的人工组合 | 待建 |
@@ -314,6 +359,20 @@
   `breakpoint set --shlib NGR --address <unslid>`；不带 `--shlib` 的
   绝对 VA 在 ASLR slide 下不命中（`hok006_ngr_lldb_runner.py` 默认
   透传 pre-run-command，调用方负责拼这条格式）。
+- **HOK-016 LLDB Python BP callback 套路**：`breakpoint set` 本身
+  **不支持** `--script-type python -F <func>`（会报 `unknown or
+  ambiguous option`）；必须拆成 `breakpoint set ...` + 紧邻的
+  `breakpoint command add -s python -F <func>` 两步。
+  `breakpoint command add` 默认对最后创建的 BP 操作，所以两步之间
+  **不能插入其它 `breakpoint set`**。参考
+  `Scripts/hok016cx_ngr_seed_experiment.py` 的 pre_run_commands
+  结构。
+- **LLDB transcript 解析 BP `-C` callback 输出**：LLDB 把 callback
+  命令 echo 成 `(lldb)  <cmd>`（**2 空格**），而 `breakpoint set ... -C 'cmd'`
+  这种 BP-creation 行 echo 成 `(lldb) <cmd>`（**1 空格**）。解析
+  "register read x0 的输出值"时必须锚定 `startswith("(lldb)  register
+  read x0")` 两空格，否则会误命中 BP-creation 行里出现的
+  `register read x0` 字符串。
 - **HOK-016 reporter 调用链速查**：frame0 `0x108879164` (QtsFS vtable[0x30])
   ← frame3 `0x103a29fa0` (QtsFileSystem_Init，内部 `+796` 是 HOK-011
   `0x10e2146f8` 唯一 writer) ← frame5 `0x103a227d0` (MessagingInit，
@@ -430,6 +489,20 @@
   `build/hok-016-qts-reporter-lldb.json`（原始 hok006 schema）+
   `build/hok-016-qts-reporter-summary.json`（HOK-016-B 专属 summary，
   含 x1/x2 低 28 位交叉比对）。
+- `Scripts/hok016c_ngr_qts_w0_trace.py`：HOK-016-C.1 最小 runner。在
+  `0x108877bd0` 的两条 tbz 前设 auto-continue BP 抓 `register read
+  x0`、在 `+1364` 失败 sink 作 hard-stop 终结。输出
+  `build/hok-016c-w0-trace.json`；transcript 稳定同时捕获 UE4 自身
+  `[UE4] Project file not found: ../../../NGR/NGR.uproject` 一行，
+  但 HOK-016-C.X.1 已证明此 log 与 QtsFS Create Failed 路径无因果
+  关联。
+- `Scripts/hok016cx_lldb_cmdline_override.py` +
+  `Scripts/hok016cx_ngr_seed_experiment.py`：HOK-016-C.X.1 seed 替换
+  实验。LLDB Python callback 动态改写 `FCommandLine::CmdLine` 为 4
+  候选 seed（empty / project / ue4cmdfile / uproject），每 seed 跑一
+  轮 hok006 runner；产物 `build/hok-016cx-summary.json` + 4 份
+  per-seed trace。**已用于证伪** "HOK-015 seed 驱动 QtsFS 失败"
+  假设。
 
 ### 运行时证据路径
 

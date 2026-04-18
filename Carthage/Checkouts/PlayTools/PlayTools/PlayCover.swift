@@ -9,6 +9,7 @@ import UIKit
 public class PlayCover: NSObject {
 
     static let shared = PlayCover()
+    private static let immediateAKInterfaceDelay = "0.00"
     var menuController: MenuController?
 
     @objc static public func launch() {
@@ -37,8 +38,7 @@ public class PlayCover: NSObject {
         quitWhenClose()
         RuntimeLaunchDiagnostics.record(event: "playcover_quit_observer_installed", bundleId: runtimeBundleId)
 
-        AKInterface.initialize()
-        RuntimeLaunchDiagnostics.record(event: "playcover_akinterface_initialized", bundleId: runtimeBundleId)
+        initializeAKInterface(bundleId: runtimeBundleId, playSettings: playSettings)
 
         if appliesMinimalStartupCompat {
             RuntimeLaunchDiagnostics.record(
@@ -205,7 +205,7 @@ public class PlayCover: NSObject {
                 // swiftlint:disable:previous line_length
 //                NotificationCenter.default.post(name: UIApplication.willTerminateNotification,
 //                                                object: UIApplication.shared)
-                DispatchQueue.main.async(execute: AKInterface.shared!.terminateApplication)
+                terminateApplicationIfPossible()
 
                 // Step 3.5: End BGTask
                 // BGTask typically runs in another process and is tricky to terminate.
@@ -218,5 +218,83 @@ public class PlayCover: NSObject {
     static func delay(_ delay: Double, closure: @escaping () -> Void) {
         let when = DispatchTime.now() + delay
         DispatchQueue.main.asyncAfter(deadline: when, execute: closure)
+    }
+
+    private static func initializeAKInterface(bundleId: String, playSettings: PlaySettings) {
+        guard let akInterfaceInitializationDelay = playSettings.akInterfaceInitializationDelay else {
+            RuntimeLaunchDiagnostics.record(
+                event: "playcover_akinterface_initialize_started",
+                bundleId: bundleId,
+                details: [
+                    "delaySeconds": immediateAKInterfaceDelay,
+                    "mode": "immediate",
+                ]
+            )
+            AKInterface.initialize()
+            RuntimeLaunchDiagnostics.record(
+                event: "playcover_akinterface_initialized",
+                bundleId: bundleId,
+                details: [
+                    "delaySeconds": immediateAKInterfaceDelay,
+                    "mode": "immediate",
+                ]
+            )
+            return
+        }
+
+        let formattedDelay = formatDelaySeconds(akInterfaceInitializationDelay)
+        RuntimeLaunchDiagnostics.record(
+            event: "playcover_akinterface_delayed",
+            bundleId: bundleId,
+            details: [
+                "delaySeconds": formattedDelay,
+                "mode": "scheduled",
+                "reason": "startup_compat_profile",
+            ]
+        )
+        delay(akInterfaceInitializationDelay) {
+            RuntimeLaunchDiagnostics.record(
+                event: "playcover_akinterface_initialize_started",
+                bundleId: bundleId,
+                details: [
+                    "delaySeconds": formattedDelay,
+                    "mode": "delayed",
+                ]
+            )
+            AKInterface.initialize()
+            RuntimeLaunchDiagnostics.record(
+                event: "playcover_akinterface_initialized",
+                bundleId: bundleId,
+                details: [
+                    "delaySeconds": formattedDelay,
+                    "mode": "delayed",
+                ]
+            )
+        }
+    }
+
+    private static func terminateApplicationIfPossible() {
+        if let akInterface = AKInterface.shared {
+            DispatchQueue.main.async(execute: akInterface.terminateApplication)
+            return
+        }
+
+        if let akInterfaceInitializationDelay = PlaySettings.shared.akInterfaceInitializationDelay {
+            RuntimeLaunchDiagnostics.record(
+                event: "playcover_akinterface_terminate_skipped",
+                bundleId: PlaySettings.shared.bundleIdentifier,
+                details: [
+                    "delaySeconds": formatDelaySeconds(akInterfaceInitializationDelay),
+                    "reason": "akinterface_not_initialized_yet",
+                ]
+            )
+            return
+        }
+
+        DispatchQueue.main.async(execute: AKInterface.shared!.terminateApplication)
+    }
+
+    private static func formatDelaySeconds(_ delay: TimeInterval) -> String {
+        String(format: "%.2f", delay)
     }
 }

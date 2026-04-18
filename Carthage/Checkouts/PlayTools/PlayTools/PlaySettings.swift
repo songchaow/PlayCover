@@ -6,6 +6,9 @@ let settings = PlaySettings.shared
 @objc public final class PlaySettings: NSObject {
     @objc public static let shared = PlaySettings()
     private static let minimalStartupCompatBundleIds: Set<String> = ["com.tencent.ngr"]
+    private static let delayedAKInterfaceInitializationDelays: [String: TimeInterval] = [
+        "com.tencent.ngr": 1.0
+    ]
 
     let bundleIdentifier = Bundle.main.infoDictionary?["CFBundleIdentifier"] as? String ?? ""
     let settingsUrl: URL
@@ -27,6 +30,8 @@ let settings = PlaySettings.shared
     lazy var discordActivity = settingsData.discordActivity
 
     lazy var appliesMinimalStartupCompat = Self.minimalStartupCompatBundleIds.contains(bundleIdentifier)
+
+    lazy var akInterfaceInitializationDelay = Self.delayedAKInterfaceInitializationDelays[bundleIdentifier]
 
     lazy var shouldInstallLibrarySourceInjection = !appliesMinimalStartupCompat
 

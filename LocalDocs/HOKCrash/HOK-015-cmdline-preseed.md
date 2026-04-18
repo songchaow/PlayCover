@@ -7,29 +7,35 @@
 ## 目的
 
 在 HOK-013（`0x10e2146f8` stub 预热）与 HOK-014（UIAlertController
-swizzle）之后，`com.tencent.ngr` 进程不再秒崩，但**真实 UE4 GameThread
-并未真正跑起来**——UE4 在 `Checking for command line in
-ue4commandline.txt ... FOUND!` 之前约 141ms 里被某段 SDK static
-initializer 提前读取 `FCommandLine::Get()`，UE4 因 `bInitialized=false`
-打出 3 条 fatal，接着：
+swizzle）之后，`com.tencent.ngr` 进程不再秒崩。HOK-015 的目的是消除一
+条早期观测到的 UE4 fatal 路径的**根因**：在 `ue4commandline.txt` 的正
+式读取（`Checking for command line in ue4commandline.txt ... FOUND!`）
+之前 ~141ms 里，某段 SDK static initializer 提前调用
+`FCommandLine::Get()`，因 `bInitialized=false` 走 fatal 分支
+（`"Attempting to get the command line but it hasn't been initialized yet."`）。
 
-1. 构造 `UIAlertController(title="Message", message="QtsFileSystem
-   Create Failed!!")` 投递到主 VC；HOK-014 压下这个 alert 的 UI 表
-   现、但 alert 本身的**构造与 present**仍然发生（`hok014_ngr_alert_suppressed`
-   事件 ≥1）。
-2. UE4 fatal handler set `GIsRequestingExit=true`；GameThread 随之退
-   出 tick loop；进程落入僵尸态（`%CPU ≈ 2%`、RSS ≈ 333MB、线程全部
-   sleeping、主窗口停在 UE4 未完成布局时的随机 bounds 如 `Y=-1007`）。
-
-HOK-015 目的是**在 PlayTools constructor 最早时刻把 NGR 的
-`FCommandLine` 存储预置成已初始化状态**（与 HOK-013 相同的套路：预
-写 NGR `__common` 槽位），从而根本消除 fatal：
+HOK-015 在 PlayTools constructor 最早时刻把 NGR 的 `FCommandLine` 存储
+预置成已初始化状态（与 HOK-013 相同的套路：预写 NGR `__common` 槽
+位），从而根本消除这条 UE4 fatal：
 
 - UE4 `Fatal error: ... Attempting to get the command line ...` 从不
   触发；
-- UIAlertController 从不构造；
-- `GIsRequestingExit` 保持 false；GameThread 正常进入主 tick loop；
-- app 真正"活着"。
+- 218 条 inline `FCommandLine::Get()` guard（`adrp/ldrb/tbz`）全部
+  fall-through 到 normal path；
+- HOK-013 slot 的真 writer（`0x103a29c60 +796`，见 HOK-011 / HOK-016）
+  仍会在 `QtsFileSystem::Init` 执行时覆盖 stub，但在此之前的 reader
+  都能安全读到 stub object。
+
+> **与 `QtsFileSystem Create Failed!!` 的关系**：HOK-015 落地后
+> `launch-events.jsonl` 仍会稳定出现 1 条
+> `hok014_ngr_alert_suppressed message="QtsFileSystem Create Failed!!"`。
+> 该 alert **不是 HOK-015 要消除的 UE4 fatal 的下游**——它由 NGR 自研
+> QtsFS 初始化的独立分支（reporter `0x108879164` 内部
+> `bl 0x108877bd0` 返回 0）触发，归属 HOK-016 的根因。详见
+> `HOK-016-qts-fs-create-failed.md`。HOK-015 依旧是 HOK-016 的必要前
+> 提：HOK-016 的 frame 5 `0x103a227a4 +24` 的 inline
+> `FCommandLine::Get()` guard 必须 fall-through 才能走到 frame 3
+> / frame 0。
 
 本方案仍然遵守 Dashboard 最终目标的硬约束：**不改动 NGR app 二进
 制、bundle-scoped 到 `com.tencent.ngr`、失败时无副作用**。

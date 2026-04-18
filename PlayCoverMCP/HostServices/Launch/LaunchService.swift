@@ -1046,9 +1046,38 @@ public final class LaunchService: Sendable {
                                 if let addr = options.watchAddress?
                                     .trimmingCharacters(in: .whitespaces),
                                     !addr.isEmpty {
-                                    abortScript += "memory read -s 8 -c 1 \(addr)\n"
+                                    // HOK-012-C.3-b.3-redo: explicit `-fx`
+                                    // (hex) format is REQUIRED here — the
+                                    // default display format `-fb` (bytes
+                                    // with ASCII) collides with `-s 8` and
+                                    // LLDB rejects the command with
+                                    // `display format ... conflicts with
+                                    // the specified byte size 8`, which
+                                    // silently drops the slot read. Keep
+                                    // the format explicit so the slot
+                                    // value is always emitted in hex.
+                                    abortScript += "memory read -fx -s 8 -c 1 \(addr)\n"
                                 }
-                                abortScript += "breakpoint list\nwatchpoint list\ncontinue\n"
+                                abortScript += "breakpoint list\nwatchpoint list\n"
+                                // HOK-012-C.3-b.3-redo: kill the inferior
+                                // and quit LLDB instead of `continue`. All
+                                // evidence we care about (slot value, bp
+                                // hit counts, watchpoint list, every
+                                // thread's backtrace) has already been
+                                // dumped above; letting the app continue
+                                // would allow `-[NSWindow orderFront:]`
+                                // to finish ordering the modal dialog
+                                // into view, which would (a) pollute
+                                // future `CGWindowListCopyWindowInfo`
+                                // snapshots and (b) force b.0's dialog
+                                // gate to hard-fail the run. `kill` also
+                                // avoids depending on the Apple crash
+                                // dialog to tear the process down on
+                                // SIGABRT paths — we never need the
+                                // `.ips` because the LLDB evidence is a
+                                // strict superset of what the `.ips`
+                                // would carry.
+                                abortScript += "kill\nquit\n"
                                 sendLLDBCommands(
                                     abortScript,
                                     to: inputPipe.fileHandleForWriting

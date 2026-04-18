@@ -93,11 +93,29 @@ python3 Scripts/hok006_ngr_lldb_runner.py \
   --defer-watchpoint-install --writer-address "" \
   --pre-run-command 'breakpoint set --shlib GCloudCore --name load -C "watchpoint set expression -s 8 -- 0x10e2146f8" -C "continue" --auto-continue true --one-shot true' \
   --skip-build-install
+
+# b.3-redo：deferred-install + SIGABRT 拦截 + 参数化 teardown + sheet modal 拦截 bp
+# 这是 "在未污染条件下取 0x10e2146f8 live 证据" 的默认形态。需要 LaunchService
+# abort-stop handler 里的 `memory read -fx` 与 `kill\nquit` 修复 (b.3-redo) 已经
+# 部署；否则 slot 值会被 LLDB 格式冲突静默丢弃、或被 `continue` 后 sheet modal
+# 污染。实测 v3 run: `blockingDialogs=0 residualPIDsKilled=0`，slot=0x0、writer
+# bp (0x103a29b7c) hit=0、watchpoint `No watchpoints currently set`。
+python3 Scripts/hok006_ngr_lldb_runner.py \
+  --watch-address 0x10e2146f8 --watch-size 8 \
+  --defer-watchpoint-install \
+  --lldb-timeout 60 --settle-seconds 65 \
+  --skip-build-install \
+  --pre-run-command 'breakpoint set --name "-[NSApplication runModalForWindow:]"' \
+  --pre-run-command 'breakpoint set --name "-[NSWindow orderFront:]"' \
+  --pre-run-command 'breakpoint set --name CGSOrderWindow' \
+  --output build/hok-012-c-3-b-3-redo-v3-report.json \
+  --watchpoint-report build/hok-012-c-3-b-3-redo-v3-watchpoint.json \
+  --dyld-log build/hok-012-c-3-b-3-redo-v3-dyld.log
 ```
 
 ## 对话框污染 gate（所有 live run 的强制前置条件）
 
-`com.tencent.ngr` 启动后会**自主弹出一个 modal 对话框**（结构是普通 `NSWindow` + 自管 modal event loop，`windowLayer=0`，不是 `NSAlert`），弹出之后 UI 线程陷入 app 自己的 modal loop，其他线程继续跑但永不前进——典型表现是 `SceneExtension hook_frame` 被稳态循环打印，transcript 完全空转 60s 都不出现 `stop reason = `，一切看起来"健康"其实是冻结。**在这种冻结状态下从 LLDB 取到的任何 `memory read` / `breakpoint list` / `watchpoint list` 都是快照而不是 live 行为**，不能用来证实或反驳 HOK-011 的静态结论。因此 HOK-012 的每一轮 watchpoint live run，退出前必须强制走一次对话框检测 + 残留进程强杀，并把"检测到对话框"当成本轮证据全部作废的 hard-fail。
+`com.tencent.ngr` 启动期会通过 **`NSAlert` 以 sheet modal 形式 attach 到 parent window** 而不是独立 top-level modal window（典型 backtrace 链：`-[NSAlert beginSheetModalForWindow:completionHandler:]_block_invoke` → `-[NSWindow _beginWindowBlockingModalSessionForSheet:service:completionHandler:isCritical:]` → `-[NSApplication _orderFrontModalWindow:relativeToWindow:]` → `-[NSWindow(NSSheets) _orderFrontRelativeToWindow:]` → `-[NSWindow orderFront:]`）。sheet 的 `windowLayer=0` 是 sheet 特征，不代表"自绘 NSWindow + 自己跑 modal loop"。sheet 一旦 order front，parent window 的 UI 线程进入 sheet modal session，app 其他线程继续跑但永不前进——典型表现是 `SceneExtension hook_frame` 被稳态循环打印，transcript 完全空转 60s 都不出现 `stop reason = `，一切看起来"健康"其实是冻结。**在这种冻结状态下从 LLDB 取到的任何 `memory read` / `breakpoint list` / `watchpoint list` 都是快照而不是 live 行为**，不能用来证实或反驳 HOK-011 的静态结论。因此 HOK-012 的每一轮 watchpoint live run，退出前必须强制走一次对话框检测 + 残留进程强杀，并把"检测到对话框"当成本轮证据全部作废的 hard-fail。
 
 实现层面（`LaunchService.runLLDBHeadless` 收尾阶段）：
 
@@ -107,18 +125,33 @@ python3 Scripts/hok006_ngr_lldb_runner.py \
 4. 对 descendants 里每一个仍 alive 的 PID 调 `kill(pid, SIGKILL)`，记录实际被 signal 的 PID 到 `residualProcessesKilled`；
 5. `LLDBLaunchEvidence` 新增两个字段暴露结果；`launch_app_with_lldb` JSON response 透出；Python runner 侧 `determine_overall_pass` 在 `blockingDialogDetected=True` 时强制 `overallPass=False`、exit 非零；summary 行含 `blockingDialogs=…` / `residualPIDsKilled=…` 供目视识别。
 
-**不要**把"检测到的窗口一定是对话框"当成前提。实测 b.0 的端到端验证里一轮 capture 同时看到 2 个 NGR 窗口：一个 260×204 小窗（极可能是对话框）和一个 1478×859 主窗。两者都不应该在 LLDB capture 窗口结束时还处于"被 LLDB 看着仍 running"状态——任何 NGR 窗口残留在屏幕上，本身就意味着 LLDB 没把 app 停在期望的 stop 点上，本轮证据都不可信。因此当前判据"属于 NGR PID + onscreen + alpha≥0.05"就是最保守正确的，不要继续细分 modal vs 普通窗口。
+**不要**把"检测到的窗口一定是对话框"当成前提。实测 b.0 的端到端验证里一轮 capture 同时看到 2 个 NGR 窗口：一个 260×204 小窗（sheet 的视觉呈现）和一个 1478×859 主窗。两者都不应该在 LLDB capture 窗口结束时还处于"被 LLDB 看着仍 running"状态——任何 NGR 窗口残留在屏幕上，本身就意味着 LLDB 没把 app 停在期望的 stop 点上，本轮证据都不可信。因此当前判据"属于 NGR PID + onscreen + alpha≥0.05"就是最保守正确的，不要继续细分 modal vs 普通窗口。
 
-检测到对话框后的正确动作**不是**重跑 live run（重跑还是会污染），而是往前走 b.3 的"对话框弹出前拦截 bp"设计：在 `preRunCommands` 里补 `-[NSApplication runModalForWindow:]` / `-[NSWindow orderFront:]` / `CGSOrderWindow` 等候选 symbol 的 bp，让 LLDB 在对话框动手 order window front 之前就把 app 停下来，由 b.1 的 abort-stop handler 一次性取 slot / bp / watchpoint 证据；捕获到后如果 `lldbBlockingDialogDetected=False`，才是一轮合法 live 证据。
+检测到对话框后的正确动作**不是**重跑 live run（重跑还是会污染），而是在 `preRunCommands` 里补 sheet modal 拦截 bp + 把 abort-handler 的尾部动作从 `continue` 换成 `kill\nquit`，同时保证 `memory read` 用显式 hex 格式；下面两节展开。
+
+## sheet modal 拦截 bp 的覆盖面
+
+`preRunCommands` 里追加三条拦截 bp：
+
+- `breakpoint set --name "-[NSWindow orderFront:]"`：主力。sheet modal 最终要 order 自己进入 parent window 的 overlay，必经 `-[NSWindow orderFront:]`；任何 modal 路径（sheet / alert / panel）都走到这里。
+- `breakpoint set --name "-[NSApplication runModalForWindow:]"`：top-level modal window 路径（app 直接调 `[NSApp runModalForWindow:window]`）的冷备拦截。sheet modal 不会走这个入口；但它是最快的"显式 modal"探针，留着不妨碍。
+- `breakpoint set --name CGSOrderWindow`：底层 CoreGraphics 实际 order window 的入口（macOS 上 re-export 到 `SkyLight`SLSOrderWindow`）。作为 AppKit 私有 API 被绕开时的最后一道冷备。
+
+b.3-redo live 观察：**只有 SIGABRT 拦截被实际触发**（app 在 `[GPM] cpp constructor call` / `BqCCS` static init 之后、sheet order front 之前就 `abort()` 了），三条 sheet modal bp hit=0；但这不代表它们没用——换个 build / 换条代码路径，sheet 可能先到达、SIGABRT 后到达，这时 sheet bp 是唯一拦住污染的保险丝。这三条 bp 的存在成本（解析 symbol + 装 bp）几乎是零，保留即可。
 
 ## SIGABRT 拦截下 abort-stop 的自动证据采集
 
 `runLLDBHeadless` 在 watchpoint 模式下对每一次新出现的 `stop reason =` 行都做一次分流：
 
 - 行内含 `"watchpoint "` 字样：继续走 HOK-012-B 的 legacy 序列 `thread backtrace` + `frame variable` + `continue`，把 stop 当成普通 writer 命中、不打断采集。
-- 行内**不含** `"watchpoint "` 字样（典型是 `signal SIGABRT` 被 `process handle -s true -n true -p false SIGABRT` 拦住）：改发 `thread backtrace all` + `frame variable` + `memory read -s 8 -c 1 <watchAddress>`（仅当 `watchAddress` 非空时）+ `breakpoint list` + `watchpoint list` + `continue`。
+- 行内**不含** `"watchpoint "` 字样（典型是 `signal SIGABRT` 被 `process handle -s true -n true -p false SIGABRT` 拦住，或 sheet modal 拦截 bp 命中）：改发 `thread backtrace all` + `frame variable` + `memory read -fx -s 8 -c 1 <watchAddress>`（仅当 `watchAddress` 非空时）+ `breakpoint list` + `watchpoint list` + `kill` + `quit`。
 
-这一改动保持 watchpoint-hit 的采集逻辑与 HOK-012-B 完全一致，只在"非 watchpoint 的 stop"——也就是被 SIGABRT 拦截的 abort 现场——上附加 slot 读取与 bp / watchpoint 汇总，使 abort 一次停住就能同时回答"slot 当前值多少"、"writer bp 命中几次"、"watchpoint 曾否触发"。整套序列的执行时间会超过 HOK-012-B 原硬编码的 2.0s 收尾窗口，因此必须配合 HOK-012-C.3-b.2 的 `LLDBRunOptions.teardownTimeoutSeconds` 放大（默认 2.0 保持 legacy，defer 模式由 `hok006_ngr_lldb_runner.py` 自动拉到 6.0s）。
+这套序列执行时间会超过 HOK-012-B 原硬编码的 2.0s 收尾窗口，因此必须配合 HOK-012-C.3-b.2 的 `LLDBRunOptions.teardownTimeoutSeconds` 放大（默认 2.0 保持 legacy，defer 模式由 `hok006_ngr_lldb_runner.py` 自动拉到 6.0s）。
+
+两条硬性约束：
+
+1. **`memory read` 必须显式 `-fx`**：不带 format 的 `memory read -s 8 -c 1 <addr>` 与 LLDB 默认的 `bytes/bytes with ASCII` 显示模式冲突，LLDB 返回 `error: display format (bytes/bytes with ASCII) conflicts with the specified byte size 8 — consider using a different display format or don't specify the byte size.` 并静默丢弃——transcript 表面看"命令被发出"，slot 值其实根本没落到证据里。必须写 `memory read -fx -s 8 -c 1 <addr>`。b.3-redo v1/v2 都是因此白跑。
+2. **尾部发 `kill\nquit`，不发 `continue`**：stop 现场已经把所有可用证据（slot 值、bp list、watchpoint list、every-thread backtrace）采完，没有继续跑 app 的理由。如果发 `continue`：(a) sheet modal 拦截 bp 那种 stop 会让 app 继续跑到 `-[NSWindow orderFront:]` 把 sheet 订上屏幕，从而触发 b.0 的污染 gate；(b) SIGABRT stop 发 `continue` 理论上可以让进程自己走到 CrashReporter，但 UE4 fatal 路径会被 Apple 对话框挂住 UI 线程、既不退出也不生成对我们有用的 `.ips`。`kill\nquit` 是让 LLDB 自己杀 process + 退出会话的最干净收尾；`hok006_ngr_lldb_runner.py` summary 行里看到 `blockingDialogs=0 residualPIDsKilled=0` 就是这套组合生效的外在表现。
 
 ## dyld log 交叉对齐规则
 

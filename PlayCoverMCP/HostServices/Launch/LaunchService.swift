@@ -10,12 +10,66 @@ public struct LaunchResult: Codable, Equatable, Sendable {
     public let launched: Bool
     public let method: String
     public let message: String
+    public let lldb: LLDBLaunchEvidence?
 
-    public init(bundleIdentifier: String, launched: Bool, method: String, message: String) {
+    public init(
+        bundleIdentifier: String,
+        launched: Bool,
+        method: String,
+        message: String,
+        lldb: LLDBLaunchEvidence? = nil
+    ) {
         self.bundleIdentifier = bundleIdentifier
         self.launched = launched
         self.method = method
         self.message = message
+        self.lldb = lldb
+    }
+}
+
+public struct LLDBLaunchEvidence: Codable, Equatable, Sendable {
+    public let processIdentifier: Int32?
+    public let timedOut: Bool
+    public let didStop: Bool
+    public let terminationStatus: Int32
+    public let stopReason: String?
+    public let signal: String?
+    public let faultAddress: String?
+    public let faultingThread: String?
+    public let faultingFrame: String?
+    public let faultingInstruction: String?
+    public let backtrace: [String]
+    public let transcript: String
+    public let transcriptTail: String
+
+    public init(
+        processIdentifier: Int32?,
+        timedOut: Bool,
+        didStop: Bool,
+        terminationStatus: Int32,
+        stopReason: String?,
+        signal: String?,
+        faultAddress: String?,
+        faultingThread: String?,
+        faultingFrame: String?,
+        faultingInstruction: String?,
+        backtrace: [String],
+        transcript: String,
+        transcriptTail: String
+    ) {
+        self.processIdentifier = processIdentifier
+        self.timedOut = timedOut
+        self.didStop = didStop
+        self.terminationStatus = terminationStatus
+        self.stopReason = stopReason
+        self.signal = signal
+        self.faultAddress = faultAddress
+        self.faultingThread = faultingThread
+        self.faultingFrame = faultingFrame
+        self.faultingInstruction = faultingInstruction
+        self.backtrace = backtrace
+        self.transcript = transcript
+        self.transcriptTail = transcriptTail
     }
 }
 
@@ -58,6 +112,9 @@ public final class LaunchService: Sendable {
     /// The alias directory where PlayCover creates .app aliases.
     public let aliasDirectory: URL
 
+    private let headlessLLDBRunner: @Sendable (URL, [String: String], TimeInterval) throws -> LLDBLaunchEvidence
+    private let terminalLLDBRunner: @Sendable (URL, [String: String]) throws -> Void
+
     private static let metalEnvKeys = [
         "METAL_DEVICE_WRAPPER_TYPE",
         "METAL_DEBUG_LAYER",
@@ -94,6 +151,28 @@ public final class LaunchService: Sendable {
     public init(appDirectory: URL, aliasDirectory: URL) {
         self.appDirectory = appDirectory
         self.aliasDirectory = aliasDirectory
+        self.headlessLLDBRunner = { executable, environment, timeoutSeconds in
+            try Self.runLLDBHeadless(
+                executable: executable,
+                environment: environment,
+                timeoutSeconds: timeoutSeconds
+            )
+        }
+        self.terminalLLDBRunner = { executable, environment in
+            try Self.runLLDBWithTerminal(executable: executable, environment: environment)
+        }
+    }
+
+    init(
+        appDirectory: URL,
+        aliasDirectory: URL,
+        headlessLLDBRunner: @escaping @Sendable (URL, [String: String], TimeInterval) throws -> LLDBLaunchEvidence,
+        terminalLLDBRunner: @escaping @Sendable (URL, [String: String]) throws -> Void
+    ) {
+        self.appDirectory = appDirectory
+        self.aliasDirectory = aliasDirectory
+        self.headlessLLDBRunner = headlessLLDBRunner
+        self.terminalLLDBRunner = terminalLLDBRunner
     }
 
     /// Create a LaunchService pointing to default PlayCover paths.
@@ -161,8 +240,13 @@ public final class LaunchService: Sendable {
     /// - Parameters:
     ///   - bundleId: The bundle identifier of the app to launch.
     ///   - withTerminalWindow: Whether to open a Terminal window for LLDB output.
+    ///   - timeoutSeconds: Headless LLDB wait timeout before the session is interrupted and summarized.
     /// - Returns: A `LaunchResult` indicating success or failure.
-    public func launchAppWithLLDB(bundleId: String, withTerminalWindow: Bool = false) throws -> LaunchResult {
+    public func launchAppWithLLDB(
+        bundleId: String,
+        withTerminalWindow: Bool = false,
+        timeoutSeconds: TimeInterval = 5.0
+    ) throws -> LaunchResult {
         let appRecord = try resolveApp(bundleId: bundleId)
         try preflightChecks(app: appRecord)
         let launchEnvironment = effectiveLaunchEnvironment(bundleId: bundleId)
@@ -174,17 +258,21 @@ public final class LaunchService: Sendable {
             throw LaunchError.executableNotFound(executableURL.path)
         }
 
+        let normalizedTimeoutSeconds = max(timeoutSeconds, 0.1)
+        let lldbEvidence: LLDBLaunchEvidence?
         if withTerminalWindow {
-            try lldbWithTerminal(executable: executableURL, environment: launchEnvironment)
+            try terminalLLDBRunner(executableURL, launchEnvironment)
+            lldbEvidence = nil
         } else {
-            try lldbHeadless(executable: executableURL, environment: launchEnvironment)
+            lldbEvidence = try headlessLLDBRunner(executableURL, launchEnvironment, normalizedTimeoutSeconds)
         }
 
         return LaunchResult(
             bundleIdentifier: bundleId,
             launched: true,
             method: withTerminalWindow ? "lldb-terminal" : "lldb-headless",
-            message: "App \(appRecord.displayName) (\(bundleId)) launched with LLDB (terminal: \(withTerminalWindow))."
+            message: "App \(appRecord.displayName) (\(bundleId)) launched with LLDB (terminal: \(withTerminalWindow)).",
+            lldb: lldbEvidence
         )
     }
 
@@ -313,22 +401,182 @@ public final class LaunchService: Sendable {
 
     // MARK: - LLDB Helpers
 
-    /// Launch an executable under LLDB in headless mode (output to stdout/stderr).
-    private func lldbHeadless(executable: URL, environment: [String: String]) throws {
+    private static func parseProcessIdentifier(from transcript: String) -> Int32? {
+        let pattern = #"Process\s+(\d+)\s+launched"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return nil
+        }
+        let nsrange = NSRange(transcript.startIndex..<transcript.endIndex, in: transcript)
+        guard let match = regex.firstMatch(in: transcript, options: [], range: nsrange),
+              let range = Range(match.range(at: 1), in: transcript),
+              let value = Int32(transcript[range]) else {
+            return nil
+        }
+        return value
+    }
+
+    private static func extractFirstMatch(in text: String, pattern: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return nil
+        }
+        let nsrange = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, options: [], range: nsrange),
+              let range = Range(match.range(at: 1), in: text) else {
+            return nil
+        }
+        return String(text[range])
+    }
+
+    private static func transcriptTail(_ transcript: String, maxCharacters: Int = 4000) -> String {
+        guard transcript.count > maxCharacters else {
+            return transcript
+        }
+        let start = transcript.index(transcript.endIndex, offsetBy: -maxCharacters)
+        return String(transcript[start...])
+    }
+
+    static func parseLLDBEvidence(
+        transcript: String,
+        timedOut: Bool,
+        terminationStatus: Int32
+    ) -> LLDBLaunchEvidence {
+        let lines = transcript.split(whereSeparator: \.isNewline).map(String.init)
+        let stopLineIndex = lines.firstIndex { $0.contains("stop reason =") }
+        let stopLine = stopLineIndex.map { lines[$0].trimmingCharacters(in: .whitespaces) }
+        let faultingFrame = stopLineIndex.flatMap { startIndex in
+            lines[startIndex...].first { $0.contains("frame #0:") }
+        }?.trimmingCharacters(in: .whitespaces)
+        let faultingInstruction = stopLineIndex.flatMap { startIndex in
+            lines[startIndex...].first { $0.trimmingCharacters(in: .whitespaces).hasPrefix("->") }
+        }?.trimmingCharacters(in: .whitespaces)
+        let backtrace = lines
+            .filter { $0.contains("frame #") }
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+
+        let stopReason = stopLine.flatMap { line -> String? in
+            guard let range = line.range(of: "stop reason =") else {
+                return nil
+            }
+            return line[range.upperBound...].trimmingCharacters(in: .whitespaces)
+        }
+        let signal = stopReason.flatMap {
+            extractFirstMatch(in: $0, pattern: #"(SIG[A-Z0-9]+)"#)
+        }
+        let faultAddress = stopReason.flatMap {
+            extractFirstMatch(in: $0, pattern: #"address\s*=\s*([^,)\s]+)"#)
+        }
+        let faultingThread = stopLine.flatMap {
+            extractFirstMatch(in: $0, pattern: #"thread\s+#(\d+)"#)
+        }
+
+        return LLDBLaunchEvidence(
+            processIdentifier: parseProcessIdentifier(from: transcript),
+            timedOut: timedOut,
+            didStop: stopReason != nil,
+            terminationStatus: terminationStatus,
+            stopReason: stopReason,
+            signal: signal,
+            faultAddress: faultAddress,
+            faultingThread: faultingThread,
+            faultingFrame: faultingFrame,
+            faultingInstruction: faultingInstruction,
+            backtrace: backtrace,
+            transcript: transcript,
+            transcriptTail: transcriptTail(transcript)
+        )
+    }
+
+    private static func sendLLDBCommands(_ command: String, to handle: FileHandle) {
+        guard let data = command.data(using: .utf8) else {
+            return
+        }
+        do {
+            try handle.write(contentsOf: data)
+        } catch {
+            return
+        }
+    }
+
+    /// Launch an executable under LLDB in headless mode and collect automation-grade evidence.
+    private static func runLLDBHeadless(
+        executable: URL,
+        environment: [String: String],
+        timeoutSeconds: TimeInterval
+    ) throws -> LLDBLaunchEvidence {
         do {
             let process = Process()
             let pipe = Pipe()
+            let inputPipe = Pipe()
+            let transcriptQueue = DispatchQueue(label: "PlayCoverMCP.LLDBTranscript")
+            let completion = DispatchSemaphore(value: 0)
+            var transcript = ""
+            var commandsSentAfterStop = false
             process.executableURL = URL(fileURLWithPath: "/usr/bin/lldb")
-            process.arguments = ["-o", "run", executable.path, "-o", "exit"]
+            process.arguments = [executable.path]
             process.standardOutput = pipe
             process.standardError = pipe
+            process.standardInput = inputPipe
             process.environment = environment
-            try process.run()
-            _ = try pipe.fileHandleForReading.readToEnd()
-            process.waitUntilExit()
-            if process.terminationStatus != 0 {
-                throw LaunchError.lldbFailed("lldb exited with status \(process.terminationStatus)")
+            process.terminationHandler = { _ in
+                completion.signal()
             }
+
+            pipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty else {
+                    return
+                }
+                let chunk = String(data: data, encoding: .utf8) ?? ""
+                transcriptQueue.sync {
+                    transcript += chunk
+                    if !commandsSentAfterStop && transcript.contains("stop reason =") {
+                        commandsSentAfterStop = true
+                        sendLLDBCommands(
+                            "thread backtrace all\ndisassemble --pc --count 8\nregister read\nquit\n",
+                            to: inputPipe.fileHandleForWriting
+                        )
+                    }
+                }
+            }
+
+            try process.run()
+            sendLLDBCommands("run\n", to: inputPipe.fileHandleForWriting)
+
+            let timedOut = completion.wait(timeout: .now() + timeoutSeconds) == .timedOut
+            if timedOut {
+                sendLLDBCommands(
+                    "process interrupt\nthread backtrace all\ndisassemble --pc --count 8\nregister read\nquit\n",
+                    to: inputPipe.fileHandleForWriting
+                )
+                if completion.wait(timeout: .now() + 2.0) == .timedOut {
+                    process.terminate()
+                    _ = completion.wait(timeout: .now() + 1.0)
+                }
+            }
+
+            pipe.fileHandleForReading.readabilityHandler = nil
+            let remainder = try pipe.fileHandleForReading.readToEnd() ?? Data()
+            if !remainder.isEmpty {
+                let trailingText = String(data: remainder, encoding: .utf8) ?? ""
+                transcriptQueue.sync {
+                    transcript += trailingText
+                }
+            }
+
+            let capturedTranscript = transcriptQueue.sync { transcript }
+            let evidence = parseLLDBEvidence(
+                transcript: capturedTranscript,
+                timedOut: timedOut,
+                terminationStatus: process.terminationStatus
+            )
+            if process.terminationStatus != 0,
+               evidence.processIdentifier == nil,
+               !evidence.didStop {
+                throw LaunchError.lldbFailed(
+                    "lldb exited with status \(process.terminationStatus): \(evidence.transcriptTail)"
+                )
+            }
+            return evidence
         } catch let error as LaunchError {
             throw error
         } catch {
@@ -337,7 +585,7 @@ public final class LaunchService: Sendable {
     }
 
     /// Launch an executable under LLDB in a Terminal window via osascript.
-    private func lldbWithTerminal(executable: URL, environment: [String: String]) throws {
+    private static func runLLDBWithTerminal(executable: URL, environment: [String: String]) throws {
         let escapedPath = executable.path.replacingOccurrences(of: "\"", with: "\\\"")
         let envPrefix = environment
             .filter { Self.injectedMetalCaptureEnvironment.keys.contains($0.key) }

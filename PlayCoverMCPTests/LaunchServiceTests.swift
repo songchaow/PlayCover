@@ -225,13 +225,110 @@ final class LaunchServiceTests: XCTestCase {
             bundleIdentifier: "com.test.app",
             launched: true,
             method: "lldb-terminal",
-            message: "Launched with LLDB in terminal."
+            message: "Launched with LLDB in terminal.",
+            lldb: LLDBLaunchEvidence(
+                processIdentifier: 42,
+                timedOut: false,
+                didStop: true,
+                terminationStatus: 0,
+                stopReason: "signal SIGSEGV",
+                signal: "SIGSEGV",
+                faultAddress: "0x0",
+                faultingThread: "1",
+                faultingFrame: "frame #0: 0x1 App`main + 0",
+                faultingInstruction: "->  0x1 <+0>: brk #0x1",
+                backtrace: ["frame #0: 0x1 App`main + 0"],
+                transcript: "Process 42 launched",
+                transcriptTail: "Process 42 launched"
+            )
         )
 
         let data = try JSONEncoder().encode(result)
         let decoded = try JSONDecoder().decode(LaunchResult.self, from: data)
         XCTAssertEqual(decoded, result)
         XCTAssertEqual(decoded.method, "lldb-terminal")
+        XCTAssertEqual(decoded.lldb?.signal, "SIGSEGV")
+    }
+
+    func testParseLLDBEvidenceExtractsStopReasonFaultAndBacktrace() {
+        let transcript = """
+        (lldb) target create /Applications/NGR.app/NGR
+        Current executable set to '/Applications/NGR.app/NGR' (arm64).
+        (lldb) run
+        Process 24769 launched: '/Applications/NGR.app/NGR' (arm64)
+        Process 24769 stopped
+        * thread #1, queue = 'com.apple.main-thread', stop reason = EXC_BAD_ACCESS (code=1, address=0x0)
+            frame #0: 0x0000000101234567 NGR`foo + 12
+        NGR`foo:
+        ->  0x0000000101234567 <+12>: ldr    x8, [x0]
+            0x000000010123456b <+16>: ret
+        (lldb) thread backtrace all
+        * thread #1, queue = 'com.apple.main-thread', stop reason = EXC_BAD_ACCESS (code=1, address=0x0)
+          * frame #0: 0x0000000101234567 NGR`foo + 12
+            frame #1: 0x0000000107654321 NGR`bar + 44
+        """
+
+        let evidence = LaunchService.parseLLDBEvidence(
+            transcript: transcript,
+            timedOut: false,
+            terminationStatus: 0
+        )
+
+        XCTAssertEqual(evidence.processIdentifier, 24769)
+        XCTAssertTrue(evidence.didStop)
+        XCTAssertEqual(evidence.faultAddress, "0x0")
+        XCTAssertEqual(evidence.faultingThread, "1")
+        XCTAssertEqual(evidence.signal, nil)
+        XCTAssertEqual(evidence.faultingFrame, "frame #0: 0x0000000101234567 NGR`foo + 12")
+        XCTAssertEqual(evidence.faultingInstruction, "->  0x0000000101234567 <+12>: ldr    x8, [x0]")
+        XCTAssertEqual(evidence.backtrace.count, 3)
+    }
+
+    func testLaunchWithLLDBHeadlessReturnsStructuredEvidenceFromRunner() throws {
+        let (appDir, aliasDir) = try makeFixtureApp(
+            bundleId: "com.test.lldb",
+            displayName: "LLDBApp",
+            executableName: "LLDBApp"
+        )
+        defer { cleanupFixture([appDir, aliasDir]) }
+
+        let expectedEvidence = LLDBLaunchEvidence(
+            processIdentifier: 9,
+            timedOut: true,
+            didStop: false,
+            terminationStatus: 15,
+            stopReason: nil,
+            signal: nil,
+            faultAddress: nil,
+            faultingThread: nil,
+            faultingFrame: nil,
+            faultingInstruction: nil,
+            backtrace: [],
+            transcript: "Process 9 launched",
+            transcriptTail: "Process 9 launched"
+        )
+        let service = LaunchService(
+            appDirectory: appDir,
+            aliasDirectory: aliasDir,
+            headlessLLDBRunner: { executable, _, timeoutSeconds in
+                XCTAssertEqual(executable.lastPathComponent, "LLDBApp")
+                XCTAssertEqual(timeoutSeconds, 2.5, accuracy: 0.001)
+                return expectedEvidence
+            },
+            terminalLLDBRunner: { _, _ in
+                XCTFail("terminal runner should not be used in headless test")
+            }
+        )
+
+        let result = try service.launchAppWithLLDB(
+            bundleId: "com.test.lldb",
+            withTerminalWindow: false,
+            timeoutSeconds: 2.5
+        )
+
+        XCTAssertEqual(result.method, "lldb-headless")
+        XCTAssertEqual(result.lldb, expectedEvidence)
+        XCTAssertTrue(result.lldb?.timedOut ?? false)
     }
 
     // MARK: - LaunchError Tests

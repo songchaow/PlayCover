@@ -74,6 +74,10 @@ public enum LaunchTools {
                     "withTerminalWindow": AnyCodable([
                         "type": "boolean",
                         "description": "Whether to open LLDB in a Terminal window (default: false, headless mode)"
+                    ] as Any),
+                    "timeoutSeconds": AnyCodable([
+                        "type": "number",
+                        "description": "Headless LLDB timeout before interrupting and summarizing the session (default: 5.0 seconds). Ignored when withTerminalWindow=true"
                     ] as Any)
                 ],
                 required: ["bundleId"]
@@ -94,9 +98,11 @@ public enum LaunchTools {
             }
 
             let withTerminalWindow = args["withTerminalWindow"] as? Bool ?? false
+            let timeoutSeconds = args["timeoutSeconds"] as? Double ?? 5.0
             let result = try launchService.launchAppWithLLDB(
                 bundleId: bundleId,
-                withTerminalWindow: withTerminalWindow
+                withTerminalWindow: withTerminalWindow,
+                timeoutSeconds: timeoutSeconds
             )
             return CallToolResult(content: [.text(content: formatLaunchResult(result))])
         }
@@ -105,12 +111,44 @@ public enum LaunchTools {
     // MARK: - Helpers
 
     private static func formatLaunchResult(_ result: LaunchResult) -> String {
-        let data: [String: Any] = [
+        var data: [String: Any] = [
             "bundleIdentifier": result.bundleIdentifier,
             "launched": result.launched,
             "method": result.method,
-            "message": result.message
+            "message": result.message,
         ]
+        if let evidence = result.lldb {
+            var lldbData: [String: Any] = [
+                "timedOut": evidence.timedOut,
+                "didStop": evidence.didStop,
+                "terminationStatus": evidence.terminationStatus,
+                "backtrace": evidence.backtrace,
+                "transcript": evidence.transcript,
+                "transcriptTail": evidence.transcriptTail,
+            ]
+            if let processIdentifier = evidence.processIdentifier {
+                lldbData["processIdentifier"] = processIdentifier
+            }
+            if let stopReason = evidence.stopReason {
+                lldbData["stopReason"] = stopReason
+            }
+            if let signal = evidence.signal {
+                lldbData["signal"] = signal
+            }
+            if let faultAddress = evidence.faultAddress {
+                lldbData["faultAddress"] = faultAddress
+            }
+            if let faultingThread = evidence.faultingThread {
+                lldbData["faultingThread"] = faultingThread
+            }
+            if let faultingFrame = evidence.faultingFrame {
+                lldbData["faultingFrame"] = faultingFrame
+            }
+            if let faultingInstruction = evidence.faultingInstruction {
+                lldbData["faultingInstruction"] = faultingInstruction
+            }
+            data["lldb"] = lldbData
+        }
         guard let jsonData = try? JSONSerialization.data(
             withJSONObject: data,
             options: [.prettyPrinted, .sortedKeys]

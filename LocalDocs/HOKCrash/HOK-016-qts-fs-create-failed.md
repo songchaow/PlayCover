@@ -147,8 +147,16 @@ HOK-013 的价值是在 frame 3 触发前防卫 early reader。HOK-015 让 frame
    在 `0x1001a55b8` 立刻返回 0。与此同时，新增 natural-run storage 深 probe
    `build/hok-016c27-mainchunk-subtree-storage-v3.json` 还证明：
    `0x10012bb7c` entry 收到的并不是简单 PascalString `"1"`，而是一份
-   49-byte descriptor（`x1/x20`）+ companion blob（`x2`）；helper 返回 0
-   之后才把 `storage+0x30` 置成 `0x9000b`。详见 `HOK-016-appendix-C27.md`。
+   49-byte descriptor（`x1/x20`）+ companion blob（`x2`）；而再往里补的
+   `build/hok-016c27-mainchunk-subtree-trace-v3.json` +
+   `build/hok-016c27-create-table-impl-static*.txt` 又把 helper 后半段继续收紧：
+   `0x10012bb7c` 入口只是 `str wzr, [x4]; b 0x100124e80` 的薄 wrapper；natural
+   run 在 `0x10012502c -> 0x100135d80(..., errSlot)` 的第一层 gate 实测
+   `w0=1`、`errSlot=0`，随后命中 `0x10012581c` entry-build branch
+   （`node+0x48=0, node+0x50=0`），**没有** 命中 `0x100125334` 的 `err=9`
+   写点；真正把 helper 压回 0 的，是更后的 `0x100125960` final-check，
+   那里 `w0=0` 且 `errSlot=0x9000b`，随后 `0x1001259c4` 才返回 null table。
+   详见 `HOK-016-appendix-C27.md`。
 
 ### 当前根因链（跨 C.2.3 → C.2.7 稳定版本）
 
@@ -189,8 +197,10 @@ bundle-scoped、不动 NGR 二进制：
    `0x10432df30` 这支首轮 `0x1001a53a0(..., 1)` 会在 `0x1001a588c` /
    OpenNodeStorage gate 返回 0；(b) 为什么 `0x10432dfdc` 这支
    `ba720(key="1")` lookup 返回 0、把 `ctx+0x38` 初始化成 0；(c) natural
-   run 里 `0x10012bb7c` 收到的 49-byte descriptor + `x2` companion blob
-   到底缺了哪一项前置契约，才会把 helper 返回压成 null table / `0x9000b`。
+   run 里 `0x10012bb7c` 的第一层 `0x100135d80(..., errSlot)` gate 已经返回 1、
+   并已走进 `0x10012581c` entry-build 之后，究竟是哪一个后半 helper /
+   final-check（现收紧到 `0x10012595c -> 0x100125960` 一带）把 error slot
+   推成 `0x9000b`，才让 helper 最终返回 null table。
 2. **C.5**：若 C.2.7 能给出可重复的 child-registration API 签名或完
    整对象构造路径，PlayTools constructor 里按同样签名补齐。**最小侵
    入修法**。

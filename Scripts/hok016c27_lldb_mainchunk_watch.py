@@ -659,6 +659,131 @@ def snapshot_storage_after_create_table_on_hit(frame, bp_loc, internal_dict):
     return False
 
 
+def snapshot_create_table_impl_gate_call_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    x0 = _reg_u64(frame, "x0")
+    x1 = _reg_u64(frame, "x1")
+    x2 = _reg_u64(frame, "x2")
+    x3 = _reg_u64(frame, "x3")
+    x23 = _reg_u64(frame, "x23")
+    x27 = _reg_u64(frame, "x27")
+    x30 = _reg_u64(frame, "x30")
+    err_before = _read_u32(process, x3) if x3 > 0x100000000 else None
+    extra = ""
+    for label, value in (("x0", x0), ("x2", x2), ("x23", x23), ("x27", x27)):
+        if value > 0x100000000:
+            extra += f" {label}raw={_hex_dump(_read_bytes(process, value, 0x20))}"
+
+    print(
+        f"[hok016c27-create-table-gate-call] pc=0x{frame.GetPC():x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3(err)=0x{x3:x} "
+        f"x23(desc)=0x{x23:x} x27(blob)=0x{x27:x} x30(lr)=0x{x30:x} errBefore=0x{(err_before or 0):x}"
+        f"{extra} bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_create_table_impl_gate_ret_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    x0 = _reg_u64(frame, "x0")
+    x23 = _reg_u64(frame, "x23")
+    x26 = _reg_u64(frame, "x26")
+    x27 = _reg_u64(frame, "x27")
+    x30 = _reg_u64(frame, "x30")
+    sp = _reg_u64(frame, "sp")
+    out0 = _read_u64(process, sp + 0x30) if sp else None
+    out1 = _read_u64(process, sp + 0x38) if sp else None
+    err_after = _read_u32(process, x26) if x26 > 0x100000000 else None
+    desc_raw = _hex_dump(_read_bytes(process, x23, 0x20)) if x23 > 0x100000000 else "<nil>"
+    blob_raw = _hex_dump(_read_bytes(process, x27, 0x20)) if x27 > 0x100000000 else "<nil>"
+
+    print(
+        f"[hok016c27-create-table-gate-ret] pc=0x{frame.GetPC():x} w0=0x{(x0 & 0xffffffff):x} x23(desc)=0x{x23:x} "
+        f"x26(err)=0x{x26:x} x27(blob)=0x{x27:x} x30(lr)=0x{x30:x} out0=0x{(out0 or 0):x} out1=0x{(out1 or 0):x} "
+        f"errAfter=0x{(err_after or 0):x} descRaw={desc_raw} blobRaw={blob_raw} bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_create_table_impl_err9_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    sp = _reg_u64(frame, "sp")
+    x22 = _reg_u64(frame, "x22")
+    x23 = _reg_u64(frame, "x23")
+    x26 = _reg_u64(frame, "x26")
+    x27 = _reg_u64(frame, "x27")
+    x30 = _reg_u64(frame, "x30")
+    err_slot = _read_u64(process, sp + 0x8) if sp else None
+    err_value = _read_u32(process, err_slot) if err_slot and err_slot > 0x100000000 else None
+
+    print(
+        f"[hok016c27-create-table-err9] pc=0x{frame.GetPC():x} x22(ret)=0x{x22:x} x23(desc)=0x{x23:x} x26(node)=0x{x26:x} "
+        f"x27(blob)=0x{x27:x} x30(lr)=0x{x30:x} errSlot=0x{(err_slot or 0):x} errValue=0x{(err_value or 0):x} "
+        f"node+0x48=0x{(_read_u32(process, x26 + 0x48) or 0):x} bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_create_table_impl_entry_build_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    x22 = _reg_u64(frame, "x22")
+    x23 = _reg_u64(frame, "x23")
+    x26 = _reg_u64(frame, "x26")
+    x27 = _reg_u64(frame, "x27")
+    x30 = _reg_u64(frame, "x30")
+
+    print(
+        f"[hok016c27-create-table-entry-build] pc=0x{frame.GetPC():x} x22=0x{x22:x} x23(desc)=0x{x23:x} x26(node)=0x{x26:x} "
+        f"x27(blob)=0x{x27:x} x30(lr)=0x{x30:x} node+0x48=0x{(_read_u32(process, x26 + 0x48) or 0):x} "
+        f"node+0x50=0x{(_read_u32(process, x26 + 0x50) or 0):x} bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_create_table_impl_final_check_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    sp = _reg_u64(frame, "sp")
+    x0 = _reg_u64(frame, "x0")
+    x22 = _reg_u64(frame, "x22")
+    x26 = _reg_u64(frame, "x26")
+    x30 = _reg_u64(frame, "x30")
+    err_slot = _read_u64(process, sp + 0x8) if sp else None
+    err_value = _read_u32(process, err_slot) if err_slot and err_slot > 0x100000000 else None
+
+    print(
+        f"[hok016c27-create-table-final-check] pc=0x{frame.GetPC():x} w0=0x{(x0 & 0xffffffff):x} x22=0x{x22:x} x26=0x{x26:x} x30(lr)=0x{x30:x} "
+        f"errSlot=0x{(err_slot or 0):x} errValue=0x{(err_value or 0):x} bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_create_table_impl_return_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    sp = _reg_u64(frame, "sp")
+    x22 = _reg_u64(frame, "x22")
+    x26 = _reg_u64(frame, "x26")
+    x30 = _reg_u64(frame, "x30")
+    err_slot = _read_u64(process, sp + 0x8) if sp else None
+    err_value = _read_u32(process, err_slot) if err_slot and err_slot > 0x100000000 else None
+
+    print(
+        f"[hok016c27-create-table-ret] pc=0x{frame.GetPC():x} x22(ret)=0x{x22:x} x26=0x{x26:x} x30(lr)=0x{x30:x} "
+        f"errSlot=0x{(err_slot or 0):x} errValue=0x{(err_value or 0):x} bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
 def force_storage_success_on_hit(frame, bp_loc, internal_dict):
     import lldb  # type: ignore
 

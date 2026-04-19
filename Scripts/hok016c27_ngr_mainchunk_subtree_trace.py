@@ -56,6 +56,12 @@ BP_A5014_AFTER_STORAGE = "0x1001a522c"
 BP_STORAGE_METHOD_ENTRY = "0x1001b3d0c"
 BP_STORAGE_CREATE_TABLE_CALL = "0x1001b3df0"
 BP_CREATE_TABLE_ENTRY = "0x10012bb7c"
+BP_CREATE_TABLE_IMPL_GATE_CALL = "0x10012502c"
+BP_CREATE_TABLE_IMPL_GATE_RET = "0x100125030"
+BP_CREATE_TABLE_IMPL_ERR9 = "0x100125334"
+BP_CREATE_TABLE_IMPL_ENTRY_BUILD = "0x10012581c"
+BP_CREATE_TABLE_IMPL_FINAL_CHECK = "0x100125960"
+BP_CREATE_TABLE_IMPL_RETURN = "0x1001259c4"
 BP_STORAGE_AFTER_CREATE_TABLE = "0x1001b3df4"
 
 
@@ -149,6 +155,36 @@ def main() -> int:
             "hok016c27_lldb_mainchunk_watch.snapshot_create_table_entry_on_hit",
         ),
         (
+            BP_CREATE_TABLE_IMPL_GATE_CALL,
+            "hok016c27_create_table_impl_gate_call",
+            "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_gate_call_on_hit",
+        ),
+        (
+            BP_CREATE_TABLE_IMPL_GATE_RET,
+            "hok016c27_create_table_impl_gate_ret",
+            "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_gate_ret_on_hit",
+        ),
+        (
+            BP_CREATE_TABLE_IMPL_ERR9,
+            "hok016c27_create_table_impl_err9",
+            "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_err9_on_hit",
+        ),
+        (
+            BP_CREATE_TABLE_IMPL_ENTRY_BUILD,
+            "hok016c27_create_table_impl_entry_build",
+            "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_entry_build_on_hit",
+        ),
+        (
+            BP_CREATE_TABLE_IMPL_FINAL_CHECK,
+            "hok016c27_create_table_impl_final_check",
+            "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_final_check_on_hit",
+        ),
+        (
+            BP_CREATE_TABLE_IMPL_RETURN,
+            "hok016c27_create_table_impl_return",
+            "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_return_on_hit",
+        ),
+        (
             BP_STORAGE_AFTER_CREATE_TABLE,
             "hok016c27_storage_after_create_table",
             "hok016c27_lldb_mainchunk_watch.snapshot_storage_after_create_table_on_hit",
@@ -216,6 +252,11 @@ def main() -> int:
     print(f"  storage method      : {BP_STORAGE_METHOD_ENTRY}")
     print(f"  storage create-call : {BP_STORAGE_CREATE_TABLE_CALL}")
     print(f"  create-table entry  : {BP_CREATE_TABLE_ENTRY}")
+    print(f"  create-table gate   : {BP_CREATE_TABLE_IMPL_GATE_CALL}, {BP_CREATE_TABLE_IMPL_GATE_RET}")
+    print(f"  create-table err=9  : {BP_CREATE_TABLE_IMPL_ERR9}")
+    print(f"  create-table build  : {BP_CREATE_TABLE_IMPL_ENTRY_BUILD}")
+    print(f"  create-table check  : {BP_CREATE_TABLE_IMPL_FINAL_CHECK}")
+    print(f"  create-table return : {BP_CREATE_TABLE_IMPL_RETURN}")
     print(f"  storage table       : {BP_STORAGE_AFTER_CREATE_TABLE}")
     print(f"  a5014 return        : {BP_BD464_AFTER_A5014}")
     print(f"  lookup2 return      : {BP_BD448_AFTER_LOOKUP1}")

@@ -404,3 +404,63 @@ state 尚未就绪，而不是 key / candidate materialization 自身有误。**
 这说明：**到 `0x10012bb7c` 这一层，问题已经不应再表述成“key=`"1"` 查不到表”**，
 而更像是“create-table helper 拿到的 descriptor/blob contract 缺了一项或多项前置状态”，
 所以 helper 返回 null table，并把错误码落到 `0x9000b`。
+
+## 13. `0x10012bb7c` 的第一层 descriptor/blob gate 已通过；natural run 失败后移到 entry-build 之后的 final-check
+
+这轮先用 `build/hok-016c27-create-table-impl-static.txt` /
+`build/hok-016c27-create-table-impl-static-tail.txt` 把 `0x10012bb7c` 的真实静态骨架拉了出来，再用
+`build/hok-016c27-mainchunk-subtree-trace-v3.json` 对应地址做 natural-run live probe。
+
+### 13.a 静态收紧：`0x10012bb7c` 只是薄 wrapper，真实实现是 `0x100124e80`
+
+- `0x10012bb7c` 本身并不是普通 prologue，而是：
+  - `str wzr, [x4]`：先把 caller 传进来的 error slot 清零；
+  - `b 0x100124e80`：直接跳进真正的 helper 实现体。
+- 这意味着 natural run 里看到的 `storage+0x30 = 0x9000b` **不是** wrapper 自己的参数校验产物，而是更深层 helper 后半段写出来的状态。
+- `0x100124e80` 里最早的一层关键 gate 是 `0x10012502c -> bl 0x100135d80`，其入参带着：
+  - 规范化后的 descriptor；
+  - `x2 = sp+0x30` 的临时 out slot；
+  - `x3 = errSlot`。
+
+### 13.b live 结果 1：`0x100135d80(..., errSlot)` 这层 gate 在 natural run **返回 1**
+
+`[hok016c27-create-table-gate-call]` / `[...-gate-ret]` 直接给出：
+
+- 调 gate 前 `errBefore = 0`；
+- gate 返回点 `0x100125030` 上 `w0 = 1`；
+- 同时 `errAfter = 0`；
+- transcript 里还能看到 descriptor/blob raw bytes 与前一节记录的 49-byte descriptor + companion blob 一致。
+
+所以：**descriptor/blob contract 的第一层 gate 已经通过，不是当前 null table 的直接来源。**
+
+### 13.c live 结果 2：natural run 会走进 `0x10012581c` 的 entry-build branch，而且没有命中 `err=9`
+
+`[hok016c27-create-table-entry-build]` 证明 natural run 确实命中了 `0x10012581c`，且现场是：
+
+- `node+0x48 = 0`
+- `node+0x50 = 0`
+
+对照静态分支：这是从 `0x100125318 cmp w8,#1; 0x100125320 b.lt 0x10012581c` 过来的，
+意味着 helper 进入的是“先补 entry / container”的那条路径，而不是直接走
+`0x100125324..330` 的 `err=9` 写点。实际 live transcript 里也**没有任何**
+`[hok016c27-create-table-err9]` 命中。
+
+这又把自然路径进一步收紧成：**当前失败既不是第一层 gate fail，也不是 `err=9` 这条显式错误码路径。**
+
+### 13.d live 结果 3：真正把 helper 压回 0 的，是 `0x10012595c -> 0x100125960` 之后的 final-check
+
+新增的 `[hok016c27-create-table-final-check]` / `[hok016c27-create-table-ret]` 记录显示：
+
+- 到 `0x100125960` 时，`x22` 已经是非零临时对象（说明 helper 已经跑过了 entry-build / 后续若干组装步骤）；
+- 但这时 `w0 = 0`，同时 `errSlot = 0x9000b`；
+- 随后的 `0x1001259c4` 仍保持 `x22(ret)=0`、`errSlot=0x9000b`，最终把 null table 返还给 storage method。
+
+换句话说，**natural run 的 create-table 失败现在应表述成：helper 已经通过前半 descriptor/blob gate，也已经进入 entry-build，但在更后的 final-check 阶段把 error slot 推成了 `0x9000b`，并因此返回 null table。**
+
+### 13.e 对 C.2.7 主线的影响
+
+这轮结果把问题 (c) 从“49-byte descriptor / blob 本身是不是格式不对”进一步收紧成：
+
+- 这对 descriptor/blob 至少能通过 `0x100135d80(..., errSlot)` 的**第一层** gate；
+- 当前缺的前置条件更像是 `0x10012581c -> 0x10012595c -> 0x100125960` 这一段后半 helper 需要的 entry-build / final-verify / registrar state；
+- 下一步最值钱的 probe 应该继续围绕 `0x100125948` / `0x10012595c` / `0x1001148b8` 一带补 live trace，直接回答是谁在 final-check 之前把 error slot 推成了 `0x9000b`。

@@ -75,9 +75,16 @@
     lookup 才会返回 nonzero 并把 `ctx+0x38` 真正填起来。另一个新事实是：
     `build/hok-016c27-mainchunk-subtree-storage-v3.json` 已证明 natural run 的
     `0x10012bb7c` entry 收到的是 49-byte descriptor（`x1/x20`）+
-    companion blob（`x2`），不是简单 PascalString `"1"`；helper 返回 0 后才
-    把 `storage+0x30` 写成 `0x9000b`。`hok014_ngr_alert_suppressed`
-    仍为 1，进程仍停在僵尸态。
+    companion blob（`x2`），不是简单 PascalString `"1"`；而新增
+    `build/hok-016c27-mainchunk-subtree-trace-v3.json` +
+    `build/hok-016c27-create-table-impl-static*.txt` 又把 helper 内部继续收紧：
+    `0x10012bb7c` 入口只是 `str wzr, [x4]; b 0x100124e80` 的薄 wrapper；natural
+    run 在 `0x10012502c -> 0x100135d80(..., errSlot)` 的第一层 gate 实测
+    `w0=1`、`errSlot` 仍为 0，随后命中 `0x10012581c` entry-build branch
+    （`node+0x48=0, node+0x50=0`），**没有** 命中 `0x100125334` 的 `err=9`
+    写点；真正把 helper 压回 0 的是更后的 `0x100125960` final-check，那里
+    `w0=0` 且 `errSlot=0x9000b`，随后 `0x1001259c4` 才返回 null table。
+    `hok014_ngr_alert_suppressed` 仍为 1，进程仍停在僵尸态。
 
 - **修复路线（优先级最高 → 最低；按 HOK-016-C.2.7 当前证据重排）**：
   1. `HOK-016-C.2.7`（**当前主线**）：继续拆 `ba940` / second-gate 这条
@@ -263,20 +270,23 @@
   `RSS ≥ 800MB` / 线程数 ≥ 20 / 窗口在主屏内 / `%CPU` 持续 ≥ 5%。
 
 - **当前卡点**：当前未闭合的 contract 已不再是“`mainChunk+0x60` 从头到尾没写”
-  或“final entry 的 `slot1` 没写进去”，而是 **为什么 `0x10432df30` 这支会带着
-  `pkg+0xa8=3 / pkg+0x110=5` 进入 `0x1001a588c` 并在 gate1 立刻失败，以及为什么
-  `0x10432dfdc` 这支总在 `mainChunk+0x60` 仍为 0 的时刻先触发 `ba720(key="1")`**。
-  同时，natural run 的 `0x10012bb7c` 也已证实看到的是一份 descriptor/blob contract，
-  不是简单 key `"1"`；换句话说，当前 second-gate
-  `0x10017faa0 -> 0x1001be550(flag=1)` 看到的对象已经来自 final entry 的真实
-  override slot，但它自身仍缺 child/payload 语义，而 create-table helper 这侧又缺
-  前置契约，所以返回值继续被压成 0。
+  或“final entry 的 `slot1` 没写进去”，也不再是 create-table 的**第一层**
+  descriptor/blob gate——新增 natural-run trace 已证明：`0x10012bb7c` 先经
+  `0x10012502c -> 0x100135d80(..., errSlot)` 时 `w0=1` 且 `errSlot=0`，随后会走进
+  `0x10012581c` 的 entry-build branch（`node+0x48=0, node+0x50=0`），并且没有命中
+  `0x100125334` 的 `err=9` 写点；真正把 helper 压回 0 的，是更后的
+  `0x100125960` final-check，此时 `w0=0` 且 `errSlot=0x9000b`，再由
+  `0x1001259c4` 返回 null table。当前最值钱的问题因此收紧成两层：**为什么
+  `0x10432df30` 这支会带着 `pkg+0xa8=3 / pkg+0x110=5` 进入 `0x1001a588c` 并在 gate1
+  立刻失败，以及 natural run 的 `0x100124e80` / `0x10012581c -> 0x10012595c ->
+  0x100125960` 这段后半 helper 还缺哪一项前置契约，才会把 error slot 推成
+  `0x9000b`。**
 
 - **下一步默认规划**：
-  1. `HOK-016-C.2.7`：优先围绕 `ba720` / `ba940` / `0x1001a53dc` / `0x1001bb73c` 一带继续补 live trace，直接回答：
+  1. `HOK-016-C.2.7`：优先围绕 `ba720` / `ba940` / `0x1001a53dc` / `0x1001bb73c` 一带继续补 live trace，并把 natural-run create-table helper 的后半段一起拆开，直接回答：
      (a) 为什么 `0x10432df30` 这支里的首轮 `0x1001a53a0(..., 1)` 会带着 `pkg+0xa8=3 / pkg+0x110=5` 卡在 `0x1001a588c` / OpenNodeStorage gate；
      (b) 为什么 `0x10432dfdc` 这支会在 `mainChunk+0x60` 仍为 0 的时刻先触发 `ba720(key="1")`，从而让 lookup 返回 0、把 `ctx+0x38` 初始化成 0，最终只能走硬编码 `w3 = 0` 的 `0x1001bb73c`；
-     (c) 当前 natural run 里 `0x10012bb7c` 看到的 49-byte descriptor + `x2` companion blob 还缺哪一项前置条件，才能不再落回这份 hollow wrapper。
+     (c) 当前 natural run 里 `0x10012bb7c` 的第一层 `0x100135d80(..., errSlot)` gate 已经返回 1、并已走进 `0x10012581c` entry-build branch 之后，究竟是哪一个后半 helper / final-check（现收紧到 `0x10012595c -> 0x100125960` 一带）把 error slot 推成 `0x9000b`，才让返回值继续落回 0。
   2. 并行保留对 natural run 前置条件的追踪：继续沿
      `0x1001bd464 -> 0x1001ba50c -> 0x1001a5014 -> storage.vtable[0x18](0x1001b3d0c)
      -> 0x10012bb7c` 解释 descriptor/blob contract 与 `0x9000b` / null table 的对应关系；同时围绕

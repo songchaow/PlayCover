@@ -53,6 +53,8 @@ BP_BA940_OVERRIDE_ALLOC_POST = "0x1001bae70"
 BP_BA940_OVERRIDE_RESULT = "0x1001bae8c"
 BP_A53DC_AFTER_STEP1 = "0x1001a55b8"
 BP_A53DC_AFTER_STEP2 = "0x1001a55c8"
+BP_OPEN_NODE_STORAGE_ENTRY = "0x1001a588c"
+BP_OPEN_NODE_STORAGE_FAIL = "0x1001a5730"
 BP_BA940_SECOND_OVERRIDE_CALL = "0x1001baf80"
 BP_BA940_SECOND_OVERRIDE_RESULT = "0x1001baf84"
 BP_BA940_CTX38_CHECK = "0x1001bafa8"
@@ -351,6 +353,8 @@ def main() -> int:
         print(f"  ba940 override ret   : {BP_BA940_OVERRIDE_RESULT}")
         print(f"  a53dc gate step1     : {BP_A53DC_AFTER_STEP1}")
         print(f"  a53dc gate step2     : {BP_A53DC_AFTER_STEP2}")
+        print(f"  open-node entry      : {BP_OPEN_NODE_STORAGE_ENTRY}")
+        print(f"  open-node fail       : {BP_OPEN_NODE_STORAGE_FAIL}")
         print(f"  ba940 second call    : {BP_BA940_SECOND_OVERRIDE_CALL}")
         print(f"  ba940 second ret     : {BP_BA940_SECOND_OVERRIDE_RESULT}")
         print(f"  ba940 ctx+0x38 check : {BP_BA940_CTX38_CHECK}")

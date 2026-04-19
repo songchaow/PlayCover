@@ -131,12 +131,18 @@ HOK-013 的价值是在 frame 3 触发前防卫 early reader。HOK-015 让 frame
    storage method 返回 0 → a5014 返回 0。C.4 双 checkpoint（storage
    success + ready bit）顶开 old gate 后，dormant writer path
    `0x10432dfdc -> 0x10017f3c8 -> 0x1001bc220 -> 0x1001bc970 ->
-   0x1001c6da4 -> 0x1001c6e74` 会真实写 `mainChunk+0x60`；但 dual-force
-   run 里还暴露出两支 sibling branch：一支被 `0x1001a588c` /
-   OpenNodeStorage gate 卡死（首轮 `a53a0(..., 1)` 返回 0），另一支
-   在上游 `ba720(key="1")` lookup 返回 0，导致 `ctx+0x38` 初始化为 0、
-   被迫走硬编码 `w3=0` 的 `bb73c`，产出 `backref-to-entry +
-   null-child` 的 hollow wrapper。详见 `HOK-016-appendix-C27.md`。
+   0x1001c6da4 -> 0x1001c6e74` 会真实写 `mainChunk+0x60`；最新
+   `build/hok-016c4-force-storage-ready-open-node.json` 又把 sibling
+   branch 的分水岭进一步收紧：`0x10432df30` 与 `0x10432dfdc` 两支在
+   `ba720(key="1")` 看到的 `ctx[0]` / `ctx+0x18` raw bytes 与 key 都一致，
+   真正变化的是调用当下的 `mainChunk+0x60`——前者在 subtree root 已非零时
+   lookup 返回 nonzero 并把 `ctx+0x38` 填起来，后者在 `mainChunk+0x60 = 0`
+   时 lookup 返回 0、把 `ctx+0x38` 初始化成 0，随后被迫走硬编码 `w3=0`
+   的 `bb73c`，产出 `backref-to-entry + null-child` 的 hollow wrapper。
+   分支 A 仍卡在 `0x1001a588c` / OpenNodeStorage gate；这轮对
+   `0x1001a588c` / `0x1001a5730` 的直探针 0 hit，因此当前对它的直接证据
+   仍是 return-site package-state 差异（fail: `pkg+0xa8=3`, `pkg+0x110=5`；
+   success: `pkg+0xa8=2`, `pkg+0x110=1/3`）。详见 `HOK-016-appendix-C27.md`。
 
 ### 当前根因链（跨 C.2.3 → C.2.7 稳定版本）
 

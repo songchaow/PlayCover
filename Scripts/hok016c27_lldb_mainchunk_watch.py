@@ -817,6 +817,63 @@ def snapshot_ba940_override_result_on_hit(frame, bp_loc, internal_dict):
     return False
 
 
+def snapshot_open_node_storage_entry_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    x0 = _reg_u64(frame, "x0")
+    x1 = _reg_u64(frame, "x1")
+    x2 = _reg_u64(frame, "x2")
+    x3 = _reg_u64(frame, "x3")
+    x4 = _reg_u64(frame, "x4")
+    x30 = _reg_u64(frame, "x30")
+    label = {
+        0x1001A55B8: "gate1-ret",
+        0x1001A55C8: "gate2-ret",
+    }.get(x30, f"lr-0x{x30:x}")
+    pkg_a8 = _read_u64(process, x0 + 0xA8) if x0 > 0x100000000 else None
+    pkg_b0 = _read_u64(process, x0 + 0xB0) if x0 > 0x100000000 else None
+    pkg_110 = _read_u32(process, x0 + 0x110) if x0 > 0x100000000 else None
+    arg1_dump = _hex_dump(_read_bytes(process, x1, 0x20)) if x1 > 0x100000000 else "<nil>"
+    arg2_dump = _hex_dump(_read_bytes(process, x2, 0x20)) if x2 > 0x100000000 else "<nil>"
+
+    print(
+        f"[hok016c27-open-node-entry] pc=0x{frame.GetPC():x} label={label} "
+        f"x0(pkg)=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} x30(lr)=0x{x30:x} "
+        f"pkg+0xa8=0x{(pkg_a8 or 0):x} pkg+0xb0=0x{(pkg_b0 or 0):x} pkg+0x110=0x{(pkg_110 or 0):x} "
+        f"arg1raw={arg1_dump} arg2raw={arg2_dump}"
+        + (_tracked_chunk_extra(process, _tracked_mainchunk_addr) if _tracked_mainchunk_addr else "")
+        + f" bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_open_node_storage_fail_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    x0 = _reg_u64(frame, "x0")
+    x1 = _reg_u64(frame, "x1")
+    x2 = _reg_u64(frame, "x2")
+    x3 = _reg_u64(frame, "x3")
+    x4 = _reg_u64(frame, "x4")
+    x19 = _reg_u64(frame, "x19")
+    x20 = _reg_u64(frame, "x20")
+    x30 = _reg_u64(frame, "x30")
+    pkg_a8 = _read_u64(process, x19 + 0xA8) if x19 > 0x100000000 else None
+    pkg_b0 = _read_u64(process, x19 + 0xB0) if x19 > 0x100000000 else None
+    pkg_110 = _read_u32(process, x19 + 0x110) if x19 > 0x100000000 else None
+
+    print(
+        f"[hok016c27-open-node-fail] pc=0x{frame.GetPC():x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} "
+        f"x19(pkg)=0x{x19:x} x20=0x{x20:x} x30(lr)=0x{x30:x} "
+        f"pkg+0xa8=0x{(pkg_a8 or 0):x} pkg+0xb0=0x{(pkg_b0 or 0):x} pkg+0x110=0x{(pkg_110 or 0):x}"
+        + (_tracked_chunk_extra(process, _tracked_mainchunk_addr) if _tracked_mainchunk_addr else "")
+        + f" bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
 def snapshot_a53dc_gate_on_hit(frame, bp_loc, internal_dict):
     thread = frame.GetThread()
     process = thread.GetProcess()
@@ -841,6 +898,7 @@ def snapshot_a53dc_gate_on_hit(frame, bp_loc, internal_dict):
         f"x19(pkg)=0x{x19:x} x20(args)=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x} "
         f"in.w3=0x{(input_w3 or 0):x} in.w4=0x{(input_w4 or 0):x} in.x5=0x{(input_x5 or 0):x} "
         f"pkg+0xa8=0x{(pkg_a8 or 0):x} pkg+0xb0=0x{(pkg_b0 or 0):x} pkg+0x110=0x{(pkg_110 or 0):x}"
+        + (_tracked_chunk_extra(process, _tracked_mainchunk_addr) if _tracked_mainchunk_addr else "")
         + f" bt={_short_backtrace(thread)}"
     )
     return False
@@ -1123,11 +1181,15 @@ def snapshot_ba720_lookup_ret_on_hit(frame, bp_loc, internal_dict):
     key = _decode_pascal_string(process, x21)
     ctx0 = _read_u64(process, x19) if x19 > 0x100000000 else None
     ctx18 = _read_u64(process, x19 + 0x18) if x19 > 0x100000000 else None
+    ctx0_raw = _hex_dump(_read_bytes(process, ctx0, 0x20)) if ctx0 and ctx0 > 0x100000000 else "<nil>"
+    ctx18_raw = _hex_dump(_read_bytes(process, ctx18, 0x20)) if ctx18 and ctx18 > 0x100000000 else "<nil>"
 
     print(
         f"[hok016c27-ba720-lookup] pc=0x{frame.GetPC():x} x0(lookupRet)=0x{x0:x} x19(ctx)=0x{x19:x} "
         f"x21(key)=0x{x21:x} x30(lr)=0x{x30:x} ctx[0]=0x{(ctx0 or 0):x} ctx+0x18=0x{(ctx18 or 0):x} "
-        f"key=[{key['summary']}] bt={_short_backtrace(thread)}"
+        f"ctx0raw={ctx0_raw} ctx18raw={ctx18_raw} key=[{key['summary']}]"
+        + (_tracked_chunk_extra(process, _tracked_mainchunk_addr) if _tracked_mainchunk_addr else "")
+        + f" bt={_short_backtrace(thread)}"
     )
     return False
 
@@ -1151,7 +1213,10 @@ def snapshot_ba720_ctx_ready_on_hit(frame, bp_loc, internal_dict):
         f"[hok016c27-ba720-ctx] pc=0x{frame.GetPC():x} x19(ctx)=0x{x19:x} x30(lr)=0x{x30:x} "
         f"ctx[0]=0x{(ctx0 or 0):x} ctx+0x18=0x{(ctx18 or 0):x} ctx+0x38=0x{(ctx38 or 0):x} "
         f"ctx+0x40=0x{(ctx40 or 0):x} ctx+0x98=0x{(ctx98 or 0):x} ctx+0xa0=0x{(ctxA0 or 0):x} "
-        f"ctx+0x20=[{ctx20['summary']}] ctx+0x28=[{ctx28['summary']}] bt={_short_backtrace(thread)}"
+        f"ctx+0x20=[{ctx20['summary']}] ctx+0x28=[{ctx28['summary']}]"
+        + (_object_contract_extra(process, ctx38, "ctx38") if ctx38 and ctx38 > 0x100000000 else "")
+        + (_tracked_chunk_extra(process, _tracked_mainchunk_addr) if _tracked_mainchunk_addr else "")
+        + f" bt={_short_backtrace(thread)}"
     )
     return False
 

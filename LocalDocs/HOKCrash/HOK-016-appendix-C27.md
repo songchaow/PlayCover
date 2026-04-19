@@ -327,11 +327,49 @@ dual-force pushes first writer branch alive
   -> sibling branch later calls 0x10017f3c8 again and the process eventually falls back to the old readiness-B sink
 ```
 
+### 11. `ba720` 的 branch 差异现在已经收紧到 `mainChunk+0x60` 是否已挂上 subtree root
+
+新增 `build/hok-016c4-force-storage-ready-open-node.json` 后，`ba720`
+这条线又缩小了一步：
+
+- `LR = 0x10432dfdc` 这支里，`[hok016c27-ba720-lookup]` 读到：
+  - `lookupRet = 0`
+  - `ctx[0] = 0x1158e9920`
+  - `ctx+0x18 = 0x13480ce00`
+  - `ctx0raw = 68 dc 80 0c 01 00 00 00 05 00 00 00 ... 6d 61 69 6e ...`
+  - `ctx18raw = a8 e4 80 0c 01 00 00 00 ... 58 54 55 4d ...`
+  - key 恒为 PascalString `"1"`
+  - **调用当下 `mainChunk+0x60 = 0`**
+- `LR = 0x10432df30` 这支里，同一个 `ba720(key="1")` 读到：
+  - `lookupRet = 0x130c66d20`（nonzero）
+  - `ctx[0]` / `ctx+0x18` / `ctx0raw` / `ctx18raw` / key 与上面那支保持一致
+  - **但此时 `mainChunk+0x60 = 0x132f4dcd0` 已经非零**
+
+这说明：**`ba720` miss 不再像是“ctx producer 自己构造错了另一份 header”**；
+目前可见的分水岭是 **调用 `ba720` 时 subtree root 是否已经挂进
+`mainChunk+0x60`**。也就是说，问题 (b) 的表述需要收紧成：
+
+- 为什么 `0x10432dfdc` 这支总是在 `mainChunk+0x60` 仍为 0 时先触发
+  `ba720(key="1")`，从而让 lookup 返回 0、把 `ctx+0x38` 初始化成 0；
+- 为什么要到后续 sibling / dormant writer path 跑起来之后，同一个
+  `ba720` 才会在 `0x10432df30` 这支里看到 nonzero subtree root，进而
+  返回 nonzero 并把 `ctx+0x38` 真正填起来。
+
+同一轮还补了 `0x1001a588c` / `0x1001a5730` 的 direct probe，但 **0 hit**；
+因此对 branch A 的当前直接证据仍是 return-site 差异，而不是 entry-side
+参数：
+
+- fail 的首轮 `a53dc(..., 1)`：`pkg+0xa8 = 3`、`pkg+0x110 = 5`
+- success 的两条可对照路径：`pkg+0xa8 = 2`、`pkg+0x110 = 1 / 3`
+
+这进一步暗示：`0x10432df30` 这支卡在 OpenNodeStorage，更像是 **package /
+storage state 尚未就绪**，而不是 key / candidate materialization 自身有误。
+
 这把主线目标进一步改写为两层：
 
 1. 先解释 **为什么 `0x10432df30` 这支里的首轮 `0x1001a53a0(..., 1)`
    会在 `0x1001a588c` / OpenNodeStorage gate 上返回 0，以及为什么
-   `0x10432dfdc` 这支里的 `ba720(key="1")` lookup 只会返回 0、从而
-   把 `ctx+0x38` 初始化成 0**；
+   `0x10432dfdc` 这支会在 `mainChunk+0x60` 仍为 0 的时刻先触发
+   `ba720(key="1")`**；
 2. 再继续收紧 natural run 为什么过不了 `storage success + ready`
    以及更高层 mount / registrar state 这组一项或多项 prerequisite。

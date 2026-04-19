@@ -41,147 +41,28 @@
 ## 主线任务
 
 - **当前状态（HOK-015 / HOK-016-A / HOK-016-B / HOK-016-C.1 /
-  HOK-016-C.X.1 / HOK-016-C.2.1 / HOK-016-C.2.2 / HOK-016-C.2.3 /
-  HOK-016-C.2.4 / HOK-016-C.2.5 / HOK-016-C.2.6 已落地；
-  HOK-016-C.2.7 当前主线）**：HOK-015 `cmdline preseed` 在
-  PlayTools constructor 稳定命中，218 条 inline
-  `FCommandLine::Get()` guard 全部 fall-through。HOK-016-A / B /
-  C.1 已精确锁定 Create Failed 的外层触发链；HOK-016-C.X.1 证伪
-  "HOK-015 seed 值驱动"假设；HOK-016-C.2.1 / C.2.2 / C.2.3 证伪
-  "sentinel `0x10e1eeef0` 未 bump" 假设；HOK-016-C.2.4 把失败链
-  缩到 `0x10017f184`；**HOK-016-C.2.6 进一步更正：rootB 并不缺
-  `"main"` key，真正缺的是 `"main"` 对应对象下面的 `"1"`
-  二级子项**：
-  - `Scripts/hok016c26_ngr_main_literal_xref.py` 离线扫 NGR 二进制后，
-    **没有**找到与 dyld `__init_offsets` 可达链相交的 PascalString
-    `"main"` 预注册 literal/xref；仅命中与当前主线无关的 `__cstring`
-    `main` 文本。
-  - `Scripts/hok016c26_ngr_rootB_keys.py` +
-    `Scripts/hok016c26_lldb_rootb_key_watch.py` 的运行期 key-watch 证实：
-    reporter 内部 **第一次** rootB insert（`PC = 0x1001cf020`，
-    backtrace 仍是 `0x108877bd0 +692`）插入的 key 就是
-    PascalString `"main"`；insert 后 rootB header 变成单节点树
-    （两指针都指向新节点、count=1）。
-  - `0x10017f184` 内那次关键调用
-    `bl 0x1001cd114(rootB=0x10e184b18, "main", 1)` **返回非零**：
-    `0x10017f1dc` 处实测 `x0 = 0x137027a00`（非零），因此
-    `0x10017f1e0 cbz x0` **不是** 当前 run 的失败点。
-  - 真正把返回值翻成 0 的是后续的 `0x1001bd448`：其内部先调
-    `0x1001ba82c(mainChunk, "1")`，`0x1001bd588` 处实测 `x0 = 0`；
-    随后 `0x10017f29c` 处 `x0 = 0 / x19 = 0`，最终
-    `0x10432e074` 看到 `0x10017f184` 返回 0。
-  - `0x10017f1dc` 处对返回的 `mainChunk` 对象做快照：
-    `obj+0x60 = 0x0`，而 `0x1001ba82c` 正是从 `mainChunk+0x60`
-    起步做二级树 lookup；动态装到 `mainChunk+0x60` 的 watchpoint 在
-    failure 发生前 **0 hit**。即 reporter 插进 rootB 的 `main`
-    对象是**空壳对象**：名字已注册，但 `"1"` 子项树始终没被填充。
-  - `Scripts/hok016c27_ngr_mainchunk_subtree_trace.py` +
-    `Scripts/hok016c27_lldb_mainchunk_watch.py` 新增后，当前 run 已能在
-    `0x10017f1dc` **稳定装上** `mainChunk+0x60` 的动态 8-byte watchpoint；
-    从对象出现到现有 failure sink 之间仍 **0 hit**。同一 run 里
-    `0x1001ba82c` 只命中 **1 次**，`x30 = 0x1001bd588`、`tracked=true`、
-    key 恒为 PascalString `"1"`，说明当前 macOS 失败 run 只走
-    `0x10017f194 → 0x1001bd448 → 0x1001ba82c(mainChunk, "1")` 这条二级
-    lookup 路径。
-  - `Scripts/hok016c27_ngr_mainchunk_callers.py` 离线扫 NGR `__text` 后，
-    `0x1001ba82c` 共找到 **7** 个 direct caller function、
-    `0x1001bd448` 仅 **1** 个 direct caller function；其中
-    `0x1001ba50c` 是唯一带 **5** 个 shallow callers 的 `lookup2`
-    wrapper 候选。当前 live transcript 没有出现任何非 `0x1001bd588`
-    的 `lookup2` return PC。
-   - C.2.7 新一轮对 `0x1001ba50c` / `0x1001a5014` 的 probe 进一步证实：
-     当前失败 run 里 `0x1001bd464` 在 `lookup2` miss 之后**确实会走**
-     fallback builder `0x1001ba50c`，入参是
-     `(mainChunk, "../../../NGR/Content/Paks/1", "1", 0, 1)`；
-     `0x1001ba50c` **返回非零对象**，但后续 `0x1001a5014` 在
-     `0x1001bd888` 处实测 `x0 = 0`，且 builder 返回对象 `x27` 与新分配对象
-     `x24` 的 `+0x60` 都仍为 `0`。反汇编 `0x1001a5014` 还表明：只有它后
-     半段某个下游方法返回 success 时，才会把 `x22(= x27+0x60)` 写进
-     `x21+0x60`。也就是说，当前失败点已经从“lookup2 miss”进一步收紧为
-     **`ba50c` fallback object 存在，但它的 `+0x60` 仍为空，且
-     `0x1001a5014` 的 post-builder contract 未闭合**。
-   - `Scripts/hok016c27_ngr_mainchunk_subtree_trace.py` /
-     `Scripts/hok016c27_lldb_mainchunk_watch.py` 新增对 `0x1001a50ec` /
-     `0x1001a5114` / `0x1001a522c` / `0x1001b3df4` 的细化 probe 后，
-     当前 run **没有**命中 `0x1001a50ec`，说明 `0x1001a5014` 的 path
-     precheck 并不是当前失败点；同一 run 在 `0x1001a5114` 处实测
-     `x0(db)=3`、`*dbErr=0`，说明 open-db 也已通过。
-   - `0x1001a522c` 处实测：`newObj+0xa8` 已拿到 db handle，`newObj+0xb0`
-     已挂上非零 storage 对象；storage vtable `slot+0x18` 归一化后指向
-     `0x1001b3d0c`，但该调用返回 `w0 = 0`，因此 `str x22, [x21, #0x60]`
-     与 `str w20, [x21, #0x50]` 这组成功路径赋值始终不执行。
-   - 对 `0x1001b3d0c` / `0x1001b3d7c` 的静态反汇编 + `0x1001b3df4`
-     live probe 进一步证实：当前 active failure 已从 `a5014` 总体失败收紧到
-     **storage create-table 失败**——`0x10012bb7c` 返回 null table pointer，
-     同一命中读取到 `storage+0x30 = 0x9000b`。也就是说，当前 run 真正还没闭合
-     的 contract 已下钻到
-     `0x1001bd464 -> 0x1001a5014 -> storage.vtable[0x18](0x1001b3d0c) -> 0x10012bb7c`。
-   - 新增 `Scripts/hok016c4_ngr_force_storage_success.py` 后，**只强制**
-     `0x1001a522c`（storage vtable return）的 `x0=1` 已证实：`a5014` 确实会
-     返回 1，且 `newObj` 的 `+0x48/+0x50` 被填上，但 `0x10017f184` /
-     `0x10432dd98` 仍回到 0。说明“只让 storage method success”**不足以**
-     顶开 readiness B。
-   - 同一 C.4 runner 再**叠加** `0x1001a6958`（`0x1001a6830` 内 SaveHeader /
-     `IsReadyToUse()` result）强制成功后，`0x1001bd960` 处 `x0 = 1`，且
-     `0x10017f29c` / `0x10432e074` 两处都实测 `x0 = 1`；也就是说，双 checkpoint
-     已能把当前这轮 `0x10432dd98 -> 0x10017f184` 主路径**真正推成 success**。
-   - 在这组双 checkpoint 之上，旧的 dormant path 被首次激活：
-     `0x10432dfdc -> 0x10017f3c8 -> 0x1001bc220 -> 0x1001bc970 -> 0x1001c6da4`。
-     启用 `mainChunk+0x60` watchpoint 的 run 中，LLDB 已在 `0x1001c6e74`
-     之后停到 `0x1001c6e78`，证明这条链**真的会写** `mainChunk+0x60`；frame
-     0..5 依次是 `0x1001c6e78` / `0x1001bca40` / `0x1001bc2a4` /
-     `0x1001bd3b8` / `0x10017f51c` / `0x10432dfdc`。
-   - 把 dormant writer path 改成结构化 callback 以后，当前证据已进一步收紧：
-     `0x1001c6e78` 这次写入的 `x23(dst)` **确实等于** tracked
-     `mainChunk+0x60`，helper 直接打印 `trackedDst=true`；同一命中里
-     `dstBefore=0x125d95d20`，且读回 `mainChunk+0x60=0x125d95d20`。也就是
-     说，这次不是“附近对象被写了”，而是 dormant path **在这组 dual-force
-     诊断条件下，真的把当前 tracked mainChunk 的二级树根挂上了一个非零对象**。
-   - 同一结构化 run 还显示：writer path 成功写完之后，`0x10017f3c8` 会在另一条
-     上游分支（`LR = 0x10432df30`）**再次被调用一次**，而那第二次调用返回 0。
-     这解释了为什么即便 dual checkpoint 已把第一轮 `0x10432dfdc` 主路径推成
-     success，进程后续仍会重新回落到旧 sink——当前不是“同一个 gate 没过”，而是
-     **writer path 暴露后又出现了新的上游/并行轮次失败**。
-    - 对 second-fallback 再补 probe 后，`0x10017faa0` 的 return site
-      `0x10017fb44` 已证实：无论是第一轮 (`LR = 0x10432dfc8`) 还是第二轮
-      (`LR = 0x10432df1c`) 调用，这个 gate 在真正返回前的 `x19` 都还是 0。
-      也就是说，当前两轮 `0x10432dfbc/0x10432df10 -> 0x10017faa0` **都会失败**，
-      于是两条分支都继续跌回各自的 `0x10017f3c8` fallback。当前第二次回落的上游
-      状态已经从“未知 sibling branch”进一步收紧为：**`w20 = 1` 的情况下，
-      `0x10017faa0` 仍返回 0，随后 `0x10432df20 -> 0x10017f3c8` 这条第二轮
-      fallback 继续失败。**
-  - 再往里加 `0x1001be550` 的 probe 后，second-gate 的 failure shape 继续被拆开：
-    第一轮 (`flag=0`, `LR = 0x10432dfc8`) 时，`0x1001be584` 处 `x0=0`，即
-    writer path 触发前 subtree 里**连目标 payload object 都不存在**。
-  - 针对 `0x1001ba940` 再补 wrapper-shape probe（产物
-    `build/hok-016c4-force-storage-ready-wrapper-shape.json`）后，当前口径再收紧：
-    `0x1001bae8c` 处首轮 `bl 0x1001a53a0(..., w3=1)` **返回 0**，但这时
-    `ctx+0x40` 已经是 nonzero candidate（本轮实测 `0x139f19bd0`）。也就是说，
-    “candidate 进入 context”与“首轮 override contract 成功”并不是同一件事。
-  - 随后的 fallback 并不是把这份 `ctx+0x40` candidate 原地改造成 final wrapper，
-    而是在 `0x1001bafc0` 调 `0x1001bb73c(x0=0x13d82ee00, x1="1", x2=1, x3=0)`
-    **重新造了一份对象**；live probe 直接抓到 `w3 = 0`，而静态反汇编表明
-    `0x1001bb73c` 只有在 `x3 != 0` 时才会走 `0x1001bc970` 那条补 child / payload
-    的路径。
-  - `0x1001bafc4` 处 `bb73c` 返回对象已经是 hollow wrapper 形状：首 qword / 第二
-    qword 都还是 `0`，`+0x48 = 0`、`+0x50 = -1`；随后 `0x1001bb844` 入口前的 raw dump
-    与 `0x1001bb010` / `0x1001be584(flag=1)` 处看到的对象完全同形。
-  - `0x1001bb844` 的静态反汇编 + live entry probe 进一步证实：它只做
-    `str x19, [x20]`，也就是给 wrapper 写回 `entry` backref；**不会**补 child/payload。
-    因而，最终写进 `slot1` 的 `backref-to-entry + null-child` hollow wrapper 不是
-    “`ctx+0x40` candidate 被谁清空 / 重建” 的问题，而是 fallback `bb73c(..., 0)`
-    本身就只产出这种骨架对象。
-  - 这把 active failure 再收紧为：当前真正要解释的是 **为什么首轮
-    `0x1001a53a0(..., 1)` 在 candidate 已入 `ctx+0x40` 后仍返回 0，以及为什么后续
-    fallback 只走 `0x1001bb73c(..., 0)` / 跳过 `0x1001bc970`，最终只能得到
-    `backref-to-entry + null-child` 的 wrapper**。
-
-   - 但无 watchpoint 的双 checkpoint run 也表明：即便这组 force 已把当前一轮
-     readiness B 顶开，进程后续仍会重新落回旧 failure sink `0x108878124`
-     并断 session。结论：`0x1001a522c + 0x1001a6958` 足以暴露真正的 child-
-     registration writer path，但**仍不足以**直接达成稳定启动。
-   - `hok014_ngr_alert_suppressed` 仍稳定触发 1 次，HOK-014 swizzle
-     守住 UI。进程依然僵尸态。
+  HOK-016-C.X / HOK-016-C.2.1 / HOK-016-C.2.2 / HOK-016-C.2.3 /
+  HOK-016-C.2.4 / HOK-016-C.2.5 / HOK-016-C.2.6 / HOK-016-C.4 已落地；
+  HOK-016-C.2.7 当前主线）**：
+  - 已完成项已经把启动前半段边界收紧：`HOK-015` 稳定消除 UE4 cmdline
+    fatal；`HOK-016-A / B / C.1` 锁定 Create Failed 外层调用链与 reporter；
+    `HOK-016-C.X / C.2.1 / C.2.2 / C.2.3` 已排除 seed / sentinel /
+    旧分支误判。
+  - 当前主线认知已从“rootB 缺 `"main"`”修正为：`"main"` 注册存在，
+    但 `mainChunk` 下面的 `"1"` 二级子树 / payload contract 没有闭合；问题
+    已经下钻到 override object 成形，而不是入口 key 缺失。
+  - natural run 的 active failure 目前收紧到
+    `0x1001bd464 -> 0x1001ba50c -> 0x1001a5014 -> storage.vtable[0x18] -> 0x10012bb7c`；
+    直接现象是 null table pointer + `storage+0x30 = 0x9000b`。
+  - `HOK-016-C.4` 的双 checkpoint 诊断已证明：只让 storage-method success
+    还不够；但再叠加 ready/save-header success 后，第一轮 readiness B
+    可以被真正顶开，并会暴露 dormant writer path 对当前 tracked
+    `mainChunk+0x60` 的真实写入。
+  - 剩余核心问题已经收敛到 second-gate / wrapper shape：首轮
+    `0x1001a53a0(..., 1)` 虽把 candidate 写进 `ctx+0x40` 仍返回 0；fallback
+    固定走 `0x1001bb73c(..., 0)`、跳过 `0x1001bc970`，最终只得到
+    `backref-to-entry + null-child` 的 hollow wrapper。`hok014_ngr_alert_suppressed`
+    仍为 1，进程仍停在僵尸态。
 
 - **修复路线（优先级最高 → 最低；按 HOK-016-C.2.7 当前证据重排）**：
   1. `HOK-016-C.2.7`（**当前主线**）：继续拆 `ba940` / second-gate 这条
@@ -207,29 +88,11 @@
   5. `HOK-016-C.6`：降级到 HOK-009 类型（需要用户介入）。
 
 - **已证伪路径**：
-  - ~~HOK-016-C.X~~（HOK-015 seed 替换）—— 4 种 seed 下
-    `w0@+912` 恒 0，`build/hok-016cx-summary.json` +
-    `build/hok-016cx-*-trace.json`。
-  - ~~HOK-016-C.2.1 / C.2.2~~（sentinel 未 bump）—— probe 实测
-    sentinel = 0x05、全 __text 0 writer；证据
-    `build/hok-016c2-sentinel-writer.json`（__init_offsets 扫描） +
-    `build/hok-016c2-sentinel-writer-full-text.json`（全 __text
-    扫描） + `build/hok-016c2-sentinel-probe.json`（运行期 probe）
-    + `build/hok-016c2-step-into-readinessB.json`（证实 bl
-    0x10432dd98 命中、返回 0）。
-  - ~~HOK-016-C.2.3 里"`0x10432dd98` → `0x10017f3c8`" 路径~~——
-    HOK-016-C.2.4 v2/v3/v4/v5 run 证实 `0x10432dd98` 实际走
-    `+0x54 b.eq 0x10432df8c` 分支，`0x10017f3c8` 在 NGR 当前 run
-    中不可达。真路径经过 `0x10017f184`。证据
-    `build/hok-016c24-readinessB-inner-args.json`。
-  - ~~HOK-016-C.5 path fixup~~（间接证伪）—— lookup key 是内部
-    PascalString `"main"`（chunk 名），不是 FString 路径；pt_stat
-    / NSBundle swizzle 无法修正这种 rootB 缺 name entry 问题。
-  - ~~"rootB 从头到尾完全是空" 推测~~（HOK-016-C.2.5 更正）—— 
-    LLDB watchpoint 实测 rootB 在 reporter 运行期被 insert 过
-    2 次 entry（来自 `0x1001cf020` 红黑树 insert 路径）；只是
-    insert 的 key 都不是 "main"。证据
-    `build/hok-016c25-rootB-watch.json`。
+  - ~~HOK-016-C.X~~：seed 内容不驱动 QtsFS 失败，`w0@+912` 在 4 组 seed 下都保持 0。
+  - ~~HOK-016-C.2.1 / C.2.2~~：sentinel 不是当前主因；运行期已是 `0x05`，也没有可用 writer 线索。
+  - ~~HOK-016-C.2.3 里的 `0x10432dd98` → `0x10017f3c8` 路径~~：实际失败链经过 `0x10017f184`，不是旧假设分支。
+  - ~~HOK-016-C.5 path fixup~~：lookup key 是内部 PascalString `"main"`，不是可由路径修正解决的问题。
+  - ~~"rootB 从头到尾完全是空"~~：后续 run 已证明 rootB 会被 insert；当前缺口在更深层的 `mainChunk -> "1"` 子树 / payload。
 
 - **当前兜底链路**（全部 apply，顺序按 PlayTools constructor 内执行序）：
   1. `HOK-013`：为 `0x10e2146f8`（UE4 GLog 实例 slot）写入 stub object，
@@ -480,39 +343,39 @@
 
 | ID | 状态 | 任务描述 | 子文档 |
 |---|---|---|---|
-| HOK-001 | DONE | 复现 NGR 启动崩溃并固定第一轮基线证据 | — |
-| HOK-002 | DONE | 落地 app-scoped 最小兼容启动 gate（跳过 `MetalCapture` / library hook；压低 `PlayChain` 早期副作用） | — |
-| HOK-003 | DONE | 补齐最小兼容档 settings 的 MCP 自动化读写/reset 能力 | — |
-| HOK-004 | DONE | 固化 `10s settle window` 启动闭环与失败非零退出语义（`Scripts/hok004_ngr_startup_runner.py`） | `HOK-004-启动验证与settle-window.md` |
-| HOK-005A/B/C/D | DONE | DiscordIPC / PlayInput / PlayScreen app-scoped skip；AKInterface 1.0s 延迟 | `HOK-005-深层bootstrap分层最小化.md` |
-| HOK-006 | DONE | LLDB 自动化入口 + 结构化证据链；崩点固定在 NGR early initializer 路径 | `HOK-006-LLDB归因与crash-window压缩.md`（按需） |
-| HOK-007A | DONE | `0x10480df08` faulting callsite 的 LLDB / `.ips` / bytes / file offset 一致性映射 | `HOK-007-二进制意图分析与callsite映射.md`（按需） |
-| HOK-007B | DONE | 候选 E（`ldr x8,[x19]` → `b 0x10480df24`）设计 + apply/revert runner；当前已 **revert**，HOK-013/014 替代它作为兜底 | `HOK-007-二进制意图分析与callsite映射.md`（按需） |
-| HOK-011 | DONE | 离线定位 `0x10e2146f8` writer 不可达 NGR 自身 `__init_offsets`；真 writer 入口修正为 `0x103a29c60`；ObjC 重复类警告识别 | `HOK-011-静态初始化链分析.md`（按需） |
-| HOK-012-A/B/C（全系列） | DONE | LLDB 自动化工具链：诊断 env 注入 + `LLDBRunOptions` 扩展 + legacy/pre-run/deferred-install watchpoint + SIGABRT 拦截 + sheet modal 拦截 + b.0 对话框污染 gate + teardownTimeout 参数化 + abort-stop handler 的 `memory read -fx` / `kill\nquit` 硬性规则。当前日常启动链路**不依赖**这些工具，但未来追查新 slot / 新 fatal-before-modal 问题时仍是主干工具链 | `HOK-012-工具链与方法论归档.md`（按需） |
-| HOK-013 | DONE | PlayTools constructor 最早时刻为 NGR 写入 stub object 地址到 `0x10e2146f8`；bundle-scoped + slide 安全阀 + `dispatch_once` 幂等；诊断事件 `hok013_ngr_slot_preheat`。消除"reader 读 null deref"层面的崩溃，但不治 UE4 cmdline fatal / UIAlertController 构造 | `HOK-013-slot-preheat.md` |
-| HOK-014 | DONE（HOK-016 闭合后降级为安全网） | PlayTools 层 swizzle `-[UIViewController presentViewController:animated:completion:]`，对 `UIAlertController` 直接 `completion(nil)` 返回。**消除 alert UI 表现但不治本**——业务 fatal 仍然发生、GameThread 仍退出。HOK-015 已把 UE4 cmdline fatal 路径消除（在此路径上 swizzle 一次都不触发），当前仍触发的是 HOK-016 的 QtsFS Create Failed 独立分支 | `HOK-014-alert-suppressor.md` |
-| HOK-010 | DONE | `rootWorkDir` 从 `disableForMinimalStartupCompat(...)` 摘除；GUI host 端 self-healing 保证 plist 不被 stale 内存覆盖 | `HOK-014-alert-suppressor.md`（合并说明） |
-| HOK-015 | DONE | 在 PlayTools 层预写 NGR `FCommandLine` 存储（`bInitialized=true` + cmdline char buffer = `"../../../NGR/NGR.uproject"`），消除 UE4 early-read fatal 根因。218 条 inline `FCommandLine::Get()` guard 全部 fall-through；HOK-014 alert 观察期 HOK-016 未闭合前仍为 1（由 QtsFS Create Failed 独立路径触发，与 HOK-015 语义无关） | `HOK-015-cmdline-preseed.md` |
-| HOK-016-A | DONE | 离线静态定位 `QtsFileSystem` 字符串家族 + reporter 函数入口（`Scripts/hok016_ngr_qts_locator.py`，产物 `build/hok-016-qts-fs-static.json`）。结果：`"Create Failed!!"` / `"init Failed!!"` / `"Create failed."` 各 1 条 UTF-16-LE xref；前两条 xref 共属 reporter `0x108879164`，walk-back stp-prologue 与 xref 一致 | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-B | DONE | 运行期 LLDB 在 reporter 入口 + 家族 xref 设 BP 抓 backtrace + x0..x8（`Scripts/hok016_ngr_qts_reporter_trace.py`，产物 `build/hok-016-qts-reporter-lldb.json` / `build/hok-016-qts-reporter-summary.json`）。锁定完整 8 层调用链（frame 0 = `0x108879164` vtable[0x30] 方法、frame 3 = HOK-011 `0x10e2146f8` 真 writer、frame 7 = Foundation NSThread）与 Create Failed 分支判定点（`0x108877bd0` 返回 0 时触发）；x2 严格匹配 HOK-015 preseed 的 CmdLine buffer。**绝对 VA BP 在 ASLR 下不命中，必须用 `--shlib NGR --address <unslid>` 格式** | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.1 | DONE | 运行期追踪 `0x108877bd0` 的失败分支 w0 来源（`Scripts/hok016c_ngr_qts_w0_trace.py`，产物 `build/hok-016c-w0-trace.json`）。稳定结论：**w0@+900=1 / w0@+912=0 / `0x108878534` 是失败源**。同一 transcript 稳定捕获 UE4 自身 log `[UE4] Project file not found: ../../../NGR/NGR.uproject`，但 HOK-016-C.X.1 已证实该 log 与 QtsFS 失败无因果关联 | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.X | DONE（证伪） | HOK-015 seed 替换实验（`Scripts/hok016cx_lldb_cmdline_override.py` + `Scripts/hok016cx_ngr_seed_experiment.py`，产物 `build/hok-016cx-{summary,empty,project,ue4cmdfile,uproject}-*.json`）。LLDB Python BP 动态改写 `FCommandLine::CmdLine` 为 4 种候选值，`w0@+912` 恒 = 0、failure sink 命中恒 = 3 —— **"seed 内容驱动 QtsFS 失败" 假设被证伪**。**踩坑固化**：`breakpoint set` 不支持 `--script-type python -F`；Python callback 必须拆成 `breakpoint set` + 紧邻的 `breakpoint command add -s python -F <func>` 两步（默认对最后创建的 BP 操作，两步之间不能插入其它 `breakpoint set`） | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.2.1 | DONE（证伪） | 用 `Scripts/hok011_ngr_common_init_chain.py --target-address 0x10e1eeef0` 扫 `__init_offsets` initializer 链，输出 `build/hok-016c2-sentinel-writer.json`。结果：**0 hit**，证明 sentinel writer 不在 NGR 自身 dyld initializer 可达链上 | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.2.2 | DONE（证伪） | 新增 `Scripts/hok016c2_ngr_sentinel_writer_scan.py` 做全 `__text` writer 扫描（`str/strb/strh/str.w`），并用 `Scripts/hok016c2_ngr_sentinel_probe.py` + `hok016c2_lldb_sentinel_watch.py` 运行期 probe。结果：**sentinel `0x10e1eeef0` = 0x05、全 `__text` 0 writer**，"sentinel 未 bump" 假设被证伪 | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.2.3 | DONE | 新增 `Scripts/hok016c2_ngr_step_into_readinessB.py`，在 `0x108878534 +352 bl 0x10432dd98` 前 / 后及 `0x10432dd98` 入口设探针。结果：**`0x10432dd98` 被稳定 call 到，且返回 0**；readiness B 失败源从 sentinel 改写为 `0x10432dd98` 深层 lookup（HOK-016-C.2.4 进一步修正为 `0x10017f184` 而非 `0x10017f3c8`） | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.2.4 | DONE | 新增 `Scripts/hok016c24_ngr_readinessB_inner_args.py` + `Scripts/hok016c24_lldb_inner_probes.py`，分三轮实验（v2/v3/v4-5）在 `0x10432dd98` / `0x10017f184` / `0x10017f3c8` 装 ~30 个 Python callback BP。结论：**真正失败点是 `0x10017f184` 内 `bl 0x1001cd114(rootB=0x10e184b18, "main", 1)` 返回 0**——rootB 是空红黑树（sentinel 自指），没人注册过 key `"main"` 这个 chunk 名。先前 Dashboard "`0x10432dd98 → 0x10017f3c8`" 路径被证伪（f3c8 系列 BP 跨 run 0 命中）；C.5 path fixup 路线也被间接证伪（lookup key 是内部 PascalString 而非 FString 路径）。证据 `build/hok-016c24-readinessB-inner-args.json` | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.2.5 | DONE | 新增 `Scripts/hok016c25_ngr_rootB_xref_scan.py` + `Scripts/hok016c25_ngr_rootB_watch.py`；复用 `hok016c2_ngr_sentinel_writer_scan.py --target-address 0x10e184b18` 做离线直接 store 扫描（1 真 writer `0x1001cf314` = static init 空容器初始化、1 误报）+ 94 个 adrp+add xref 入 x0 的 helper 消费方 + LLDB watchpoint 在 NGR main 入口装 modify watchpoint 捕获到 reporter 内部 insert。**该轮最初关于“insert 的 key 不是 `main`”的判断已被 C.2.6 推翻**；保留其对 rootB writer / insert-helper 归因的证据价值。证据 `build/hok-016c25-rootB-writer.json` + `build/hok-016c25-rootB-xrefs.json` + `build/hok-016c25-rootB-watch.json` | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.2.6 | DONE | 新增 `Scripts/hok016c26_ngr_main_literal_xref.py` + `Scripts/hok016c26_ngr_rootB_keys.py` + `Scripts/hok016c26_lldb_rootb_key_watch.py`。离线扫描结果：**没有**找到与 dyld `__init_offsets` 可达链相交的 PascalString `"main"` 预注册 literal/xref；运行期 key-watch 结果：reporter 内部第一次 insert 的 key **就是** `"main"`，`0x10017f184` 内 `bl 0x1001cd114(rootB, "main", 1)` 也**返回非零**。**关键改写**：问题不再是 rootB 缺 `"main"`，而是 `mainChunk` 对象的 `obj+0x60` 二级树为空，导致后续 `0x1001ba82c(mainChunk, "1")` 返回 0。证据 `build/hok-016c26-main-literal.json` + `build/hok-016c26-rootB-keys.json` | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.2.7 | TODO（当前主线） | 继续拆 `override candidate -> final entry slot1 -> second-gate payload` 这条链：当前 natural run 已收紧到 `0x10012bb7c` null table + `storage+0x30 = 0x9000b`；C.4 双 checkpoint (`0x1001a522c` + `0x1001a6958`) 已进一步证明 dormant path `0x10432dfdc -> 0x10017f3c8 -> 0x1001bc220 -> 0x1001bc970 -> 0x1001c6da4` 会在 dual-force 诊断条件下对当前 tracked `mainChunk+0x60` 发生真实写入（`trackedDst=true`）。最新 wrapper-shape probe（`build/hok-016c4-force-storage-ready-wrapper-shape.json`）又进一步证实：首轮 `0x1001a53a0(...,1)` 虽已把 nonzero candidate 写进 `ctx+0x40`，却仍返回 0；后续 fallback 固定以 `x3 = 0` 调 `0x1001bb73c`，产出的对象在 `0x1001bb844` 入口前就已经是 `backref-to-entry + null-child` 的 hollow wrapper，而 `0x1001bb844` 只负责补 `entry` backref。当前下一步优先拆首轮 `a53a0(...,1)` 的失败原因，以及 fallback 为什么稳定落在 `bb73c(...,0)` / 跳过 `0x1001bc970` | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.3 | DEFERRED | 终极野蛮方案：fishhook interpose `0x108878534` 直接返回 1，跳过整条 readiness B。稳定性风险极高，仅在 C.2.7/C.4/C.5 全部证伪时作为最后兜底 | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.4 | TODO | 若 C.2.7 证实自然路径过深、对象形状又无法安全模拟，基于 PlayTools 现有 bundle-scoped runtime hook / direct patch 基建，对 second-gate / override object 闭合做诊断性强制成功验证；先确认"只要 `ba940 -> entry.slot1 -> 0x1001be550(flag=1)` 这层 contract 闭合，进程就能继续跑" | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.5 | TODO | 若 C.2.7 定位到可重复的 override payload 成形签名，或完整的 `mainChunk -> "1"` 注册 / 对象构造路径且可在 PlayTools constructor 中模拟，就按同样签名补齐；先前“只在 rootB 中模拟插入 `main` entry”已被 C.2.6 证伪为修得不够深 | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.6 | DEFERRED | 若 C.2.6 最终指向必须由用户提供外部资源或登录态，才把问题降级到 HOK-009 类型（需要用户介入）。在此之前不主动走这条线 | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-D | TODO | HOK-016-C 落地后 live 验证（`hok014_ngr_alert_suppressed = 0` + 进程活跃度指标 + 窗口可见性 + 无新 `NGR-*.ips`）；闭合后把 HOK-014 降级为冷备安全网 | `HOK-016-qts-fs-create-failed.md` |
-| HOK-007C | DEFERRED | 下游 crash 的离线映射 + 可逆 patch；HOK-013/014 之后未观察到新 faulting callsite，当前无触发动机 | `HOK-007-二进制意图分析与callsite映射.md`（按需） |
-| HOK-008 | TODO | 把"revert 候选 E → `rootWorkDir=1` → 启动 → 证据采集 → pass 判定"固化成单脚本；替代现在的人工组合 | 待建 |
-| HOK-009 | BLOCKED | 需要用户账号 / 手工 UI 的后续验证（登录 / 进游戏行为）；执行前必须得到用户确认 | 不执行 |
+| HOK-001 | DONE | 复现 NGR 启动崩溃并固定基线证据 | — |
+| HOK-002 | DONE | 落地 app-scoped 最小兼容启动 gate | — |
+| HOK-003 | DONE | 补齐最小兼容档 settings 的 MCP 自动化 | — |
+| HOK-004 | DONE | 固化 `10s settle window` 启动 runner 与失败退出语义 | `HOK-004-启动验证与settle-window.md` |
+| HOK-005A/B/C/D | DONE | 最小化深层 bootstrap 副作用（skip + 延迟） | `HOK-005-深层bootstrap分层最小化.md` |
+| HOK-006 | DONE | 固化 LLDB 自动化入口与结构化证据链 | `HOK-006-LLDB归因与crash-window压缩.md`（按需） |
+| HOK-007A | DONE | 完成首轮 faulting callsite 一致性映射 | `HOK-007-二进制意图分析与callsite映射.md`（按需） |
+| HOK-007B | DONE | 候选 E 设计与 apply/revert runner；当前已 revert | `HOK-007-二进制意图分析与callsite映射.md`（按需） |
+| HOK-011 | DONE | 修正 `0x10e2146f8` 真 writer 入口并排除 `__init_offsets` 主线 | `HOK-011-静态初始化链分析.md`（按需） |
+| HOK-012-A/B/C（全系列） | DONE | 补齐 HOK-012 LLDB 工具链；当前按需使用 | `HOK-012-工具链与方法论归档.md`（按需） |
+| HOK-013 | DONE | `0x10e2146f8` slot preheat 落地 | `HOK-013-slot-preheat.md` |
+| HOK-014 | DONE（HOK-016 闭合后降级为安全网） | `UIAlertController` suppressor 落地；当前仅作安全网 | `HOK-014-alert-suppressor.md` |
+| HOK-010 | DONE | `rootWorkDir` self-heal 落地 | `HOK-014-alert-suppressor.md`（合并说明） |
+| HOK-015 | DONE | `FCommandLine` preseed 落地，218 条 guard 全部放行 | `HOK-015-cmdline-preseed.md` |
+| HOK-016-A | DONE | 静态定位 `QtsFileSystem` 字符串族与 reporter | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-B | DONE | 运行期锁定 reporter 调用链与 Create Failed 判定点 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.1 | DONE | 锁定 readiness B（`0x108878534`）为失败源 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.X | DONE（证伪） | 证伪“seed 内容驱动 QtsFS 失败” | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.2.1 | DONE（证伪） | 证伪“sentinel writer 在 NGR `__init_offsets` 链上” | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.2.2 | DONE（证伪） | 证伪“sentinel 未 bump” | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.2.3 | DONE | 证实 `0x10432dd98` 稳定返回 0 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.2.4 | DONE | 收紧到 `0x10017f184` 的 lookup 失败 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.2.5 | DONE | 补齐 rootB writer / insert-helper 的侧证 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.2.6 | DONE | 更正为 `mainChunk` 的 `"1"` 子树缺失，不是 `"main"` 缺失 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.2.7 | TODO（当前主线） | 继续拆 `override candidate -> final entry slot1 -> second-gate payload`：优先解释 `0x1001a53a0(..., 1)` 为什么返回 0、fallback 为什么固定落到 `0x1001bb73c(..., 0)`，以及 natural run 触发 hollow wrapper 的前置条件 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.3 | DEFERRED | 终极野蛮方案：fishhook interpose `0x108878534` 直接返回 1，仅作最后兜底 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.4 | TODO | 若 C.2.7 证明自然路径过深或对象形状不可安全模拟，再做诊断性强制成功验证 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.5 | TODO | 若 C.2.7 找到可重复的对象成形签名 / 注册路径，就在 PlayTools constructor 中按同样签名补齐 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.6 | DEFERRED | 仅在必须依赖外部资源或登录态时，才降级到需要用户介入的路线 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-D | TODO | HOK-016-C 落地后做 live 验证，并把 HOK-014 降级为冷备安全网 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-007C | DEFERRED | 下游 crash 的离线映射 + 可逆 patch；当前无触发动机 | `HOK-007-二进制意图分析与callsite映射.md`（按需） |
+| HOK-008 | TODO | 把“revert 候选 E → `rootWorkDir=1` → 启动 → 证据采集 → pass 判定”固化成单脚本 | 待建 |
+| HOK-009 | BLOCKED | 需要用户账号 / 手工 UI 的后续验证；执行前必须得到用户确认 | 不执行 |
 
 ## 高频复用经验（当前仍适用的）
 

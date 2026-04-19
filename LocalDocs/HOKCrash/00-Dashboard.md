@@ -496,6 +496,9 @@
 ### 按需读取（与当前主线无直接关系，出问题再翻）
 
 > 以下子文档**不强制读取**；只有当前排查内容明确涉及它们时才需要进入。
+> 各主文档都把长篇细节（多轮验证口径、LLDB 证据快照、逐步下钻证据）
+> 再下沉到了同名 `*-appendix-*.md` 附录文件——附录的进入时机都写在各
+> 附录开头的"何时读"提示里，日常阅读对应主文档时不必随手打开附录。
 
 - `LocalDocs/HOKCrash/HOK-004-启动验证与settle-window.md`：HOK-004
   runner 的 settle window 口径与 raw settings 模板。
@@ -509,8 +512,26 @@
   设计、反向 call graph 方法论、writer 不可达离线结论、H1/H2/H3
   假设分类。
 - `LocalDocs/HOKCrash/HOK-012-工具链与方法论归档.md`：HOK-012 全系列
-  LLDB 工具链与 live-trace 方法论归档；当前日常启动不需要，仅在追查
-  新 slot / 新 fatal-before-modal 路径时参考。
+  LLDB 工具链与 live-trace 方法论归档（证据 6 种语义 / CLI 清单 /
+  secondary fault 解读下沉到 `HOK-012-appendix-evidence-and-cli.md`）；
+  当前日常启动不需要，仅在追查新 slot / 新 fatal-before-modal 路径
+  时参考。
+- `LocalDocs/HOKCrash/HOK-013-slot-preheat.md`（+
+  `HOK-013-appendix-verification.md`）：HOK-013 stub 写入的设计决策、
+  实现位置；三轮验证口径与已否决方案细节在附录。
+- `LocalDocs/HOKCrash/HOK-014-alert-suppressor.md`（+
+  `HOK-014-appendix-verification.md`）：HOK-014 swizzle 的设计决策、
+  实现位置；live 验证口径与常见误区（`blockingDialogs>=1` 判读等）
+  在附录。
+- `LocalDocs/HOKCrash/HOK-015-cmdline-preseed.md`（+
+  `HOK-015-appendix-verification.md`）：HOK-015 预种 cmdline 的设计
+  决策、实现位置；4 轮验证口径 + HOK-014/016 联动归属规则 + 非目标/
+  边界在附录。
+- `LocalDocs/HOKCrash/HOK-016-qts-fs-create-failed.md`（+ 5 份附录：
+  `HOK-016-appendix-tooling.md` / `...-C23-C24.md` / `...-C25-C26.md` /
+  `...-C27.md` / `...-CX.md`）：当前主线 HOK-016 的骨干证据 + 根因链
+  + 修复方向；脚本目录、逐层下钻证据、seed 替换实验详情分别在对应
+  附录（附录开头的"何时读"提示给出进入时机）。
 
 ### 代码/脚本
 

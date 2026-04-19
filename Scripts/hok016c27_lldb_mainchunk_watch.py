@@ -32,6 +32,26 @@ _entry_slot0_addr = 0
 _entry_slot1_addr = 0
 _err_slot_watch_installed = False
 _err_slot_watch_addr = 0
+_materialize_target_trace_seq = 0
+_materialize_target_traces = {}
+
+_MATERIALIZE_TARGET_UNSLID = 0x10432A068
+_MATERIALIZE_TARGET_PHASES = {
+    0x10432A068: "entry",
+    0x10432A090: "post-helper1",
+    0x10432A098: "check1-a",
+    0x10432A09C: "check1-b",
+    0x10432A10C: "post-helper2",
+    0x10432A114: "check2-a",
+    0x10432A118: "check2-b",
+    0x10432A17C: "branch-17c",
+    0x10432A1C8: "branch-1c8",
+    0x10432A224: "branch-224",
+    0x10432A2C8: "branch-2c8",
+    0x10432A2E0: "branch-2e0",
+    0x10432A31C: "ret-31c",
+    0x10432A33C: "branch-33c",
+}
 
 
 def _resolve_ngr_slide(target):
@@ -99,6 +119,55 @@ def _run_lldb_command(debugger, command):
     output = result.GetOutput() or ""
     error = result.GetError() or ""
     return result.Succeeded(), (output or error).strip()
+
+
+def _thread_trace_key(thread):
+    return int(thread.GetThreadID())
+
+
+def _remember_materialize_target_entry(thread, frame):
+    global _materialize_target_trace_seq
+
+    key = _thread_trace_key(thread)
+    _materialize_target_trace_seq += 1
+    call_id = _materialize_target_trace_seq
+    _materialize_target_traces[key] = {
+        "call_id": call_id,
+        "entry_pc": int(frame.GetPC()),
+        "entry_lr": _reg_u64(frame, "x30"),
+        "entry_x0": _reg_u64(frame, "x0"),
+        "entry_x1": _reg_u64(frame, "x1"),
+        "entry_x2": _reg_u64(frame, "x2"),
+        "entry_x3": _reg_u64(frame, "x3"),
+    }
+    return _materialize_target_traces[key]
+
+
+def _current_materialize_target_trace(thread):
+    return _materialize_target_traces.get(_thread_trace_key(thread))
+
+
+def _format_materialize_target_trace_context(trace):
+    if not trace:
+        return " trace=untracked"
+    return (
+        f" call={trace['call_id']}"
+        f" entryLR=0x{trace['entry_lr']:x}"
+        f" entryX0=0x{trace['entry_x0']:x}"
+        f" entryX1=0x{trace['entry_x1']:x}"
+        f" entryX2=0x{trace['entry_x2']:x}"
+        f" entryX3=0x{trace['entry_x3']:x}"
+    )
+
+
+def _materialize_target_pointer_summary(process, label, value):
+    if value <= 0x100000000:
+        return ""
+    return f" {label}raw={_hex_dump(_read_bytes(process, value, 0x20))}"
+
+
+def _materialize_target_phase_for_pc(pc):
+    return _MATERIALIZE_TARGET_PHASES.get(int(pc), f"pc-0x{int(pc):x}")
 
 
 def _hex_dump(data):
@@ -1055,6 +1124,47 @@ def snapshot_create_table_impl_materialize_result_on_hit(frame, bp_loc, internal
         f"x30(lr)=0x{x30:x} helper+0x18(after)=0x{(helper_slot18 or 0):x} willTakeErrProvider={str(x0 == 0).lower()}"
         f"{_pointer_raw_extra(process, 'x0', x0)}{_watched_err_slot_extra(process)} bt={_short_backtrace(thread)}"
     )
+    return False
+
+
+def snapshot_materialize_target_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    pc = int(frame.GetPC())
+    phase = _materialize_target_phase_for_pc(pc)
+    trace = _remember_materialize_target_entry(thread, frame) if phase == "entry" else _current_materialize_target_trace(thread)
+
+    x0 = _reg_u64(frame, "x0")
+    x1 = _reg_u64(frame, "x1")
+    x2 = _reg_u64(frame, "x2")
+    x3 = _reg_u64(frame, "x3")
+    x19 = _reg_u64(frame, "x19")
+    x20 = _reg_u64(frame, "x20")
+    x21 = _reg_u64(frame, "x21")
+    x22 = _reg_u64(frame, "x22")
+    x23 = _reg_u64(frame, "x23")
+    x30 = _reg_u64(frame, "x30")
+
+    extra = _format_materialize_target_trace_context(trace)
+    extra += (
+        f" x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x}"
+        f" x19=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x23=0x{x23:x}"
+        f" x30(lr)=0x{x30:x}"
+    )
+    extra += _materialize_target_pointer_summary(process, "x0", x0)
+    extra += _materialize_target_pointer_summary(process, "x1", x1)
+    if phase in {"post-helper1", "post-helper2", "ret-31c"}:
+        extra += _materialize_target_pointer_summary(process, "x21", x21)
+    if phase in {"branch-17c", "branch-1c8", "branch-224", "branch-2c8", "branch-2e0", "branch-33c", "ret-31c"}:
+        extra += _materialize_target_pointer_summary(process, "x22", x22)
+
+    print(
+        f"[hok016c27-materialize-target] phase={phase} pc=0x{pc:x}{extra} bt={_short_backtrace(thread, 6)}"
+    )
+
+    if phase == "ret-31c":
+        _materialize_target_traces.pop(_thread_trace_key(thread), None)
     return False
 
 

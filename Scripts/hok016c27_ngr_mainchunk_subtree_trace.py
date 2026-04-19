@@ -68,6 +68,20 @@ BP_CREATE_TABLE_IMPL_MATERIALIZE_ENTRY = "0x100122f20"
 BP_CREATE_TABLE_IMPL_MATERIALIZE_PRECALL = "0x100122f54"
 BP_CREATE_TABLE_IMPL_MATERIALIZE_RET = "0x100122f58"
 BP_CREATE_TABLE_IMPL_MATERIALIZE_RESULT = "0x100122f60"
+BP_MATERIALIZE_TARGET_ENTRY = "0x10432a068"
+BP_MATERIALIZE_TARGET_POST_HELPER1 = "0x10432a090"
+BP_MATERIALIZE_TARGET_CHECK1_A = "0x10432a098"
+BP_MATERIALIZE_TARGET_CHECK1_B = "0x10432a09c"
+BP_MATERIALIZE_TARGET_POST_HELPER2 = "0x10432a10c"
+BP_MATERIALIZE_TARGET_CHECK2_A = "0x10432a114"
+BP_MATERIALIZE_TARGET_CHECK2_B = "0x10432a118"
+BP_MATERIALIZE_TARGET_BRANCH_17C = "0x10432a17c"
+BP_MATERIALIZE_TARGET_BRANCH_1C8 = "0x10432a1c8"
+BP_MATERIALIZE_TARGET_BRANCH_224 = "0x10432a224"
+BP_MATERIALIZE_TARGET_BRANCH_2C8 = "0x10432a2c8"
+BP_MATERIALIZE_TARGET_BRANCH_2E0 = "0x10432a2e0"
+BP_MATERIALIZE_TARGET_RET_31C = "0x10432a31c"
+BP_MATERIALIZE_TARGET_BRANCH_33C = "0x10432a33c"
 BP_CREATE_TABLE_IMPL_ERR_DIRECT = "0x100122f98"
 BP_CREATE_TABLE_IMPL_FINAL_CHECK = "0x100125960"
 BP_CREATE_TABLE_IMPL_RETURN = "0x1001259c4"
@@ -224,6 +238,76 @@ def main() -> int:
             "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_materialize_result_on_hit",
         ),
         (
+            BP_MATERIALIZE_TARGET_ENTRY,
+            "hok016c27_materialize_target_entry",
+            "hok016c27_lldb_mainchunk_watch.snapshot_materialize_target_on_hit",
+        ),
+        (
+            BP_MATERIALIZE_TARGET_POST_HELPER1,
+            "hok016c27_materialize_target_post_helper1",
+            "hok016c27_lldb_mainchunk_watch.snapshot_materialize_target_on_hit",
+        ),
+        (
+            BP_MATERIALIZE_TARGET_CHECK1_A,
+            "hok016c27_materialize_target_check1_a",
+            "hok016c27_lldb_mainchunk_watch.snapshot_materialize_target_on_hit",
+        ),
+        (
+            BP_MATERIALIZE_TARGET_CHECK1_B,
+            "hok016c27_materialize_target_check1_b",
+            "hok016c27_lldb_mainchunk_watch.snapshot_materialize_target_on_hit",
+        ),
+        (
+            BP_MATERIALIZE_TARGET_POST_HELPER2,
+            "hok016c27_materialize_target_post_helper2",
+            "hok016c27_lldb_mainchunk_watch.snapshot_materialize_target_on_hit",
+        ),
+        (
+            BP_MATERIALIZE_TARGET_CHECK2_A,
+            "hok016c27_materialize_target_check2_a",
+            "hok016c27_lldb_mainchunk_watch.snapshot_materialize_target_on_hit",
+        ),
+        (
+            BP_MATERIALIZE_TARGET_CHECK2_B,
+            "hok016c27_materialize_target_check2_b",
+            "hok016c27_lldb_mainchunk_watch.snapshot_materialize_target_on_hit",
+        ),
+        (
+            BP_MATERIALIZE_TARGET_BRANCH_17C,
+            "hok016c27_materialize_target_branch_17c",
+            "hok016c27_lldb_mainchunk_watch.snapshot_materialize_target_on_hit",
+        ),
+        (
+            BP_MATERIALIZE_TARGET_BRANCH_1C8,
+            "hok016c27_materialize_target_branch_1c8",
+            "hok016c27_lldb_mainchunk_watch.snapshot_materialize_target_on_hit",
+        ),
+        (
+            BP_MATERIALIZE_TARGET_BRANCH_224,
+            "hok016c27_materialize_target_branch_224",
+            "hok016c27_lldb_mainchunk_watch.snapshot_materialize_target_on_hit",
+        ),
+        (
+            BP_MATERIALIZE_TARGET_BRANCH_2C8,
+            "hok016c27_materialize_target_branch_2c8",
+            "hok016c27_lldb_mainchunk_watch.snapshot_materialize_target_on_hit",
+        ),
+        (
+            BP_MATERIALIZE_TARGET_BRANCH_2E0,
+            "hok016c27_materialize_target_branch_2e0",
+            "hok016c27_lldb_mainchunk_watch.snapshot_materialize_target_on_hit",
+        ),
+        (
+            BP_MATERIALIZE_TARGET_RET_31C,
+            "hok016c27_materialize_target_ret_31c",
+            "hok016c27_lldb_mainchunk_watch.snapshot_materialize_target_on_hit",
+        ),
+        (
+            BP_MATERIALIZE_TARGET_BRANCH_33C,
+            "hok016c27_materialize_target_branch_33c",
+            "hok016c27_lldb_mainchunk_watch.snapshot_materialize_target_on_hit",
+        ),
+        (
             BP_CREATE_TABLE_IMPL_ERR_DIRECT,
             "hok016c27_create_table_impl_err_direct",
             "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_err_direct_on_hit",
@@ -317,6 +401,16 @@ def main() -> int:
         f"{BP_CREATE_TABLE_IMPL_MATERIALIZE_PRECALL}, "
         f"{BP_CREATE_TABLE_IMPL_MATERIALIZE_RET}, "
         f"{BP_CREATE_TABLE_IMPL_MATERIALIZE_RESULT}"
+    )
+    print(
+        "  materialize target : "
+        f"{BP_MATERIALIZE_TARGET_ENTRY}, {BP_MATERIALIZE_TARGET_POST_HELPER1}, "
+        f"{BP_MATERIALIZE_TARGET_CHECK1_A}, {BP_MATERIALIZE_TARGET_CHECK1_B}, "
+        f"{BP_MATERIALIZE_TARGET_POST_HELPER2}, {BP_MATERIALIZE_TARGET_CHECK2_A}, "
+        f"{BP_MATERIALIZE_TARGET_CHECK2_B}, {BP_MATERIALIZE_TARGET_BRANCH_17C}, "
+        f"{BP_MATERIALIZE_TARGET_BRANCH_1C8}, {BP_MATERIALIZE_TARGET_BRANCH_224}, "
+        f"{BP_MATERIALIZE_TARGET_BRANCH_2C8}, {BP_MATERIALIZE_TARGET_BRANCH_2E0}, "
+        f"{BP_MATERIALIZE_TARGET_RET_31C}, {BP_MATERIALIZE_TARGET_BRANCH_33C}"
     )
     print(f"  err direct writer   : {BP_CREATE_TABLE_IMPL_ERR_DIRECT}")
     print(f"  create-table check  : {BP_CREATE_TABLE_IMPL_FINAL_CHECK}")

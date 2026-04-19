@@ -77,14 +77,19 @@
     `0x10012bb7c` entry 收到的是 49-byte descriptor（`x1/x20`）+
     companion blob（`x2`），不是简单 PascalString `"1"`；而新增
     `build/hok-016c27-mainchunk-subtree-trace-v3.json` +
-    `build/hok-016c27-create-table-impl-static*.txt` 又把 helper 内部继续收紧：
+    `build/hok-016c27-create-table-impl-static*.txt` 先把 helper 内部收紧到：
     `0x10012bb7c` 入口只是 `str wzr, [x4]; b 0x100124e80` 的薄 wrapper；natural
     run 在 `0x10012502c -> 0x100135d80(..., errSlot)` 的第一层 gate 实测
     `w0=1`、`errSlot` 仍为 0，随后命中 `0x10012581c` entry-build branch
     （`node+0x48=0, node+0x50=0`），**没有** 命中 `0x100125334` 的 `err=9`
-    写点；真正把 helper 压回 0 的是更后的 `0x100125960` final-check，那里
-    `w0=0` 且 `errSlot=0x9000b`，随后 `0x1001259c4` 才返回 null table。
-    `hok014_ngr_alert_suppressed` 仍为 1，进程仍停在僵尸态。
+    写点。再新增 `build/hok-016c27-final-check-errslot-watch.json` 后，direct
+    writer 已继续下钻：gate-ret `0x100125030` 当场把 err slot watch 装到
+    `0x6000013bbeb0`，随后第一次写入直接命中 `0x100122f98`，value=`0x9000b`，
+    回溯是 `0x100122f98 <- 0x1001142a4 <- 0x100114994 <- 0x100125960 <- ...`。
+    这说明 `0x100125960` final-check 只是消费已写好的 `0x9000b`，direct
+    writer 实际位于 `0x10012595c -> 0x1001148b8` 更深层的 callee 链；随后
+    `0x1001259c4` 才返回 null table。`hok014_ngr_alert_suppressed` 仍为 1，
+    进程仍停在僵尸态。
 
 - **修复路线（优先级最高 → 最低；按 HOK-016-C.2.7 当前证据重排）**：
   1. `HOK-016-C.2.7`（**当前主线**）：继续拆 `ba940` / second-gate 这条
@@ -274,19 +279,20 @@
   descriptor/blob gate——新增 natural-run trace 已证明：`0x10012bb7c` 先经
   `0x10012502c -> 0x100135d80(..., errSlot)` 时 `w0=1` 且 `errSlot=0`，随后会走进
   `0x10012581c` 的 entry-build branch（`node+0x48=0, node+0x50=0`），并且没有命中
-  `0x100125334` 的 `err=9` 写点；真正把 helper 压回 0 的，是更后的
-  `0x100125960` final-check，此时 `w0=0` 且 `errSlot=0x9000b`，再由
-  `0x1001259c4` 返回 null table。当前最值钱的问题因此收紧成两层：**为什么
-  `0x10432df30` 这支会带着 `pkg+0xa8=3 / pkg+0x110=5` 进入 `0x1001a588c` 并在 gate1
-  立刻失败，以及 natural run 的 `0x100124e80` / `0x10012581c -> 0x10012595c ->
-  0x100125960` 这段后半 helper 还缺哪一项前置契约，才会把 error slot 推成
-  `0x9000b`。**
+  `0x100125334` 的 `err=9` 写点；新增 err-slot watch 进一步证明：真正把 error slot
+  写成 `0x9000b` 的 direct writer 不是 `0x100125960` 自己，而是更深层
+  `0x100122f98`，回溯已收紧到
+  `0x10012595c -> 0x1001148b8 -> 0x100114994 -> 0x1001142a4 -> 0x100122f98`。
+  当前最值钱的问题因此收紧成两层：**为什么 `0x10432df30` 这支会带着
+  `pkg+0xa8=3 / pkg+0x110=5` 进入 `0x1001a588c` 并在 gate1 立刻失败，以及这条
+  `0x10012595c -> ... -> 0x100122f98` 更深层 callee 链还缺哪一项前置契约，才会把
+  error slot 推成 `0x9000b`。**
 
 - **下一步默认规划**：
   1. `HOK-016-C.2.7`：优先围绕 `ba720` / `ba940` / `0x1001a53dc` / `0x1001bb73c` 一带继续补 live trace，并把 natural-run create-table helper 的后半段一起拆开，直接回答：
      (a) 为什么 `0x10432df30` 这支里的首轮 `0x1001a53a0(..., 1)` 会带着 `pkg+0xa8=3 / pkg+0x110=5` 卡在 `0x1001a588c` / OpenNodeStorage gate；
      (b) 为什么 `0x10432dfdc` 这支会在 `mainChunk+0x60` 仍为 0 的时刻先触发 `ba720(key="1")`，从而让 lookup 返回 0、把 `ctx+0x38` 初始化成 0，最终只能走硬编码 `w3 = 0` 的 `0x1001bb73c`；
-     (c) 当前 natural run 里 `0x10012bb7c` 的第一层 `0x100135d80(..., errSlot)` gate 已经返回 1、并已走进 `0x10012581c` entry-build branch 之后，究竟是哪一个后半 helper / final-check（现收紧到 `0x10012595c -> 0x100125960` 一带）把 error slot 推成 `0x9000b`，才让返回值继续落回 0。
+     (c) 当前 natural run 里 `0x10012bb7c` 的第一层 `0x100135d80(..., errSlot)` gate 已经返回 1、并已走进 `0x10012581c` entry-build branch 之后，direct writer 已收紧到 `0x10012595c -> 0x1001148b8 -> 0x100114994 -> 0x1001142a4 -> 0x100122f98`；下一步要解释这条更深层 callee 链为何会把 error slot 推成 `0x9000b`，才让返回值继续落回 0。
   2. 并行保留对 natural run 前置条件的追踪：继续沿
      `0x1001bd464 -> 0x1001ba50c -> 0x1001a5014 -> storage.vtable[0x18](0x1001b3d0c)
      -> 0x10012bb7c` 解释 descriptor/blob contract 与 `0x9000b` / null table 的对应关系；同时围绕
@@ -398,7 +404,7 @@
 | HOK-016-C.2.4 | DONE | 收紧到 `0x10017f184` 的 lookup 失败 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.2.5 | DONE | 补齐 rootB writer / insert-helper 的侧证 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.2.6 | DONE | 更正为 `mainChunk` 的 `"1"` 子树缺失，不是 `"main"` 缺失 | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.2.7 | TODO（当前主线） | 继续拆 `override candidate -> final entry slot1 -> second-gate payload`：优先解释 `0x1001a53a0(..., 1)` 为什么返回 0、fallback 为什么固定落到 `0x1001bb73c(..., 0)`，以及 natural run 触发 hollow wrapper 的前置条件 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.2.7 | TODO（当前主线） | 继续拆 `override candidate -> final entry slot1 -> second-gate payload`：优先解释 `0x1001a53a0(..., 1)` 为什么返回 0、fallback 为什么固定落到 `0x1001bb73c(..., 0)`，以及 natural run 的 `0x10012595c -> 0x1001148b8 -> 0x100114994 -> 0x1001142a4 -> 0x100122f98` 为何会把 err slot 推成 `0x9000b` | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.3 | DEFERRED | 终极野蛮方案：fishhook interpose `0x108878534` 直接返回 1，仅作最后兜底 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.4 | TODO | 若 C.2.7 证明自然路径过深或对象形状不可安全模拟，再做诊断性强制成功验证 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.5 | TODO | 若 C.2.7 找到可重复的对象成形签名 / 注册路径，就在 PlayTools constructor 中按同样签名补齐 | `HOK-016-qts-fs-create-failed.md` |
@@ -643,8 +649,10 @@
   当前结果证明 watchpoint 安装干净、到 failure sink 前 `0 hit`，且当前
   run 只出现 1 次 `lookup2` 命中；`lookup2` miss 后的 `ba50c` fallback
   builder 会返回非零对象，但 builder object 的 `+0x60` 仍为 0，
-  `0x1001a5014` 也继续返回 0。产物
-  `build/hok-016c27-mainchunk-subtree-trace.json`。
+  `0x1001a5014` 也继续返回 0。新增 err-slot watch 后，又把 `0x9000b`
+  的 direct writer 钉到 `0x100122f98`。产物
+  `build/hok-016c27-mainchunk-subtree-trace.json` /
+  `build/hok-016c27-final-check-errslot-watch.json`。
 - `Scripts/hok016c4_ngr_force_storage_success.py`：HOK-016-C.4 的诊断性
   force-success runner。当前支持两档实验：
   (a) 只强制 `0x1001a522c` 的 storage-method return；

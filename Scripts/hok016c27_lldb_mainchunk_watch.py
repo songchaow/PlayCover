@@ -30,6 +30,8 @@ _slot1_watch_addr = 0
 _entry_slot_watch_installed = False
 _entry_slot0_addr = 0
 _entry_slot1_addr = 0
+_err_slot_watch_installed = False
+_err_slot_watch_addr = 0
 
 
 def _resolve_ngr_slide(target):
@@ -685,8 +687,12 @@ def snapshot_create_table_impl_gate_call_on_hit(frame, bp_loc, internal_dict):
 
 
 def snapshot_create_table_impl_gate_ret_on_hit(frame, bp_loc, internal_dict):
+    global _err_slot_watch_installed
+    global _err_slot_watch_addr
+
     thread = frame.GetThread()
     process = thread.GetProcess()
+    target = process.GetTarget()
 
     x0 = _reg_u64(frame, "x0")
     x23 = _reg_u64(frame, "x23")
@@ -699,11 +705,72 @@ def snapshot_create_table_impl_gate_ret_on_hit(frame, bp_loc, internal_dict):
     err_after = _read_u32(process, x26) if x26 > 0x100000000 else None
     desc_raw = _hex_dump(_read_bytes(process, x23, 0x20)) if x23 > 0x100000000 else "<nil>"
     blob_raw = _hex_dump(_read_bytes(process, x27, 0x20)) if x27 > 0x100000000 else "<nil>"
+    extra = ""
+
+    if (
+        not _err_slot_watch_installed
+        and x26 > 0x100000000
+        and (err_after or 0) == 0
+    ):
+        try:
+            import lldb  # type: ignore
+
+            err = lldb.SBError()
+            wp = target.WatchAddress(x26, 4, False, True, err)
+            if not err.Fail() and wp and wp.IsValid():
+                debugger = target.GetDebugger()
+                ci = debugger.GetCommandInterpreter()
+                res = lldb.SBCommandReturnObject()
+                cmd = (
+                    "watchpoint command add -s python -F "
+                    "hok016c27_lldb_mainchunk_watch.snapshot_err_slot_write_on_hit "
+                    f"{wp.GetID()}"
+                )
+                ci.HandleCommand(cmd, res)
+                if res.Succeeded():
+                    _err_slot_watch_installed = True
+                    _err_slot_watch_addr = x26
+                    extra = f" err-wp=id{wp.GetID()}@0x{x26:x}"
+                else:
+                    extra = f" err-wp-attach-failed={res.GetError()!r}"
+            else:
+                extra = f" err-wp-install-failed={err.GetCString()!r}"
+        except Exception as exc:
+            extra = f" err-wp-exc={exc!r}"
 
     print(
         f"[hok016c27-create-table-gate-ret] pc=0x{frame.GetPC():x} w0=0x{(x0 & 0xffffffff):x} x23(desc)=0x{x23:x} "
         f"x26(err)=0x{x26:x} x27(blob)=0x{x27:x} x30(lr)=0x{x30:x} out0=0x{(out0 or 0):x} out1=0x{(out1 or 0):x} "
-        f"errAfter=0x{(err_after or 0):x} descRaw={desc_raw} blobRaw={blob_raw} bt={_short_backtrace(thread)}"
+        f"errAfter=0x{(err_after or 0):x} descRaw={desc_raw} blobRaw={blob_raw}{extra} bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_err_slot_write_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+    frame0 = thread.GetFrameAtIndex(0)
+
+    x0 = _reg_u64(frame0, "x0")
+    x1 = _reg_u64(frame0, "x1")
+    x2 = _reg_u64(frame0, "x2")
+    x3 = _reg_u64(frame0, "x3")
+    x4 = _reg_u64(frame0, "x4")
+    x5 = _reg_u64(frame0, "x5")
+    x19 = _reg_u64(frame0, "x19")
+    x20 = _reg_u64(frame0, "x20")
+    x21 = _reg_u64(frame0, "x21")
+    x22 = _reg_u64(frame0, "x22")
+    x23 = _reg_u64(frame0, "x23")
+    x25 = _reg_u64(frame0, "x25")
+    x26 = _reg_u64(frame0, "x26")
+    x30 = _reg_u64(frame0, "x30")
+    err_value = _read_u32(process, _err_slot_watch_addr) if _err_slot_watch_addr else None
+
+    print(
+        f"[hok016c27-err-slot-write] pc=0x{frame0.GetPC():x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} x5=0x{x5:x} "
+        f"x19=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x23=0x{x23:x} x25=0x{x25:x} x26=0x{x26:x} x30(lr)=0x{x30:x} "
+        f"watched=0x{_err_slot_watch_addr:x} value=0x{(err_value or 0):x} bt={_short_backtrace(thread)}"
     )
     return False
 

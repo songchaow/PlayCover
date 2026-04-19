@@ -447,20 +447,33 @@ state 尚未就绪，而不是 key / candidate materialization 自身有误。**
 
 这又把自然路径进一步收紧成：**当前失败既不是第一层 gate fail，也不是 `err=9` 这条显式错误码路径。**
 
-### 13.d live 结果 3：真正把 helper 压回 0 的，是 `0x10012595c -> 0x100125960` 之后的 final-check
+### 13.d live 结果 3：`0x100125960` 只是消费已写好的 `0x9000b`；direct writer 在更深层 `0x100122f98`
 
-新增的 `[hok016c27-create-table-final-check]` / `[hok016c27-create-table-ret]` 记录显示：
+新增 `build/hok-016c27-final-check-errslot-watch.json` 后，这条线又向下收紧了一步：
 
-- 到 `0x100125960` 时，`x22` 已经是非零临时对象（说明 helper 已经跑过了 entry-build / 后续若干组装步骤）；
-- 但这时 `w0 = 0`，同时 `errSlot = 0x9000b`；
-- 随后的 `0x1001259c4` 仍保持 `x22(ret)=0`、`errSlot=0x9000b`，最终把 null table 返还给 storage method。
+- `[hok016c27-create-table-gate-ret]` 显示：在 `0x100125030` 时，第一层
+  `0x100135d80(..., errSlot)` gate 仍保持 `w0 = 1`、`errAfter = 0`；同时
+  动态把 err slot watchpoint 装到了 `0x6000013bbeb0`。
+- watchpoint 的第一次后续写入直接命中
+  `[hok016c27-err-slot-write] pc=0x100122f98 value=0x9000b`；其回溯是
+  `0x100122f98 <- 0x1001142a4 <- 0x100114994 <- 0x100125960 <- 0x1001b3df4 <- ...`。
+  这说明把 error slot 推成 `0x9000b` 的**直接写点**并不在
+  `0x100125960` 自己，也不在 `0x100125984` 之后的 cleanup，而是位于
+  `0x10012595c -> 0x1001148b8` 更深层的 callee 链里。
+- 等控制流回到 `[hok016c27-create-table-final-check]` 时，`w0 = 0`、
+  `errSlot = 0x9000b` 已经成立；随后 `0x1001259c4` 保持
+  `x22(ret)=0` / `errSlot=0x9000b`，最终把 null table 返还给 storage method。
 
-换句话说，**natural run 的 create-table 失败现在应表述成：helper 已经通过前半 descriptor/blob gate，也已经进入 entry-build，但在更后的 final-check 阶段把 error slot 推成了 `0x9000b`，并因此返回 null table。**
+换句话说，**natural run 的 create-table 失败已不应再描述成“final-check 自己把 error slot 推成 `0x9000b`”**；更准确的表述是：helper 通过了前半 descriptor/blob gate，也进入了 entry-build，但在 `0x10012595c` 之后更深层的校验 / helper 链里，`0x100122f98` 先把 err slot 写成 `0x9000b`，`0x100125960` 只是消费这份已形成的错误状态并把返回值压回 0。
 
 ### 13.e 对 C.2.7 主线的影响
 
-这轮结果把问题 (c) 从“49-byte descriptor / blob 本身是不是格式不对”进一步收紧成：
+这轮结果把问题 (c) 再收紧了一层：
 
 - 这对 descriptor/blob 至少能通过 `0x100135d80(..., errSlot)` 的**第一层** gate；
-- 当前缺的前置条件更像是 `0x10012581c -> 0x10012595c -> 0x100125960` 这一段后半 helper 需要的 entry-build / final-verify / registrar state；
-- 下一步最值钱的 probe 应该继续围绕 `0x100125948` / `0x10012595c` / `0x1001148b8` 一带补 live trace，直接回答是谁在 final-check 之前把 error slot 推成了 `0x9000b`。
+- 当前缺的前置条件已经从泛化的“`0x10012581c -> 0x100125960` 后半 helper”收紧成
+  `0x10012595c -> 0x1001148b8 -> 0x100114994 -> 0x1001142a4 -> 0x100122f98`
+  这条更深层 callee 链；
+- 下一步最值钱的 probe / 静态对齐，不应再把 `0x100125960` 当成 direct writer，
+  而要直接解释：`0x100122f98` 在什么前置状态下把 err slot 写成 `0x9000b`，以及
+  这条链与 entry-build / registrar / schema state 缺口之间的对应关系。

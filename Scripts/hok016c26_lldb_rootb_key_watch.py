@@ -182,8 +182,9 @@ def install_rootb_wide_watch(frame, bp_loc, internal_dict):
     import lldb  # already imported above
     res = lldb.SBCommandReturnObject()
     cmd = (
-        f"watchpoint command add {wp_id} -s python -F "
-        "hok016c26_lldb_rootb_key_watch.dump_node_key_on_hit"
+        "watchpoint command add -s python -F "
+        "hok016c26_lldb_rootb_key_watch.dump_node_key_on_hit "
+        f"{wp_id}"
     )
     ci.HandleCommand(cmd, res)
     if not res.Succeeded():
@@ -451,7 +452,7 @@ def _attach_watchpoint_callback(target, wp, callback_name):
     debugger = target.GetDebugger()
     ci = debugger.GetCommandInterpreter()
     res = lldb.SBCommandReturnObject()
-    cmd = f"watchpoint command add {wp.GetID()} -s python -F {callback_name}"
+    cmd = f"watchpoint command add -s python -F {callback_name} {wp.GetID()}"
     ci.HandleCommand(cmd, res)
     return res.Succeeded(), res.GetError()
 

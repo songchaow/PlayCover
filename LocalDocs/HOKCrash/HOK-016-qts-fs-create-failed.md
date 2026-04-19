@@ -703,32 +703,294 @@ reporter 内部 insert main 到 rootB
 **让 `mainChunk` 对象下面的 `"1"` 子注册闭合**，或者在更靠后的诊断点
 （`0x1001ba82c` / `0x1001bd448`）做 bundle-scoped 强制成功验证。
 
-## 修复方向（HOK-016-C.2.6 之后重新排序）
+### HOK-016-C.2.7：`mainChunk+0x60` 在 failure window 内始终为 0，当前 run 只命中 1 次 `lookup2`
+
+C.2.6 已把根因改写成“`mainChunk` 空壳对象缺 `"1"` 子树”；C.2.7 继续往前推，
+把 live 失败窗口和静态 caller 面都收紧到足够具体的粒度：
+
+1. **live trace 已能在 `mainChunk` 出现的第一时间稳定装上 `mainChunk+0x60` watchpoint**。
+   新增 `Scripts/hok016c27_ngr_mainchunk_subtree_trace.py` +
+   `Scripts/hok016c27_lldb_mainchunk_watch.py`，在 `0x10017f1dc`（`rootB["main"]`
+   返回后）抓到 `mainChunk` 对象并动态装 8-byte watchpoint 到 `mainChunk+0x60`。
+   这轮还顺手修正了 LLDB `watchpoint command add` 的参数顺序坑；当前 probe
+   安装过程已无额外 Python callback 噪音。
+
+2. **当前 macOS failure run 里，`lookup2` 只活跃 1 次，而且就是 dashboard
+   已知的失败 wrapper**。
+   `build/hok-016c27-mainchunk-subtree-trace.json` 里唯一一条
+   `[hok016c27-lookup2]` 记录为：
+
+   - `pc = 0x1001ba82c`
+   - `x0(mainChunk) = 0x...`（tracked object）
+   - `x1(key)` 解码恒为 PascalString `"1"`
+   - `x30 = 0x1001bd588`（即 callsite = `0x1001bd584`，caller function =
+     `0x1001bd464` / 当前失败链 wrapper）
+   - `mainChunk+0x60 = 0x0`
+
+   也就是说，这一轮 live run **没有**出现任何来自另外 6 个 `lookup2`
+   direct caller 的 runtime hit。
+
+3. **从 `mainChunk` 出现到现有 failure sink，`mainChunk+0x60` watchpoint 仍 0 hit**。
+   失败窗口内我们持续看到：
+
+   - `[hok016c27-mainchunk]`：`subtree-wp=id1@mainChunk+0x60`
+   - `[hok016c27-lookup2]`：`tracked=true`、key = `"1"`、`mainChunk+0x60=0x0`
+   - `[hok016c27-post]`：`0x1001bd588` / `0x10017f29c` / `0x10432e074`
+     三处返回值都延续为 0
+   - LLDB 最终仍停在既有 failure sink `0x108878124`，`watchpointHitCount = 0`
+
+   这把 C.2.6 的结论收紧成：**当前失败 run 里，`mainChunk` 出现之后直到
+   readiness-B fail，根本没有任何 runtime writer 试图填 `+0x60`。**
+
+4. **离线 caller scan 给出了 `lookup2` / `bd448` / `rootbLookup` 的完整 static 面。**
+   新增 `Scripts/hok016c27_ngr_mainchunk_callers.py`，产物
+   `build/hok-016c27-mainchunk-callers.json`。当前结果：
+
+   - `0x1001ba82c`（`lookup2`）共有 **7** 个 direct caller function：
+     `0x1001822a8`、`0x1001b9c68`、`0x1001ba50c`、`0x1001bc220`、
+     `0x1001bd464`、`0x1001bdde4`、`0x1001becb0`
+   - `0x1001bd448` 仅 **1** 个 direct caller function：`0x10017f194`
+   - `0x1001ba50c` 是唯一带 **5** 个 shallow callers 的 `lookup2` wrapper，
+     当前最值得继续反推
+   - 当前 run 唯一 live 命中的 `lookup2` caller 仍是 `0x1001bd464`
+
+5. **C.2.7 对下一步的意义**。
+   到目前为止，我们已经可以排除“`mainChunk` 在 reporter failure window 内晚到写入”
+   这条路。后续若继续 C.2.7，优先级应改成：
+
+   - 静态 / live 结合反推 `0x1001ba50c` 与它的 5 个 shallow callers
+   - 拆 `0x1001bd464 → 0x1001ba50c → 0x1001a5014` 这条 miss 后 fallback
+     builder / post-builder contract
+   - 对另外 6 个未在当前 run 活跃的 `lookup2` direct caller 做按需 probe
+   - 只有当这些路径都证明“注册逻辑过深、返回对象形状又无法安全伪造”时，
+     再进入 C.4 诊断性强制成功方案
+
+6. **C.2.7 新增关键更正：当前 run 并不是止步于 `lookup2` miss，而是继续走到
+   `ba50c` fallback builder，但仍在 `0x1001a5014` 后归零**。
+   在 `0x1001bd464` 里追加 probe 后，当前 run 观察到：
+
+   - `0x1001ba50c` **确实被调用**，且 `tracked=true`
+   - 其入参是 `(mainChunk, "../../../NGR/Content/Paks/1", "1", 0, 1)`
+   - `0x1001ba50c` **返回非零对象**（`x0 = 0x...`）
+   - 但 `0x1001bd888` 处（`bl 0x1001a5014` 返回后）实测 `x0 = 0`
+   - 此时 builder 返回对象 `x27` 与新分配对象 `x24` 的 `+0x60` 都仍为 `0`
+
+   这意味着：
+
+   - `lookup2` miss 后的 fallback builder **不是完全失效**；它能构造出一份
+     非零对象
+   - 真正把这条 fallback 路径继续压成失败的，是后续
+     `0x1001a5014` 的校验 / 组装阶段
+   - 因而 C.5 的最小 shim 目标不应再停留在“让 `lookup2` 返回非零”或“单独
+     调 `ba50c`”，而应改成：**让 `ba50c` 返回对象进入 `0x1001a5014` 时具备
+     足够的下游契约，或直接复用一份已满足该契约的现成对象**
+
+7. **`0x1001a5014` 进一步给出了 `+0x60` 的真实传播方向**。
+   反汇编 `0x1001a5014` 后可见：
+
+   - 它会把 `x1` / `x2` 两个字符串参数分别写进新对象 `x21+0x20` /
+     `x21+0x30`
+   - 它会调用一组下游 helper / vtable method；只有这些后半段检查成功时，
+     才会执行：
+
+     - `stp w23, w23, [x21, #0x48]`
+     - `str x22, [x21, #0x60]`
+     - `str w20, [x21, #0x50]`（带上限修正）
+
+   - 在 `0x1001bd464` 调用点里，`x22` 正是 `x27+0x60`（即 `ba50c`
+     fallback object 的 `+0x60` 字段）
+
+   因而当前 run 的失败更精确地说是：**`ba50c` 虽然返回了非零对象，但这份
+   builder object 的 `+0x60` 仍为空，导致 `0x1001a5014` 既拿不到要传播的
+   `x22`，也拿不到后半段所需的 success bit。**
+
+8. **C.2.7 进一步收紧：当前 run 既不是 path precheck fail，也不是 open-db fail，
+   真正死在 storage create-table。**
+   在现有 `Scripts/hok016c27_ngr_mainchunk_subtree_trace.py` /
+   `Scripts/hok016c27_lldb_mainchunk_watch.py` 上继续加 probe 后，最新 run
+   观察到：
+
+   - `0x1001a50ec`（`0x1016b91c0` 返回后那个 `tbz w0` 分支点）**0 hit**。
+     当前 run 直接从 `0x1001a50d4 tbnz w0` 走 fast-path 到 `0x1001a50f0`，
+     即 `a5014` 的 path precheck 已通过，不是当前失败源。
+   - `0x1001a5114` 处实测 `x0(db)=3`、`*dbErr=0`；随后
+     `newObj+0xa8` 变成非零，说明 `0x10012b2a4` open-db 已成功，失败也
+     **不是** db-handle 这一层。
+   - `0x1001a522c` 处实测：`newObj+0xb0` 已挂上非零 storage 对象，
+     storage vtable `slot+0x18` 归一化后是 `0x1001b3d0c`；但该调用返回
+     `w0=0`，所以 `0x1001a5230..0x1001a524c` 那组 success path 赋值
+     （`stp w23,w23,[x21,#0x48]` / `str x22,[x21,#0x60]` /
+     `str w20,[x21,#0x50]`）根本不会执行。
+   - 对 `0x1001b3d0c` / `0x1001b3d7c` 的静态反汇编可见：storage slot `+0x18`
+     先调用 `0x1001b3d7c`，其内部在 `0x1001b3df0` 调
+     `0x10012bb7c`，并把返回值写到 `storage+0x18`。`0x1001b3df4` live probe
+     直接读到：`x0(table)=0`、`storage+0x30 = 0x9000b`，随后
+     `0x1001b3ecc cset w0, ne` 把整条 storage method 压成 failure。
+
+   这把当前 active failure 再改写成：
+
+   ```text
+   ba50c fallback object exists
+     → a5014 path precheck passes
+     → a5014 open-db succeeds (db handle = 3, err = 0)
+     → a5014 creates storage object (newObj+0xb0)
+     → storage.vtable[0x18] = 0x1001b3d0c
+     → 0x1001b3d7c calls 0x10012bb7c
+     → 0x10012bb7c returns null table, storage+0x30 = 0x9000b
+     → storage method returns 0
+     → a5014 returns 0
+     → bd464 / f184 / dd98 continue returning 0
+   ```
+
+   因而 C.2.7 的下一步默认优先级又往下钻了一层：先解释
+   `0x10012bb7c` 为什么在 key=`"1"` 时返回 null table，以及 `0x9000b`
+   到底代表缺了哪一个前置契约；只有把这层解释清楚，才知道 C.5 应该模拟的
+   是 `mainChunk+0x60` 子树本身、storage 对象的建表前置状态，还是更深一层的
+   registrar / schema 初始化。
+
+9. **C.4 诊断性双 checkpoint 已证明：old gate 能被顶开，并且 dormant writer
+   path 会真的写 `mainChunk+0x60`。**
+   新增 `Scripts/hok016c4_ngr_force_storage_success.py` 后，连续做了三轮实验：
+
+   - **storage-only force**：仅在 `0x1001a522c` 把 storage method return
+     强制为 1。结果：`a5014` 确实返回 1，`newObj` 的 `+0x48/+0x50` 被填上，
+     但 `0x10017f184` / `0x10432dd98` 仍返回 0，说明“只让 storage create
+     success”还不够。
+   - **storage + ready dual force（带 watchpoint）**：在 storage force 的基础上，
+     再在 `0x1001a6958` 把 `0x1001a6830` 内 SaveHeader / ready result 强制为 1。
+     这轮里 `0x1001bd960`、`0x10017f29c`、`0x10432e074` 都已实测 `x0 = 1`，
+     old readiness-B gate 被真正顶开；同一 run 里 `mainChunk+0x60` watchpoint
+     首次在 `0x1001c6e74` 之后触发，LLDB 停在 `0x1001c6e78`。backtrace 显示
+     真 writer path 是：
+
+     ```text
+     0x10432dfdc
+       -> 0x10017f3c8
+       -> 0x1001bc220
+       -> 0x1001bc970
+       -> 0x1001c6da4
+       -> 0x1001c6e74 writes mainChunk+0x60
+     ```
+
+     这条链恰好落在 C.2.7 静态 caller scan 里原先**未在 natural run 活跃**的
+     `lookup2` direct caller `0x1001bc220` 上。
+   - **storage + ready dual force（无 watchpoint）**：为了避免 probe 自己拦停
+     进程，再跑了一轮 `--skip-mainchunk-watchpoint`。结果表明：虽然当前这轮
+     `0x10432dd98 -> 0x10017f184` 已被推成 success，但进程后续仍会重新回落到
+     旧 failure sink `0x108878124` 并 disconnect。说明双 checkpoint 足以暴露
+     真 writer path，却**仍不足以**直接达到稳定启动。
+
+   当前对主线的含义是：
+
+   - `mainChunk+0x60` 的 writer 已不再是假设，而是已经拿到真实 dynamic chain；
+   - natural run 缺的不是“根本不存在 writer”，而是**没有满足这条 dormant
+     writer path 的一项或多项 gating condition**；
+   - 下一步最值钱的工作，不再是盲猜 `+0x60` 应该长什么样，而是解释：
+     为什么只有在 storage success + ready bit 都被强推后，
+     `0x10432dfdc -> 0x10017f3c8 -> 0x1001bc220 -> 0x1001bc970 -> 0x1001c6da4`
+     才会活过来，以及 natural run 里到底缺了哪个 prerequisite。
+
+10. **C.2.7 再次收紧：writer 命中已经从“停在 watchpoint”升级成“拿到真实
+    tracked-dst 写入”，而且 writer 后还有第二次 `f3c8` 回落。**
+    在 `Scripts/hok016c4_ngr_force_storage_success.py --force-ready-to-use
+    --skip-mainchunk-watchpoint --trace-dormant-writer` 这轮结构化 run 里：
+
+   - `0x1001c6e78` callback 直接打印：`x23(dst) = tracked mainChunk+0x60`，
+     `trackedDst=true`；同一命中还读到 `dstBefore = 0x125d95d20`，并在 helper
+     的 tracked-chunk extra 中同步看到 `mainChunk+0x60 = 0x125d95d20`。这说明
+     dormant path 已经不是“疑似附近写入”，而是**真的把当前 tracked mainChunk
+     的 subtree root 挂上了非零对象**——但这里的“真的”仍限定在 dual-force
+     诊断条件下。
+   - 写入对象 `x22(src)` 的首 0x40 bytes 也被抓下来：里面能看到
+     `0x12603ae60`（即 tracked `mainChunk+0x60` 自身）以及若干状态位，说明这份
+     writer object 至少已经带了与目标 subtree root 绑定的内部指针 / metadata。
+   - 同一 run 还抓到一条新的后续事实：`0x10432dfdc` 那次 `f3c8` 成功之后，
+     在更早的 sibling branch `0x10432def0..0x10432df30` 里，
+     `0x10017f3c8` 会被**再次**调用（`LR = 0x10432df30`），而那第二次命中
+     返回 `x0 = 0`。继续加 `0x10017faa0` 的 return probe 后，又能看到：
+
+     - 第一轮 `0x10432dfbc -> 0x10017faa0` 的 return site `0x10017fb44`
+       在真正 `mov x0, x19` 之前，`x19 = 0`；
+     - 第二轮 `0x10432df10 -> 0x10017faa0` 的 return site `0x10017fb44`
+       同样是 `x19 = 0`；
+
+     再往里加 `0x1001be550` 的 probe 后，又能把这两次失败拆成不同形状。结合
+     `0x1001be61c` 的静态语义（成功时返回树节点 `+0x30` 上挂着的 entry/payload
+     object，而不是树 node 本体），当前动态结果应理解成：
+
+     - **第一轮**（`flag=0`）时，`0x1001be584` 处 `x0=0`。也就是 writer
+       path 触发前，`mainChunk+0x60` subtree 里**连目标 entry/payload object
+       都不存在**；
+    - **第二轮**（`flag=1`）时，`0x1001be584` 处已经能拿到非零 `x0=0x124834450`。
+      这轮新的 `ba940` 细化 probe（`build/hok-016c4-force-storage-ready-override-post.json`）
+      又把旧口径改写了一次：
+      - `0x1001bae58` 处，`ctx+0x40` 仍是 `0`；
+      - `0x1001bae70` 处，`ctx+0x40` **确实被写成** `0x15a991210`，说明 nonzero
+        override candidate 的确短暂进入过 context；
+      - 但到 `0x1001bb010` 前，`ctx+0x40` 已经又回到 `0`；与此同时
+        `ctx+0xa0 = 0x15aacf0c0`，`x22 = 0x124834450`；
+      - `0x1001bb014` 处实测 `str x22, [x8, #0x8]` **真的执行**，final entry
+        `0x15aacf0c0` 的 `slot1` 从 `0` 变成 `0x124834450`，且 `slot1 == x22`。
+
+      也就是说，第二轮失败**已经不再是**“final entry 的 override slot 没写进去”。
+      真正失败的是：写进 `slot1` 的这份 override object `0x124834450` 自身仍然是个
+      hollow wrapper——它的 raw dump 首 qword 回指 final entry `0x15aacf0c0`，第二
+      qword 仍为 `0`，而 `0x1001be5cc` 处 `child0/child1` 也都是 `0`。换句话说，
+      `flag=1` gate 看到的不是“缺少 override slot”，而是 **override slot 已存在，
+      但里面挂的是一份 `backref-to-entry + null-child` 的未完成对象**；
+      `0x1001be550` 因而继续把 return 压回 `0`。
+
+    也就是说，两轮 `0x10017faa0` gate **都没有成功**，只是当前 callback 停在
+    `mov x0, x19` 之前，不能把旧 `x0` 误当成真实 return value。把这个口径修正后，
+    当前 sequence 应写成：
+
+    ```text
+    dual-force pushes first writer branch alive
+      -> first 0x10017faa0 still returns 0, so first branch falls through to f3c8
+      -> dormant path writes tracked mainChunk+0x60
+      -> ba940 first stores a nonzero override candidate into ctx+0x40, then later clears/rebuilds it
+      -> ba940 finally writes entry.slot1 = 0x124834450
+      -> second 0x10017faa0 / 0x1001be550(flag=1) reads that same 0x124834450 object
+      -> but the written object is only a backref-to-entry + null-child wrapper, so second gate still returns 0
+      -> sibling branch then calls 0x10017f3c8 again
+      -> second f3c8 invocation returns 0
+      -> process eventually falls back to old readiness-B failure sink
+    ```
+
+  这把主线目标进一步改写为两层：
+
+   1. 先解释 **`0x1001bae70 .. 0x1001bb010` 之间谁把 `ctx+0x40` 清回 `0`、以及
+      `0x1001bb844` / 相邻 helper 为什么最终产出 `0x124834450` 这种
+      `backref-to-entry + null-child` 的 override wrapper**，
+      因为这是当前唯一已经被实证证明会在 dual-force 之后继续阻断流程的下一个 gate；
+
+   2. 再继续收紧 natural run 为什么过不了 `storage success + ready` 以及更高层
+      mount / registrar state 这组一项或多项 prerequisite。
+
+## 修复方向（HOK-016-C.2.7 之后重新排序）
 
 HOK-016 的修复必须在 PlayTools 层 bundle-scoped、不动 NGR 二进制，可选
 方案按"影响面从小到大 / 风险从低到高"排：
 
-1. **(C.2.6) 定位 "main" chunk 的预注册路径**（当前方向）：
-   - 静态：在 NGR 二进制里搜 PascalString 字面量 `"main"` 的 4 字
-     节 length-prefix 模式（`04 00 00 00 00 00 00 00 6d 61 69 6e`），
-     看哪些 `__TEXT` / `__const` / `__data` 段包含它以及有哪些 xref
-     指向它——这些 xref 的函数就是候选的"预注册 main" 路径。
-   - 运行：扩大 C.2.5 的 watchpoint 覆盖——不仅 watch rootB[0..7]，
-     也对每次 insert 的 new-node 里的 key 字段做读写监控，对比看
-     哪次 insert 的 key 真的是 "main"；若 "main" 的 insert **发生
-     在 reporter 路径以外**（例如 dyld static init 的另一条链），
-     backtrace 会直接告诉我们 registrar 的函数入口。
-2. **(C.5) 在 PlayTools 里模拟 "main" entry 插入**：若 C.2.6 能给
-   出一个可重复的 insert API 签名（`bl <insert_helper>(x0=rootB,
-   x1="main" PascalString, ...)`），PlayTools constructor 里按同样
-   的签名手动 invoke 一次即可。这是最小侵入的修法。
-3. **(C.4) 对 `bl 0x1001cd114` / `0x10017f184` / `0x10432dd98` 做
-   fishhook interpose**：若 C.2.6 发现 insert 是 C++ template /
-   lambda / 无法从 PlayTools 复制的复杂路径，退而求其次，interpose
-   让 lookup 对 key "main" 强制返回"假装找到"。
-4. **(C.3) fishhook interpose `0x108878534` 直接返回 1**：野蛮方案
-   保留作为最后兜底。
-5. **(C.6) 降级**：若 C.2.6 最终指向必须由用户提供外部资源/登录
+1. **(C.2.7) 定位 / 模拟 `mainChunk -> "1"` 注册路径**（当前方向）：
+   - 运行：继续围绕唯一 live active path
+     `0x10017f194 → 0x1001bd448 → 0x1001ba82c(mainChunk, "1")`
+     扩 probe，但重点从“watch 失败窗口内有没有晚到 writer”转成
+     “当前 run 之外还有哪些 constructor / registrar 路径本该被触发”，
+     以及“`ba50c` 之后 `0x1001a5014` 还要求哪些对象字段 / 关联状态”。
+   - 静态：优先反推 `0x1001ba50c` 及其 5 个 shallow callers，并对另外
+     6 个未在当前 run 活跃的 `lookup2` direct caller 做按需 probe。
+2. **(C.5) 在 PlayTools 里模拟 `mainChunk -> "1"` 的二级注册**：若
+   C.2.7 能给出一个可重复的 child-registration API 签名或完整对象构造
+   路径，PlayTools constructor 里按同样签名补齐该二级子树；这是新的最
+   小侵入修法。
+3. **(C.4) 基于 PlayTools 现有 bundle-scoped runtime hook / direct
+   patch 基建做诊断性强制成功**：若 C.2.7 证实注册路径过于复杂、且
+   `lookup2` 的返回对象形状又无法安全伪造，再退而求其次对
+   `0x1001ba82c` / `0x1001bd448` 做 bundle-scoped 诊断性强制成功验证。
+4. **(C.3) 在更外层强制 readiness-B 成功**：保留作为最后兜底，风险仍
+   然最高。
+5. **(C.6) 降级**：若 C.2.7 最终指向必须由用户提供外部资源/登录
    态，才把问题降级到 HOK-009（需要用户介入）。
 
 已证伪路径：
@@ -765,10 +1027,17 @@ HOK-016 的修复必须在 PlayTools 层 bundle-scoped、不动 NGR 二进制，
 后的验证口径见 Dashboard "HOK-016-D 判据"（`hok014_ngr_alert_suppressed
 = 0` / 进程活跃度 / 窗口可见性 / 无新 `NGR-*.ips`）。
 
-**下一步默认推进顺序**：C.2.6（静态扫 `"main"` PascalString literal
-xref + watchpoint 范围扩大到 new-node key 字段）→ 根据 registrar
-位置在 C.5（PlayTools 模拟插入）/ C.4（fishhook lookup interpose）
-中选择 → C.3（最终兜底）→ C.6 降级（末选）。
+**下一步默认推进顺序**：C.2.7（优先拆
+`0x1001bd464 → 0x1001a5014 → storage.vtable[0x18](0x1001b3d0c) →
+0x10012bb7c` 的 create-table 失败链，继续解释 `0x9000b` / null table 的来源；
+同时围绕已被 dual-force 激活的 dormant writer path
+`0x10432dfdc -> 0x10017f3c8 -> 0x1001bc220 -> 0x1001bc970 -> 0x1001c6da4`
+优先补 `ba940` 中段 `0x1001bae70 .. 0x1001bb010` 的 state 变化——也就是
+谁把 `ctx+0x40` 清回 `0`、谁把临时 candidate 改写成最终写入 `slot1` 的
+`0x124834450` override wrapper，以及为什么 `0x1001be550(flag=1)` 看到它时仍只是一份
+`backref-to-entry + null-child` 的 hollow object；再回过头追自然激活前置条件）
+→ 若拿到可重复 child-registration / ready-state 契约则进 C.5；若只剩“复杂路径且无法安全伪造返回对象”
+则继续扩 C.4 的 bundle-scoped 诊断性强制成功验证 → C.3（最终兜底）→ C.6 降级（末选）。
 
 ## 参考
 

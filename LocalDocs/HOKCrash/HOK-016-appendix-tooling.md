@@ -159,11 +159,14 @@ branch / `0x10012595c -> 0x1001148b8 -> 0x1001142a4 -> 0x100122f20/
 0x100122f58/0x100122f60 -> 0x100122f98` 这条更深层 err-slot /
 materialization 链 / final-check / err=9 写点。在 gate-ret
 `0x100125030` 时会根据需要动态把 err slot watchpoint 装到 caller
-传入的 err slot 上；新增的 materialization breakpoint 会把 `x20=errSlot`
-/ `x21<-x2` / `x22<-x1` / `x19=helper` 以及 `0x100122f54` 那次 vcall 的
-返回值一起打出来，便于判断到底是 success-side 汇合（`x30=0x100122f7c`）
-还是 err-provider 路径（`x30=0x100122f88`）。产物新增
-`build/hok-016c27-materialize-trace.json`；历史还保留
+传入的 err slot 上；新增的 materialization breakpoint 现在会同时覆盖
+`0x100122f20` entry、`0x100122f54` precall、`0x100122f58` return、
+`0x100122f60` result：既打出 `x20=errSlot` / `x21<-x2` / `x22<-x1` /
+`x19=helper`，也打出 `0x100122f54` 那次 vcall 的 `x8 target` / saved args /
+helper vtable，再配合返回值判断到底是 success-side 汇合
+（`x30=0x100122f7c`）还是 err-provider 路径（`x30=0x100122f88`）。产物新增
+`build/hok-016c27-materialize-vcall-trace-v3.json`；历史还保留
+`build/hok-016c27-materialize-trace.json` /
 `build/hok-016c27-deep-err-chain.json` /
 `build/hok-016c27-mainchunk-subtree-trace.json` /
 `build/hok-016c27-final-check-errslot-watch.json`。

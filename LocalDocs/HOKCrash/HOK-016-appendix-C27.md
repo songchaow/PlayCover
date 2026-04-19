@@ -552,3 +552,31 @@ post-store compare。新增 `build/hok-016c27-materialize-trace.json` 后，这�
 （`helper+0x10 = 0x3200080a0`、`helper+0x18 = 0`）下，为什么会返回 0。**
 只要这个返回值继续为 0，`0x100122f58/0x100122f5c` 就会稳定把 `x21` 与
 `helper+0x18` 一起压空，随后 `0x100122f94` 继续把 create-table 压回 null table。
+
+### 14.b precall target trace：failing hit 与两次 success hit 共用同一个 materializer target
+
+新增 `build/hok-016c27-materialize-vcall-trace-v3.json` 后，`0x100122f54`
+前一拍的现场也闭合了：
+
+- 共抓到 **8** 组 `precall -> ret`：其中 **5** 组 success 命中
+  `x8(target)=0x100128c6c`，另 **2** 组 success + **1** 组 fail 命中
+  `x8(target)=0x10432a068`。
+- 对于与 failing hit 同一 target 的那 **2** 组 success，`x0` 同样固定为
+  `0x10e16ded8`，`helper.vtable` 同为 `0x10c80ae20`，`helper_slot10raw`
+  也一致；说明 failing hit **不是**“打到了一个 fail-only materializer”。
+- 真正新的分叉点在输入 tuple：success hit 带
+  `x21(savedArg)=0x10aa5264a`、
+  `x1/x22="../../../NGR/Content/Paks/1/1.db"`、
+  `helper+0x10=0x6000031c4070`；natural failing hit 则带
+  `x21(savedArg)=0x10aa4678c`、`x1/x22="/Users/..."`、
+  `helper+0x10=0x6000031c4930`。
+- backtrace 侧也支持这点：两次 success 同 target 分别来自
+  `0x100114170` 与 `0x100114684 -> 0x100118cfc -> 0x100118b18 ->
+  0x10011967c -> 0x10019731c -> 0x1001a5e58 -> 0x1001a55c8`；failing hit
+  仍来自 natural create-table 链
+  `0x1001142a4 -> 0x100114994 -> 0x100125960 -> 0x1001b3df4 ->
+  0x1001b3d50 -> 0x1001a522c -> 0x1001bd888`。
+- 因而问题 (c) 需要再改写一步：要解释的已不再是“哪一个 `x8` target
+  返回 0”，而是**为什么同一个 `0x10432a068` materializer 会在两组
+  caller / input tuple 下呈现一成一败**。`0x100122f58/0x100122f5c` 仍只是
+  空值回写点。

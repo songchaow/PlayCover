@@ -134,12 +134,18 @@ frame 3 这条路径时 HOK-013 预置的 stub 会被真 writer 覆盖；HOK-013
    success）证明 dormant writer path
    `0x10432dfdc → 0x10017f3c8 → 0x1001bc220 → 0x1001bc970 →
    0x1001c6da4 → 0x1001c6e74` 会真实写 `mainChunk+0x60`；新增
-   `build/hok-016c27-materialize-trace.json` 又把 create-table fail
-   进一步收紧成：failing helper state 下，`0x100122f54` 的
-   materialization vcall 直接返回 0，随后空值被回写到
-   `x21/helper+0x18`，再落入 `err=9` provider 合成 `0x9000b`。
-   `0x100122f98` 同时还是 success / fail 两支的 join point，解读时必须
-   用 `x30` 区分路径。详细寄存器与逐指令证据见
+   `build/hok-016c27-materialize-trace.json` 先把 create-table fail
+   收紧成：failing helper state 下，`0x100122f54` 的 materialization
+   vcall 直接返回 0。随后 `build/hok-016c27-materialize-vcall-trace-v3.json`
+   又进一步证实：failing hit 与 2 次 success hit 共用同一个
+   `x8(target)=0x10432a068`、同一个 `x0=0x10e16ded8` 与相同
+   `helper_slot10raw`；当前真正未闭合的点已改写成：为什么这同一 target
+   会在 success tuple（`x21=0x10aa5264a`、
+   `x1="../../../NGR/Content/Paks/1/1.db"`）返回 nonzero，却在 natural
+   failing tuple（`x21=0x10aa4678c`、`x1="/Users/..."`）返回 0，随后
+   空值被回写到 `x21/helper+0x18`，再落入 `err=9` provider 合成
+   `0x9000b`。`0x100122f98` 同时还是 success / fail 两支的 join point，
+   解读时必须用 `x30` 区分路径。详细寄存器与逐指令证据见
    `HOK-016-appendix-C27.md`。
 
 ### 当前根因链（骨架版）
@@ -184,10 +190,14 @@ direct-writer 调用链见 `HOK-016-appendix-C27.md`。
    - (b) 为什么 `0x10432dfdc` 这支 `ba720(key="1")` lookup 返回 0、
      把 `ctx+0x38` 初始化成 0，最后被迫走硬编码 `w3=0` 的 `bb73c`；
    - (c) `0x10012595c → 0x1001148b8 → ... → 0x100122f20..0x100122f60`
-     这条更深层 callee 链里，为什么 `0x100122f54` 的 materialization
-     vcall 会返回 0，并经 `mov x21,x0` / `str x0,[x19,#0x18]` 把
-     `x21/helper+0x18` 一起压空，再走 `err=9` provider 合成
-     `(9 << 16) | 0xb = 0x9000b` 写回 caller err slot。
+     这条更深层 callee 链里，为什么**同一个** `0x100122f54`
+     materializer target `0x10432a068` + 相同 `x0=0x10e16ded8`，会在
+     success hit（`x21=0x10aa5264a`、
+     `x1="../../../NGR/Content/Paks/1/1.db"`）返回 nonzero，却在
+     natural failing hit（`x21=0x10aa4678c`、`x1="/Users/..."`）返回 0，
+     并经 `mov x21,x0` / `str x0,[x19,#0x18]` 把 `x21/helper+0x18`
+     一起压空，再走 `err=9` provider 合成 `(9 << 16) | 0xb = 0x9000b`
+     写回 caller err slot。
 2. **C.5**：若 C.2.7 能给出可重复的 child-registration API 签名或完
    整对象构造路径，PlayTools constructor 里按同样签名补齐。**最小侵
    入修法。**

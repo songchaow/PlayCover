@@ -65,6 +65,7 @@ BP_CREATE_TABLE_IMPL_DEEP_ENTRY = "0x1001148b8"
 BP_CREATE_TABLE_IMPL_DEEP_STAGE1 = "0x100114994"
 BP_CREATE_TABLE_IMPL_DEEP_STAGE2 = "0x1001142a4"
 BP_CREATE_TABLE_IMPL_MATERIALIZE_ENTRY = "0x100122f20"
+BP_CREATE_TABLE_IMPL_MATERIALIZE_PRECALL = "0x100122f54"
 BP_CREATE_TABLE_IMPL_MATERIALIZE_RET = "0x100122f58"
 BP_CREATE_TABLE_IMPL_MATERIALIZE_RESULT = "0x100122f60"
 BP_CREATE_TABLE_IMPL_ERR_DIRECT = "0x100122f98"
@@ -208,6 +209,11 @@ def main() -> int:
             "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_materialize_entry_on_hit",
         ),
         (
+            BP_CREATE_TABLE_IMPL_MATERIALIZE_PRECALL,
+            "hok016c27_create_table_impl_materialize_precall",
+            "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_materialize_precall_on_hit",
+        ),
+        (
             BP_CREATE_TABLE_IMPL_MATERIALIZE_RET,
             "hok016c27_create_table_impl_materialize_ret",
             "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_materialize_ret_on_hit",
@@ -308,6 +314,7 @@ def main() -> int:
     print(
         "  materialize chain  : "
         f"{BP_CREATE_TABLE_IMPL_MATERIALIZE_ENTRY}, "
+        f"{BP_CREATE_TABLE_IMPL_MATERIALIZE_PRECALL}, "
         f"{BP_CREATE_TABLE_IMPL_MATERIALIZE_RET}, "
         f"{BP_CREATE_TABLE_IMPL_MATERIALIZE_RESULT}"
     )

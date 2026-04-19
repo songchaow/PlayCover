@@ -981,6 +981,40 @@ def snapshot_create_table_impl_materialize_entry_on_hit(frame, bp_loc, internal_
     return False
 
 
+def snapshot_create_table_impl_materialize_precall_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    sp = _reg_u64(frame, "sp")
+    x0 = _reg_u64(frame, "x0")
+    x1 = _reg_u64(frame, "x1")
+    x8 = _reg_u64(frame, "x8")
+    x19 = _reg_u64(frame, "x19")
+    x20 = _reg_u64(frame, "x20")
+    x21 = _reg_u64(frame, "x21")
+    x22 = _reg_u64(frame, "x22")
+    x30 = _reg_u64(frame, "x30")
+    helper_vtable = _read_u64(process, x19) if x19 > 0x100000000 else None
+    helper_vtable_norm = _normalize_ngr_ptr(helper_vtable)
+    helper_slot10 = _read_u64(process, x19 + 0x10) if x19 > 0x100000000 else None
+    helper_slot18 = _read_u64(process, x19 + 0x18) if x19 > 0x100000000 else None
+    helper_slot28 = _read_u64(process, x19 + 0x28) if x19 > 0x100000000 else None
+    target_norm = _normalize_ngr_ptr(x8)
+
+    print(
+        f"[hok016c27-create-table-materialize-precall] pc=0x{frame.GetPC():x} sp=0x{sp:x} x0=0x{x0:x} x1=0x{x1:x} x8(target)=0x{x8:x} "
+        f"x19=0x{x19:x} x20=0x{x20:x} x21(savedArg)=0x{x21:x} x22(savedObj)=0x{x22:x} x30(lr)=0x{x30:x} "
+        f"x0==x22={str(x0 == x22).lower()} x1==x21={str(x1 == x21).lower()} "
+        f"x8.norm=0x{(target_norm or 0):x} helper.vtable=0x{(helper_vtable or 0):x} helper.vtable.norm=0x{(helper_vtable_norm or 0):x} "
+        f"helper+0x10=0x{(helper_slot10 or 0):x} helper+0x18=0x{(helper_slot18 or 0):x} helper+0x28=0x{(helper_slot28 or 0):x}"
+        f"{_pointer_raw_extra(process, 'x0', x0)}{_pointer_raw_extra(process, 'x1', x1)}{_pointer_raw_extra(process, 'x8', x8, 0x10)}"
+        f"{_pointer_raw_extra(process, 'x21', x21)}{_pointer_raw_extra(process, 'x22', x22)}"
+        f"{_pointer_raw_extra(process, 'helper_slot10', helper_slot10)}{_pointer_raw_extra(process, 'helper_slot28', helper_slot28)}"
+        f"{_watched_err_slot_extra(process)} bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
 def snapshot_create_table_impl_materialize_ret_on_hit(frame, bp_loc, internal_dict):
     thread = frame.GetThread()
     process = thread.GetProcess()

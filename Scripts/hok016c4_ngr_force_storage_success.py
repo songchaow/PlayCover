@@ -239,6 +239,16 @@ def main() -> int:
                     "hok016c27_lldb_mainchunk_watch.snapshot_a53dc_gate_on_hit",
                 ),
                 (
+                    BP_OPEN_NODE_STORAGE_ENTRY,
+                    "hok016c4_open_node_entry",
+                    "hok016c27_lldb_mainchunk_watch.snapshot_open_node_storage_entry_on_hit",
+                ),
+                (
+                    BP_OPEN_NODE_STORAGE_FAIL,
+                    "hok016c4_open_node_fail",
+                    "hok016c27_lldb_mainchunk_watch.snapshot_open_node_storage_fail_on_hit",
+                ),
+                (
                     BP_BA940_SECOND_OVERRIDE_CALL,
                     "hok016c4_ba940_second_override_call",
                     "hok016c27_lldb_mainchunk_watch.snapshot_ba940_second_override_call_on_hit",

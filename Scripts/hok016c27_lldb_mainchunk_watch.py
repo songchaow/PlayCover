@@ -530,6 +530,113 @@ def snapshot_a5014_storage_on_hit(frame, bp_loc, internal_dict):
     return False
 
 
+def snapshot_storage_method_entry_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    x0 = _reg_u64(frame, "x0")
+    x1 = _reg_u64(frame, "x1")
+    x2 = _reg_u64(frame, "x2")
+    x3 = _reg_u64(frame, "x3")
+    x19 = _reg_u64(frame, "x19")
+    x20 = _reg_u64(frame, "x20")
+    x21 = _reg_u64(frame, "x21")
+    x22 = _reg_u64(frame, "x22")
+    x30 = _reg_u64(frame, "x30")
+    key1 = _decode_pascal_string(process, x1)
+    key20 = _decode_pascal_string(process, x20)
+    storage = x0 if x0 > 0x100000000 else x19
+    extra = ""
+    if storage > 0x100000000:
+        vtable = _read_u64(process, storage)
+        slot18 = _read_u64(process, (vtable or 0) + 0x18) if vtable else None
+        normalized = _normalize_ngr_ptr(slot18)
+        extra += f" storage=0x{storage:x}"
+        extra += f" storage+0x18=0x{(_read_u64(process, storage + 0x18) or 0):x}"
+        extra += f" storage+0x30=0x{(_read_u32(process, storage + 0x30) or 0):x}"
+        extra += f" storage+0x3c=0x{(_read_u32(process, storage + 0x3C) or 0):x}"
+        extra += f" storage.vtable=0x{(vtable or 0):x}"
+        extra += f" storage.slot18=0x{(slot18 or 0):x}"
+        if normalized is not None:
+            extra += f" storage.slot18.norm=0x{normalized:x}"
+
+    print(
+        f"[hok016c27-storage-method] pc=0x{frame.GetPC():x} x0=0x{x0:x} x1=0x{x1:x} "
+        f"x2=0x{x2:x} x3=0x{x3:x} x19=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x} "
+        f"arg1=[{key1['summary']}] arg20=[{key20['summary']}]"
+        f"{extra} bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_storage_create_table_call_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    x0 = _reg_u64(frame, "x0")
+    x1 = _reg_u64(frame, "x1")
+    x2 = _reg_u64(frame, "x2")
+    x3 = _reg_u64(frame, "x3")
+    x4 = _reg_u64(frame, "x4")
+    x19 = _reg_u64(frame, "x19")
+    x20 = _reg_u64(frame, "x20")
+    x21 = _reg_u64(frame, "x21")
+    x22 = _reg_u64(frame, "x22")
+    x30 = _reg_u64(frame, "x30")
+    key1 = _decode_pascal_string(process, x1)
+    key20 = _decode_pascal_string(process, x20)
+    storage = x19 if x19 > 0x100000000 else 0
+    extra = ""
+    if storage:
+        extra += f" storage+0x18=0x{(_read_u64(process, storage + 0x18) or 0):x}"
+        extra += f" storage+0x30=0x{(_read_u32(process, storage + 0x30) or 0):x}"
+        extra += f" storage+0x3c=0x{(_read_u32(process, storage + 0x3C) or 0):x}"
+    if x1 > 0x100000000:
+        extra += f" x1raw={_hex_dump(_read_bytes(process, x1, 0x20))}"
+    if x20 > 0x100000000:
+        extra += f" x20raw={_hex_dump(_read_bytes(process, x20, 0x20))}"
+    if x22 > 0x100000000:
+        extra += f" x22raw={_hex_dump(_read_bytes(process, x22, 0x20))}"
+
+    print(
+        f"[hok016c27-create-table-call] pc=0x{frame.GetPC():x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} "
+        f"x19(storage)=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x} "
+        f"arg1=[{key1['summary']}] arg20=[{key20['summary']}]"
+        f"{extra} bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_create_table_entry_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    x0 = _reg_u64(frame, "x0")
+    x1 = _reg_u64(frame, "x1")
+    x2 = _reg_u64(frame, "x2")
+    x3 = _reg_u64(frame, "x3")
+    x4 = _reg_u64(frame, "x4")
+    x19 = _reg_u64(frame, "x19")
+    x20 = _reg_u64(frame, "x20")
+    x21 = _reg_u64(frame, "x21")
+    x22 = _reg_u64(frame, "x22")
+    x30 = _reg_u64(frame, "x30")
+    key1 = _decode_pascal_string(process, x1)
+    key2 = _decode_pascal_string(process, x2)
+    extra = ""
+    for label, value in (("x0", x0), ("x1", x1), ("x2", x2)):
+        if value > 0x100000000:
+            extra += f" {label}raw={_hex_dump(_read_bytes(process, value, 0x20))}"
+
+    print(
+        f"[hok016c27-create-table-entry] pc=0x{frame.GetPC():x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} "
+        f"x19=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x} "
+        f"arg1=[{key1['summary']}] arg2=[{key2['summary']}]"
+        f"{extra} bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
 def snapshot_storage_after_create_table_on_hit(frame, bp_loc, internal_dict):
     thread = frame.GetThread()
     process = thread.GetProcess()

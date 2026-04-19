@@ -355,15 +355,24 @@ dual-force pushes first writer branch alive
   `ba720` 才会在 `0x10432df30` 这支里看到 nonzero subtree root，进而
   返回 nonzero 并把 `ctx+0x38` 真正填起来。
 
-同一轮还补了 `0x1001a588c` / `0x1001a5730` 的 direct probe，但 **0 hit**；
-因此对 branch A 的当前直接证据仍是 return-site 差异，而不是 entry-side
-参数：
+再跑一轮 `build/hok-016c4-force-storage-ready-open-node-v2.json` 后，
+`0x1001a588c` / `0x1001a5730` 的 direct probe 已真正命中，branch A 的
+entry-side 证据也补齐了：
 
-- fail 的首轮 `a53dc(..., 1)`：`pkg+0xa8 = 3`、`pkg+0x110 = 5`
-- success 的两条可对照路径：`pkg+0xa8 = 2`、`pkg+0x110 = 1 / 3`
+- **success 对照 1**：`pkg+0xa8 = 2`、`pkg+0x110 = 1`，`mainChunk+0x60 = 0`；
+  `0x1001a588c` 入口命中后，`0x1001a55b8` / `0x1001a55c8` 两个 gate 都读到
+  `w0 = 1`。
+- **success 对照 2**（`LR = 0x10432dfdc`）：`pkg+0xa8 = 2`、`pkg+0x110 = 3`，
+  `mainChunk+0x60 = 0`；同样 gate1 / gate2 都返回 1。
+- **fail 的 branch A**（`LR = 0x10432df30`）：`pkg+0xa8 = 3`、`pkg+0x110 = 5`，
+  且此时 `mainChunk+0x60` 已经非零；但 `0x1001a588c` 刚返回，
+  `0x1001a55b8` 就直接观测到 `w0 = 0`，随后 `0x1001a5730`
+  `QtsfPackage OpenNodeStorage failed! package=%s` 分支被直接命中。
 
-这进一步暗示：`0x10432df30` 这支卡在 OpenNodeStorage，更像是 **package /
-storage state 尚未就绪**，而不是 key / candidate materialization 自身有误。
+这把 branch A 的口径从“只看 return-site 推断 package state 差异”升级成了：
+**`0x10432df30` 这支确实在 entry-side 带着 `pkg+0xa8 = 3 / pkg+0x110 = 5`
+进入 `0x1001a588c`，并在 gate1 立刻失败；问题更像是 package / storage
+state 尚未就绪，而不是 key / candidate materialization 自身有误。**
 
 这把主线目标进一步改写为两层：
 
@@ -373,3 +382,25 @@ storage state 尚未就绪**，而不是 key / candidate materialization 自身�
    `ba720(key="1")`**；
 2. 再继续收紧 natural run 为什么过不了 `storage success + ready`
    以及更高层 mount / registrar state 这组一项或多项 prerequisite。
+
+### 12. natural run 的 `0x10012bb7c` 入口实参现在也有了：它看到的是 descriptor/blob contract，不是简单 key `"1"`
+
+新增 `build/hok-016c27-mainchunk-subtree-storage-v3.json` 后，natural run
+的 storage 深 probe 进一步把 `0x10012bb7c` 入口实参钉死：
+
+- `0x1001b3d0c` storage method 入口实测：
+  `x0(storage)=0x12d03cfb0`、`x1=0x12d03c728`、`x2=0x2710`；此时
+  `storage+0x18 = 0`、`storage+0x30 = 0`、`storage+0x3c = 0`。
+- 到 `0x1001b3df0` call site 时，`x1 == x20 == 0x12d03c728`，其 raw bytes 为
+  `31 00 00 00 00 00 00 00 01 01 00 00 ...`；也就是说它更像一份
+  **49-byte descriptor**，不是前面 `ba720` / `lookup2` 那种简单 PascalString
+  `"1"`。
+- 同一 call site 的 `x2 = 0x170b819b8`，其 raw bytes 以 `0x2710` 开头，后面还跟着
+  指针 / 长度字段；它更像一份与 descriptor 配套的 **companion blob**。
+- `0x10012bb7c` entry 收到的就是这组 `(x0, x1/x20, x2, x4)` 组合；helper 返回后，
+  `0x1001b3df4` 立刻观测到 `x0(table)=0`，随后 `storage+0x30` 才被写成
+  `0x9000b`。
+
+这说明：**到 `0x10012bb7c` 这一层，问题已经不应再表述成“key=`"1"` 查不到表”**，
+而更像是“create-table helper 拿到的 descriptor/blob contract 缺了一项或多项前置状态”，
+所以 helper 返回 null table，并把错误码落到 `0x9000b`。

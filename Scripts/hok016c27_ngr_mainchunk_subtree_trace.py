@@ -53,6 +53,9 @@ BP_BD464_AFTER_A5014 = "0x1001bd888"
 BP_A5014_PRECHECK = "0x1001a50ec"
 BP_A5014_AFTER_OPEN_DB = "0x1001a5114"
 BP_A5014_AFTER_STORAGE = "0x1001a522c"
+BP_STORAGE_METHOD_ENTRY = "0x1001b3d0c"
+BP_STORAGE_CREATE_TABLE_CALL = "0x1001b3df0"
+BP_CREATE_TABLE_ENTRY = "0x10012bb7c"
 BP_STORAGE_AFTER_CREATE_TABLE = "0x1001b3df4"
 
 
@@ -131,6 +134,21 @@ def main() -> int:
             "hok016c27_lldb_mainchunk_watch.snapshot_a5014_storage_on_hit",
         ),
         (
+            BP_STORAGE_METHOD_ENTRY,
+            "hok016c27_storage_method_entry",
+            "hok016c27_lldb_mainchunk_watch.snapshot_storage_method_entry_on_hit",
+        ),
+        (
+            BP_STORAGE_CREATE_TABLE_CALL,
+            "hok016c27_storage_create_table_call",
+            "hok016c27_lldb_mainchunk_watch.snapshot_storage_create_table_call_on_hit",
+        ),
+        (
+            BP_CREATE_TABLE_ENTRY,
+            "hok016c27_create_table_entry",
+            "hok016c27_lldb_mainchunk_watch.snapshot_create_table_entry_on_hit",
+        ),
+        (
             BP_STORAGE_AFTER_CREATE_TABLE,
             "hok016c27_storage_after_create_table",
             "hok016c27_lldb_mainchunk_watch.snapshot_storage_after_create_table_on_hit",
@@ -195,6 +213,9 @@ def main() -> int:
     print(f"  a5014 precheck      : {BP_A5014_PRECHECK}")
     print(f"  a5014 open-db       : {BP_A5014_AFTER_OPEN_DB}")
     print(f"  a5014 storage       : {BP_A5014_AFTER_STORAGE}")
+    print(f"  storage method      : {BP_STORAGE_METHOD_ENTRY}")
+    print(f"  storage create-call : {BP_STORAGE_CREATE_TABLE_CALL}")
+    print(f"  create-table entry  : {BP_CREATE_TABLE_ENTRY}")
     print(f"  storage table       : {BP_STORAGE_AFTER_CREATE_TABLE}")
     print(f"  a5014 return        : {BP_BD464_AFTER_A5014}")
     print(f"  lookup2 return      : {BP_BD448_AFTER_LOOKUP1}")

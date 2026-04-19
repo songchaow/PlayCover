@@ -132,17 +132,23 @@ HOK-013 的价值是在 frame 3 触发前防卫 early reader。HOK-015 让 frame
    success + ready bit）顶开 old gate 后，dormant writer path
    `0x10432dfdc -> 0x10017f3c8 -> 0x1001bc220 -> 0x1001bc970 ->
    0x1001c6da4 -> 0x1001c6e74` 会真实写 `mainChunk+0x60`；最新
-   `build/hok-016c4-force-storage-ready-open-node.json` 又把 sibling
+   `build/hok-016c4-force-storage-ready-open-node-v2.json` 又把 sibling
    branch 的分水岭进一步收紧：`0x10432df30` 与 `0x10432dfdc` 两支在
    `ba720(key="1")` 看到的 `ctx[0]` / `ctx+0x18` raw bytes 与 key 都一致，
    真正变化的是调用当下的 `mainChunk+0x60`——前者在 subtree root 已非零时
    lookup 返回 nonzero 并把 `ctx+0x38` 填起来，后者在 `mainChunk+0x60 = 0`
    时 lookup 返回 0、把 `ctx+0x38` 初始化成 0，随后被迫走硬编码 `w3=0`
    的 `bb73c`，产出 `backref-to-entry + null-child` 的 hollow wrapper。
-   分支 A 仍卡在 `0x1001a588c` / OpenNodeStorage gate；这轮对
-   `0x1001a588c` / `0x1001a5730` 的直探针 0 hit，因此当前对它的直接证据
-   仍是 return-site package-state 差异（fail: `pkg+0xa8=3`, `pkg+0x110=5`；
-   success: `pkg+0xa8=2`, `pkg+0x110=1/3`）。详见 `HOK-016-appendix-C27.md`。
+   这一轮 `0x1001a588c` / `0x1001a5730` 的 direct probe 已真正命中：
+   success 对照路径分别看到 `pkg+0xa8=2, pkg+0x110=1` 与
+   `pkg+0xa8=2, pkg+0x110=3`，且 gate1/gate2 都返回 1；fail 的 branch A
+   （`LR = 0x10432df30`）则直接命中 `0x1001a588c` / `0x1001a5730`，
+   现场是 `pkg+0xa8=3, pkg+0x110=5`、`mainChunk+0x60` 已非零，但 gate1
+   在 `0x1001a55b8` 立刻返回 0。与此同时，新增 natural-run storage 深 probe
+   `build/hok-016c27-mainchunk-subtree-storage-v3.json` 还证明：
+   `0x10012bb7c` entry 收到的并不是简单 PascalString `"1"`，而是一份
+   49-byte descriptor（`x1/x20`）+ companion blob（`x2`）；helper 返回 0
+   之后才把 `storage+0x30` 置成 `0x9000b`。详见 `HOK-016-appendix-C27.md`。
 
 ### 当前根因链（跨 C.2.3 → C.2.7 稳定版本）
 
@@ -182,9 +188,9 @@ bundle-scoped、不动 NGR 二进制：
 1. **C.2.7（当前主线）**：继续 live trace，重点并行回答：(a) 为什么
    `0x10432df30` 这支首轮 `0x1001a53a0(..., 1)` 会在 `0x1001a588c` /
    OpenNodeStorage gate 返回 0；(b) 为什么 `0x10432dfdc` 这支
-   `ba720(key="1")` lookup 返回 0、把 `ctx+0x38` 初始化成 0；同时继
-   续追 natural run 里 `0x10012bb7c` null table / `0x9000b` 的前置
-   契约。
+   `ba720(key="1")` lookup 返回 0、把 `ctx+0x38` 初始化成 0；(c) natural
+   run 里 `0x10012bb7c` 收到的 49-byte descriptor + `x2` companion blob
+   到底缺了哪一项前置契约，才会把 helper 返回压成 null table / `0x9000b`。
 2. **C.5**：若 C.2.7 能给出可重复的 child-registration API 签名或完
    整对象构造路径，PlayTools constructor 里按同样签名补齐。**最小侵
    入修法**。

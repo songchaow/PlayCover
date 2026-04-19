@@ -59,31 +59,40 @@
     可以被真正顶开，并会暴露 dormant writer path 对当前 tracked
     `mainChunk+0x60` 的真实写入。
   - 剩余核心问题已经进一步收敛到 **一个 active failure + 两支 sibling branch 的先后约束**：
-    `0x10432df30` 这支里的首轮 `0x1001a53a0(..., 1)` 仍会在内部
-    `0x1001a588c` / OpenNodeStorage gate 返回 0；而最新
-    `build/hok-016c4-force-storage-ready-open-node.json` 已证明：
-    `0x10432df30` 与 `0x10432dfdc` 两支在 `ba720(key="1")` 看到的
+    `build/hok-016c4-force-storage-ready-open-node-v2.json` 已直接命中
+    `0x1001a588c` / `0x1001a5730`——`0x10432df30` 这支里的首轮
+    `0x1001a53a0(..., 1)` 确实会在 OpenNodeStorage gate 上失败，且现场
+    是 `pkg+0xa8=3, pkg+0x110=5`、`mainChunk+0x60` 已非零；对照地，
+    两条 success 对照路径都带着 `pkg+0xa8=2, pkg+0x110=1/3`，并在 gate1/gate2
+    继续返回 1。与此同时，`build/hok-016c4-force-storage-ready-open-node.json`
+    仍证明：`0x10432df30` 与 `0x10432dfdc` 两支在 `ba720(key="1")` 看到的
     `ctx[0]` / `ctx+0x18` raw bytes 与 key 都一致，真正分水岭是调用当下的
     `mainChunk+0x60`——`0x10432dfdc` 这支触发 `ba720` 时 subtree root 仍为 0，
     lookup 返回 0、`ctx+0x38` 被初始化成 0，后续只能硬编码走
     `0x1001bb73c(..., 0)` 跳过 `0x1001bc970`，最终产出
     `backref-to-entry + null-child` 的 hollow wrapper；对照地，
     `0x10432df30` 这支在 `mainChunk+0x60` 已非零后再进同一个 `ba720`，
-    lookup 才会返回 nonzero 并把 `ctx+0x38` 真正填起来。`hok014_ngr_alert_suppressed`
+    lookup 才会返回 nonzero 并把 `ctx+0x38` 真正填起来。另一个新事实是：
+    `build/hok-016c27-mainchunk-subtree-storage-v3.json` 已证明 natural run 的
+    `0x10012bb7c` entry 收到的是 49-byte descriptor（`x1/x20`）+
+    companion blob（`x2`），不是简单 PascalString `"1"`；helper 返回 0 后才
+    把 `storage+0x30` 写成 `0x9000b`。`hok014_ngr_alert_suppressed`
     仍为 1，进程仍停在僵尸态。
 
 - **修复路线（优先级最高 → 最低；按 HOK-016-C.2.7 当前证据重排）**：
   1. `HOK-016-C.2.7`（**当前主线**）：继续拆 `ba940` / second-gate 这条
-     **override object 成形链**，但当前优先级已经改成并行回答两件事：
-     (a) 为什么 `0x10432df30` 这支里的首轮 `0x1001a53a0(..., 1)` 会在内部
-     `0x1001a588c` / OpenNodeStorage gate 上返回 0；
+     **override object 成形链**，但当前优先级已经改成并行回答三件事：
+     (a) 为什么 `0x10432df30` 这支里的首轮 `0x1001a53a0(..., 1)` 会带着
+     `pkg+0xa8=3 / pkg+0x110=5` 卡在 `0x1001a588c` / OpenNodeStorage gate；
      (b) 为什么 `0x10432dfdc` 这支会在 `mainChunk+0x60` 仍为 0 的时刻先触发
      `ba720(key="1")`，从而让 lookup 返回 0、把 `ctx+0x38` 初始化成 0，使后续
      只能硬编码走 `0x1001bb73c(..., 0)`，跳过 `0x1001bc970` child/payload 路径并稳定
-     产出 `backref-to-entry + null-child` 的 hollow override wrapper。
-     同时保留对 natural run 前置条件的追踪：继续沿
+     产出 `backref-to-entry + null-child` 的 hollow override wrapper；
+     (c) 当前 natural run 里 `0x10012bb7c` 看到的 49-byte descriptor + `x2`
+     companion blob 还缺哪一项前置条件，才会把 helper 返回压成 null table /
+     `0x9000b`。同时保留对 natural run 前置条件的追踪：继续沿
      `0x1001bd464 → 0x1001ba50c → 0x1001a5014 → storage.vtable[0x18] → 0x10012bb7c`
-     解释 `0x9000b` / null table 的来源，并对
+     解释 descriptor/blob contract 与 `0x9000b` / null table 的对应关系，并对
      `0x10432dfdc → 0x10017f3c8 → 0x1001bc220 → 0x1001bc970 → 0x1001c6da4`
      这条 dormant writer path 的自然激活条件做按需 probe。
   2. `HOK-016-C.5`：若 C.2.7 能给出可重复的 override payload 成形签名
@@ -254,20 +263,23 @@
   `RSS ≥ 800MB` / 线程数 ≥ 20 / 窗口在主屏内 / `%CPU` 持续 ≥ 5%。
 
 - **当前卡点**：当前未闭合的 contract 已不再是“`mainChunk+0x60` 从头到尾没写”
-  或“final entry 的 `slot1` 没写进去”，而是 **谁该为 `0x10432df30` 这支满足
-  `0x1001a588c` / OpenNodeStorage gate，以及为什么 `0x10432dfdc` 这支总在
-  `mainChunk+0x60` 仍为 0 的时刻先触发 `ba720(key="1")`**。换句话说，当前 second-gate
+  或“final entry 的 `slot1` 没写进去”，而是 **为什么 `0x10432df30` 这支会带着
+  `pkg+0xa8=3 / pkg+0x110=5` 进入 `0x1001a588c` 并在 gate1 立刻失败，以及为什么
+  `0x10432dfdc` 这支总在 `mainChunk+0x60` 仍为 0 的时刻先触发 `ba720(key="1")`**。
+  同时，natural run 的 `0x10012bb7c` 也已证实看到的是一份 descriptor/blob contract，
+  不是简单 key `"1"`；换句话说，当前 second-gate
   `0x10017faa0 -> 0x1001be550(flag=1)` 看到的对象已经来自 final entry 的真实
-  override slot，但它自身仍缺 child/payload 语义，所以返回值继续被压成 0。
+  override slot，但它自身仍缺 child/payload 语义，而 create-table helper 这侧又缺
+  前置契约，所以返回值继续被压成 0。
 
 - **下一步默认规划**：
   1. `HOK-016-C.2.7`：优先围绕 `ba720` / `ba940` / `0x1001a53dc` / `0x1001bb73c` 一带继续补 live trace，直接回答：
-     (a) 为什么 `0x10432df30` 这支里的首轮 `0x1001a53a0(..., 1)` 会卡在 `0x1001a588c` / OpenNodeStorage gate；
+     (a) 为什么 `0x10432df30` 这支里的首轮 `0x1001a53a0(..., 1)` 会带着 `pkg+0xa8=3 / pkg+0x110=5` 卡在 `0x1001a588c` / OpenNodeStorage gate；
      (b) 为什么 `0x10432dfdc` 这支会在 `mainChunk+0x60` 仍为 0 的时刻先触发 `ba720(key="1")`，从而让 lookup 返回 0、把 `ctx+0x38` 初始化成 0，最终只能走硬编码 `w3 = 0` 的 `0x1001bb73c`；
-     (c) 当前 natural run 里要满足什么额外前置条件，才能不再落回这份 hollow wrapper。
+     (c) 当前 natural run 里 `0x10012bb7c` 看到的 49-byte descriptor + `x2` companion blob 还缺哪一项前置条件，才能不再落回这份 hollow wrapper。
   2. 并行保留对 natural run 前置条件的追踪：继续沿
      `0x1001bd464 -> 0x1001ba50c -> 0x1001a5014 -> storage.vtable[0x18](0x1001b3d0c)
-     -> 0x10012bb7c` 解释 `0x9000b` / null table 的来源；同时围绕
+     -> 0x10012bb7c` 解释 descriptor/blob contract 与 `0x9000b` / null table 的对应关系；同时围绕
      `0x10432dfdc -> 0x10017f3c8 -> 0x1001bc220 -> 0x1001bc970 -> 0x1001c6da4`
      继续拆 dormant writer path 的自然激活条件。
   3. 若 C.2.7 能定位可重复的对象成形签名或完整 `mainChunk -> "1"`

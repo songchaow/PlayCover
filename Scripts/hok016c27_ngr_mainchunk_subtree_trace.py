@@ -64,6 +64,9 @@ BP_CREATE_TABLE_IMPL_DEEP_CALL = "0x10012595c"
 BP_CREATE_TABLE_IMPL_DEEP_ENTRY = "0x1001148b8"
 BP_CREATE_TABLE_IMPL_DEEP_STAGE1 = "0x100114994"
 BP_CREATE_TABLE_IMPL_DEEP_STAGE2 = "0x1001142a4"
+BP_CREATE_TABLE_IMPL_MATERIALIZE_ENTRY = "0x100122f20"
+BP_CREATE_TABLE_IMPL_MATERIALIZE_RET = "0x100122f58"
+BP_CREATE_TABLE_IMPL_MATERIALIZE_RESULT = "0x100122f60"
 BP_CREATE_TABLE_IMPL_ERR_DIRECT = "0x100122f98"
 BP_CREATE_TABLE_IMPL_FINAL_CHECK = "0x100125960"
 BP_CREATE_TABLE_IMPL_RETURN = "0x1001259c4"
@@ -200,6 +203,21 @@ def main() -> int:
             "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_deep_stage2_on_hit",
         ),
         (
+            BP_CREATE_TABLE_IMPL_MATERIALIZE_ENTRY,
+            "hok016c27_create_table_impl_materialize_entry",
+            "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_materialize_entry_on_hit",
+        ),
+        (
+            BP_CREATE_TABLE_IMPL_MATERIALIZE_RET,
+            "hok016c27_create_table_impl_materialize_ret",
+            "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_materialize_ret_on_hit",
+        ),
+        (
+            BP_CREATE_TABLE_IMPL_MATERIALIZE_RESULT,
+            "hok016c27_create_table_impl_materialize_result",
+            "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_materialize_result_on_hit",
+        ),
+        (
             BP_CREATE_TABLE_IMPL_ERR_DIRECT,
             "hok016c27_create_table_impl_err_direct",
             "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_err_direct_on_hit",
@@ -287,6 +305,12 @@ def main() -> int:
     print(f"  create-table build  : {BP_CREATE_TABLE_IMPL_ENTRY_BUILD}")
     print(f"  create-table deep   : {BP_CREATE_TABLE_IMPL_DEEP_CALL}, {BP_CREATE_TABLE_IMPL_DEEP_ENTRY}")
     print(f"  create-table stages : {BP_CREATE_TABLE_IMPL_DEEP_STAGE1}, {BP_CREATE_TABLE_IMPL_DEEP_STAGE2}")
+    print(
+        "  materialize chain  : "
+        f"{BP_CREATE_TABLE_IMPL_MATERIALIZE_ENTRY}, "
+        f"{BP_CREATE_TABLE_IMPL_MATERIALIZE_RET}, "
+        f"{BP_CREATE_TABLE_IMPL_MATERIALIZE_RESULT}"
+    )
     print(f"  err direct writer   : {BP_CREATE_TABLE_IMPL_ERR_DIRECT}")
     print(f"  create-table check  : {BP_CREATE_TABLE_IMPL_FINAL_CHECK}")
     print(f"  create-table return : {BP_CREATE_TABLE_IMPL_RETURN}")

@@ -66,11 +66,16 @@
 - dual-force 诊断（storage success + ready/save-header success）已证明
   `0x10432dfdc → 0x10017f3c8 → 0x1001bc220 → 0x1001bc970 → 0x1001c6da4`
   是真实存在的 dormant writer path，只在双 checkpoint 顶开之后才激活。
-- 最新一轮 deep err-slot probe（`build/hok-016c27-deep-err-chain.json`）
-  继续把 `0x9000b` 收紧成：`0x10012595c` 已把 caller err slot 作为
-  `x3` 传入 `0x1001148b8`；真正的 store 是 `0x100122f94 str w8, [x20]`，
-  `0x100122f98 cmp x21,#0` 只是 post-store compare。live 现场同时给出
-  `x20 == errSlot`、`x21 = 0`、`*x0 = 9`，说明 `0x9000b = (9 << 16) | 0xb`。
+- 最新一轮 materialization trace（`build/hok-016c27-materialize-trace.json`）
+  已把问题 (c) 从“为什么 `x21=0`”收紧成“为什么 `0x100122f54`
+  materialization vcall 返回 0”：在 failing hit 上，`x20 = errSlot`、
+  `x21 = x2`、`x22 = x1`、`x19 = helper` 进入 `0x100122f20`；真正让
+  `x21/helper+0x18` 变空的是 `0x100122f58 mov x21,x0` +
+  `0x100122f5c str x0,[x19,#0x18]`，其上游返回值来自
+  `0x100122f54` 那次 vcall。`0x100122f98` 还是 success / fail 两支的
+  join point，必须靠 `x30 = 0x100122f7c`（success）vs `0x100122f88`
+  （fail）区分；真正的 `0x9000b` failing hit 仍满足 `*x0 = 9`、
+  `errValue = 0x9000b`。
 
 > 完整的 sibling branch 分析、寄存器快照、BP 清单、descriptor/blob
 > contract 拆解都在 `HOK-016-qts-fs-create-failed.md` 与
@@ -84,9 +89,11 @@
    - (b) 为什么 `0x10432dfdc` 这支会在 `mainChunk+0x60` 仍为 0 的时刻先
      触发 `ba720(key="1")`，让 lookup 返回 0 并走硬编码 `w3=0` 的
      `0x1001bb73c`，产出 hollow override wrapper；
-  - (c) `0x10012595c → 0x1001148b8 → ... → 0x100122f94/0x100122f98`
-    这条更深层 callee 链里，为什么会先把 `x21` 压成 0，再走
-    `err=9` provider 合成 `(9 << 16) | 0xb = 0x9000b` 写回 caller err slot。
+  - (c) `0x10012595c → 0x1001148b8 → ... → 0x100122f20..0x100122f60`
+    这条更深层 callee 链里，为什么 `0x100122f54` 的 materialization
+    vcall 会返回 0，并经 `mov x21,x0` / `str x0,[x19,#0x18]` 把
+    `x21/helper+0x18` 一起压空，再走 `err=9` provider 合成
+    `(9 << 16) | 0xb = 0x9000b` 写回 caller err slot。
 
 2. **`HOK-016-C.5`**：若 C.2.7 能给出可重复的 override payload / 子树
    注册路径，PlayTools constructor 按同样签名补齐。**最小侵入修法**。
@@ -140,18 +147,22 @@ descriptor/blob gate；而是两层剩余问题：
 
 1. 为什么 `0x10432df30` 这支会带着 `pkg+0xa8=3 / pkg+0x110=5` 进入
    `0x1001a588c`，并在 gate1 立刻失败；
-2. `0x10012595c → 0x1001148b8 → ... → 0x100122f94/0x100122f98`
-   这条更深层 callee 链里，为什么会先把 `x21` 压成 0，再落到
-   `0x100122f84..0x100122f94` 这段 `err=9` provider，把 caller err slot
-   合成为 `0x9000b`。
+2. `0x10012595c → 0x1001148b8 → ... → 0x100122f20..0x100122f60`
+   这条更深层 callee 链里，为什么 `0x100122f54` 的 materialization
+   vcall 会在 failing helper state 上直接返回 0，并经
+   `mov x21,x0` / `str x0,[x19,#0x18]` 把 `x21/helper+0x18` 一起压空，
+   再落到 `0x100122f84..0x100122f94` 这段 `err=9` provider，把 caller
+   err slot 合成为 `0x9000b`。
 
 ### 下一步默认规划
 
 1. 继续 `HOK-016-C.2.7` live trace，优先回答上面两层问题。
 2. 并行保留对 natural run 前置条件的追踪：继续沿
    `0x1001bd464 → 0x1001ba50c → 0x1001a5014 → storage.vtable[0x18]
-   (0x1001b3d0c) → 0x10012bb7c` 解释 descriptor/blob contract 与
-   `0x9000b` / null table 的对应关系；同时围绕
+   (0x1001b3d0c) → 0x10012bb7c → 0x10012595c → 0x1001148b8 →
+   0x100122f54` 解释 descriptor/blob contract 与
+   `0x9000b` / null table 的对应关系，重点回答 failing helper state
+   下这次 materialization vcall 为什么返 0；同时围绕
    `0x10432dfdc → 0x10017f3c8 → 0x1001bc220 → 0x1001bc970 →
    0x1001c6da4` 拆 dormant writer path 的自然激活条件。
 3. 若 C.2.7 能定位可重复的对象成形签名 / 完整 `mainChunk → "1"` 注册
@@ -265,7 +276,7 @@ descriptor/blob gate；而是两层剩余问题：
 | HOK-016-C.2.4 | DONE | 收紧到 `0x10017f184` 的 lookup 失败 | `HOK-016-appendix-C23-C24.md` |
 | HOK-016-C.2.5 | DONE | 补齐 rootB writer / insert-helper 的侧证 | `HOK-016-appendix-C25-C26.md` |
 | HOK-016-C.2.6 | DONE | 更正为 `mainChunk` 的 `"1"` 子树缺失，不是 `"main"` 缺失 | `HOK-016-appendix-C25-C26.md` |
-| HOK-016-C.2.7 | TODO（当前主线） | 拆 sibling branch + `0x9000b` 合成契约：解释 `0x10432df30` 为什么在 OpenNodeStorage gate 失败、`0x10432dfdc` 为什么提前进 `ba720` 让 lookup 返 0、以及 `0x10012595c -> 0x1001148b8 -> ... -> 0x100122f94/0x100122f98` 里为何会先把 `x21` 压成 0，再走 `err=9` provider 把 caller err slot 合成为 `0x9000b` | `HOK-016-appendix-C27.md` |
+| HOK-016-C.2.7 | TODO（当前主线） | 拆 sibling branch + `0x9000b` 合成契约：解释 `0x10432df30` 为什么在 OpenNodeStorage gate 失败、`0x10432dfdc` 为什么提前进 `ba720` 让 lookup 返 0、以及 `0x10012595c -> 0x1001148b8 -> ... -> 0x100122f20..0x100122f60` 里为何是 `0x100122f54` 的 materialization vcall 先返回 0、再经 `mov x21,x0` / `str x0,[x19,#0x18]` 把 `x21/helper+0x18` 压空，并最终走 `err=9` provider 把 caller err slot 合成为 `0x9000b` | `HOK-016-appendix-C27.md` |
 | HOK-016-C.3 | DEFERRED | 终极野蛮方案：fishhook interpose `0x108878534` 直接返回 1，仅作最后兜底 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.4 | TODO | 若 C.2.7 证明自然路径过深或对象形状不可安全模拟，再做诊断性强制成功验证 | `HOK-016-appendix-C27.md` |
 | HOK-016-C.5 | TODO | 若 C.2.7 找到可重复的对象成形签名 / 注册路径，就在 PlayTools constructor 中按同样签名补齐 | `HOK-016-qts-fs-create-failed.md` |

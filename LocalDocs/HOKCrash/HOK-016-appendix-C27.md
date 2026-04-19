@@ -490,39 +490,62 @@ state 尚未就绪，而不是 key / candidate materialization 自身有误。**
   置状态下把 err slot 写成 `0x9000b`，以及这条链与 entry-build /
   registrar / schema state 缺口之间的对应关系。
 
-## 14. deep err-slot probe 继续把 “`0x100122f98` direct writer” 收紧成 “`0x100122f94` 真 store + `x21=0` post-store 判定”
+## 14. deep err-slot probe 继续把 create-table failure 收紧成 “`0x100122f54` materialization vcall 返 0 → `x21/helper+0x18` 被一起压空”
 
-新增 `build/hok-016c27-deep-err-chain.json` 后，问题 (c) 又向下缩小了一步：
+先前的 `build/hok-016c27-deep-err-chain.json` 已经把问题 (c) 收紧到：
+`0x10012595c` 会把 caller err slot 作为 `x3` 传入 `0x1001148b8`，真正写
+`0x9000b` 的是 `0x100122f94 str w8, [x20]`，而 `0x100122f98` 只是后面的
+post-store compare。新增 `build/hok-016c27-materialize-trace.json` 后，这条线
+又向前推进了一层：
 
-- `0x10012595c` call-site 现场直接读到：`errSlot@sp+8 = 0x600003552130`，
-  同时 `x3 == errSlot`，`errValue = 0`。也就是说 create-table helper 在
-  进入深层 `0x1001148b8` 前，已经把 caller 的 err slot 作为**第三参数**传下去。
-- `0x1001148b8` entry 再次证实：`x3` 仍是同一 err slot，`x30 = 0x100125960`；
-  这把 error-code 的传播方向收紧成“`0x10012595c` 明确把 err slot 交给深层 helper”，
-  而不是后半段某个 cleanup 临时找回来的旁路状态。
-- 自然路径最终停在 `0x100122f98` 时，live 寄存器给出：`x20 == errSlot`、
-  `x21 = 0`、`*x0 = 9`、`x8 = 0x9000b`。配合新增的静态反汇编可见：
+- `0x100122f20..0x100122f9c` 的静态骨架现已明确：
 
   ```text
-  0x100122f84 bl  0x107c041e4
-  0x100122f88 ldr w8, [x0]
-  0x100122f8c mov w9, #0xb
-  0x100122f90 orr w8, w9, w8, lsl #16
-  0x100122f94 str w8, [x20]
-  0x100122f98 cmp x21, #0x0
-  0x100122f9c cset w0, ne
+  0x100122f20 mov x20, x3        ; errSlot
+  0x100122f24 mov x21, x2        ; incoming materialization arg
+  0x100122f28 mov x22, x1
+  0x100122f2c mov x19, x0        ; helper object
+  0x100122f30..0x100122f38 blr x8
+  0x100122f3c..0x100122f54 blr x8 ; vcall(x22, x21)
+  0x100122f58 mov x21, x0
+  0x100122f5c str x0, [x19, #0x18]
+  0x100122f60 cbz x0, 0x100122f84 ; null -> err provider
+  0x100122f64..0x100122f78 blr x8 ; non-null -> success-side second vcall
+  0x100122f80 b 0x100122f98       ; success path 也会汇合到 0x100122f98
+  0x100122f84..0x100122f94        ; err=9 provider + errSlot store
+  0x100122f98 cmp x21, #0
   ```
 
-- 因而此前“`0x100122f98` direct writer”这句口径需要修正：
-  **真正把 `0x9000b` 写进 err slot 的是 `0x100122f94 str w8, [x20]`；
-  `0x100122f98` 只是紧随其后的 post-store compare。**
-- `0x9000b` 的组成也已明确：`0x107c041e4` 返回的 error descriptor 首 word
-  为 `9`，随后 `orr w8, #0xb, w8<<16` 合成 `(9 << 16) | 0xb = 0x9000b`。
-- 这把问题 (c) 从“为什么 `0x100122f98` 会写 `0x9000b`”进一步改写成：
-  **为什么这条 helper 在到达 `0x100122f84` 前已经让 `x21` 变成了 0，进而
-  落入 `err=9` provider，再把 `(err<<16)|0xb` 写回 caller err slot。**
+- 这意味着：**`0x100122f98` 不是纯错误路径断点，而是 success / fail 两支的
+  join point**。新的 live trace 共命中 8 组 materialization 事件：
+  - 7 组 `materializeReturnedNull=false` / `willTakeErrProvider=false`，对应
+    `0x100122f98` 上 `x30 = 0x100122f7c` 的 success-side 汇合；
+  - 仅 1 组 `materializeReturnedNull=true` / `willTakeErrProvider=true`，对应
+    `0x100122f98` 上 `x30 = 0x100122f88` 的真实 err-provider 路径。
 
-换句话说，当前需要继续解释的，不再是 `0x9000b` 的字面来源，而是
-`0x100122f20..0x100122f78` 这段内部 lookup / materialization 为什么会产出
-`x21 = 0`。只要这个前置条件继续不闭合，`0x100122f94` 就会稳定把 create-table
-压回 null table。
+- 真实 failing hit 的连续现场现在已经闭合：
+  - `0x100122f20` entry：`x20 = errSlot`、`x21 = x2 = 0x10aa4678c`、
+    `x22 = x1 = 0x600003c1b390`、`x19 = helper = 0x600001039140`，此时
+    `helper+0x18 = 0`；
+  - `0x100122f58` return：第二个 vtable call（`0x100122f54 blr x8`）
+    **直接返回 `x0 = 0`**，而不是先成功 materialize 再被后续逻辑清空；
+  - `0x100122f60` result：`mov x21, x0` + `str x0, [x19,#0x18]` 之后，
+    `x21 = 0`、`helper+0x18 = 0`，于是 `cbz x0` 直接落入 `0x100122f84..94`；
+  - `0x100122f98` fail-side hit：`x30 = 0x100122f88`、`x0raw` 首 word = `9`、
+    `errWatch = 0x600003159fb0`、`errValue = 0x9000b`，与
+    `(9 << 16) | 0xb` 完全对齐。
+
+- 因而此前“`x21` 在 `0x100122f84` 前被某段未知逻辑压成 0”这句口径需要修正：
+  **`x21` 只是 `0x100122f54` 这次 materialization vcall 返回值的镜像；真正要解释的
+  已经不是 post-store compare，而是为什么该 vcall 在 failing hit 上直接返回 0，
+  并让 `helper+0x18` 继续保持空。**
+
+- 这轮同时也给出一个新的解读纪律：以后看 `0x100122f98` 时，必须同时看
+  `x30` 来区分路径——`0x100122f7c` 表示 success-side 汇合，`0x100122f88`
+  才表示真正走过 `err=9` provider。
+
+换句话说，当前未闭合的前置条件已不再是“`0x100122f98` 为什么看到 `x21=0`”，
+而是：**`0x100122f54` 这次 materialization vcall 在 failing helper state
+（`helper+0x10 = 0x3200080a0`、`helper+0x18 = 0`）下，为什么会返回 0。**
+只要这个返回值继续为 0，`0x100122f58/0x100122f5c` 就会稳定把 `x21` 与
+`helper+0x18` 一起压空，随后 `0x100122f94` 继续把 create-table 压回 null table。

@@ -155,15 +155,18 @@ HOK-016-C.2.7 的 live trace driver + LLDB helper。在 `0x10017f1dc`
 动态装 `mainChunk+0x60` watchpoint，并对 `0x1001bd448` /
 `0x1001ba82c` / `0x1001ba50c` / `0x1001a5014` / `0x10432e074` 采样；
 覆盖范围扩展到 storage method / create-table helper / entry-build
-branch / `0x10012595c -> 0x1001148b8 -> 0x1001142a4 -> 0x100122f98`
-这条更深层 err-slot 链 / final-check / err=9 写点。在 gate-ret
+branch / `0x10012595c -> 0x1001148b8 -> 0x1001142a4 -> 0x100122f20/
+0x100122f58/0x100122f60 -> 0x100122f98` 这条更深层 err-slot /
+materialization 链 / final-check / err=9 写点。在 gate-ret
 `0x100125030` 时会根据需要动态把 err slot watchpoint 装到 caller
-传入的 err slot 上；同时新增的 deep-chain breakpoint 会把
-`0x10012595c` 的入参、`0x1001148b8` 的 entry 实参、以及
-`0x100122f94/0x100122f98` 附近的 post-store 状态一起打出来，方便判
-断 `0x9000b` 是如何合成的。产物新增 `build/hok-016c27-deep-err-chain.json`
-（历史还保留 `build/hok-016c27-mainchunk-subtree-trace.json` /
-`build/hok-016c27-final-check-errslot-watch.json`）。
+传入的 err slot 上；新增的 materialization breakpoint 会把 `x20=errSlot`
+/ `x21<-x2` / `x22<-x1` / `x19=helper` 以及 `0x100122f54` 那次 vcall 的
+返回值一起打出来，便于判断到底是 success-side 汇合（`x30=0x100122f7c`）
+还是 err-provider 路径（`x30=0x100122f88`）。产物新增
+`build/hok-016c27-materialize-trace.json`；历史还保留
+`build/hok-016c27-deep-err-chain.json` /
+`build/hok-016c27-mainchunk-subtree-trace.json` /
+`build/hok-016c27-final-check-errslot-watch.json`。
 
 ### `Scripts/hok016c4_ngr_force_storage_success.py`
 

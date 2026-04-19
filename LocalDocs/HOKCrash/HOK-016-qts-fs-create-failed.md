@@ -20,8 +20,9 @@
 >   live run 里 reporter 插的第一个 key 是不是 `main` 时读。**
 > - `HOK-016-appendix-C27.md`：HOK-016-C.2.7 的完整 live 证据（mainChunk
 >   watchpoint / ba50c fallback / storage fail / dual-force / sibling
->   branch / hollow wrapper / err-slot watchpoint）。**阅读建议：做
->   HOK-016-C.2.7 / C.4 / C.5 任何 probe 或修复设计时总是读。**
+>   branch / hollow wrapper / err-slot / materialization trace）。**阅读建
+>   议：做 HOK-016-C.2.7 / C.4 / C.5 任何 probe 或修复设计时总是读；只
+>   想同步当前最新收紧口径时优先看其 §14。**
 > - `HOK-016-appendix-CX.md`：seed 替换实验证伪详情。**阅读建议：需要
 >   重跑 seed 实验、或怀疑 cmdline 会影响 QtsFS 时读。**
 
@@ -134,15 +135,12 @@ frame 3 这条路径时 HOK-013 预置的 stub 会被真 writer 覆盖；HOK-013
    `0x10432dfdc → 0x10017f3c8 → 0x1001bc220 → 0x1001bc970 →
    0x1001c6da4 → 0x1001c6e74` 会真实写 `mainChunk+0x60`；新增
    `build/hok-016c27-materialize-trace.json` 又把 create-table fail
-   收紧成：`0x100122f20..0x100122f60` 里 `x20 <- errSlot`、`x21 <- x2`、
-   `x22 <- x1`、`x19 <- helper`，真正让 `x21/helper+0x18` 变成 0 的是
-   `0x100122f54` 那次 materialization vcall **直接返回 0**，随后
-   `0x100122f58 mov x21,x0` + `0x100122f5c str x0,[x19,#0x18]` 把空值
-   回写，再落入 `0x100122f84..0x100122f94` 的 `err=9` provider。另
-   外 `0x100122f98` 还是 success / fail 两支的 join point，必须靠
-   `x30 = 0x100122f7c`（success）vs `0x100122f88`（fail）区分。sibling
-   branch、hollow wrapper、`ba720` / OpenNodeStorage gate、以及这条
-   深层 err-slot / materialization 链的详细证据见 `HOK-016-appendix-C27.md`。
+   进一步收紧成：failing helper state 下，`0x100122f54` 的
+   materialization vcall 直接返回 0，随后空值被回写到
+   `x21/helper+0x18`，再落入 `err=9` provider 合成 `0x9000b`。
+   `0x100122f98` 同时还是 success / fail 两支的 join point，解读时必须
+   用 `x30` 区分路径。详细寄存器与逐指令证据见
+   `HOK-016-appendix-C27.md`。
 
 ### 当前根因链（骨架版）
 

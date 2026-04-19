@@ -4,11 +4,14 @@
 > 的完整逐层证据：从 `mainChunk+0x60` watchpoint live trace，一路下钻
 > 到 `ba50c` fallback builder → `0x1001a5014` storage 创建 →
 > `0x10012bb7c` null table → dual-force checkpoint → sibling branch +
-> hollow wrapper → `0x9000b` err-slot direct writer。
+> hollow wrapper → `0x9000b` err-slot / materialization 链。
 >
 > **何时读**：
 >
 > - 做 HOK-016-C.2.7 / C.4 / C.5 任何 probe 或修复设计时总是读；
+> - 只需要同步**当前最新收紧口径**时，优先看 **§14**；
+> - 需要复盘“问题是如何从 `mainChunk+0x60` 缺口一路收紧到
+>   materialization vcall 返回 0”时，再按顺序回看 §1-§13；
 > - 需要理解两支 sibling branch 如何共同把 second-gate 压回 0、或需
 >   要在 C.5 PlayTools shim 里决定"模拟哪一层 contract"时读；
 > - 日常阅读 HOK-016 主文档不必进入本文。
@@ -456,7 +459,7 @@ state 尚未就绪，而不是 key / candidate materialization 自身有误。**
 
 这又把自然路径进一步收紧成：**当前失败既不是第一层 gate fail，也不是 `err=9` 这条显式错误码路径。**
 
-### 13.d live 结果 3：`0x100125960` 只是消费已写好的 `0x9000b`；direct writer 在更深层 `0x100122f98`
+### 13.d 阶段性结果 3：`0x100125960` 只是消费已写好的 `0x9000b`；更深层写点在当时先收紧到 `0x100122f98`
 
 新增 `build/hok-016c27-final-check-errslot-watch.json` 后，这条线又向下收紧了一步：
 
@@ -485,10 +488,10 @@ state 尚未就绪，而不是 key / candidate materialization 自身有误。**
 - 当前缺的前置条件从泛化的"`0x10012581c → 0x100125960` 后半 helper"
   收紧成 `0x10012595c → 0x1001148b8 → 0x100114994 → 0x1001142a4 →
   0x100122f98` 这条更深层 callee 链；
-- Dashboard 会以此重写 HOK-016-C.2.7 的问题 (c)：不再把
-  `0x100125960` 当成 direct writer，而要解释 `0x100122f98` 在什么前
-  置状态下把 err slot 写成 `0x9000b`，以及这条链与 entry-build /
-  registrar / schema state 缺口之间的对应关系。
+- **注意：以上仍是阶段性收紧，不是当前最终口径。** 第 14 节的
+  materialization trace 会继续把这条线从“解释 `0x100122f98` 为什么命中”
+  改写成“解释 `0x100122f54` 的 materialization vcall 为什么在 failing
+  helper state 上直接返回 0”。
 
 ## 14. deep err-slot probe 继续把 create-table failure 收紧成 “`0x100122f54` materialization vcall 返 0 → `x21/helper+0x18` 被一起压空”
 

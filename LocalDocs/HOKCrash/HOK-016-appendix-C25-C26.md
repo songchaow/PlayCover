@@ -18,8 +18,8 @@
 >
 > - readiness B 内部控制流 / `0x10017f184` 真失败决定点：
 >   `HOK-016-appendix-C23-C24.md`；
-> - fallback builder / storage create-table / `0x9000b`：
->   `HOK-016-appendix-C27.md`；
+> - fallback builder / storage create-table / `0x9000b` err-slot 与
+>   materialization 链：`HOK-016-appendix-C27.md`；
 > - 脚本说明与 LLDB BP callback 踩坑：`HOK-016-appendix-tooling.md`。
 
 ## HOK-016-C.2.5：rootB writer 在 reporter 内部才 fire，是 lazy-init 模式

@@ -18,7 +18,7 @@
 > - 上一层 readiness B dispatcher：见 HOK-016 主文档"核心证据"段；
 > - rootB writer / `mainChunk -> "1"` 缺口：
 >   `HOK-016-appendix-C25-C26.md`；
-> - storage create-table / `0x9000b` direct writer：
+> - storage create-table / `0x9000b` err-slot 与 materialization 链：
 >   `HOK-016-appendix-C27.md`；
 > - 脚本说明与 LLDB BP callback 踩坑：`HOK-016-appendix-tooling.md`。
 

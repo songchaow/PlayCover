@@ -66,16 +66,16 @@
 - dual-force 诊断（storage success + ready/save-header success）已证明
   `0x10432dfdc → 0x10017f3c8 → 0x1001bc220 → 0x1001bc970 → 0x1001c6da4`
   是真实存在的 dormant writer path，只在双 checkpoint 顶开之后才激活。
-- 最新一轮 materialization target trace（`build/hok-016c27-materialize-vcall-trace-v3.json`）
-  已证实：natural run 的 failing hit **不是**命中 fail-only materializer。
-  `0x100122f54` 的 failing hit 与 2 次 success hit 共用
-  `x8(target)=0x10432a068`、`x0=0x10e16ded8` 与相同 `helper_slot10raw`；
-  当前应把问题 (c) 收紧成：为什么同一 target 会在
-  `x21=0x10aa4678c` / `x1="/Users/..."` / `helper+0x10=0x6000031c4930`
-  这组输入下返回 0，而在 `x21=0x10aa5264a` /
-  `x1="../../../NGR/Content/Paks/1/1.db"` /
-  `helper+0x10=0x6000031c4070` 时返回 nonzero。寄存器快照与 precall 对照
-  统一下沉到 `HOK-016-appendix-C27.md`。
+- 最新一轮 materialization target trace（`build/hok-016c27-materialize-target-trace-v1.json`）
+  已把差异再收紧一步：2 次 success hit 与 natural failing hit 在同一
+  target `0x10432a068` 内共用 `entry → post-helper1 → check1 →
+  post-helper2 → check2 → 0x10432a17c/0x10432a1c8` 这段前缀；真正的首个
+  target-side 分叉发生在后续 fanout——success 继续走
+  `0x10432a2c8 → 0x10432a2e0`，natural failing hit 则改走 fail-only
+  `0x10432a224`，随后 caller 仍在 `0x100122f58` 收到 `x0=0`。此外两边在
+  `0x10432a10c` / `0x10432a17c` 的状态也稳定分开：success 为
+  `x22=0x21 → 0x3`，natural fail 为 `x22=0x31 → 0x4`。详细 checkpoint
+  证据下沉到 `HOK-016-appendix-C27.md`。
 
 > 完整的 sibling branch 分析、寄存器快照、BP 清单、descriptor/blob
 > contract 拆解都在 `HOK-016-qts-fs-create-failed.md` 与
@@ -89,15 +89,17 @@
    - (b) 为什么 `0x10432dfdc` 这支会在 `mainChunk+0x60` 仍为 0 的时刻先
      触发 `ba720(key="1")`，让 lookup 返回 0 并走硬编码 `w3=0` 的
      `0x1001bb73c`，产出 hollow override wrapper；
-  - (c) `0x10012595c → 0x1001148b8 → ... → 0x100122f20..0x100122f60`
-    这条更深层 callee 链里，为什么**同一个** `0x100122f54`
-    materializer target `0x10432a068` + 相同 `x0=0x10e16ded8`，会在
-    success hit（`x21=0x10aa5264a`、
-    `x1="../../../NGR/Content/Paks/1/1.db"`）返回 nonzero，却在
-    natural failing hit（`x21=0x10aa4678c`、`x1="/Users/..."`）返回 0，
-    并经 `mov x21,x0` / `str x0,[x19,#0x18]` 把 `x21/helper+0x18`
-    一起压空，再走 `err=9` provider 合成 `(9 << 16) | 0xb = 0x9000b`
-    写回 caller err slot。
+   - (c) `0x10012595c → 0x1001148b8 → ... → 0x100122f20..0x100122f60`
+     这条更深层 callee 链里，为什么**同一个** `0x100122f54`
+     materializer target `0x10432a068` 在 shared prefix
+     `entry → post-helper1 → check1 → post-helper2 → check2 →
+     0x10432a17c/0x10432a1c8` 之后，会把 success tuple
+     （`x21=0x10aa5264a`、`x1="../../../NGR/Content/Paks/1/1.db"`）送进
+     `0x10432a2c8/0x10432a2e0`，却把 natural failing tuple
+     （`x21=0x10aa4678c`、`x1="/Users/..."`）送进 `0x10432a224`，并最终让
+     caller 在 `0x100122f58` 收到 `x0=0`、再经 `mov x21,x0` /
+     `str x0,[x19,#0x18]` 把 `x21/helper+0x18` 一起压空，落到
+     `err=9` provider 合成 `(9 << 16) | 0xb = 0x9000b`。
 
 2. **`HOK-016-C.5`**：若 C.2.7 能给出可重复的 override payload / 子树
    注册路径，PlayTools constructor 按同样签名补齐。**最小侵入修法**。
@@ -153,15 +155,15 @@ descriptor/blob gate；而是两层剩余问题：
    `0x1001a588c`，并在 gate1 立刻失败；
 2. `0x10012595c → 0x1001148b8 → ... → 0x100122f20..0x100122f60`
    这条更深层 callee 链里，为什么同一个 `0x100122f54`
-   materializer target `0x10432a068` + 相同 `x0=0x10e16ded8`，会在
-   success tuple（`x21=0x10aa5264a`、
-   `x1="../../../NGR/Content/Paks/1/1.db"`、
-   `helper+0x10=0x6000031c4070`）返回 nonzero，却在 natural failing
-   tuple（`x21=0x10aa4678c`、`x1="/Users/..."`、
-   `helper+0x10=0x6000031c4930`）返回 0，并经 `mov x21,x0` /
-   `str x0,[x19,#0x18]` 把 `x21/helper+0x18` 一起压空，再落到
-   `0x100122f84..0x100122f94` 这段 `err=9` provider，把 caller err slot
-   合成为 `0x9000b`。
+   materializer target `0x10432a068` 在 shared prefix
+   `entry → post-helper1 → check1 → post-helper2 → check2 →
+   0x10432a17c/0x10432a1c8` 之后，会把 success tuple
+   （`x21=0x10aa5264a`、`x1="../../../NGR/Content/Paks/1/1.db"`、
+   `helper+0x10=0x60000353d420`）送进 `0x10432a2c8/0x10432a2e0`，却把
+   natural failing tuple（`x21=0x10aa4678c`、`x1="/Users/..."`、
+   `helper+0x10=0x600003548460`）送进 `0x10432a224`，随后 caller 在
+   `0x100122f58` 仍拿到 `x0=0`，再把 `x21/helper+0x18` 一起压空并合成
+   `0x9000b`。
 
 ### 下一步默认规划
 
@@ -171,9 +173,10 @@ descriptor/blob gate；而是两层剩余问题：
    (0x1001b3d0c) → 0x10012bb7c → 0x10012595c → 0x1001148b8 →
    0x100122f54` 解释 descriptor/blob contract 与
    `0x9000b` / null table 的对应关系，重点比较同一 materializer target
-   `0x10432a068` 在 success tuple（`x21=0x10aa5264a`、
-   `x1="../../../NGR/Content/Paks/1/1.db"`）与 failing tuple
-   （`x21=0x10aa4678c`、`x1="/Users/..."`）之间到底缺了哪一项前置状态；
+   `0x10432a068` 在 shared prefix 之后，success tuple
+   （`x21=0x10aa5264a`、`x1="../../../NGR/Content/Paks/1/1.db"`）为何进入
+   `0x10432a2c8/0x10432a2e0`，而 failing tuple（`x21=0x10aa4678c`、
+   `x1="/Users/..."`）为何改走 `0x10432a224`；
    同时围绕 `0x10432dfdc → 0x10017f3c8 → 0x1001bc220 → 0x1001bc970 →
    0x1001c6da4` 拆 dormant writer path 的自然激活条件。
 3. 若 C.2.7 能定位可重复的对象成形签名 / 完整 `mainChunk → "1"` 注册

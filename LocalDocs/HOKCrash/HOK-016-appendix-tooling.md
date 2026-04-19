@@ -164,7 +164,13 @@ materialization 链 / final-check / err=9 写点。在 gate-ret
 `0x100122f60` result：既打出 `x20=errSlot` / `x21<-x2` / `x22<-x1` /
 `x19=helper`，也打出 `0x100122f54` 那次 vcall 的 `x8 target` / saved args /
 helper vtable，再配合返回值判断到底是 success-side 汇合
-（`x30=0x100122f7c`）还是 err-provider 路径（`x30=0x100122f88`）。产物新增
+（`x30=0x100122f7c`）还是 err-provider 路径（`x30=0x100122f88`）。最新一轮
+又把 target-side probe 继续延伸到共享 materializer `0x10432a068` 内部的
+`entry / post-helper1 / check1 / post-helper2 / check2 / branch-17c /
+branch-1c8 / branch-224 / branch-2c8 / branch-2e0 / ret-31c / branch-33c`
+检查点，用 thread-scoped `call=<n>` 标签把同一调用的 target 内部轨迹串起来，
+避免 transcript 被其它 materializer 命中淹没。产物新增
+`build/hok-016c27-materialize-target-trace-v1.json` 与此前的
 `build/hok-016c27-materialize-vcall-trace-v3.json`；历史还保留
 `build/hok-016c27-materialize-trace.json` /
 `build/hok-016c27-deep-err-chain.json` /

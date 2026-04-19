@@ -5,9 +5,22 @@
 > （真正缺失的不是 `rootB -> "main"`，而是 `mainChunk -> "1"` 二级
 > 子树）的完整证据。
 >
-> **何时读**：需要理解"rootB 在 reporter 运行期被 insert，但 insert
-> 的 key 不是我们关心的"、或需要复现 watchpoint 抓新 node 内容的流程
-> 时读；日常阅读 HOK-016 主文档不必进入本文。
+> **何时读**：
+>
+> - 需要理解"rootB 在 reporter 运行期被 insert，但 insert 的 key 是
+>   什么"；
+> - 需要复现 watchpoint 抓新 node 内容的流程；
+> - 需要判断某次 live run 里 reporter 实际插入的第一个 key 是不是
+>   `main`；
+> - 日常阅读 HOK-016 主文档不必进入本文。
+>
+> **相关文档**：
+>
+> - readiness B 内部控制流 / `0x10017f184` 真失败决定点：
+>   `HOK-016-appendix-C23-C24.md`；
+> - fallback builder / storage create-table / `0x9000b`：
+>   `HOK-016-appendix-C27.md`；
+> - 脚本说明与 LLDB BP callback 踩坑：`HOK-016-appendix-tooling.md`。
 
 ## HOK-016-C.2.5：rootB writer 在 reporter 内部才 fire，是 lazy-init 模式
 

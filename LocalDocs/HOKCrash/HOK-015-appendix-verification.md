@@ -3,9 +3,20 @@
 > 本文是 `HOK-015-cmdline-preseed.md` 的附录，沉淀四轮 live 验证口径、
 > 与 HOK-014/016 的联动归属规则、以及 HOK-015 的非目标 / 边界。
 >
-> **何时读**：需要真正跑一轮 HOK-015 验证、判断一次 `hok014_ngr_alert_
-> suppressed = 1` 是 HOK-015 回归还是 HOK-016 残留、或考虑把 HOK-015
-> 推广到其它 UE4 app 时读；日常阅读 HOK-015 主文档不必进入本文。
+> **何时读**：
+>
+> - 需要真正跑一轮 HOK-015 验证；
+> - 判断一次 `hok014_ngr_alert_suppressed = 1` 是 HOK-015 回归还是
+>   HOK-016 残留；
+> - 考虑把 HOK-015 推广到其它 UE4 app；
+> - 日常阅读 HOK-015 主文档不必进入本文。
+>
+> **相关文档**：
+>
+> - 主文档：`HOK-015-cmdline-preseed.md`；
+> - alert 压制与归属规则：`HOK-014-alert-suppressor.md`；
+> - QtsFS 独立 alert 路径：`HOK-016-qts-fs-create-failed.md`；
+> - seed 实验证伪：`HOK-016-appendix-CX.md`。
 
 ## 验证口径
 

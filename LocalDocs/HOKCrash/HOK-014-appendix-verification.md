@@ -4,9 +4,19 @@
 > 联合生效后的 live 验证口径、bundle gate 回归检查、以及容易误判的
 > `blockingDialogs` 语义。
 >
-> **何时读**：需要真正跑一轮 HOK-014 live 验证、怀疑 alert 没被压制、
-> 需要在窗口/尺寸 metadata 上区分 sheet vs 主游戏窗口，或需要判断"其它
-> bundle 是否被 swizzle 误伤"时读；日常阅读 HOK-014 主文档不必进入本文。
+> **何时读**：
+>
+> - 需要真正跑一轮 HOK-014 live 验证；
+> - 怀疑 alert 没被压制；
+> - 需要在窗口 / 尺寸 metadata 上区分 sheet vs 主游戏窗口；
+> - 需要判断"其它 bundle 是否被 swizzle 误伤"；
+> - 日常阅读 HOK-014 主文档不必进入本文。
+>
+> **相关文档**：
+>
+> - 主文档：`HOK-014-alert-suppressor.md`；
+> - 候选 E apply/revert：`HOK-007-二进制意图分析与callsite映射.md`；
+> - b.0 对话框 gate 实现细节：`HOK-012-工具链与方法论归档.md`。
 
 ## 验证口径
 

@@ -4,11 +4,18 @@
 > 以及曾被考虑但被 live 证伪的替代方案。
 >
 > **何时读**：
-> - 需要重新跑 HOK-013 验证（例如 PlayTools 改动后回归、怀疑 preheat 没
->   落地、或要确认 bundle gate 未溢出到其它 app）时读；
-> - 需要回顾"为什么不直接调 NGR 自己的 Logger accessor" / 要避免重蹈覆
->   辙时读；
+>
+> - 需要重新跑 HOK-013 验证（例如 PlayTools 改动后回归、怀疑 preheat
+>   没落地、或要确认 bundle gate 未溢出到其它 app）时读；
+> - 需要回顾"为什么不直接调 NGR 自己的 Logger accessor"以避免重蹈
+>   覆辙时读；
 > - 日常阅读 HOK-013 主文档不必进入本文。
+>
+> **相关文档**：
+>
+> - 主文档：`HOK-013-slot-preheat.md`；
+> - LLDB watchpoint / b.0 gate 工具链：`HOK-012-工具链与方法论归档.md`；
+> - 候选 E apply/revert 口径：`HOK-007-二进制意图分析与callsite映射.md`。
 
 ## 验证口径
 

@@ -1,8 +1,20 @@
 # HOK-015: PlayTools 侧预种 `com.tencent.ngr` 的 UE4 CommandLine
 
 > 本文只沉淀 HOK-015 的**设计依据、实现口径、验证口径**。任务状态以
-> `LocalDocs/HOKCrash/00-Dashboard.md` 为准；本文不出现 "DONE / TODO /
+> `00-Dashboard.md` 为准；本文不出现 "DONE / TODO /
 > 已落地 / 下一步" 等字样，也不写日期快照。
+>
+> **何时读**：修改 HOK-015 相关代码、或需要把 HOK-015 推广到其它 UE4
+> app 时读；日常 HOK-016 系列工作不需要进入。
+>
+> **相关文档**：
+>
+> - 验证口径 / 非目标边界：`HOK-015-appendix-verification.md`（按需读）；
+> - Slot preheat 与 bundle gate 复用：`HOK-013-slot-preheat.md`；
+> - alert 压制的最后一道防线：`HOK-014-alert-suppressor.md`；
+> - 与 HOK-016 的关系：`HOK-016-qts-fs-create-failed.md`；
+> - LLDB watchpoint 工具链（locator 失败时的兜底）：
+>   `HOK-012-工具链与方法论归档.md`。
 
 ## 目的
 

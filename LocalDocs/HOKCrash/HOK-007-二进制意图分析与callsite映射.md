@@ -1,6 +1,14 @@
 ## HOK-007 二进制意图分析与 callsite 映射
 
-> 本文只沉淀 HOK-007 的**离线 callsite 映射工具**、**patch 候选设计与选择理由**、**安全/回滚/重签口径**以及**候选 E 作为症状 workaround 的技术定位**。任务状态、apply 与 live 闭环结论、下游 `far=0x50` 之类 crash 是否继续跟踪，以 `LocalDocs/HOKCrash/00-Dashboard.md` 为准。
+> 本文只沉淀 HOK-007 的**离线 callsite 映射工具**、**patch 候选设计与选择理由**、**安全/回滚/重签口径**以及**候选 E 作为症状 workaround 的技术定位**。任务状态、apply 与 live 闭环结论、下游 `far=0x50` 之类 crash 是否继续跟踪，以 `00-Dashboard.md` 为准。
+>
+> **何时读**：需要追查新 faulting callsite、需要重新上/下候选 E、或需要把候选 E 的 apply/revert 接入新流程时读；当前 HOK-013 + HOK-015 已替代候选 E，日常 HOK-016 系列工作不需要进入。
+>
+> **相关文档**：
+>
+> - 静态初始化链与 `__common` slot writer 识别：`HOK-011-静态初始化链分析.md`；
+> - Slot preheat（HOK-013 之后候选 E 的替代方案）：`HOK-013-slot-preheat.md`；
+> - LLDB / watchpoint 方法论：`HOK-012-工具链与方法论归档.md`。
 
 ### 目标
 

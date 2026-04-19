@@ -1,6 +1,14 @@
 ## HOK-005 深层 bootstrap 分层最小化
 
-> 本文只沉淀 HOK-005 各子层（A/B/C/D）的**分层策略**、**代码落点**与**诊断事件语义**。任务状态、live 结果与是否仍然是主线以 `LocalDocs/HOKCrash/00-Dashboard.md` 为准。
+> 本文只沉淀 HOK-005 各子层（A/B/C/D）的**分层策略**、**代码落点**与**诊断事件语义**。任务状态、live 结果与是否仍然是主线以 `00-Dashboard.md` 为准。
+>
+> **何时读**：需要调整 `com.tencent.ngr` 的 `DiscordIPC` / `PlayInput` / `PlayScreen` / `AKInterface` 四层 skip 或延迟策略、或需要新增一层 bootstrap 抑制时读；日常 HOK-016 系列工作不需要进入。
+>
+> **相关文档**：
+>
+> - 启动 runner 与 settle window：`HOK-004-启动验证与settle-window.md`；
+> - compat event 收集点：`00-Dashboard.md` 的"构建与验证"章节；
+> - 兜底链路实现：`HOK-013-slot-preheat.md` / `HOK-014-alert-suppressor.md` / `HOK-015-cmdline-preseed.md`。
 
 ### 目标
 

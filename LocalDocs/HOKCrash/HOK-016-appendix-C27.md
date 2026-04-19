@@ -1,15 +1,24 @@
 # HOK-016 附录：HOK-016-C.2.7 证据详解
 
 > 本文是 `HOK-016-qts-fs-create-failed.md` 的附录，沉淀 HOK-016-C.2.7
-> 的完整 10 步证据：从 `mainChunk+0x60` watchpoint live trace，一路
-> 下钻到 `ba50c` fallback builder → `0x1001a5014` storage 创建 →
+> 的完整逐层证据：从 `mainChunk+0x60` watchpoint live trace，一路下钻
+> 到 `ba50c` fallback builder → `0x1001a5014` storage 创建 →
 > `0x10012bb7c` null table → dual-force checkpoint → sibling branch +
-> hollow wrapper。
+> hollow wrapper → `0x9000b` err-slot direct writer。
 >
-> **何时读**：需要为 HOK-016-C.2.7 新增 probe、需要理解两支 sibling
-> branch 如何共同把 second-gate 压回 0、或需要在 `HOK-016-C.5`
-> PlayTools shim 里决定"模拟哪一层 contract"时读；日常阅读 HOK-016
-> 主文档不必进入本文。
+> **何时读**：
+>
+> - 做 HOK-016-C.2.7 / C.4 / C.5 任何 probe 或修复设计时总是读；
+> - 需要理解两支 sibling branch 如何共同把 second-gate 压回 0、或需
+>   要在 C.5 PlayTools shim 里决定"模拟哪一层 contract"时读；
+> - 日常阅读 HOK-016 主文档不必进入本文。
+>
+> **相关文档**：
+>
+> - 上一层 rootB / mainChunk 缺口：`HOK-016-appendix-C25-C26.md`；
+> - readiness B 内部控制流 / `0x10017f184` 真失败决定点：
+>   `HOK-016-appendix-C23-C24.md`；
+> - 脚本说明与 LLDB BP callback 踩坑：`HOK-016-appendix-tooling.md`。
 
 ## 1. live trace 已能在 `mainChunk` 出现的第一时间稳定装上 `mainChunk+0x60` watchpoint
 
@@ -61,17 +70,17 @@ readiness-B fail，根本没有任何 runtime writer 试图填 `+0x60`。**
   当前最值得继续反推
 - 当前 run 唯一 live 命中的 `lookup2` caller 仍是 `0x1001bd464`
 
-## 5. C.2.7 对下一步的意义
+## 5. 这轮证据对主线的含义
 
-到目前为止，已经可以排除"`mainChunk` 在 reporter failure window 内
-晚到写入"这条路。后续若继续 C.2.7，优先级应改成：
+到这一步可以排除"`mainChunk` 在 reporter failure window 内晚到写入"
+这条路。Dashboard 的 HOK-016-C.2.7 分解条目据此改写：
 
-- 静态 / live 结合反推 `0x1001ba50c` 与它的 5 个 shallow callers
+- 静态 / live 结合反推 `0x1001ba50c` 与它的 5 个 shallow callers；
 - 拆 `0x1001bd464 → 0x1001ba50c → 0x1001a5014` 这条 miss 后 fallback
-  builder / post-builder contract
-- 对另外 6 个未在当前 run 活跃的 `lookup2` direct caller 做按需 probe
+  builder / post-builder contract；
+- 对另外 6 个未在当前 run 活跃的 `lookup2` direct caller 做按需 probe；
 - 只有当这些路径都证明"注册逻辑过深、返回对象形状又无法安全伪造"时，
-  再进入 C.4 诊断性强制成功方案
+  Dashboard 才考虑进入 C.4 诊断性强制成功方案。
 
 ## 6. 当前 run 并不是止步于 `lookup2` miss，而是继续走到 `ba50c` fallback builder，但仍在 `0x1001a5014` 后归零
 
@@ -152,11 +161,11 @@ ba50c fallback object exists
   → bd464 / f184 / dd98 continue returning 0
 ```
 
-因而 C.2.7 的下一步默认优先级又往下钻了一层：先解释
-`0x10012bb7c` 为什么在 key=`"1"` 时返回 null table，以及 `0x9000b`
-到底代表缺了哪一个前置契约；只有把这层解释清楚，才知道 C.5 应该模
-拟的是 `mainChunk+0x60` 子树本身、storage 对象的建表前置状态，还
-是更深一层的 registrar / schema 初始化。
+因而 create-table 的失败并不发生在 `0x1001a5014` 外层校验，而是发
+生在更深一层：`0x10012bb7c` 为什么在 key=`"1"` 时返回 null table、
+`0x9000b` 代表缺了哪一个前置契约。Dashboard 会把这一层抽象成 C.5
+应该模拟什么（`mainChunk+0x60` 子树本身 / storage 对象的建表前置状
+态 / 更深一层 registrar / schema 初始化）。
 
 ## 9. C.4 诊断性双 checkpoint 已证明：old gate 能被顶开，并且 dormant writer path 会真的写 `mainChunk+0x60`
 
@@ -204,11 +213,11 @@ gate 被真正顶开；同一 run 里 `mainChunk+0x60` watchpoint 首次在
   chain；
 - natural run 缺的不是 "根本不存在 writer"，而是 **没有满足这条
   dormant writer path 的一项或多项 gating condition**；
-- 下一步最值钱的工作，不再是盲猜 `+0x60` 应该长什么样，而是解释：为
-  什么只有在 storage success + ready bit 都被强推后，
-  `0x10432dfdc -> 0x10017f3c8 -> 0x1001bc220 -> 0x1001bc970 ->
+- 因此 Dashboard 把 C.2.7 的焦点从"盲猜 `+0x60` 应该长什么样"改成
+  "解释为什么只有在 storage success + ready bit 都被强推后
+  `0x10432dfdc → 0x10017f3c8 → 0x1001bc220 → 0x1001bc970 →
   0x1001c6da4` 才会活过来，以及 natural run 里到底缺了哪个
-  prerequisite。
+  prerequisite"。
 
 ## 10. writer 命中已经从"停在 watchpoint"升级成"拿到真实 tracked-dst 写入"，而且 writer 后还有第二次 `f3c8` 回落
 
@@ -374,14 +383,14 @@ entry-side 证据也补齐了：
 进入 `0x1001a588c`，并在 gate1 立刻失败；问题更像是 package / storage
 state 尚未就绪，而不是 key / candidate materialization 自身有误。**
 
-这把主线目标进一步改写为两层：
+这把主线目标进一步改写为两层（Dashboard 会据此更新问题 (a)(b)）：
 
-1. 先解释 **为什么 `0x10432df30` 这支里的首轮 `0x1001a53a0(..., 1)`
+1. 解释 **为什么 `0x10432df30` 这支里的首轮 `0x1001a53a0(..., 1)`
    会在 `0x1001a588c` / OpenNodeStorage gate 上返回 0，以及为什么
    `0x10432dfdc` 这支会在 `mainChunk+0x60` 仍为 0 的时刻先触发
    `ba720(key="1")`**；
-2. 再继续收紧 natural run 为什么过不了 `storage success + ready`
-   以及更高层 mount / registrar state 这组一项或多项 prerequisite。
+2. 继续收紧 natural run 为什么过不了 `storage success + ready` 以及
+   更高层 mount / registrar state 这组一项或多项 prerequisite。
 
 ### 12. natural run 的 `0x10012bb7c` 入口实参现在也有了：它看到的是 descriptor/blob contract，不是简单 key `"1"`
 
@@ -466,14 +475,17 @@ state 尚未就绪，而不是 key / candidate materialization 自身有误。**
 
 换句话说，**natural run 的 create-table 失败已不应再描述成“final-check 自己把 error slot 推成 `0x9000b`”**；更准确的表述是：helper 通过了前半 descriptor/blob gate，也进入了 entry-build，但在 `0x10012595c` 之后更深层的校验 / helper 链里，`0x100122f98` 先把 err slot 写成 `0x9000b`，`0x100125960` 只是消费这份已形成的错误状态并把返回值压回 0。
 
-### 13.e 对 C.2.7 主线的影响
+### 13.e 这轮结果对主线的含义
 
-这轮结果把问题 (c) 再收紧了一层：
+这轮结果把 create-table 失败的表述从"`0x100125960` final-check 自己
+失败"修正成更深一层：
 
-- 这对 descriptor/blob 至少能通过 `0x100135d80(..., errSlot)` 的**第一层** gate；
-- 当前缺的前置条件已经从泛化的“`0x10012581c -> 0x100125960` 后半 helper”收紧成
-  `0x10012595c -> 0x1001148b8 -> 0x100114994 -> 0x1001142a4 -> 0x100122f98`
-  这条更深层 callee 链；
-- 下一步最值钱的 probe / 静态对齐，不应再把 `0x100125960` 当成 direct writer，
-  而要直接解释：`0x100122f98` 在什么前置状态下把 err slot 写成 `0x9000b`，以及
-  这条链与 entry-build / registrar / schema state 缺口之间的对应关系。
+- 这对 descriptor/blob 至少能通过 `0x100135d80(..., errSlot)` 的
+  **第一层** gate；
+- 当前缺的前置条件从泛化的"`0x10012581c → 0x100125960` 后半 helper"
+  收紧成 `0x10012595c → 0x1001148b8 → 0x100114994 → 0x1001142a4 →
+  0x100122f98` 这条更深层 callee 链；
+- Dashboard 会以此重写 HOK-016-C.2.7 的问题 (c)：不再把
+  `0x100125960` 当成 direct writer，而要解释 `0x100122f98` 在什么前
+  置状态下把 err slot 写成 `0x9000b`，以及这条链与 entry-build /
+  registrar / schema state 缺口之间的对应关系。

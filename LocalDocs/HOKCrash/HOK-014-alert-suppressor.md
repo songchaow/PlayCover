@@ -1,8 +1,22 @@
 # HOK-014: PlayTools 侧压制 `com.tencent.ngr` 启动期 UIAlertController sheet
 
 > 本文只沉淀 HOK-014（顺带 HOK-010）的**设计依据、实现口径、验证口径**。
-> 任务状态以 `LocalDocs/HOKCrash/00-Dashboard.md` 为准；本文不出现
+> 任务状态以 `00-Dashboard.md` 为准；本文不出现
 > "DONE / TODO / 已落地 / 下一步" 等字样，也不写日期快照。
+>
+> **何时读**：修改 HOK-014 swizzle / HOK-010 `rootWorkDir` / plist vs
+> GUI 内存一致性相关逻辑时读；怀疑 alert 没被压制 / bundle gate 被溢出
+> 时读。HOK-016 闭合前 HOK-014 仍是"用户看不到错误对话框"的硬约束，
+> 不能轻易动。
+>
+> **相关文档**：
+>
+> - 验证口径 / 常见误区：`HOK-014-appendix-verification.md`（按需读）；
+> - Slot preheat（HOK-014 的前置依赖）：`HOK-013-slot-preheat.md`；
+> - 命令行 preseed（让 HOK-014 能触发 alert 背后的 UE4 fatal 消失）：
+>   `HOK-015-cmdline-preseed.md`；
+> - 真正的业务 fatal 源（HOK-016）：`HOK-016-qts-fs-create-failed.md`；
+> - LLDB / b.0 gate 工具链：`HOK-012-工具链与方法论归档.md`。
 
 ## 目的
 

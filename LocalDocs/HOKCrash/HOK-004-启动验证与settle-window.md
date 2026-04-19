@@ -1,6 +1,14 @@
 ## HOK-004 启动验证与 settle window
 
-> 本文只沉淀 HOK-004 建立起来的**自动化入口**、**settle window 口径**与**通过/失败判据**。任务状态、主线结论、时间戳快照一律以 `LocalDocs/HOKCrash/00-Dashboard.md` 为准。
+> 本文只沉淀 HOK-004 建立起来的**自动化入口**、**settle window 口径**与**通过/失败判据**。任务状态、主线结论、时间戳快照一律以 `00-Dashboard.md` 为准。
+>
+> **何时读**：需要改 `Scripts/hok004_ngr_startup_runner.py`、调 compat 事件 required/forbidden 集合、或扩展 settle window 口径时读；日常 HOK-016 系列工作不需要进入。
+>
+> **相关文档**：
+>
+> - LLDB 归因入口（HOK-004 的兄弟 runner）：`HOK-006-LLDB归因与crash-window压缩.md`；
+> - 深层 bootstrap 分层：`HOK-005-深层bootstrap分层最小化.md`；
+> - 兜底链路实现：`HOK-013-slot-preheat.md` / `HOK-014-alert-suppressor.md` / `HOK-015-cmdline-preseed.md`。
 
 ### 目标
 

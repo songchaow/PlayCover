@@ -4,9 +4,19 @@
 > "HOK-015 seed value 驱动 QtsFS 失败" 假设的证伪实验：4 种 seed 下
 > `0x108878534` 返回值恒为 0、reporter 内部 failure sink 命中次数恒为 3。
 >
-> **何时读**：需要重跑 seed 替换实验、需要引用该实验产物 /
-> transcript 关键片段、或需要评估 "换 cmdline 能否影响 QtsFS" 的兄弟
-> 假设时读；日常阅读 HOK-016 主文档不必进入本文。
+> **何时读**：
+>
+> - 需要重跑 seed 替换实验；
+> - 需要引用该实验的 transcript / 产物作为"cmdline 不驱动 QtsFS"的
+>   证据；
+> - 需要评估"换 cmdline 能否影响 QtsFS"的兄弟假设；
+> - 日常阅读 HOK-016 主文档不必进入本文。
+>
+> **相关文档**：
+>
+> - HOK-015 本体：`HOK-015-cmdline-preseed.md`；
+> - readiness B 内部真失败点：`HOK-016-appendix-C23-C24.md`；
+> - 脚本说明与 LLDB BP callback 踩坑：`HOK-016-appendix-tooling.md`。
 
 ## 脚本
 
@@ -40,8 +50,9 @@
 3. QtsFS 的 Create Failed sink 在全部 4 种 seed 下各触发 3 次，分布
    无变化。
 
-**结论**：HOK-016-C.X（换 HOK-015 seed value）已被证伪。下一步必须进
-入 `0x108878534` 的内部深度分析（HOK-016-C.2）。
+**含义**：HOK-016-C.X（换 HOK-015 seed value）证伪了 "cmdline 内容驱
+动 QtsFS 失败" 假设；Dashboard 据此把主线推进到 `0x108878534` 的内部
+深度分析（HOK-016-C.2 系列）。
 
 ## 跨 run 稳定 transcript 片段
 

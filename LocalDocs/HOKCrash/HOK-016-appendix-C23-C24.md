@@ -5,10 +5,22 @@
 > `0x10017f184`）的完整控制流、寄存器快照、rootA/rootB 结构解析与
 > 收尾结论。
 >
-> **何时读**：需要理解"为什么 `0x10017f3c8` 是死代码 / 真正被调用的是
-> `0x10017f184`"、需要查 `0x10432dd98` 各关键 offset 的实测寄存器值、
-> 或需要复现 C.2.4 的 30 个 Python callback BP 时读；日常阅读 HOK-016
-> 主文档不必进入本文。
+> **何时读**：
+>
+> - 需要理解"为什么 `0x10017f3c8` 是死代码 / 真正被调用的是
+>   `0x10017f184`"；
+> - 需要查 `0x10432dd98` 各关键 offset 的实测寄存器值；
+> - 需要复现 C.2.4 的 30 个 Python callback BP；
+> - 日常阅读 HOK-016 主文档不必进入本文。
+>
+> **相关文档**：
+>
+> - 上一层 readiness B dispatcher：见 HOK-016 主文档"核心证据"段；
+> - rootB writer / `mainChunk -> "1"` 缺口：
+>   `HOK-016-appendix-C25-C26.md`；
+> - storage create-table / `0x9000b` direct writer：
+>   `HOK-016-appendix-C27.md`；
+> - 脚本说明与 LLDB BP callback 踩坑：`HOK-016-appendix-tooling.md`。
 
 ## HOK-016-C.2.3：`0x10432dd98` 内部 step-into 证据
 

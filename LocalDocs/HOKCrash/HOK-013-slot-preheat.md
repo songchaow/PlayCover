@@ -1,8 +1,20 @@
 # HOK-013: PlayTools 侧预热 `com.tencent.ngr` 的 `__common` slot `0x10e2146f8`
 
 > 本文只沉淀 HOK-013 的**设计依据、实现口径、验证口径**。任务状态以
-> `LocalDocs/HOKCrash/00-Dashboard.md` 为准；本文不出现 "DONE / TODO /
+> `00-Dashboard.md` 为准；本文不出现 "DONE / TODO /
 > 已落地 / 下一步" 等字样，也不写日期快照。
+>
+> **何时读**：修改 HOK-013 相关代码、或怀疑 preheat 没落地 / bundle
+> gate 溢出时读；当前候选 E 已 revert，HOK-013 单独兜住
+> `0x10e2146f8` reader，是 HOK-016 的必要前提之一。
+>
+> **相关文档**：
+>
+> - 验证口径与已否决方案：`HOK-013-appendix-verification.md`（按需读）；
+> - writer 识别与反向 BFS 方法论：`HOK-011-静态初始化链分析.md`；
+> - 候选 E 的 apply/revert 口径：`HOK-007-二进制意图分析与callsite映射.md`；
+> - LLDB watchpoint / b.0 gate 工具链：`HOK-012-工具链与方法论归档.md`；
+> - HOK-016 frame 3 与 slot writer 的关系：`HOK-016-qts-fs-create-failed.md`。
 
 ## 目的
 
@@ -11,8 +23,8 @@
 （reader `0x1047e83f4` → faulting callsite `0x10480df08`）跑起来之前被
 预写入一个**合法**的对象指针；这样 reader 原 faulting 指令
 `ldr x8, [x19]` 读到合法 vtable、`ldr x8, [x8, #0x10]; blr x8` 命中
-no-op 虚函数，安全返回。**HOK-013 落地后，HOK-007B 的候选 E（磁盘字节
-patch）可以从安全网降级为反向对照**。
+no-op 虚函数，安全返回。HOK-013 落地后候选 E（磁盘字节 patch）从"安全
+网"降级为"磁盘备份 + 反向对照"，默认 `state=original`。
 
 HOK-013 的成功判据：
 
@@ -117,9 +129,10 @@ HOK-013 落地后**不要立即自动 revert 候选 E**；两者并存时的语�
 - Revert 候选 E：reader 恢复 `ldr x8, [x19]`，会读取 slot → 读 vtable
   → `blr x8` no-op。整个路径由 HOK-013 单独兜住。
 
-HOK-013 单独兜住的 live 验证必须在 Dashboard 明确允许后进行；在那之
-前候选 E 是默认安全网。revert 流程由 `Scripts/hok007b_ngr_patch_runner.py
---revert` 管，HOK-013 本身不碰磁盘 patch。
+**当前状态**：HOK-013 单独兜住已通过验证，候选 E 已经执行
+`Scripts/hok007b_ngr_patch_runner.py --revert`，磁盘 `state=original`，
+备份保留在 `build/hok-007b-backups/*.bin`。revert 流程统一由
+`hok007b_ngr_patch_runner.py` 管理，HOK-013 本身不碰磁盘 patch。
 
 ## 实现位置
 

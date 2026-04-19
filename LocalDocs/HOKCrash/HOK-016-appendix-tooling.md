@@ -4,9 +4,21 @@
 > 各子任务用到的所有 `Scripts/hok016*` 脚本的详细说明、输入/输出、
 > 以及 LLDB BP callback 的关键踩坑。
 >
-> **何时读**：需要重跑某一轮 live trace、需要为新子任务复用现有 Python
-> probe helper、或需要按脚本名反查它解决的是 HOK-016 哪一层证据时读；
-> 日常阅读 HOK-016 主文档不必进入本文。
+> **何时读**：
+>
+> - 需要重跑某一轮 live trace；
+> - 需要为新子任务复用现有 Python probe helper；
+> - 需要按脚本名反查它解决的是 HOK-016 哪一层证据；
+> - 日常阅读 HOK-016 主文档不必进入本文。
+>
+> **相关文档**：
+>
+> - HOK-016 本体 / 根因链骨架：`HOK-016-qts-fs-create-failed.md`；
+> - C.2.3 / C.2.4 readiness B 内部：`HOK-016-appendix-C23-C24.md`；
+> - C.2.5 / C.2.6 rootB + mainChunk：`HOK-016-appendix-C25-C26.md`；
+> - C.2.7 storage fail + dual-force + err-slot：
+>   `HOK-016-appendix-C27.md`；
+> - seed 替换实验：`HOK-016-appendix-CX.md`。
 
 ## 静态分析
 
@@ -141,8 +153,13 @@ registers。产物 `build/hok-016c25-rootB-watch.json`。
 
 HOK-016-C.2.7 的 live trace driver + LLDB helper。在 `0x10017f1dc`
 动态装 `mainChunk+0x60` watchpoint，并对 `0x1001bd448` /
-`0x1001ba82c` / `0x1001ba50c` / `0x1001a5014` / `0x10432e074` 采样。
-产物 `build/hok-016c27-mainchunk-subtree-trace.json`。
+`0x1001ba82c` / `0x1001ba50c` / `0x1001a5014` / `0x10432e074` 采样；
+覆盖范围扩展到 storage method / create-table helper / entry-build
+branch / final-check / err=9 写点。在 gate-ret `0x100125030` 时会根
+据需要动态把 err slot watchpoint 装到 caller 传入的 err slot 上，
+`snapshot_err_slot_write_on_hit` 回调记录 `0x9000b` 的 direct writer
+PC + 回溯。产物 `build/hok-016c27-mainchunk-subtree-trace.json` /
+`build/hok-016c27-final-check-errslot-watch.json`。
 
 ### `Scripts/hok016c4_ngr_force_storage_success.py`
 

@@ -1,6 +1,14 @@
 ## HOK-006 LLDB 归因与 crash window 压缩
 
-> 本文只沉淀 HOK-006 引入的 **LLDB 自动化入口**、**结构化 LLDB 证据 schema**、**transcript 解析口径**与**automation gate 定义**。任务状态、某轮 live 结论以 `LocalDocs/HOKCrash/00-Dashboard.md` 为准；watchpoint / stderr 重定向等 HOK-012-B 增量扩展见 `LocalDocs/HOKCrash/HOK-011-静态初始化链分析.md` 的方法论小节。
+> 本文只沉淀 HOK-006 引入的 **LLDB 自动化入口**、**结构化 LLDB 证据 schema**、**transcript 解析口径**与**automation gate 定义**。任务状态、某轮 live 结论以 `00-Dashboard.md` 为准；watchpoint / stderr 重定向等 HOK-012-B 增量扩展见 `HOK-012-工具链与方法论归档.md`。
+>
+> **何时读**：需要改 `launch_app_with_lldb` / `LLDBLaunchEvidence` / `Scripts/hok006_ngr_lldb_runner.py` 的 schema 或 gate 判据时读；需要扩展 fault vs watchpoint 分流规则时读；日常 HOK-016 系列工作不需要进入。
+>
+> **相关文档**：
+>
+> - LLDB 工具链与 watchpoint live-trace 方法论：`HOK-012-工具链与方法论归档.md`（+ `HOK-012-appendix-evidence-and-cli.md`）；
+> - 启动 baseline runner：`HOK-004-启动验证与settle-window.md`；
+> - HOK-016 系列 LLDB driver 如何基于 `hok006` runner 搭建：`HOK-016-appendix-tooling.md`。
 
 ### 目标
 

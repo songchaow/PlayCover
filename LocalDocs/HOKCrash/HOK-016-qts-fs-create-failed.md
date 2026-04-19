@@ -921,62 +921,82 @@ C.2.6 已把根因改写成“`mainChunk` 空壳对象缺 `"1"` 子树”；C.2.
      - **第一轮**（`flag=0`）时，`0x1001be584` 处 `x0=0`。也就是 writer
        path 触发前，`mainChunk+0x60` subtree 里**连目标 entry/payload object
        都不存在**；
-   - **第二轮**（`flag=1`）时，`0x1001be584` 处已经能拿到非零 override object；
-     但这轮新增的 wrapper-shape probe（`build/hok-016c4-force-storage-ready-wrapper-shape.json`）
-     又把旧口径改写了一次：
-     - `0x1001bae8c` 处首轮 `bl 0x1001a53a0(..., w3=1)` **返回 0**；但同一时刻
-       `ctx+0x40` 已经是 nonzero candidate（本轮实测 `0x139f19bd0`），说明
-       “candidate 进入 context”与“首轮 override contract 成功”不是一回事。
-     - `0x1001bafc0` 随后的 fallback 实际调的是
-       `0x1001bb73c(x0=0x13d82ee00, x1="1", x2=1, x3=0)`；live entry probe 直接抓到
-       `w3 = 0`。而静态反汇编表明 `0x1001bb73c` 只有在 `x3 != 0` 时才会走
-       `0x1001bc970` 那条补 child / payload 的路径。
-     - `0x1001bafc4` 处 `bb73c` 返回对象已经是 hollow wrapper 形状：首 qword 与第二
-       qword 都还是 `0`，`+0x48 = 0`、`+0x50 = 0xffffffff`；随后
-       `0x1001bb844` 入口前的 raw dump 与 `0x1001bb010` / `0x1001be584(flag=1)`
-       处看到的对象保持同形。
-     - `0x1001bb844` 的静态反汇编 + live entry probe 进一步证实：它只做
-       `str x19, [x20]`，也就是把 final entry 回写到 wrapper 首 qword 里形成 backref；
-       **不会**补 child / payload。`0x1001bb014` 处 `str x22, [x8, #0x8]` 确实执行，
-       final entry 的 `slot1` 也确实从 `0` 变成了这份 wrapper。
+  - **第二轮**（`flag=1`）时，`0x1001be584` 处已经能拿到非零 override object；
+    但新增的 stage-correlation probe（`build/hok-016c4-force-storage-ready-stage-correlation.json`）
+    证明：**“首轮 `0x1001a53a0(..., 1)` 失败”与“`bb73c(..., 0)` 产出 hollow wrapper”并不是同一条直线控制流，而是同一轮 dual-force run 里的两个 sibling branch**。
+    关键证据如下：
+    - `0x1001bae8c` 这次首轮 `bl 0x1001a53a0(..., w3=1)` 的 return site，来自
+      `LR = 0x10432df30` 这支 sibling branch；它虽然看到 `ctx+0x40` 已经是
+      nonzero candidate，但在 `0x1001a53dc` 内部的第一个 gate
+      `0x1001a55b8`（`bl 0x1001a588c` 返回后）就已经观测到 `w0 = 0`，且没有同分支的
+      `0x1001a55c8` 命中。这说明首轮失败的具体位置不是泛化的“override contract 不闭合”，
+      而是 **`0x1001a588c` / OpenNodeStorage 这一级直接返回 0**；静态 failure 文案
+      `0x1001a5730` 也对应 `"QtsfPackage OpenNodeStorage failed! package=%s"`。
+    - `0x1001bb73c(..., 0)` 则来自另一支 `LR = 0x10432dfdc`。这支里真正被调用的是
+      `0x1001baf80` 处的 **第二轮** `0x1001a53a0(..., w3=0)`；它在
+      `0x1001a55b8` / `0x1001a55c8` 两个 gate 上都实测 `w0 = 1`，并在
+      `0x1001baf84` 返回 `w0 = 1`。也就是说，`w3=0` 这轮 package load 本身**成功**。
+    - 紧接着 `0x1001bafa8` 处直接读到 `ctx+0x38 = 0`；而新增的
+      `build/hok-016c4-force-storage-ready-context-init.json` 进一步把这个 producer
+      锁定到上游 `0x1001ba720` context-builder：
+      - 在 `LR = 0x10432df30` 这支里，`0x1001ba7a8` 的 lookup return 是 nonzero
+        `0x120eb04f0`，随后 `0x1001ba7c0` 直接观测到 `ctx+0x38 = 0x120eb04f0`；
+      - 在 `LR = 0x10432dfdc` 这支里，同一个 `0x1001ba7a8` lookup return 变成 `0`，
+        `0x1001ba7c0` 也随之把 `ctx+0x38` 初始化成 `0`。
+      再结合对 `0x1001ba940..0x1001bb120` 的静态反汇编筛选——`ba940` 一带对
+      `[x19,#0x38]` 只有多处 `ldr`、**没有任何 `str` 写入**——可以确认：
+      `bb73c(..., 0)` 被选中，不是因为“首轮 `a53a0(..., 1)` 失败后直接跌落到这里”，
+      而是因为当前这支路径在进入 `ba940` 之前，`ba720(key="1")` 自己就已经把
+      `ctx+0x38` 初始化成了 0。
+    - `0x1001bafbc` 的静态反汇编同时坐实：传给 `0x1001bb73c` 的 `w3 = 0`
+      是函数内的硬编码 `mov w3, #0`，而 `0x1001bb73c` 自身在 `0x1001bb798` 对
+      `w22/x3` 做 `cbz`；当 `x3 == 0` 时直接跳过 `0x1001bc970` 的 child / payload
+      路径。
+    - `0x1001bafc4` 处 `bb73c` 返回对象已经是 hollow wrapper 形状：首 qword 与第二
+      qword 都还是 `0`，`+0x48 = 0`、`+0x50 = 0xffffffff`；随后
+      `0x1001bb844` 的静态反汇编 + live probe 进一步证实：它只做
+      `str x19, [x20]`，也就是把 final entry 回写到 wrapper 首 qword 里形成 backref；
+      **不会**补 child / payload。`0x1001bb014` 处 `str x22, [x8, #0x8]` 确实执行，
+      final entry 的 `slot1` 也确实从 `0` 变成了这份 wrapper。
 
-     也就是说，第二轮失败**已经不再是**“final entry 的 override slot 没写进去”，
-     甚至也不再主要是“谁把 `ctx+0x40` 清回了 0”。真正失败的是：首轮
-     `0x1001a53a0(..., 1)` 已拿到 candidate 却仍返回 0，随后 fallback 固定走
-     `0x1001bb73c(..., 0)`，因此最终写进 `slot1` 的对象天生就是一份
-     `backref-to-entry + null-child` 的 hollow wrapper；`0x1001be550(flag=1)`
-     看到它时自然继续把 return 压回 `0`。
+    把这些证据合起来，当前口径应修正为：**dual-force run 里至少有两支 sibling path**——
+    一支在 `0x10432df30` 上把 `0x1001a53a0(..., 1)` 卡死在 `0x1001a588c`
+    / OpenNodeStorage gate；另一支在 `0x10432dfdc` 上让 `0x1001a53a0(..., 0)`
+    顺利通过，但因为上游 `ba720(key="1")` lookup 自己就返回 0、把 `ctx+0x38`
+    初始化成了 0，于是被迫走硬编码 `w3=0` 的 `bb73c` 路径，最终把
+    `backref-to-entry + null-child` 的 hollow wrapper 写进 `slot1`；
+    `0x1001be550(flag=1)` 看到它时自然继续把 return 压回 `0`。
 
-
-    也就是说，两轮 `0x10017faa0` gate **都没有成功**，只是当前 callback 停在
-    `mov x0, x19` 之前，不能把旧 `x0` 误当成真实 return value。把这个口径修正后，
-    当前 sequence 应写成：
+    因而当前 sequence 应写成：
 
     ```text
     dual-force pushes first writer branch alive
-      -> first 0x10017faa0 still returns 0, so first branch falls through to f3c8
-      -> dormant path writes tracked mainChunk+0x60
-      -> ba940 first stores a nonzero override candidate into ctx+0x40
-      -> but 0x1001a53a0(..., 1) still returns 0, so the flow falls into fallback
-      -> fallback calls 0x1001bb73c(..., "1", 1, 0)
+      -> first 0x10017faa0 still returns 0, so sibling branch A reaches 0x10432df30
+      -> branch A calls ba940 first-stage 0x1001a53a0(..., 1)
+      -> inside 0x1001a53dc, gate#1 (0x1001a588c / OpenNodeStorage) already returns 0
+      -> branch A returns 0 without producing a usable override object
+      -> sibling branch B at 0x10432dfdc activates the dormant writer path and writes tracked mainChunk+0x60
+      -> branch B enters ba940 second-stage 0x1001a53a0(..., 0)
+      -> gate#1 + gate#2 both return 1, so second-stage package load itself succeeds
+      -> ba940 then reads ctx+0x38 and still gets 0
+      -> code executes hardcoded 0x1001bb73c(..., "1", 1, 0)
       -> because x3 == 0, bb73c skips 0x1001bc970 and returns a hollow wrapper
       -> 0x1001bb844 only patches entry backref into that wrapper
       -> ba940 finally writes entry.slot1 = hollowWrapper
       -> second 0x10017faa0 / 0x1001be550(flag=1) reads that same wrapper
-      -> but the written object is only a backref-to-entry + null-child wrapper, so second gate still returns 0
-      -> sibling branch then calls 0x10017f3c8 again
-      -> second f3c8 invocation returns 0
-      -> process eventually falls back to old readiness-B failure sink
+      -> second gate still returns 0
+      -> sibling branch later calls 0x10017f3c8 again and the process eventually falls back to the old readiness-B sink
     ```
 
   这把主线目标进一步改写为两层：
 
-   1. 先解释 **为什么首轮 `0x1001a53a0(..., 1)` 在 candidate 已进入 `ctx+0x40`
-      后仍返回 0，以及为什么 fallback 固定以 `x3 = 0` 调 `0x1001bb73c`，从而跳过
-      `0x1001bc970` 并稳定产出 hollow wrapper**；
+   1. 先解释 **为什么 `0x10432df30` 这支里的首轮 `0x1001a53a0(..., 1)` 会在
+      `0x1001a588c` / OpenNodeStorage gate 上返回 0，以及为什么 `0x10432dfdc`
+      这支里的 `ba720(key="1")` lookup 只会返回 0、从而把 `ctx+0x38` 初始化成 0**；
 
    2. 再继续收紧 natural run 为什么过不了 `storage success + ready` 以及更高层
       mount / registrar state 这组一项或多项 prerequisite。
+
 
 ## 修复方向（HOK-016-C.2.7 之后重新排序）
 
@@ -1038,15 +1058,14 @@ HOK-016 的修复必须在 PlayTools 层 bundle-scoped、不动 NGR 二进制，
 后的验证口径见 Dashboard "HOK-016-D 判据"（`hok014_ngr_alert_suppressed
 = 0` / 进程活跃度 / 窗口可见性 / 无新 `NGR-*.ips`）。
 
-**下一步默认推进顺序**：C.2.7（优先拆
-`0x1001bd464 → 0x1001a5014 → storage.vtable[0x18](0x1001b3d0c) →
-0x10012bb7c` 的 create-table 失败链，继续解释 `0x9000b` / null table 的来源；
-同时围绕已被 dual-force 激活的 dormant writer path
-`0x10432dfdc -> 0x10017f3c8 -> 0x1001bc220 -> 0x1001bc970 -> 0x1001c6da4`
-优先补 `ba940` / `0x1001bb73c` / `0x1001bb844` 一带的 state 变化——也就是
-为什么首轮 `0x1001a53a0(..., 1)` 在 candidate 已写入 `ctx+0x40` 后仍失败、为什么 fallback
-稳定以 `x3 = 0` 调 `0x1001bb73c` 并跳过 `0x1001bc970`，以及 natural run 里究竟缺了哪项前置条件
-才会不断落回这份 `backref-to-entry + null-child` 的 hollow object；再回过头追自然激活前置条件）
+**下一步默认推进顺序**：C.2.7（优先并行拆两条新收紧的分支：
+一条沿 `0x10432df30 -> 0x1001bae8c -> 0x1001a55b8 -> 0x1001a588c`
+解释首轮 `0x1001a53a0(..., 1)` / OpenNodeStorage gate 为什么返回 0；另一条沿
+`0x10432dfdc -> 0x1001ba720(ba720) -> 0x1001ba7a8/0x1001ba7c0 -> 0x1001baf80 -> 0x1001bb73c`
+解释为什么 `ba720(key="1")` lookup 只会返回 0、从而把 `ctx+0x38` 初始化成 0，并把流程推入硬编码
+`x3 = 0` 的 hollow-wrapper 路径；同时保持对 natural run 主失败链
+`0x1001bd464 -> 0x1001a5014 -> storage.vtable[0x18](0x1001b3d0c) -> 0x10012bb7c`
+的追踪，继续解释 `0x9000b` / null table 的来源）
 → 若拿到可重复 child-registration / ready-state 契约则进 C.5；若只剩“复杂路径且无法安全伪造返回对象”
 则继续扩 C.4 的 bundle-scoped 诊断性强制成功验证 → C.3（最终兜底）→ C.6 降级（末选）。
 

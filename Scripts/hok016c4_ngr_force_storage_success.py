@@ -46,9 +46,17 @@ BP_F3C8_POST = "0x10017f51c"
 BP_BC220_STAGE = "0x1001bc2a4"
 BP_BC220_SLOT1_SOURCE = "0x1001bc45c"
 BP_BC970_STAGE = "0x1001bca40"
+BP_BA720_LOOKUP_RET = "0x1001ba7a8"
+BP_BA720_CTX_READY = "0x1001ba7c0"
 BP_BA940_OVERRIDE_ALLOC = "0x1001bae58"
 BP_BA940_OVERRIDE_ALLOC_POST = "0x1001bae70"
 BP_BA940_OVERRIDE_RESULT = "0x1001bae8c"
+BP_A53DC_AFTER_STEP1 = "0x1001a55b8"
+BP_A53DC_AFTER_STEP2 = "0x1001a55c8"
+BP_BA940_SECOND_OVERRIDE_CALL = "0x1001baf80"
+BP_BA940_SECOND_OVERRIDE_RESULT = "0x1001baf84"
+BP_BA940_CTX38_CHECK = "0x1001bafa8"
+BP_BA940_SECOND_FAIL = "0x1001bb050"
 BP_BB73C_ENTRY = "0x1001bb73c"
 BP_BA940_WRAPPER_RETURN = "0x1001bafc4"
 BP_C5A38_PAIR_WRITE = "0x1001c5a98"
@@ -194,6 +202,16 @@ def main() -> int:
                     "hok016c27_lldb_mainchunk_watch.snapshot_bc970_stage_on_hit",
                 ),
                 (
+                    BP_BA720_LOOKUP_RET,
+                    "hok016c4_ba720_lookup_ret",
+                    "hok016c27_lldb_mainchunk_watch.snapshot_ba720_lookup_ret_on_hit",
+                ),
+                (
+                    BP_BA720_CTX_READY,
+                    "hok016c4_ba720_ctx_ready",
+                    "hok016c27_lldb_mainchunk_watch.snapshot_ba720_ctx_ready_on_hit",
+                ),
+                (
                     BP_BA940_OVERRIDE_ALLOC,
                     "hok016c4_ba940_override_alloc",
                     "hok016c27_lldb_mainchunk_watch.snapshot_ba940_override_alloc_on_hit",
@@ -207,6 +225,36 @@ def main() -> int:
                     BP_BA940_OVERRIDE_RESULT,
                     "hok016c4_ba940_override_result",
                     "hok016c27_lldb_mainchunk_watch.snapshot_ba940_override_result_on_hit",
+                ),
+                (
+                    BP_A53DC_AFTER_STEP1,
+                    "hok016c4_a53dc_after_step1",
+                    "hok016c27_lldb_mainchunk_watch.snapshot_a53dc_gate_on_hit",
+                ),
+                (
+                    BP_A53DC_AFTER_STEP2,
+                    "hok016c4_a53dc_after_step2",
+                    "hok016c27_lldb_mainchunk_watch.snapshot_a53dc_gate_on_hit",
+                ),
+                (
+                    BP_BA940_SECOND_OVERRIDE_CALL,
+                    "hok016c4_ba940_second_override_call",
+                    "hok016c27_lldb_mainchunk_watch.snapshot_ba940_second_override_call_on_hit",
+                ),
+                (
+                    BP_BA940_SECOND_OVERRIDE_RESULT,
+                    "hok016c4_ba940_second_override_result",
+                    "hok016c27_lldb_mainchunk_watch.snapshot_ba940_second_override_result_on_hit",
+                ),
+                (
+                    BP_BA940_CTX38_CHECK,
+                    "hok016c4_ba940_ctx38_check",
+                    "hok016c27_lldb_mainchunk_watch.snapshot_ba940_ctx38_check_on_hit",
+                ),
+                (
+                    BP_BA940_SECOND_FAIL,
+                    "hok016c4_ba940_second_fail",
+                    "hok016c27_lldb_mainchunk_watch.snapshot_ba940_second_fail_on_hit",
                 ),
                 (
                     BP_BB73C_ENTRY,
@@ -296,9 +344,17 @@ def main() -> int:
         print(f"  bc220 stage          : {BP_BC220_STAGE}")
         print(f"  bc220 slot1 src      : {BP_BC220_SLOT1_SOURCE}")
         print(f"  bc970 stage          : {BP_BC970_STAGE}")
+        print(f"  ba720 lookup ret     : {BP_BA720_LOOKUP_RET}")
+        print(f"  ba720 ctx ready      : {BP_BA720_CTX_READY}")
         print(f"  ba940 override alloc : {BP_BA940_OVERRIDE_ALLOC}")
         print(f"  ba940 override post  : {BP_BA940_OVERRIDE_ALLOC_POST}")
         print(f"  ba940 override ret   : {BP_BA940_OVERRIDE_RESULT}")
+        print(f"  a53dc gate step1     : {BP_A53DC_AFTER_STEP1}")
+        print(f"  a53dc gate step2     : {BP_A53DC_AFTER_STEP2}")
+        print(f"  ba940 second call    : {BP_BA940_SECOND_OVERRIDE_CALL}")
+        print(f"  ba940 second ret     : {BP_BA940_SECOND_OVERRIDE_RESULT}")
+        print(f"  ba940 ctx+0x38 check : {BP_BA940_CTX38_CHECK}")
+        print(f"  ba940 second fail    : {BP_BA940_SECOND_FAIL}")
         print(f"  bb73c entry          : {BP_BB73C_ENTRY}")
         print(f"  ba940 wrapper ret    : {BP_BA940_WRAPPER_RETURN}")
         print(f"  c5a38 pair write     : {BP_C5A38_PAIR_WRITE}")

@@ -58,19 +58,25 @@
     还不够；但再叠加 ready/save-header success 后，第一轮 readiness B
     可以被真正顶开，并会暴露 dormant writer path 对当前 tracked
     `mainChunk+0x60` 的真实写入。
-  - 剩余核心问题已经收敛到 second-gate / wrapper shape：首轮
-    `0x1001a53a0(..., 1)` 虽把 candidate 写进 `ctx+0x40` 仍返回 0；fallback
-    固定走 `0x1001bb73c(..., 0)`、跳过 `0x1001bc970`，最终只得到
-    `backref-to-entry + null-child` 的 hollow wrapper。`hok014_ngr_alert_suppressed`
-    仍为 1，进程仍停在僵尸态。
+  - 剩余核心问题已经进一步收敛到 **两个 sibling branch + 一个明确的 `ctx+0x38` producer**：
+    `0x10432df30` 这支里的首轮 `0x1001a53a0(..., 1)` 虽然看到 candidate 已进
+    `ctx+0x40`，但实际在内部 `0x1001a588c` / OpenNodeStorage gate 就返回 0；
+    `0x10432dfdc` 这支里的 `0x1001a53a0(..., 0)` 反而是成功的，但 `ba720`
+    context-builder 在这支里对 key=`"1"` 的 lookup 直接返回 0，所以 `ctx+0x38`
+    被原样初始化成 0，后续只能硬编码走 `0x1001bb73c(..., 0)`、跳过
+    `0x1001bc970`，最终产出 `backref-to-entry + null-child` 的 hollow wrapper；
+    对照地，`0x10432df30` 这支同一个 `ba720` lookup 会返回 nonzero，并把 `ctx+0x38`
+    真正填起来。`hok014_ngr_alert_suppressed` 仍为 1，进程仍停在僵尸态。
 
 - **修复路线（优先级最高 → 最低；按 HOK-016-C.2.7 当前证据重排）**：
   1. `HOK-016-C.2.7`（**当前主线**）：继续拆 `ba940` / second-gate 这条
-     **override object 成形链**。当前优先回答两件事：
-     (a) 为什么首轮 `0x1001a53a0(..., 1)` 在 candidate 已写入 `ctx+0x40` 后仍返回 0；
-     (b) 为什么后续 fallback 只会走 `0x1001bb73c(..., 0)`，从而跳过
-     `0x1001bc970` child/payload 路径并稳定产出 `backref-to-entry + null-child`
-     的 hollow override wrapper。
+     **override object 成形链**，但当前优先级已经改成并行回答两件事：
+     (a) 为什么 `0x10432df30` 这支里的首轮 `0x1001a53a0(..., 1)` 会在内部
+     `0x1001a588c` / OpenNodeStorage gate 上返回 0；
+     (b) 为什么 `0x10432dfdc` 这支里 `ba720` 对 key=`"1"` 的 lookup 会返回 0、
+     进而把 `ctx+0x38` 初始化成 0，使后续只能硬编码走
+     `0x1001bb73c(..., 0)`，从而跳过 `0x1001bc970` child/payload 路径并稳定产出
+     `backref-to-entry + null-child` 的 hollow override wrapper。
      同时保留对 natural run 前置条件的追踪：继续沿
      `0x1001bd464 → 0x1001ba50c → 0x1001a5014 → storage.vtable[0x18] → 0x10012bb7c`
      解释 `0x9000b` / null table 的来源，并对
@@ -228,29 +234,30 @@
     plist 行为未变；HOK-010 self-heal 仍是改 settings 的正确入口。
   - 候选 E 磁盘备份仍在 `build/hok-007b-backups/*.bin`，日常不 apply。
 
-- **当前主线**：`HOK-016-C.2.7`——继续把 **首轮 override 失败 → fallback wrapper
-  成形 → second-gate payload miss** 这条链钉死。当前已知：natural run 的 active
+- **当前主线**：`HOK-016-C.2.7`——继续把 **两个 sibling branch 如何共同把 second-gate 压回 0** 这条链钉死。当前已知：natural run 的 active
   failure 已收紧到 `0x10012bb7c` null table + `storage+0x30 = 0x9000b`；dual-force
   诊断 run 则进一步证明 dormant writer path 不仅会真实写当前 tracked
-  `mainChunk+0x60`，而且 `ba940` 首轮 `0x1001a53a0(..., 1)` 虽然已把 nonzero
-  candidate 写进 `ctx+0x40`，却仍返回 0；随后 fallback `0x1001bb73c(..., 0)`
-  单独新造出一份最终写进 `slot1` 的 hollow wrapper，`0x1001bb844` 只负责给它补
-  `entry` backref。目标状态不变：`launch-events.jsonl` 里
+  `mainChunk+0x60`，还暴露出两支并行问题：`0x10432df30` 这支里的首轮
+  `0x1001a53a0(..., 1)` 会在内部 `0x1001a588c` / OpenNodeStorage gate 上失败；
+  `0x10432dfdc` 这支里的 `0x1001a53a0(..., 0)` 则是成功的，但 `ctx+0x38`
+  现在已经明确是由上游 `ba720` context-builder 负责填的——而这支里 `ba720` 对 key=`"1"`
+  的 lookup 本身就返回 0，所以后续只能硬编码走 `0x1001bb73c(..., 0)`，最终把一份
+  `backref-to-entry + null-child` 的 hollow wrapper 写进 `slot1`，而
+  `0x1001bb844` 只负责补 `entry` backref。目标状态不变：`launch-events.jsonl` 里
   `hok014_ngr_alert_suppressed` 事件**真正归零**；进程 `RSS ≥ 800MB` /
   线程数 ≥ 20 / 窗口在主屏内 / `%CPU` 持续 ≥ 5%。
 
 - **当前卡点**：当前未闭合的 contract 已不再是“`mainChunk+0x60` 从头到尾没写”
-  或“final entry 的 `slot1` 没写进去”，而是 **为什么首轮
-  `0x1001a53a0(..., 1)` 在 candidate 已进入 `ctx+0x40` 后仍失败，以及为什么后续
-  fallback 固定走 `0x1001bb73c(..., 0)` / 跳过 `0x1001bc970`，最终只得到
-  `backref-to-entry + null-child` 的 hollow wrapper**。换句话说，当前 second-gate
+  或“final entry 的 `slot1` 没写进去”，而是 **谁该为 `0x10432df30` 这支满足
+  `0x1001a588c` / OpenNodeStorage gate，以及为什么 `0x10432dfdc` 这支里的
+  `ba720(key="1")` lookup 只会返回 0**。换句话说，当前 second-gate
   `0x10017faa0 -> 0x1001be550(flag=1)` 看到的对象已经来自 final entry 的真实
   override slot，但它自身仍缺 child/payload 语义，所以返回值继续被压成 0。
 
 - **下一步默认规划**：
-  1. `HOK-016-C.2.7`：优先补 `ba940` / `0x1001bb73c` / `0x1001bb844` 一带的 live trace，直接回答：
-     (a) 首轮 `0x1001a53a0(..., 1)` 为什么在 `ctx+0x40` 已拿到 candidate 后仍返回 0；
-     (b) fallback 为什么固定以 `w3 = 0` 调 `0x1001bb73c`，从而跳过 `0x1001bc970` 的 child/payload 路径；
+  1. `HOK-016-C.2.7`：优先围绕 `ba720` / `ba940` / `0x1001a53dc` / `0x1001bb73c` 一带继续补 live trace，直接回答：
+     (a) 为什么 `0x10432df30` 这支里的首轮 `0x1001a53a0(..., 1)` 会卡在 `0x1001a588c` / OpenNodeStorage gate；
+     (b) 为什么 `0x10432dfdc` 这支里的 `ba720(key="1")` lookup 返回 0，从而把 `ctx+0x38` 初始化成 0，最终只能走硬编码 `w3 = 0` 的 `0x1001bb73c`；
      (c) 当前 natural run 里要满足什么额外前置条件，才能不再落回这份 hollow wrapper。
   2. 并行保留对 natural run 前置条件的追踪：继续沿
      `0x1001bd464 -> 0x1001ba50c -> 0x1001a5014 -> storage.vtable[0x18](0x1001b3d0c)

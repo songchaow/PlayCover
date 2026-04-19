@@ -817,6 +817,142 @@ def snapshot_ba940_override_result_on_hit(frame, bp_loc, internal_dict):
     return False
 
 
+def snapshot_a53dc_gate_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    pc = frame.GetPC()
+    label = "step1" if pc == 0x1001A55B8 else "step2"
+    x0 = _reg_u64(frame, "x0")
+    x19 = _reg_u64(frame, "x19")
+    x20 = _reg_u64(frame, "x20")
+    x21 = _reg_u64(frame, "x21")
+    x22 = _reg_u64(frame, "x22")
+    x30 = _reg_u64(frame, "x30")
+    input_w3 = _read_u32(process, x20) if x20 > 0x100000000 else None
+    input_w4 = _read_u32(process, x20 + 0x4) if x20 > 0x100000000 else None
+    input_x5 = _read_u64(process, x20 + 0x8) if x20 > 0x100000000 else None
+    pkg_a8 = _read_u64(process, x19 + 0xA8) if x19 > 0x100000000 else None
+    pkg_b0 = _read_u64(process, x19 + 0xB0) if x19 > 0x100000000 else None
+    pkg_110 = _read_u32(process, x19 + 0x110) if x19 > 0x100000000 else None
+
+    print(
+        f"[hok016c27-a53dc-{label}] pc=0x{pc:x} x0=0x{x0:x} w0=0x{(x0 & 0xffffffff):x} "
+        f"x19(pkg)=0x{x19:x} x20(args)=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x} "
+        f"in.w3=0x{(input_w3 or 0):x} in.w4=0x{(input_w4 or 0):x} in.x5=0x{(input_x5 or 0):x} "
+        f"pkg+0xa8=0x{(pkg_a8 or 0):x} pkg+0xb0=0x{(pkg_b0 or 0):x} pkg+0x110=0x{(pkg_110 or 0):x}"
+        + f" bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_ba940_second_override_call_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    x0 = _reg_u64(frame, "x0")
+    x1 = _reg_u64(frame, "x1")
+    x2 = _reg_u64(frame, "x2")
+    x3 = _reg_u64(frame, "x3")
+    x5 = _reg_u64(frame, "x5")
+    x19 = _reg_u64(frame, "x19")
+    x21 = _reg_u64(frame, "x21")
+    x22 = _reg_u64(frame, "x22")
+    x30 = _reg_u64(frame, "x30")
+    ctx38 = _read_u64(process, x19 + 0x38) if x19 > 0x100000000 else None
+    ctx40 = _read_u64(process, x19 + 0x40) if x19 > 0x100000000 else None
+    ctxA0 = _read_u64(process, x19 + 0xA0) if x19 > 0x100000000 else None
+    key = _decode_pascal_string(process, x2)
+
+    print(
+        f"[hok016c27-ba940-second-call] pc=0x{frame.GetPC():x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} "
+        f"x3=0x{x3:x} x5=0x{x5:x} x19(ctx)=0x{x19:x} x21=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x} "
+        f"ctx+0x38=0x{(ctx38 or 0):x} ctx+0x40=0x{(ctx40 or 0):x} ctx+0xa0=0x{(ctxA0 or 0):x} "
+        f"key=[{key['summary']}]"
+        + (_object_contract_extra(process, x0, "x0") if x0 > 0x100000000 else "")
+        + (_object_contract_extra(process, x5, "x5") if x5 > 0x100000000 else "")
+        + f" bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_ba940_second_override_result_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    x0 = _reg_u64(frame, "x0")
+    x19 = _reg_u64(frame, "x19")
+    x20 = _reg_u64(frame, "x20")
+    x21 = _reg_u64(frame, "x21")
+    x22 = _reg_u64(frame, "x22")
+    x30 = _reg_u64(frame, "x30")
+    ctx38 = _read_u64(process, x19 + 0x38) if x19 > 0x100000000 else None
+    ctx40 = _read_u64(process, x19 + 0x40) if x19 > 0x100000000 else None
+    ctxA0 = _read_u64(process, x19 + 0xA0) if x19 > 0x100000000 else None
+    key = _decode_pascal_string(process, x20)
+
+    print(
+        f"[hok016c27-ba940-second-ret] pc=0x{frame.GetPC():x} x0=0x{x0:x} w0=0x{(x0 & 0xffffffff):x} "
+        f"x19(ctx)=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x} "
+        f"ctx+0x38=0x{(ctx38 or 0):x} ctx+0x40=0x{(ctx40 or 0):x} ctx+0xa0=0x{(ctxA0 or 0):x} "
+        f"key=[{key['summary']}]"
+        + (_object_contract_extra(process, x21, "x21") if x21 > 0x100000000 else "")
+        + (_object_contract_extra(process, x22, "x22") if x22 > 0x100000000 else "")
+        + f" bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_ba940_ctx38_check_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    x19 = _reg_u64(frame, "x19")
+    x20 = _reg_u64(frame, "x20")
+    x21 = _reg_u64(frame, "x21")
+    x22 = _reg_u64(frame, "x22")
+    x30 = _reg_u64(frame, "x30")
+    ctx38 = _read_u64(process, x19 + 0x38) if x19 > 0x100000000 else None
+    ctx40 = _read_u64(process, x19 + 0x40) if x19 > 0x100000000 else None
+    key = _decode_pascal_string(process, x20)
+
+    print(
+        f"[hok016c27-ba940-ctx38] pc=0x{frame.GetPC():x} x19(ctx)=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} "
+        f"x22(ctx+0x38)=0x{x22:x} x30(lr)=0x{x30:x} ctx+0x38=0x{(ctx38 or 0):x} ctx+0x40=0x{(ctx40 or 0):x} "
+        f"key=[{key['summary']}]"
+        + (_object_contract_extra(process, x21, "x21") if x21 > 0x100000000 else "")
+        + (_object_contract_extra(process, x22, "x22") if x22 > 0x100000000 else "")
+        + f" bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_ba940_second_fail_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    x19 = _reg_u64(frame, "x19")
+    x20 = _reg_u64(frame, "x20")
+    x21 = _reg_u64(frame, "x21")
+    x22 = _reg_u64(frame, "x22")
+    x30 = _reg_u64(frame, "x30")
+    sp = _reg_u64(frame, "sp")
+    local_2c = _read_u32(process, sp + 0x2C) if sp else None
+    local_30 = _read_u64(process, sp + 0x30) if sp else None
+    ctx38 = _read_u64(process, x19 + 0x38) if x19 > 0x100000000 else None
+    ctx40 = _read_u64(process, x19 + 0x40) if x19 > 0x100000000 else None
+    key = _decode_pascal_string(process, x20)
+
+    print(
+        f"[hok016c27-ba940-second-fail] pc=0x{frame.GetPC():x} x19(ctx)=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} "
+        f"x22=0x{x22:x} x30(lr)=0x{x30:x} sp+0x2c=0x{(local_2c or 0):x} sp+0x30=0x{(local_30 or 0):x} "
+        f"ctx+0x38=0x{(ctx38 or 0):x} ctx+0x40=0x{(ctx40 or 0):x} key=[{key['summary']}]"
+        + (_object_contract_extra(process, x21, "x21") if x21 > 0x100000000 else "")
+        + f" bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
 def snapshot_bb73c_entry_on_hit(frame, bp_loc, internal_dict):
     thread = frame.GetThread()
     process = thread.GetProcess()
@@ -972,6 +1108,50 @@ def snapshot_bc970_stage_on_hit(frame, bp_loc, internal_dict):
         f"x21=0x{x21:x} x22=0x{x22:x} x23=0x{x23:x} x24=0x{x24:x} x30(lr)=0x{x30:x}"
         + (_tracked_chunk_extra(process, _tracked_mainchunk_addr) if _tracked_mainchunk_addr else "")
         + f" bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_ba720_lookup_ret_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    x0 = _reg_u64(frame, "x0")
+    x19 = _reg_u64(frame, "x19")
+    x21 = _reg_u64(frame, "x21")
+    x30 = _reg_u64(frame, "x30")
+    key = _decode_pascal_string(process, x21)
+    ctx0 = _read_u64(process, x19) if x19 > 0x100000000 else None
+    ctx18 = _read_u64(process, x19 + 0x18) if x19 > 0x100000000 else None
+
+    print(
+        f"[hok016c27-ba720-lookup] pc=0x{frame.GetPC():x} x0(lookupRet)=0x{x0:x} x19(ctx)=0x{x19:x} "
+        f"x21(key)=0x{x21:x} x30(lr)=0x{x30:x} ctx[0]=0x{(ctx0 or 0):x} ctx+0x18=0x{(ctx18 or 0):x} "
+        f"key=[{key['summary']}] bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_ba720_ctx_ready_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    x19 = _reg_u64(frame, "x19")
+    x30 = _reg_u64(frame, "x30")
+    ctx0 = _read_u64(process, x19) if x19 > 0x100000000 else None
+    ctx18 = _read_u64(process, x19 + 0x18) if x19 > 0x100000000 else None
+    ctx20 = _decode_pascal_string(process, x19 + 0x20) if x19 > 0x100000000 else {"summary": "<nil>"}
+    ctx28 = _decode_pascal_string(process, x19 + 0x28) if x19 > 0x100000000 else {"summary": "<nil>"}
+    ctx38 = _read_u64(process, x19 + 0x38) if x19 > 0x100000000 else None
+    ctx40 = _read_u64(process, x19 + 0x40) if x19 > 0x100000000 else None
+    ctx98 = _read_u64(process, x19 + 0x98) if x19 > 0x100000000 else None
+    ctxA0 = _read_u64(process, x19 + 0xA0) if x19 > 0x100000000 else None
+
+    print(
+        f"[hok016c27-ba720-ctx] pc=0x{frame.GetPC():x} x19(ctx)=0x{x19:x} x30(lr)=0x{x30:x} "
+        f"ctx[0]=0x{(ctx0 or 0):x} ctx+0x18=0x{(ctx18 or 0):x} ctx+0x38=0x{(ctx38 or 0):x} "
+        f"ctx+0x40=0x{(ctx40 or 0):x} ctx+0x98=0x{(ctx98 or 0):x} ctx+0xa0=0x{(ctxA0 or 0):x} "
+        f"ctx+0x20=[{ctx20['summary']}] ctx+0x28=[{ctx28['summary']}] bt={_short_backtrace(thread)}"
     )
     return False
 

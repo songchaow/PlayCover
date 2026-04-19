@@ -137,16 +137,21 @@ frame 3 这条路径时 HOK-013 预置的 stub 会被真 writer 覆盖；HOK-013
    `build/hok-016c27-materialize-trace.json` 先把 create-table fail
    收紧成：failing helper state 下，`0x100122f54` 的 materialization
    vcall 直接返回 0。随后 `build/hok-016c27-materialize-vcall-trace-v3.json`
-   又进一步证实：failing hit 与 2 次 success hit 共用同一个
+   证实：failing hit 与 2 次 success hit 共用同一个
    `x8(target)=0x10432a068`、同一个 `x0=0x10e16ded8` 与相同
-   `helper_slot10raw`；当前真正未闭合的点已改写成：为什么这同一 target
-   会在 success tuple（`x21=0x10aa5264a`、
-   `x1="../../../NGR/Content/Paks/1/1.db"`）返回 nonzero，却在 natural
-   failing tuple（`x21=0x10aa4678c`、`x1="/Users/..."`）返回 0，随后
-   空值被回写到 `x21/helper+0x18`，再落入 `err=9` provider 合成
-   `0x9000b`。`0x100122f98` 同时还是 success / fail 两支的 join point，
-   解读时必须用 `x30` 区分路径。详细寄存器与逐指令证据见
-   `HOK-016-appendix-C27.md`。
+   `helper_slot10raw`。最新 `build/hok-016c27-materialize-target-trace-v1.json`
+   又把问题继续收紧成：这同一 target 在 success / fail 两边都共用
+   `entry → post-helper1 → check1 → post-helper2 → check2 →
+   0x10432a17c/0x10432a1c8` 这段前缀，但 success tuple
+   （`x21=0x10aa5264a`、`x1="../../../NGR/Content/Paks/1/1.db"`）会继续进
+   `0x10432a2c8/0x10432a2e0`，natural failing tuple
+   （`x21=0x10aa4678c`、`x1="/Users/..."`）却会改走 `0x10432a224`，随后
+   caller 仍在 `0x100122f58` 拿到 `x0=0` 并把空值回写到
+   `x21/helper+0x18`，再落入 `err=9` provider 合成 `0x9000b`。此外两边在
+   `0x10432a10c` / `0x10432a17c` 的状态也已稳定分开：success 为
+   `x22=0x21 → 0x3`，natural fail 为 `x22=0x31 → 0x4`。`0x100122f98`
+   同时还是 success / fail 两支的 join point，解读时必须用 `x30` 区分
+   路径。详细寄存器与逐指令证据见 `HOK-016-appendix-C27.md`。
 
 ### 当前根因链（骨架版）
 
@@ -191,13 +196,15 @@ direct-writer 调用链见 `HOK-016-appendix-C27.md`。
      把 `ctx+0x38` 初始化成 0，最后被迫走硬编码 `w3=0` 的 `bb73c`；
    - (c) `0x10012595c → 0x1001148b8 → ... → 0x100122f20..0x100122f60`
      这条更深层 callee 链里，为什么**同一个** `0x100122f54`
-     materializer target `0x10432a068` + 相同 `x0=0x10e16ded8`，会在
-     success hit（`x21=0x10aa5264a`、
-     `x1="../../../NGR/Content/Paks/1/1.db"`）返回 nonzero，却在
-     natural failing hit（`x21=0x10aa4678c`、`x1="/Users/..."`）返回 0，
-     并经 `mov x21,x0` / `str x0,[x19,#0x18]` 把 `x21/helper+0x18`
-     一起压空，再走 `err=9` provider 合成 `(9 << 16) | 0xb = 0x9000b`
-     写回 caller err slot。
+     materializer target `0x10432a068` 在 shared prefix
+     `entry → post-helper1 → check1 → post-helper2 → check2 →
+     0x10432a17c/0x10432a1c8` 之后，会把 success tuple
+     （`x21=0x10aa5264a`、`x1="../../../NGR/Content/Paks/1/1.db"`）送进
+     `0x10432a2c8/0x10432a2e0`，却把 natural failing tuple
+     （`x21=0x10aa4678c`、`x1="/Users/..."`）送进 `0x10432a224`，并最终让
+     caller 在 `0x100122f58` 收到 `x0=0`、再经 `mov x21,x0` /
+     `str x0,[x19,#0x18]` 把 `x21/helper+0x18` 一起压空，写回
+     `0x9000b`。
 2. **C.5**：若 C.2.7 能给出可重复的 child-registration API 签名或完
    整对象构造路径，PlayTools constructor 里按同样签名补齐。**最小侵
    入修法。**

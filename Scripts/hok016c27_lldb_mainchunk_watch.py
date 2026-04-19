@@ -793,6 +793,113 @@ def snapshot_ba940_override_alloc_post_on_hit(frame, bp_loc, internal_dict):
     return False
 
 
+def snapshot_ba940_override_result_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    x0 = _reg_u64(frame, "x0")
+    x19 = _reg_u64(frame, "x19")
+    x20 = _reg_u64(frame, "x20")
+    x21 = _reg_u64(frame, "x21")
+    x22 = _reg_u64(frame, "x22")
+    x30 = _reg_u64(frame, "x30")
+    sp = _reg_u64(frame, "sp")
+    ctx40 = _read_u64(process, x19 + 0x40) if x19 > 0x100000000 else None
+    ctx40_dump = _hex_dump(_read_bytes(process, ctx40, 0x20)) if ctx40 and ctx40 > 0x100000000 else "<nil>"
+    sp3c = _read_u32(process, sp + 0x3C) if sp else None
+
+    print(
+        f"[hok016c27-ba940-override-ret] pc=0x{frame.GetPC():x} x0=0x{x0:x} w0=0x{(x0 & 0xffffffff):x} "
+        f"x19(ctx)=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x} "
+        f"ctx+0x40=0x{(ctx40 or 0):x} sp+0x3c=0x{(sp3c or 0):x} ctx40raw={ctx40_dump}"
+        + f" bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_bb73c_entry_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    x0 = _reg_u64(frame, "x0")
+    x1 = _reg_u64(frame, "x1")
+    x2 = _reg_u64(frame, "x2")
+    x3 = _reg_u64(frame, "x3")
+    x30 = _reg_u64(frame, "x30")
+    key = _decode_pascal_string(process, x1)
+    arg0_dump = _hex_dump(_read_bytes(process, x0, 0x20)) if x0 > 0x100000000 else "<nil>"
+
+    print(
+        f"[hok016c27-bb73c-entry] pc=0x{frame.GetPC():x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} "
+        f"w3=0x{(x3 & 0xffffffff):x} x30(lr)=0x{x30:x} x1Decoded=[{key['summary']}] arg0raw={arg0_dump}"
+        + f" bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_ba940_wrapper_return_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    x0 = _reg_u64(frame, "x0")
+    x19 = _reg_u64(frame, "x19")
+    x20 = _reg_u64(frame, "x20")
+    x21 = _reg_u64(frame, "x21")
+    x22 = _reg_u64(frame, "x22")
+    x30 = _reg_u64(frame, "x30")
+    ret_dump = _hex_dump(_read_bytes(process, x0, 0x40)) if x0 > 0x100000000 else "<nil>"
+    ret_plus28 = _hex_dump(_read_bytes(process, x0 + 0x28, 0x20)) if x0 > 0x100000000 else "<nil>"
+
+    print(
+        f"[hok016c27-ba940-wrapper-ret] pc=0x{frame.GetPC():x} x0(ret)=0x{x0:x} x19(ctx)=0x{x19:x} x20=0x{x20:x} "
+        f"x21=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x}{_object_contract_extra(process, x0, 'ret') if x0 > 0x100000000 else ''} "
+        f"retRaw40={ret_dump} ret+0x28[32]={ret_plus28}"
+        + f" bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_c5a38_pair_write_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    x19 = _reg_u64(frame, "x19")
+    x20 = _reg_u64(frame, "x20")
+    x30 = _reg_u64(frame, "x30")
+    if x30 != 0x1001BAFF8:
+        return False
+
+    pair0 = _read_u64(process, x19 + 0x40) if x19 > 0x100000000 else None
+    pair1 = _read_u64(process, x19 + 0x48) if x19 > 0x100000000 else None
+    pair_dump = _hex_dump(_read_bytes(process, x19 + 0x40, 0x20)) if x19 > 0x100000000 else "<nil>"
+
+    print(
+        f"[hok016c27-c5a38-pair] pc=0x{frame.GetPC():x} x19(obj)=0x{x19:x} x20(src)=0x{x20:x} x30(lr)=0x{x30:x} "
+        f"pair0=0x{(pair0 or 0):x} pair1=0x{(pair1 or 0):x} pairRaw={pair_dump}"
+        + f" bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_bb844_entry_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    x0 = _reg_u64(frame, "x0")
+    x1 = _reg_u64(frame, "x1")
+    x30 = _reg_u64(frame, "x30")
+    wrapper_dump = _hex_dump(_read_bytes(process, x0, 0x40)) if x0 > 0x100000000 else "<nil>"
+    entry_slot0 = _read_u64(process, x1) if x1 > 0x100000000 else None
+    entry_slot1 = _read_u64(process, x1 + 0x8) if x1 > 0x100000000 else None
+
+    print(
+        f"[hok016c27-bb844-entry] pc=0x{frame.GetPC():x} x0(wrapper)=0x{x0:x} x1(entry)=0x{x1:x} x30(lr)=0x{x30:x} "
+        f"entry.slot0=0x{(entry_slot0 or 0):x} entry.slot1=0x{(entry_slot1 or 0):x} wrapperRaw40={wrapper_dump}"
+        + f" bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
 def snapshot_ba940_override_slot_write_on_hit(frame, bp_loc, internal_dict):
     thread = frame.GetThread()
     process = thread.GetProcess()

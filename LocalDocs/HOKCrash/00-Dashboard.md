@@ -153,24 +153,28 @@
   - 再往里加 `0x1001be550` 的 probe 后，second-gate 的 failure shape 继续被拆开：
     第一轮 (`flag=0`, `LR = 0x10432dfc8`) 时，`0x1001be584` 处 `x0=0`，即
     writer path 触发前 subtree 里**连目标 payload object 都不存在**。
-  - 针对 `0x1001ba940` 再补 `ctx+0x40` store 后与 `target.slot1` store 后 probe
-    （产物 `build/hok-016c4-force-storage-ready-override-post.json`）后，当前口径进一步更正：
-    `0x1001bae5c` **确实**会先把 nonzero 临时 override candidate 写进 `ctx+0x40`
-    （`0x1001bae70` 处实测 `ctx+0x40 = 0x15a991210`），说明 candidate 不是从头没进
-    context；但到 `0x1001bb010` 前 `ctx+0x40` 又回到 `0`。
-  - 同一 run 在 `0x1001bb014` 处实测：`str x22, [x8, #0x8]` **真的执行**，
-    `ctx+0xa0 = 0x15aacf0c0` 这份 final entry 的 `slot1` 从 `0` 变成 `0x124834450`，
-    且 `slot1 == x22`。也就是说，旧结论“override slot 从未写入 final entry”已经被证伪。
-  - 但 `0x1001be584(flag=1)` 随后拿到的正是 `0x124834450` 这个 override object；
-    它的 raw dump 首 qword 回指 final entry `0x15aacf0c0`，第二 qword 仍为 `0`，且
-    `0x1001be5cc` 处 `child0/child1` 都还是 `0`。也就是说，当前真正未闭合的
-    contract 已不再是 final entry 的 `slot1`，而是 **被写进 `slot1` 的 override object
-    自身仍是个未完成 wrapper / hollow object**。
-  - 这把 active failure 再收紧为：`ba940` 路径里 **context candidate 已出现、final
-    entry 的 override slot 也已写入，但中间发生了 candidate 清空 / 重建**；当前下一步
-    要追的是 `0x1001bae70 .. 0x1001bb010` 之间谁把 `ctx+0x40` 清回 `0`，以及
-    `0x1001bb844` / 相邻 helper 为什么最终产出的是 `0x124834450` 这种
-    `backref-to-entry + null-child` 的 override wrapper。
+  - 针对 `0x1001ba940` 再补 wrapper-shape probe（产物
+    `build/hok-016c4-force-storage-ready-wrapper-shape.json`）后，当前口径再收紧：
+    `0x1001bae8c` 处首轮 `bl 0x1001a53a0(..., w3=1)` **返回 0**，但这时
+    `ctx+0x40` 已经是 nonzero candidate（本轮实测 `0x139f19bd0`）。也就是说，
+    “candidate 进入 context”与“首轮 override contract 成功”并不是同一件事。
+  - 随后的 fallback 并不是把这份 `ctx+0x40` candidate 原地改造成 final wrapper，
+    而是在 `0x1001bafc0` 调 `0x1001bb73c(x0=0x13d82ee00, x1="1", x2=1, x3=0)`
+    **重新造了一份对象**；live probe 直接抓到 `w3 = 0`，而静态反汇编表明
+    `0x1001bb73c` 只有在 `x3 != 0` 时才会走 `0x1001bc970` 那条补 child / payload
+    的路径。
+  - `0x1001bafc4` 处 `bb73c` 返回对象已经是 hollow wrapper 形状：首 qword / 第二
+    qword 都还是 `0`，`+0x48 = 0`、`+0x50 = -1`；随后 `0x1001bb844` 入口前的 raw dump
+    与 `0x1001bb010` / `0x1001be584(flag=1)` 处看到的对象完全同形。
+  - `0x1001bb844` 的静态反汇编 + live entry probe 进一步证实：它只做
+    `str x19, [x20]`，也就是给 wrapper 写回 `entry` backref；**不会**补 child/payload。
+    因而，最终写进 `slot1` 的 `backref-to-entry + null-child` hollow wrapper 不是
+    “`ctx+0x40` candidate 被谁清空 / 重建” 的问题，而是 fallback `bb73c(..., 0)`
+    本身就只产出这种骨架对象。
+  - 这把 active failure 再收紧为：当前真正要解释的是 **为什么首轮
+    `0x1001a53a0(..., 1)` 在 candidate 已入 `ctx+0x40` 后仍返回 0，以及为什么后续
+    fallback 只走 `0x1001bb73c(..., 0)` / 跳过 `0x1001bc970`，最终只能得到
+    `backref-to-entry + null-child` 的 wrapper**。
 
    - 但无 watchpoint 的双 checkpoint run 也表明：即便这组 force 已把当前一轮
      readiness B 顶开，进程后续仍会重新落回旧 failure sink `0x108878124`
@@ -182,10 +186,10 @@
 - **修复路线（优先级最高 → 最低；按 HOK-016-C.2.7 当前证据重排）**：
   1. `HOK-016-C.2.7`（**当前主线**）：继续拆 `ba940` / second-gate 这条
      **override object 成形链**。当前优先回答两件事：
-     (a) `0x1001bae70 .. 0x1001bb010` 之间究竟是谁把 `ctx+0x40` 里的
-     nonzero candidate 清回 `0`；
-     (b) `0x1001bb844` / 相邻 helper 为什么最终只产出
-     `backref-to-entry + null-child` 的 hollow override wrapper。
+     (a) 为什么首轮 `0x1001a53a0(..., 1)` 在 candidate 已写入 `ctx+0x40` 后仍返回 0；
+     (b) 为什么后续 fallback 只会走 `0x1001bb73c(..., 0)`，从而跳过
+     `0x1001bc970` child/payload 路径并稳定产出 `backref-to-entry + null-child`
+     的 hollow override wrapper。
      同时保留对 natural run 前置条件的追踪：继续沿
      `0x1001bd464 → 0x1001ba50c → 0x1001a5014 → storage.vtable[0x18] → 0x10012bb7c`
      解释 `0x9000b` / null table 的来源，并对
@@ -361,28 +365,30 @@
     plist 行为未变；HOK-010 self-heal 仍是改 settings 的正确入口。
   - 候选 E 磁盘备份仍在 `build/hok-007b-backups/*.bin`，日常不 apply。
 
-- **当前主线**：`HOK-016-C.2.7`——继续把 **override candidate → final entry
-  slot1 → second-gate payload** 这条链钉死。当前已知：natural run 的 active
+- **当前主线**：`HOK-016-C.2.7`——继续把 **首轮 override 失败 → fallback wrapper
+  成形 → second-gate payload miss** 这条链钉死。当前已知：natural run 的 active
   failure 已收紧到 `0x10012bb7c` null table + `storage+0x30 = 0x9000b`；dual-force
   诊断 run 则进一步证明 dormant writer path 不仅会真实写当前 tracked
-  `mainChunk+0x60`，而且 `ba940` 路径里 nonzero override candidate 也确实短暂
-  进入过 `ctx+0x40`，final entry 的 `slot1` 也真的被写成了 override object。
-  目标状态不变：`launch-events.jsonl` 里 `hok014_ngr_alert_suppressed`
-  事件**真正归零**；进程 `RSS ≥ 800MB` / 线程数 ≥ 20 / 窗口在主屏内 /
-  `%CPU` 持续 ≥ 5%。
+  `mainChunk+0x60`，而且 `ba940` 首轮 `0x1001a53a0(..., 1)` 虽然已把 nonzero
+  candidate 写进 `ctx+0x40`，却仍返回 0；随后 fallback `0x1001bb73c(..., 0)`
+  单独新造出一份最终写进 `slot1` 的 hollow wrapper，`0x1001bb844` 只负责给它补
+  `entry` backref。目标状态不变：`launch-events.jsonl` 里
+  `hok014_ngr_alert_suppressed` 事件**真正归零**；进程 `RSS ≥ 800MB` /
+  线程数 ≥ 20 / 窗口在主屏内 / `%CPU` 持续 ≥ 5%。
 
 - **当前卡点**：当前未闭合的 contract 已不再是“`mainChunk+0x60` 从头到尾没写”
-  或“final entry 的 `slot1` 没写进去”，而是 **`ba940` 中段发生了 candidate
-  清空 / 重建，最终写进 `slot1` 的 override object 仍是个
+  或“final entry 的 `slot1` 没写进去”，而是 **为什么首轮
+  `0x1001a53a0(..., 1)` 在 candidate 已进入 `ctx+0x40` 后仍失败，以及为什么后续
+  fallback 固定走 `0x1001bb73c(..., 0)` / 跳过 `0x1001bc970`，最终只得到
   `backref-to-entry + null-child` 的 hollow wrapper**。换句话说，当前 second-gate
   `0x10017faa0 -> 0x1001be550(flag=1)` 看到的对象已经来自 final entry 的真实
   override slot，但它自身仍缺 child/payload 语义，所以返回值继续被压成 0。
 
 - **下一步默认规划**：
-  1. `HOK-016-C.2.7`：优先补 `ba940` / `0x1001bb844` 一带的 live trace，直接回答：
-     (a) `0x1001bae70 .. 0x1001bb010` 之间谁把 `ctx+0x40` 清回 `0`；
-     (b) 谁把临时 candidate 改写成最终写入 `slot1` 的 override wrapper；
-     (c) 为什么该 wrapper 到 `0x1001be550(flag=1)` 仍只有 backref、没有 child。
+  1. `HOK-016-C.2.7`：优先补 `ba940` / `0x1001bb73c` / `0x1001bb844` 一带的 live trace，直接回答：
+     (a) 首轮 `0x1001a53a0(..., 1)` 为什么在 `ctx+0x40` 已拿到 candidate 后仍返回 0；
+     (b) fallback 为什么固定以 `w3 = 0` 调 `0x1001bb73c`，从而跳过 `0x1001bc970` 的 child/payload 路径；
+     (c) 当前 natural run 里要满足什么额外前置条件，才能不再落回这份 hollow wrapper。
   2. 并行保留对 natural run 前置条件的追踪：继续沿
      `0x1001bd464 -> 0x1001ba50c -> 0x1001a5014 -> storage.vtable[0x18](0x1001b3d0c)
      -> 0x10012bb7c` 解释 `0x9000b` / null table 的来源；同时围绕
@@ -498,7 +504,7 @@
 | HOK-016-C.2.4 | DONE | 新增 `Scripts/hok016c24_ngr_readinessB_inner_args.py` + `Scripts/hok016c24_lldb_inner_probes.py`，分三轮实验（v2/v3/v4-5）在 `0x10432dd98` / `0x10017f184` / `0x10017f3c8` 装 ~30 个 Python callback BP。结论：**真正失败点是 `0x10017f184` 内 `bl 0x1001cd114(rootB=0x10e184b18, "main", 1)` 返回 0**——rootB 是空红黑树（sentinel 自指），没人注册过 key `"main"` 这个 chunk 名。先前 Dashboard "`0x10432dd98 → 0x10017f3c8`" 路径被证伪（f3c8 系列 BP 跨 run 0 命中）；C.5 path fixup 路线也被间接证伪（lookup key 是内部 PascalString 而非 FString 路径）。证据 `build/hok-016c24-readinessB-inner-args.json` | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.2.5 | DONE | 新增 `Scripts/hok016c25_ngr_rootB_xref_scan.py` + `Scripts/hok016c25_ngr_rootB_watch.py`；复用 `hok016c2_ngr_sentinel_writer_scan.py --target-address 0x10e184b18` 做离线直接 store 扫描（1 真 writer `0x1001cf314` = static init 空容器初始化、1 误报）+ 94 个 adrp+add xref 入 x0 的 helper 消费方 + LLDB watchpoint 在 NGR main 入口装 modify watchpoint 捕获到 reporter 内部 insert。**该轮最初关于“insert 的 key 不是 `main`”的判断已被 C.2.6 推翻**；保留其对 rootB writer / insert-helper 归因的证据价值。证据 `build/hok-016c25-rootB-writer.json` + `build/hok-016c25-rootB-xrefs.json` + `build/hok-016c25-rootB-watch.json` | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.2.6 | DONE | 新增 `Scripts/hok016c26_ngr_main_literal_xref.py` + `Scripts/hok016c26_ngr_rootB_keys.py` + `Scripts/hok016c26_lldb_rootb_key_watch.py`。离线扫描结果：**没有**找到与 dyld `__init_offsets` 可达链相交的 PascalString `"main"` 预注册 literal/xref；运行期 key-watch 结果：reporter 内部第一次 insert 的 key **就是** `"main"`，`0x10017f184` 内 `bl 0x1001cd114(rootB, "main", 1)` 也**返回非零**。**关键改写**：问题不再是 rootB 缺 `"main"`，而是 `mainChunk` 对象的 `obj+0x60` 二级树为空，导致后续 `0x1001ba82c(mainChunk, "1")` 返回 0。证据 `build/hok-016c26-main-literal.json` + `build/hok-016c26-rootB-keys.json` | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.2.7 | TODO（当前主线） | 继续拆 `override candidate -> final entry slot1 -> second-gate payload` 这条链：当前 natural run 已收紧到 `0x10012bb7c` null table + `storage+0x30 = 0x9000b`；C.4 双 checkpoint (`0x1001a522c` + `0x1001a6958`) 已进一步证明 dormant path `0x10432dfdc -> 0x10017f3c8 -> 0x1001bc220 -> 0x1001bc970 -> 0x1001c6da4` 会在 dual-force 诊断条件下对当前 tracked `mainChunk+0x60` 发生真实写入（`trackedDst=true`）。最新 `ba940` post-store probe（`build/hok-016c4-force-storage-ready-override-post.json`）又进一步证实：`ctx+0x40` 曾短暂拿到 nonzero override candidate，但到 `0x1001bb010` 前已被清回 `0`；与此同时 `0x1001bb014` 处 final entry 的 `slot1` 已被真实写成 `0x124834450`。随后 second-gate `0x10017faa0 -> 0x1001be550(flag=1)` 拿到的正是这份 override object，但它仍表现为 `backref-to-entry + null-child` 的 hollow wrapper，因此第二轮 `0x10432df20 -> 0x10017f3c8` 继续失败并最终重返旧 sink。当前下一步优先拆 `0x1001bae70 .. 0x1001bb010` 之间的 candidate 清空 / 重建来源，以及 `0x1001bb844` / 相邻 helper 为什么最终只产出 hollow override wrapper | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.2.7 | TODO（当前主线） | 继续拆 `override candidate -> final entry slot1 -> second-gate payload` 这条链：当前 natural run 已收紧到 `0x10012bb7c` null table + `storage+0x30 = 0x9000b`；C.4 双 checkpoint (`0x1001a522c` + `0x1001a6958`) 已进一步证明 dormant path `0x10432dfdc -> 0x10017f3c8 -> 0x1001bc220 -> 0x1001bc970 -> 0x1001c6da4` 会在 dual-force 诊断条件下对当前 tracked `mainChunk+0x60` 发生真实写入（`trackedDst=true`）。最新 wrapper-shape probe（`build/hok-016c4-force-storage-ready-wrapper-shape.json`）又进一步证实：首轮 `0x1001a53a0(...,1)` 虽已把 nonzero candidate 写进 `ctx+0x40`，却仍返回 0；后续 fallback 固定以 `x3 = 0` 调 `0x1001bb73c`，产出的对象在 `0x1001bb844` 入口前就已经是 `backref-to-entry + null-child` 的 hollow wrapper，而 `0x1001bb844` 只负责补 `entry` backref。当前下一步优先拆首轮 `a53a0(...,1)` 的失败原因，以及 fallback 为什么稳定落在 `bb73c(...,0)` / 跳过 `0x1001bc970` | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.3 | DEFERRED | 终极野蛮方案：fishhook interpose `0x108878534` 直接返回 1，跳过整条 readiness B。稳定性风险极高，仅在 C.2.7/C.4/C.5 全部证伪时作为最后兜底 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.4 | TODO | 若 C.2.7 证实自然路径过深、对象形状又无法安全模拟，基于 PlayTools 现有 bundle-scoped runtime hook / direct patch 基建，对 second-gate / override object 闭合做诊断性强制成功验证；先确认"只要 `ba940 -> entry.slot1 -> 0x1001be550(flag=1)` 这层 contract 闭合，进程就能继续跑" | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.5 | TODO | 若 C.2.7 定位到可重复的 override payload 成形签名，或完整的 `mainChunk -> "1"` 注册 / 对象构造路径且可在 PlayTools constructor 中模拟，就按同样签名补齐；先前“只在 rootB 中模拟插入 `main` entry”已被 C.2.6 证伪为修得不够深 | `HOK-016-qts-fs-create-failed.md` |

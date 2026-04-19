@@ -921,24 +921,32 @@ C.2.6 已把根因改写成“`mainChunk` 空壳对象缺 `"1"` 子树”；C.2.
      - **第一轮**（`flag=0`）时，`0x1001be584` 处 `x0=0`。也就是 writer
        path 触发前，`mainChunk+0x60` subtree 里**连目标 entry/payload object
        都不存在**；
-    - **第二轮**（`flag=1`）时，`0x1001be584` 处已经能拿到非零 `x0=0x124834450`。
-      这轮新的 `ba940` 细化 probe（`build/hok-016c4-force-storage-ready-override-post.json`）
-      又把旧口径改写了一次：
-      - `0x1001bae58` 处，`ctx+0x40` 仍是 `0`；
-      - `0x1001bae70` 处，`ctx+0x40` **确实被写成** `0x15a991210`，说明 nonzero
-        override candidate 的确短暂进入过 context；
-      - 但到 `0x1001bb010` 前，`ctx+0x40` 已经又回到 `0`；与此同时
-        `ctx+0xa0 = 0x15aacf0c0`，`x22 = 0x124834450`；
-      - `0x1001bb014` 处实测 `str x22, [x8, #0x8]` **真的执行**，final entry
-        `0x15aacf0c0` 的 `slot1` 从 `0` 变成 `0x124834450`，且 `slot1 == x22`。
+   - **第二轮**（`flag=1`）时，`0x1001be584` 处已经能拿到非零 override object；
+     但这轮新增的 wrapper-shape probe（`build/hok-016c4-force-storage-ready-wrapper-shape.json`）
+     又把旧口径改写了一次：
+     - `0x1001bae8c` 处首轮 `bl 0x1001a53a0(..., w3=1)` **返回 0**；但同一时刻
+       `ctx+0x40` 已经是 nonzero candidate（本轮实测 `0x139f19bd0`），说明
+       “candidate 进入 context”与“首轮 override contract 成功”不是一回事。
+     - `0x1001bafc0` 随后的 fallback 实际调的是
+       `0x1001bb73c(x0=0x13d82ee00, x1="1", x2=1, x3=0)`；live entry probe 直接抓到
+       `w3 = 0`。而静态反汇编表明 `0x1001bb73c` 只有在 `x3 != 0` 时才会走
+       `0x1001bc970` 那条补 child / payload 的路径。
+     - `0x1001bafc4` 处 `bb73c` 返回对象已经是 hollow wrapper 形状：首 qword 与第二
+       qword 都还是 `0`，`+0x48 = 0`、`+0x50 = 0xffffffff`；随后
+       `0x1001bb844` 入口前的 raw dump 与 `0x1001bb010` / `0x1001be584(flag=1)`
+       处看到的对象保持同形。
+     - `0x1001bb844` 的静态反汇编 + live entry probe 进一步证实：它只做
+       `str x19, [x20]`，也就是把 final entry 回写到 wrapper 首 qword 里形成 backref；
+       **不会**补 child / payload。`0x1001bb014` 处 `str x22, [x8, #0x8]` 确实执行，
+       final entry 的 `slot1` 也确实从 `0` 变成了这份 wrapper。
 
-      也就是说，第二轮失败**已经不再是**“final entry 的 override slot 没写进去”。
-      真正失败的是：写进 `slot1` 的这份 override object `0x124834450` 自身仍然是个
-      hollow wrapper——它的 raw dump 首 qword 回指 final entry `0x15aacf0c0`，第二
-      qword 仍为 `0`，而 `0x1001be5cc` 处 `child0/child1` 也都是 `0`。换句话说，
-      `flag=1` gate 看到的不是“缺少 override slot”，而是 **override slot 已存在，
-      但里面挂的是一份 `backref-to-entry + null-child` 的未完成对象**；
-      `0x1001be550` 因而继续把 return 压回 `0`。
+     也就是说，第二轮失败**已经不再是**“final entry 的 override slot 没写进去”，
+     甚至也不再主要是“谁把 `ctx+0x40` 清回了 0”。真正失败的是：首轮
+     `0x1001a53a0(..., 1)` 已拿到 candidate 却仍返回 0，随后 fallback 固定走
+     `0x1001bb73c(..., 0)`，因此最终写进 `slot1` 的对象天生就是一份
+     `backref-to-entry + null-child` 的 hollow wrapper；`0x1001be550(flag=1)`
+     看到它时自然继续把 return 压回 `0`。
+
 
     也就是说，两轮 `0x10017faa0` gate **都没有成功**，只是当前 callback 停在
     `mov x0, x19` 之前，不能把旧 `x0` 误当成真实 return value。把这个口径修正后，
@@ -948,9 +956,13 @@ C.2.6 已把根因改写成“`mainChunk` 空壳对象缺 `"1"` 子树”；C.2.
     dual-force pushes first writer branch alive
       -> first 0x10017faa0 still returns 0, so first branch falls through to f3c8
       -> dormant path writes tracked mainChunk+0x60
-      -> ba940 first stores a nonzero override candidate into ctx+0x40, then later clears/rebuilds it
-      -> ba940 finally writes entry.slot1 = 0x124834450
-      -> second 0x10017faa0 / 0x1001be550(flag=1) reads that same 0x124834450 object
+      -> ba940 first stores a nonzero override candidate into ctx+0x40
+      -> but 0x1001a53a0(..., 1) still returns 0, so the flow falls into fallback
+      -> fallback calls 0x1001bb73c(..., "1", 1, 0)
+      -> because x3 == 0, bb73c skips 0x1001bc970 and returns a hollow wrapper
+      -> 0x1001bb844 only patches entry backref into that wrapper
+      -> ba940 finally writes entry.slot1 = hollowWrapper
+      -> second 0x10017faa0 / 0x1001be550(flag=1) reads that same wrapper
       -> but the written object is only a backref-to-entry + null-child wrapper, so second gate still returns 0
       -> sibling branch then calls 0x10017f3c8 again
       -> second f3c8 invocation returns 0
@@ -959,10 +971,9 @@ C.2.6 已把根因改写成“`mainChunk` 空壳对象缺 `"1"` 子树”；C.2.
 
   这把主线目标进一步改写为两层：
 
-   1. 先解释 **`0x1001bae70 .. 0x1001bb010` 之间谁把 `ctx+0x40` 清回 `0`、以及
-      `0x1001bb844` / 相邻 helper 为什么最终产出 `0x124834450` 这种
-      `backref-to-entry + null-child` 的 override wrapper**，
-      因为这是当前唯一已经被实证证明会在 dual-force 之后继续阻断流程的下一个 gate；
+   1. 先解释 **为什么首轮 `0x1001a53a0(..., 1)` 在 candidate 已进入 `ctx+0x40`
+      后仍返回 0，以及为什么 fallback 固定以 `x3 = 0` 调 `0x1001bb73c`，从而跳过
+      `0x1001bc970` 并稳定产出 hollow wrapper**；
 
    2. 再继续收紧 natural run 为什么过不了 `storage success + ready` 以及更高层
       mount / registrar state 这组一项或多项 prerequisite。
@@ -1032,10 +1043,10 @@ HOK-016 的修复必须在 PlayTools 层 bundle-scoped、不动 NGR 二进制，
 0x10012bb7c` 的 create-table 失败链，继续解释 `0x9000b` / null table 的来源；
 同时围绕已被 dual-force 激活的 dormant writer path
 `0x10432dfdc -> 0x10017f3c8 -> 0x1001bc220 -> 0x1001bc970 -> 0x1001c6da4`
-优先补 `ba940` 中段 `0x1001bae70 .. 0x1001bb010` 的 state 变化——也就是
-谁把 `ctx+0x40` 清回 `0`、谁把临时 candidate 改写成最终写入 `slot1` 的
-`0x124834450` override wrapper，以及为什么 `0x1001be550(flag=1)` 看到它时仍只是一份
-`backref-to-entry + null-child` 的 hollow object；再回过头追自然激活前置条件）
+优先补 `ba940` / `0x1001bb73c` / `0x1001bb844` 一带的 state 变化——也就是
+为什么首轮 `0x1001a53a0(..., 1)` 在 candidate 已写入 `ctx+0x40` 后仍失败、为什么 fallback
+稳定以 `x3 = 0` 调 `0x1001bb73c` 并跳过 `0x1001bc970`，以及 natural run 里究竟缺了哪项前置条件
+才会不断落回这份 `backref-to-entry + null-child` 的 hollow object；再回过头追自然激活前置条件）
 → 若拿到可重复 child-registration / ready-state 契约则进 C.5；若只剩“复杂路径且无法安全伪造返回对象”
 则继续扩 C.4 的 bundle-scoped 诊断性强制成功验证 → C.3（最终兜底）→ C.6 降级（末选）。
 

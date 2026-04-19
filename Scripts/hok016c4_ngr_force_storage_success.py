@@ -48,6 +48,11 @@ BP_BC220_SLOT1_SOURCE = "0x1001bc45c"
 BP_BC970_STAGE = "0x1001bca40"
 BP_BA940_OVERRIDE_ALLOC = "0x1001bae58"
 BP_BA940_OVERRIDE_ALLOC_POST = "0x1001bae70"
+BP_BA940_OVERRIDE_RESULT = "0x1001bae8c"
+BP_BB73C_ENTRY = "0x1001bb73c"
+BP_BA940_WRAPPER_RETURN = "0x1001bafc4"
+BP_C5A38_PAIR_WRITE = "0x1001c5a98"
+BP_BB844_ENTRY = "0x1001bb844"
 BP_BA940_OVERRIDE_SLOT = "0x1001bb010"
 BP_BA940_OVERRIDE_SLOT_POST = "0x1001bb014"
 BP_WRITER_STORE = "0x1001c6e78"
@@ -199,6 +204,31 @@ def main() -> int:
                     "hok016c27_lldb_mainchunk_watch.snapshot_ba940_override_alloc_post_on_hit",
                 ),
                 (
+                    BP_BA940_OVERRIDE_RESULT,
+                    "hok016c4_ba940_override_result",
+                    "hok016c27_lldb_mainchunk_watch.snapshot_ba940_override_result_on_hit",
+                ),
+                (
+                    BP_BB73C_ENTRY,
+                    "hok016c4_bb73c_entry",
+                    "hok016c27_lldb_mainchunk_watch.snapshot_bb73c_entry_on_hit",
+                ),
+                (
+                    BP_BA940_WRAPPER_RETURN,
+                    "hok016c4_ba940_wrapper_return",
+                    "hok016c27_lldb_mainchunk_watch.snapshot_ba940_wrapper_return_on_hit",
+                ),
+                (
+                    BP_C5A38_PAIR_WRITE,
+                    "hok016c4_c5a38_pair_write",
+                    "hok016c27_lldb_mainchunk_watch.snapshot_c5a38_pair_write_on_hit",
+                ),
+                (
+                    BP_BB844_ENTRY,
+                    "hok016c4_bb844_entry",
+                    "hok016c27_lldb_mainchunk_watch.snapshot_bb844_entry_on_hit",
+                ),
+                (
                     BP_BA940_OVERRIDE_SLOT,
                     "hok016c4_ba940_override_slot",
                     "hok016c27_lldb_mainchunk_watch.snapshot_ba940_override_slot_write_on_hit",
@@ -268,6 +298,11 @@ def main() -> int:
         print(f"  bc970 stage          : {BP_BC970_STAGE}")
         print(f"  ba940 override alloc : {BP_BA940_OVERRIDE_ALLOC}")
         print(f"  ba940 override post  : {BP_BA940_OVERRIDE_ALLOC_POST}")
+        print(f"  ba940 override ret   : {BP_BA940_OVERRIDE_RESULT}")
+        print(f"  bb73c entry          : {BP_BB73C_ENTRY}")
+        print(f"  ba940 wrapper ret    : {BP_BA940_WRAPPER_RETURN}")
+        print(f"  c5a38 pair write     : {BP_C5A38_PAIR_WRITE}")
+        print(f"  bb844 entry          : {BP_BB844_ENTRY}")
         print(f"  ba940 override slot  : {BP_BA940_OVERRIDE_SLOT}")
         print(f"  ba940 override slot+ : {BP_BA940_OVERRIDE_SLOT_POST}")
         print(f"  writer store         : {BP_WRITER_STORE}")

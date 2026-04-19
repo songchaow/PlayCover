@@ -60,6 +60,11 @@ BP_CREATE_TABLE_IMPL_GATE_CALL = "0x10012502c"
 BP_CREATE_TABLE_IMPL_GATE_RET = "0x100125030"
 BP_CREATE_TABLE_IMPL_ERR9 = "0x100125334"
 BP_CREATE_TABLE_IMPL_ENTRY_BUILD = "0x10012581c"
+BP_CREATE_TABLE_IMPL_DEEP_CALL = "0x10012595c"
+BP_CREATE_TABLE_IMPL_DEEP_ENTRY = "0x1001148b8"
+BP_CREATE_TABLE_IMPL_DEEP_STAGE1 = "0x100114994"
+BP_CREATE_TABLE_IMPL_DEEP_STAGE2 = "0x1001142a4"
+BP_CREATE_TABLE_IMPL_ERR_DIRECT = "0x100122f98"
 BP_CREATE_TABLE_IMPL_FINAL_CHECK = "0x100125960"
 BP_CREATE_TABLE_IMPL_RETURN = "0x1001259c4"
 BP_STORAGE_AFTER_CREATE_TABLE = "0x1001b3df4"
@@ -175,6 +180,31 @@ def main() -> int:
             "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_entry_build_on_hit",
         ),
         (
+            BP_CREATE_TABLE_IMPL_DEEP_CALL,
+            "hok016c27_create_table_impl_deep_call",
+            "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_deep_call_on_hit",
+        ),
+        (
+            BP_CREATE_TABLE_IMPL_DEEP_ENTRY,
+            "hok016c27_create_table_impl_deep_entry",
+            "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_deep_entry_on_hit",
+        ),
+        (
+            BP_CREATE_TABLE_IMPL_DEEP_STAGE1,
+            "hok016c27_create_table_impl_deep_stage1",
+            "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_deep_stage1_on_hit",
+        ),
+        (
+            BP_CREATE_TABLE_IMPL_DEEP_STAGE2,
+            "hok016c27_create_table_impl_deep_stage2",
+            "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_deep_stage2_on_hit",
+        ),
+        (
+            BP_CREATE_TABLE_IMPL_ERR_DIRECT,
+            "hok016c27_create_table_impl_err_direct",
+            "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_err_direct_on_hit",
+        ),
+        (
             BP_CREATE_TABLE_IMPL_FINAL_CHECK,
             "hok016c27_create_table_impl_final_check",
             "hok016c27_lldb_mainchunk_watch.snapshot_create_table_impl_final_check_on_hit",
@@ -255,6 +285,9 @@ def main() -> int:
     print(f"  create-table gate   : {BP_CREATE_TABLE_IMPL_GATE_CALL}, {BP_CREATE_TABLE_IMPL_GATE_RET}")
     print(f"  create-table err=9  : {BP_CREATE_TABLE_IMPL_ERR9}")
     print(f"  create-table build  : {BP_CREATE_TABLE_IMPL_ENTRY_BUILD}")
+    print(f"  create-table deep   : {BP_CREATE_TABLE_IMPL_DEEP_CALL}, {BP_CREATE_TABLE_IMPL_DEEP_ENTRY}")
+    print(f"  create-table stages : {BP_CREATE_TABLE_IMPL_DEEP_STAGE1}, {BP_CREATE_TABLE_IMPL_DEEP_STAGE2}")
+    print(f"  err direct writer   : {BP_CREATE_TABLE_IMPL_ERR_DIRECT}")
     print(f"  create-table check  : {BP_CREATE_TABLE_IMPL_FINAL_CHECK}")
     print(f"  create-table return : {BP_CREATE_TABLE_IMPL_RETURN}")
     print(f"  storage table       : {BP_STORAGE_AFTER_CREATE_TABLE}")

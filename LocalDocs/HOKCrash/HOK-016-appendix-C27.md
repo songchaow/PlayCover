@@ -489,3 +489,40 @@ state 尚未就绪，而不是 key / candidate materialization 自身有误。**
   `0x100125960` 当成 direct writer，而要解释 `0x100122f98` 在什么前
   置状态下把 err slot 写成 `0x9000b`，以及这条链与 entry-build /
   registrar / schema state 缺口之间的对应关系。
+
+## 14. deep err-slot probe 继续把 “`0x100122f98` direct writer” 收紧成 “`0x100122f94` 真 store + `x21=0` post-store 判定”
+
+新增 `build/hok-016c27-deep-err-chain.json` 后，问题 (c) 又向下缩小了一步：
+
+- `0x10012595c` call-site 现场直接读到：`errSlot@sp+8 = 0x600003552130`，
+  同时 `x3 == errSlot`，`errValue = 0`。也就是说 create-table helper 在
+  进入深层 `0x1001148b8` 前，已经把 caller 的 err slot 作为**第三参数**传下去。
+- `0x1001148b8` entry 再次证实：`x3` 仍是同一 err slot，`x30 = 0x100125960`；
+  这把 error-code 的传播方向收紧成“`0x10012595c` 明确把 err slot 交给深层 helper”，
+  而不是后半段某个 cleanup 临时找回来的旁路状态。
+- 自然路径最终停在 `0x100122f98` 时，live 寄存器给出：`x20 == errSlot`、
+  `x21 = 0`、`*x0 = 9`、`x8 = 0x9000b`。配合新增的静态反汇编可见：
+
+  ```text
+  0x100122f84 bl  0x107c041e4
+  0x100122f88 ldr w8, [x0]
+  0x100122f8c mov w9, #0xb
+  0x100122f90 orr w8, w9, w8, lsl #16
+  0x100122f94 str w8, [x20]
+  0x100122f98 cmp x21, #0x0
+  0x100122f9c cset w0, ne
+  ```
+
+- 因而此前“`0x100122f98` direct writer”这句口径需要修正：
+  **真正把 `0x9000b` 写进 err slot 的是 `0x100122f94 str w8, [x20]`；
+  `0x100122f98` 只是紧随其后的 post-store compare。**
+- `0x9000b` 的组成也已明确：`0x107c041e4` 返回的 error descriptor 首 word
+  为 `9`，随后 `orr w8, #0xb, w8<<16` 合成 `(9 << 16) | 0xb = 0x9000b`。
+- 这把问题 (c) 从“为什么 `0x100122f98` 会写 `0x9000b`”进一步改写成：
+  **为什么这条 helper 在到达 `0x100122f84` 前已经让 `x21` 变成了 0，进而
+  落入 `err=9` provider，再把 `(err<<16)|0xb` 写回 caller err slot。**
+
+换句话说，当前需要继续解释的，不再是 `0x9000b` 的字面来源，而是
+`0x100122f20..0x100122f78` 这段内部 lookup / materialization 为什么会产出
+`x21 = 0`。只要这个前置条件继续不闭合，`0x100122f94` 就会稳定把 create-table
+压回 null table。

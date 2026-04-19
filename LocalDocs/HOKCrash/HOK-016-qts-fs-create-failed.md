@@ -132,11 +132,14 @@ frame 3 这条路径时 HOK-013 预置的 stub 会被真 writer 覆盖；HOK-013
    a5014 = 0。C.4 dual-force（storage success + ready/save-header
    success）证明 dormant writer path
    `0x10432dfdc → 0x10017f3c8 → 0x1001bc220 → 0x1001bc970 →
-   0x1001c6da4 → 0x1001c6e74` 会真实写 `mainChunk+0x60`；sibling
-   branch、hollow wrapper、`ba720` / OpenNodeStorage gate、以及
-   `0x9000b` 的 direct writer（`0x100122f98`，调用链
-   `0x10012595c → 0x1001148b8 → 0x100114994 → 0x1001142a4`）的详
-   细证据见 `HOK-016-appendix-C27.md`。
+   0x1001c6da4 → 0x1001c6e74` 会真实写 `mainChunk+0x60`；最新 deep
+   probe 继续把 `0x9000b` 收紧成：`0x10012595c` 已把 caller err slot
+   作为 `x3` 传入 `0x1001148b8`，真正的 store 是
+   `0x100122f94 str w8, [x20]`，而 `0x100122f98 cmp x21,#0` 只是
+   post-store compare；live 现场同时给出 `x20 == errSlot`、`x21 = 0`
+   与 `*x0 = 9`，说明 `0x9000b = (9 << 16) | 0xb`。sibling branch、
+   hollow wrapper、`ba720` / OpenNodeStorage gate、以及这条深层
+   err-slot 链的详细证据见 `HOK-016-appendix-C27.md`。
 
 ### 当前根因链（骨架版）
 
@@ -179,8 +182,9 @@ direct-writer 调用链见 `HOK-016-appendix-C27.md`。
      `0x1001a588c` / OpenNodeStorage gate 返回 0；
    - (b) 为什么 `0x10432dfdc` 这支 `ba720(key="1")` lookup 返回 0、
      把 `ctx+0x38` 初始化成 0，最后被迫走硬编码 `w3=0` 的 `bb73c`；
-   - (c) `0x10012595c → 0x1001148b8 → 0x100114994 → 0x1001142a4 →
-     0x100122f98` 这条更深层 callee 链为什么把 err slot 写成 `0x9000b`。
+   - (c) `0x10012595c → 0x1001148b8 → ... → 0x100122f94/0x100122f98`
+     这条更深层 callee 链里，为什么会先把 `x21` 压成 0，再走
+     `err=9` provider 合成 `(9 << 16) | 0xb = 0x9000b` 写回 caller err slot。
 2. **C.5**：若 C.2.7 能给出可重复的 child-registration API 签名或完
    整对象构造路径，PlayTools constructor 里按同样签名补齐。**最小侵
    入修法。**

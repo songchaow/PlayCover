@@ -155,11 +155,15 @@ HOK-016-C.2.7 的 live trace driver + LLDB helper。在 `0x10017f1dc`
 动态装 `mainChunk+0x60` watchpoint，并对 `0x1001bd448` /
 `0x1001ba82c` / `0x1001ba50c` / `0x1001a5014` / `0x10432e074` 采样；
 覆盖范围扩展到 storage method / create-table helper / entry-build
-branch / final-check / err=9 写点。在 gate-ret `0x100125030` 时会根
-据需要动态把 err slot watchpoint 装到 caller 传入的 err slot 上，
-`snapshot_err_slot_write_on_hit` 回调记录 `0x9000b` 的 direct writer
-PC + 回溯。产物 `build/hok-016c27-mainchunk-subtree-trace.json` /
-`build/hok-016c27-final-check-errslot-watch.json`。
+branch / `0x10012595c -> 0x1001148b8 -> 0x1001142a4 -> 0x100122f98`
+这条更深层 err-slot 链 / final-check / err=9 写点。在 gate-ret
+`0x100125030` 时会根据需要动态把 err slot watchpoint 装到 caller
+传入的 err slot 上；同时新增的 deep-chain breakpoint 会把
+`0x10012595c` 的入参、`0x1001148b8` 的 entry 实参、以及
+`0x100122f94/0x100122f98` 附近的 post-store 状态一起打出来，方便判
+断 `0x9000b` 是如何合成的。产物新增 `build/hok-016c27-deep-err-chain.json`
+（历史还保留 `build/hok-016c27-mainchunk-subtree-trace.json` /
+`build/hok-016c27-final-check-errslot-watch.json`）。
 
 ### `Scripts/hok016c4_ngr_force_storage_success.py`
 

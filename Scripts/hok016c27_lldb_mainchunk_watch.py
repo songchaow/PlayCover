@@ -202,6 +202,21 @@ def _object_contract_extra(process, obj_addr, label):
     )
 
 
+def _pointer_raw_extra(process, label, value, size=0x20):
+    if value <= 0x100000000:
+        return ""
+    return f" {label}raw={_hex_dump(_read_bytes(process, value, size))}"
+
+
+def _watched_err_slot_extra(process):
+    if _err_slot_watch_addr <= 0x100000000:
+        return " errWatch=<nil>"
+    return (
+        f" errWatch=0x{_err_slot_watch_addr:x}"
+        f" errValue=0x{(_read_u32(process, _err_slot_watch_addr) or 0):x}"
+    )
+
+
 def snapshot_rootb_lookup_on_hit(frame, bp_loc, internal_dict):
     thread = frame.GetThread()
     process = thread.GetProcess()
@@ -829,6 +844,144 @@ def snapshot_create_table_impl_final_check_on_hit(frame, bp_loc, internal_dict):
     print(
         f"[hok016c27-create-table-final-check] pc=0x{frame.GetPC():x} w0=0x{(x0 & 0xffffffff):x} x22=0x{x22:x} x26=0x{x26:x} x30(lr)=0x{x30:x} "
         f"errSlot=0x{(err_slot or 0):x} errValue=0x{(err_value or 0):x} bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_create_table_impl_deep_call_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    sp = _reg_u64(frame, "sp")
+    x0 = _reg_u64(frame, "x0")
+    x1 = _reg_u64(frame, "x1")
+    x2 = _reg_u64(frame, "x2")
+    x3 = _reg_u64(frame, "x3")
+    x22 = _reg_u64(frame, "x22")
+    x23 = _reg_u64(frame, "x23")
+    x26 = _reg_u64(frame, "x26")
+    x30 = _reg_u64(frame, "x30")
+    err_slot = _read_u64(process, sp + 0x8) if sp else None
+
+    print(
+        f"[hok016c27-create-table-deep-call] pc=0x{frame.GetPC():x} sp=0x{sp:x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} "
+        f"x22=0x{x22:x} x23=0x{x23:x} x26=0x{x26:x} x30(lr)=0x{x30:x} errSlot@sp+8=0x{(err_slot or 0):x}"
+        f"{_pointer_raw_extra(process, 'x0', x0)}{_pointer_raw_extra(process, 'x3', x3)}{_pointer_raw_extra(process, 'x22', x22)}"
+        f"{_watched_err_slot_extra(process)} bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_create_table_impl_deep_entry_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    sp = _reg_u64(frame, "sp")
+    x0 = _reg_u64(frame, "x0")
+    x1 = _reg_u64(frame, "x1")
+    x2 = _reg_u64(frame, "x2")
+    x3 = _reg_u64(frame, "x3")
+    x4 = _reg_u64(frame, "x4")
+    x5 = _reg_u64(frame, "x5")
+    x19 = _reg_u64(frame, "x19")
+    x20 = _reg_u64(frame, "x20")
+    x21 = _reg_u64(frame, "x21")
+    x22 = _reg_u64(frame, "x22")
+    x23 = _reg_u64(frame, "x23")
+    x30 = _reg_u64(frame, "x30")
+
+    print(
+        f"[hok016c27-create-table-deep-entry] pc=0x{frame.GetPC():x} sp=0x{sp:x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} x5=0x{x5:x} "
+        f"x19=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x23=0x{x23:x} x30(lr)=0x{x30:x}"
+        f"{_pointer_raw_extra(process, 'x0', x0)}{_pointer_raw_extra(process, 'x3', x3)}{_pointer_raw_extra(process, 'x5', x5)}"
+        f"{_watched_err_slot_extra(process)} bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_create_table_impl_deep_stage1_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    sp = _reg_u64(frame, "sp")
+    x0 = _reg_u64(frame, "x0")
+    x1 = _reg_u64(frame, "x1")
+    x2 = _reg_u64(frame, "x2")
+    x3 = _reg_u64(frame, "x3")
+    x4 = _reg_u64(frame, "x4")
+    x19 = _reg_u64(frame, "x19")
+    x20 = _reg_u64(frame, "x20")
+    x21 = _reg_u64(frame, "x21")
+    x22 = _reg_u64(frame, "x22")
+    x23 = _reg_u64(frame, "x23")
+    x24 = _reg_u64(frame, "x24")
+    x25 = _reg_u64(frame, "x25")
+    x30 = _reg_u64(frame, "x30")
+
+    print(
+        f"[hok016c27-create-table-deep-stage1] pc=0x{frame.GetPC():x} sp=0x{sp:x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} "
+        f"x19=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x23=0x{x23:x} x24=0x{x24:x} x25=0x{x25:x} x30(lr)=0x{x30:x}"
+        f"{_pointer_raw_extra(process, 'x0', x0)}{_pointer_raw_extra(process, 'x1', x1)}{_pointer_raw_extra(process, 'x3', x3)}"
+        f"{_watched_err_slot_extra(process)} bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_create_table_impl_deep_stage2_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    sp = _reg_u64(frame, "sp")
+    x0 = _reg_u64(frame, "x0")
+    x1 = _reg_u64(frame, "x1")
+    x2 = _reg_u64(frame, "x2")
+    x3 = _reg_u64(frame, "x3")
+    x4 = _reg_u64(frame, "x4")
+    x19 = _reg_u64(frame, "x19")
+    x20 = _reg_u64(frame, "x20")
+    x21 = _reg_u64(frame, "x21")
+    x22 = _reg_u64(frame, "x22")
+    x23 = _reg_u64(frame, "x23")
+    x30 = _reg_u64(frame, "x30")
+
+    print(
+        f"[hok016c27-create-table-deep-stage2] pc=0x{frame.GetPC():x} sp=0x{sp:x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} "
+        f"x19=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x23=0x{x23:x} x30(lr)=0x{x30:x}"
+        f"{_pointer_raw_extra(process, 'x0', x0)}{_pointer_raw_extra(process, 'x1', x1)}{_pointer_raw_extra(process, 'x3', x3)}"
+        f"{_watched_err_slot_extra(process)} bt={_short_backtrace(thread)}"
+    )
+    return False
+
+
+def snapshot_create_table_impl_err_direct_on_hit(frame, bp_loc, internal_dict):
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+
+    sp = _reg_u64(frame, "sp")
+    x0 = _reg_u64(frame, "x0")
+    x1 = _reg_u64(frame, "x1")
+    x2 = _reg_u64(frame, "x2")
+    x3 = _reg_u64(frame, "x3")
+    x4 = _reg_u64(frame, "x4")
+    x5 = _reg_u64(frame, "x5")
+    x19 = _reg_u64(frame, "x19")
+    x20 = _reg_u64(frame, "x20")
+    x21 = _reg_u64(frame, "x21")
+    x22 = _reg_u64(frame, "x22")
+    x23 = _reg_u64(frame, "x23")
+    x24 = _reg_u64(frame, "x24")
+    x25 = _reg_u64(frame, "x25")
+    x26 = _reg_u64(frame, "x26")
+    x30 = _reg_u64(frame, "x30")
+
+    print(
+        f"[hok016c27-create-table-err-direct] pc=0x{frame.GetPC():x} sp=0x{sp:x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} x5=0x{x5:x} "
+        f"x19=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x23=0x{x23:x} x24=0x{x24:x} x25=0x{x25:x} x26=0x{x26:x} x30(lr)=0x{x30:x}"
+        f" x0==errWatch={str(bool(_err_slot_watch_addr and x0 == _err_slot_watch_addr)).lower()}"
+        f" x1==errWatch={str(bool(_err_slot_watch_addr and x1 == _err_slot_watch_addr)).lower()}"
+        f" x3==errWatch={str(bool(_err_slot_watch_addr and x3 == _err_slot_watch_addr)).lower()}"
+        f"{_pointer_raw_extra(process, 'x0', x0)}{_pointer_raw_extra(process, 'x1', x1)}{_pointer_raw_extra(process, 'x3', x3)}"
+        f"{_watched_err_slot_extra(process)} bt={_short_backtrace(thread)}"
     )
     return False
 

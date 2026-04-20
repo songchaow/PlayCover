@@ -66,16 +66,18 @@
 - dual-force 诊断（storage success + ready/save-header success）已证明
   `0x10432dfdc → 0x10017f3c8 → 0x1001bc220 → 0x1001bc970 → 0x1001c6da4`
   是真实存在的 dormant writer path，只在双 checkpoint 顶开之后才激活。
-- 最新一轮 materialization target trace（`build/hok-016c27-materialize-target-trace-v1.json`）
-  已把差异再收紧一步：2 次 success hit 与 natural failing hit 在同一
-  target `0x10432a068` 内共用 `entry → post-helper1 → check1 →
-  post-helper2 → check2 → 0x10432a17c/0x10432a1c8` 这段前缀；真正的首个
-  target-side 分叉发生在后续 fanout——success 继续走
-  `0x10432a2c8 → 0x10432a2e0`，natural failing hit 则改走 fail-only
-  `0x10432a224`，随后 caller 仍在 `0x100122f58` 收到 `x0=0`。此外两边在
-  `0x10432a10c` / `0x10432a17c` 的状态也稳定分开：success 为
-  `x22=0x21 → 0x3`，natural fail 为 `x22=0x31 → 0x4`。详细 checkpoint
-  证据下沉到 `HOK-016-appendix-C27.md`。
+- 最新一轮 materialization target trace
+  （`build/hok-016c27-materialize-target-trace-v2.json`；与
+  `...-v1.json` / `...-v1-recheck2.json` 复现一致）已把差异再收紧一步：
+  2 次 success hit 与 natural failing hit 在同一 target `0x10432a068`
+  内共用 `entry → post-helper1 → check1 → post-helper2 → check2 →
+  0x10432a17c/0x10432a1c8` 这段前缀，而且在当前观测到的 success / fail
+  hit 里，`branch-1c8` 之后的 post-`1c8` pair 已收敛为同一组
+  `x21=0x10b248b8c` / `x22=0x10b308bee`；真正稳定分开的只剩 pre-`1c8`
+  state：success 为 `x22=0x21 → 0x3` 并继续走 `0x10432a2c8 → 0x10432a2e0`，
+  natural fail 为 `x22=0x31 → 0x4` 并改走 `0x10432a224`，随后 caller
+  仍在 `0x100122f58` 收到 `x0=0`。详细 checkpoint 证据下沉到
+  `HOK-016-appendix-C27.md`。
 
 > 完整的 sibling branch 分析、寄存器快照、BP 清单、descriptor/blob
 > contract 拆解都在 `HOK-016-qts-fs-create-failed.md` 与
@@ -91,13 +93,15 @@
      `0x1001bb73c`，产出 hollow override wrapper；
    - (c) `0x10012595c → 0x1001148b8 → ... → 0x100122f20..0x100122f60`
      这条更深层 callee 链里，为什么**同一个** `0x100122f54`
-     materializer target `0x10432a068` 在 shared prefix
-     `entry → post-helper1 → check1 → post-helper2 → check2 →
-     0x10432a17c/0x10432a1c8` 之后，会把 success tuple
-     （`x21=0x10aa5264a`、`x1="../../../NGR/Content/Paks/1/1.db"`）送进
-     `0x10432a2c8/0x10432a2e0`，却把 natural failing tuple
-     （`x21=0x10aa4678c`、`x1="/Users/..."`）送进 `0x10432a224`，并最终让
-     caller 在 `0x100122f58` 收到 `x0=0`、再经 `mov x21,x0` /
+     materializer target `0x10432a068` 在当前观测到的 natural / success
+     run 里，已经在 `branch-1c8` 之后收敛到同一组 post-`1c8` pair
+     （`x21=0x10b248b8c`、`x22=0x10b308bee`），却仍会因 pre-`1c8` 的
+     entry tuple / helper state 差异——success 为
+     `entryX2=0x10aa5264a`、`entryX1="../../../NGR/Content/Paks/1/1.db"`、
+     `x22=0x21 → 0x3`，natural fail 为 `entryX2=0x10aa4678c`、
+     `entryX1="/Users/..."`、`x22=0x31 → 0x4`——分别走向
+     `0x10432a2c8/0x10432a2e0` 与 `0x10432a224`，并最终让 caller 在
+     `0x100122f58` 收到 `x0=0`、再经 `mov x21,x0` /
      `str x0,[x19,#0x18]` 把 `x21/helper+0x18` 一起压空，落到
      `err=9` provider 合成 `(9 << 16) | 0xb = 0x9000b`。
 
@@ -155,15 +159,15 @@ descriptor/blob gate；而是两层剩余问题：
    `0x1001a588c`，并在 gate1 立刻失败；
 2. `0x10012595c → 0x1001148b8 → ... → 0x100122f20..0x100122f60`
    这条更深层 callee 链里，为什么同一个 `0x100122f54`
-   materializer target `0x10432a068` 在 shared prefix
-   `entry → post-helper1 → check1 → post-helper2 → check2 →
-   0x10432a17c/0x10432a1c8` 之后，会把 success tuple
-   （`x21=0x10aa5264a`、`x1="../../../NGR/Content/Paks/1/1.db"`、
-   `helper+0x10=0x60000353d420`）送进 `0x10432a2c8/0x10432a2e0`，却把
-   natural failing tuple（`x21=0x10aa4678c`、`x1="/Users/..."`、
-   `helper+0x10=0x600003548460`）送进 `0x10432a224`，随后 caller 在
-   `0x100122f58` 仍拿到 `x0=0`，再把 `x21/helper+0x18` 一起压空并合成
-   `0x9000b`。
+   materializer target `0x10432a068` 在当前 observed run 里，已经在
+   `branch-1c8` 之后收敛到同一组 post-`1c8` pair
+   （`x21=0x10b248b8c`、`x22=0x10b308bee`），却仍会因 pre-`1c8` 的
+   entry tuple / helper state 差异——success 为 `entryX2=0x10aa5264a`、
+   `entryX1="../../../NGR/Content/Paks/1/1.db"`、`x22=0x21 → 0x3`，natural
+   fail 为 `entryX2=0x10aa4678c`、`entryX1="/Users/..."`、
+   `x22=0x31 → 0x4`——分别走向 `0x10432a2c8/0x10432a2e0` 与
+   `0x10432a224`，随后 caller 在 `0x100122f58` 仍拿到 `x0=0`，再把
+   `x21/helper+0x18` 一起压空并合成 `0x9000b`。
 
 ### 下一步默认规划
 
@@ -173,12 +177,16 @@ descriptor/blob gate；而是两层剩余问题：
    (0x1001b3d0c) → 0x10012bb7c → 0x10012595c → 0x1001148b8 →
    0x100122f54` 解释 descriptor/blob contract 与
    `0x9000b` / null table 的对应关系，重点比较同一 materializer target
-   `0x10432a068` 在 shared prefix 之后，success tuple
-   （`x21=0x10aa5264a`、`x1="../../../NGR/Content/Paks/1/1.db"`）为何进入
-   `0x10432a2c8/0x10432a2e0`，而 failing tuple（`x21=0x10aa4678c`、
-   `x1="/Users/..."`）为何改走 `0x10432a224`；
-   同时围绕 `0x10432dfdc → 0x10017f3c8 → 0x1001bc220 → 0x1001bc970 →
-   0x1001c6da4` 拆 dormant writer path 的自然激活条件。
+   `0x10432a068` 在 shared prefix / `branch-17c` / `branch-1c8` 之前，
+   为什么 success entry tuple（`entryX2=0x10aa5264a`、
+   `entryX1="../../../NGR/Content/Paks/1/1.db"`、`x22=0x21 → 0x3`）会继续
+   进入 `0x10432a2c8/0x10432a2e0`，而 failing tuple
+   （`entryX2=0x10aa4678c`、`entryX1="/Users/..."`、`x22=0x31 → 0x4`）
+   会改走 `0x10432a224`；当前 observed run 里 `branch-1c8` 之后的
+   post-`1c8` pair（`x21=0x10b248b8c`、`x22=0x10b308bee`）已一致，不再把
+   “different post-`1c8` object pair”作为默认假设。同时围绕
+   `0x10432dfdc → 0x10017f3c8 → 0x1001bc220 → 0x1001bc970 → 0x1001c6da4`
+   拆 dormant writer path 的自然激活条件。
 3. 若 C.2.7 能定位可重复的对象成形签名 / 完整 `mainChunk → "1"` 注册
    路径，进入 `HOK-016-C.5`：在 PlayTools constructor 里补齐该契约。
 4. 若 C.2.7 证实路径过深、对象形状无法安全模拟，进入 `HOK-016-C.4`：
@@ -290,7 +298,7 @@ descriptor/blob gate；而是两层剩余问题：
 | HOK-016-C.2.4 | DONE | 收紧到 `0x10017f184` 的 lookup 失败 | `HOK-016-appendix-C23-C24.md` |
 | HOK-016-C.2.5 | DONE | 补齐 rootB writer / insert-helper 的侧证 | `HOK-016-appendix-C25-C26.md` |
 | HOK-016-C.2.6 | DONE | 更正为 `mainChunk` 的 `"1"` 子树缺失，不是 `"main"` 缺失 | `HOK-016-appendix-C25-C26.md` |
-| HOK-016-C.2.7 | TODO（当前主线） | 拆 sibling branch + `0x9000b` 合成契约：解释 `0x10432df30` 为什么在 OpenNodeStorage gate 失败、`0x10432dfdc` 为什么提前进 `ba720` 让 lookup 返 0，以及 failing helper state 下 `0x100122f54` 的 materialization vcall 为什么返回 0，最终把 `x21/helper+0x18` 压空并走到 `0x9000b` | `HOK-016-appendix-C27.md` |
+| HOK-016-C.2.7 | TODO（当前主线） | 拆 sibling branch + `0x9000b` 合成契约：解释 `0x10432df30` 为什么在 OpenNodeStorage gate 失败、`0x10432dfdc` 为什么提前进 `ba720` 让 lookup 返 0，以及同一 `0x10432a068` 在 observed natural / success run 里已收敛到同一 post-`1c8` pair（`x21=0x10b248b8c` / `x22=0x10b308bee`）后，为什么仍会因 pre-`1c8` entry tuple / helper state 差异分到 `0x10432a224` vs `0x10432a2c8/0x10432a2e0`，最终把 `x21/helper+0x18` 压空并走到 `0x9000b` | `HOK-016-appendix-C27.md` |
 | HOK-016-C.3 | DEFERRED | 终极野蛮方案：fishhook interpose `0x108878534` 直接返回 1，仅作最后兜底 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.4 | TODO | 若 C.2.7 证明自然路径过深或对象形状不可安全模拟，再做诊断性强制成功验证 | `HOK-016-appendix-C27.md` |
 | HOK-016-C.5 | TODO | 若 C.2.7 找到可重复的对象成形签名 / 注册路径，就在 PlayTools constructor 中按同样签名补齐 | `HOK-016-qts-fs-create-failed.md` |

@@ -553,37 +553,42 @@ post-store compare。新增 `build/hok-016c27-materialize-trace.json` 后，这�
 只要这个返回值继续为 0，`0x100122f58/0x100122f5c` 就会稳定把 `x21` 与
 `helper+0x18` 一起压空，随后 `0x100122f94` 继续把 create-table 压回 null table。
 
-### 14.b target-side checkpoint trace：shared prefix 已闭合，首个分叉点落在 `0x10432a1c8` 之后
+### 14.b target-side checkpoint trace：`v2` 复验表明 observed post-`1c8` pair 已一致，剩余分叉收紧到 pre-`1c8` state
 
-新增 `build/hok-016c27-materialize-target-trace-v1.json` 后，`0x10432a068`
-内部的 target-side 现场也闭合了：
+`build/hok-016c27-materialize-target-trace-v1.json` 先把 `0x10432a068`
+内部的 target-side 现场闭合；最新
+`build/hok-016c27-materialize-target-trace-v2.json` 再加上中间的
+`build/hok-016c27-materialize-target-trace-v1-recheck2.json`，把这条口径
+从“首个 control-flow 分叉在 `0x10432a1c8` 之后”继续收紧成“observed
+post-`1c8` pointer pair 其实一致”：
 
-- 共抓到 **3** 组命中同一 target `0x10432a068` 的完整 checkpoint 序列：
-  **2** 组 success、**1** 组 natural fail。三组命中都共用同一个 entry tuple：
-  `x0=0x10e16ded8`，`helper.vtable=0x10c80ae20`，`helper_slot10raw` 同源；
-  因而 failing hit 仍然**不是**命中另一颗 fail-only materializer。
+- 三轮自然 run 都复现同一组 **3-call** 形状：**2** 组 success、**1** 组
+  natural fail，而且都命中同一 target `0x10432a068`。三组命中仍共用
+  `x0=0x10e16ded8` 与同源 `helper.vtable=0x10c80ae20` /
+  `helper_slot10raw`；因而 failing hit 仍然**不是**命中另一颗 fail-only
+  materializer。
 - 这三组命中在 target 内都走过同一段 shared prefix：
   `entry(0x10432a068) → post-helper1(0x10432a090) → check1(0x10432a098/
   0x10432a09c) → post-helper2(0x10432a10c) → check2(0x10432a114/
   0x10432a118) → branch-17c(0x10432a17c) → branch-1c8(0x10432a1c8)`。
-- 共享前缀里的状态已经足够说明“差异并非只在 caller 外层”：success hit 在
-  `0x10432a10c` 读到 `x22=0x21`、到 `0x10432a17c` 变成 `x22=0x3`；natural
-  failing hit 在同两处则稳定是 `x22=0x31`、`x22=0x4`。也就是说，同一
-  target 在第二个 helper 之后就已经把两组 tuple 编成不同的内部状态位。
-- 真正的首个 control-flow 分叉点出现在 `0x10432a1c8` 之后：两组 success
-  都继续命中 `0x10432a2c8 -> 0x10432a2e0 -> 0x10432a31c`；natural failing
-  hit 则**不会**再进 `0x10432a2c8/0x10432a2e0`，而是改走 fail-only
-  `0x10432a224 -> 0x10432a31c`。本轮 `0x10432a33c` 为 0 hit。
-- success / fail 的输入 tuple 与 backtrace 仍和 v3 一致：success 两组分别
-  来自 `0x100114170` 与
-  `0x100114684 -> 0x100118cfc -> 0x100118b18 -> 0x10011967c ->
-  0x10019731c -> 0x1001a5e58 -> 0x1001a55c8`，都带
-  `x21=0x10aa5264a`、`x1="../../../NGR/Content/Paks/1/1.db"`；natural failing
-  hit 仍来自 `0x1001142a4 -> 0x100114994 -> 0x100125960 -> 0x1001b3df4 ->
-  0x1001b3d50 -> 0x1001a522c -> 0x1001bd888`，带
-  `x21=0x10aa4678c`、`x1="/Users/..."`。
-- 因而问题 (c) 现在需要再收紧一步：要解释的已不再只是“同一个
-  `0x10432a068` 为什么一成一败”，而是**为什么 natural tuple 会在 shared
-  prefix 之后被送进 `0x10432a224`，而 success tuple 会继续进入
-  `0x10432a2c8/0x10432a2e0`**。`0x100122f58/0x100122f5c` 仍只是 caller 侧的
-  空值回写点；真正新的 target-side 分叉已经定位到 `0x10432a1c8` 之后。
+- shared prefix 里的 state split 也在多轮里稳定复现：success 两组在
+  `0x10432a10c` / `0x10432a17c` 都是 `x22=0x21 → 0x3`；natural failing
+  hit 在同两处则稳定是 `x22=0x31 → 0x4`。success / fail 的输入 tuple 与
+  backtrace 也保持旧口径：success 仍来自 `entryX2=0x10aa5264a`、
+  `entryX1="../../../NGR/Content/Paks/1/1.db"` 那两条链；natural fail
+  仍来自 `entryX2=0x10aa4678c`、`entryX1="/Users/..."` 那条链。
+- `v2` 复验把分叉口径再往前推了一步：在当前**观测到的** success / fail
+  hit 里，`branch-1c8` 之后的 post-`1c8` pair 已经收敛——两边都读到同一组
+  `x21=0x10b248b8c`、`x22=0x10b308bee`。两组 success 继续命中
+  `0x10432a2c8 -> 0x10432a2e0 -> 0x10432a31c`；natural failing hit 则改走
+  `0x10432a224 -> 0x10432a31c`。`0x10432a33c` 仍为 0 hit。
+- 因而更准确的提法不再是“success / fail 在 `0x10432a1c8` 之后拿到了不同
+  的 object pair”，而是：**在当前观测到的
+  `v1` / `v1-recheck2` / `v2` 自然 run 里，post-`1c8` object pair 相同；
+  真正剩下要解释的是 pre-`1c8` entry tuple / helper state 为什么已足以把
+  同一 pair 分流到 `0x10432a224` vs `0x10432a2c8/0x10432a2e0`。**
+- `0x100122f58/0x100122f5c` 仍只是 caller 侧的空值回写点；
+  `materialize-ret` / `materialize-result` / `err-direct` 也保持旧结论：
+  success 返 non-null 并写回 `helper+0x18`，fail 返 0、`helper+0x18`
+  保持 0，并继续由 `x30=0x100122f88` / `errValue=0x9000b` 闭合
+  err-provider。

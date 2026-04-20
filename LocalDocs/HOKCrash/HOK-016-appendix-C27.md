@@ -359,7 +359,14 @@ dual-force pushes first writer branch alive
 
 这说明：**`ba720` miss 不再像是“ctx producer 自己构造错了另一份 header”**；
 目前可见的分水岭是 **调用 `ba720` 时 subtree root 是否已经挂进
-`mainChunk+0x60`**。也就是说，问题 (b) 的表述需要收紧成：
+`mainChunk+0x60`**。再结合本轮对 `0x1001ba720..0x1001ba7c0` 的静态反汇编，
+`ba720` 本体也已经闭合：它先把 incoming header / key 搬到 ctx，唯一的
+child 获取就是 `0x1001ba7a4 bl 0x1001ba82c`，随后立刻在
+`0x1001ba7b4 stur x1, [x22,#-0x8]` 把 lookup return 原样写进 `ctx+0x38`；
+`0x1001ba7b8..0x1001ba7bc` 之后只剩 `0x1001c5a38` 的配对处理，没有第二个
+producer。也就是说，`0x10432dfdc` 这支的 `ctx+0x38 = 0` 不是 later
+overwrite，也不是 `ba940` 选错 wrapper，而是 `ba720` 在 subtree 仍为空时对
+`lookup2(mainChunk, "1")` 的**直接快照**。问题 (b) 的表述因此进一步收紧成：
 
 - 为什么 `0x10432dfdc` 这支总是在 `mainChunk+0x60` 仍为 0 时先触发
   `ba720(key="1")`，从而让 lookup 返回 0、把 `ctx+0x38` 初始化成 0；
@@ -384,14 +391,28 @@ entry-side 证据也补齐了：
 这把 branch A 的口径从“只看 return-site 推断 package state 差异”升级成了：
 **`0x10432df30` 这支确实在 entry-side 带着 `pkg+0xa8 = 3 / pkg+0x110 = 5`
 进入 `0x1001a588c`，并在 gate1 立刻失败；问题更像是 package / storage
-state 尚未就绪，而不是 key / candidate materialization 自身有误。**
+state 尚未就绪，而不是 key / candidate materialization 自身有误。** 结合本轮
+对 `0x1001a588c..0x1001a5c60` 的静态反汇编，这个“OpenNodeStorage gate”也已
+经能拆成更具体的两层：
+
+- `0x1001a58b8..0x1001a58c0` 先直接检查 `pkg+0x10`；若 `>= 2`，会落入
+  `0x1001a5aa8` 的 `unknown E_QTSF_OPEN_PACKAGE_MODE` 路径；
+- 若 mode 合法，`0x1001a58e4..0x1001a5998` 会构造/复用 `pkg+0xb0`
+  nodeStorage，并通过其 vtable `slot+0x20` 做真正的 open-node；
+  `0x1001a55b8` 看到的 `w0=0` 只是这整串子流程的汇总返回值。
+
+因此，问题 (a) 的下一跳不该再泛化成“继续看 `pkg+0xa8 / pkg+0x110`
+有没有差异”，而应该直接 live capture branch A 进入 `0x1001a588c` 时的
+`pkg+0x10` 与 `pkg+0xb0->0x30`，判断它究竟死在 invalid open-mode，还是死在
+nodeStorage open errcode。
 
 这把主线目标进一步改写为两层（Dashboard 会据此更新问题 (a)(b)）：
 
 1. 解释 **为什么 `0x10432df30` 这支里的首轮 `0x1001a53a0(..., 1)`
-   会在 `0x1001a588c` / OpenNodeStorage gate 上返回 0，以及为什么
-   `0x10432dfdc` 这支会在 `mainChunk+0x60` 仍为 0 的时刻先触发
-   `ba720(key="1")`**；
+   会在 `0x1001a588c` / OpenNodeStorage gate 上返回 0——具体是
+   `pkg+0x10` invalid mode 还是 `pkg+0xb0->0x30` 这层 nodeStorage errcode——
+   以及为什么 `0x10432dfdc` 这支会在 `mainChunk+0x60` 仍为 0 的时刻先触发
+   `ba720(key="1")`，从而把 lookup return 直接快照进 `ctx+0x38`**；
 2. 继续收紧 natural run 为什么过不了 `storage success + ready` 以及
    更高层 mount / registrar state 这组一项或多项 prerequisite。
 
@@ -582,11 +603,24 @@ post-`1c8` pointer pair 其实一致”：
   `x21=0x10b248b8c`、`x22=0x10b308bee`。两组 success 继续命中
   `0x10432a2c8 -> 0x10432a2e0 -> 0x10432a31c`；natural failing hit 则改走
   `0x10432a224 -> 0x10432a31c`。`0x10432a33c` 仍为 0 hit。
+- 再结合这轮对 `0x10432a068..0x10432a31c` 的静态反汇编，`target-side`
+  语义也更明确了：`0x10432a17c..0x10432a224` 并不是在“挑不同 object pair”，
+  而是在用 `x22=0x10b308bee` 这张 case-fold table，对两份临时 UTF-16 buffer
+  与两组固定 literal（`x23` 与 `x23+0xca6`）做逐字符比较；`0x10432a224`
+  之后还会继续走 `0x10432a238` 的第二轮 compare，再在
+  `0x10432a2c8` success path 与 `0x10432a3e0/0x10432a580` 的 fail / late-gate
+  之间分流。
 - 因而更准确的提法不再是“success / fail 在 `0x10432a1c8` 之后拿到了不同
   的 object pair”，而是：**在当前观测到的
   `v1` / `v1-recheck2` / `v2` 自然 run 里，post-`1c8` object pair 相同；
   真正剩下要解释的是 pre-`1c8` entry tuple / helper state 为什么已足以把
   同一 pair 分流到 `0x10432a224` vs `0x10432a2c8/0x10432a2e0`。**
+- 这也解释了为什么“post-`1c8` pair 相同”仍不足以推出相同返回值：真正驱动
+  分流的是 compare accumulators / selected buffer state，而不是 `x21/x22`
+  这对指针本身。当前 probe 集只打到了 `0x10432a224 / 0x10432a2c8 /
+  0x10432a2e0 / 0x10432a31c`，还没有把 `0x10432a238 / 0x10432a3e0 /
+  0x10432a580` 钉住；所以下一轮 C.2.7 的最小增量 probe 应该补这 3 个
+  checkpoint，而不是再泛化地扩大 pre-`1c8` register dump。
 - `0x100122f58/0x100122f5c` 仍只是 caller 侧的空值回写点；
   `materialize-ret` / `materialize-result` / `err-direct` 也保持旧结论：
   success 返 non-null 并写回 `helper+0x18`，fail 返 0、`helper+0x18`

@@ -155,9 +155,14 @@ frame 3 这条路径时 HOK-013 预置的 stub 会被真 writer 覆盖；HOK-013
    （`entryX2=0x10aa4678c`、`entryX1="/Users/..."`）则呈现
    `x22=0x31 → 0x4` 并改走 `0x10432a224`，随后 caller 仍在
    `0x100122f58` 拿到 `x0=0` 并把空值回写到 `x21/helper+0x18`，再落入
-   `err=9` provider 合成 `0x9000b`。`0x100122f98` 同时还是 success /
-   fail 两支的 join point，解读时必须用 `x30` 区分路径。详细寄存器与
-   逐指令证据见 `HOK-016-appendix-C27.md`。
+   `err=9` provider 合成 `0x9000b`。本轮补的静态反汇编又把三处未闭合点
+   再收紧一步：`0x1001ba720` 只是把 `lookup2(mainChunk, "1")` 的返回值直接
+   快照进 `ctx+0x38`；`0x1001a588c` 的下一跳缺口落到 `pkg+0x10` 与
+   `pkg+0xb0->0x30`；`0x10432a068` 在 `0x10432a224` 之后还会继续走
+   `0x10432a238` compare ladder，并在 `0x10432a3e0/0x10432a580` 与
+   `0x10432a2c8` 之间分流。`0x100122f98` 同时还是 success / fail 两支的
+   join point，解读时必须用 `x30` 区分路径。详细寄存器与逐指令证据见
+   `HOK-016-appendix-C27.md`。
 
 ### 当前根因链（骨架版）
 
@@ -197,9 +202,11 @@ direct-writer 调用链见 `HOK-016-appendix-C27.md`。
 
 1. **C.2.7（当前主线）**：继续 live trace，聚焦回答三件事：
    - (a) 为什么 `0x10432df30` 这支首轮 `0x1001a53a0(..., 1)` 会在
-     `0x1001a588c` / OpenNodeStorage gate 返回 0；
-   - (b) 为什么 `0x10432dfdc` 这支 `ba720(key="1")` lookup 返回 0、
-     把 `ctx+0x38` 初始化成 0，最后被迫走硬编码 `w3=0` 的 `bb73c`；
+     `0x1001a588c` / OpenNodeStorage gate 返回 0——具体是 `pkg+0x10`
+     invalid mode 还是 `pkg+0xb0->0x30` 这层 nodeStorage errcode；
+   - (b) 为什么 `0x10432dfdc` 这支会在 dormant writer 之前先触发
+     `ba720(key="1")`；`ba720` 本体已经静态坐实为
+     `lookup2(mainChunk, "1") -> ctx+0x38` 的直接快照，而不是 later overwrite；
    - (c) `0x10012595c → 0x1001148b8 → ... → 0x100122f20..0x100122f60`
      这条更深层 callee 链里，为什么**同一个** `0x100122f54`
      materializer target `0x10432a068` 在当前观测到的 natural / success
@@ -209,7 +216,8 @@ direct-writer 调用链见 `HOK-016-appendix-C27.md`。
      `entryX2=0x10aa5264a`、`entryX1="../../../NGR/Content/Paks/1/1.db"`、
      `x22=0x21 → 0x3`，natural fail 为 `entryX2=0x10aa4678c`、
      `entryX1="/Users/..."`、`x22=0x31 → 0x4`——分别走向
-     `0x10432a2c8/0x10432a2e0` 与 `0x10432a224`，并最终让 caller 在
+     `0x10432a2c8/0x10432a2e0` 与 `0x10432a224`（以及其后尚未钉住的
+     `0x10432a238 / 0x10432a3e0 / 0x10432a580` tail），并最终让 caller 在
      `0x100122f58` 收到 `x0=0`、再经 `mov x21,x0` /
      `str x0,[x19,#0x18]` 把 `x21/helper+0x18` 一起压空，写回 `0x9000b`。
 2. **C.5**：若 C.2.7 能给出可重复的 child-registration API 签名或完

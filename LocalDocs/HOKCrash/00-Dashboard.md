@@ -78,6 +78,11 @@
   natural fail 为 `x22=0x31 → 0x4` 并改走 `0x10432a224`，随后 caller
   仍在 `0x100122f58` 收到 `x0=0`。详细 checkpoint 证据下沉到
   `HOK-016-appendix-C27.md`。
+- 本轮补的静态反汇编把剩余口径再收紧成三点：`0x1001ba720` 只是把
+  `lookup2(mainChunk, "1")` 的返回值直接快照进 `ctx+0x38`；
+  `0x1001a588c` 的下一跳缺口落到 `pkg+0x10` 与 `pkg+0xb0->0x30`；
+  `0x10432a068` 在 `0x10432a224` 之后还会继续走
+  `0x10432a238 / 0x10432a3e0 / 0x10432a580` 这组当前未打点的 tail。
 
 > 完整的 sibling branch 分析、寄存器快照、BP 清单、descriptor/blob
 > contract 拆解都在 `HOK-016-qts-fs-create-failed.md` 与
@@ -88,9 +93,12 @@
 1. **`HOK-016-C.2.7`（当前主线）**：继续 live trace，并行回答三件事：
    - (a) 为什么 `0x10432df30` 这支首轮 `0x1001a53a0(..., 1)` 会带着
      `pkg+0xa8=3 / pkg+0x110=5` 卡在 `0x1001a588c` / OpenNodeStorage gate；
-   - (b) 为什么 `0x10432dfdc` 这支会在 `mainChunk+0x60` 仍为 0 的时刻先
-     触发 `ba720(key="1")`，让 lookup 返回 0 并走硬编码 `w3=0` 的
-     `0x1001bb73c`，产出 hollow override wrapper；
+     下一轮需要直接区分它究竟死在 `pkg+0x10` invalid mode，还是死在
+     `pkg+0xb0->0x30` 这层 nodeStorage errcode；
+   - (b) 为什么 `0x10432dfdc` 这支会在 dormant writer 之前先触发
+     `ba720(key="1")`；`ba720` 本体已经静态坐实为
+     `lookup2(mainChunk, "1") -> ctx+0x38` 的直接快照，因此剩余问题是时序而
+     不是 producer 正确性；
    - (c) `0x10012595c → 0x1001148b8 → ... → 0x100122f20..0x100122f60`
      这条更深层 callee 链里，为什么**同一个** `0x100122f54`
      materializer target `0x10432a068` 在当前观测到的 natural / success
@@ -100,7 +108,8 @@
      `entryX2=0x10aa5264a`、`entryX1="../../../NGR/Content/Paks/1/1.db"`、
      `x22=0x21 → 0x3`，natural fail 为 `entryX2=0x10aa4678c`、
      `entryX1="/Users/..."`、`x22=0x31 → 0x4`——分别走向
-     `0x10432a2c8/0x10432a2e0` 与 `0x10432a224`，并最终让 caller 在
+     `0x10432a2c8/0x10432a2e0` 与 `0x10432a224`（以及其后尚未钉住的
+     `0x10432a238 / 0x10432a3e0 / 0x10432a580` tail），并最终让 caller 在
      `0x100122f58` 收到 `x0=0`、再经 `mov x21,x0` /
      `str x0,[x19,#0x18]` 把 `x21/helper+0x18` 一起压空，落到
      `err=9` provider 合成 `(9 << 16) | 0xb = 0x9000b`。
@@ -156,7 +165,8 @@ entry `slot1` 没写进去"，也不是 create-table 的**第一层**
 descriptor/blob gate；而是两层剩余问题：
 
 1. 为什么 `0x10432df30` 这支会带着 `pkg+0xa8=3 / pkg+0x110=5` 进入
-   `0x1001a588c`，并在 gate1 立刻失败；
+   `0x1001a588c`，并在 gate1 立刻失败——具体是 `pkg+0x10` invalid mode，
+   还是 `pkg+0xb0->0x30` 这层 nodeStorage errcode；
 2. `0x10012595c → 0x1001148b8 → ... → 0x100122f20..0x100122f60`
    这条更深层 callee 链里，为什么同一个 `0x100122f54`
    materializer target `0x10432a068` 在当前 observed run 里，已经在
@@ -166,13 +176,19 @@ descriptor/blob gate；而是两层剩余问题：
    `entryX1="../../../NGR/Content/Paks/1/1.db"`、`x22=0x21 → 0x3`，natural
    fail 为 `entryX2=0x10aa4678c`、`entryX1="/Users/..."`、
    `x22=0x31 → 0x4`——分别走向 `0x10432a2c8/0x10432a2e0` 与
-   `0x10432a224`，随后 caller 在 `0x100122f58` 仍拿到 `x0=0`，再把
-   `x21/helper+0x18` 一起压空并合成 `0x9000b`。
+   `0x10432a224`，但当前 probe 还没把 `0x10432a238 / 0x10432a3e0 /
+   0x10432a580` 这组 tail 钉住；随后 caller 在 `0x100122f58` 仍拿到
+   `x0=0`，再把 `x21/helper+0x18` 一起压空并合成 `0x9000b`。
 
 ### 下一步默认规划
 
-1. 继续 `HOK-016-C.2.7` live trace，优先回答上面两层问题。
-2. 并行保留对 natural run 前置条件的追踪：继续沿
+1. 继续 `HOK-016-C.2.7` live trace，先补 branch A 在 `0x1001a588c` 的
+   `pkg+0x10` / `pkg+0xb0->0x30` 观测，区分 invalid mode vs nodeStorage
+   err path。
+2. 在 natural run 的 materializer target 上补
+   `0x10432a238 / 0x10432a3e0 / 0x10432a580` 三个 checkpoint，闭合
+   `0x10432a224` 之后的真实 fail tail。
+3. 并行保留对 natural run 前置条件的追踪：继续沿
    `0x1001bd464 → 0x1001ba50c → 0x1001a5014 → storage.vtable[0x18]
    (0x1001b3d0c) → 0x10012bb7c → 0x10012595c → 0x1001148b8 →
    0x100122f54` 解释 descriptor/blob contract 与
@@ -187,16 +203,16 @@ descriptor/blob gate；而是两层剩余问题：
    “different post-`1c8` object pair”作为默认假设。同时围绕
    `0x10432dfdc → 0x10017f3c8 → 0x1001bc220 → 0x1001bc970 → 0x1001c6da4`
    拆 dormant writer path 的自然激活条件。
-3. 若 C.2.7 能定位可重复的对象成形签名 / 完整 `mainChunk → "1"` 注册
+4. 若 C.2.7 能定位可重复的对象成形签名 / 完整 `mainChunk → "1"` 注册
    路径，进入 `HOK-016-C.5`：在 PlayTools constructor 里补齐该契约。
-4. 若 C.2.7 证实路径过深、对象形状无法安全模拟，进入 `HOK-016-C.4`：
+5. 若 C.2.7 证实路径过深、对象形状无法安全模拟，进入 `HOK-016-C.4`：
    做 bundle-scoped 诊断性强制成功验证，先确认一旦契约闭合进程是否
    就能继续跑。
-5. `HOK-016-C.3` 保留作为最后兜底。
-6. `HOK-016-D` live 验证标准：`hok014_ngr_alert_suppressed = 0` +
+6. `HOK-016-C.3` 保留作为最后兜底。
+7. `HOK-016-D` live 验证标准：`hok014_ngr_alert_suppressed = 0` +
    `%CPU/RSS/线程/窗口` 活跃度达标 + 无新 `NGR-*.ips`。
-7. 只有 HOK-016 闭合，才把 HOK-014 正式降级为冷备安全网。
-8. 闭合后再做 `HOK-008`：把"revert 候选 E → `rootWorkDir=1` → 启动 →
+8. 只有 HOK-016 闭合，才把 HOK-014 正式降级为冷备安全网。
+9. 闭合后再做 `HOK-008`：把"revert 候选 E → `rootWorkDir=1` → 启动 →
    证据采集 → pass 判定"固化成单脚本。
 
 ## 构建与验证

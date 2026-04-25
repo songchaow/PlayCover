@@ -44,66 +44,44 @@
 
 ### 当前主线一句话
 
-`PDT-001`：验证路径差异假设。分两步：先通过静态分析提取 materializer
-> 内部 compare literal（PDT-001-A），再设计**上层路径重定向实验**
->（PDT-001-B）——不依赖 vtable hook（被 `__DATA_CONST` 阻塞），改在
-> `NSBundle` / `NSSearchPathForDirectoriesInDomains` / UE4 `FPaths::` 等
-> 更上层 API 做 swizzle，让 NGR 在调用 materializer 前生成 iOS 风格路径，
-> 观察 `entryX1` 是否随之收敛到 success 分支。
+`PDT-003`：关闭路径差异 trial。`PDT-001-A` 已完成静态 literal 提取，证据显示
+> `0x10432a068` compare ladder 使用的固定 UTF-16 literal 为 `"r"` 与 `"rb"`，
+> 不含路径前缀、目录层级、文件名或数据库片段；因此本 trial 不再推进
+> `PDT-001-B` / `PDT-002`，结论回流到 `HOK-016-C.2.7` 主线。
 
 ### 当前状态摘要
 
-- **假设来源**：HOK-016-C.2.7 materialization trace 中，success / fail 的
-> 关键 pre-`1c8` 差异是 `entryX1` 的字符串内容：
->   - success 链：`entryX1="../../../NGR/Content/Paks/1/1.db"`（相对路径，iOS 风格）
->   - fail 链：`entryX1="/Users/songdogwang/..."`（绝对路径，macOS 风格）
-> - 同一 materializer target `0x10432a068` 在 post-`1c8` pair 相同的情况下，
->   仅因 pre-`1c8` entry tuple 差异就分流到 `0x10432a2c8/0x10432a2e0`(success)
->   vs `0x10432a224`(fail)。C27 §14 已指出：真正驱动分流的是"compare
->   accumulators / selected buffer state"，而不是 `x21/x22` 这对指针本身。
-> - 已知 materializer 内部在做"逐字符比较"（对临时 UTF-16 buffer 与固定
->   literal 做 case-fold compare）。路径字符串前缀不同，极可能改变 compare
->   accumulator 的演进，从而导致不同的分支决策。
-> - **重要新发现**：HOK-016-C.5 的代码（`PlayLoader.m`）**已经在尝试修复路径
->   差异**：
->   - `pt_ngr_c5_should_redirect_saved_path()` 检查 `/Saved/Paks/1/1.db`；
->   - 匹配时把 `x1` 从 `/Users/...` 重定向为 `"../../../NGR/Content/Paks/1/1.db"`；
->   - 然后调用原始 materializer，期望走 success 分支。
->   这证明**路径差异假设有历史工程依据**。但 C.5 因 `__DATA_CONST` 写保护
->   + natural run target 偏移（`0x100128c6c` 而非 `0x10432a068`）而**从未
->   在 natural run 中触发**。
-> - **尚未确认的事实**：
->   1. materializer 内部比较的"固定 literal"到底是什么？是否包含路径前缀？
->   2. 若在上层（`NSBundle` / `FPaths::` 等）做路径重定向，让 NGR 自己生成
->      `"../../../NGR/Content/Paks/1/1.db"`，materializer 是否还会走
->      `0x10432a224` fail 分支？
+- **假设来源仍成立，但已被新证据压低优先级**：HOK-016-C.2.7 的自然 run 中，
+>  success / fail 的 pre-`1c8` 差异仍表现为 `entryX1` 字符串不同：
+>   - success 链：`entryX1="../../../NGR/Content/Paks/1/1.db"`；
+>   - fail 链：`entryX1="/Users/songdogwang/..."`。
+>  这仍说明“路径字符串差异”是**现象层差异**，但不再足以支撑“fixed literal
+>  本身与路径相关”的更强假设。
+- **`PDT-001-A` 新证据**：新增 `Scripts/pdt001_ngr_materializer_literal_extractor.py`
+>  对 `0x10432a068..0x10432a31c` 做离线反汇编与 Mach-O 常量解析，产物为
+>  `build/pdt-001a-compare-literals.json`。结果显示：
+>   - first compare literal：`x23 = 0x10c09aca2` → UTF-16 `"r"`；
+>   - second compare literal：`0x10c09aca6` → UTF-16 `"rb"`；
+>   - 两者都位于 `__TEXT,__ustring`，且完整上下文仍然只是 `"r"` / `"rb"`，
+>     不是更长路径字符串的中间 suffix。
+- **结论**：materializer 的 fixed literal **与路径/文件名无关**。当前观测到的
+>  success / fail 分流，更像是“selected buffer / compare accumulator”对
+>  输入字符串的处理差异，而不是“内部固定路径模板”与路径前缀直接比较。
+- **对 C.5 历史线索的重新解读**：`PlayLoader.m` 里已有 `/Users/... →
+>  "../../../NGR/Content/Paks/1/1.db"` 的重定向尝试，说明工程上曾怀疑路径差异；
+>  但这条线索只能说明“上层字符串差异值得怀疑”，不能覆盖 `PDT-001-A`
+>  已提取到的 fixed literal 真值。
 
-### 修复路线（优先级从高到低）
+### 修复路线（执行后状态）
 
-1. **`PDT-001-A`（当前主线）**：提取 materializer 内部 compare literal。
->    - 静态反汇编 `0x10432a068` 中 `0x10432a17c..0x10432a224` 的 compare
->      ladder，提取 `x23` 与 `x23+0xca6` 指向的 literal 字符串内容。
->    - 判断这些 literal 是否包含路径前缀、文件名或数据库相关字符串。
->    - 产物：`build/pdt-001a-compare-literals.json`。
-2. **`PDT-001-B`**：上层路径重定向 live 验证。
->    - **不依赖 vtable hook**（`__DATA_CONST` 写保护已阻断 C.5 方案）。
->    - 在 PlayTools constructor 中对以下 API 做**临时、可开关**的 swizzle：
->      - `-[NSBundle bundlePath]` / `-[NSBundle resourcePath]` / `-[NSBundle executablePath]`
->      - `NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, ...)`
->      - UE4 `FPaths::ProjectSavedDir()` / `FPaths::ProjectContentDir()` 等（若符号可见）
->    - 目标：让 NGR 在构造 `entryX1` 时生成 `"../../../NGR/Content/Paks/1/1.db"`
->      而不是 `"/Users/..."`。
->    - 观察 `launch-events.jsonl` 中 `hok014_ngr_alert_suppressed` 是否归零；
->      同时用 LLDB BP 观察 `0x100122f54` materialization vcall 返回值是否从 0
->      变为 non-null。
->    - 产物：`build/pdt-001b-path-redirect-report.json`。
-3. **`PDT-002`**：若 PDT-001-B 证实路径差异是根因，设计 PlayTools 层
->    bundle-scoped 最小路径重定向方案。参考 C.5 思路但换一个更稳定的落点：
->    直接在 `PlaySettings.swift` 中增加 `ngrPathRedirectEnabled` 选项，
->    在 PlayTools 启动时统一替换 `NSBundle` / `NSSearchPath...` 的返回路径。
-4. **`PDT-003`**：若 PDT-001-A 证伪（literal 与路径无关）或 PDT-001-B 证伪
->    （重定向后仍 fail），留下结构化证据，关闭本 trial，回到 `HOK-016-C.2.7`
->    原有分析线。
+1. **`PDT-001-A`（已完成）**：已提取 compare literal，并确认其**不含**路径前缀、
+>    文件名或数据库片段。结构化证据：`build/pdt-001a-compare-literals.json`；
+>    细节下沉：`PDT-001A-compare-literals.md`。
+2. **`PDT-001-B`（关闭）**：由于 `PDT-001-A` 已表明 fixed literal 与路径无关，
+>    不再继续上层路径重定向 live 验证。
+3. **`PDT-002`（关闭）**：不再设计 PlayTools 层 bundle-scoped 路径重定向方案。
+4. **`PDT-003`（当前收尾）**：保留结构化证据，关闭本 trial，并把主线切回
+>    `HOK-016-C.2.7` 原有 materializer state 分析。
 
 ### 当前兜底链路（按 PlayTools constructor 执行序）
 
@@ -137,35 +115,22 @@
 
 ### 当前卡点
 
-1. **materializer 内部 compare literal 尚未提取**：`0x10432a068` 内部的
->   `x23` 与 `x23+0xca6` 固定 literal 到底是什么字符串，还需要一轮静态反汇编
->   或 LLDB memory dump 才能确认。这是 PDT-001-A 的硬前置。
-2. **上层路径重定向的精确落点未确定**：`entryX1` 到底由 NGR 内部哪个 API
->   生成？是 `NSBundle` 系列、UE4 `FPaths::`、还是 NGR 自研的 path helper？
->   需要静态定位 `entryX1="/Users/..."` 的构造点，才能知道该 swizzle 谁。
-3. **路径重定向的副作用范围未知**：若强行把 macOS 路径改成 iOS 前缀，
->   可能影响 UE4 的 I/O 实际落盘位置，需要验证文件读写是否仍能正确映射到
->   PlayCover container。PDT-001-B 必须设计成**临时、可开关、可回退**的实验，
->   不能默认 apply。
+- **本 trial 当前无独立卡点**：`PDT-001-A` 已给出可执行结论，且结论足以关闭
+>  路径差异假设。
+- **若未来要重开本 trial，必须满足更强前提**：需要新的 live / static 证据表明
+>  真正参与分流的不是 fixed literal，而是上层输入字符串在进入 compare ladder
+>  前被映射到另一块 path-related selected buffer；否则不应再优先消耗在路径重定向上。
 
 ### 下一步默认规划
 
-1. **执行 PDT-001-A**：静态反汇编 `0x10432a068` 中 `0x10432a17c..0x10432a224`
->    的 compare ladder，提取 `x23` 与 `x23+0xca6` 指向的 literal 字符串内容。
->    产物：`build/pdt-001a-compare-literals.json`。
-2. **若 literal 与路径无关**：直接关闭路径差异假设，记录证伪证据，更新
->    Dashboard TODO 状态，回到 HOK-016-C.2.7。
-3. **若 literal 与路径有关**：进入 PDT-001-B：
->    - (a) 先静态定位 `entryX1="/Users/..."` 在 NGR 二进制中的构造点；
->    - (b) 根据构造点确定需要 swizzle 的上层 API（`NSBundle` / `NSSearchPath...` /
->      `FPaths::` 等）；
->    - (c) 在 PlayTools constructor 中实现临时 swizzle，通过 `launch_app` 做
->      live 验证；观察 `hok014_ngr_alert_suppressed` 是否归零、
->      `0x100122f54` 返回值是否变为 non-null。
->    - 产物：`build/pdt-001b-path-redirect-report.json`。
-4. **若 PDT-001-B 证实路径差异是根因**：进入 PDT-002，设计最小可落地方案。
-5. **若 PDT-001-B 证伪**：更新 Dashboard TODO，关闭本 trial，回到 HOK-016-C.2.7。
-6. 收尾执行 `git commit`。
+1. **结束 PathDifferenceTrial**：保留 `build/pdt-001a-compare-literals.json` 与
+>    `PDT-001A-compare-literals.md` 作为证伪证据。
+2. **回到母线 `HOK-016-C.2.7`**：继续围绕 pre-`1c8` selected buffer /
+>    compare accumulator / helper state 做分析，而不是继续追 fixed literal。
+3. **如后续重新怀疑路径差异**：必须先静态定位 `entryX1="/Users/..."` 的构造点，
+>    再判断它是否真的改变了 materializer 看到的 selected buffer；在此之前
+>    不进入 `PDT-001-B`。
+4. 收尾执行 `git commit`。
 
 ## 构建与验证
 
@@ -240,10 +205,10 @@
 
 | ID | 状态 | 任务描述 | 子文档 |
 |---|---|---|---|
-| PDT-001-A | TODO（当前主线） | 静态反汇编提取 `0x10432a068` 内部 compare literal（`x23` / `x23+0xca6`），判断是否与路径/文件名相关 | 待建 `PDT-001A-compare-literals.md` |
-| PDT-001-B | TODO | 若 PDT-001-A 证实 literal 与路径有关，设计上层路径重定向 live 实验：swizzle `NSBundle` / `NSSearchPath...` / `FPaths::` 等 API，观察 `entryX1` 是否收敛到 success 分支 | 待建 `PDT-001B-path-redirect-live.md` |
-| PDT-002 | TODO | 若 PDT-001-B 证实路径差异是根因，设计 PlayTools 层最小可落地 bundle-scoped 路径重定向方案 | 待建 |
-| PDT-003 | TODO | 若 PDT-001-A 或 PDT-001-B 证伪，留下结构化证据并关闭本 trial | 待建 |
+| PDT-001-A | DONE | 已离线提取 `0x10432a068` compare literal；结果为 UTF-16 `"r"` / `"rb"`，与路径/文件名无关 | `PDT-001A-compare-literals.md` |
+| PDT-001-B | CLOSED | `PDT-001-A` 已证伪 fixed literal 路径相关性，因此不再进入上层路径重定向 live 实验 | — |
+| PDT-002 | CLOSED | 不再设计 PlayTools 层路径重定向方案 | — |
+| PDT-003 | DONE（当前收尾） | 已留下结构化证据并关闭本 trial，主线回到 `HOK-016-C.2.7` | `PDT-001A-compare-literals.md` |
 
 ## 高频复用经验（当前仍适用的）
 
@@ -251,8 +216,10 @@
 > 分类细节见对应子文档。
 
 - **"路径差异假设的边界"**：HOK-016-C.2.4 已证伪 `0x10432dd98` 入口处的
->  FString 路径消费，但**未证伪**更深 materializer 内部的路径相关 compare。
->  本 trial 只负责后者；若最终证伪，必须明确区分"哪一层"被排除。
+>  FString 路径消费；本轮 `PDT-001-A` 又进一步证实 `0x10432a068` 的 fixed literal
+>  只是 UTF-16 `"r"` / `"rb"`，**不是路径模板**。因此当前被排除的是
+>  "materializer fixed literal 直接做路径相关 compare" 这层假设；尚未被直接
+>  排除的，只剩输入侧 selected buffer / compare accumulator 如何受上层字符串影响。
 - **materializer 分流的关键不在 pointer 而在 compare accumulator**：
 >  C27 §14 已指出 success / fail 的 post-`1c8` pair 相同，分流由 pre-`1c8`
 >  state 驱动。任何路径修复方案的目标不是改变 `x21/x22`，而是改变

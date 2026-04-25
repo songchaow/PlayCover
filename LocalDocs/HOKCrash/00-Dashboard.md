@@ -66,6 +66,11 @@
   target 内 post-`1c8` pair 已收敛，success / fail 的分叉只剩 entry tuple
   / helper state 差异导致 `0x10432a224` vs `0x10432a2c8/0x10432a2e0` 的分流。
   详细 checkpoint 证据见 `HOK-016-appendix-C27.md` §14。
+- PathDifferenceTrial 的 `PDT-001-A` 已完成：`Scripts/pdt001_ngr_materializer_literal_extractor.py`
+  从 `0x10432a068` 提取到的 fixed literal 为 UTF-16 `"r"` / `"rb"`，不含路径前缀、
+  文件名或数据库片段；因此“materializer fixed literal 直接做路径相关 compare”
+  这层假设已被排除，主线不再优先投入路径重定向实验。详见
+  `PathDifferenceTrial/PDT-001A-compare-literals.md` 与 `build/pdt-001a-compare-literals.json`。
 - `branch-238` / `branch-3e0` / `branch-580` 经 natural run 验证：**natural
   failing path 在 `branch-224` 分流后直接返回 0 到 caller（`0x100122f58`），
   未进入 `branch-238` compare ladder 及后续 tail**。LLDB trace 在
@@ -291,7 +296,7 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
 | HOK-016-C.2.4 | DONE | 收紧到 `0x10017f184` 的 lookup 失败 | `HOK-016-appendix-C23-C24.md` |
 | HOK-016-C.2.5 | DONE | 补齐 rootB writer / insert-helper 的侧证 | `HOK-016-appendix-C25-C26.md` |
 | HOK-016-C.2.6 | DONE | 更正为 `mainChunk` 的 `"1"` 子树缺失，不是 `"main"` 缺失 | `HOK-016-appendix-C25-C26.md` |
-| HOK-016-C.2.7 | TODO（当前主线） | (a) `0x1001a588c` natural run 已观测到一次 success 命中（`pkg+0x10=0x0 pkg+0xa8=0x2 pkg+0xb0=0x0 pkg+0x110=0x1`），label=`gate1-ret`；natural fail 走 `branch-224` 直接返 0，未进入 `branch-238` tail。**(c) 新发现**：natural run 中 `0x100122f54` 的 `x8(target)=0x100128c6c/0x115a5eb30`，不是 `0x10432a068`。C.5 因 `__DATA_CONST` 写保护无法安装 alt1 hook，已降级。下一步改用 LLDB 直接对 `0x100122f54` 设 BP，统计命中次数、每次 `x8` 实际值与返回值，关联 `hok014_ngr_alert_suppressed` 时序，区分 (a) 同一路径多次调用部分失败 vs (b) 独立第二条 path。详见 `HOK-016-appendix-C27.md` §14。 | `HOK-016-appendix-C27.md` |
+| HOK-016-C.2.7 | TODO（当前主线） | (a) `0x1001a588c` natural run 已观测到一次 success 命中（`pkg+0x10=0x0 pkg+0xa8=0x2 pkg+0xb0=0x0 pkg+0x110=0x1`），label=`gate1-ret`；natural fail 走 `branch-224` 直接返 0，未进入 `branch-238` tail。**(c) 新发现**：natural run 中 `0x100122f54` 的 `x8(target)=0x100128c6c/0x115a5eb30`，不是 `0x10432a068`。PathDifferenceTrial 的 `PDT-001-A` 又进一步证实 `0x10432a068` fixed literal 仅为 UTF-16 `"r"` / `"rb"`，与路径无关；主线因此继续聚焦 selected buffer / compare accumulator / helper state，而不是路径模板。C.5 因 `__DATA_CONST` 写保护无法安装 alt1 hook，已降级。下一步改用 LLDB 直接对 `0x100122f54` 设 BP，统计命中次数、每次 `x8` 实际值与返回值，关联 `hok014_ngr_alert_suppressed` 时序，区分 (a) 同一路径多次调用部分失败 vs (b) 独立第二条 path。详见 `HOK-016-appendix-C27.md` §14。 | `HOK-016-appendix-C27.md` |
 | HOK-016-C.3 | DEFERRED | 终极野蛮方案：fishhook interpose `0x108878534` 直接返回 1，仅作最后兜底 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.4 | TODO | 若 C.2.7 通过 LLDB trace 仍无法收敛，进入诊断性强制成功验证。natural run 的 materialize target 与 dual-force 不同，对象形状假设需重新验证。 | `HOK-016-appendix-C27.md` |
 | HOK-016-C.5 | BLOCKED | 已修复 provider-clone 路径跳过 alt1 安装的 bug，已增加 `alt1-dispatch` 细粒度日志。但 `__DATA_CONST` 写保护导致 alt1 slot 不可写（`alt1-not-writable`），`vm_write` fallback 也失败。在当前 macOS 环境下无法通过 vtable patch 拦截 `0x100128c6c` 路径。待找到新的写保护突破方法或环境变化后再评估。live 证据：`build/hok-004-ngr-startup-report.json`，pid 97177，processLaunchId=`launch-97177-272c5ad8-f770-4e3b-92da-c691f042b89a`。 | `HOK-016-qts-fs-create-failed.md` |

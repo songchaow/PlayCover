@@ -44,14 +44,13 @@
 
 ### 当前主线一句话
 
-`PDT-001-B-revised`：在 `PDT-001-A` 已确认 `0x10432a068` fixed literal 与路径无关、
-> 且 `PDT-004` 已确认 natural run target `0x100128c6c` 不是本地 compare ladder 后，
-> 路径差异假设的验证重心进一步收窄到 **UE4 I/O 层路径转换对外部函数输入的影响**。
-> 核心工程依据不变：UE4 `FIOSPlatformFile::ConvertToPlatformPath` 对 `/var/` 透传、对 `/Users/` 转换，
-> 因此 iOS 真机与 PlayCover 在 `entryX1` 字符串上存在差异；但 natural run 的 materialize target
-> `0x100128c6c` 只是一个 dispatch stub（mov + b 到 `__stubs`），真正的 materialization 逻辑
-> 位于该 stub 调用的外部函数中。本 trial 继续推进，目标：验证或证伪**这种上层路径转换差异
-> 是否通过改变外部函数的输入参数来驱动 fail 分支**。
+`PDT-005`：在 `PDT-001-A` 与 `PDT-004` 已排除 materializer 内部 fixed literal compare 后，
+> 验证重心进一步收窄到 **UE4 `FIOSPlatformFile::ConvertToPlatformPath` 的行为差异**。
+> 核心工程依据：`ConvertToPlatformPath` 对 `/var/` 透传、对 `/Users/` 转换；
+> 本 trial 的新方向是直接**在 NGR 二进制中 patch 该函数的判断条件，让 `/Users/` 前缀也走透传分支**，
+> 从而验证路径转换差异是否是 `QtsFileSystem Create Failed!!` 的根因。
+> 此方案避免了原路径伪装方案（让 `NSSearchPath...` 返回 `/var/...` 假路径）带来的 "ENOENT 干扰" 问题，
+> 同时保留了 macOS 真实路径的合法性。
 
 ### 当前状态摘要
 
@@ -106,18 +105,28 @@
 >    而是 dispatch stub，窗口内无 compare literal。`PDT-001-A` 结论不适用于 natural run。
 >    结构化证据：`build/pdt-004-natural-target-literal.json`；
 >    细节：`PDT-004-natural-target-literal.md`。
-3. **`PDT-001-B-revised`（当前主线）**：验证 UE4 `ConvertToPlatformPath` 差异是否是根因。
->    - **目标**：在 PlayTools 层对 `NSBundle` / `NSSearchPathForDirectoriesInDomains`
->      做临时 swizzle，让 NGR 构造出的路径前缀从 `/Users/...` 变成 `/var/...`，
->      观察 `entryX1` 是否随之改变，以及 `hok014_ngr_alert_suppressed` 是否归零。
->    - **关键验证点**：`ConvertToPlatformPath` 对 `/var/` 透传、对 `/Users/` 转换；
->      若把 PlayCover 的路径前缀伪装成 `/var/`，UE4 是否会直接透传而不做转换，
->      从而使外部函数看到的输入参数与 iOS 真机一致。
->    - **产物**：`build/pdt-001b-revised-path-redirect-report.json`。
-4. **`PDT-002`（TODO）**：若 `PDT-001-B-revised` 证实路径转换差异是根因，设计 PlayTools 层
->    bundle-scoped 最小路径伪装方案（如 `ngrPathRedirectEnabled` 选项，统一把
->    `NSDocumentDirectory` / `NSLibraryDirectory` 返回路径前缀改为 `/var/mobile/Containers/...`）。
-5. **`PDT-003`（TODO）**：若 `PDT-001-B-revised` 证伪，留下结构化证据，关闭本 trial。
+3. **`PDT-005`（当前主线）**：在 NGR 二进制中定位 `FIOSPlatformFile::ConvertToPlatformPath` 的实现。
+>    - **目标**：通过离线字符串扫描找到 `"/var/"` UTF-16 常量，追踪其引用位置，
+>      定位 `StartsWith("/var/")` 条件判断的机器码地址。
+>    - **关键验证点**：确认判断逻辑的边界（内联比较还是函数调用、条件跳转指令类型），
+>      为后续机器码 patch 提供精确的落点。
+>    - **产物**：`build/pdt-005-convert-to-platform-path-locate.json`。
+4. **`PDT-006`（TODO）**：编写 PlayTools runtime patch 原型。
+>    - 在 PDT-005 定位的地址处修改机器码：增加 `StartsWith("/User")` 条件，
+>      使其与 `/var/` 一同走透传分支。
+>    - 使用 `mprotect` 解除 `__TEXT` 写保护，patch 后恢复；保存原机器码确保可逆。
+>    - 只对 `com.tencent.ngr` bundle 生效。
+>    - **产物**：`PDT-006-convert-patch-prototype.md`。
+5. **`PDT-007`（TODO）**：Live 验证 patch 效果。
+>    - 应用 PDT-006 patch 后启动 NGR，观察 `QtsFileSystem Create Failed!!` 是否消失。
+>    - 同时收集 `launch-events.jsonl`、`NGR-*.ips`、LLDB trace 等结构化证据。
+>    - 若崩溃消失 → 路径差异假设成立，进入 PDT-008。
+>    - 若崩溃仍然出现（且不是路径不存在导致）→ 强证伪路径差异假设，进入 PDT-009。
+>    - **产物**：`build/pdt-007-patch-live-report.json`。
+6. **`PDT-008`（TODO）**：若 PDT-007 证实路径差异是根因，设计最小可落地的 bundle-scoped 修复方案。
+>    - 固化 PDT-006 的 patch 逻辑，添加 runtime toggle（如 `ngrConvertToPlatformPathPatchEnabled`）。
+>    - 确保不影响其他 app。
+7. **`PDT-009`（TODO）**：若 PDT-007 证伪，留下结构化证据，关闭本 trial，回到 `HOK-016-C.2.7`。
 
 ### 当前兜底链路（按 PlayTools constructor 执行序）
 
@@ -130,8 +139,9 @@
 >   的 materializer 重定向尝试；
 > - 但该方案依赖 vtable patch，因 `__DATA_CONST` 写保护与 natural-run target
 >   偏移而未在 natural run 中生效；
-> - 因此本 trial 后续实验应**绕开 C.5 的 patch 落点**，改在更上层 API 做
->   swizzle / interpose，失败时可立即回退。
+> - 本 trial 的新验证入口是直接 patch NGR 二进制中 `ConvertToPlatformPath`
+>   的判断条件（让 `/User` 也走透传分支），不再走 swizzle 上层 API 的路径；
+>   失败时可通过恢复原始机器码立即回退。
 >
 > 唯一新增依赖：
 > - 若 PDT-001-A / PDT-001-B 需要 live trace `0x10432a068` 内部的 compare literal
@@ -158,24 +168,22 @@
 2. **natural run materialize 的真实逻辑尚未定位**：`0x100128c6c` 跳转到的
 >   `__stubs` 外部符号尚未识别；若该外部函数本身对路径敏感，路径差异假设
 >   仍可能成立，但验证口径需从 "compare literal" 切换到 "外部函数输入参数"。
-3. **`PDT-001-B-revised` 的精确落点未验证**：UE4 `ConvertToPlatformPath` 的源码
->   已确认 `/var/` 透传、`/Users/` 转换，但 NGR 在 PlayCover 中实际构造出的
->   `entryX1="/Users/..."` 是否确实经过了这个转换、以及转换后的结果是什么，
->   还需要 live trace 或静态定位来确认。
-4. **路径伪装方案的副作用未知**：若强行把 `NSDocumentDirectory` / `NSLibraryDirectory`
->   返回路径前缀改为 `/var/mobile/Containers/...`，可能影响 UE4 的实际文件 I/O
->   落盘位置（因为 `/var/mobile/Containers/...` 在 macOS 上不是真实路径）。
->   `PDT-001-B-revised` 必须设计成**临时、可开关、可回退**的实验，不能默认 apply。
+3. **`FIOSPlatformFile::ConvertToPlatformPath` 在 NGR 二进制中的具体地址尚未确定**：
+>   需要通过离线字符串扫描（搜索 `"/var/"` UTF-16 常量）+ 控制流分析定位判断逻辑。
+4. **ARM64 机器码 patch 的复杂度未知**：`StartsWith` 是内联展开还是外部函数调用，
+>   决定了 patch 策略（原位修改 vs trampoline）；需待 PDT-005 定位后才能评估。
 
 ### 下一步默认规划
 
-1. **执行 `PDT-001-B-revised`**：在 PlayTools 层对 `NSBundle` / `NSSearchPathForDirectoriesInDomains`
->    做临时 swizzle，让 NGR 构造出的路径前缀从 `/Users/...` 变成 `/var/...`，
->    观察 `entryX1` 是否改变、`hok014_ngr_alert_suppressed` 是否归零。
->    - 产物：`build/pdt-001b-revised-path-redirect-report.json`。
-2. **若 `PDT-001-B-revised` 证实路径转换差异是根因**：进入 `PDT-002`，设计最小可落地方案。
-3. **若 `PDT-001-B-revised` 证伪**：更新 Dashboard TODO，关闭本 trial，回到 `HOK-016-C.2.7`。
-4. 收尾执行 `git commit`。
+1. **执行 `PDT-005`**：在 NGR 二进制中搜索 `"/var/"` UTF-16 字符串常量，
+>    定位 `FIOSPlatformFile::ConvertToPlatformPath` 的判断逻辑地址。
+>    - 产物：`build/pdt-005-convert-to-platform-path-locate.json`。
+2. **执行 `PDT-006`**：基于 PDT-005 的落点，编写 PlayTools runtime patch 原型，
+>    使 `/User` 前缀也走透传分支。
+3. **执行 `PDT-007`**：Live 验证 patch 效果，观察 `QtsFileSystem Create Failed!!` 是否消失。
+>    - 产物：`build/pdt-007-patch-live-report.json`。
+4. **根据 PDT-007 结果**：进入 `PDT-008`（证实）或 `PDT-009`（证伪）。
+5. 收尾执行 `git commit`。
 
 ## 构建与验证
 
@@ -252,9 +260,11 @@
 |---|---|---|---|
 | PDT-001-A | DONE（结论已收窄） | 已离线提取 `0x10432a068` compare literal；结果为 UTF-16 `"r"` / `"rb"`，与路径/文件名无关。此结论只适用于 `0x10432a068` | `PDT-001A-compare-literals.md` |
 | PDT-004 | DONE | 已离线提取 natural run target `0x100128c6c` 的窗口；结果为 **dispatch stub，无 compare literal**。`PDT-001-A` 结论不适用于 natural run | `PDT-004-natural-target-literal.md` |
-| PDT-001-B-revised | TODO（当前主线） | 验证 UE4 `ConvertToPlatformPath` 差异是否是根因：对 `NSBundle` / `NSSearchPath...` 做临时 swizzle，让路径前缀从 `/Users/...` 变成 `/var/...`，观察 `entryX1` 与 `hok014_ngr_alert_suppressed` 是否收敛 | 待建 `PDT-001B-revised-path-redirect-live.md` |
-| PDT-002 | TODO | 若 `PDT-001-B-revised` 证实路径转换差异是根因，设计 PlayTools 层最小可落地 bundle-scoped 路径伪装方案 | 待建 |
-| PDT-003 | TODO | 若 `PDT-001-B-revised` 证伪，留下结构化证据并关闭本 trial | 待建 |
+| PDT-005 | TODO（当前主线） | 在 NGR 二进制中定位 `ConvertToPlatformPath`：搜索 `"/var/"` UTF-16 常量，定位条件判断逻辑地址 | 待建 `PDT-005-locate-convert-to-platform-path.md` |
+| PDT-006 | TODO | 编写 PlayTools runtime patch：修改机器码使 `/User` 前缀走透传分支；确保可逆、bundle-scoped | 待建 |
+| PDT-007 | TODO | Live 验证 patch 效果：观察 `QtsFileSystem Create Failed!!` 是否消失，收集结构化证据 | 待建 |
+| PDT-008 | TODO | 若 PDT-007 证实，设计最小可落地 bundle-scoped 修复方案（runtime toggle） | 待建 |
+| PDT-009 | TODO | 若 PDT-007 证伪，留下结构化证据并关闭本 trial | 待建 |
 
 ## 高频复用经验（当前仍适用的）
 
@@ -284,10 +294,11 @@
 >  trial 的污染源。唯一与路径直接相关的是 HOK-016-C.5，但 C.5 因
 >  `__DATA_CONST` 写保护与 natural-run target 偏移而**未在 natural run 中生效**，
 >  因此当前观察到的 `entryX1="/Users/..."` 仍可视为未修正的原始现象。
-- **C.5 更像先验线索，不是当前执行路径**：`PlayLoader.m` 里已有
+- **C.5 是先验线索，验证入口已切换**：`PlayLoader.m` 里已有
 >  `/Users/... → "../../../NGR/Content/Paks/1/1.db"` 的重定向尝试，说明
->  路径差异假设有历史依据；但后续实验应避开 vtable patch，优先选上层 API
->  swizzle 作为新的验证入口。
+>  路径差异假设有历史依据；本 trial 的新验证入口是直接 patch NGR 二进制中
+>  `ConvertToPlatformPath` 的判断条件（让 `/User` 也走透传分支），不再走
+>  swizzle 上层 API 的路径。
 - **`playcover_launch_complete` ≠ app 已安全启动**：NGR 会在该事件之
 >  后进入 UE4 bootstrap、可能进入 fatal 路径。
 - **`session briefly ready → disconnected`** 是比"窗口看起来闪退"更

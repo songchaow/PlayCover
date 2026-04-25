@@ -19,8 +19,26 @@ structured transcript lines prefixed with ``[hok016c27-*]``.
 
 from __future__ import annotations
 
+import os
+
 _NGR_TEXT_BASE_UNSLID = 0x100000000
 _ROOTB_UNSLID = 0x10E184B18
+
+_LLDB_TRACE_LOG_PATH = "/tmp/hok016c27-lldb-trace.log"
+
+try:
+    os.remove(_LLDB_TRACE_LOG_PATH)
+except FileNotFoundError:
+    pass
+
+
+def _log(msg: str) -> None:
+    print(msg)
+    try:
+        with open(_LLDB_TRACE_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+    except Exception:
+        pass
 
 _tracked_mainchunk_addr = 0
 _subtree_watch_installed = False
@@ -326,7 +344,7 @@ def snapshot_rootb_lookup_on_hit(frame, bp_loc, internal_dict):
     key = _decode_pascal_string(process, x1)
     header = _read_bytes(process, rootb_addr, 32)
 
-    print(
+    _log(
         f"[hok016c27-rootb] pc=0x{frame.GetPC():x} x0(root)=0x{x0:x} "
         f"x1(key)=0x{x1:x} x2=0x{x2:x} x30(lr)=0x{x30:x} "
         f"key=[{key['summary']}] rootB_header32={_hex_dump(header)} "
@@ -369,7 +387,7 @@ def snapshot_mainchunk_on_hit(frame, bp_loc, internal_dict):
             except Exception as exc:
                 extra += f" subtree-wp-exc={exc!r}"
 
-    print(
+    _log(
         f"[hok016c27-mainchunk] pc=0x{frame.GetPC():x} x0(mainChunk)=0x{mainchunk:x} "
         f"x19=0x{x19:x} sp=0x{sp:x} stack40={stack_preview}{extra} "
         f"bt={_short_backtrace(thread)}"
@@ -394,7 +412,7 @@ def snapshot_mainchunk_no_watch_on_hit(frame, bp_loc, internal_dict):
         extra += _tracked_chunk_extra(process, mainchunk)
         extra += " subtree-wp=skipped"
 
-    print(
+    _log(
         f"[hok016c27-mainchunk-nowp] pc=0x{frame.GetPC():x} x0(mainChunk)=0x{mainchunk:x} "
         f"x19=0x{x19:x} sp=0x{sp:x} stack40={stack_preview}{extra} "
         f"bt={_short_backtrace(thread)}"
@@ -416,7 +434,7 @@ def snapshot_bd448_entry_on_hit(frame, bp_loc, internal_dict):
     x30 = _reg_u64(frame, "x30")
     key = _decode_pascal_string(process, x1)
 
-    print(
+    _log(
         f"[hok016c27-bd448] pc=0x{frame.GetPC():x} x0(mainChunk)=0x{x0:x} "
         f"x1(key)=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x30(lr)=0x{x30:x} "
         f"key=[{key['summary']}]"
@@ -435,7 +453,7 @@ def snapshot_lookup2_on_hit(frame, bp_loc, internal_dict):
     key = _decode_pascal_string(process, x1)
     tracked = _tracked_mainchunk_addr != 0 and x0 == _tracked_mainchunk_addr
 
-    print(
+    _log(
         f"[hok016c27-lookup2] pc=0x{frame.GetPC():x} x0(mainChunk)=0x{x0:x} "
         f"x1(key)=0x{x1:x} x30(lr)=0x{x30:x} tracked={str(tracked).lower()} key=[{key['summary']}]"
         f"{_tracked_chunk_extra(process, x0)} bt={_short_backtrace(thread)}"
@@ -455,7 +473,7 @@ def snapshot_subtree_watch_on_hit(frame, bp_loc, internal_dict):
     x30 = _reg_u64(frame0, "x30")
     new_value = _read_u64(process, _subtree_watch_addr) if _subtree_watch_addr else None
 
-    print(
+    _log(
         f"[hok016c27-subtree-write] pc=0x{frame0.GetPC():x} x0=0x{x0:x} "
         f"x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x30(lr)=0x{x30:x} "
         f"watched=0x{_subtree_watch_addr:x} value=0x{(new_value or 0):x} "
@@ -475,7 +493,7 @@ def snapshot_postcall_on_hit(frame, bp_loc, internal_dict):
     sp = _reg_u64(frame, "sp")
     stack_preview = _hex_dump(_read_bytes(process, sp, 0x40)) if sp else "<no-sp>"
 
-    print(
+    _log(
         f"[hok016c27-post] pc=0x{frame.GetPC():x} x0=0x{x0:x} x19=0x{x19:x} "
         f"x20=0x{x20:x} x30(lr)=0x{x30:x} sp=0x{sp:x} stack40={stack_preview}"
         + (
@@ -502,7 +520,7 @@ def snapshot_ba50c_entry_on_hit(frame, bp_loc, internal_dict):
     key2 = _decode_pascal_string(process, x2)
     tracked = _tracked_mainchunk_addr != 0 and x0 == _tracked_mainchunk_addr
 
-    print(
+    _log(
         f"[hok016c27-ba50c-entry] pc=0x{frame.GetPC():x} x0=0x{x0:x} "
         f"x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} x30(lr)=0x{x30:x} "
         f"tracked={str(tracked).lower()} key1=[{key1['summary']}] key2=[{key2['summary']}]"
@@ -527,7 +545,7 @@ def snapshot_ba50c_return_on_hit(frame, bp_loc, internal_dict):
         )
         extra += _object_contract_extra(process, x0, "ret")
 
-    print(
+    _log(
         f"[hok016c27-ba50c-return] pc=0x{frame.GetPC():x} x0(ret)=0x{x0:x} "
         f"x27=0x{x27:x} x30(lr)=0x{x30:x}{extra} bt={_short_backtrace(thread)}"
     )
@@ -548,7 +566,7 @@ def snapshot_bd464_after_a5014_on_hit(frame, bp_loc, internal_dict):
     if x27 > 0x100000000:
         extra += _object_contract_extra(process, x27, "x27")
 
-    print(
+    _log(
         f"[hok016c27-a5014-post] pc=0x{frame.GetPC():x} x0=0x{x0:x} "
         f"x24=0x{x24:x} x27=0x{x27:x} x30(lr)=0x{x30:x}{extra} "
         f"bt={_short_backtrace(thread)}"
@@ -576,7 +594,7 @@ def snapshot_a5014_precheck_on_hit(frame, bp_loc, internal_dict):
         extra += f" newObj+0xb0=0x{(_read_u64(process, x21 + 0xB0) or 0):x}"
         extra += _object_contract_extra(process, x21, "newObj")
 
-    print(
+    _log(
         f"[hok016c27-a5014-precheck] pc=0x{frame.GetPC():x} w0=0x{x0:x} "
         f"x21(newObj)=0x{x21:x} x22(builder+0x60)=0x{x22:x} x23=0x{x23:x} "
         f"x20=0x{x20:x} x30(lr)=0x{x30:x} path=[{path['summary']}] key=[{key['summary']}]"
@@ -596,7 +614,7 @@ def snapshot_a5014_db_on_hit(frame, bp_loc, internal_dict):
     x30 = _reg_u64(frame, "x30")
     error_code = _read_u32(process, x24) if x24 > 0x100000000 else None
 
-    print(
+    _log(
         f"[hok016c27-a5014-db] pc=0x{frame.GetPC():x} x0(db)=0x{x0:x} "
         f"x21(newObj)=0x{x21:x} x24(dbErr)=0x{x24:x} err=0x{(error_code or 0):x} "
         f"x25(existing)=0x{x25:x} x30(lr)=0x{x30:x}"
@@ -631,7 +649,7 @@ def snapshot_a5014_storage_on_hit(frame, bp_loc, internal_dict):
         if normalized is not None:
             extra += f" storage.slot18.norm=0x{normalized:x}"
 
-    print(
+    _log(
         f"[hok016c27-a5014-storage] pc=0x{frame.GetPC():x} w0=0x{x0:x} "
         f"x21(newObj)=0x{x21:x} x24(storage)=0x{x24:x} x22(builder+0x60)=0x{x22:x} "
         f"x23=0x{x23:x} x20=0x{x20:x} x30(lr)=0x{x30:x}{extra} "
@@ -670,7 +688,7 @@ def snapshot_storage_method_entry_on_hit(frame, bp_loc, internal_dict):
         if normalized is not None:
             extra += f" storage.slot18.norm=0x{normalized:x}"
 
-    print(
+    _log(
         f"[hok016c27-storage-method] pc=0x{frame.GetPC():x} x0=0x{x0:x} x1=0x{x1:x} "
         f"x2=0x{x2:x} x3=0x{x3:x} x19=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x} "
         f"arg1=[{key1['summary']}] arg20=[{key20['summary']}]"
@@ -708,7 +726,7 @@ def snapshot_storage_create_table_call_on_hit(frame, bp_loc, internal_dict):
     if x22 > 0x100000000:
         extra += f" x22raw={_hex_dump(_read_bytes(process, x22, 0x20))}"
 
-    print(
+    _log(
         f"[hok016c27-create-table-call] pc=0x{frame.GetPC():x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} "
         f"x19(storage)=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x} "
         f"arg1=[{key1['summary']}] arg20=[{key20['summary']}]"
@@ -738,7 +756,7 @@ def snapshot_create_table_entry_on_hit(frame, bp_loc, internal_dict):
         if value > 0x100000000:
             extra += f" {label}raw={_hex_dump(_read_bytes(process, value, 0x20))}"
 
-    print(
+    _log(
         f"[hok016c27-create-table-entry] pc=0x{frame.GetPC():x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} "
         f"x19=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x} "
         f"arg1=[{key1['summary']}] arg2=[{key2['summary']}]"
@@ -760,7 +778,7 @@ def snapshot_storage_after_create_table_on_hit(frame, bp_loc, internal_dict):
     error_code = _read_u32(process, x19 + 0x30) if x19 > 0x100000000 else None
     state_flags = _read_u32(process, x19 + 0x3C) if x19 > 0x100000000 else None
 
-    print(
+    _log(
         f"[hok016c27-storage-table] pc=0x{frame.GetPC():x} x0(table)=0x{x0:x} "
         f"x19(storage)=0x{x19:x} x21(limit)=0x{x21:x} x30(lr)=0x{x30:x} "
         f"storage+0x30(err)=0x{(error_code or 0):x} storage+0x3c(flags)=0x{(state_flags or 0):x} "
@@ -786,7 +804,7 @@ def snapshot_create_table_impl_gate_call_on_hit(frame, bp_loc, internal_dict):
         if value > 0x100000000:
             extra += f" {label}raw={_hex_dump(_read_bytes(process, value, 0x20))}"
 
-    print(
+    _log(
         f"[hok016c27-create-table-gate-call] pc=0x{frame.GetPC():x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3(err)=0x{x3:x} "
         f"x23(desc)=0x{x23:x} x27(blob)=0x{x27:x} x30(lr)=0x{x30:x} errBefore=0x{(err_before or 0):x}"
         f"{extra} bt={_short_backtrace(thread)}"
@@ -846,7 +864,7 @@ def snapshot_create_table_impl_gate_ret_on_hit(frame, bp_loc, internal_dict):
         except Exception as exc:
             extra = f" err-wp-exc={exc!r}"
 
-    print(
+    _log(
         f"[hok016c27-create-table-gate-ret] pc=0x{frame.GetPC():x} w0=0x{(x0 & 0xffffffff):x} x23(desc)=0x{x23:x} "
         f"x26(err)=0x{x26:x} x27(blob)=0x{x27:x} x30(lr)=0x{x30:x} out0=0x{(out0 or 0):x} out1=0x{(out1 or 0):x} "
         f"errAfter=0x{(err_after or 0):x} descRaw={desc_raw} blobRaw={blob_raw}{extra} bt={_short_backtrace(thread)}"
@@ -875,7 +893,7 @@ def snapshot_err_slot_write_on_hit(frame, bp_loc, internal_dict):
     x30 = _reg_u64(frame0, "x30")
     err_value = _read_u32(process, _err_slot_watch_addr) if _err_slot_watch_addr else None
 
-    print(
+    _log(
         f"[hok016c27-err-slot-write] pc=0x{frame0.GetPC():x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} x5=0x{x5:x} "
         f"x19=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x23=0x{x23:x} x25=0x{x25:x} x26=0x{x26:x} x30(lr)=0x{x30:x} "
         f"watched=0x{_err_slot_watch_addr:x} value=0x{(err_value or 0):x} bt={_short_backtrace(thread)}"
@@ -896,7 +914,7 @@ def snapshot_create_table_impl_err9_on_hit(frame, bp_loc, internal_dict):
     err_slot = _read_u64(process, sp + 0x8) if sp else None
     err_value = _read_u32(process, err_slot) if err_slot and err_slot > 0x100000000 else None
 
-    print(
+    _log(
         f"[hok016c27-create-table-err9] pc=0x{frame.GetPC():x} x22(ret)=0x{x22:x} x23(desc)=0x{x23:x} x26(node)=0x{x26:x} "
         f"x27(blob)=0x{x27:x} x30(lr)=0x{x30:x} errSlot=0x{(err_slot or 0):x} errValue=0x{(err_value or 0):x} "
         f"node+0x48=0x{(_read_u32(process, x26 + 0x48) or 0):x} bt={_short_backtrace(thread)}"
@@ -914,7 +932,7 @@ def snapshot_create_table_impl_entry_build_on_hit(frame, bp_loc, internal_dict):
     x27 = _reg_u64(frame, "x27")
     x30 = _reg_u64(frame, "x30")
 
-    print(
+    _log(
         f"[hok016c27-create-table-entry-build] pc=0x{frame.GetPC():x} x22=0x{x22:x} x23(desc)=0x{x23:x} x26(node)=0x{x26:x} "
         f"x27(blob)=0x{x27:x} x30(lr)=0x{x30:x} node+0x48=0x{(_read_u32(process, x26 + 0x48) or 0):x} "
         f"node+0x50=0x{(_read_u32(process, x26 + 0x50) or 0):x} bt={_short_backtrace(thread)}"
@@ -934,7 +952,7 @@ def snapshot_create_table_impl_final_check_on_hit(frame, bp_loc, internal_dict):
     err_slot = _read_u64(process, sp + 0x8) if sp else None
     err_value = _read_u32(process, err_slot) if err_slot and err_slot > 0x100000000 else None
 
-    print(
+    _log(
         f"[hok016c27-create-table-final-check] pc=0x{frame.GetPC():x} w0=0x{(x0 & 0xffffffff):x} x22=0x{x22:x} x26=0x{x26:x} x30(lr)=0x{x30:x} "
         f"errSlot=0x{(err_slot or 0):x} errValue=0x{(err_value or 0):x} bt={_short_backtrace(thread)}"
     )
@@ -956,7 +974,7 @@ def snapshot_create_table_impl_deep_call_on_hit(frame, bp_loc, internal_dict):
     x30 = _reg_u64(frame, "x30")
     err_slot = _read_u64(process, sp + 0x8) if sp else None
 
-    print(
+    _log(
         f"[hok016c27-create-table-deep-call] pc=0x{frame.GetPC():x} sp=0x{sp:x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} "
         f"x22=0x{x22:x} x23=0x{x23:x} x26=0x{x26:x} x30(lr)=0x{x30:x} errSlot@sp+8=0x{(err_slot or 0):x}"
         f"{_pointer_raw_extra(process, 'x0', x0)}{_pointer_raw_extra(process, 'x3', x3)}{_pointer_raw_extra(process, 'x22', x22)}"
@@ -983,7 +1001,7 @@ def snapshot_create_table_impl_deep_entry_on_hit(frame, bp_loc, internal_dict):
     x23 = _reg_u64(frame, "x23")
     x30 = _reg_u64(frame, "x30")
 
-    print(
+    _log(
         f"[hok016c27-create-table-deep-entry] pc=0x{frame.GetPC():x} sp=0x{sp:x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} x5=0x{x5:x} "
         f"x19=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x23=0x{x23:x} x30(lr)=0x{x30:x}"
         f"{_pointer_raw_extra(process, 'x0', x0)}{_pointer_raw_extra(process, 'x3', x3)}{_pointer_raw_extra(process, 'x5', x5)}"
@@ -1011,7 +1029,7 @@ def snapshot_create_table_impl_deep_stage1_on_hit(frame, bp_loc, internal_dict):
     x25 = _reg_u64(frame, "x25")
     x30 = _reg_u64(frame, "x30")
 
-    print(
+    _log(
         f"[hok016c27-create-table-deep-stage1] pc=0x{frame.GetPC():x} sp=0x{sp:x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} "
         f"x19=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x23=0x{x23:x} x24=0x{x24:x} x25=0x{x25:x} x30(lr)=0x{x30:x}"
         f"{_pointer_raw_extra(process, 'x0', x0)}{_pointer_raw_extra(process, 'x1', x1)}{_pointer_raw_extra(process, 'x3', x3)}"
@@ -1037,7 +1055,7 @@ def snapshot_create_table_impl_deep_stage2_on_hit(frame, bp_loc, internal_dict):
     x23 = _reg_u64(frame, "x23")
     x30 = _reg_u64(frame, "x30")
 
-    print(
+    _log(
         f"[hok016c27-create-table-deep-stage2] pc=0x{frame.GetPC():x} sp=0x{sp:x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} "
         f"x19=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x23=0x{x23:x} x30(lr)=0x{x30:x}"
         f"{_pointer_raw_extra(process, 'x0', x0)}{_pointer_raw_extra(process, 'x1', x1)}{_pointer_raw_extra(process, 'x3', x3)}"
@@ -1064,7 +1082,7 @@ def snapshot_create_table_impl_materialize_entry_on_hit(frame, bp_loc, internal_
     helper_slot18 = _read_u64(process, x19 + 0x18) if x19 > 0x100000000 else None
     helper_slot28 = _read_u64(process, x19 + 0x28) if x19 > 0x100000000 else None
 
-    print(
+    _log(
         f"[hok016c27-create-table-materialize-entry] pc=0x{frame.GetPC():x} sp=0x{sp:x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} "
         f"x19=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x} "
         f"helper+0x10=0x{(helper_slot10 or 0):x} helper+0x18=0x{(helper_slot18 or 0):x} helper+0x28=0x{(helper_slot28 or 0):x}"
@@ -1094,7 +1112,7 @@ def snapshot_create_table_impl_materialize_precall_on_hit(frame, bp_loc, interna
     helper_slot28 = _read_u64(process, x19 + 0x28) if x19 > 0x100000000 else None
     target_norm = _normalize_ngr_ptr(x8)
 
-    print(
+    _log(
         f"[hok016c27-create-table-materialize-precall] pc=0x{frame.GetPC():x} sp=0x{sp:x} x0=0x{x0:x} x1=0x{x1:x} x8(target)=0x{x8:x} "
         f"x19=0x{x19:x} x20=0x{x20:x} x21(savedArg)=0x{x21:x} x22(savedObj)=0x{x22:x} x30(lr)=0x{x30:x} "
         f"x0==x22={str(x0 == x22).lower()} x1==x21={str(x1 == x21).lower()} "
@@ -1121,7 +1139,7 @@ def snapshot_create_table_impl_materialize_ret_on_hit(frame, bp_loc, internal_di
     x30 = _reg_u64(frame, "x30")
     helper_slot18 = _read_u64(process, x19 + 0x18) if x19 > 0x100000000 else None
 
-    print(
+    _log(
         f"[hok016c27-create-table-materialize-ret] pc=0x{frame.GetPC():x} sp=0x{sp:x} x0(ret)=0x{x0:x} x19=0x{x19:x} x20=0x{x20:x} "
         f"x21(prevArg)=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x} helper+0x18(before)=0x{(helper_slot18 or 0):x}"
         f" materializeReturnedNull={str(x0 == 0).lower()}"
@@ -1143,7 +1161,7 @@ def snapshot_create_table_impl_materialize_result_on_hit(frame, bp_loc, internal
     x30 = _reg_u64(frame, "x30")
     helper_slot18 = _read_u64(process, x19 + 0x18) if x19 > 0x100000000 else None
 
-    print(
+    _log(
         f"[hok016c27-create-table-materialize-result] pc=0x{frame.GetPC():x} sp=0x{sp:x} x0=0x{x0:x} x19=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} "
         f"x30(lr)=0x{x30:x} helper+0x18(after)=0x{(helper_slot18 or 0):x} willTakeErrProvider={str(x0 == 0).lower()}"
         f"{_pointer_raw_extra(process, 'x0', x0)}{_watched_err_slot_extra(process)} bt={_short_backtrace(thread)}"
@@ -1194,7 +1212,7 @@ def snapshot_materialize_target_on_hit(frame, bp_loc, internal_dict):
     }:
         extra += _materialize_target_pointer_summary(process, "x22", x22)
 
-    print(
+    _log(
         f"[hok016c27-materialize-target] phase={phase} pc=0x{pc:x}{extra} bt={_short_backtrace(thread, 6)}"
     )
 
@@ -1224,7 +1242,7 @@ def snapshot_create_table_impl_err_direct_on_hit(frame, bp_loc, internal_dict):
     x26 = _reg_u64(frame, "x26")
     x30 = _reg_u64(frame, "x30")
 
-    print(
+    _log(
         f"[hok016c27-create-table-err-direct] pc=0x{frame.GetPC():x} sp=0x{sp:x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} x5=0x{x5:x} "
         f"x19=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x23=0x{x23:x} x24=0x{x24:x} x25=0x{x25:x} x26=0x{x26:x} x30(lr)=0x{x30:x}"
         f" x0==errWatch={str(bool(_err_slot_watch_addr and x0 == _err_slot_watch_addr)).lower()}"
@@ -1247,7 +1265,7 @@ def snapshot_create_table_impl_return_on_hit(frame, bp_loc, internal_dict):
     err_slot = _read_u64(process, sp + 0x8) if sp else None
     err_value = _read_u32(process, err_slot) if err_slot and err_slot > 0x100000000 else None
 
-    print(
+    _log(
         f"[hok016c27-create-table-ret] pc=0x{frame.GetPC():x} x22(ret)=0x{x22:x} x26=0x{x26:x} x30(lr)=0x{x30:x} "
         f"errSlot=0x{(err_slot or 0):x} errValue=0x{(err_value or 0):x} bt={_short_backtrace(thread)}"
     )
@@ -1298,7 +1316,7 @@ def force_storage_success_on_hit(frame, bp_loc, internal_dict):
     if message:
         message = message.replace("\n", " ")
 
-    print(
+    _log(
         f"[hok016c4-force-storage] pc=0x{frame.GetPC():x} oldX0=0x{old_x0:x} "
         f"forcedX0=0x{forced_x0:x} status={status} x21=0x{x21:x} x22=0x{x22:x} "
         f"x24=0x{x24:x} x30(lr)=0x{x30:x}{extra}"
@@ -1337,7 +1355,7 @@ def force_ready_to_use_success_on_hit(frame, bp_loc, internal_dict):
     if message:
         message = message.replace("\n", " ")
 
-    print(
+    _log(
         f"[hok016c4-force-ready] pc=0x{frame.GetPC():x} oldX0=0x{old_x0:x} "
         f"forcedX0=0x{forced_x0:x} status={status} x19=0x{x19:x} x20(pkg)=0x{x20:x} "
         f"x30(lr)=0x{x30:x}{extra}"
@@ -1356,7 +1374,7 @@ def snapshot_bd464_after_ready_on_hit(frame, bp_loc, internal_dict):
     x26 = _reg_u64(frame, "x26")
     x30 = _reg_u64(frame, "x30")
 
-    print(
+    _log(
         f"[hok016c4-ready-post] pc=0x{frame.GetPC():x} x0=0x{x0:x} x24(pkg)=0x{x24:x} "
         f"x26=0x{x26:x} x30(lr)=0x{x30:x}"
         + (_object_contract_extra(process, x24, "pkg") if x24 > 0x100000000 else "")
@@ -1376,7 +1394,7 @@ def snapshot_dormant_branch_on_hit(frame, bp_loc, internal_dict):
     x22 = _reg_u64(frame, "x22")
     x30 = _reg_u64(frame, "x30")
 
-    print(
+    _log(
         f"[hok016c27-dormant-branch] pc=0x{frame.GetPC():x} x0=0x{x0:x} x19=0x{x19:x} "
         f"x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x}"
         + (_tracked_chunk_extra(process, _tracked_mainchunk_addr) if _tracked_mainchunk_addr else "")
@@ -1398,7 +1416,7 @@ def snapshot_f3c8_post_on_hit(frame, bp_loc, internal_dict):
     x24 = _reg_u64(frame, "x24")
     x30 = _reg_u64(frame, "x30")
 
-    print(
+    _log(
         f"[hok016c27-f3c8-post] pc=0x{frame.GetPC():x} x0=0x{x0:x} x19=0x{x19:x} "
         f"x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x23=0x{x23:x} x24=0x{x24:x} x30(lr)=0x{x30:x}"
         + (_tracked_chunk_extra(process, _tracked_mainchunk_addr) if _tracked_mainchunk_addr else "")
@@ -1420,7 +1438,7 @@ def snapshot_bc220_stage_on_hit(frame, bp_loc, internal_dict):
     x24 = _reg_u64(frame, "x24")
     x30 = _reg_u64(frame, "x30")
 
-    print(
+    _log(
         f"[hok016c27-bc220] pc=0x{frame.GetPC():x} x0=0x{x0:x} x19=0x{x19:x} x20=0x{x20:x} "
         f"x21=0x{x21:x} x22=0x{x22:x} x23=0x{x23:x} x24=0x{x24:x} x30(lr)=0x{x30:x}"
         + (_tracked_chunk_extra(process, _tracked_mainchunk_addr) if _tracked_mainchunk_addr else "")
@@ -1443,7 +1461,7 @@ def snapshot_bc220_slot1_source_on_hit(frame, bp_loc, internal_dict):
     entry_slot0 = _read_u64(process, x21) if x21 > 0x100000000 else None
     entry_slot1 = _read_u64(process, x21 + 0x8) if x21 > 0x100000000 else None
 
-    print(
+    _log(
         f"[hok016c27-bc220-slot1-src] pc=0x{frame.GetPC():x} x19(ctx)=0x{x19:x} x21(entry)=0x{x21:x} "
         f"x22=0x{x22:x} x24(src)=0x{x24:x} x30(lr)=0x{x30:x} "
         f"ctx+0x40=0x{(ctx40 or 0):x} ctx+0xa0=0x{(ctxA0 or 0):x} "
@@ -1466,7 +1484,7 @@ def snapshot_ba940_override_alloc_on_hit(frame, bp_loc, internal_dict):
     ctxA0 = _read_u64(process, x19 + 0xA0) if x19 > 0x100000000 else None
     ctx40_dump = _hex_dump(_read_bytes(process, ctx40, 0x20)) if ctx40 and ctx40 > 0x100000000 else "<nil>"
 
-    print(
+    _log(
         f"[hok016c27-ba940-override-alloc] pc=0x{frame.GetPC():x} x19(ctx)=0x{x19:x} x21=0x{x21:x} "
         f"x22=0x{x22:x} x30(lr)=0x{x30:x} ctx+0x40=0x{(ctx40 or 0):x} ctx+0xa0=0x{(ctxA0 or 0):x} "
         f"ctx40raw={ctx40_dump}"
@@ -1486,7 +1504,7 @@ def snapshot_ba940_override_alloc_post_on_hit(frame, bp_loc, internal_dict):
     ctxA0 = _read_u64(process, x19 + 0xA0) if x19 > 0x100000000 else None
     ctx40_dump = _hex_dump(_read_bytes(process, ctx40, 0x20)) if ctx40 and ctx40 > 0x100000000 else "<nil>"
 
-    print(
+    _log(
         f"[hok016c27-ba940-override-alloc-post] pc=0x{frame.GetPC():x} x19(ctx)=0x{x19:x} x21(new)=0x{x21:x} "
         f"x30(lr)=0x{x30:x} ctx+0x40=0x{(ctx40 or 0):x} ctx+0xa0=0x{(ctxA0 or 0):x} "
         f"ctx40==x21={str(bool(ctx40 and x21 and ctx40 == x21)).lower()} ctx40raw={ctx40_dump}"
@@ -1510,7 +1528,7 @@ def snapshot_ba940_override_result_on_hit(frame, bp_loc, internal_dict):
     ctx40_dump = _hex_dump(_read_bytes(process, ctx40, 0x20)) if ctx40 and ctx40 > 0x100000000 else "<nil>"
     sp3c = _read_u32(process, sp + 0x3C) if sp else None
 
-    print(
+    _log(
         f"[hok016c27-ba940-override-ret] pc=0x{frame.GetPC():x} x0=0x{x0:x} w0=0x{(x0 & 0xffffffff):x} "
         f"x19(ctx)=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x} "
         f"ctx+0x40=0x{(ctx40 or 0):x} sp+0x3c=0x{(sp3c or 0):x} ctx40raw={ctx40_dump}"
@@ -1536,7 +1554,7 @@ def snapshot_open_node_storage_entry_on_hit(frame, bp_loc, internal_dict):
     arg1_dump = _hex_dump(_read_bytes(process, x1, 0x20)) if x1 > 0x100000000 else "<nil>"
     arg2_dump = _hex_dump(_read_bytes(process, x2, 0x20)) if x2 > 0x100000000 else "<nil>"
 
-    print(
+    _log(
         f"[hok016c27-open-node-entry] pc=0x{frame.GetPC():x} label={label} "
         f"x0(pkg)=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} x30(lr)=0x{x30:x} "
         f"{_open_node_storage_pkg_extra(process, x0)} "
@@ -1559,7 +1577,7 @@ def snapshot_open_node_storage_fail_on_hit(frame, bp_loc, internal_dict):
     x19 = _reg_u64(frame, "x19")
     x20 = _reg_u64(frame, "x20")
     x30 = _reg_u64(frame, "x30")
-    print(
+    _log(
         f"[hok016c27-open-node-fail] pc=0x{frame.GetPC():x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} "
         f"x19(pkg)=0x{x19:x} x20=0x{x20:x} x30(lr)=0x{x30:x} "
         f"{_open_node_storage_pkg_extra(process, x19)}"
@@ -1584,7 +1602,7 @@ def snapshot_a53dc_gate_on_hit(frame, bp_loc, internal_dict):
     input_w3 = _read_u32(process, x20) if x20 > 0x100000000 else None
     input_w4 = _read_u32(process, x20 + 0x4) if x20 > 0x100000000 else None
     input_x5 = _read_u64(process, x20 + 0x8) if x20 > 0x100000000 else None
-    print(
+    _log(
         f"[hok016c27-a53dc-{label}] pc=0x{pc:x} x0=0x{x0:x} w0=0x{(x0 & 0xffffffff):x} "
         f"x19(pkg)=0x{x19:x} x20(args)=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x} "
         f"in.w3=0x{(input_w3 or 0):x} in.w4=0x{(input_w4 or 0):x} in.x5=0x{(input_x5 or 0):x} "
@@ -1613,7 +1631,7 @@ def snapshot_ba940_second_override_call_on_hit(frame, bp_loc, internal_dict):
     ctxA0 = _read_u64(process, x19 + 0xA0) if x19 > 0x100000000 else None
     key = _decode_pascal_string(process, x2)
 
-    print(
+    _log(
         f"[hok016c27-ba940-second-call] pc=0x{frame.GetPC():x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} "
         f"x3=0x{x3:x} x5=0x{x5:x} x19(ctx)=0x{x19:x} x21=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x} "
         f"ctx+0x38=0x{(ctx38 or 0):x} ctx+0x40=0x{(ctx40 or 0):x} ctx+0xa0=0x{(ctxA0 or 0):x} "
@@ -1640,7 +1658,7 @@ def snapshot_ba940_second_override_result_on_hit(frame, bp_loc, internal_dict):
     ctxA0 = _read_u64(process, x19 + 0xA0) if x19 > 0x100000000 else None
     key = _decode_pascal_string(process, x20)
 
-    print(
+    _log(
         f"[hok016c27-ba940-second-ret] pc=0x{frame.GetPC():x} x0=0x{x0:x} w0=0x{(x0 & 0xffffffff):x} "
         f"x19(ctx)=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x} "
         f"ctx+0x38=0x{(ctx38 or 0):x} ctx+0x40=0x{(ctx40 or 0):x} ctx+0xa0=0x{(ctxA0 or 0):x} "
@@ -1665,7 +1683,7 @@ def snapshot_ba940_ctx38_check_on_hit(frame, bp_loc, internal_dict):
     ctx40 = _read_u64(process, x19 + 0x40) if x19 > 0x100000000 else None
     key = _decode_pascal_string(process, x20)
 
-    print(
+    _log(
         f"[hok016c27-ba940-ctx38] pc=0x{frame.GetPC():x} x19(ctx)=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} "
         f"x22(ctx+0x38)=0x{x22:x} x30(lr)=0x{x30:x} ctx+0x38=0x{(ctx38 or 0):x} ctx+0x40=0x{(ctx40 or 0):x} "
         f"key=[{key['summary']}]"
@@ -1692,7 +1710,7 @@ def snapshot_ba940_second_fail_on_hit(frame, bp_loc, internal_dict):
     ctx40 = _read_u64(process, x19 + 0x40) if x19 > 0x100000000 else None
     key = _decode_pascal_string(process, x20)
 
-    print(
+    _log(
         f"[hok016c27-ba940-second-fail] pc=0x{frame.GetPC():x} x19(ctx)=0x{x19:x} x20=0x{x20:x} x21=0x{x21:x} "
         f"x22=0x{x22:x} x30(lr)=0x{x30:x} sp+0x2c=0x{(local_2c or 0):x} sp+0x30=0x{(local_30 or 0):x} "
         f"ctx+0x38=0x{(ctx38 or 0):x} ctx+0x40=0x{(ctx40 or 0):x} key=[{key['summary']}]"
@@ -1714,7 +1732,7 @@ def snapshot_bb73c_entry_on_hit(frame, bp_loc, internal_dict):
     key = _decode_pascal_string(process, x1)
     arg0_dump = _hex_dump(_read_bytes(process, x0, 0x20)) if x0 > 0x100000000 else "<nil>"
 
-    print(
+    _log(
         f"[hok016c27-bb73c-entry] pc=0x{frame.GetPC():x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} "
         f"w3=0x{(x3 & 0xffffffff):x} x30(lr)=0x{x30:x} x1Decoded=[{key['summary']}] arg0raw={arg0_dump}"
         + f" bt={_short_backtrace(thread)}"
@@ -1735,7 +1753,7 @@ def snapshot_ba940_wrapper_return_on_hit(frame, bp_loc, internal_dict):
     ret_dump = _hex_dump(_read_bytes(process, x0, 0x40)) if x0 > 0x100000000 else "<nil>"
     ret_plus28 = _hex_dump(_read_bytes(process, x0 + 0x28, 0x20)) if x0 > 0x100000000 else "<nil>"
 
-    print(
+    _log(
         f"[hok016c27-ba940-wrapper-ret] pc=0x{frame.GetPC():x} x0(ret)=0x{x0:x} x19(ctx)=0x{x19:x} x20=0x{x20:x} "
         f"x21=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x}{_object_contract_extra(process, x0, 'ret') if x0 > 0x100000000 else ''} "
         f"retRaw40={ret_dump} ret+0x28[32]={ret_plus28}"
@@ -1758,7 +1776,7 @@ def snapshot_c5a38_pair_write_on_hit(frame, bp_loc, internal_dict):
     pair1 = _read_u64(process, x19 + 0x48) if x19 > 0x100000000 else None
     pair_dump = _hex_dump(_read_bytes(process, x19 + 0x40, 0x20)) if x19 > 0x100000000 else "<nil>"
 
-    print(
+    _log(
         f"[hok016c27-c5a38-pair] pc=0x{frame.GetPC():x} x19(obj)=0x{x19:x} x20(src)=0x{x20:x} x30(lr)=0x{x30:x} "
         f"pair0=0x{(pair0 or 0):x} pair1=0x{(pair1 or 0):x} pairRaw={pair_dump}"
         + f" bt={_short_backtrace(thread)}"
@@ -1777,7 +1795,7 @@ def snapshot_bb844_entry_on_hit(frame, bp_loc, internal_dict):
     entry_slot0 = _read_u64(process, x1) if x1 > 0x100000000 else None
     entry_slot1 = _read_u64(process, x1 + 0x8) if x1 > 0x100000000 else None
 
-    print(
+    _log(
         f"[hok016c27-bb844-entry] pc=0x{frame.GetPC():x} x0(wrapper)=0x{x0:x} x1(entry)=0x{x1:x} x30(lr)=0x{x30:x} "
         f"entry.slot0=0x{(entry_slot0 or 0):x} entry.slot1=0x{(entry_slot1 or 0):x} wrapperRaw40={wrapper_dump}"
         + f" bt={_short_backtrace(thread)}"
@@ -1800,7 +1818,7 @@ def snapshot_ba940_override_slot_write_on_hit(frame, bp_loc, internal_dict):
     ctx40_dump = _hex_dump(_read_bytes(process, ctx40, 0x20)) if ctx40 and ctx40 > 0x100000000 else "<nil>"
     x22_dump = _hex_dump(_read_bytes(process, x22, 0x20)) if x22 > 0x100000000 else "<nil>"
 
-    print(
+    _log(
         f"[hok016c27-ba940-override-slot] pc=0x{frame.GetPC():x} x19(ctx)=0x{x19:x} x21=0x{x21:x} "
         f"x22=0x{x22:x} x30(lr)=0x{x30:x} ctx+0x40=0x{(ctx40 or 0):x} ctx+0xa0=0x{(ctxA0 or 0):x} "
         f"ctx40==x22={str(bool(ctx40 and x22 and ctx40 == x22)).lower()} "
@@ -1827,7 +1845,7 @@ def snapshot_ba940_override_slot_post_on_hit(frame, bp_loc, internal_dict):
     x22_dump = _hex_dump(_read_bytes(process, x22, 0x20)) if x22 > 0x100000000 else "<nil>"
     slot1_dump = _hex_dump(_read_bytes(process, slot1, 0x20)) if slot1 and slot1 > 0x100000000 else "<nil>"
 
-    print(
+    _log(
         f"[hok016c27-ba940-override-slot-post] pc=0x{frame.GetPC():x} x19(ctx)=0x{x19:x} x21=0x{x21:x} "
         f"x22=0x{x22:x} x30(lr)=0x{x30:x} ctx+0x40=0x{(ctx40 or 0):x} ctx+0xa0=0x{(ctxA0 or 0):x} "
         f"ctx40==x22={str(bool(ctx40 and x22 and ctx40 == x22)).lower()} "
@@ -1852,7 +1870,7 @@ def snapshot_bc970_stage_on_hit(frame, bp_loc, internal_dict):
     x24 = _reg_u64(frame, "x24")
     x30 = _reg_u64(frame, "x30")
 
-    print(
+    _log(
         f"[hok016c27-bc970] pc=0x{frame.GetPC():x} x0=0x{x0:x} x19=0x{x19:x} x20=0x{x20:x} "
         f"x21=0x{x21:x} x22=0x{x22:x} x23=0x{x23:x} x24=0x{x24:x} x30(lr)=0x{x30:x}"
         + (_tracked_chunk_extra(process, _tracked_mainchunk_addr) if _tracked_mainchunk_addr else "")
@@ -1875,7 +1893,7 @@ def snapshot_ba720_lookup_ret_on_hit(frame, bp_loc, internal_dict):
     ctx0_raw = _hex_dump(_read_bytes(process, ctx0, 0x20)) if ctx0 and ctx0 > 0x100000000 else "<nil>"
     ctx18_raw = _hex_dump(_read_bytes(process, ctx18, 0x20)) if ctx18 and ctx18 > 0x100000000 else "<nil>"
 
-    print(
+    _log(
         f"[hok016c27-ba720-lookup] pc=0x{frame.GetPC():x} x0(lookupRet)=0x{x0:x} x19(ctx)=0x{x19:x} "
         f"x21(key)=0x{x21:x} x30(lr)=0x{x30:x} ctx[0]=0x{(ctx0 or 0):x} ctx+0x18=0x{(ctx18 or 0):x} "
         f"ctx0raw={ctx0_raw} ctx18raw={ctx18_raw} key=[{key['summary']}]"
@@ -1900,7 +1918,7 @@ def snapshot_ba720_ctx_ready_on_hit(frame, bp_loc, internal_dict):
     ctx98 = _read_u64(process, x19 + 0x98) if x19 > 0x100000000 else None
     ctxA0 = _read_u64(process, x19 + 0xA0) if x19 > 0x100000000 else None
 
-    print(
+    _log(
         f"[hok016c27-ba720-ctx] pc=0x{frame.GetPC():x} x19(ctx)=0x{x19:x} x30(lr)=0x{x30:x} "
         f"ctx[0]=0x{(ctx0 or 0):x} ctx+0x18=0x{(ctx18 or 0):x} ctx+0x38=0x{(ctx38 or 0):x} "
         f"ctx+0x40=0x{(ctx40 or 0):x} ctx+0x98=0x{(ctx98 or 0):x} ctx+0xa0=0x{(ctxA0 or 0):x} "
@@ -1976,7 +1994,7 @@ def snapshot_writer_store_on_hit(frame, bp_loc, internal_dict):
             except Exception as exc:
                 extra += f" entry-wp-exc={exc!r}"
 
-    print(
+    _log(
         f"[hok016c27-writer-store] pc=0x{frame.GetPC():x} x0=0x{x0:x} x19=0x{x19:x} x20=0x{x20:x} "
         f"x21=0x{x21:x} x22(src)=0x{x22:x} x23(dst)=0x{x23:x} x24=0x{x24:x} x30(lr)=0x{x30:x} "
         f"trackedDst={str(target_matches).lower()} dstBefore=0x{(dest_before or 0):x} src40={src_dump}{extra}"
@@ -1994,7 +2012,7 @@ def snapshot_second_gate_return_on_hit(frame, bp_loc, internal_dict):
     x19 = _reg_u64(frame, "x19")
     x30 = _reg_u64(frame, "x30")
 
-    print(
+    _log(
         f"[hok016c27-second-gate] pc=0x{frame.GetPC():x} preX0=0x{x0:x} retX19=0x{x19:x} x30(lr)=0x{x30:x}"
         + (_tracked_chunk_extra(process, _tracked_mainchunk_addr) if _tracked_mainchunk_addr else "")
         + f" bt={_short_backtrace(thread)}"
@@ -2011,7 +2029,7 @@ def snapshot_second_f3c8_return_on_hit(frame, bp_loc, internal_dict):
     x20 = _reg_u64(frame, "x20")
     x30 = _reg_u64(frame, "x30")
 
-    print(
+    _log(
         f"[hok016c27-second-f3c8] pc=0x{frame.GetPC():x} x0=0x{x0:x} x19=0x{x19:x} x20=0x{x20:x} x30(lr)=0x{x30:x}"
         + (_tracked_chunk_extra(process, _tracked_mainchunk_addr) if _tracked_mainchunk_addr else "")
         + f" bt={_short_backtrace(thread)}"
@@ -2062,7 +2080,7 @@ def snapshot_be550_post_lookup_on_hit(frame, bp_loc, internal_dict):
             except Exception as exc:
                 extra += f" slot1-wp-exc={exc!r}"
 
-    print(
+    _log(
         f"[hok016c27-be550-lookup] pc=0x{frame.GetPC():x} x0(node)=0x{x0:x} x21(flag)=0x{x21:x} "
         f"x22=0x{x22:x} x30(lr)=0x{x30:x}{extra}"
         + (_tracked_chunk_extra(process, _tracked_mainchunk_addr) if _tracked_mainchunk_addr else "")
@@ -2083,7 +2101,7 @@ def snapshot_be550_child_pick_on_hit(frame, bp_loc, internal_dict):
     child1 = _read_u64(process, x20 + 0x8) if x20 > 0x100000000 else None
     raw40 = _hex_dump(_read_bytes(process, x20, 0x40)) if x20 > 0x100000000 else "<no-node>"
 
-    print(
+    _log(
         f"[hok016c27-be550-child] pc=0x{frame.GetPC():x} x20=0x{x20:x} x21(flag)=0x{x21:x} "
         f"x22=0x{x22:x} x30(lr)=0x{x30:x} child0=0x{(child0 or 0):x} child1=0x{(child1 or 0):x} raw40={raw40}"
         + (_object_contract_extra(process, x20, "node") if x20 > 0x100000000 else "")
@@ -2105,7 +2123,7 @@ def snapshot_slot1_write_on_hit(frame, bp_loc, internal_dict):
     x30 = _reg_u64(frame0, "x30")
     new_value = _read_u64(process, _slot1_watch_addr) if _slot1_watch_addr else None
 
-    print(
+    _log(
         f"[hok016c27-slot1-write] pc=0x{frame0.GetPC():x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} "
         f"x30(lr)=0x{x30:x} watched=0x{_slot1_watch_addr:x} value=0x{(new_value or 0):x}"
         + (_tracked_chunk_extra(process, _tracked_mainchunk_addr) if _tracked_mainchunk_addr else "")
@@ -2127,7 +2145,7 @@ def snapshot_entry_slot_write_on_hit(frame, bp_loc, internal_dict):
     slot0 = _read_u64(process, _entry_slot0_addr) if _entry_slot0_addr else None
     slot1 = _read_u64(process, _entry_slot1_addr) if _entry_slot1_addr else None
 
-    print(
+    _log(
         f"[hok016c27-entry-slot-write] pc=0x{frame0.GetPC():x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} "
         f"x30(lr)=0x{x30:x} slot0@0x{_entry_slot0_addr:x}=0x{(slot0 or 0):x} "
         f"slot1@0x{_entry_slot1_addr:x}=0x{(slot1 or 0):x}"
@@ -2138,7 +2156,7 @@ def snapshot_entry_slot_write_on_hit(frame, bp_loc, internal_dict):
 
 
 def __lldb_init_module(debugger, internal_dict):
-    print(
+    _log(
         "[hok016c27] loaded; use snapshot_mainchunk_on_hit / "
         "snapshot_lookup2_on_hit / snapshot_subtree_watch_on_hit callbacks."
     )

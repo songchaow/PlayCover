@@ -71,24 +71,36 @@
   未进入 `branch-238` compare ladder 及后续 tail**。LLDB trace 在
   `0x100122f98`（err direct writer）捕获到 `x21=0`、`x8=0x9000b`，与
   `build/hok-016c27-mainchunk-subtree-trace.json` 一致。
+- **本轮关键新发现**：natural run 中 `0x100122f54` 的 materialize vcall
+  实际 `x8(target)=0x100128c6c`（或 `0x115a5eb30`），**不是**静态分析锁定的
+  `0x10432a068`。这意味着 dual-force / 附录 C27 中基于 `0x10432a068` 的
+  target-side trace 与 natural run 的实际 target 不同；C.5 安装在
+  `0x10432a068` vtable slot 上的 hook **从未被 natural run 触发**。
 - HOK-016-C.5 materialize shim 已 live 验证：安装成功（provider-clone
-  方式，`patchAddr=0x10e16ded8`），`cache` 命中一次（路径
-  `../../../NGR/Content/Paks/1/1.db`）。**但 `hok014_ngr_alert_suppressed`
-  仍稳定触发 1 次**，说明 natural run 中至少存在一条未被 C.5 cache/reuse
-  覆盖的失败路径。无新 `NGR-*.ips`。
+  方式），`cache` 命中一次（路径 `../../../NGR/Content/Paks/1/1.db`），但
+  扩展 `should_reuse_path` 后仍无 `reuse`。根因已确认：natural run 的
+  materialize target 不是 `0x10432a068`。无新 `NGR-*.ips`。
 
 ### 修复路线（优先级从高到低）
 
-1. **`HOK-016-C.2.7`（当前主线）**：继续 live trace，聚焦三个未闭合点：
-   - (a) `0x10432df30` 在 OpenNodeStorage gate 失败的具体原因（`pkg+0x10`
-     invalid mode vs `pkg+0xb0->0x30` nodeStorage errcode）；
-   - (b) `0x10432dfdc` 在 dormant writer 前提前触发 `ba720(key="1")` 的时序；
-   - (c) 同一 materializer target 在 post-`1c8` pair 已收敛的情况下，为什么
-     pre-`1c8` entry tuple / helper state 差异仍导致不同分支并最终压空
-     `helper+0x18`。完整技术细节与寄存器证据见 `HOK-016-appendix-C27.md` §14。
-2. **`HOK-016-C.5`**：PlayTools constructor 中已补齐 materialize shim，
-   待 live 验证。**最小侵入修法**。
-3. **`HOK-016-C.4`**：若对象形状无法安全模拟，做诊断性强制成功验证。
+1. **`HOK-016-C.2.7`（当前主线）**：
+   - (a) natural run 中 `0x1001a588c` 已观测到一次 success 命中（`pkg+0x10=0x0`
+     `pkg+0xa8=0x2` `pkg+0xb0=0x0` `pkg+0x110=0x1`），label=`gate1-ret`；
+     natural fail 路径在 `branch-224` 后直接返回 0，未进入 `branch-238`
+     tail，因此 (a) 的 OpenNodeStorage gate 可能**不是** natural fail 的直
+     接来源。
+   - (b) `ba720(key="1")` 的时序差异已在 dual-force run 中闭合；natural
+     run 中 `mainChunk+0x60` 为 0 时 `ba720` 返回 0 是预期行为。
+   - **(c) 新口径**：natural run 中 `0x100122f54` 的 `x8(target)` 实际是
+     `0x100128c6c` / `0x115a5eb30`，不是 `0x10432a068`。dual-force run 与
+     natural run 的 materialize target 不同，附录 C27 §14 的 target-side
+     分析需要重新评估是否适用于 natural path。
+2. **`HOK-016-C.5`**：根因已确认为 hook target 地址错误（`0x10432a068` vs
+   `0x100128c6c`）。下一步需改为在 `0x100122f54` 处动态捕获 `x8` 并安装
+   hook，或放弃 vtable-slot 方式改为直接 patch caller。
+3. **`HOK-016-C.4`**：由于 natural run 的 materialize target 与 dual-force
+   不同，对象形状假设需要重新验证。若 C.5 修正后仍无法覆盖，进入诊断性
+   强制成功验证。
 4. **`HOK-016-C.3`**：fishhook interpose `0x108878534` 直接返回 1，
    稳定性风险极高，仅作最后兜底。
 5. **`HOK-016-C.6`**：若必须依赖用户外部资源 / 登录态，才降级到 HOK-009。
@@ -130,34 +142,39 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
 ### 当前卡点
 
 三层未闭合问题：
-1. `0x10432df30` 在 OpenNodeStorage gate 失败的具体原因（`pkg+0x10`
-   invalid mode vs `pkg+0xb0->0x30` nodeStorage errcode）；
-2. 同一 materializer target 在 post-`1c8` pair 已收敛的情况下，为什么
-   pre-`1c8` entry tuple / helper state 差异仍导致不同分支；
-3. **C.5 已安装且 cache 命中，但 `hok014_ngr_alert_suppressed` 仍触发 1
-   次**：natural run 中存在第二条未被 C.5 拦截的失败路径，需定位其入口
-   tuple / helper state 与 C.5 cache 命中的差异。完整证据链见
-   `HOK-016-appendix-C27.md` §14。
+1. `0x1001a588c` 在 natural run 中观测到一次 success 命中（`pkg+0x10=0x0`
+   `pkg+0xb0=0x0`），但 natural fail 走 `branch-224` 直接返 0；OpenNodeStorage
+   gate 可能不是 natural fail 的直接来源。
+2. **C.5 hook target 地址错误**：natural run 中 `0x100122f54` 的
+   `x8(target)=0x100128c6c/0x115a5eb30`，不是 `0x10432a068`，导致 C.5
+   vtable hook 从未被触发；dual-force run 的 target-side 分析（`0x10432a068`
+   pre-`1c8` entry tuple / helper state 差异）是否适用于 natural run 需
+   重新评估。
+3. **C.5 修正策略未定**：是在 `0x100122f54` 动态捕获 `x8` 并实时安装
+   hook，还是放弃 vtable-slot 方式改为 caller-side patch（`0x100122f58`
+   处拦截返回值），或直接进入 C.4 诊断性强制成功验证。
 
 ### 下一步默认规划
 
-1. **继续 `HOK-016-C.2.7`**：natural run 已证实 `branch-238` / `branch-3e0`
-   / `branch-580` 在 failing path 中**未命中**（`branch-224` 后直接返
-   回 0）。下一步补 branch A 在 `0x1001a588c` 的 `pkg+0x10` /
-   `pkg+0xb0->0x30` 观测，确认 OpenNodeStorage gate 的根因。
-2. **定位 C.5 未覆盖路径**：`launch-events.jsonl` 显示 C.5 仅对
-   `../../../NGR/Content/Paks/1/1.db` 命中 1 次 `cache`，但 alert 仍触
-   发。需通过 live trace 或结构化日志确认：是否存在另一条 materialize
-   调用（不同 entry tuple / helper state）绕过了 C.5 的
-   `pt_ngr_c5_should_cache_path` / `pt_ngr_c5_should_reuse_path` gate。
-3. 并行追踪 dormant writer path（`0x10432dfdc → ... → 0x1001c6da4`）的
-   自然激活条件。
-4. 若 C.2.7 证实对象形状无法安全模拟，进入 `HOK-016-C.4` 诊断性强制成功验证。
-5. `HOK-016-C.3` 保留作为最后兜底。
-6. `HOK-016-D` live 验证标准：`hok014_ngr_alert_suppressed = 0` +
+1. **修正 C.5 的安装策略**（优先级最高）：当前 C.5 安装在 `0x10432a068`
+   vtable slot 上，但 natural run 中 `0x100122f54` 的 `x8` 实际是
+   `0x100128c6c` / `0x115a5eb30`。需改为：
+   - 方案 A：在 `0x100122f54` 设 breakpoint，首次命中时读取 `x8`，然后
+     在运行期把 hook 安装到实际 target 的 vtable slot 上；
+   - 方案 B：放弃 vtable-slot 方式，直接在 `0x100122f58`（materialize ret
+     site）做 return-value patch，当 `x0==0` 且 err slot 为 `0x9000b` 时
+     强制返回 cache 对象；
+   - 方案 C：若 A/B 都因 target 动态分配 / vtable 不可写而失败，降级到
+     C.4 诊断性强制成功验证。
+2. **同步重新验证 C.2.7 (c)**：由于 natural run 的 materialize target
+   与 dual-force run 不同，`0x10432a068` 的 pre-`1c8` entry tuple 差异
+   分析是否仍适用于 natural path 需要重新确认。修正 C.5 后若 alert 仍
+   触发，再补 `0x100128c6c` 的 target-side trace。
+3. `HOK-016-C.3` 保留作为最后兜底。
+4. `HOK-016-D` live 验证标准：`hok014_ngr_alert_suppressed = 0` +
    `%CPU/RSS/线程/窗口` 活跃度达标 + 无新 `NGR-*.ips`。
-7. 只有 HOK-016 闭合，才把 HOK-014 正式降级为冷备安全网。
-8. 闭合后再做 `HOK-008`：把"revert 候选 E → `rootWorkDir=1` → 启动 →
+5. 只有 HOK-016 闭合，才把 HOK-014 正式降级为冷备安全网。
+6. 闭合后再做 `HOK-008`：把"revert 候选 E → `rootWorkDir=1` → 启动 →
    证据采集 → pass 判定"固化成单脚本。
 
 ## 构建与验证
@@ -259,10 +276,10 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
 | HOK-016-C.2.4 | DONE | 收紧到 `0x10017f184` 的 lookup 失败 | `HOK-016-appendix-C23-C24.md` |
 | HOK-016-C.2.5 | DONE | 补齐 rootB writer / insert-helper 的侧证 | `HOK-016-appendix-C25-C26.md` |
 | HOK-016-C.2.6 | DONE | 更正为 `mainChunk` 的 `"1"` 子树缺失，不是 `"main"` 缺失 | `HOK-016-appendix-C25-C26.md` |
-| HOK-016-C.2.7 | TODO（当前主线） | (b)(c) 已验证：natural run 中 `branch-224` 后直接返回 0，未进入 `branch-238/3e0/580` tail；仍待 (a) `0x1001a588c` 处 `pkg+0x10` / `pkg+0xb0->0x30` 的根因。详见 `HOK-016-appendix-C27.md` §14、`build/hok-016c27-mainchunk-subtree-trace.json`。 | `HOK-016-appendix-C27.md` |
+| HOK-016-C.2.7 | TODO（当前主线） | (a) `0x1001a588c` natural run 已观测到一次 success 命中（`pkg+0x10=0x0 pkg+0xa8=0x2 pkg+0xb0=0x0 pkg+0x110=0x1`），label=`gate1-ret`；natural fail 走 `branch-224` 直接返 0，未进入 `branch-238` tail。**(c) 新发现**：natural run 中 `0x100122f54` 的 `x8(target)=0x100128c6c/0x115a5eb30`，不是 `0x10432a068`，dual-force 的 target-side 分析需重新评估。详见 `HOK-016-appendix-C27.md` §14、`build/hok-016c27-mainchunk-subtree-trace-post-log.json`、`/tmp/hok016c27-lldb-trace.log`。 | `HOK-016-appendix-C27.md` |
 | HOK-016-C.3 | DEFERRED | 终极野蛮方案：fishhook interpose `0x108878534` 直接返回 1，仅作最后兜底 | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.4 | TODO | 若 C.2.7 证明自然路径过深或对象形状不可安全模拟，再做诊断性强制成功验证 | `HOK-016-appendix-C27.md` |
-| HOK-016-C.5 | TODO（部分验证，待定位未覆盖路径） | Live 验证：安装成功（provider-clone），`cache` 命中 1 次，但 `hok014_ngr_alert_suppressed` 仍触发 1 次。存在未被 C.5 拦截的失败路径，需继续定位。证据：`launch-events.jsonl`（pid=13324）、`build/hok-016c27-mainchunk-subtree-trace.json`。 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.4 | TODO | 若 C.5 修正 target 后仍无法覆盖，进入诊断性强制成功验证。natural run 的 materialize target 与 dual-force 不同，对象形状假设需重新验证。 | `HOK-016-appendix-C27.md` |
+| HOK-016-C.5 | TODO（根因已定位：hook target 地址错误） | `should_reuse_path` 扩展无效；根本原因是 natural run 的 materialize target 为 `0x100128c6c`/`0x115a5eb30`，不是 `0x10432a068`，C.5 vtable hook 从未被触发。下一步：改为在 `0x100122f54` 动态捕获 `x8` 并安装 hook，或改用 caller-side patch。证据：`/tmp/hok016c27-lldb-trace.log`、`launch-events.jsonl`（pid=42186）。 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.6 | DEFERRED | 仅在必须依赖外部资源或登录态时，才降级到需要用户介入的路线 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-D | TODO | HOK-016-C 落地后做 live 验证，并把 HOK-014 降级为冷备安全网 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-007C | DEFERRED | 下游 crash 的离线映射 + 可逆 patch；当前无触发动机 | `HOK-007-二进制意图分析与callsite映射.md` |
@@ -315,6 +332,10 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
   <func>` 两步；`-C 'shell cmd'` 与 `command add -s python -F` 不能
   同时作用于同一 BP。完整脚本清单与踩坑汇总见
   `HOK-016-appendix-tooling.md`。
+- **C.5 vtable hook 的 target 地址可能在 natural run 中变化**：静态分析
+  锁定的 `0x10432a068` 在 dual-force run 中确实被命中，但 natural run 中
+  `0x100122f54` 的 `x8` 实际是 `0x100128c6c`/`0x115a5eb30`。任何基于固定
+  vtable slot 的 hook 方案，都必须先通过 live BP 验证运行期实际 target。
 
 ## 参考信息
 

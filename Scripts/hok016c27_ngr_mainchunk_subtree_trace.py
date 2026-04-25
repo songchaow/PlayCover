@@ -89,6 +89,8 @@ BP_CREATE_TABLE_IMPL_ERR_DIRECT = "0x100122f98"
 BP_CREATE_TABLE_IMPL_FINAL_CHECK = "0x100125960"
 BP_CREATE_TABLE_IMPL_RETURN = "0x1001259c4"
 BP_STORAGE_AFTER_CREATE_TABLE = "0x1001b3df4"
+BP_OPEN_NODE_STORAGE_ENTRY = "0x1001a588c"
+BP_OPEN_NODE_STORAGE_FAIL = "0x1001a5730"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -346,6 +348,16 @@ def main() -> int:
             "hok016c27_lldb_mainchunk_watch.snapshot_storage_after_create_table_on_hit",
         ),
         (
+            BP_OPEN_NODE_STORAGE_ENTRY,
+            "hok016c27_open_node_storage_entry",
+            "hok016c27_lldb_mainchunk_watch.snapshot_open_node_storage_entry_on_hit",
+        ),
+        (
+            BP_OPEN_NODE_STORAGE_FAIL,
+            "hok016c27_open_node_storage_fail",
+            "hok016c27_lldb_mainchunk_watch.snapshot_open_node_storage_fail_on_hit",
+        ),
+        (
             BP_BD448_AFTER_LOOKUP1,
             "hok016c27_bd448_after_lookup1",
             "hok016c27_lldb_mainchunk_watch.snapshot_postcall_on_hit",
@@ -436,6 +448,8 @@ def main() -> int:
     print(f"  create-table check  : {BP_CREATE_TABLE_IMPL_FINAL_CHECK}")
     print(f"  create-table return : {BP_CREATE_TABLE_IMPL_RETURN}")
     print(f"  storage table       : {BP_STORAGE_AFTER_CREATE_TABLE}")
+    print(f"  open-node entry     : {BP_OPEN_NODE_STORAGE_ENTRY}")
+    print(f"  open-node fail      : {BP_OPEN_NODE_STORAGE_FAIL}")
     print(f"  a5014 return        : {BP_BD464_AFTER_A5014}")
     print(f"  lookup2 return      : {BP_BD448_AFTER_LOOKUP1}")
     print(f"  f184 return path    : {BP_F184_BEFORE_FLAG_TESTS}, {BP_DD98_AFTER_F184}")

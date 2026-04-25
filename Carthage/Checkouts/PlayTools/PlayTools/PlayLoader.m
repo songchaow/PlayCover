@@ -1037,7 +1037,9 @@ static BOOL pt_ngr_c5_should_cache_path(const char *path) {
 
 static BOOL pt_ngr_c5_should_reuse_path(const char *path) {
     if (!pt_ngr_c5_string_has_prefix(path, "/Users/")) { return NO; }
-    return strstr(path, "/Library/NGR/") != NULL;
+    return strstr(path, "/Library/NGR/") != NULL
+        || strstr(path, "/NGR/") != NULL
+        || strstr(path, ".db") != NULL;
 }
 
 static BOOL pt_ngr_c5_should_redirect_saved_path(const char *path) {

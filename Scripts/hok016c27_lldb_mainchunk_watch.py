@@ -47,10 +47,13 @@ _MATERIALIZE_TARGET_PHASES = {
     0x10432A17C: "branch-17c",
     0x10432A1C8: "branch-1c8",
     0x10432A224: "branch-224",
+    0x10432A238: "branch-238",
     0x10432A2C8: "branch-2c8",
     0x10432A2E0: "branch-2e0",
     0x10432A31C: "ret-31c",
     0x10432A33C: "branch-33c",
+    0x10432A3E0: "branch-3e0",
+    0x10432A580: "branch-580",
 }
 
 
@@ -275,6 +278,27 @@ def _pointer_raw_extra(process, label, value, size=0x20):
     if value <= 0x100000000:
         return ""
     return f" {label}raw={_hex_dump(_read_bytes(process, value, size))}"
+
+
+def _open_node_storage_pkg_extra(process, pkg_addr):
+    if pkg_addr <= 0x100000000:
+        return " pkg=<nil>"
+    pkg_10 = _read_u32(process, pkg_addr + 0x10)
+    pkg_a8 = _read_u64(process, pkg_addr + 0xA8)
+    pkg_b0 = _read_u64(process, pkg_addr + 0xB0)
+    node_storage_err = (
+        _read_u32(process, pkg_b0 + 0x30)
+        if pkg_b0 is not None and pkg_b0 > 0x100000000
+        else None
+    )
+    pkg_110 = _read_u32(process, pkg_addr + 0x110)
+    return (
+        f" pkg+0x10=0x{(pkg_10 or 0):x}"
+        f" pkg+0xa8=0x{(pkg_a8 or 0):x}"
+        f" pkg+0xb0=0x{(pkg_b0 or 0):x}"
+        f" pkg+0xb0->0x30=0x{(node_storage_err or 0):x}"
+        f" pkg+0x110=0x{(pkg_110 or 0):x}"
+    )
 
 
 def _watched_err_slot_extra(process):
@@ -1156,7 +1180,18 @@ def snapshot_materialize_target_on_hit(frame, bp_loc, internal_dict):
     extra += _materialize_target_pointer_summary(process, "x1", x1)
     if phase in {"post-helper1", "post-helper2", "ret-31c"}:
         extra += _materialize_target_pointer_summary(process, "x21", x21)
-    if phase in {"branch-17c", "branch-1c8", "branch-224", "branch-2c8", "branch-2e0", "branch-33c", "ret-31c"}:
+    if phase in {
+        "branch-17c",
+        "branch-1c8",
+        "branch-224",
+        "branch-238",
+        "branch-2c8",
+        "branch-2e0",
+        "branch-33c",
+        "branch-3e0",
+        "branch-580",
+        "ret-31c",
+    }:
         extra += _materialize_target_pointer_summary(process, "x22", x22)
 
     print(
@@ -1498,16 +1533,13 @@ def snapshot_open_node_storage_entry_on_hit(frame, bp_loc, internal_dict):
         0x1001A55B8: "gate1-ret",
         0x1001A55C8: "gate2-ret",
     }.get(x30, f"lr-0x{x30:x}")
-    pkg_a8 = _read_u64(process, x0 + 0xA8) if x0 > 0x100000000 else None
-    pkg_b0 = _read_u64(process, x0 + 0xB0) if x0 > 0x100000000 else None
-    pkg_110 = _read_u32(process, x0 + 0x110) if x0 > 0x100000000 else None
     arg1_dump = _hex_dump(_read_bytes(process, x1, 0x20)) if x1 > 0x100000000 else "<nil>"
     arg2_dump = _hex_dump(_read_bytes(process, x2, 0x20)) if x2 > 0x100000000 else "<nil>"
 
     print(
         f"[hok016c27-open-node-entry] pc=0x{frame.GetPC():x} label={label} "
         f"x0(pkg)=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} x30(lr)=0x{x30:x} "
-        f"pkg+0xa8=0x{(pkg_a8 or 0):x} pkg+0xb0=0x{(pkg_b0 or 0):x} pkg+0x110=0x{(pkg_110 or 0):x} "
+        f"{_open_node_storage_pkg_extra(process, x0)} "
         f"arg1raw={arg1_dump} arg2raw={arg2_dump}"
         + (_tracked_chunk_extra(process, _tracked_mainchunk_addr) if _tracked_mainchunk_addr else "")
         + f" bt={_short_backtrace(thread)}"
@@ -1527,14 +1559,10 @@ def snapshot_open_node_storage_fail_on_hit(frame, bp_loc, internal_dict):
     x19 = _reg_u64(frame, "x19")
     x20 = _reg_u64(frame, "x20")
     x30 = _reg_u64(frame, "x30")
-    pkg_a8 = _read_u64(process, x19 + 0xA8) if x19 > 0x100000000 else None
-    pkg_b0 = _read_u64(process, x19 + 0xB0) if x19 > 0x100000000 else None
-    pkg_110 = _read_u32(process, x19 + 0x110) if x19 > 0x100000000 else None
-
     print(
         f"[hok016c27-open-node-fail] pc=0x{frame.GetPC():x} x0=0x{x0:x} x1=0x{x1:x} x2=0x{x2:x} x3=0x{x3:x} x4=0x{x4:x} "
         f"x19(pkg)=0x{x19:x} x20=0x{x20:x} x30(lr)=0x{x30:x} "
-        f"pkg+0xa8=0x{(pkg_a8 or 0):x} pkg+0xb0=0x{(pkg_b0 or 0):x} pkg+0x110=0x{(pkg_110 or 0):x}"
+        f"{_open_node_storage_pkg_extra(process, x19)}"
         + (_tracked_chunk_extra(process, _tracked_mainchunk_addr) if _tracked_mainchunk_addr else "")
         + f" bt={_short_backtrace(thread)}"
     )
@@ -1556,15 +1584,11 @@ def snapshot_a53dc_gate_on_hit(frame, bp_loc, internal_dict):
     input_w3 = _read_u32(process, x20) if x20 > 0x100000000 else None
     input_w4 = _read_u32(process, x20 + 0x4) if x20 > 0x100000000 else None
     input_x5 = _read_u64(process, x20 + 0x8) if x20 > 0x100000000 else None
-    pkg_a8 = _read_u64(process, x19 + 0xA8) if x19 > 0x100000000 else None
-    pkg_b0 = _read_u64(process, x19 + 0xB0) if x19 > 0x100000000 else None
-    pkg_110 = _read_u32(process, x19 + 0x110) if x19 > 0x100000000 else None
-
     print(
         f"[hok016c27-a53dc-{label}] pc=0x{pc:x} x0=0x{x0:x} w0=0x{(x0 & 0xffffffff):x} "
         f"x19(pkg)=0x{x19:x} x20(args)=0x{x20:x} x21=0x{x21:x} x22=0x{x22:x} x30(lr)=0x{x30:x} "
         f"in.w3=0x{(input_w3 or 0):x} in.w4=0x{(input_w4 or 0):x} in.x5=0x{(input_x5 or 0):x} "
-        f"pkg+0xa8=0x{(pkg_a8 or 0):x} pkg+0xb0=0x{(pkg_b0 or 0):x} pkg+0x110=0x{(pkg_110 or 0):x}"
+        f"{_open_node_storage_pkg_extra(process, x19)}"
         + (_tracked_chunk_extra(process, _tracked_mainchunk_addr) if _tracked_mainchunk_addr else "")
         + f" bt={_short_backtrace(thread)}"
     )

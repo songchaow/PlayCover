@@ -83,6 +83,16 @@
   `0x1001a588c` 的下一跳缺口落到 `pkg+0x10` 与 `pkg+0xb0->0x30`；
   `0x10432a068` 在 `0x10432a224` 之后还会继续走
   `0x10432a238 / 0x10432a3e0 / 0x10432a580` 这组当前未打点的 tail。
+- LLDB `hok016c27_lldb_mainchunk_watch.py` 与
+  `hok016c27_ngr_mainchunk_subtree_trace.py` 已补
+  `branch-238` / `branch-3e0` / `branch-580` 三个 checkpoint，单测通过。
+- HOK-016-C.5 materialize shim 已在 PlayTools constructor 落地：vtable
+  hook（`0x10432a068` provider entry clone + slot redirect）、consumer
+  handle family hook（slot 0x30 wrapper）、FS/URL reuse trace、late-linked
+  graph capture、object clone cache 全套机制已 install；`initialize()`
+  执行序中 `pt_ngr_install_materialize_shim_once()` +
+  `pt_ngr_install_url_resolution_probe_once()` 位于 HOK-015 之后、HOK-014
+  之前。待 live 验证。
 
 > 完整的 sibling branch 分析、寄存器快照、BP 清单、descriptor/blob
 > contract 拆解都在 `HOK-016-qts-fs-create-failed.md` 与
@@ -114,8 +124,9 @@
      `str x0,[x19,#0x18]` 把 `x21/helper+0x18` 一起压空，落到
      `err=9` provider 合成 `(9 << 16) | 0xb = 0x9000b`。
 
-2. **`HOK-016-C.5`**：若 C.2.7 能给出可重复的 override payload / 子树
-   注册路径，PlayTools constructor 按同样签名补齐。**最小侵入修法**。
+2. **`HOK-016-C.5`**：PlayTools constructor 中已按 C.2.7 观测到的对象
+   成形签名补齐 materialize shim（vtable hook + object clone + consumer
+   handle family hook + FS/URL reuse trace），待 live 验证。**最小侵入修法**。
 3. **`HOK-016-C.4`**：若上述对象形状无法安全模拟，走 bundle-scoped
    runtime hook / direct patch 做诊断性强制成功验证，确认只要契约闭合
    进程是否就能继续跑。
@@ -185,9 +196,8 @@ descriptor/blob gate；而是两层剩余问题：
 1. 继续 `HOK-016-C.2.7` live trace，先补 branch A 在 `0x1001a588c` 的
    `pkg+0x10` / `pkg+0xb0->0x30` 观测，区分 invalid mode vs nodeStorage
    err path。
-2. 在 natural run 的 materializer target 上补
-   `0x10432a238 / 0x10432a3e0 / 0x10432a580` 三个 checkpoint，闭合
-   `0x10432a224` 之后的真实 fail tail。
+2. `0x10432a238 / 0x10432a3e0 / 0x10432a580` 三个 checkpoint 已补齐，单测
+   通过；下一步是拿 natural run 验证这组 tail 的命中语义。
 3. 并行保留对 natural run 前置条件的追踪：继续沿
    `0x1001bd464 → 0x1001ba50c → 0x1001a5014 → storage.vtable[0x18]
    (0x1001b3d0c) → 0x10012bb7c → 0x10012595c → 0x1001148b8 →
@@ -203,8 +213,8 @@ descriptor/blob gate；而是两层剩余问题：
    “different post-`1c8` object pair”作为默认假设。同时围绕
    `0x10432dfdc → 0x10017f3c8 → 0x1001bc220 → 0x1001bc970 → 0x1001c6da4`
    拆 dormant writer path 的自然激活条件。
-4. 若 C.2.7 能定位可重复的对象成形签名 / 完整 `mainChunk → "1"` 注册
-   路径，进入 `HOK-016-C.5`：在 PlayTools constructor 里补齐该契约。
+4. `HOK-016-C.5` materialize shim 已落地，下一步是做 live 启动验证，确认
+   shim install 事件写入 `launch-events.jsonl` 且 reuse path 被正确触发。
 5. 若 C.2.7 证实路径过深、对象形状无法安全模拟，进入 `HOK-016-C.4`：
    做 bundle-scoped 诊断性强制成功验证，先确认一旦契约闭合进程是否
    就能继续跑。
@@ -317,7 +327,7 @@ descriptor/blob gate；而是两层剩余问题：
 | HOK-016-C.2.7 | TODO（当前主线） | 拆 sibling branch + `0x9000b` 合成契约：解释 `0x10432df30` 为什么在 OpenNodeStorage gate 失败、`0x10432dfdc` 为什么提前进 `ba720` 让 lookup 返 0，以及同一 `0x10432a068` 在 observed natural / success run 里已收敛到同一 post-`1c8` pair（`x21=0x10b248b8c` / `x22=0x10b308bee`）后，为什么仍会因 pre-`1c8` entry tuple / helper state 差异分到 `0x10432a224` vs `0x10432a2c8/0x10432a2e0`，最终把 `x21/helper+0x18` 压空并走到 `0x9000b` | `HOK-016-appendix-C27.md` |
 | HOK-016-C.3 | DEFERRED | 终极野蛮方案：fishhook interpose `0x108878534` 直接返回 1，仅作最后兜底 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.4 | TODO | 若 C.2.7 证明自然路径过深或对象形状不可安全模拟，再做诊断性强制成功验证 | `HOK-016-appendix-C27.md` |
-| HOK-016-C.5 | TODO | 若 C.2.7 找到可重复的对象成形签名 / 注册路径，就在 PlayTools constructor 中按同样签名补齐 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.5 | TODO（代码已落地，待验证） | PlayTools constructor 中已按 C.2.7 签名补齐 materialize shim（vtable hook + object clone + consumer handle family hook + FS/URL reuse trace），待 live 验证 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.6 | DEFERRED | 仅在必须依赖外部资源或登录态时，才降级到需要用户介入的路线 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-D | TODO | HOK-016-C 落地后做 live 验证，并把 HOK-014 降级为冷备安全网 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-007C | DEFERRED | 下游 crash 的离线映射 + 可逆 patch；当前无触发动机 | `HOK-007-二进制意图分析与callsite映射.md` |

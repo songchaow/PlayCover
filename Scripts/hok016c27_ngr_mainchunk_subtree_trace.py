@@ -78,10 +78,13 @@ BP_MATERIALIZE_TARGET_CHECK2_B = "0x10432a118"
 BP_MATERIALIZE_TARGET_BRANCH_17C = "0x10432a17c"
 BP_MATERIALIZE_TARGET_BRANCH_1C8 = "0x10432a1c8"
 BP_MATERIALIZE_TARGET_BRANCH_224 = "0x10432a224"
+BP_MATERIALIZE_TARGET_BRANCH_238 = "0x10432a238"
 BP_MATERIALIZE_TARGET_BRANCH_2C8 = "0x10432a2c8"
 BP_MATERIALIZE_TARGET_BRANCH_2E0 = "0x10432a2e0"
 BP_MATERIALIZE_TARGET_RET_31C = "0x10432a31c"
 BP_MATERIALIZE_TARGET_BRANCH_33C = "0x10432a33c"
+BP_MATERIALIZE_TARGET_BRANCH_3E0 = "0x10432a3e0"
+BP_MATERIALIZE_TARGET_BRANCH_580 = "0x10432a580"
 BP_CREATE_TABLE_IMPL_ERR_DIRECT = "0x100122f98"
 BP_CREATE_TABLE_IMPL_FINAL_CHECK = "0x100125960"
 BP_CREATE_TABLE_IMPL_RETURN = "0x1001259c4"
@@ -288,6 +291,11 @@ def main() -> int:
             "hok016c27_lldb_mainchunk_watch.snapshot_materialize_target_on_hit",
         ),
         (
+            BP_MATERIALIZE_TARGET_BRANCH_238,
+            "hok016c27_materialize_target_branch_238",
+            "hok016c27_lldb_mainchunk_watch.snapshot_materialize_target_on_hit",
+        ),
+        (
             BP_MATERIALIZE_TARGET_BRANCH_2C8,
             "hok016c27_materialize_target_branch_2c8",
             "hok016c27_lldb_mainchunk_watch.snapshot_materialize_target_on_hit",
@@ -305,6 +313,16 @@ def main() -> int:
         (
             BP_MATERIALIZE_TARGET_BRANCH_33C,
             "hok016c27_materialize_target_branch_33c",
+            "hok016c27_lldb_mainchunk_watch.snapshot_materialize_target_on_hit",
+        ),
+        (
+            BP_MATERIALIZE_TARGET_BRANCH_3E0,
+            "hok016c27_materialize_target_branch_3e0",
+            "hok016c27_lldb_mainchunk_watch.snapshot_materialize_target_on_hit",
+        ),
+        (
+            BP_MATERIALIZE_TARGET_BRANCH_580,
+            "hok016c27_materialize_target_branch_580",
             "hok016c27_lldb_mainchunk_watch.snapshot_materialize_target_on_hit",
         ),
         (
@@ -409,8 +427,10 @@ def main() -> int:
         f"{BP_MATERIALIZE_TARGET_POST_HELPER2}, {BP_MATERIALIZE_TARGET_CHECK2_A}, "
         f"{BP_MATERIALIZE_TARGET_CHECK2_B}, {BP_MATERIALIZE_TARGET_BRANCH_17C}, "
         f"{BP_MATERIALIZE_TARGET_BRANCH_1C8}, {BP_MATERIALIZE_TARGET_BRANCH_224}, "
-        f"{BP_MATERIALIZE_TARGET_BRANCH_2C8}, {BP_MATERIALIZE_TARGET_BRANCH_2E0}, "
-        f"{BP_MATERIALIZE_TARGET_RET_31C}, {BP_MATERIALIZE_TARGET_BRANCH_33C}"
+        f"{BP_MATERIALIZE_TARGET_BRANCH_238}, {BP_MATERIALIZE_TARGET_BRANCH_2C8}, "
+        f"{BP_MATERIALIZE_TARGET_BRANCH_2E0}, {BP_MATERIALIZE_TARGET_RET_31C}, "
+        f"{BP_MATERIALIZE_TARGET_BRANCH_33C}, {BP_MATERIALIZE_TARGET_BRANCH_3E0}, "
+        f"{BP_MATERIALIZE_TARGET_BRANCH_580}"
     )
     print(f"  err direct writer   : {BP_CREATE_TABLE_IMPL_ERR_DIRECT}")
     print(f"  create-table check  : {BP_CREATE_TABLE_IMPL_FINAL_CHECK}")

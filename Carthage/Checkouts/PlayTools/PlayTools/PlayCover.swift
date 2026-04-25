@@ -220,6 +220,26 @@ public class PlayCover: NSObject {
         )
     }
 
+    @objc static public func recordHOK016C5MaterializeShimInstall(details: [String: String]) {
+        let runtimeBundleId = Bundle.main.bundleIdentifier
+            ?? "playtools.runtime.\(ProcessInfo.processInfo.processIdentifier)"
+        RuntimeLaunchDiagnostics.record(
+            event: "hok016c5_ngr_materialize_shim_installed",
+            bundleId: runtimeBundleId,
+            details: details
+        )
+    }
+
+    @objc static public func recordHOK016C5MaterializeShimReuse(details: [String: String]) {
+        let runtimeBundleId = Bundle.main.bundleIdentifier
+            ?? "playtools.runtime.\(ProcessInfo.processInfo.processIdentifier)"
+        RuntimeLaunchDiagnostics.record(
+            event: "hok016c5_ngr_materialize_shim_reused",
+            bundleId: runtimeBundleId,
+            details: details
+        )
+    }
+
     static public func quitWhenClose() {
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name(rawValue: "NSWindowWillCloseNotification"),

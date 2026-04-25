@@ -21,6 +21,9 @@ class HOK016C27LLDBMainchunkWatchTests(unittest.TestCase):
     def test_materialize_target_phase_mapping_uses_named_checkpoints(self) -> None:
         self.assertEqual(_materialize_target_phase_for_pc(0x10432A068), "entry")
         self.assertEqual(_materialize_target_phase_for_pc(0x10432A10C), "post-helper2")
+        self.assertEqual(_materialize_target_phase_for_pc(0x10432A238), "branch-238")
+        self.assertEqual(_materialize_target_phase_for_pc(0x10432A3E0), "branch-3e0")
+        self.assertEqual(_materialize_target_phase_for_pc(0x10432A580), "branch-580")
         self.assertEqual(_materialize_target_phase_for_pc(0x10432A31C), "ret-31c")
         self.assertEqual(_materialize_target_phase_for_pc(0x10432A555), "pc-0x10432a555")
 

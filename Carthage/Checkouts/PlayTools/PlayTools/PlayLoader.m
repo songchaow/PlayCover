@@ -5,7 +5,12 @@
 
 #include <Foundation/Foundation.h>
 #include <errno.h>
+#include <libkern/OSCacheControl.h>
+#include <mach/mach.h>
+#include <string.h>
+#include <sys/mman.h>
 #include <sys/sysctl.h>
+#include <unistd.h>
 
 #import "PlayLoader.h"
 #import <PlayTools/PlayTools-Swift.h>
@@ -218,6 +223,35 @@ DYLD_INTERPOSE(pt_SecKeyCreateRandomKey, SecKeyCreateRandomKey)
 DYLD_INTERPOSE(pt_SecKeyGeneratePair, SecKeyGeneratePair)
 
 static uint8_t ue_status = 0;
+static BOOL pt_ngr_c5_trace_fs_after_reuse = NO;
+static size_t pt_ngr_c5_fs_trace_count = 0;
+static const size_t pt_ngr_c5_fs_trace_limit = 40;
+static __thread BOOL pt_ngr_c5_fs_trace_reentrant = NO;
+
+static BOOL pt_ngr_c5_should_trace_fs_path(const char *path);
+static BOOL pt_ngr_should_preheat_slot(void);
+static void pt_ngr_c5_log_fs_event(const char *action,
+                                   const char *path,
+                                   int resultValue,
+                                   int errnoValue,
+                                   void *callerPC);
+static NSString *pt_ngr_c5_path_preview_string(const char *path);
+static void pt_ngr_install_url_resolution_probe_once(void);
+
+static size_t pt_ngr_c5_url_trace_count = 0;
+static const size_t pt_ngr_c5_url_trace_limit = 24;
+static __thread BOOL pt_ngr_c5_url_trace_reentrant = NO;
+static IMP pt_ngr_original_url_resolve_bookmark_IMP = NULL;
+static IMP pt_ngr_original_start_accessing_scope_IMP = NULL;
+
+typedef NSURL *(*pt_ngr_url_resolve_bookmark_imp_t)(id,
+                                                    SEL,
+                                                    NSData *,
+                                                    NSURLBookmarkResolutionOptions,
+                                                    NSURL *,
+                                                    BOOL *,
+                                                    NSError **);
+typedef BOOL (*pt_ngr_start_accessing_scope_imp_t)(id, SEL);
 
 static char const* ue_fix_filename(char const* filename) {
     static char UE_PATTERN[1024] = "//Users/";
@@ -236,8 +270,181 @@ static char const* ue_fix_filename(char const* filename) {
     return p;
 }
 
+static BOOL pt_ngr_c5_should_trace_fs_path(const char *path) {
+    if (!pt_ngr_c5_trace_fs_after_reuse || path == NULL) {
+        return NO;
+    }
+
+    static char prefix[1024] = {0};
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        char username[256] = {0};
+        getlogin_r(username, sizeof(username));
+        snprintf(prefix,
+                 sizeof(prefix),
+                 "/Users/%s/Library/Containers/io.playcover.PlayCover/Applications/com.tencent.ngr.app/",
+                 username);
+    });
+
+    if (prefix[0] == '\0') {
+        return NO;
+    }
+    return strncmp(path, prefix, strlen(prefix)) == 0;
+}
+
+static void pt_ngr_c5_log_fs_event(const char *action,
+                                   const char *path,
+                                   int resultValue,
+                                   int errnoValue,
+                                   void *callerPC) {
+    if (!pt_ngr_c5_should_trace_fs_path(path)
+        || pt_ngr_c5_fs_trace_reentrant
+        || pt_ngr_c5_fs_trace_count >= pt_ngr_c5_fs_trace_limit) {
+        return;
+    }
+
+    BOOL suspiciousPath = strstr(path, "/Saved/Paks/") != NULL || strstr(path, ".db") != NULL;
+    BOOL failed = resultValue < 0 || errnoValue != 0;
+    if (!failed && !suspiciousPath) {
+        return;
+    }
+
+    pt_ngr_c5_fs_trace_reentrant = YES;
+    pt_ngr_c5_fs_trace_count += 1;
+
+    NSDictionary<NSString *, NSString *> *details = @{
+        @"action": action ? [NSString stringWithUTF8String:action] : @"",
+        @"path": pt_ngr_c5_path_preview_string(path),
+        @"result": [NSString stringWithFormat:@"%d", resultValue],
+        @"errno": [NSString stringWithFormat:@"%d", errnoValue],
+        @"callerPC": [NSString stringWithFormat:@"0x%llx", (uint64_t)(uintptr_t)callerPC],
+        @"traceCount": [NSString stringWithFormat:@"%zu", pt_ngr_c5_fs_trace_count],
+    };
+    [PlayCover recordHOK016C5MaterializeShimReuseWithDetails:details];
+    pt_ngr_c5_fs_trace_reentrant = NO;
+}
+
+static void pt_ngr_c5_log_url_event(NSString *action,
+                                    NSURL *url,
+                                    NSURL *relativeURL,
+                                    BOOL hasResult,
+                                    BOOL isStale,
+                                    NSError *error,
+                                    BOOL scopeResult) {
+    if (!pt_ngr_c5_trace_fs_after_reuse
+        || pt_ngr_c5_url_trace_reentrant
+        || pt_ngr_c5_url_trace_count >= pt_ngr_c5_url_trace_limit) {
+        return;
+    }
+
+    pt_ngr_c5_url_trace_reentrant = YES;
+    pt_ngr_c5_url_trace_count += 1;
+
+    NSString *resolvedPath = url.path ?: @"";
+    NSString *relativePath = relativeURL.path ?: @"";
+    BOOL prefixMatched = pt_ngr_c5_should_trace_fs_path(resolvedPath.UTF8String);
+
+    NSMutableDictionary<NSString *, NSString *> *details = [@{
+        @"action": action ?: @"",
+        @"resolvedPath": resolvedPath,
+        @"relativePath": relativePath,
+        @"hasResult": hasResult ? @"true" : @"false",
+        @"isStale": isStale ? @"true" : @"false",
+        @"prefixMatched": prefixMatched ? @"true" : @"false",
+        @"scopeResult": scopeResult ? @"true" : @"false",
+        @"traceCount": [NSString stringWithFormat:@"%zu", pt_ngr_c5_url_trace_count],
+    } mutableCopy];
+    if (error != nil) {
+        details[@"errorDomain"] = error.domain ?: @"";
+        details[@"errorCode"] = [NSString stringWithFormat:@"%ld", (long)error.code];
+        details[@"errorDescription"] = error.localizedDescription ?: @"";
+    }
+
+    [PlayCover recordHOK016C5MaterializeShimReuseWithDetails:details];
+    pt_ngr_c5_url_trace_reentrant = NO;
+}
+
+static NSURL *pt_ngr_swizzled_URLByResolvingBookmarkData(id self,
+                                                         SEL _cmd,
+                                                         NSData *bookmarkData,
+                                                         NSURLBookmarkResolutionOptions options,
+                                                         NSURL *relativeURL,
+                                                         BOOL *isStale,
+                                                         NSError **error) {
+    if (pt_ngr_original_url_resolve_bookmark_IMP == NULL) {
+        return nil;
+    }
+
+    pt_ngr_url_resolve_bookmark_imp_t orig =
+        (pt_ngr_url_resolve_bookmark_imp_t)pt_ngr_original_url_resolve_bookmark_IMP;
+
+    BOOL localStale = NO;
+    BOOL *stalePtr = isStale != NULL ? isStale : &localStale;
+    NSError *__autoreleasing localError = nil;
+    NSError *__autoreleasing *errorPtr = error != NULL ? error : &localError;
+
+    NSURL *resolvedURL = orig(self, _cmd, bookmarkData, options, relativeURL, stalePtr, errorPtr);
+    NSError *resolvedError = errorPtr != NULL ? *errorPtr : nil;
+    pt_ngr_c5_log_url_event(@"url-resolve-bookmark",
+                            resolvedURL,
+                            relativeURL,
+                            resolvedURL != nil,
+                            stalePtr != NULL ? *stalePtr : NO,
+                            resolvedError,
+                            NO);
+    return resolvedURL;
+}
+
+static BOOL pt_ngr_swizzled_startAccessingSecurityScopedResource(id self, SEL _cmd) {
+    if (pt_ngr_original_start_accessing_scope_IMP == NULL) {
+        return NO;
+    }
+
+    pt_ngr_start_accessing_scope_imp_t orig =
+        (pt_ngr_start_accessing_scope_imp_t)pt_ngr_original_start_accessing_scope_IMP;
+    BOOL result = orig(self, _cmd);
+    pt_ngr_c5_log_url_event(@"url-start-accessing-scope",
+                            (NSURL *)self,
+                            nil,
+                            YES,
+                            NO,
+                            nil,
+                            result);
+    return result;
+}
+
+static void pt_ngr_install_url_resolution_probe_once(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        if (!pt_ngr_should_preheat_slot()) {
+            return;
+        }
+
+        Class urlClass = NSClassFromString(@"NSURL");
+        if (urlClass == Nil) {
+            return;
+        }
+
+        SEL resolveSel = NSSelectorFromString(@"URLByResolvingBookmarkData:options:relativeToURL:bookmarkDataIsStale:error:");
+        Method resolveMethod = class_getClassMethod(urlClass, resolveSel);
+        if (resolveMethod != NULL) {
+            pt_ngr_original_url_resolve_bookmark_IMP = method_getImplementation(resolveMethod);
+            method_setImplementation(resolveMethod, (IMP)pt_ngr_swizzled_URLByResolvingBookmarkData);
+        }
+
+        SEL scopeSel = NSSelectorFromString(@"startAccessingSecurityScopedResource");
+        Method scopeMethod = class_getInstanceMethod(urlClass, scopeSel);
+        if (scopeMethod != NULL) {
+            pt_ngr_original_start_accessing_scope_IMP = method_getImplementation(scopeMethod);
+            method_setImplementation(scopeMethod, (IMP)pt_ngr_swizzled_startAccessingSecurityScopedResource);
+        }
+    });
+}
+
 static int pt_open(char const* restrict filename, int oflag, ... ) {
     filename = ue_fix_filename(filename);
+
+    void *callerPC = __builtin_return_address(0);
 
     if (oflag == O_CREAT) {
         int mod;
@@ -246,26 +453,50 @@ static int pt_open(char const* restrict filename, int oflag, ... ) {
         mod = va_arg(ap, int);
         va_end(ap);
 
-        return open(filename, O_CREAT, mod);
+        errno = 0;
+        int result = open(filename, O_CREAT, mod);
+        pt_ngr_c5_log_fs_event("fs-open-create", filename, result, errno, callerPC);
+        return result;
     }
 
-    return open(filename, oflag);
+    errno = 0;
+    int result = open(filename, oflag);
+    pt_ngr_c5_log_fs_event("fs-open", filename, result, errno, callerPC);
+    return result;
 }
 
 static int pt_stat(char const* restrict path, struct stat* restrict buf) {
-    return stat(ue_fix_filename(path), buf);
+    path = ue_fix_filename(path);
+    errno = 0;
+    int result = stat(path, buf);
+    pt_ngr_c5_log_fs_event("fs-stat", path, result, errno, __builtin_return_address(0));
+    return result;
 }
 
 static int pt_access(char const* path, int mode) {
-    return access(ue_fix_filename(path), mode);
+    path = ue_fix_filename(path);
+    errno = 0;
+    int result = access(path, mode);
+    pt_ngr_c5_log_fs_event("fs-access", path, result, errno, __builtin_return_address(0));
+    return result;
 }
 
 static int pt_rename(char const* restrict old_name, char const* restrict new_name) {
-    return rename(ue_fix_filename(old_name), ue_fix_filename(new_name));
+    old_name = ue_fix_filename(old_name);
+    new_name = ue_fix_filename(new_name);
+    errno = 0;
+    int result = rename(old_name, new_name);
+    pt_ngr_c5_log_fs_event("fs-rename-old", old_name, result, errno, __builtin_return_address(0));
+    pt_ngr_c5_log_fs_event("fs-rename-new", new_name, result, errno, __builtin_return_address(0));
+    return result;
 }
 
 static int pt_unlink(char const* path) {
-    return unlink(ue_fix_filename(path));
+    path = ue_fix_filename(path);
+    errno = 0;
+    int result = unlink(path);
+    pt_ngr_c5_log_fs_event("fs-unlink", path, result, errno, __builtin_return_address(0));
+    return result;
 }
 
 static NSMutableDictionary *thread_sleep_counters = nil;
@@ -734,6 +965,1017 @@ static void pt_ngr_preseed_cmdline_once(void) {
 }
 // ---------------------------------------------------------------------------
 
+#define NGR_C5_MATERIALIZE_PROVIDER_UNSLID        0x10e16ded8ULL
+#define NGR_C5_MATERIALIZE_VTABLE_UNSLID          0x10c80ae20ULL
+#define NGR_C5_MATERIALIZE_TARGET_UNSLID          0x10432a068ULL
+#define NGR_C5_CONSUMER_HANDLE_SLOT30_UNSLID      0x100122fb0ULL
+#define NGR_C5_MATERIALIZE_TEMPLATE_SIZE          0x80U
+#define NGR_C5_MATERIALIZE_MAX_CLONES             32U
+#define NGR_C5_CONSUMER_VTABLE_CLONE_SIZE         0x80U
+#define NGR_C5_CONSUMER_SCAN_WINDOW_BYTES         0x4000000ULL
+#define NGR_C5_CONSUMER_SCAN_CHUNK_BYTES          0x4000U
+
+uint64_t pt_ngr_c5_cached_materialize_obj = 0;
+uint64_t pt_ngr_c5_original_materialize_target = 0;
+uint64_t pt_ngr_c5_materialize_slot_addr = 0;
+uint64_t pt_ngr_c5_materialize_provider_entry_addr = 0;
+uint64_t pt_ngr_c5_main_image_slide = 0;
+uint64_t pt_ngr_c5_recent_reuse_objects[4] = {0};
+size_t pt_ngr_c5_recent_reuse_count = 0;
+uint64_t pt_ngr_c5_consumer_handle_original_slot30 = 0;
+BOOL pt_ngr_c5_consumer_handle_family_hooked = NO;
+uint64_t pt_ngr_c5_late_linked_graph_obj = 0;
+uint64_t pt_ngr_c5_late_linked_entry_obj = 0;
+uint64_t pt_ngr_c5_late_linked_source_obj = 0;
+uint64_t pt_ngr_c5_late_linked_wrapper_obj = 0;
+void *pt_ngr_c5_cloned_materialize_table = NULL;
+void *pt_ngr_c5_consumer_vtable_clones[NGR_C5_MATERIALIZE_MAX_CLONES] = {0};
+size_t pt_ngr_c5_consumer_vtable_clone_count = 0;
+uint8_t pt_ngr_c5_cached_materialize_template[NGR_C5_MATERIALIZE_TEMPLATE_SIZE] = {0};
+BOOL pt_ngr_c5_have_materialize_template = NO;
+BOOL pt_ngr_c5_have_late_linked_graph = NO;
+void *pt_ngr_c5_materialize_clones[NGR_C5_MATERIALIZE_MAX_CLONES] = {0};
+size_t pt_ngr_c5_materialize_clone_count = 0;
+BOOL pt_ngr_c5_logged_cache_event = NO;
+BOOL pt_ngr_c5_logged_late_linked_cache_event = NO;
+BOOL pt_ngr_c5_logged_first_cache_probe = NO;
+BOOL pt_ngr_c5_logged_first_fallback_probe = NO;
+
+static void * const pt_ngr_c5_materialize_stub_vtable[4] = {
+    (void *)pt_ngr_stub_vfunc_noop,
+    (void *)pt_ngr_stub_vfunc_noop,
+    (void *)pt_ngr_stub_vfunc_noop,
+    (void *)pt_ngr_stub_vfunc_noop,
+};
+
+typedef struct {
+    uint64_t providerEntryAddr;
+    uint64_t tableAddr;
+    uint64_t slotAddr;
+    uint64_t slotValue;
+} pt_ngr_c5_materialize_slot_match;
+
+static BOOL pt_ngr_vm_read_bytes(uint64_t address, void *buffer, size_t size);
+static BOOL pt_ngr_vm_read_u64(uint64_t address, uint64_t *outValue);
+static BOOL pt_ngr_make_patch_writable(void *address, size_t length);
+static void pt_ngr_restore_patch_protection(void *address, size_t length, vm_prot_t protection);
+static BOOL pt_ngr_c5_install_consumer_handle_family_hook(uint64_t slide);
+static void pt_ngr_c5_remember_reuse_object(uint64_t selectedObj);
+static void pt_ngr_c5_schedule_consumer_handle_guard_scan(uint64_t payloadObj);
+
+static const char pt_ngr_c5_content_pak_path[] = "../../../NGR/Content/Paks/1/1.db";
+
+static BOOL pt_ngr_c5_string_has_prefix(const char *value, const char *prefix) {
+    if (value == NULL || prefix == NULL) { return NO; }
+    size_t prefixLength = strlen(prefix);
+    return strncmp(value, prefix, prefixLength) == 0;
+}
+
+static BOOL pt_ngr_c5_should_cache_path(const char *path) {
+    return pt_ngr_c5_string_has_prefix(path, pt_ngr_c5_content_pak_path);
+}
+
+static BOOL pt_ngr_c5_should_reuse_path(const char *path) {
+    if (!pt_ngr_c5_string_has_prefix(path, "/Users/")) { return NO; }
+    return strstr(path, "/Library/NGR/") != NULL;
+}
+
+static BOOL pt_ngr_c5_should_redirect_saved_path(const char *path) {
+    if (!pt_ngr_c5_should_reuse_path(path)) {
+        return NO;
+    }
+    return strstr(path, "/Saved/Paks/1/1.db") != NULL;
+}
+
+static NSString *pt_ngr_c5_path_preview_string(const char *path) {
+    if (path == NULL) { return @""; }
+    size_t length = strnlen(path, 192);
+    return [[NSString alloc] initWithBytes:path
+                                    length:length
+                                  encoding:NSUTF8StringEncoding] ?: @"";
+}
+
+static NSString *pt_ngr_c5_utf16_preview_string(uint64_t address) {
+    if (address <= 0x100000000ULL) { return @""; }
+
+    uint8_t buffer[192] = {0};
+    if (!pt_ngr_vm_read_bytes(address, buffer, sizeof(buffer) - 2)) {
+        return @"";
+    }
+
+    size_t length = 0;
+    while (length + 1 < sizeof(buffer)) {
+        if (buffer[length] == 0 && buffer[length + 1] == 0) {
+            break;
+        }
+        length += 2;
+    }
+
+    return [[NSString alloc] initWithBytes:buffer
+                                    length:length
+                                  encoding:NSUTF16LittleEndianStringEncoding] ?: @"";
+}
+
+static void pt_ngr_c5_schedule_vtable_stabilizer(uint64_t objAddr) {
+    if (objAddr <= 0x100000000ULL) {
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_MSEC)),
+                   dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0),
+                   ^{
+        uint64_t current = 0;
+        memcpy(&current, (const void *)(uintptr_t)objAddr, sizeof(current));
+        if (current == 0 || current == (uint64_t)(uintptr_t)pt_ngr_c5_materialize_stub_vtable) {
+            return;
+        }
+        uint64_t stubVtable = (uint64_t)(uintptr_t)pt_ngr_c5_materialize_stub_vtable;
+        memcpy((void *)(uintptr_t)objAddr, &stubVtable, sizeof(stubVtable));
+    });
+}
+
+static uint64_t pt_ngr_c5_clone_materialize_template(void) {
+    if (pt_ngr_c5_cached_materialize_obj == 0 && !pt_ngr_c5_have_materialize_template) {
+        return 0;
+    }
+    void *clone = calloc(1, NGR_C5_MATERIALIZE_TEMPLATE_SIZE);
+    if (clone == NULL) {
+        return 0;
+    }
+    BOOL copied = NO;
+    if (pt_ngr_c5_cached_materialize_obj != 0) {
+        copied = pt_ngr_vm_read_bytes(pt_ngr_c5_cached_materialize_obj,
+                                      clone,
+                                      NGR_C5_MATERIALIZE_TEMPLATE_SIZE);
+    }
+    if (!copied && pt_ngr_c5_have_materialize_template) {
+        memcpy(clone,
+               pt_ngr_c5_cached_materialize_template,
+               sizeof(pt_ngr_c5_cached_materialize_template));
+        copied = YES;
+    }
+    if (!copied) {
+        free(clone);
+        return 0;
+    }
+    if (pt_ngr_c5_materialize_clone_count < NGR_C5_MATERIALIZE_MAX_CLONES) {
+        pt_ngr_c5_materialize_clones[pt_ngr_c5_materialize_clone_count++] = clone;
+    }
+    return (uint64_t)(uintptr_t)clone;
+}
+
+static BOOL pt_ngr_c5_try_capture_late_linked_graph(uint64_t candidateObj) {
+    if (candidateObj <= 0x100000000ULL) {
+        return NO;
+    }
+
+    uint64_t wrapperAddr = 0;
+    uint64_t wrapperEntry = 0;
+    uint64_t entryAddr = 0;
+    uint64_t entrySlot1 = 0;
+
+    if (pt_ngr_vm_read_u64(candidateObj + sizeof(uint64_t), &wrapperAddr)
+        && wrapperAddr > 0x100000000ULL
+        && pt_ngr_vm_read_u64(wrapperAddr, &wrapperEntry)
+        && wrapperEntry == candidateObj) {
+        pt_ngr_c5_late_linked_source_obj = candidateObj;
+        pt_ngr_c5_late_linked_graph_obj = candidateObj;
+        pt_ngr_c5_late_linked_entry_obj = candidateObj;
+        pt_ngr_c5_late_linked_wrapper_obj = wrapperAddr;
+        pt_ngr_c5_have_late_linked_graph = YES;
+        return YES;
+    }
+
+    if (!pt_ngr_vm_read_u64(candidateObj + 0x30, &wrapperAddr)
+        || wrapperAddr <= 0x100000000ULL
+        || !pt_ngr_vm_read_u64(wrapperAddr, &entryAddr)
+        || entryAddr <= 0x100000000ULL
+        || !pt_ngr_vm_read_u64(entryAddr + sizeof(uint64_t), &entrySlot1)
+        || entrySlot1 != wrapperAddr) {
+        return NO;
+    }
+
+    pt_ngr_c5_late_linked_source_obj = candidateObj;
+    pt_ngr_c5_late_linked_graph_obj = entryAddr;
+    pt_ngr_c5_late_linked_entry_obj = entryAddr;
+    pt_ngr_c5_late_linked_wrapper_obj = wrapperAddr;
+    pt_ngr_c5_have_late_linked_graph = YES;
+    return YES;
+}
+
+static uint64_t pt_ngr_c5_wait_for_late_linked_graph(uint64_t candidateObj) {
+    if (pt_ngr_c5_have_late_linked_graph && pt_ngr_c5_late_linked_source_obj == candidateObj) {
+        return pt_ngr_c5_late_linked_graph_obj;
+    }
+    if (pt_ngr_c5_try_capture_late_linked_graph(candidateObj)) {
+        return pt_ngr_c5_late_linked_graph_obj;
+    }
+    for (size_t attempt = 0; attempt < 20; attempt++) {
+        usleep(1000);
+        if (pt_ngr_c5_try_capture_late_linked_graph(candidateObj)) {
+            return pt_ngr_c5_late_linked_graph_obj;
+        }
+    }
+    return 0;
+}
+
+static void pt_ngr_log_c5_install_event(const char *status,
+                                        uint64_t patchAddr,
+                                        uint64_t hookAddr,
+                                        uint64_t successResumeAddr,
+                                        uint64_t failResumeAddr,
+                                        uint64_t slide) {
+    NSLog(@"[PlayTools] HOK-016-C.5 materialize-shim install: status=%s patch=0x%llx hook=0x%llx successResume=0x%llx failResume=0x%llx slide=0x%llx",
+          status ?: "", patchAddr, hookAddr, successResumeAddr, failResumeAddr, slide);
+    NSDictionary<NSString *, NSString *> *details = @{
+        @"status": status ? [NSString stringWithUTF8String:status] : @"",
+        @"patchAddr": [NSString stringWithFormat:@"0x%llx", patchAddr],
+        @"hookAddr": [NSString stringWithFormat:@"0x%llx", hookAddr],
+        @"successResumeAddr": [NSString stringWithFormat:@"0x%llx", successResumeAddr],
+        @"failResumeAddr": [NSString stringWithFormat:@"0x%llx", failResumeAddr],
+        @"slide": [NSString stringWithFormat:@"0x%llx", slide],
+    };
+    [PlayCover recordHOK016C5MaterializeShimInstallWithDetails:details];
+}
+
+static void pt_ngr_log_c5_reuse_event(const char *action,
+                                      uint64_t selectedObj,
+                                      uint64_t helperAddr,
+                                      uint64_t errSlotAddr,
+                                      uint64_t savedArgAddr,
+                                      uint64_t savedObjAddr,
+                                      const char *path) {
+    uint64_t selectedPlus0 = 0;
+    uint64_t selectedPlus8 = 0;
+    uint64_t selectedPlus10 = 0;
+    uint64_t selectedPlus18 = 0;
+    uint64_t selectedPlus28 = 0;
+    uint64_t selectedPlus30 = 0;
+    uint64_t plus8Backref0 = 0;
+    uint64_t plus28Plus10 = 0;
+    uint64_t plus28Plus18 = 0;
+    uint64_t plus30Backref0 = 0;
+    uint64_t plus30Backref8 = 0;
+    uint64_t downstreamObj = 0;
+    uint64_t downstreamPlus0 = 0;
+    uint64_t downstreamPlus8 = 0;
+    uint64_t downstreamPlus10 = 0;
+    uint64_t downstreamPlus18 = 0;
+    uint64_t downstreamPlus20 = 0;
+    uint64_t downstreamPlus28 = 0;
+    uint64_t downstreamPlus30 = 0;
+    uint64_t downstreamPlus38 = 0;
+    BOOL haveSelectedLinks = NO;
+    BOOL haveDownstreamLinks = NO;
+
+    if (selectedObj > 0x100000000ULL) {
+        haveSelectedLinks = YES;
+        (void)pt_ngr_vm_read_u64(selectedObj + 0x0, &selectedPlus0);
+        (void)pt_ngr_vm_read_u64(selectedObj + 0x8, &selectedPlus8);
+        (void)pt_ngr_vm_read_u64(selectedObj + 0x10, &selectedPlus10);
+        (void)pt_ngr_vm_read_u64(selectedObj + 0x18, &selectedPlus18);
+        (void)pt_ngr_vm_read_u64(selectedObj + 0x28, &selectedPlus28);
+        (void)pt_ngr_vm_read_u64(selectedObj + 0x30, &selectedPlus30);
+        if (selectedPlus8 > 0x100000000ULL) {
+            (void)pt_ngr_vm_read_u64(selectedPlus8, &plus8Backref0);
+        }
+        if (selectedPlus28 > 0x100000000ULL) {
+            (void)pt_ngr_vm_read_u64(selectedPlus28 + 0x10, &plus28Plus10);
+            (void)pt_ngr_vm_read_u64(selectedPlus28 + 0x18, &plus28Plus18);
+        }
+        if (selectedPlus30 > 0x100000000ULL) {
+            (void)pt_ngr_vm_read_u64(selectedPlus30, &plus30Backref0);
+            (void)pt_ngr_vm_read_u64(selectedPlus30 + 0x8, &plus30Backref8);
+        }
+        if (selectedPlus10 > 0x100000000ULL) {
+            downstreamObj = selectedPlus10;
+            haveDownstreamLinks = YES;
+            (void)pt_ngr_vm_read_u64(downstreamObj + 0x0, &downstreamPlus0);
+            (void)pt_ngr_vm_read_u64(downstreamObj + 0x8, &downstreamPlus8);
+            (void)pt_ngr_vm_read_u64(downstreamObj + 0x10, &downstreamPlus10);
+            (void)pt_ngr_vm_read_u64(downstreamObj + 0x18, &downstreamPlus18);
+            (void)pt_ngr_vm_read_u64(downstreamObj + 0x20, &downstreamPlus20);
+            (void)pt_ngr_vm_read_u64(downstreamObj + 0x28, &downstreamPlus28);
+            (void)pt_ngr_vm_read_u64(downstreamObj + 0x30, &downstreamPlus30);
+            (void)pt_ngr_vm_read_u64(downstreamObj + 0x38, &downstreamPlus38);
+        }
+    }
+
+    NSLog(@"[PlayTools] HOK-016-C.5 materialize-shim: action=%s selected=0x%llx helper=0x%llx errSlot=0x%llx savedArg=0x%llx savedObj=0x%llx path=%s",
+          action ?: "", selectedObj, helperAddr, errSlotAddr, savedArgAddr, savedObjAddr, path ?: "");
+    NSMutableDictionary<NSString *, NSString *> *details = [@{
+        @"action": action ? [NSString stringWithUTF8String:action] : @"",
+        @"selectedObj": [NSString stringWithFormat:@"0x%llx", selectedObj],
+        @"helperAddr": [NSString stringWithFormat:@"0x%llx", helperAddr],
+        @"errSlotAddr": [NSString stringWithFormat:@"0x%llx", errSlotAddr],
+        @"savedArgAddr": [NSString stringWithFormat:@"0x%llx", savedArgAddr],
+        @"savedObjAddr": [NSString stringWithFormat:@"0x%llx", savedObjAddr],
+        @"path": pt_ngr_c5_path_preview_string(path),
+    } mutableCopy];
+    if (haveSelectedLinks) {
+        details[@"selectedPlus0"] = [NSString stringWithFormat:@"0x%llx", selectedPlus0];
+        details[@"selectedPlus8"] = [NSString stringWithFormat:@"0x%llx", selectedPlus8];
+        details[@"selectedPlus10"] = [NSString stringWithFormat:@"0x%llx", selectedPlus10];
+        details[@"selectedPlus18"] = [NSString stringWithFormat:@"0x%llx", selectedPlus18];
+        details[@"selectedPlus28"] = [NSString stringWithFormat:@"0x%llx", selectedPlus28];
+        details[@"selectedPlus30"] = [NSString stringWithFormat:@"0x%llx", selectedPlus30];
+        details[@"plus8Backref0"] = [NSString stringWithFormat:@"0x%llx", plus8Backref0];
+        details[@"plus28Plus10"] = [NSString stringWithFormat:@"0x%llx", plus28Plus10];
+        details[@"plus28Plus18"] = [NSString stringWithFormat:@"0x%llx", plus28Plus18];
+        details[@"plus30Backref0"] = [NSString stringWithFormat:@"0x%llx", plus30Backref0];
+        details[@"plus30Backref8"] = [NSString stringWithFormat:@"0x%llx", plus30Backref8];
+    }
+    if (haveDownstreamLinks) {
+        details[@"downstreamObj"] = [NSString stringWithFormat:@"0x%llx", downstreamObj];
+        details[@"downstreamPlus0"] = [NSString stringWithFormat:@"0x%llx", downstreamPlus0];
+        details[@"downstreamPlus8"] = [NSString stringWithFormat:@"0x%llx", downstreamPlus8];
+        details[@"downstreamPlus10"] = [NSString stringWithFormat:@"0x%llx", downstreamPlus10];
+        details[@"downstreamPlus18"] = [NSString stringWithFormat:@"0x%llx", downstreamPlus18];
+        details[@"downstreamPlus20"] = [NSString stringWithFormat:@"0x%llx", downstreamPlus20];
+        details[@"downstreamPlus28"] = [NSString stringWithFormat:@"0x%llx", downstreamPlus28];
+        details[@"downstreamPlus30"] = [NSString stringWithFormat:@"0x%llx", downstreamPlus30];
+        details[@"downstreamPlus38"] = [NSString stringWithFormat:@"0x%llx", downstreamPlus38];
+        details[@"downstreamPreview"] = pt_ngr_c5_utf16_preview_string(downstreamObj);
+    }
+    if (action != NULL && strncmp(action, "reuse", 5) == 0) {
+        pt_ngr_c5_trace_fs_after_reuse = YES;
+        pt_ngr_c5_fs_trace_count = 0;
+        pt_ngr_c5_url_trace_count = 0;
+        pt_ngr_c5_remember_reuse_object(selectedObj);
+    }
+    [PlayCover recordHOK016C5MaterializeShimReuseWithDetails:details];
+}
+
+static void pt_ngr_c5_remember_reuse_object(uint64_t selectedObj) {
+    if (selectedObj <= 0x100000000ULL) {
+        return;
+    }
+    for (size_t index = 0; index < pt_ngr_c5_recent_reuse_count; index++) {
+        if (pt_ngr_c5_recent_reuse_objects[index] == selectedObj) {
+            return;
+        }
+    }
+    if (pt_ngr_c5_recent_reuse_count < sizeof(pt_ngr_c5_recent_reuse_objects) / sizeof(pt_ngr_c5_recent_reuse_objects[0])) {
+        pt_ngr_c5_recent_reuse_objects[pt_ngr_c5_recent_reuse_count++] = selectedObj;
+        return;
+    }
+    memmove(pt_ngr_c5_recent_reuse_objects,
+            pt_ngr_c5_recent_reuse_objects + 1,
+            sizeof(pt_ngr_c5_recent_reuse_objects) - sizeof(pt_ngr_c5_recent_reuse_objects[0]));
+    pt_ngr_c5_recent_reuse_objects[(sizeof(pt_ngr_c5_recent_reuse_objects) / sizeof(pt_ngr_c5_recent_reuse_objects[0])) - 1] = selectedObj;
+}
+
+static void pt_ngr_c5_log_first_fallback_probe(uint64_t originalRetObj,
+                                               uint64_t replacementObj,
+                                               uint64_t errSlotAddr,
+                                               const char *path) {
+    if (pt_ngr_c5_logged_first_fallback_probe) {
+        return;
+    }
+    pt_ngr_c5_logged_first_fallback_probe = YES;
+
+    uint64_t errSlotValue = 0;
+    if (errSlotAddr > 0x100000000ULL) {
+        (void)pt_ngr_vm_read_u64(errSlotAddr, &errSlotValue);
+    }
+
+    NSDictionary<NSString *, NSString *> *details = @{
+        @"action": @"reuse-early-fallback-probe",
+        @"originalRetObj": [NSString stringWithFormat:@"0x%llx", originalRetObj],
+        @"selectedObj": [NSString stringWithFormat:@"0x%llx", replacementObj],
+        @"errSlotAddr": [NSString stringWithFormat:@"0x%llx", errSlotAddr],
+        @"errSlotValue": [NSString stringWithFormat:@"0x%llx", errSlotValue],
+        @"path": pt_ngr_c5_path_preview_string(path),
+    };
+    [PlayCover recordHOK016C5MaterializeShimReuseWithDetails:details];
+}
+
+static void pt_ngr_c5_log_first_cache_probe(uint64_t originalRetObj,
+                                            uint64_t selectedObj,
+                                            uint64_t errSlotAddr,
+                                            const char *path) {
+    if (pt_ngr_c5_logged_first_cache_probe) {
+        return;
+    }
+    pt_ngr_c5_logged_first_cache_probe = YES;
+
+    uint64_t errSlotValue = 0;
+    if (errSlotAddr > 0x100000000ULL) {
+        (void)pt_ngr_vm_read_u64(errSlotAddr, &errSlotValue);
+    }
+
+    NSDictionary<NSString *, NSString *> *details = @{
+        @"action": @"cache-probe",
+        @"originalRetObj": [NSString stringWithFormat:@"0x%llx", originalRetObj],
+        @"selectedObj": [NSString stringWithFormat:@"0x%llx", selectedObj],
+        @"errSlotAddr": [NSString stringWithFormat:@"0x%llx", errSlotAddr],
+        @"errSlotValue": [NSString stringWithFormat:@"0x%llx", errSlotValue],
+        @"path": pt_ngr_c5_path_preview_string(path),
+    };
+    [PlayCover recordHOK016C5MaterializeShimReuseWithDetails:details];
+}
+
+static void pt_ngr_c5_clear_error_slot(uint64_t errSlotAddr) {
+    if (errSlotAddr <= 0x100000000ULL) {
+        return;
+    }
+
+    uint64_t zero = 0;
+    memcpy((void *)(uintptr_t)errSlotAddr, &zero, sizeof(zero));
+}
+
+static BOOL pt_ngr_c5_payload_matches_recent_reuse(uint64_t payloadObj) {
+    for (size_t index = 0; index < pt_ngr_c5_recent_reuse_count; index++) {
+        if (pt_ngr_c5_recent_reuse_objects[index] == payloadObj) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+typedef void (*pt_ngr_c5_consumer_handle_slot30_imp_t)(uint64_t);
+
+static void pt_ngr_c5_consumer_handle_slot30_wrapper(uint64_t handleObj) {
+    uint64_t payloadObj = 0;
+    uint64_t containerObj = 0;
+    uint64_t candidateObj = 0;
+    if (handleObj > 0x100000000ULL) {
+        memcpy(&payloadObj, (const void *)(uintptr_t)(handleObj + 0x18), sizeof(payloadObj));
+        memcpy(&containerObj, (const void *)(uintptr_t)(handleObj + 0x10), sizeof(containerObj));
+        if (containerObj > 0x100000000ULL) {
+            memcpy(&candidateObj, (const void *)(uintptr_t)(containerObj + 0x8), sizeof(candidateObj));
+        }
+        if (pt_ngr_c5_payload_matches_recent_reuse(candidateObj)) {
+            uint64_t zero = 0;
+            memcpy((void *)(uintptr_t)(handleObj + 0x18), &zero, sizeof(zero));
+            pt_ngr_log_c5_reuse_event("consumer-handle-zeroed",
+                                      candidateObj,
+                                      handleObj,
+                                      handleObj + 0x18,
+                                      0,
+                                      0,
+                                      "handle+0x18");
+        }
+    }
+
+    if (pt_ngr_c5_consumer_handle_original_slot30 != 0) {
+        pt_ngr_c5_consumer_handle_slot30_imp_t orig =
+            (pt_ngr_c5_consumer_handle_slot30_imp_t)(uintptr_t)pt_ngr_c5_consumer_handle_original_slot30;
+        orig(handleObj);
+    }
+}
+
+static BOOL pt_ngr_c5_install_consumer_handle_family_hook(uint64_t slide) {
+    if (pt_ngr_c5_consumer_handle_family_hooked) {
+        return YES;
+    }
+
+    uint64_t vtableAddr = NGR_C5_MATERIALIZE_VTABLE_UNSLID + slide;
+    uint64_t slotAddr = vtableAddr + 0x18;
+    uint64_t originalSlot = 0;
+    uint64_t wrapperAddr = (uint64_t)(uintptr_t)&pt_ngr_c5_consumer_handle_slot30_wrapper;
+
+    if (!pt_ngr_vm_read_u64(slotAddr, &originalSlot) || originalSlot <= 0x100000000ULL) {
+        return NO;
+    }
+    if (originalSlot == wrapperAddr) {
+        pt_ngr_c5_consumer_handle_family_hooked = YES;
+        return YES;
+    }
+    if (!pt_ngr_make_patch_writable((void *)(uintptr_t)slotAddr, sizeof(wrapperAddr))) {
+        return NO;
+    }
+
+    memcpy((void *)(uintptr_t)slotAddr, &wrapperAddr, sizeof(wrapperAddr));
+    pt_ngr_restore_patch_protection((void *)(uintptr_t)slotAddr, sizeof(wrapperAddr), VM_PROT_READ);
+
+    uint64_t verify = 0;
+    if (!pt_ngr_vm_read_u64(slotAddr, &verify) || verify != wrapperAddr) {
+        return NO;
+    }
+
+    pt_ngr_c5_consumer_handle_original_slot30 = originalSlot;
+    pt_ngr_c5_consumer_handle_family_hooked = YES;
+    pt_ngr_log_c5_install_event("consumer-family-hook-installed",
+                                slotAddr,
+                                wrapperAddr,
+                                originalSlot,
+                                vtableAddr,
+                                slide);
+    return YES;
+}
+
+static BOOL pt_ngr_c5_try_patch_consumer_handle(uint64_t handleObj) {
+    if (handleObj <= 0x100000000ULL) {
+        return NO;
+    }
+
+    uint64_t vtableAddr = 0;
+    if (!pt_ngr_vm_read_u64(handleObj, &vtableAddr) || vtableAddr <= 0x100000000ULL) {
+        return NO;
+    }
+
+    uint64_t slot18 = 0;
+    if (!pt_ngr_vm_read_u64(vtableAddr + 0x18, &slot18)) {
+        return NO;
+    }
+
+    uint64_t expectedVtableAddr = NGR_C5_MATERIALIZE_VTABLE_UNSLID + pt_ngr_c5_main_image_slide;
+    uint64_t wrapperAddr = (uint64_t)(uintptr_t)&pt_ngr_c5_consumer_handle_slot30_wrapper;
+    if (slot18 == wrapperAddr) {
+        return YES;
+    }
+    if (vtableAddr != expectedVtableAddr) {
+        return NO;
+    }
+
+    uint8_t vtableClone[NGR_C5_CONSUMER_VTABLE_CLONE_SIZE] = {0};
+    if (!pt_ngr_vm_read_bytes(vtableAddr, vtableClone, sizeof(vtableClone))) {
+        return NO;
+    }
+
+    void *clone = malloc(sizeof(vtableClone));
+    if (clone == NULL) {
+        return NO;
+    }
+    memcpy(clone, vtableClone, sizeof(vtableClone));
+    memcpy((uint8_t *)clone + 0x18, &wrapperAddr, sizeof(wrapperAddr));
+
+    memcpy((void *)(uintptr_t)handleObj, &clone, sizeof(clone));
+    uint64_t verifyVtable = 0;
+    if (!pt_ngr_vm_read_u64(handleObj, &verifyVtable) || verifyVtable != (uint64_t)(uintptr_t)clone) {
+        free(clone);
+        return NO;
+    }
+
+    pt_ngr_c5_consumer_handle_original_slot30 = slot18;
+    if (pt_ngr_c5_consumer_vtable_clone_count < NGR_C5_MATERIALIZE_MAX_CLONES) {
+        pt_ngr_c5_consumer_vtable_clones[pt_ngr_c5_consumer_vtable_clone_count++] = clone;
+    }
+    pt_ngr_log_c5_reuse_event("consumer-handle-guard-installed",
+                              handleObj,
+                              handleObj,
+                              handleObj + 0x18,
+                              0,
+                              0,
+                              "handle+0x18");
+    return YES;
+}
+
+static BOOL pt_ngr_c5_scan_consumer_handles_for_payload(uint64_t anchorObj) {
+    if (anchorObj <= 0x100000000ULL) {
+        return NO;
+    }
+
+    uint64_t base = anchorObj > NGR_C5_CONSUMER_SCAN_WINDOW_BYTES
+        ? anchorObj - NGR_C5_CONSUMER_SCAN_WINDOW_BYTES
+        : 0;
+    uint64_t limit = anchorObj + NGR_C5_CONSUMER_SCAN_WINDOW_BYTES;
+
+    uint8_t buffer[NGR_C5_CONSUMER_SCAN_CHUNK_BYTES] = {0};
+    for (uint64_t address = base; address < limit; address += NGR_C5_CONSUMER_SCAN_CHUNK_BYTES) {
+        size_t readable = NGR_C5_CONSUMER_SCAN_CHUNK_BYTES;
+        if (address + readable > limit) {
+            readable = (size_t)(limit - address);
+        }
+        if (!pt_ngr_vm_read_bytes(address, buffer, readable)) {
+            continue;
+        }
+        for (size_t offset = 0; offset + sizeof(uint64_t) <= readable; offset += sizeof(uint64_t)) {
+            if (offset + (4 * sizeof(uint64_t)) > readable) {
+                break;
+            }
+            uint64_t qword0 = 0;
+            uint64_t qword1 = 0;
+            uint64_t qword2 = 0;
+            uint64_t qword3 = 0;
+            memcpy(&qword0, buffer + offset, sizeof(qword0));
+            memcpy(&qword1, buffer + offset + sizeof(uint64_t), sizeof(qword1));
+            memcpy(&qword2, buffer + offset + (2 * sizeof(uint64_t)), sizeof(qword2));
+            memcpy(&qword3, buffer + offset + (3 * sizeof(uint64_t)), sizeof(qword3));
+            if (qword0 <= 0x100000000ULL
+                || qword1 > 0x20
+                || qword2 <= 0x100000000ULL
+                || qword3 == 0) {
+                continue;
+            }
+            uint64_t handleObj = address + offset;
+            if (pt_ngr_c5_try_patch_consumer_handle(handleObj)) {
+                return YES;
+            }
+        }
+    }
+    return NO;
+}
+
+static void pt_ngr_c5_schedule_consumer_handle_guard_scan(uint64_t payloadObj) {
+    if (payloadObj <= 0x100000000ULL) {
+        return;
+    }
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+        if (pt_ngr_c5_scan_consumer_handles_for_payload(payloadObj)) {
+            return;
+        }
+        for (size_t attempt = 0; attempt < 4; attempt++) {
+            usleep(2000);
+            if (pt_ngr_c5_scan_consumer_handles_for_payload(payloadObj)) {
+                return;
+            }
+        }
+        pt_ngr_log_c5_reuse_event("consumer-handle-guard-miss",
+                                  payloadObj,
+                                  0,
+                                  0,
+                                  0,
+                                  0,
+                                  "handle+0x18");
+    });
+}
+
+uint64_t pt_ngr_c5_materialize_select(uint64_t retObj,
+                                      uint64_t helperAddr,
+                                      uint64_t errSlotAddr,
+                                      uint64_t savedArgAddr,
+                                      uint64_t savedObjAddr) {
+    const char *path = savedObjAddr > 0x100000000ULL
+        ? (const char *)(uintptr_t)savedObjAddr
+        : NULL;
+
+    if (retObj != 0 && pt_ngr_c5_should_cache_path(path)) {
+        pt_ngr_c5_cached_materialize_obj = retObj;
+        pt_ngr_c5_have_materialize_template = pt_ngr_vm_read_bytes(
+            retObj,
+            pt_ngr_c5_cached_materialize_template,
+            sizeof(pt_ngr_c5_cached_materialize_template)
+        );
+        pt_ngr_c5_log_first_cache_probe(retObj,
+                                        retObj,
+                                        errSlotAddr,
+                                        path);
+        uint64_t lateLinked = pt_ngr_c5_wait_for_late_linked_graph(retObj);
+        if (lateLinked != 0 && !pt_ngr_c5_logged_late_linked_cache_event) {
+            pt_ngr_c5_logged_late_linked_cache_event = YES;
+            pt_ngr_log_c5_reuse_event("cache-late-linked",
+                                      lateLinked,
+                                      helperAddr,
+                                      errSlotAddr,
+                                      savedArgAddr,
+                                      savedObjAddr,
+                                      path);
+        }
+        if (!pt_ngr_c5_logged_cache_event) {
+            pt_ngr_c5_logged_cache_event = YES;
+            pt_ngr_log_c5_reuse_event("cache",
+                                      retObj,
+                                      helperAddr,
+                                      errSlotAddr,
+                                      savedArgAddr,
+                                      savedObjAddr,
+                                      path);
+        }
+        return retObj;
+    }
+
+    if (retObj == 0
+        && pt_ngr_c5_have_materialize_template
+        && pt_ngr_c5_should_reuse_path(path)) {
+        uint64_t replacement = pt_ngr_c5_wait_for_late_linked_graph(pt_ngr_c5_cached_materialize_obj);
+        if (replacement != 0) {
+            pt_ngr_c5_clear_error_slot(errSlotAddr);
+            pt_ngr_log_c5_reuse_event("reuse-late-linked",
+                                      replacement,
+                                      helperAddr,
+                                      errSlotAddr,
+                                      savedArgAddr,
+                                      savedObjAddr,
+                                      path);
+            if (!pt_ngr_c5_scan_consumer_handles_for_payload(replacement)) {
+                pt_ngr_c5_schedule_consumer_handle_guard_scan(replacement);
+            }
+            return replacement;
+        }
+
+        replacement = pt_ngr_c5_cached_materialize_obj;
+        pt_ngr_c5_schedule_vtable_stabilizer(replacement);
+        pt_ngr_c5_log_first_fallback_probe(retObj,
+                                           replacement,
+                                           errSlotAddr,
+                                           path);
+        pt_ngr_c5_clear_error_slot(errSlotAddr);
+        pt_ngr_log_c5_reuse_event("reuse-early-fallback",
+                                  replacement,
+                                  helperAddr,
+                                  errSlotAddr,
+                                  savedArgAddr,
+                                  savedObjAddr,
+                                  path);
+        if (!pt_ngr_c5_scan_consumer_handles_for_payload(replacement)) {
+            pt_ngr_c5_schedule_consumer_handle_guard_scan(replacement);
+        }
+        return replacement;
+    }
+
+    return retObj;
+}
+
+typedef uint64_t (*pt_ngr_c5_materialize_imp_t)(uint64_t, uint64_t, uint64_t, uint64_t);
+
+uint64_t pt_ngr_c5_materialize_dispatch_hook(uint64_t x0,
+                                             uint64_t x1,
+                                             uint64_t x2,
+                                             uint64_t x3) {
+    const char *originalPath = x1 > 0x100000000ULL
+        ? (const char *)(uintptr_t)x1
+        : NULL;
+    uint64_t dispatchSavedObjAddr = x1;
+    if (pt_ngr_c5_should_redirect_saved_path(originalPath)) {
+        dispatchSavedObjAddr = (uint64_t)(uintptr_t)pt_ngr_c5_content_pak_path;
+    }
+
+    uint64_t retObj = 0;
+    if (pt_ngr_c5_original_materialize_target != 0) {
+        pt_ngr_c5_materialize_imp_t orig =
+            (pt_ngr_c5_materialize_imp_t)(uintptr_t)pt_ngr_c5_original_materialize_target;
+        retObj = orig(x0, dispatchSavedObjAddr, x2, x3);
+    }
+
+    return pt_ngr_c5_materialize_select(retObj,
+                                        0,
+                                        x3,
+                                        x2,
+                                        dispatchSavedObjAddr);
+}
+
+static BOOL pt_ngr_make_patch_writable(void *address, size_t length) {
+    long pageSize = sysconf(_SC_PAGESIZE);
+    if (pageSize <= 0) { return NO; }
+    uintptr_t start = ((uintptr_t)address) & ~((uintptr_t)pageSize - 1ULL);
+    uintptr_t end = (((uintptr_t)address) + length + (uintptr_t)pageSize - 1ULL)
+        & ~((uintptr_t)pageSize - 1ULL);
+    size_t size = (size_t)(end - start);
+    if (mprotect((void *)start, size, PROT_READ | PROT_WRITE | PROT_EXEC) == 0) {
+        return YES;
+    }
+    kern_return_t kr = vm_protect(mach_task_self(),
+                                  (vm_address_t)start,
+                                  (vm_size_t)size,
+                                  TRUE,
+                                  VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY | VM_PROT_EXECUTE);
+    if (kr != KERN_SUCCESS) {
+        return NO;
+    }
+    kr = vm_protect(mach_task_self(),
+                    (vm_address_t)start,
+                    (vm_size_t)size,
+                    FALSE,
+                    VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY | VM_PROT_EXECUTE);
+    return kr == KERN_SUCCESS;
+}
+
+static void pt_ngr_restore_patch_protection(void *address, size_t length, vm_prot_t protection) {
+    long pageSize = sysconf(_SC_PAGESIZE);
+    if (pageSize <= 0) { return; }
+    uintptr_t start = ((uintptr_t)address) & ~((uintptr_t)pageSize - 1ULL);
+    uintptr_t end = (((uintptr_t)address) + length + (uintptr_t)pageSize - 1ULL)
+        & ~((uintptr_t)pageSize - 1ULL);
+    size_t size = (size_t)(end - start);
+    int mprotectFlags = PROT_READ;
+    if ((protection & VM_PROT_EXECUTE) != 0) {
+        mprotectFlags |= PROT_EXEC;
+    }
+    if ((protection & VM_PROT_WRITE) != 0) {
+        mprotectFlags |= PROT_WRITE;
+    }
+    if (mprotect((void *)start, size, mprotectFlags) == 0) {
+        return;
+    }
+    vm_protect(mach_task_self(),
+               (vm_address_t)start,
+               (vm_size_t)size,
+               FALSE,
+               protection);
+}
+
+static BOOL pt_ngr_vm_read_bytes(uint64_t address, void *buffer, size_t size) {
+    vm_size_t outSize = 0;
+    kern_return_t kr = vm_read_overwrite(mach_task_self(),
+                                         (vm_address_t)address,
+                                         (vm_size_t)size,
+                                         (vm_address_t)buffer,
+                                         &outSize);
+    return kr == KERN_SUCCESS && outSize == size;
+}
+
+static BOOL pt_ngr_vm_read_u64(uint64_t address, uint64_t *outValue) {
+    return pt_ngr_vm_read_bytes(address, outValue, sizeof(*outValue));
+}
+
+static BOOL pt_ngr_c5_find_materialize_slot_from_provider(uint64_t providerAddr,
+                                                          uint64_t targetValue,
+                                                          pt_ngr_c5_materialize_slot_match *outMatch) {
+    if (providerAddr == 0) {
+        return NO;
+    }
+    for (size_t index = 0; index < 16; index++) {
+        uint64_t tableAddr = 0;
+        if (!pt_ngr_vm_read_u64(providerAddr + (index * sizeof(uint64_t)), &tableAddr)) {
+            continue;
+        }
+        if (tableAddr <= 0x100000000ULL) {
+            continue;
+        }
+        uint64_t slotValue = 0;
+        uint64_t slotAddr = tableAddr + 0x10;
+        if (!pt_ngr_vm_read_u64(slotAddr, &slotValue)) {
+            continue;
+        }
+        if (slotValue == targetValue) {
+            if (outMatch != NULL) {
+                outMatch->providerEntryAddr = providerAddr + (index * sizeof(uint64_t));
+                outMatch->tableAddr = tableAddr;
+                outMatch->slotAddr = slotAddr;
+                outMatch->slotValue = slotValue;
+            }
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static void pt_ngr_install_materialize_shim_once(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        if (!pt_ngr_should_preheat_slot()) {
+            return;
+        }
+
+        const struct mach_header_64 *mh = NULL;
+        uint64_t unslidTextVMAddr = 0;
+        if (!pt_ngr_find_main_image(&mh, &unslidTextVMAddr)) {
+            pt_ngr_log_c5_install_event("main-image-not-found", 0, 0, 0, 0, 0);
+            return;
+        }
+
+        uint64_t slide = (uint64_t)(uintptr_t)mh - unslidTextVMAddr;
+        pt_ngr_c5_main_image_slide = slide;
+        if (unslidTextVMAddr != NGRSLOT_PREHEAT_TEXT_VMADDR) {
+            pt_ngr_log_c5_install_event("unexpected-text-vmaddr", 0, 0, 0, 0, slide);
+            return;
+        }
+
+        if (!pt_ngr_c5_install_consumer_handle_family_hook(slide)) {
+            pt_ngr_log_c5_install_event("consumer-family-hook-install-failed",
+                                        NGR_C5_MATERIALIZE_VTABLE_UNSLID + slide + 0x18,
+                                        0,
+                                        0,
+                                        NGR_C5_MATERIALIZE_VTABLE_UNSLID + slide,
+                                        slide);
+        }
+
+        uint64_t slidedTarget = NGR_C5_MATERIALIZE_TARGET_UNSLID + slide;
+        pt_ngr_c5_materialize_slot_match candidates[8] = {0};
+        size_t matchCount = 0;
+        uint64_t providerBases[] = {
+            NGR_C5_MATERIALIZE_PROVIDER_UNSLID,
+            NGR_C5_MATERIALIZE_PROVIDER_UNSLID,
+            NGR_C5_MATERIALIZE_PROVIDER_UNSLID + slide,
+            NGR_C5_MATERIALIZE_PROVIDER_UNSLID + slide,
+            NGR_C5_MATERIALIZE_VTABLE_UNSLID,
+            NGR_C5_MATERIALIZE_VTABLE_UNSLID,
+            NGR_C5_MATERIALIZE_VTABLE_UNSLID + slide,
+            NGR_C5_MATERIALIZE_VTABLE_UNSLID + slide,
+        };
+        uint64_t targetValues[] = {
+            NGR_C5_MATERIALIZE_TARGET_UNSLID,
+            slidedTarget,
+            NGR_C5_MATERIALIZE_TARGET_UNSLID,
+            slidedTarget,
+            NGR_C5_MATERIALIZE_TARGET_UNSLID,
+            slidedTarget,
+            NGR_C5_MATERIALIZE_TARGET_UNSLID,
+            slidedTarget,
+        };
+
+        pt_ngr_c5_materialize_slot_match selected = {0};
+        for (size_t i = 0; i < sizeof(providerBases) / sizeof(providerBases[0]); i++) {
+            pt_ngr_c5_materialize_slot_match candidate = {0};
+            if (!pt_ngr_c5_find_materialize_slot_from_provider(providerBases[i],
+                                                               targetValues[i],
+                                                               &candidate)) {
+                continue;
+            }
+            candidates[matchCount++] = candidate;
+            if (selected.slotAddr == 0) {
+                selected = candidate;
+            }
+        }
+
+        if (selected.slotAddr == 0) {
+            pt_ngr_log_c5_install_event("slot-not-found",
+                                        0,
+                                        (uint64_t)(uintptr_t)&pt_ngr_c5_materialize_dispatch_hook,
+                                        0,
+                                        0,
+                                        slide);
+            return;
+        }
+
+        uint64_t slotAddr = selected.slotAddr;
+        uint64_t originalTarget = selected.slotValue;
+        if (!pt_ngr_vm_read_u64(slotAddr, &originalTarget)
+            || (originalTarget != NGR_C5_MATERIALIZE_TARGET_UNSLID
+                && originalTarget != slidedTarget)) {
+            pt_ngr_log_c5_install_event("unexpected-slot-value",
+                                        slotAddr,
+                                        (uint64_t)(uintptr_t)&pt_ngr_c5_materialize_dispatch_hook,
+                                        originalTarget,
+                                        0,
+                                        slide);
+            return;
+        }
+
+        pt_ngr_c5_materialize_provider_entry_addr = selected.providerEntryAddr;
+
+        uint64_t hookTarget = (uint64_t)(uintptr_t)&pt_ngr_c5_materialize_dispatch_hook;
+        if (!pt_ngr_make_patch_writable((void *)slotAddr, sizeof(uint64_t))) {
+            uint8_t tableCopy[0x80] = {0};
+            if (!pt_ngr_vm_read_bytes(selected.tableAddr, tableCopy, sizeof(tableCopy))) {
+                pt_ngr_log_c5_install_event("clone-read-failed",
+                                            slotAddr,
+                                            hookTarget,
+                                            originalTarget,
+                                            selected.tableAddr,
+                                            slide);
+                return;
+            }
+            void *tableClone = malloc(sizeof(tableCopy));
+            if (tableClone == NULL) {
+                pt_ngr_log_c5_install_event("clone-alloc-failed",
+                                            slotAddr,
+                                            hookTarget,
+                                            originalTarget,
+                                            selected.tableAddr,
+                                            slide);
+                return;
+            }
+            memcpy(tableClone, tableCopy, sizeof(tableCopy));
+            memcpy((uint8_t *)tableClone + 0x10, &hookTarget, sizeof(hookTarget));
+
+            if (pt_ngr_c5_materialize_provider_entry_addr == 0) {
+                pt_ngr_log_c5_install_event("provider-entry-missing",
+                                            slotAddr,
+                                            hookTarget,
+                                            originalTarget,
+                                            selected.tableAddr,
+                                            slide);
+                free(tableClone);
+                return;
+            }
+
+            memcpy((void *)pt_ngr_c5_materialize_provider_entry_addr,
+                   &tableClone,
+                   sizeof(tableClone));
+
+            uint64_t verifyProviderEntry = 0;
+            if (!pt_ngr_vm_read_u64(pt_ngr_c5_materialize_provider_entry_addr, &verifyProviderEntry)
+                || verifyProviderEntry != (uint64_t)(uintptr_t)tableClone) {
+                pt_ngr_log_c5_install_event("provider-write-failed",
+                                            pt_ngr_c5_materialize_provider_entry_addr,
+                                            hookTarget,
+                                            originalTarget,
+                                            selected.tableAddr,
+                                            slide);
+                free(tableClone);
+                return;
+            }
+
+            pt_ngr_c5_cloned_materialize_table = tableClone;
+            pt_ngr_c5_materialize_slot_addr = (uint64_t)(uintptr_t)tableClone + 0x10;
+            pt_ngr_c5_original_materialize_target = originalTarget;
+            pt_ngr_log_c5_install_event("installed-provider-clone",
+                                        pt_ngr_c5_materialize_provider_entry_addr,
+                                        hookTarget,
+                                        originalTarget,
+                                        pt_ngr_c5_materialize_slot_addr,
+                                        slide);
+            return;
+        }
+
+        memcpy((void *)slotAddr, &hookTarget, sizeof(hookTarget));
+        pt_ngr_restore_patch_protection((void *)slotAddr, sizeof(hookTarget), VM_PROT_READ);
+
+        pt_ngr_c5_materialize_slot_addr = slotAddr;
+        pt_ngr_c5_original_materialize_target = originalTarget;
+
+        pt_ngr_log_c5_install_event("installed",
+                                    slotAddr,
+                                    hookTarget,
+                                    originalTarget,
+                                    pt_ngr_c5_materialize_slot_addr,
+                                    slide);
+    });
+}
+// ---------------------------------------------------------------------------
+
 // ---------------------------------------------------------------------------
 // HOK-014: 压制 `com.tencent.ngr` 启动期的 UIAlertController sheet modal。
 //
@@ -872,6 +2114,10 @@ static void __attribute__((constructor)) initialize(void) {
     // bundle-scoped、幂等。消除 "Attempting to get the command line..." fatal
     // 的根因，HOK-014 swizzle 观察期望从此为"零触发"。
     pt_ngr_preseed_cmdline_once();
+
+    pt_ngr_install_materialize_shim_once();
+
+    pt_ngr_install_url_resolution_probe_once();
 
     // HOK-014: 为 `com.tencent.ngr` 压制启动期的 UIAlertController sheet
     // modal（UE4 fatal 触发的 "Attempting to get the command line..."

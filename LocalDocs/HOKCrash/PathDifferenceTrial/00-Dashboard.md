@@ -44,7 +44,7 @@
 
 ### 当前主线一句话
 
-`PDT-005` 已完成：`FIOSPlatformFile::ConvertToPlatformPath` 在 NGR 二进制中的地址已确定为 **`0x10463f204`**（边界 `0x10463f204..0x10463ff48`）。函数内唯一引用 `/OnDemandResources/`，并依次执行 `Find` → `ReplaceInline("../")` → `ReplaceInline("..")` → `ReplaceInline(BaseDir)` → `AdditionalRootDirectory` 循环 → `objc_msgSend` 等 ObjC 调用，与源码行为高度吻合。验证重心已从 "定位函数" 切换到 **分析该函数的 `/var/` 透传分支判断逻辑，为 PDT-006 的机器码 patch 提供精确落点**。
+`PDT-006` 已完成：PlayTools runtime patch 已落地。在 `FIOSPlatformFile::ConvertToPlatformPath`（`0x10463f204`）函数入口处写入 16 字节 absolute-branch hook，跳转到 PlayTools 内部的 `pdt006_convert_replacement`。该 replacement 检查 `x1`（`const TCHAR*`）是否以 `/Users/` 开头：若匹配直接返回原指针（透传），否则经 `mmap` exec page 执行原始 prologue 后回退到原函数继续。patch 使用 `mprotect` 解除 `__TEXT` 写保护、保存原机器码确保可逆、仅对 `com.tencent.ngr` 生效。验证重心已切换到 **PDT-007：Live 验证 patch 效果**。
 
 ### 当前状态摘要
 
@@ -95,6 +95,19 @@
 >  但 PDT-006 的 patch 目标已明确：在 `0x10463f204` 函数的 `/OnDemandResources/` 检查之后、
 >  `../` 替换之前，插入对 `/Users/` 前缀的透传判断。
 >  结构化证据：`build/pdt-005-convert-to-platform-path-locate.json`。
+- **`PDT-006` 完成**：PlayTools runtime patch 已编写、构建并通过 `sync_playtools_xcframework.sh` 同步到预构建产物。核心实现：
+>   - 目标地址：`0x10463f204 + slide`；
+>   - Hook 格式：16 字节 `ldr x16, #8; br x16; .quad replacement`；
+>   - Replacement 检查 `x1` 是否以 `/Users/` 开头，匹配则直接返回原指针（透传）；
+>   - 非匹配路径通过 `mmap` exec page 执行原始 16 字节 prologue + 跳回原函数 +16；
+>   - 写保护：`pt_ngr_make_patch_writable` / `pt_ngr_restore_patch_protection`；
+>   - 指令缓存刷新：`sys_icache_invalidate`；
+>   - Bundle gate：复用 `pt_ngr_should_preheat_slot()`（`com.tencent.ngr`）；
+>   - 主 image 校验：复用 `pt_ngr_find_main_image()` + `__TEXT.vmaddr == 0x100000000`；
+>   - 诊断事件：`pdt006_ngr_convert_patch` 写入 `launch-events.jsonl`；
+>   - 已知限制：假设原函数前 16 字节为标准 prologue（无 PC-relative 指令）；假设调用约定为 x0=this, x1=const TCHAR*。
+>   代码落点：`Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m`（PDT-006 区块）与 `PlayCover.swift`（`recordPDT006ConvertPatchDiagnostic`）。
+>   子文档：`PDT-006-convert-patch-prototype.md`。
 - **对 C.5 历史线索的重新解读**：`PlayLoader.m` 里已有 `/Users/... →
 >  "../../../NGR/Content/Paks/1/1.db"` 的重定向尝试。结合 `ConvertToPlatformPath`
 >  的源码，这条线索现在有了更具体的工程解释：C.5 的开发者可能观察到 `/Users/...`
@@ -117,13 +130,8 @@
 >    `BaseDir` 的引用在 `0x10463f570`。函数末尾包含 `_CMTimeGetSeconds` 调用，应为
 >    NGR 定制引擎的额外逻辑，不影响主体身份判定。
 >    结构化证据：`build/pdt-005-convert-to-platform-path-locate.json`。
-4. **`PDT-006`（TODO）**：编写 PlayTools runtime patch 原型。
->    - 在 PDT-005 定位的地址处修改机器码：增加 `StartsWith("/User")` 条件，
->      使其与 `/var/` 一同走透传分支。
->    - 使用 `mprotect` 解除 `__TEXT` 写保护，patch 后恢复；保存原机器码确保可逆。
->    - 只对 `com.tencent.ngr` bundle 生效。
->    - **产物**：`PDT-006-convert-patch-prototype.md`。
-5. **`PDT-007`（TODO）**：Live 验证 patch 效果。
+4. **`PDT-006`（DONE）**：PlayTools runtime patch 原型已编写、构建并同步。在 `ConvertToPlatformPath`（`0x10463f204`）入口插入 16 字节 hook，使 `/Users/` 前缀路径直接透传。可逆、bundle-scoped、`mprotect` 安全写保护。子文档：`PDT-006-convert-patch-prototype.md`。
+5. **`PDT-007`（当前主线 / TODO）**：Live 验证 patch 效果。
 >    - 应用 PDT-006 patch 后启动 NGR，观察 `QtsFileSystem Create Failed!!` 是否消失。
 >    - 同时收集 `launch-events.jsonl`、`NGR-*.ips`、LLDB trace 等结构化证据。
 >    - 若崩溃消失 → 路径差异假设成立，进入 PDT-008。
@@ -181,12 +189,8 @@
 
 ### 下一步默认规划
 
-1. **执行 `PDT-006`**：基于 PDT-005 确认的 `0x10463f204`，编写 PlayTools runtime patch 原型。
->    - 目标：修改机器码使 `/User` 前缀也走透传分支（与 `/var/` 同等处理）。
->    - 使用 `mprotect` 解除 `__TEXT` 写保护，patch 后恢复；保存原机器码确保可逆。
->    - 只对 `com.tencent.ngr` bundle 生效。
->    - 产物：`PDT-006-convert-patch-prototype.md`。
-2. **执行 `PDT-007`**：Live 验证 patch 效果，观察 `QtsFileSystem Create Failed!!` 是否消失。
+1. **`PDT-006` 已完成**：PlayTools runtime patch 已编写、构建、同步到预构建产物。代码落点：`PlayLoader.m` + `PlayCover.swift`；子文档：`PDT-006-convert-patch-prototype.md`。
+2. **执行 `PDT-007`（当前主线）**：Live 验证 patch 效果，观察 `QtsFileSystem Create Failed!!` 是否消失。
 >    - 产物：`build/pdt-007-patch-live-report.json`。
 3. **根据 PDT-007 结果**：进入 `PDT-008`（证实）或 `PDT-009`（证伪）。
 4. 收尾执行 `git commit`。
@@ -267,8 +271,8 @@
 | PDT-001-A | DONE（结论已收窄） | 已离线提取 `0x10432a068` compare literal；结果为 UTF-16 `"r"` / `"rb"`，与路径/文件名无关。此结论只适用于 `0x10432a068` | `PDT-001A-compare-literals.md` |
 | PDT-004 | DONE | 已离线提取 natural run target `0x100128c6c` 的窗口；结果为 **dispatch stub，无 compare literal**。`PDT-001-A` 结论不适用于 natural run | `PDT-004-natural-target-literal.md` |
 | PDT-005 | DONE（结论已收窄） | 已定位 `FIOSPlatformFile::ConvertToPlatformPath` 在 NGR 二进制中的实现地址为 **`0x10463f204`**（函数边界 `0x10463f204..0x10463ff48`）。关键行为证据：函数内唯一引用 `/OnDemandResources/`（`0x10c10053c`），并依次执行 `FString::Find` → 未找到则 `ReplaceInline("../", "")` → `ReplaceInline("..", "")` → `ReplaceInline(BaseDir, "")` → 循环遍历 `AdditionalRootDirectory` → 调用 `objc_alloc`/`objc_autorelease`/`objc_msgSend` 等 ObjC 运行时函数。末尾的 `_CMTimeGetSeconds` 调用不影响主体身份判定，极可能是 NGR 定制引擎的额外逻辑。`/var/` 的 ADRP+ADD 引用（`0x107d009c4`）位于另一函数，非 `ConvertToPlatformPath` 本体。结构化证据：`build/pdt-005-convert-to-platform-path-locate.json` | 待建 `PDT-005-locate-convert-to-platform-path.md` |
-| PDT-006 | TODO | 编写 PlayTools runtime patch：修改机器码使 `/User` 前缀走透传分支；确保可逆、bundle-scoped | 待建 |
-| PDT-007 | TODO | Live 验证 patch 效果：观察 `QtsFileSystem Create Failed!!` 是否消失，收集结构化证据 | 待建 |
+| PDT-006 | DONE | PlayTools runtime patch 已落地：在 `ConvertToPlatformPath`（`0x10463f204`）入口插入 16 字节 absolute-branch hook，使 `/Users/` 前缀路径直接透传。可逆（保存原机器码 + mmap exec page）、bundle-scoped（`com.tencent.ngr`）、`mprotect` 安全写保护。代码：`PlayLoader.m` PDT-006 区块 + `PlayCover.swift` `recordPDT006ConvertPatchDiagnostic` | `PDT-006-convert-patch-prototype.md` |
+| PDT-007 | TODO（当前主线） | Live 验证 patch 效果：观察 `QtsFileSystem Create Failed!!` 是否消失，收集结构化证据 | 待建 |
 | PDT-008 | TODO | 若 PDT-007 证实，设计最小可落地 bundle-scoped 修复方案（runtime toggle） | 待建 |
 | PDT-009 | TODO | 若 PDT-007 证伪，留下结构化证据并关闭本 trial | 待建 |
 

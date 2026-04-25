@@ -2304,6 +2304,139 @@ static void pt_ngr_install_alert_suppressor_once(void) {
     });
 }
 // ---------------------------------------------------------------------------
+// PDT-006: Patch `FIOSPlatformFile::ConvertToPlatformPath` for `com.tencent.ngr`
+// 使 `/Users/` 前缀路径与 `/var/` 同等处理（直接透传）。
+//
+// 背景：UE4 `ConvertToPlatformPath` 在 iOS 真机上对 `/var/` 开头路径直接
+// 原样返回，而对 `/Users/...`（PlayCover/macOS 路径）会经过重新拼接，
+// 导致 materializer 看到的最终路径不同。本 patch 在函数入口处拦截：
+// 若参数（x1，const TCHAR*）以 `/Users/` 开头，直接返回原指针，跳过所有
+// 后续转换逻辑。
+//
+// 约束：
+//   - 仅对 `com.tencent.ngr` 生效。
+//   - 使用 mprotect 解除 __TEXT 写保护，patch 后恢复。
+//   - 保存原 16 字节机器码，确保可逆。
+//   - 通过 mmap 分配可执行内存页执行原始 prologue，再跳回原函数+16。
+// ---------------------------------------------------------------------------
+
+#define PDT006_CONVERT_FUNC_UNSLID  0x10463f204ULL
+#define PDT006_PATCH_SIZE           16
+
+static uint8_t pdt006_original_bytes[PDT006_PATCH_SIZE] = {0};
+static void *pdt006_original_exec_page = NULL;
+static BOOL pdt006_patch_installed = NO;
+
+static BOOL pdt006_should_pass_through(const char *path) {
+    if (path == NULL) { return NO; }
+    uintptr_t addr = (uintptr_t)path;
+    if (addr <= 0x100000000ULL) { return NO; }
+    return strncmp(path, "/Users/", 7) == 0;
+}
+
+// Replacement 函数，匹配 ARM64 调用约定
+// x0 = this (FIOSPlatformFile*), x1 = filename (const TCHAR*)
+// 返回 x0 = const TCHAR*
+static uint64_t pdt006_convert_replacement(uint64_t x0, uint64_t x1) {
+    const char *path = (const char *)(uintptr_t)x1;
+    if (pdt006_should_pass_through(path)) {
+        return x1;
+    }
+
+    if (pdt006_original_exec_page != NULL) {
+        typedef uint64_t (*orig_func_t)(uint64_t, uint64_t);
+        orig_func_t orig = (orig_func_t)pdt006_original_exec_page;
+        return orig(x0, x1);
+    }
+
+    return x1;
+}
+
+static void pdt006_log_event(const char *status,
+                             uint64_t patchAddr,
+                             uint64_t slide,
+                             const char *detail) {
+    NSLog(@"[PlayTools] PDT-006 convert-patch: status=%s patchAddr=0x%llx slide=0x%llx detail=%s",
+          status ?: "", patchAddr, slide, detail ?: "");
+    NSDictionary<NSString *, NSString *> *details = @{
+        @"status": status ? [NSString stringWithUTF8String:status] : @"",
+        @"patchAddr": [NSString stringWithFormat:@"0x%llx", patchAddr],
+        @"slide": [NSString stringWithFormat:@"0x%llx", slide],
+        @"detail": detail ? [NSString stringWithUTF8String:detail] : @"",
+    };
+    [PlayCover recordPDT006ConvertPatchDiagnosticWithDetails:details];
+}
+
+static void pdt006_install_convert_patch_once(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        if (!pt_ngr_should_preheat_slot()) {
+            return;
+        }
+
+        const struct mach_header_64 *mh = NULL;
+        uint64_t unslidTextVMAddr = 0;
+        if (!pt_ngr_find_main_image(&mh, &unslidTextVMAddr)) {
+            pdt006_log_event("main-image-not-found", 0, 0, "pt_ngr_find_main_image failed");
+            return;
+        }
+
+        uint64_t slide = (uint64_t)(uintptr_t)mh - unslidTextVMAddr;
+        if (unslidTextVMAddr != NGRSLOT_PREHEAT_TEXT_VMADDR) {
+            pdt006_log_event("unexpected-text-vmaddr",
+                             PDT006_CONVERT_FUNC_UNSLID,
+                             slide,
+                             "unslid __TEXT.vmaddr mismatch");
+            return;
+        }
+
+        uint64_t target = PDT006_CONVERT_FUNC_UNSLID + slide;
+
+        memcpy(pdt006_original_bytes, (void *)(uintptr_t)target, PDT006_PATCH_SIZE);
+
+        if (!pt_ngr_make_patch_writable((void *)(uintptr_t)target, PDT006_PATCH_SIZE)) {
+            pdt006_log_event("mprotect-failed", target, slide, "cannot make target writable");
+            return;
+        }
+
+        long pageSize = sysconf(_SC_PAGESIZE);
+        void *execPage = mmap(NULL, (size_t)pageSize, PROT_READ | PROT_WRITE | PROT_EXEC,
+                              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (execPage == MAP_FAILED) {
+            pdt006_log_event("mmap-failed", target, slide, "cannot allocate exec page");
+            pt_ngr_restore_patch_protection((void *)(uintptr_t)target, PDT006_PATCH_SIZE,
+                                            VM_PROT_READ | VM_PROT_EXECUTE);
+            return;
+        }
+
+        memcpy(execPage, pdt006_original_bytes, PDT006_PATCH_SIZE);
+
+        uint32_t *execTrampoline = (uint32_t *)((uint8_t *)execPage + PDT006_PATCH_SIZE);
+        execTrampoline[0] = 0x58000050;
+        execTrampoline[1] = 0xd61f0200;
+        uint64_t *execLiteral = (uint64_t *)(execTrampoline + 2);
+        *execLiteral = target + PDT006_PATCH_SIZE;
+
+        sys_icache_invalidate(execPage, (size_t)pageSize);
+
+        uint32_t *hook = (uint32_t *)(uintptr_t)target;
+        hook[0] = 0x58000050;
+        hook[1] = 0xd61f0200;
+        uint64_t *hookLiteral = (uint64_t *)(hook + 2);
+        *hookLiteral = (uint64_t)(uintptr_t)&pdt006_convert_replacement;
+
+        sys_icache_invalidate((void *)(uintptr_t)target, PDT006_PATCH_SIZE);
+
+        pt_ngr_restore_patch_protection((void *)(uintptr_t)target, PDT006_PATCH_SIZE,
+                                        VM_PROT_READ | VM_PROT_EXECUTE);
+
+        pdt006_original_exec_page = execPage;
+        pdt006_patch_installed = YES;
+
+        pdt006_log_event("installed", target, slide, "ConvertToPlatformPath patched for /Users/ pass-through");
+    });
+}
+// ---------------------------------------------------------------------------
 
 @implementation PlayLoader
 
@@ -2328,6 +2461,10 @@ static void __attribute__((constructor)) initialize(void) {
     // alert）。HOK-015 落地后该 swizzle 在日常启动应**一次都不触发**，
     // 保留作为安全网。bundle-scoped、幂等。
     pt_ngr_install_alert_suppressor_once();
+
+    // PDT-006: 在 NGR 进入 UE4 路径转换前 patch `ConvertToPlatformPath`，
+    // 使 `/Users/` 前缀与 `/var/` 同等透传。bundle-scoped、可逆。
+    pdt006_install_convert_patch_once();
 
     [PlayCover launch];
     

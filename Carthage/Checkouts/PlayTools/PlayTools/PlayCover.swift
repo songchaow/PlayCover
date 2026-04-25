@@ -240,6 +240,19 @@ public class PlayCover: NSObject {
         )
     }
 
+    /// PDT-006: 供 PlayLoader.m 的 `pdt006_install_convert_patch_once()` 回调使用，
+    /// 把 `ConvertToPlatformPath` machine-code patch 的安装事件落盘到
+    /// `launch-events.jsonl`。事件字段含 `status` / `patchAddr` / `slide` / `detail`。
+    @objc static public func recordPDT006ConvertPatchDiagnostic(details: [String: String]) {
+        let runtimeBundleId = Bundle.main.bundleIdentifier
+            ?? "playtools.runtime.\(ProcessInfo.processInfo.processIdentifier)"
+        RuntimeLaunchDiagnostics.record(
+            event: "pdt006_ngr_convert_patch",
+            bundleId: runtimeBundleId,
+            details: details
+        )
+    }
+
     static public func quitWhenClose() {
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name(rawValue: "NSWindowWillCloseNotification"),

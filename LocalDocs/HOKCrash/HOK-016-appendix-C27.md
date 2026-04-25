@@ -620,3 +620,32 @@ post-`1c8` pointer pair 其实一致"：
   success 返 non-null 并写回 `helper+0x18`，fail 返 0、`helper+0x18`
   保持 0，并继续由 `x30=0x100122f88` / `errValue=0x9000b` 闭合
   err-provider。
+
+## 15. 本轮 agent 执行新增证据（2026-04-25）
+
+> 阅读建议：同步 Dashboard 最新状态时读取；复盘 C.5 技术路线时必读。
+
+### 15.a C.5 alt1 hook 安装被 `__DATA_CONST` 写保护阻塞
+
+- **问题发现**：`installed-provider-clone` 路径在 `return` 前会跳过 alt1 安装。
+  已在 `PlayLoader.m` 中将 alt1 安装逻辑提取为 `pt_ngr_c5_install_alt1_hook()`，
+  在 provider-clone `return` 前也调用。代码改动见 git diff。
+- **`__DATA_CONST` 不可写**：natural run 中 alt1 slot（如 `0x10ef92fd0`）位于
+  `__DATA_CONST` 段。`pt_ngr_make_patch_writable`（`mprotect` + `vm_protect`
+  两次调用）均失败；随后尝试 `vm_write(mach_task_self(), ...)` fallback，
+  仍然失败，最终记录 `alt1-not-writable`。
+- **live 证据**：`build/hok-004-ngr-startup-report.json`，pid 97177，
+  processLaunchId=`launch-97177-272c5ad8-f770-4e3b-92da-c691f042b89a`，
+  `hok016c5_ngr_materialize_shim_installed` 事件序列：
+  `consumer-family-hook-install-failed` → `installed-provider-clone` →
+  `alt1-not-writable`。alt1 hook **未能安装**。
+- **对 Dashboard 的影响**：此前认为 alt1 hook "命中并触发 cache/reuse" 是
+  误读；实际 `cache-probe` + `cache` 来自 primary hook（provider-clone），
+  不是 alt1。C.5 在当前 macOS 环境下无法完成对 `0x100128c6c` 的拦截。
+
+### 15.b `alt1-dispatch` 细粒度日志已就绪
+
+- 已在 `pt_ngr_c5_materialize_dispatch_hook_alt1` 中增加每调用日志：
+  `callIndex` / `x1Path` / `originalRetObj` / `selectedObj` / `originalTarget`。
+- 由于 alt1 hook 未能安装，`alt1-dispatch` 事件尚未触发；代码保留，若未来
+  找到写保护突破方法可立即启用。

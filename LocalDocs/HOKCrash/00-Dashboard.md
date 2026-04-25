@@ -76,19 +76,23 @@
   `0x10432a068`。这意味着 dual-force / 附录 C27 中基于 `0x10432a068` 的
   target-side trace 与 natural run 的实际 target 不同；C.5 安装在
   `0x10432a068` vtable slot 上的 hook **从未被 natural run 触发**。
-- HOK-016-C.5 materialize shim 已修正并验证：原 hook 仅安装在静态锁定
-  的 `0x10432a068` vtable slot，但 natural run 实际 target 为
-  `0x100128c6c`（或堆地址 `0x115a5eb30`）。已在 `PlayLoader.m` 中增加
-  `NGR_C5_MATERIALIZE_TARGET_ALT1_UNSLID` (`0x100128c6c`) 的 provider 扫描
-  + `__DATA`/`__DATA_CONST` data 段扫描，安装独立的
-  `pt_ngr_c5_materialize_dispatch_hook_alt1`。live 验证（
-  `build/hok-004-ngr-startup-report.json`，pid 64036，
-  processLaunchId=`launch-64036-f6e96eb7-d7ac-45f3-aaa7-262fa8b30422`）
-  确认 alt1 hook **命中并触发 cache/reuse**
-  (`hok016c5_ngr_materialize_shim_reused`，含 `cache-probe` + `cache` 两条
-  事件)。**但 `hok014_ngr_alert_suppressed` 仍出现 1 次**，说明
-  materialize shim 未完全消除 `QtsFileSystem Create Failed!!` 路径，需继续
-  下钻。
+- HOK-016-C.5 materialize shim 现状更新：
+  - 原 hook（`0x10432a068`）在 natural run 中从未被触发；`cache-probe` +
+    `cache` 实际来自 primary hook 的 provider-clone 路径，不是 alt1。
+  - 已修复 `installed-provider-clone` 路径会跳过 alt1 安装的 bug：将 alt1
+    安装逻辑提取为 `pt_ngr_c5_install_alt1_hook()`，在 provider-clone
+    return 前也调用。
+  - 已在 `pt_ngr_c5_materialize_dispatch_hook_alt1` 中增加每调用细粒度日志
+    (`action=alt1-dispatch`)，含 `callIndex` / `path` / `originalRetObj` /
+    `selectedObj`，用于区分同一路径多次调用 vs 独立第二条 failure path。
+  - **新卡点**：`__DATA_CONST` 写保护导致 alt1 slot 不可写；
+    `pt_ngr_make_patch_writable`（`mprotect` + `vm_protect`）失败，
+    `vm_write` fallback 也失败，记录 `alt1-not-writable`。当前 macOS 下
+    C.5 无法通过 vtable patch 拦截 `0x100128c6c` 路径。
+  - live 验证（`build/hok-004-ngr-startup-report.json`，pid 97177，
+    processLaunchId=`launch-97177-272c5ad8-f770-4e3b-92da-c691f042b89a`）
+    确认 alt1 hook **未能安装**，`hok014_ngr_alert_suppressed` 仍出现 1 次。
+    materialize shim 在当前系统环境下无法完成 alt1 部署，需降级评估。
 
 ### 修复路线（优先级从高到低）
 
@@ -104,10 +108,10 @@
      `0x100128c6c` / `0x115a5eb30`，不是 `0x10432a068`。dual-force run 与
      natural run 的 materialize target 不同，附录 C27 §14 的 target-side
      分析需要重新评估是否适用于 natural path。
-2. **`HOK-016-C.5`**：已验证（见当前状态摘要）。原 hook 只覆盖
-   `0x10432a068`，现已增加 `0x100128c6c` 的独立 hook + data 段扫描。
-   live 验证确认命中并触发 `cache`/`reuse`，但 `hok014_ngr_alert_suppressed`
-   仍出现，materialize shim 未完全消除失败路径，继续推进 C.2.7 / C.4。
+2. **`HOK-016-C.5`**：alt1 hook 因 `__DATA_CONST` 写保护无法安装（`alt1-not-writable`），
+   `vm_write` fallback 同样失败。在当前 macOS 环境下，vtable patch 方案对
+   `0x100128c6c` 不可行。C.5 已收集到足够证据（`alt1-dispatch` 日志代码保留），
+   但不再作为主线推进，待环境变化或找到新的写 `__DATA_CONST` 方法后再评估。
 3. **`HOK-016-C.4`**：由于 natural run 的 materialize target 与 dual-force
    不同，对象形状假设需要重新验证。若 C.5 修正后仍无法覆盖，进入诊断性
    强制成功验证。
@@ -151,36 +155,36 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
 
 ### 当前卡点
 
-三层未闭合问题：
+四层未闭合问题：
 1. `0x1001a588c` 在 natural run 中观测到一次 success 命中（`pkg+0x10=0x0`
    `pkg+0xb0=0x0`），但 natural fail 走 `branch-224` 直接返 0；OpenNodeStorage
    gate 可能不是 natural fail 的直接来源。
-2. **C.5 alt1 hook 已命中，但 alert 仍触发**：live 验证确认
-   `hok016c5_ngr_materialize_shim_reused`（`cache-probe` + `cache`）出现，
-   说明 `0x100128c6c` 路径已被 cache/reuse 覆盖。然而
-   `hok014_ngr_alert_suppressed` 仍出现 1 次，意味着 `QtsFileSystem Create
-   Failed!!` 还有未被 materialize shim 拦截的触发源。需进一步区分：是同一
-   path 的多轮调用中部分未命中，还是存在独立的第二条 failure path。
+2. **C.5 alt1 hook 安装被 `__DATA_CONST` 写保护阻塞**：`pt_ngr_make_patch_writable`
+   与 `vm_write` 均无法修改 alt1 vtable slot，导致 `0x100128c6c` 路径无法被
+   hook。`cache-probe` + `cache` 来自 primary hook（provider-clone），不是
+   alt1；natural run 的 materialize target（`0x100128c6c` 或堆地址
+   `0x115a5eb30`）仍未被 intercept。
 3. **C.2.7 (c) 新口径**：dual-force 与 natural run 的 materialize target
-   不同；C.5 已证明 natural path 的 `0x100128c6c` 可被 hook，但 cache/reuse
-   未能消除 alert。需要针对 `0x100128c6c` 补做 target-side trace，确认
-   pre-`1c8` entry tuple / helper state 在 natural run 中的实际值。
+   不同；C.5 因系统写保护证伪，需换方向下钻。需要确认 natural run 中
+   `0x100128c6c` 被调用的次数、返回值、以及是否存在多条独立调用路径。
+4. **细粒度日志已就绪但无法触发**：`alt1-dispatch` 日志代码已写入
+   `pt_ngr_c5_materialize_dispatch_hook_alt1`，只要 alt1 hook 安装成功即可
+   输出每调用参数；当前 blocked by 卡点 2。
 
 ### 下一步默认规划
 
-1. **继续下钻 C.2.7（当前主线）**：C.5 cache/reuse 已命中但
-   `hok014_ngr_alert_suppressed` 仍出现。需要区分：
-   - (a) 是 materialize 同一路径被调用多次、仅部分命中？还是
-   - (b) 存在独立的第二条 failure path？
-   优先通过 `launch-events.jsonl` 中 `hok016c5_ngr_materialize_shim_reused`
-   的出现次数与 `hok014_ngr_alert_suppressed` 的时序关系做初步判断。
-   若 (a)，需在 alt1 hook 中增加更细粒度的日志（如 path 去重计数器）。
-   若 (b)，需回到 `0x108877bd0` 的 caller 做第二条路径扫描。
-2. **补做 `0x100128c6c` 的 target-side trace**：C.5 已证明 natural path
-   的实际 target 是 `0x100128c6c`，但 cache/reuse 未消除 alert。需要验证
-   natural run 中 `0x100128c6c` pre-`1c8` entry tuple / helper state 的
-   实际值，与 dual-force run 的 `0x10432a068` 侧证据对比。
-3. 若 C.2.7 下钻后仍无法收敛，进入 **`HOK-016-C.4`**（诊断性强制成功验证）。
+1. **评估 C.5 路线是否继续**：`__DATA_CONST` 写保护在当前 macOS 版本下
+   不可绕过。若短期内无法找到新的写保护突破方法（如 `vm_remap` 可写映射、
+   `pthread_jit_write_protect_np`、或利用 `dyld` 的 `__DATA_CONST` 重绑定
+   机制），C.5 降级为 blocked，优先切回 C.2.7 / C.4。
+2. **继续下钻 C.2.7（当前主线）**：不依赖 vtable hook，改用 LLDB 直接对
+   `0x100122f54`（materialize vcall）设 BP，统计 natural run 中该 BP 的
+   命中次数、每次 `x8(target)` 实际值（`0x100128c6c` vs 堆地址）、每次返回值
+   `x0`，与 `hok014_ngr_alert_suppressed` 的时序做关联分析。目标：确认
+   (a) 同一路径被调用多次、部分返回 0；还是 (b) 存在独立第二条 failure path。
+3. 若 C.2.7 通过 LLDB trace 仍无法收敛，进入 **`HOK-016-C.4`**（诊断性强
+   制成功验证：直接 patch `0x100122f58` 返回值或在 `0x100122f5c` 后注入
+   non-null object）。
 4. `HOK-016-C.3` 保留作为最后兜底。
 5. `HOK-016-D` live 验证标准：`hok014_ngr_alert_suppressed = 0` +
    `%CPU/RSS/线程/窗口` 活跃度达标 + 无新 `NGR-*.ips`。
@@ -287,10 +291,10 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
 | HOK-016-C.2.4 | DONE | 收紧到 `0x10017f184` 的 lookup 失败 | `HOK-016-appendix-C23-C24.md` |
 | HOK-016-C.2.5 | DONE | 补齐 rootB writer / insert-helper 的侧证 | `HOK-016-appendix-C25-C26.md` |
 | HOK-016-C.2.6 | DONE | 更正为 `mainChunk` 的 `"1"` 子树缺失，不是 `"main"` 缺失 | `HOK-016-appendix-C25-C26.md` |
-| HOK-016-C.2.7 | TODO（当前主线） | (a) `0x1001a588c` natural run 已观测到一次 success 命中（`pkg+0x10=0x0 pkg+0xa8=0x2 pkg+0xb0=0x0 pkg+0x110=0x1`），label=`gate1-ret`；natural fail 走 `branch-224` 直接返 0，未进入 `branch-238` tail。**(c) 新发现**：natural run 中 `0x100122f54` 的 `x8(target)=0x100128c6c/0x115a5eb30`，不是 `0x10432a068`，dual-force 的 target-side 分析需重新评估。详见 `HOK-016-appendix-C27.md` §14、`build/hok-016c27-mainchunk-subtree-trace-post-log.json`、`/tmp/hok016c27-lldb-trace.log`。 | `HOK-016-appendix-C27.md` |
+| HOK-016-C.2.7 | TODO（当前主线） | (a) `0x1001a588c` natural run 已观测到一次 success 命中（`pkg+0x10=0x0 pkg+0xa8=0x2 pkg+0xb0=0x0 pkg+0x110=0x1`），label=`gate1-ret`；natural fail 走 `branch-224` 直接返 0，未进入 `branch-238` tail。**(c) 新发现**：natural run 中 `0x100122f54` 的 `x8(target)=0x100128c6c/0x115a5eb30`，不是 `0x10432a068`。C.5 因 `__DATA_CONST` 写保护无法安装 alt1 hook，已降级。下一步改用 LLDB 直接对 `0x100122f54` 设 BP，统计命中次数、每次 `x8` 实际值与返回值，关联 `hok014_ngr_alert_suppressed` 时序，区分 (a) 同一路径多次调用部分失败 vs (b) 独立第二条 path。详见 `HOK-016-appendix-C27.md` §14。 | `HOK-016-appendix-C27.md` |
 | HOK-016-C.3 | DEFERRED | 终极野蛮方案：fishhook interpose `0x108878534` 直接返回 1，仅作最后兜底 | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.4 | TODO | 若 C.5 修正 target 后仍无法覆盖，进入诊断性强制成功验证。natural run 的 materialize target 与 dual-force 不同，对象形状假设需重新验证。 | `HOK-016-appendix-C27.md` |
-| HOK-016-C.5 | DONE | 已在 `PlayLoader.m` 增加 `NGR_C5_MATERIALIZE_TARGET_ALT1_UNSLID` (`0x100128c6c`) 的 provider 扫描 + `__DATA`/`__DATA_CONST` data 段扫描，安装独立 alt1 hook `pt_ngr_c5_materialize_dispatch_hook_alt1`。live 验证（`build/hok-004-ngr-startup-report.json`，pid 64036）确认 alt1 hook 命中并触发 `cache`/`reuse`（`hok016c5_ngr_materialize_shim_reused`）。但 `hok014_ngr_alert_suppressed` 仍出现，materialize shim 未完全消除失败路径，继续推进 C.2.7 / C.4。 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.4 | TODO | 若 C.2.7 通过 LLDB trace 仍无法收敛，进入诊断性强制成功验证。natural run 的 materialize target 与 dual-force 不同，对象形状假设需重新验证。 | `HOK-016-appendix-C27.md` |
+| HOK-016-C.5 | BLOCKED | 已修复 provider-clone 路径跳过 alt1 安装的 bug，已增加 `alt1-dispatch` 细粒度日志。但 `__DATA_CONST` 写保护导致 alt1 slot 不可写（`alt1-not-writable`），`vm_write` fallback 也失败。在当前 macOS 环境下无法通过 vtable patch 拦截 `0x100128c6c` 路径。待找到新的写保护突破方法或环境变化后再评估。live 证据：`build/hok-004-ngr-startup-report.json`，pid 97177，processLaunchId=`launch-97177-272c5ad8-f770-4e3b-92da-c691f042b89a`。 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.6 | DEFERRED | 仅在必须依赖外部资源或登录态时，才降级到需要用户介入的路线 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-D | TODO | HOK-016-C 落地后做 live 验证，并把 HOK-014 降级为冷备安全网 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-007C | DEFERRED | 下游 crash 的离线映射 + 可逆 patch；当前无触发动机 | `HOK-007-二进制意图分析与callsite映射.md` |
@@ -347,6 +351,11 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
   锁定的 `0x10432a068` 在 dual-force run 中确实被命中，但 natural run 中
   `0x100122f54` 的 `x8` 实际是 `0x100128c6c`/`0x115a5eb30`。任何基于固定
   vtable slot 的 hook 方案，都必须先通过 live BP 验证运行期实际 target。
+- **`__DATA_CONST` vtable slot 在当前 macOS 下不可写**：`mprotect` /
+  `vm_protect` / `vm_write` 均无法修改 `__DATA_CONST` 中的指针。
+  provider-clone 方案（malloc 新 vtable + redirect provider entry）只对
+  primary hook 可行，alt1 slot 若无对应 provider entry 则无法 clone。
+  任何依赖 runtime vtable patch 的方案，必须先验证页保护是否允许写入。
 
 ## 参考信息
 

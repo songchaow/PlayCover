@@ -2,7 +2,7 @@
 
 > 本文只沉淀 HOK-006 引入的 **LLDB 自动化入口**、**结构化 LLDB 证据 schema**、**transcript 解析口径**与**automation gate 定义**。任务状态、某轮 live 结论以 `00-Dashboard.md` 为准；watchpoint / stderr 重定向等 HOK-012-B 增量扩展见 `HOK-012-工具链与方法论归档.md`。
 >
-> **何时读**：需要改 `launch_app_with_lldb` / `LLDBLaunchEvidence` / `Scripts/hok006_ngr_lldb_runner.py` 的 schema 或 gate 判据时读；需要扩展 fault vs watchpoint 分流规则时读；日常 HOK-016 系列工作不需要进入。
+> **阅读建议**：一般无需读取；需要改 `launch_app_with_lldb` / LLDB 证据 schema 时按需读取。
 >
 > **相关文档**：
 >
@@ -27,7 +27,7 @@
     - `metalCaptureEnabled=false`
     - `injectMetalCaptureEnvironment=false`
     - `shaderSourceReplacementEnabled=false`
-    - `rootWorkDir=false`
+    - `rootWorkDir=true`
     - `playChain=false`
   - 调用 `launch_app_with_lldb(bundleId=com.tencent.ngr, withTerminalWindow=false, timeoutSeconds=...)`
   - 并行保留 `create_session` 与 `list_sessions` settle window 采样

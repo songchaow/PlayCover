@@ -2,7 +2,7 @@
 
 > 本文只沉淀 HOK-007 的**离线 callsite 映射工具**、**patch 候选设计与选择理由**、**安全/回滚/重签口径**以及**候选 E 作为症状 workaround 的技术定位**。任务状态、apply 与 live 闭环结论、下游 `far=0x50` 之类 crash 是否继续跟踪，以 `00-Dashboard.md` 为准。
 >
-> **何时读**：需要追查新 faulting callsite、需要重新上/下候选 E、或需要把候选 E 的 apply/revert 接入新流程时读；当前 HOK-013 + HOK-015 已替代候选 E，日常 HOK-016 系列工作不需要进入。
+> **阅读建议**：一般无需读取；需要追查新 faulting callsite 或重新上/下候选 E 时按需读取。
 >
 > **相关文档**：
 >

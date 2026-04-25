@@ -6,15 +6,9 @@
 > `0x10012bb7c` null table → dual-force checkpoint → sibling branch +
 > hollow wrapper → `0x9000b` err-slot / materialization 链。
 >
-> **何时读**：
->
-> - 做 HOK-016-C.2.7 / C.4 / C.5 任何 probe 或修复设计时总是读；
-> - 只需要同步**当前最新收紧口径**时，优先看 **§14**；
-> - 需要复盘“问题是如何从 `mainChunk+0x60` 缺口一路收紧到
->   materialization vcall 返回 0”时，再按顺序回看 §1-§13；
-> - 需要理解两支 sibling branch 如何共同把 second-gate 压回 0、或需
->   要在 C.5 PlayTools shim 里决定"模拟哪一层 contract"时读；
-> - 日常阅读 HOK-016 主文档不必进入本文。
+> **阅读建议**：做 HOK-016-C.2.7 / C.4 / C.5 任何 probe 或修复设计时总是读取；
+> 只想同步当前最新收紧口径时优先看 **§14**；复盘完整证据链时按顺序回看
+> §1-§13。日常阅读 HOK-016 主文档不必进入。
 >
 > **相关文档**：
 >
@@ -357,7 +351,7 @@ dual-force pushes first writer branch alive
   - `ctx[0]` / `ctx+0x18` / `ctx0raw` / `ctx18raw` / key 与上面那支保持一致
   - **但此时 `mainChunk+0x60 = 0x132f4dcd0` 已经非零**
 
-这说明：**`ba720` miss 不再像是“ctx producer 自己构造错了另一份 header”**；
+这说明：**`ba720` miss 不再像是"ctx producer 自己构造错了另一份 header"**；
 目前可见的分水岭是 **调用 `ba720` 时 subtree root 是否已经挂进
 `mainChunk+0x60`**。再结合本轮对 `0x1001ba720..0x1001ba7c0` 的静态反汇编，
 `ba720` 本体也已经闭合：它先把 incoming header / key 搬到 ctx，唯一的
@@ -388,11 +382,11 @@ entry-side 证据也补齐了：
   `0x1001a55b8` 就直接观测到 `w0 = 0`，随后 `0x1001a5730`
   `QtsfPackage OpenNodeStorage failed! package=%s` 分支被直接命中。
 
-这把 branch A 的口径从“只看 return-site 推断 package state 差异”升级成了：
+这把 branch A 的口径从"只看 return-site 推断 package state 差异"升级成了：
 **`0x10432df30` 这支确实在 entry-side 带着 `pkg+0xa8 = 3 / pkg+0x110 = 5`
 进入 `0x1001a588c`，并在 gate1 立刻失败；问题更像是 package / storage
 state 尚未就绪，而不是 key / candidate materialization 自身有误。** 结合本轮
-对 `0x1001a588c..0x1001a5c60` 的静态反汇编，这个“OpenNodeStorage gate”也已
+对 `0x1001a588c..0x1001a5c60` 的静态反汇编，这个"OpenNodeStorage gate"也已
 经能拆成更具体的两层：
 
 - `0x1001a58b8..0x1001a58c0` 先直接检查 `pkg+0x10`；若 `>= 2`，会落入
@@ -401,8 +395,8 @@ state 尚未就绪，而不是 key / candidate materialization 自身有误。**
   nodeStorage，并通过其 vtable `slot+0x20` 做真正的 open-node；
   `0x1001a55b8` 看到的 `w0=0` 只是这整串子流程的汇总返回值。
 
-因此，问题 (a) 的下一跳不该再泛化成“继续看 `pkg+0xa8 / pkg+0x110`
-有没有差异”，而应该直接 live capture branch A 进入 `0x1001a588c` 时的
+因此，问题 (a) 的下一跳不该再泛化成"继续看 `pkg+0xa8 / pkg+0x110`
+有没有差异"，而应该直接 live capture branch A 进入 `0x1001a588c` 时的
 `pkg+0x10` 与 `pkg+0xb0->0x30`，判断它究竟死在 invalid open-mode，还是死在
 nodeStorage open errcode。
 
@@ -434,8 +428,8 @@ nodeStorage open errcode。
   `0x1001b3df4` 立刻观测到 `x0(table)=0`，随后 `storage+0x30` 才被写成
   `0x9000b`。
 
-这说明：**到 `0x10012bb7c` 这一层，问题已经不应再表述成“key=`"1"` 查不到表”**，
-而更像是“create-table helper 拿到的 descriptor/blob contract 缺了一项或多项前置状态”，
+这说明：**到 `0x10012bb7c` 这一层，问题已经不应再表述成"key=`"1"` 查不到表"**，
+而更像是"create-table helper 拿到的 descriptor/blob contract 缺了一项或多项前置状态"，
 所以 helper 返回 null table，并把错误码落到 `0x9000b`。
 
 ## 13. `0x10012bb7c` 的第一层 descriptor/blob gate 已通过；natural run 失败后移到 entry-build 之后的 final-check
@@ -474,7 +468,7 @@ nodeStorage open errcode。
 - `node+0x50 = 0`
 
 对照静态分支：这是从 `0x100125318 cmp w8,#1; 0x100125320 b.lt 0x10012581c` 过来的，
-意味着 helper 进入的是“先补 entry / container”的那条路径，而不是直接走
+意味着 helper 进入的是"先补 entry / container"的那条路径，而不是直接走
 `0x100125324..330` 的 `err=9` 写点。实际 live transcript 里也**没有任何**
 `[hok016c27-create-table-err9]` 命中。
 
@@ -497,7 +491,7 @@ nodeStorage open errcode。
   `errSlot = 0x9000b` 已经成立；随后 `0x1001259c4` 保持
   `x22(ret)=0` / `errSlot=0x9000b`，最终把 null table 返还给 storage method。
 
-换句话说，**natural run 的 create-table 失败已不应再描述成“final-check 自己把 error slot 推成 `0x9000b`”**；更准确的表述是：helper 通过了前半 descriptor/blob gate，也进入了 entry-build，但在 `0x10012595c` 之后更深层的校验 / helper 链里，`0x100122f98` 先把 err slot 写成 `0x9000b`，`0x100125960` 只是消费这份已形成的错误状态并把返回值压回 0。
+换句话说，**natural run 的 create-table 失败已不应再描述成"final-check 自己把 error slot 推成 `0x9000b`"**；更准确的表述是：helper 通过了前半 descriptor/blob gate，也进入了 entry-build，但在 `0x10012595c` 之后更深层的校验 / helper 链里，`0x100122f98` 先把 err slot 写成 `0x9000b`，`0x100125960` 只是消费这份已形成的错误状态并把返回值压回 0。
 
 ### 13.e 这轮结果对主线的含义
 
@@ -510,11 +504,11 @@ nodeStorage open errcode。
   收紧成 `0x10012595c → 0x1001148b8 → 0x100114994 → 0x1001142a4 →
   0x100122f98` 这条更深层 callee 链；
 - **注意：以上仍是阶段性收紧，不是当前最终口径。** 第 14 节的
-  materialization trace 会继续把这条线从“解释 `0x100122f98` 为什么命中”
-  改写成“解释 `0x100122f54` 的 materialization vcall 为什么在 failing
-  helper state 上直接返回 0”。
+  materialization trace 会继续把这条线从"解释 `0x100122f98` 为什么命中"
+  改写成"解释 `0x100122f54` 的 materialization vcall 为什么在 failing
+  helper state 上直接返回 0"。
 
-## 14. deep err-slot probe 继续把 create-table failure 收紧成 “`0x100122f54` materialization vcall 返 0 → `x21/helper+0x18` 被一起压空”
+## 14. deep err-slot probe 继续把 create-table failure 收紧成 "`0x100122f54` materialization vcall 返 0 → `x21/helper+0x18` 被一起压空"
 
 先前的 `build/hok-016c27-deep-err-chain.json` 已经把问题 (c) 收紧到：
 `0x10012595c` 会把 caller err slot 作为 `x3` 传入 `0x1001148b8`，真正写
@@ -559,7 +553,7 @@ post-store compare。新增 `build/hok-016c27-materialize-trace.json` 后，这�
     `errWatch = 0x600003159fb0`、`errValue = 0x9000b`，与
     `(9 << 16) | 0xb` 完全对齐。
 
-- 因而此前“`x21` 在 `0x100122f84` 前被某段未知逻辑压成 0”这句口径需要修正：
+- 因而此前"`x21` 在 `0x100122f84` 前被某段未知逻辑压成 0"这句口径需要修正：
   **`x21` 只是 `0x100122f54` 这次 materialization vcall 返回值的镜像；真正要解释的
   已经不是 post-store compare，而是为什么该 vcall 在 failing hit 上直接返回 0，
   并让 `helper+0x18` 继续保持空。**
@@ -568,7 +562,7 @@ post-store compare。新增 `build/hok-016c27-materialize-trace.json` 后，这�
   `x30` 来区分路径——`0x100122f7c` 表示 success-side 汇合，`0x100122f88`
   才表示真正走过 `err=9` provider。
 
-换句话说，当前未闭合的前置条件已不再是“`0x100122f98` 为什么看到 `x21=0`”，
+换句话说，当前未闭合的前置条件已不再是"`0x100122f98` 为什么看到 `x21=0`"，
 而是：**`0x100122f54` 这次 materialization vcall 在 failing helper state
 （`helper+0x10 = 0x3200080a0`、`helper+0x18 = 0`）下，为什么会返回 0。**
 只要这个返回值继续为 0，`0x100122f58/0x100122f5c` 就会稳定把 `x21` 与
@@ -580,8 +574,8 @@ post-store compare。新增 `build/hok-016c27-materialize-trace.json` 后，这�
 内部的 target-side 现场闭合；最新
 `build/hok-016c27-materialize-target-trace-v2.json` 再加上中间的
 `build/hok-016c27-materialize-target-trace-v1-recheck2.json`，把这条口径
-从“首个 control-flow 分叉在 `0x10432a1c8` 之后”继续收紧成“observed
-post-`1c8` pointer pair 其实一致”：
+从"首个 control-flow 分叉在 `0x10432a1c8` 之后"继续收紧成"observed
+post-`1c8` pointer pair 其实一致"：
 
 - 三轮自然 run 都复现同一组 **3-call** 形状：**2** 组 success、**1** 组
   natural fail，而且都命中同一 target `0x10432a068`。三组命中仍共用
@@ -604,18 +598,18 @@ post-`1c8` pointer pair 其实一致”：
   `0x10432a2c8 -> 0x10432a2e0 -> 0x10432a31c`；natural failing hit 则改走
   `0x10432a224 -> 0x10432a31c`。`0x10432a33c` 仍为 0 hit。
 - 再结合这轮对 `0x10432a068..0x10432a31c` 的静态反汇编，`target-side`
-  语义也更明确了：`0x10432a17c..0x10432a224` 并不是在“挑不同 object pair”，
+  语义也更明确了：`0x10432a17c..0x10432a224` 并不是在"挑不同 object pair"，
   而是在用 `x22=0x10b308bee` 这张 case-fold table，对两份临时 UTF-16 buffer
   与两组固定 literal（`x23` 与 `x23+0xca6`）做逐字符比较；`0x10432a224`
   之后还会继续走 `0x10432a238` 的第二轮 compare，再在
   `0x10432a2c8` success path 与 `0x10432a3e0/0x10432a580` 的 fail / late-gate
   之间分流。
-- 因而更准确的提法不再是“success / fail 在 `0x10432a1c8` 之后拿到了不同
-  的 object pair”，而是：**在当前观测到的
+- 因而更准确的提法不再是"success / fail 在 `0x10432a1c8` 之后拿到了不同
+  的 object pair"，而是：**在当前观测到的
   `v1` / `v1-recheck2` / `v2` 自然 run 里，post-`1c8` object pair 相同；
   真正剩下要解释的是 pre-`1c8` entry tuple / helper state 为什么已足以把
   同一 pair 分流到 `0x10432a224` vs `0x10432a2c8/0x10432a2e0`。**
-- 这也解释了为什么“post-`1c8` pair 相同”仍不足以推出相同返回值：真正驱动
+- 这也解释了为什么"post-`1c8` pair 相同"仍不足以推出相同返回值：真正驱动
   分流的是 compare accumulators / selected buffer state，而不是 `x21/x22`
   这对指针本身。当前 probe 集只打到了 `0x10432a224 / 0x10432a2c8 /
   0x10432a2e0 / 0x10432a31c`，还没有把 `0x10432a238 / 0x10432a3e0 /

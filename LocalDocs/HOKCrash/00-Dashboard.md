@@ -57,83 +57,36 @@
 ### 当前状态摘要
 
 - 外层防线已全部稳定：HOK-013 stub preheat、HOK-015 cmdline preseed、
-  HOK-010 rootWorkDir self-heal、HOK-014 `UIAlertController` 压制全部 apply，
-  reporter 调用链 / `Create Failed` 分支判定点已锁定（详见 HOK-016 主文档
-  "核心证据"）。
-- 真因已下钻到 `0x1001bd464 → 0x1001ba50c → 0x1001a5014 →
-  storage.vtable[0x18] → 0x10012bb7c` 这条 storage create-table 链；
+  HOK-010 rootWorkDir self-heal、HOK-014 `UIAlertController` 压制全部 apply。
+- 真因已下钻到 storage create-table 链（`0x1001a5014 → 0x10012bb7c`）；
   natural run 的直接现象是 null table + `storage+0x30 = 0x9000b`。
-- dual-force 诊断（storage success + ready/save-header success）已证明
-  `0x10432dfdc → 0x10017f3c8 → 0x1001bc220 → 0x1001bc970 → 0x1001c6da4`
-  是真实存在的 dormant writer path，只在双 checkpoint 顶开之后才激活。
-- 最新一轮 materialization target trace
-  （`build/hok-016c27-materialize-target-trace-v2.json`；与
-  `...-v1.json` / `...-v1-recheck2.json` 复现一致）已把差异再收紧一步：
-  2 次 success hit 与 natural failing hit 在同一 target `0x10432a068`
-  内共用 `entry → post-helper1 → check1 → post-helper2 → check2 →
-  0x10432a17c/0x10432a1c8` 这段前缀，而且在当前观测到的 success / fail
-  hit 里，`branch-1c8` 之后的 post-`1c8` pair 已收敛为同一组
-  `x21=0x10b248b8c` / `x22=0x10b308bee`；真正稳定分开的只剩 pre-`1c8`
-  state：success 为 `x22=0x21 → 0x3` 并继续走 `0x10432a2c8 → 0x10432a2e0`，
-  natural fail 为 `x22=0x31 → 0x4` 并改走 `0x10432a224`，随后 caller
-  仍在 `0x100122f58` 收到 `x0=0`。详细 checkpoint 证据下沉到
-  `HOK-016-appendix-C27.md`。
-- 本轮补的静态反汇编把剩余口径再收紧成三点：`0x1001ba720` 只是把
-  `lookup2(mainChunk, "1")` 的返回值直接快照进 `ctx+0x38`；
-  `0x1001a588c` 的下一跳缺口落到 `pkg+0x10` 与 `pkg+0xb0->0x30`；
-  `0x10432a068` 在 `0x10432a224` 之后还会继续走
-  `0x10432a238 / 0x10432a3e0 / 0x10432a580` 这组当前未打点的 tail。
-- LLDB `hok016c27_lldb_mainchunk_watch.py` 与
-  `hok016c27_ngr_mainchunk_subtree_trace.py` 已补
-  `branch-238` / `branch-3e0` / `branch-580` 三个 checkpoint，单测通过。
-- HOK-016-C.5 materialize shim 已在 PlayTools constructor 落地：vtable
-  hook（`0x10432a068` provider entry clone + slot redirect）、consumer
-  handle family hook（slot 0x30 wrapper）、FS/URL reuse trace、late-linked
-  graph capture、object clone cache 全套机制已 install；`initialize()`
-  执行序中 `pt_ngr_install_materialize_shim_once()` +
-  `pt_ngr_install_url_resolution_probe_once()` 位于 HOK-015 之后、HOK-014
-  之前。待 live 验证。
-
-> 完整的 sibling branch 分析、寄存器快照、BP 清单、descriptor/blob
-> contract 拆解都在 `HOK-016-qts-fs-create-failed.md` 与
-> `HOK-016-appendix-C27.md`。Dashboard 不复述这些细节。
+- dual-force 诊断已证明 dormant writer path（`0x10432dfdc → ... →
+  0x1001c6da4`）真实存在，只在双 checkpoint 顶开后才激活。
+- materialization target trace 已把差异收紧到 pre-`1c8` state：同一
+  target 内 post-`1c8` pair 已收敛，success / fail 的分叉只剩 entry tuple
+  / helper state 差异导致 `0x10432a224` vs `0x10432a2c8/0x10432a2e0` 的分流。
+  详细 checkpoint 证据见 `HOK-016-appendix-C27.md` §14。
+- 三个未打点的 tail checkpoint（`branch-238` / `branch-3e0` / `branch-580`）
+  已补齐，单测通过；下一步拿 natural run 验证这组 tail 的命中语义。
+- HOK-016-C.5 materialize shim 已在 PlayTools constructor 落地（vtable
+  hook + consumer handle hook + FS/URL reuse trace + object clone cache），
+  待 live 验证。
 
 ### 修复路线（优先级从高到低）
 
-1. **`HOK-016-C.2.7`（当前主线）**：继续 live trace，并行回答三件事：
-   - (a) 为什么 `0x10432df30` 这支首轮 `0x1001a53a0(..., 1)` 会带着
-     `pkg+0xa8=3 / pkg+0x110=5` 卡在 `0x1001a588c` / OpenNodeStorage gate；
-     下一轮需要直接区分它究竟死在 `pkg+0x10` invalid mode，还是死在
-     `pkg+0xb0->0x30` 这层 nodeStorage errcode；
-   - (b) 为什么 `0x10432dfdc` 这支会在 dormant writer 之前先触发
-     `ba720(key="1")`；`ba720` 本体已经静态坐实为
-     `lookup2(mainChunk, "1") -> ctx+0x38` 的直接快照，因此剩余问题是时序而
-     不是 producer 正确性；
-   - (c) `0x10012595c → 0x1001148b8 → ... → 0x100122f20..0x100122f60`
-     这条更深层 callee 链里，为什么**同一个** `0x100122f54`
-     materializer target `0x10432a068` 在当前观测到的 natural / success
-     run 里，已经在 `branch-1c8` 之后收敛到同一组 post-`1c8` pair
-     （`x21=0x10b248b8c`、`x22=0x10b308bee`），却仍会因 pre-`1c8` 的
-     entry tuple / helper state 差异——success 为
-     `entryX2=0x10aa5264a`、`entryX1="../../../NGR/Content/Paks/1/1.db"`、
-     `x22=0x21 → 0x3`，natural fail 为 `entryX2=0x10aa4678c`、
-     `entryX1="/Users/..."`、`x22=0x31 → 0x4`——分别走向
-     `0x10432a2c8/0x10432a2e0` 与 `0x10432a224`（以及其后尚未钉住的
-     `0x10432a238 / 0x10432a3e0 / 0x10432a580` tail），并最终让 caller 在
-     `0x100122f58` 收到 `x0=0`、再经 `mov x21,x0` /
-     `str x0,[x19,#0x18]` 把 `x21/helper+0x18` 一起压空，落到
-     `err=9` provider 合成 `(9 << 16) | 0xb = 0x9000b`。
-
-2. **`HOK-016-C.5`**：PlayTools constructor 中已按 C.2.7 观测到的对象
-   成形签名补齐 materialize shim（vtable hook + object clone + consumer
-   handle family hook + FS/URL reuse trace），待 live 验证。**最小侵入修法**。
-3. **`HOK-016-C.4`**：若上述对象形状无法安全模拟，走 bundle-scoped
-   runtime hook / direct patch 做诊断性强制成功验证，确认只要契约闭合
-   进程是否就能继续跑。
+1. **`HOK-016-C.2.7`（当前主线）**：继续 live trace，聚焦三个未闭合点：
+   - (a) `0x10432df30` 在 OpenNodeStorage gate 失败的具体原因（`pkg+0x10`
+     invalid mode vs `pkg+0xb0->0x30` nodeStorage errcode）；
+   - (b) `0x10432dfdc` 在 dormant writer 前提前触发 `ba720(key="1")` 的时序；
+   - (c) 同一 materializer target 在 post-`1c8` pair 已收敛的情况下，为什么
+     pre-`1c8` entry tuple / helper state 差异仍导致不同分支并最终压空
+     `helper+0x18`。完整技术细节与寄存器证据见 `HOK-016-appendix-C27.md` §14。
+2. **`HOK-016-C.5`**：PlayTools constructor 中已补齐 materialize shim，
+   待 live 验证。**最小侵入修法**。
+3. **`HOK-016-C.4`**：若对象形状无法安全模拟，做诊断性强制成功验证。
 4. **`HOK-016-C.3`**：fishhook interpose `0x108878534` 直接返回 1，
    稳定性风险极高，仅作最后兜底。
-5. **`HOK-016-C.6`**：若必须依赖用户外部资源 / 登录态，才降级到需要
-   人工介入的 HOK-009 路线。
+5. **`HOK-016-C.6`**：若必须依赖用户外部资源 / 登录态，才降级到 HOK-009。
 
 ### 当前兜底链路（按 PlayTools constructor 执行序）
 
@@ -171,58 +124,28 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
 
 ### 当前卡点
 
-当前未闭合的 contract 已不再是"`mainChunk+0x60` 从头到尾没写"或"final
-entry `slot1` 没写进去"，也不是 create-table 的**第一层**
-descriptor/blob gate；而是两层剩余问题：
-
-1. 为什么 `0x10432df30` 这支会带着 `pkg+0xa8=3 / pkg+0x110=5` 进入
-   `0x1001a588c`，并在 gate1 立刻失败——具体是 `pkg+0x10` invalid mode，
-   还是 `pkg+0xb0->0x30` 这层 nodeStorage errcode；
-2. `0x10012595c → 0x1001148b8 → ... → 0x100122f20..0x100122f60`
-   这条更深层 callee 链里，为什么同一个 `0x100122f54`
-   materializer target `0x10432a068` 在当前 observed run 里，已经在
-   `branch-1c8` 之后收敛到同一组 post-`1c8` pair
-   （`x21=0x10b248b8c`、`x22=0x10b308bee`），却仍会因 pre-`1c8` 的
-   entry tuple / helper state 差异——success 为 `entryX2=0x10aa5264a`、
-   `entryX1="../../../NGR/Content/Paks/1/1.db"`、`x22=0x21 → 0x3`，natural
-   fail 为 `entryX2=0x10aa4678c`、`entryX1="/Users/..."`、
-   `x22=0x31 → 0x4`——分别走向 `0x10432a2c8/0x10432a2e0` 与
-   `0x10432a224`，但当前 probe 还没把 `0x10432a238 / 0x10432a3e0 /
-   0x10432a580` 这组 tail 钉住；随后 caller 在 `0x100122f58` 仍拿到
-   `x0=0`，再把 `x21/helper+0x18` 一起压空并合成 `0x9000b`。
+两层未闭合问题：
+1. `0x10432df30` 在 OpenNodeStorage gate 失败的具体原因（`pkg+0x10`
+   invalid mode vs `pkg+0xb0->0x30` nodeStorage errcode）；
+2. 同一 materializer target 在 post-`1c8` pair 已收敛的情况下，为什么
+   pre-`1c8` entry tuple / helper state 差异仍导致不同分支；以及
+   `0x10432a238 / 0x10432a3e0 / 0x10432a580` 这组 tail 的命中语义尚未经
+   natural run 验证。完整证据链见 `HOK-016-appendix-C27.md` §14。
 
 ### 下一步默认规划
 
-1. 继续 `HOK-016-C.2.7` live trace，先补 branch A 在 `0x1001a588c` 的
-   `pkg+0x10` / `pkg+0xb0->0x30` 观测，区分 invalid mode vs nodeStorage
-   err path。
-2. `0x10432a238 / 0x10432a3e0 / 0x10432a580` 三个 checkpoint 已补齐，单测
-   通过；下一步是拿 natural run 验证这组 tail 的命中语义。
-3. 并行保留对 natural run 前置条件的追踪：继续沿
-   `0x1001bd464 → 0x1001ba50c → 0x1001a5014 → storage.vtable[0x18]
-   (0x1001b3d0c) → 0x10012bb7c → 0x10012595c → 0x1001148b8 →
-   0x100122f54` 解释 descriptor/blob contract 与
-   `0x9000b` / null table 的对应关系，重点比较同一 materializer target
-   `0x10432a068` 在 shared prefix / `branch-17c` / `branch-1c8` 之前，
-   为什么 success entry tuple（`entryX2=0x10aa5264a`、
-   `entryX1="../../../NGR/Content/Paks/1/1.db"`、`x22=0x21 → 0x3`）会继续
-   进入 `0x10432a2c8/0x10432a2e0`，而 failing tuple
-   （`entryX2=0x10aa4678c`、`entryX1="/Users/..."`、`x22=0x31 → 0x4`）
-   会改走 `0x10432a224`；当前 observed run 里 `branch-1c8` 之后的
-   post-`1c8` pair（`x21=0x10b248b8c`、`x22=0x10b308bee`）已一致，不再把
-   “different post-`1c8` object pair”作为默认假设。同时围绕
-   `0x10432dfdc → 0x10017f3c8 → 0x1001bc220 → 0x1001bc970 → 0x1001c6da4`
-   拆 dormant writer path 的自然激活条件。
-4. `HOK-016-C.5` materialize shim 已落地，下一步是做 live 启动验证，确认
-   shim install 事件写入 `launch-events.jsonl` 且 reuse path 被正确触发。
-5. 若 C.2.7 证实路径过深、对象形状无法安全模拟，进入 `HOK-016-C.4`：
-   做 bundle-scoped 诊断性强制成功验证，先确认一旦契约闭合进程是否
-   就能继续跑。
-6. `HOK-016-C.3` 保留作为最后兜底。
-7. `HOK-016-D` live 验证标准：`hok014_ngr_alert_suppressed = 0` +
+1. 继续 `HOK-016-C.2.7` live trace：补 branch A 在 `0x1001a588c` 的
+   `pkg+0x10` / `pkg+0xb0->0x30` 观测；拿 natural run 验证
+   `branch-238` / `branch-3e0` / `branch-580` 的命中语义。
+2. 并行追踪 dormant writer path（`0x10432dfdc → ... → 0x1001c6da4`）的
+   自然激活条件。
+3. `HOK-016-C.5` materialize shim 已落地，下一步做 live 启动验证。
+4. 若 C.2.7 证实对象形状无法安全模拟，进入 `HOK-016-C.4` 诊断性强制成功验证。
+5. `HOK-016-C.3` 保留作为最后兜底。
+6. `HOK-016-D` live 验证标准：`hok014_ngr_alert_suppressed = 0` +
    `%CPU/RSS/线程/窗口` 活跃度达标 + 无新 `NGR-*.ips`。
-8. 只有 HOK-016 闭合，才把 HOK-014 正式降级为冷备安全网。
-9. 闭合后再做 `HOK-008`：把"revert 候选 E → `rootWorkDir=1` → 启动 →
+7. 只有 HOK-016 闭合，才把 HOK-014 正式降级为冷备安全网。
+8. 闭合后再做 `HOK-008`：把"revert 候选 E → `rootWorkDir=1` → 启动 →
    证据采集 → pass 判定"固化成单脚本。
 
 ## 构建与验证
@@ -324,7 +247,7 @@ descriptor/blob gate；而是两层剩余问题：
 | HOK-016-C.2.4 | DONE | 收紧到 `0x10017f184` 的 lookup 失败 | `HOK-016-appendix-C23-C24.md` |
 | HOK-016-C.2.5 | DONE | 补齐 rootB writer / insert-helper 的侧证 | `HOK-016-appendix-C25-C26.md` |
 | HOK-016-C.2.6 | DONE | 更正为 `mainChunk` 的 `"1"` 子树缺失，不是 `"main"` 缺失 | `HOK-016-appendix-C25-C26.md` |
-| HOK-016-C.2.7 | TODO（当前主线） | 拆 sibling branch + `0x9000b` 合成契约：解释 `0x10432df30` 为什么在 OpenNodeStorage gate 失败、`0x10432dfdc` 为什么提前进 `ba720` 让 lookup 返 0，以及同一 `0x10432a068` 在 observed natural / success run 里已收敛到同一 post-`1c8` pair（`x21=0x10b248b8c` / `x22=0x10b308bee`）后，为什么仍会因 pre-`1c8` entry tuple / helper state 差异分到 `0x10432a224` vs `0x10432a2c8/0x10432a2e0`，最终把 `x21/helper+0x18` 压空并走到 `0x9000b` | `HOK-016-appendix-C27.md` |
+| HOK-016-C.2.7 | TODO（当前主线） | 继续 live trace，聚焦三件事：(a) `0x10432df30` 在 OpenNodeStorage gate 失败的具体原因（`pkg+0x10` invalid mode vs `pkg+0xb0->0x30` nodeStorage errcode）；(b) `0x10432dfdc` 在 dormant writer 前提前触发 `ba720(key="1")` 的时序；(c) 同一 materializer target 在 post-`1c8` pair 已收敛的情况下，为什么 pre-`1c8` entry tuple / helper state 差异仍导致不同分支并最终压空 `helper+0x18`。详见 `HOK-016-appendix-C27.md` §14。 | `HOK-016-appendix-C27.md` |
 | HOK-016-C.3 | DEFERRED | 终极野蛮方案：fishhook interpose `0x108878534` 直接返回 1，仅作最后兜底 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.4 | TODO | 若 C.2.7 证明自然路径过深或对象形状不可安全模拟，再做诊断性强制成功验证 | `HOK-016-appendix-C27.md` |
 | HOK-016-C.5 | TODO（代码已落地，待验证） | PlayTools constructor 中已按 C.2.7 签名补齐 materialize shim（vtable hook + object clone + consumer handle family hook + FS/URL reuse trace），待 live 验证 | `HOK-016-qts-fs-create-failed.md` |
@@ -425,33 +348,29 @@ descriptor/blob gate；而是两层剩余问题：
 ### 按需读取（与当前主线无直接关系，出问题再翻）
 
 > 下列文档日常不展开；只在具体排查内容涉及时按建议展开。每份文档顶部
-> 都标了自己的"何时读"提示；附录开头同样有"何时读"提示。
+> 都标了自己的"阅读建议"；附录开头同样有"阅读建议"。
 
-- `HOK-004-启动验证与settle-window.md`：HOK-004 runner 的 settle
-  window 口径与 raw settings 模板。**阅读建议：一般无需读取；需要改
-  `Scripts/hok004_ngr_startup_runner.py` 或 compat 事件判据时读。**
-- `HOK-005-深层bootstrap分层最小化.md`：HOK-005 四层 app-scoped skip
-  的代码落点与诊断事件语义。**阅读建议：一般无需读取；需要调整 skip
-  / 延迟分层时读。**
-- `HOK-006-LLDB归因与crash-window压缩.md`：HOK-006 自动化入口、证据
-  口径、31 帧 backtrace。**阅读建议：一般无需读取；需要改
-  `launch_app_with_lldb` / LLDB 证据 schema 时读。**
-- `HOK-007-二进制意图分析与callsite映射.md`：HOK-007A 离线 callsite
-  mapper、HOK-007B 候选 E 的 apply/revert 口径与回滚。**阅读建议：一
-  般无需读取；需要追查新 faulting callsite 或重新上/下候选 E 时读。**
-- `HOK-011-静态初始化链分析.md`：HOK-011 扫描器设计、反向 call graph
-  方法论、H1/H2/H3 假设分类。**阅读建议：一般无需读取；需要为新
-  `__common` slot 做 writer 扫描 / 反向 BFS 时读。**
+- `HOK-004-启动验证与settle-window.md`：settle window 口径与 raw settings
+  模板。**阅读建议：一般无需读取；需要改 runner 或 compat 事件判据时按需读取。**
+- `HOK-005-深层bootstrap分层最小化.md`：四层 app-scoped skip 的代码落点
+  与诊断事件语义。**阅读建议：一般无需读取；需要调整 skip / 延迟分层时按需读取。**
+- `HOK-006-LLDB归因与crash-window压缩.md`：自动化入口、证据口径、31 帧
+  backtrace。**阅读建议：一般无需读取；需要改 `launch_app_with_lldb` / LLDB
+  证据 schema 时按需读取。**
+- `HOK-007-二进制意图分析与callsite映射.md`：离线 callsite mapper、候选 E
+  的 apply/revert 口径。**阅读建议：一般无需读取；需要追查新 faulting
+  callsite 或重新上/下候选 E 时按需读取。**
+- `HOK-011-静态初始化链分析.md`：扫描器设计、反向 call graph 方法论。
+  **阅读建议：一般无需读取；需要为新 `__common` slot 做 writer 扫描 / 反向
+  BFS 时按需读取。**
 - `HOK-012-工具链与方法论归档.md`（+ `HOK-012-appendix-evidence-and-cli.md`）：
-  HOK-012 全系列 LLDB 工具链与 live-trace 方法论。**阅读建议：一般
-  无需读取；需要跑新 watchpoint live run / 解读 watchpoint 命中 /
-  调 `LLDBRunOptions` 时读；附录按需展开。**
+  LLDB 工具链与 live-trace 方法论。**阅读建议：一般无需读取；需要跑新
+  watchpoint live run / 解读命中 / 调 `LLDBRunOptions` 时按需读取。**
 - `HOK-016-appendix-tooling.md` / `HOK-016-appendix-C23-C24.md` /
   `HOK-016-appendix-C25-C26.md` / `HOK-016-appendix-C27.md` /
-  `HOK-016-appendix-CX.md`：HOK-016 主文档明确点名的 5 份附录。**阅读
-  建议：HOK-016 主文档引用到对应附录时读；其中 `HOK-016-appendix-C27.md`
-  在做 C.2.7 / C.4 / C.5 时总是读取，只想同步当前最新收紧口径时优先看
-  §14；其余附录按各自顶部"何时读"进入。**
+  `HOK-016-appendix-CX.md`：HOK-016 的 5 份附录。**阅读建议：
+  `HOK-016-appendix-C27.md` 在做 C.2.7 / C.4 / C.5 时总是读取，只想同步
+  最新收紧口径时优先看 §14；其余附录按各自顶部"阅读建议"按需进入。**
 
 ### 代码 / 脚本速查
 

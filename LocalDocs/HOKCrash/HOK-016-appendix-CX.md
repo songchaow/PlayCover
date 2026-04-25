@@ -4,13 +4,8 @@
 > "HOK-015 seed value 驱动 QtsFS 失败" 假设的证伪实验：4 种 seed 下
 > `0x108878534` 返回值恒为 0、reporter 内部 failure sink 命中次数恒为 3。
 >
-> **何时读**：
->
-> - 需要重跑 seed 替换实验；
-> - 需要引用该实验的 transcript / 产物作为"cmdline 不驱动 QtsFS"的
->   证据；
-> - 需要评估"换 cmdline 能否影响 QtsFS"的兄弟假设；
-> - 日常阅读 HOK-016 主文档不必进入本文。
+> **阅读建议**：阅读 HOK-016 主文档时不必进入；需要重跑 seed 实验 / 引用
+> "cmdline 不驱动 QtsFS"证据 / 评估换 cmdline 的兄弟假设时按需读取。
 >
 > **相关文档**：
 >

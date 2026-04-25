@@ -2,7 +2,7 @@
 
 > 本文只沉淀 HOK-005 各子层（A/B/C/D）的**分层策略**、**代码落点**与**诊断事件语义**。任务状态、live 结果与是否仍然是主线以 `00-Dashboard.md` 为准。
 >
-> **何时读**：需要调整 `com.tencent.ngr` 的 `DiscordIPC` / `PlayInput` / `PlayScreen` / `AKInterface` 四层 skip 或延迟策略、或需要新增一层 bootstrap 抑制时读；日常 HOK-016 系列工作不需要进入。
+> **阅读建议**：一般无需读取；需要调整 skip / 延迟分层时按需读取。
 >
 > **相关文档**：
 >

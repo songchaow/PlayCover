@@ -5,14 +5,8 @@
 > （真正缺失的不是 `rootB -> "main"`，而是 `mainChunk -> "1"` 二级
 > 子树）的完整证据。
 >
-> **何时读**：
->
-> - 需要理解"rootB 在 reporter 运行期被 insert，但 insert 的 key 是
->   什么"；
-> - 需要复现 watchpoint 抓新 node 内容的流程；
-> - 需要判断某次 live run 里 reporter 实际插入的第一个 key 是不是
->   `main`；
-> - 日常阅读 HOK-016 主文档不必进入本文。
+> **阅读建议**：阅读 HOK-016 主文档时不必进入；需要理解 rootB lazy-init /
+> 判断 reporter 插的第一个 key / 复现 watchpoint 抓新 node 时按需读取。
 >
 > **相关文档**：
 >

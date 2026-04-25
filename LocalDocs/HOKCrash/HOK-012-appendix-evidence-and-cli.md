@@ -3,9 +3,8 @@
 > 本文是 `HOK-012-工具链与方法论归档.md` 的附录，沉淀 watchpoint run
 > 的 6 种命中语义、标准 CLI、dyld log 对齐规则、secondary fault 解读。
 >
-> **何时读**：需要真正跑一轮 watchpoint live-trace、需要解读 watchpoint
-> 命中 / timeout / secondary fault 的证据归属、或需要把 dyld log 与
-> watchpoint 命中时序对齐时读；日常阅读 HOK-012 主文档不必进入。
+> **阅读建议**：阅读 HOK-012 主文档时不必进入；需要真正跑 watchpoint run /
+> 解读 hit/miss 归属 / dyld log 对齐时按需读取。
 >
 > **相关文档**：
 >

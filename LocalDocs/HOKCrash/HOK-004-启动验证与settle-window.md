@@ -2,7 +2,7 @@
 
 > 本文只沉淀 HOK-004 建立起来的**自动化入口**、**settle window 口径**与**通过/失败判据**。任务状态、主线结论、时间戳快照一律以 `00-Dashboard.md` 为准。
 >
-> **何时读**：需要改 `Scripts/hok004_ngr_startup_runner.py`、调 compat 事件 required/forbidden 集合、或扩展 settle window 口径时读；日常 HOK-016 系列工作不需要进入。
+> **阅读建议**：一般无需读取；需要改 `Scripts/hok004_ngr_startup_runner.py` 或 compat 事件判据时按需读取。
 >
 > **相关文档**：
 >

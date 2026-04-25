@@ -66,11 +66,16 @@
   target 内 post-`1c8` pair 已收敛，success / fail 的分叉只剩 entry tuple
   / helper state 差异导致 `0x10432a224` vs `0x10432a2c8/0x10432a2e0` 的分流。
   详细 checkpoint 证据见 `HOK-016-appendix-C27.md` §14。
-- 三个未打点的 tail checkpoint（`branch-238` / `branch-3e0` / `branch-580`）
-  已补齐，单测通过；下一步拿 natural run 验证这组 tail 的命中语义。
-- HOK-016-C.5 materialize shim 已在 PlayTools constructor 落地（vtable
-  hook + consumer handle hook + FS/URL reuse trace + object clone cache），
-  待 live 验证。
+- `branch-238` / `branch-3e0` / `branch-580` 经 natural run 验证：**natural
+  failing path 在 `branch-224` 分流后直接返回 0 到 caller（`0x100122f58`），
+  未进入 `branch-238` compare ladder 及后续 tail**。LLDB trace 在
+  `0x100122f98`（err direct writer）捕获到 `x21=0`、`x8=0x9000b`，与
+  `build/hok-016c27-mainchunk-subtree-trace.json` 一致。
+- HOK-016-C.5 materialize shim 已 live 验证：安装成功（provider-clone
+  方式，`patchAddr=0x10e16ded8`），`cache` 命中一次（路径
+  `../../../NGR/Content/Paks/1/1.db`）。**但 `hok014_ngr_alert_suppressed`
+  仍稳定触发 1 次**，说明 natural run 中至少存在一条未被 C.5 cache/reuse
+  覆盖的失败路径。无新 `NGR-*.ips`。
 
 ### 修复路线（优先级从高到低）
 
@@ -124,22 +129,29 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
 
 ### 当前卡点
 
-两层未闭合问题：
+三层未闭合问题：
 1. `0x10432df30` 在 OpenNodeStorage gate 失败的具体原因（`pkg+0x10`
    invalid mode vs `pkg+0xb0->0x30` nodeStorage errcode）；
 2. 同一 materializer target 在 post-`1c8` pair 已收敛的情况下，为什么
-   pre-`1c8` entry tuple / helper state 差异仍导致不同分支；以及
-   `0x10432a238 / 0x10432a3e0 / 0x10432a580` 这组 tail 的命中语义尚未经
-   natural run 验证。完整证据链见 `HOK-016-appendix-C27.md` §14。
+   pre-`1c8` entry tuple / helper state 差异仍导致不同分支；
+3. **C.5 已安装且 cache 命中，但 `hok014_ngr_alert_suppressed` 仍触发 1
+   次**：natural run 中存在第二条未被 C.5 拦截的失败路径，需定位其入口
+   tuple / helper state 与 C.5 cache 命中的差异。完整证据链见
+   `HOK-016-appendix-C27.md` §14。
 
 ### 下一步默认规划
 
-1. 继续 `HOK-016-C.2.7` live trace：补 branch A 在 `0x1001a588c` 的
-   `pkg+0x10` / `pkg+0xb0->0x30` 观测；拿 natural run 验证
-   `branch-238` / `branch-3e0` / `branch-580` 的命中语义。
-2. 并行追踪 dormant writer path（`0x10432dfdc → ... → 0x1001c6da4`）的
+1. **继续 `HOK-016-C.2.7`**：natural run 已证实 `branch-238` / `branch-3e0`
+   / `branch-580` 在 failing path 中**未命中**（`branch-224` 后直接返
+   回 0）。下一步补 branch A 在 `0x1001a588c` 的 `pkg+0x10` /
+   `pkg+0xb0->0x30` 观测，确认 OpenNodeStorage gate 的根因。
+2. **定位 C.5 未覆盖路径**：`launch-events.jsonl` 显示 C.5 仅对
+   `../../../NGR/Content/Paks/1/1.db` 命中 1 次 `cache`，但 alert 仍触
+   发。需通过 live trace 或结构化日志确认：是否存在另一条 materialize
+   调用（不同 entry tuple / helper state）绕过了 C.5 的
+   `pt_ngr_c5_should_cache_path` / `pt_ngr_c5_should_reuse_path` gate。
+3. 并行追踪 dormant writer path（`0x10432dfdc → ... → 0x1001c6da4`）的
    自然激活条件。
-3. `HOK-016-C.5` materialize shim 已落地，下一步做 live 启动验证。
 4. 若 C.2.7 证实对象形状无法安全模拟，进入 `HOK-016-C.4` 诊断性强制成功验证。
 5. `HOK-016-C.3` 保留作为最后兜底。
 6. `HOK-016-D` live 验证标准：`hok014_ngr_alert_suppressed = 0` +
@@ -247,10 +259,10 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
 | HOK-016-C.2.4 | DONE | 收紧到 `0x10017f184` 的 lookup 失败 | `HOK-016-appendix-C23-C24.md` |
 | HOK-016-C.2.5 | DONE | 补齐 rootB writer / insert-helper 的侧证 | `HOK-016-appendix-C25-C26.md` |
 | HOK-016-C.2.6 | DONE | 更正为 `mainChunk` 的 `"1"` 子树缺失，不是 `"main"` 缺失 | `HOK-016-appendix-C25-C26.md` |
-| HOK-016-C.2.7 | TODO（当前主线） | 继续 live trace，聚焦三件事：(a) `0x10432df30` 在 OpenNodeStorage gate 失败的具体原因（`pkg+0x10` invalid mode vs `pkg+0xb0->0x30` nodeStorage errcode）；(b) `0x10432dfdc` 在 dormant writer 前提前触发 `ba720(key="1")` 的时序；(c) 同一 materializer target 在 post-`1c8` pair 已收敛的情况下，为什么 pre-`1c8` entry tuple / helper state 差异仍导致不同分支并最终压空 `helper+0x18`。详见 `HOK-016-appendix-C27.md` §14。 | `HOK-016-appendix-C27.md` |
+| HOK-016-C.2.7 | TODO（当前主线） | (b)(c) 已验证：natural run 中 `branch-224` 后直接返回 0，未进入 `branch-238/3e0/580` tail；仍待 (a) `0x1001a588c` 处 `pkg+0x10` / `pkg+0xb0->0x30` 的根因。详见 `HOK-016-appendix-C27.md` §14、`build/hok-016c27-mainchunk-subtree-trace.json`。 | `HOK-016-appendix-C27.md` |
 | HOK-016-C.3 | DEFERRED | 终极野蛮方案：fishhook interpose `0x108878534` 直接返回 1，仅作最后兜底 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.4 | TODO | 若 C.2.7 证明自然路径过深或对象形状不可安全模拟，再做诊断性强制成功验证 | `HOK-016-appendix-C27.md` |
-| HOK-016-C.5 | TODO（代码已落地，待验证） | PlayTools constructor 中已按 C.2.7 签名补齐 materialize shim（vtable hook + object clone + consumer handle family hook + FS/URL reuse trace），待 live 验证 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.5 | TODO（部分验证，待定位未覆盖路径） | Live 验证：安装成功（provider-clone），`cache` 命中 1 次，但 `hok014_ngr_alert_suppressed` 仍触发 1 次。存在未被 C.5 拦截的失败路径，需继续定位。证据：`launch-events.jsonl`（pid=13324）、`build/hok-016c27-mainchunk-subtree-trace.json`。 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.6 | DEFERRED | 仅在必须依赖外部资源或登录态时，才降级到需要用户介入的路线 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-D | TODO | HOK-016-C 落地后做 live 验证，并把 HOK-014 降级为冷备安全网 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-007C | DEFERRED | 下游 crash 的离线映射 + 可逆 patch；当前无触发动机 | `HOK-007-二进制意图分析与callsite映射.md` |

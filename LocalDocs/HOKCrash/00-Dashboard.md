@@ -76,10 +76,14 @@
   `0x10432a068`。这意味着 dual-force / 附录 C27 中基于 `0x10432a068` 的
   target-side trace 与 natural run 的实际 target 不同；C.5 安装在
   `0x10432a068` vtable slot 上的 hook **从未被 natural run 触发**。
-- HOK-016-C.5 materialize shim 已 live 验证：安装成功（provider-clone
-  方式），`cache` 命中一次（路径 `../../../NGR/Content/Paks/1/1.db`），但
-  扩展 `should_reuse_path` 后仍无 `reuse`。根因已确认：natural run 的
-  materialize target 不是 `0x10432a068`。无新 `NGR-*.ips`。
+- HOK-016-C.5 materialize shim 已修正：原 hook 仅安装在静态锁定的
+  `0x10432a068` vtable slot，但 natural run 实际 target 为 `0x100128c6c`
+  （或堆地址 `0x115a5eb30`），导致旧 hook 从未被触发。已在
+  `PlayLoader.m` 中增加 `NGR_C5_MATERIALIZE_TARGET_ALT1_UNSLID`
+  (`0x100128c6c`) 的 provider 扫描 + `__DATA`/`__DATA_CONST` data 段扫描，
+  并安装独立的 `pt_ngr_c5_materialize_dispatch_hook_alt1`，使用独立的
+  `pt_ngr_c5_alt_original_materialize_target`。PlayTools 已重建并安装。
+  待 live 验证 natural run 是否命中 alt1 hook 并触发 cache/reuse。
 
 ### 修复路线（优先级从高到低）
 
@@ -95,9 +99,10 @@
      `0x100128c6c` / `0x115a5eb30`，不是 `0x10432a068`。dual-force run 与
      natural run 的 materialize target 不同，附录 C27 §14 的 target-side
      分析需要重新评估是否适用于 natural path。
-2. **`HOK-016-C.5`**：根因已确认为 hook target 地址错误（`0x10432a068` vs
-   `0x100128c6c`）。下一步需改为在 `0x100122f54` 处动态捕获 `x8` 并安装
-   hook，或放弃 vtable-slot 方式改为直接 patch caller。
+2. **`HOK-016-C.5`**：已落地修正（见当前状态摘要）。原 hook 只覆盖
+   `0x10432a068`，现已增加 `0x100128c6c` 的独立 hook + data 段扫描。
+   待 live 验证是否触发 `cache`/`reuse`。若仍无法覆盖（如 target 为堆地址
+   `0x115a5eb30`），再评估 caller-side patch 或 C.4。
 3. **`HOK-016-C.4`**：由于 natural run 的 materialize target 与 dual-force
    不同，对象形状假设需要重新验证。若 C.5 修正后仍无法覆盖，进入诊断性
    强制成功验证。
@@ -145,31 +150,26 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
 1. `0x1001a588c` 在 natural run 中观测到一次 success 命中（`pkg+0x10=0x0`
    `pkg+0xb0=0x0`），但 natural fail 走 `branch-224` 直接返 0；OpenNodeStorage
    gate 可能不是 natural fail 的直接来源。
-2. **C.5 hook target 地址错误**：natural run 中 `0x100122f54` 的
-   `x8(target)=0x100128c6c/0x115a5eb30`，不是 `0x10432a068`，导致 C.5
-   vtable hook 从未被触发；dual-force run 的 target-side 分析（`0x10432a068`
-   pre-`1c8` entry tuple / helper state 差异）是否适用于 natural run 需
-   重新评估。
-3. **C.5 修正策略未定**：是在 `0x100122f54` 动态捕获 `x8` 并实时安装
-   hook，还是放弃 vtable-slot 方式改为 caller-side patch（`0x100122f58`
-   处拦截返回值），或直接进入 C.4 诊断性强制成功验证。
+2. **C.5 hook target 地址错误 → 已修正**：已在 `PlayLoader.m` 中增加
+   `0x100128c6c` 的独立 hook + data 段扫描。待验证 natural run 是否命中。
+   堆地址 `0x115a5eb30` 路径仍可能无法被静态 vtable hook 覆盖，若验证失败
+   再评估 caller-side patch 或 C.4。
+3. **C.2.7 (c) 新口径待验证**：dual-force 与 natural run 的 materialize
+   target 不同，`0x10432a068` 的 pre-`1c8` entry tuple 差异分析是否仍适用
+   于 natural path，需等 C.5 alt1 hook live 验证后再评估。
 
 ### 下一步默认规划
 
-1. **修正 C.5 的安装策略**（优先级最高）：当前 C.5 安装在 `0x10432a068`
-   vtable slot 上，但 natural run 中 `0x100122f54` 的 `x8` 实际是
-   `0x100128c6c` / `0x115a5eb30`。需改为：
-   - 方案 A：在 `0x100122f54` 设 breakpoint，首次命中时读取 `x8`，然后
-     在运行期把 hook 安装到实际 target 的 vtable slot 上；
-   - 方案 B：放弃 vtable-slot 方式，直接在 `0x100122f58`（materialize ret
-     site）做 return-value patch，当 `x0==0` 且 err slot 为 `0x9000b` 时
-     强制返回 cache 对象；
-   - 方案 C：若 A/B 都因 target 动态分配 / vtable 不可写而失败，降级到
-     C.4 诊断性强制成功验证。
-2. **同步重新验证 C.2.7 (c)**：由于 natural run 的 materialize target
-   与 dual-force run 不同，`0x10432a068` 的 pre-`1c8` entry tuple 差异
-   分析是否仍适用于 natural path 需要重新确认。修正 C.5 后若 alert 仍
-   触发，再补 `0x100128c6c` 的 target-side trace。
+1. **验证 C.5 alt1 hook 的 live 效果**（优先级最高）：已安装
+   `0x100128c6c` 的独立 hook，待跑一次 `launch_app` / `hok004` settle
+   window 验证，检查 `launch-events.jsonl` 是否出现
+   `hok016c5_ngr_materialize_shim_reused`（cache 或 reuse 事件）。若仍无
+   命中，说明 target 为堆地址 `0x115a5eb30`，需进入 caller-side patch 或
+   C.4。
+2. **同步重新验证 C.2.7 (c)**：natural run 的 materialize target 与
+   dual-force 不同，`0x10432a068` 的 pre-`1c8` entry tuple 差异分析是否
+   仍适用于 natural path，待 C.5 验证后再决定是否需要补
+   `0x100128c6c` 的 target-side trace。
 3. `HOK-016-C.3` 保留作为最后兜底。
 4. `HOK-016-D` live 验证标准：`hok014_ngr_alert_suppressed = 0` +
    `%CPU/RSS/线程/窗口` 活跃度达标 + 无新 `NGR-*.ips`。
@@ -279,7 +279,7 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
 | HOK-016-C.2.7 | TODO（当前主线） | (a) `0x1001a588c` natural run 已观测到一次 success 命中（`pkg+0x10=0x0 pkg+0xa8=0x2 pkg+0xb0=0x0 pkg+0x110=0x1`），label=`gate1-ret`；natural fail 走 `branch-224` 直接返 0，未进入 `branch-238` tail。**(c) 新发现**：natural run 中 `0x100122f54` 的 `x8(target)=0x100128c6c/0x115a5eb30`，不是 `0x10432a068`，dual-force 的 target-side 分析需重新评估。详见 `HOK-016-appendix-C27.md` §14、`build/hok-016c27-mainchunk-subtree-trace-post-log.json`、`/tmp/hok016c27-lldb-trace.log`。 | `HOK-016-appendix-C27.md` |
 | HOK-016-C.3 | DEFERRED | 终极野蛮方案：fishhook interpose `0x108878534` 直接返回 1，仅作最后兜底 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.4 | TODO | 若 C.5 修正 target 后仍无法覆盖，进入诊断性强制成功验证。natural run 的 materialize target 与 dual-force 不同，对象形状假设需重新验证。 | `HOK-016-appendix-C27.md` |
-| HOK-016-C.5 | TODO（根因已定位：hook target 地址错误） | `should_reuse_path` 扩展无效；根本原因是 natural run 的 materialize target 为 `0x100128c6c`/`0x115a5eb30`，不是 `0x10432a068`，C.5 vtable hook 从未被触发。下一步：改为在 `0x100122f54` 动态捕获 `x8` 并安装 hook，或改用 caller-side patch。证据：`/tmp/hok016c27-lldb-trace.log`、`launch-events.jsonl`（pid=42186）。 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.5 | 已修正待验证 | 已在 `PlayLoader.m` 增加 `NGR_C5_MATERIALIZE_TARGET_ALT1_UNSLID` (`0x100128c6c`) 的 provider 扫描 + `__DATA`/`__DATA_CONST` data 段扫描，安装独立 alt1 hook `pt_ngr_c5_materialize_dispatch_hook_alt1`。PlayTools 已重建安装。待 live 验证 natural run 是否命中 alt1 hook 并触发 cache/reuse。若堆地址 `0x115a5eb30` 仍无法覆盖，再评估 caller-side patch 或 C.4。 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.6 | DEFERRED | 仅在必须依赖外部资源或登录态时，才降级到需要用户介入的路线 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-D | TODO | HOK-016-C 落地后做 live 验证，并把 HOK-014 降级为冷备安全网 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-007C | DEFERRED | 下游 crash 的离线映射 + 可逆 patch；当前无触发动机 | `HOK-007-二进制意图分析与callsite映射.md` |

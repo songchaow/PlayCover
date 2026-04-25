@@ -968,6 +968,7 @@ static void pt_ngr_preseed_cmdline_once(void) {
 #define NGR_C5_MATERIALIZE_PROVIDER_UNSLID        0x10e16ded8ULL
 #define NGR_C5_MATERIALIZE_VTABLE_UNSLID          0x10c80ae20ULL
 #define NGR_C5_MATERIALIZE_TARGET_UNSLID          0x10432a068ULL
+#define NGR_C5_MATERIALIZE_TARGET_ALT1_UNSLID     0x100128c6cULL
 #define NGR_C5_CONSUMER_HANDLE_SLOT30_UNSLID      0x100122fb0ULL
 #define NGR_C5_MATERIALIZE_TEMPLATE_SIZE          0x80U
 #define NGR_C5_MATERIALIZE_MAX_CLONES             32U
@@ -977,6 +978,7 @@ static void pt_ngr_preseed_cmdline_once(void) {
 
 uint64_t pt_ngr_c5_cached_materialize_obj = 0;
 uint64_t pt_ngr_c5_original_materialize_target = 0;
+uint64_t pt_ngr_c5_alt_original_materialize_target = 0;
 uint64_t pt_ngr_c5_materialize_slot_addr = 0;
 uint64_t pt_ngr_c5_materialize_provider_entry_addr = 0;
 uint64_t pt_ngr_c5_main_image_slide = 0;
@@ -1681,10 +1683,11 @@ uint64_t pt_ngr_c5_materialize_select(uint64_t retObj,
 
 typedef uint64_t (*pt_ngr_c5_materialize_imp_t)(uint64_t, uint64_t, uint64_t, uint64_t);
 
-uint64_t pt_ngr_c5_materialize_dispatch_hook(uint64_t x0,
-                                             uint64_t x1,
-                                             uint64_t x2,
-                                             uint64_t x3) {
+static uint64_t pt_ngr_c5_materialize_dispatch_with_target(uint64_t x0,
+                                                            uint64_t x1,
+                                                            uint64_t x2,
+                                                            uint64_t x3,
+                                                            uint64_t originalTarget) {
     const char *originalPath = x1 > 0x100000000ULL
         ? (const char *)(uintptr_t)x1
         : NULL;
@@ -1694,9 +1697,9 @@ uint64_t pt_ngr_c5_materialize_dispatch_hook(uint64_t x0,
     }
 
     uint64_t retObj = 0;
-    if (pt_ngr_c5_original_materialize_target != 0) {
+    if (originalTarget != 0) {
         pt_ngr_c5_materialize_imp_t orig =
-            (pt_ngr_c5_materialize_imp_t)(uintptr_t)pt_ngr_c5_original_materialize_target;
+            (pt_ngr_c5_materialize_imp_t)(uintptr_t)originalTarget;
         retObj = orig(x0, dispatchSavedObjAddr, x2, x3);
     }
 
@@ -1705,6 +1708,22 @@ uint64_t pt_ngr_c5_materialize_dispatch_hook(uint64_t x0,
                                         x3,
                                         x2,
                                         dispatchSavedObjAddr);
+}
+
+uint64_t pt_ngr_c5_materialize_dispatch_hook(uint64_t x0,
+                                             uint64_t x1,
+                                             uint64_t x2,
+                                             uint64_t x3) {
+    return pt_ngr_c5_materialize_dispatch_with_target(x0, x1, x2, x3,
+                                                      pt_ngr_c5_original_materialize_target);
+}
+
+uint64_t pt_ngr_c5_materialize_dispatch_hook_alt1(uint64_t x0,
+                                                  uint64_t x1,
+                                                  uint64_t x2,
+                                                  uint64_t x3) {
+    return pt_ngr_c5_materialize_dispatch_with_target(x0, x1, x2, x3,
+                                                      pt_ngr_c5_alt_original_materialize_target);
 }
 
 static BOOL pt_ngr_make_patch_writable(void *address, size_t length) {
@@ -1974,6 +1993,131 @@ static void pt_ngr_install_materialize_shim_once(void) {
                                     originalTarget,
                                     pt_ngr_c5_materialize_slot_addr,
                                     slide);
+
+        // -----------------------------------------------------------------
+        // HOK-016-C.5 alt1: natural run 的 materialize target 不是固定的
+        // 0x10432a068，而是 0x100128c6c（或堆地址 0x115a5eb30）。
+        // 在保留原 primary hook 的基础上，再扫描并 hook alt1 target。
+        // -----------------------------------------------------------------
+        uint64_t alt1Slided = NGR_C5_MATERIALIZE_TARGET_ALT1_UNSLID + slide;
+        uint64_t alt1SlotAddr = 0;
+        pt_ngr_c5_materialize_slot_match alt1Match = {0};
+
+        // (a) provider 数组扫描
+        uint64_t altProviderBases[] = {
+            NGR_C5_MATERIALIZE_PROVIDER_UNSLID,
+            NGR_C5_MATERIALIZE_PROVIDER_UNSLID,
+            NGR_C5_MATERIALIZE_PROVIDER_UNSLID + slide,
+            NGR_C5_MATERIALIZE_PROVIDER_UNSLID + slide,
+            NGR_C5_MATERIALIZE_VTABLE_UNSLID,
+            NGR_C5_MATERIALIZE_VTABLE_UNSLID,
+            NGR_C5_MATERIALIZE_VTABLE_UNSLID + slide,
+            NGR_C5_MATERIALIZE_VTABLE_UNSLID + slide,
+        };
+        uint64_t altTargetValues[] = {
+            NGR_C5_MATERIALIZE_TARGET_ALT1_UNSLID,
+            alt1Slided,
+            NGR_C5_MATERIALIZE_TARGET_ALT1_UNSLID,
+            alt1Slided,
+            NGR_C5_MATERIALIZE_TARGET_ALT1_UNSLID,
+            alt1Slided,
+            NGR_C5_MATERIALIZE_TARGET_ALT1_UNSLID,
+            alt1Slided,
+        };
+        for (size_t i = 0; i < sizeof(altProviderBases) / sizeof(altProviderBases[0]); i++) {
+            pt_ngr_c5_materialize_slot_match candidate = {0};
+            if (pt_ngr_c5_find_materialize_slot_from_provider(altProviderBases[i],
+                                                              altTargetValues[i],
+                                                              &candidate)) {
+                alt1Match = candidate;
+                alt1SlotAddr = candidate.slotAddr;
+                break;
+            }
+        }
+
+        // (b) 若 provider 未命中，扫描 __DATA / __DATA_CONST segment
+        if (alt1SlotAddr == 0) {
+            const uint8_t *cmdPtr = (const uint8_t *)mh + sizeof(struct mach_header_64);
+            for (uint32_t c = 0; c < mh->ncmds && alt1SlotAddr == 0; c++) {
+                const struct load_command *lc = (const struct load_command *)cmdPtr;
+                if (lc->cmd == LC_SEGMENT_64) {
+                    const struct segment_command_64 *sc = (const struct segment_command_64 *)lc;
+                    if (strncmp(sc->segname, "__DATA", 6) == 0 ||
+                        strncmp(sc->segname, "__DATA_CONST", 12) == 0) {
+                        uint64_t segStart = sc->vmaddr + slide;
+                        uint64_t segEnd = segStart + sc->vmsize;
+                        for (uint64_t addr = segStart;
+                             addr + sizeof(uint64_t) <= segEnd;
+                             addr += sizeof(uint64_t)) {
+                            uint64_t value = 0;
+                            if (!pt_ngr_vm_read_u64(addr, &value)) continue;
+                            if (value == alt1Slided) {
+                                alt1SlotAddr = addr;
+                                break;
+                            }
+                        }
+                    }
+                }
+                cmdPtr += lc->cmdsize;
+            }
+        }
+
+        // (c) 安装 alt1 hook（只支持 direct patch；若页保护不可写则放弃）
+        if (alt1SlotAddr != 0) {
+            uint64_t altOriginalTarget = 0;
+            if (pt_ngr_vm_read_u64(alt1SlotAddr, &altOriginalTarget)
+                && (altOriginalTarget == NGR_C5_MATERIALIZE_TARGET_ALT1_UNSLID
+                    || altOriginalTarget == alt1Slided)) {
+
+                uint64_t altHookTarget = (uint64_t)(uintptr_t)&pt_ngr_c5_materialize_dispatch_hook_alt1;
+                if (pt_ngr_make_patch_writable((void *)alt1SlotAddr, sizeof(uint64_t))) {
+                    memcpy((void *)alt1SlotAddr, &altHookTarget, sizeof(altHookTarget));
+                    pt_ngr_restore_patch_protection((void *)alt1SlotAddr,
+                                                    sizeof(altHookTarget),
+                                                    VM_PROT_READ);
+
+                    uint64_t verifyAlt = 0;
+                    if (pt_ngr_vm_read_u64(alt1SlotAddr, &verifyAlt)
+                        && verifyAlt == altHookTarget) {
+                        pt_ngr_c5_alt_original_materialize_target = altOriginalTarget;
+                        pt_ngr_log_c5_install_event("installed-alt1",
+                                                    alt1SlotAddr,
+                                                    altHookTarget,
+                                                    altOriginalTarget,
+                                                    0,
+                                                    slide);
+                    } else {
+                        pt_ngr_log_c5_install_event("alt1-verify-failed",
+                                                    alt1SlotAddr,
+                                                    altHookTarget,
+                                                    altOriginalTarget,
+                                                    0,
+                                                    slide);
+                    }
+                } else {
+                    pt_ngr_log_c5_install_event("alt1-not-writable",
+                                                alt1SlotAddr,
+                                                altHookTarget,
+                                                altOriginalTarget,
+                                                0,
+                                                slide);
+                }
+            } else {
+                pt_ngr_log_c5_install_event("alt1-unexpected-slot-value",
+                                            alt1SlotAddr,
+                                            (uint64_t)(uintptr_t)&pt_ngr_c5_materialize_dispatch_hook_alt1,
+                                            altOriginalTarget,
+                                            0,
+                                            slide);
+            }
+        } else {
+            pt_ngr_log_c5_install_event("alt1-slot-not-found",
+                                        0,
+                                        (uint64_t)(uintptr_t)&pt_ngr_c5_materialize_dispatch_hook_alt1,
+                                        0,
+                                        0,
+                                        slide);
+        }
     });
 }
 // ---------------------------------------------------------------------------

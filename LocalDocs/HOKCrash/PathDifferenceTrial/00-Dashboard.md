@@ -44,44 +44,70 @@
 
 ### 当前主线一句话
 
-`PDT-003`：关闭路径差异 trial。`PDT-001-A` 已完成静态 literal 提取，证据显示
-> `0x10432a068` compare ladder 使用的固定 UTF-16 literal 为 `"r"` 与 `"rb"`，
-> 不含路径前缀、目录层级、文件名或数据库片段；因此本 trial 不再推进
-> `PDT-001-B` / `PDT-002`，结论回流到 `HOK-016-C.2.7` 主线。
+`PDT-001-B-revised`：在 `PDT-001-A` 已确认 `0x10432a068` fixed literal 与路径无关后，
+> 路径差异假设的验证重心从"materializer 内部固定模板"转移到 **UE4 I/O 层路径转换**
+> 对 `entryX1` / selected buffer 的影响。核心新证据：UE4 `FIOSPlatformFile::ConvertToPlatformPath`
+> 对 `/var/` 开头路径直接透传，对 `/Users/` / `~/` / `../` 路径做 `ReplaceInline("../")`、
+> `FPaths::MakePlatformFilename`、以及基于 `NSDocumentDirectory` / `NSLibraryDirectory` 的重新拼接。
+> 因此 iOS 真机的 `/var/...` 与 PlayCover 的 `/Users/...` 在 UE4 层会被**不同处理**，
+> 这种差异可能改变 materializer 看到的 selected buffer 内容，从而驱动 compare accumulator
+> 走向不同分支。本 trial 继续推进，目标：验证或证伪这种**上层路径转换差异**是否是根因。
 
 ### 当前状态摘要
 
-- **假设来源仍成立，但已被新证据压低优先级**：HOK-016-C.2.7 的自然 run 中，
->  success / fail 的 pre-`1c8` 差异仍表现为 `entryX1` 字符串不同：
+- **现象层差异仍然成立**：HOK-016-C.2.7 的自然 run 中，success / fail 的 pre-`1c8`
+>  差异仍表现为 `entryX1` 字符串不同：
 >   - success 链：`entryX1="../../../NGR/Content/Paks/1/1.db"`；
 >   - fail 链：`entryX1="/Users/songdogwang/..."`。
->  这仍说明“路径字符串差异”是**现象层差异**，但不再足以支撑“fixed literal
->  本身与路径相关”的更强假设。
-- **`PDT-001-A` 新证据**：新增 `Scripts/pdt001_ngr_materializer_literal_extractor.py`
->  对 `0x10432a068..0x10432a31c` 做离线反汇编与 Mach-O 常量解析，产物为
->  `build/pdt-001a-compare-literals.json`。结果显示：
->   - first compare literal：`x23 = 0x10c09aca2` → UTF-16 `"r"`；
->   - second compare literal：`0x10c09aca6` → UTF-16 `"rb"`；
->   - 两者都位于 `__TEXT,__ustring`，且完整上下文仍然只是 `"r"` / `"rb"`，
->     不是更长路径字符串的中间 suffix。
-- **结论**：materializer 的 fixed literal **与路径/文件名无关**。当前观测到的
->  success / fail 分流，更像是“selected buffer / compare accumulator”对
->  输入字符串的处理差异，而不是“内部固定路径模板”与路径前缀直接比较。
+- **`PDT-001-A` 结论（已收窄）**：`Scripts/pdt001_ngr_materializer_literal_extractor.py`
+>  从 `0x10432a068` 提取到的 fixed literal 为 UTF-16 `"r"` / `"rb"`，确实与路径无关。
+>  但这**只排除了** "materializer 内部固定模板直接做路径相关 compare" 这层假设；
+>  **没有排除** 上层路径转换差异通过改变 selected buffer 内容来间接影响 compare accumulator 的可能。
+- **UE4 `ConvertToPlatformPath` 新证据（关键）**：`@/Users/songdogwang/Codes/UnrealEngine/Engine/Source/Runtime/Core/Private/IOS/IOSPlatformFile.cpp`
+>  第 964-1039 行显示：
+>   - `Result.StartsWith(TEXT("/var/"))` → **直接原样返回**，不做任何转换；
+>   - `Result.StartsWith(TEXT("~/"))` → 替换为 `[[NSBundle mainBundle] bundlePath]`；
+>   - `Result.Contains(TEXT("../"))` 或 `Result.StartsWith(AdditionalRootDirectory)` →
+>     经过 `ReplaceInline("../")`、`FPaths::MakePlatformFilename`、以及基于
+>     `NSSearchPathForDirectoriesInDomains(NSDocumentDirectory/NSLibraryDirectory)` 的重新拼接；
+>   - 非 `/var/` 的绝对路径（如 `/Users/...`）会落入 write path 分支，被映射到
+>     `NSDocumentDirectory` 或 `NSLibraryDirectory` 下。
+>  这意味着：**iOS 真机上 `/var/mobile/Containers/...` 路径在 UE4 层是透传的，而 PlayCover
+>  的 `/Users/...` 路径会被 UE4 重新拼接成不同的绝对路径**。这种差异可能改变：
+>   - `entryX1` 在进入 materializer 前的最终字符串内容；
+>   - 该字符串被复制到 selected buffer 时的长度、编码、或截断行为；
+>   - compare accumulator 在逐字符比较时的演进路径。
+- **natural run target 偏移的提醒**：natural run 中 `0x100122f54` 的 `x8(target)`
+>  实际是 `0x100128c6c` / `0x115a5eb30`，不是 `0x10432a068`。因此 `PDT-001-A`
+>  的 fixed literal 结论只适用于 dual-force 路径中的 `0x10432a068`；natural run
+>  实际 target 的 compare literal 尚未提取。这是本 trial 必须继续推进的硬理由。
 - **对 C.5 历史线索的重新解读**：`PlayLoader.m` 里已有 `/Users/... →
->  "../../../NGR/Content/Paks/1/1.db"` 的重定向尝试，说明工程上曾怀疑路径差异；
->  但这条线索只能说明“上层字符串差异值得怀疑”，不能覆盖 `PDT-001-A`
->  已提取到的 fixed literal 真值。
+>  "../../../NGR/Content/Paks/1/1.db"` 的重定向尝试。结合 `ConvertToPlatformPath`
+>  的源码，这条线索现在有了更具体的工程解释：C.5 的开发者可能观察到 `/Users/...`
+>  路径在 UE4 层被转换后与 iOS 透传的 `/var/...` 不同，因此尝试把路径改回相对路径
+>  `"../../../..."` 以绕过 `ConvertToPlatformPath` 的转换逻辑。这反而**加强了**
+>  路径差异假设的可信度，而不是削弱它。
 
-### 修复路线（执行后状态）
+### 修复路线（调整后）
 
-1. **`PDT-001-A`（已完成）**：已提取 compare literal，并确认其**不含**路径前缀、
->    文件名或数据库片段。结构化证据：`build/pdt-001a-compare-literals.json`；
->    细节下沉：`PDT-001A-compare-literals.md`。
-2. **`PDT-001-B`（关闭）**：由于 `PDT-001-A` 已表明 fixed literal 与路径无关，
->    不再继续上层路径重定向 live 验证。
-3. **`PDT-002`（关闭）**：不再设计 PlayTools 层 bundle-scoped 路径重定向方案。
-4. **`PDT-003`（当前收尾）**：保留结构化证据，关闭本 trial，并把主线切回
->    `HOK-016-C.2.7` 原有 materializer state 分析。
+1. **`PDT-001-A`（已完成，结论已收窄）**：`0x10432a068` fixed literal 为 `"r"` / `"rb"`，
+>    与路径无关。结构化证据：`build/pdt-001a-compare-literals.json`；
+>    细节：`PDT-001A-compare-literals.md`。
+2. **`PDT-001-B-revised`（当前主线）**：验证 UE4 `ConvertToPlatformPath` 差异是否是根因。
+>    - **目标**：在 PlayTools 层对 `NSBundle` / `NSSearchPathForDirectoriesInDomains`
+>      做临时 swizzle，让 NGR 构造出的路径前缀从 `/Users/...` 变成 `/var/...`，
+>      观察 `entryX1` 是否随之改变，以及 `hok014_ngr_alert_suppressed` 是否归零。
+>    - **关键验证点**：`ConvertToPlatformPath` 对 `/var/` 透传、对 `/Users/` 转换；
+>      若把 PlayCover 的路径前缀伪装成 `/var/`，UE4 是否会直接透传而不做转换，
+>      从而使 materializer 看到的 selected buffer 与 iOS 真机一致。
+>    - **产物**：`build/pdt-001b-revised-path-redirect-report.json`。
+3. **`PDT-002`（TODO）**：若 `PDT-001-B-revised` 证实路径转换差异是根因，设计 PlayTools 层
+>    bundle-scoped 最小路径伪装方案（如 `ngrPathRedirectEnabled` 选项，统一把
+>    `NSDocumentDirectory` / `NSLibraryDirectory` 返回路径前缀改为 `/var/mobile/Containers/...`）。
+4. **`PDT-003`（TODO）**：若 `PDT-001-B-revised` 证伪，留下结构化证据，关闭本 trial。
+5. **`PDT-004`（TODO，硬前置）**：提取 natural run 实际 target `0x100128c6c` 的 compare literal，
+>    确认其是否与 `0x10432a068` 的 `"r"` / `"rb"` 一致。若不一致，需重新评估
+>    `PDT-001-A` 结论对 natural run 的适用性。
 
 ### 当前兜底链路（按 PlayTools constructor 执行序）
 
@@ -115,22 +141,32 @@
 
 ### 当前卡点
 
-- **本 trial 当前无独立卡点**：`PDT-001-A` 已给出可执行结论，且结论足以关闭
->  路径差异假设。
-- **若未来要重开本 trial，必须满足更强前提**：需要新的 live / static 证据表明
->  真正参与分流的不是 fixed literal，而是上层输入字符串在进入 compare ladder
->  前被映射到另一块 path-related selected buffer；否则不应再优先消耗在路径重定向上。
+1. **`PDT-001-A` 结论的适用范围限制**：`PDT-001-A` 的结论只适用于 `0x10432a068`；
+>   natural run 实际 target `0x100128c6c` 的 compare literal 尚未提取。在
+>   `PDT-004` 完成前，不能断言 natural run 的 materializer 也使用与路径无关的 fixed literal。
+2. **`PDT-001-B-revised` 的精确落点未验证**：UE4 `ConvertToPlatformPath` 的源码
+>   已确认 `/var/` 透传、`/Users/` 转换，但 NGR 在 PlayCover 中实际构造出的
+>   `entryX1="/Users/..."` 是否确实经过了这个转换、以及转换后的结果是什么，
+>   还需要 live trace 或静态定位来确认。
+3. **路径伪装方案的副作用未知**：若强行把 `NSDocumentDirectory` / `NSLibraryDirectory`
+>   返回路径前缀改为 `/var/mobile/Containers/...`，可能影响 UE4 的实际文件 I/O
+>   落盘位置（因为 `/var/mobile/Containers/...` 在 macOS 上不是真实路径）。
+>   `PDT-001-B-revised` 必须设计成**临时、可开关、可回退**的实验，不能默认 apply。
 
 ### 下一步默认规划
 
-1. **结束 PathDifferenceTrial**：保留 `build/pdt-001a-compare-literals.json` 与
->    `PDT-001A-compare-literals.md` 作为证伪证据。
-2. **回到母线 `HOK-016-C.2.7`**：继续围绕 pre-`1c8` selected buffer /
->    compare accumulator / helper state 做分析，而不是继续追 fixed literal。
-3. **如后续重新怀疑路径差异**：必须先静态定位 `entryX1="/Users/..."` 的构造点，
->    再判断它是否真的改变了 materializer 看到的 selected buffer；在此之前
->    不进入 `PDT-001-B`。
-4. 收尾执行 `git commit`。
+1. **执行 `PDT-004`**：提取 natural run 实际 target `0x100128c6c` 的 compare literal，
+>    确认其是否与 `0x10432a068` 的 `"r"` / `"rb"` 一致。
+>    - 若一致：`PDT-001-A` 结论适用范围扩大，继续推进 `PDT-001-B-revised`。
+>    - 若不一致：重新评估 `PDT-001-A` 结论，可能需要重新提取 natural run target 的 literal。
+>    - 产物：`build/pdt-004-natural-target-literal.json`。
+2. **执行 `PDT-001-B-revised`**：在 PlayTools 层对 `NSBundle` / `NSSearchPathForDirectoriesInDomains`
+>    做临时 swizzle，让 NGR 构造出的路径前缀从 `/Users/...` 变成 `/var/...`，
+>    观察 `entryX1` 是否改变、`hok014_ngr_alert_suppressed` 是否归零。
+>    - 产物：`build/pdt-001b-revised-path-redirect-report.json`。
+3. **若 `PDT-001-B-revised` 证实路径转换差异是根因**：进入 `PDT-002`，设计最小可落地方案。
+4. **若 `PDT-001-B-revised` 证伪**：更新 Dashboard TODO，关闭本 trial，回到 `HOK-016-C.2.7`。
+5. 收尾执行 `git commit`。
 
 ## 构建与验证
 
@@ -205,10 +241,11 @@
 
 | ID | 状态 | 任务描述 | 子文档 |
 |---|---|---|---|
-| PDT-001-A | DONE | 已离线提取 `0x10432a068` compare literal；结果为 UTF-16 `"r"` / `"rb"`，与路径/文件名无关 | `PDT-001A-compare-literals.md` |
-| PDT-001-B | CLOSED | `PDT-001-A` 已证伪 fixed literal 路径相关性，因此不再进入上层路径重定向 live 实验 | — |
-| PDT-002 | CLOSED | 不再设计 PlayTools 层路径重定向方案 | — |
-| PDT-003 | DONE（当前收尾） | 已留下结构化证据并关闭本 trial，主线回到 `HOK-016-C.2.7` | `PDT-001A-compare-literals.md` |
+| PDT-001-A | DONE（结论已收窄） | 已离线提取 `0x10432a068` compare literal；结果为 UTF-16 `"r"` / `"rb"`，与路径/文件名无关。但此结论只适用于 `0x10432a068`，natural run 实际 target `0x100128c6c` 的 literal 尚未提取 | `PDT-001A-compare-literals.md` |
+| PDT-001-B-revised | TODO（当前主线） | 验证 UE4 `ConvertToPlatformPath` 差异是否是根因：对 `NSBundle` / `NSSearchPath...` 做临时 swizzle，让路径前缀从 `/Users/...` 变成 `/var/...`，观察 `entryX1` 与 `hok014_ngr_alert_suppressed` 是否收敛 | 待建 `PDT-001B-revised-path-redirect-live.md` |
+| PDT-002 | TODO | 若 `PDT-001-B-revised` 证实路径转换差异是根因，设计 PlayTools 层最小可落地 bundle-scoped 路径伪装方案 | 待建 |
+| PDT-003 | TODO | 若 `PDT-001-B-revised` 证伪，留下结构化证据并关闭本 trial | 待建 |
+| PDT-004 | TODO（硬前置） | 提取 natural run 实际 target `0x100128c6c` 的 compare literal，确认是否与 `0x10432a068` 的 `"r"` / `"rb"` 一致 | 待建 |
 
 ## 高频复用经验（当前仍适用的）
 
@@ -216,10 +253,12 @@
 > 分类细节见对应子文档。
 
 - **"路径差异假设的边界"**：HOK-016-C.2.4 已证伪 `0x10432dd98` 入口处的
->  FString 路径消费；本轮 `PDT-001-A` 又进一步证实 `0x10432a068` 的 fixed literal
->  只是 UTF-16 `"r"` / `"rb"`，**不是路径模板**。因此当前被排除的是
->  "materializer fixed literal 直接做路径相关 compare" 这层假设；尚未被直接
->  排除的，只剩输入侧 selected buffer / compare accumulator 如何受上层字符串影响。
+>  FString 路径消费；本轮 `PDT-001-A` 证实 `0x10432a068` 的 fixed literal
+>  只是 UTF-16 `"r"` / `"rb"`，**不是路径模板**。因此 "materializer fixed literal
+>  直接做路径相关 compare" 这层假设已被排除。但 UE4 `ConvertToPlatformPath` 的
+>  源码显示 `/var/` 透传、`/Users/` 转换，这意味着**上层路径转换差异可能通过
+>  改变 selected buffer 内容来间接影响 compare accumulator**，这一层尚未被排除。
+>  本 trial 当前主线正是验证这一层。
 - **materializer 分流的关键不在 pointer 而在 compare accumulator**：
 >  C27 §14 已指出 success / fail 的 post-`1c8` pair 相同，分流由 pre-`1c8`
 >  state 驱动。任何路径修复方案的目标不是改变 `x21/x22`，而是改变

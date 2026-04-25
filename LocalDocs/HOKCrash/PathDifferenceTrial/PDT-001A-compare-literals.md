@@ -62,25 +62,31 @@
 因此这两个 literal **不是** `"../../../..."`、`"/Users/..."`、`"1.db"`、`"Paks"`
 或其它路径/文件名片段的 suffix。
 
-## 结论
+## 结论（已收窄）
 
 `0x10432a068` compare ladder 的 fixed literal **与路径无关**。
 
 这意味着：
 
-- PathDifferenceTrial 想验证的“materializer 内部固定模板是路径相关字符串”这层假设，
-  已被本页证据排除；
-- 当前 success / fail 在 pre-`1c8` 的分流，更可能来自 selected buffer /
-  compare accumulator / helper state 对输入字符串的处理差异；
-- 不应再优先推进 `NSBundle` / `NSSearchPath...` / `FPaths::` 的上层路径重定向实验。
+- "materializer 内部固定模板直接做路径相关 compare" 这层假设已被排除；
+- 但**不能排除**上层路径转换差异通过改变 selected buffer 内容来间接影响
+  compare accumulator 的可能。UE4 `FIOSPlatformFile::ConvertToPlatformPath` 的源码
+  已证实：对 `/var/` 开头路径直接透传，对 `/Users/` / `~/` / `../` 路径做
+  `ReplaceInline("../")`、`FPaths::MakePlatformFilename`、以及基于
+  `NSDocumentDirectory` / `NSLibraryDirectory` 的重新拼接。因此 iOS 真机的
+  `/var/...` 与 PlayCover 的 `/Users/...` 在 UE4 层会被**不同处理**，这种差异
+  可能改变 materializer 看到的 selected buffer。
+- natural run 的实际 target 是 `0x100128c6c`，不是 `0x10432a068`；本页结论
+  对 natural run 的适用性需待 `PDT-004` 验证。
 
 ## 对母线的影响
 
 本页证据只排除了 **fixed literal 路径相关性**，没有直接解释：
 
 - 为什么 success / fail 的 `entryX1` 字符串会不同；
-- 为什么同一 post-`1c8` pair 仍会分流；
+- UE4 `ConvertToPlatformPath` 对 `/Users/...` 的实际转换结果是什么；
+- natural run target `0x100128c6c` 是否使用相同的 fixed literal；
 - pre-`1c8` selected buffer / compare accumulator 是如何被构造出来的。
 
-因此后续主线应回到 `HOK-016-C.2.7`，继续围绕 selected buffer / compare accumulator /
-helper state 做分析，而不是继续把优先级压在路径重定向上。
+因此 PathDifferenceTrial 不应关闭，而应继续推进 `PDT-001-B-revised`（验证 UE4
+路径转换差异）和 `PDT-004`（提取 natural run target 的 literal）。

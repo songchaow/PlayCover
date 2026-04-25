@@ -195,39 +195,25 @@ writer path 真的把 tracked `mainChunk+0x60` 挂上非零 subtree root，但
 failure sink。完整的 sibling branch / writer 对象字段 / `0x9000b`
 direct-writer 调用链见 `HOK-016-appendix-C27.md`。
 
-## 修复方向（HOK-016-C.2.7 之后的排序）
+## 修复方向（按影响面从小到大 / 风险从低到高）
 
-按"影响面从小到大 / 风险从低到高"排；必须在 PlayTools 层 bundle-scoped、
-不动 NGR 二进制：
+必须在 PlayTools 层 bundle-scoped、不动 NGR 二进制：
 
-1. **C.2.7（当前主线）**：继续 live trace，聚焦回答三件事：
-   - (a) 为什么 `0x10432df30` 这支首轮 `0x1001a53a0(..., 1)` 会在
-     `0x1001a588c` / OpenNodeStorage gate 返回 0——具体是 `pkg+0x10`
-     invalid mode 还是 `pkg+0xb0->0x30` 这层 nodeStorage errcode；
-   - (b) 为什么 `0x10432dfdc` 这支会在 dormant writer 之前先触发
-     `ba720(key="1")`；`ba720` 本体已经静态坐实为
-     `lookup2(mainChunk, "1") -> ctx+0x38` 的直接快照，而不是 later overwrite；
-   - (c) `0x10012595c → 0x1001148b8 → ... → 0x100122f20..0x100122f60`
-     这条更深层 callee 链里，为什么**同一个** `0x100122f54`
-     materializer target `0x10432a068` 在当前观测到的 natural / success
-     run 里，已经在 `branch-1c8` 之后收敛到同一组 post-`1c8` pair
-     （`x21=0x10b248b8c`、`x22=0x10b308bee`），却仍会因 pre-`1c8` 的
-     entry tuple / helper state 差异——success 为
-     `entryX2=0x10aa5264a`、`entryX1="../../../NGR/Content/Paks/1/1.db"`、
-     `x22=0x21 → 0x3`，natural fail 为 `entryX2=0x10aa4678c`、
-     `entryX1="/Users/..."`、`x22=0x31 → 0x4`——分别走向
-     `0x10432a2c8/0x10432a2e0` 与 `0x10432a224`（以及其后尚未钉住的
-     `0x10432a238 / 0x10432a3e0 / 0x10432a580` tail），并最终让 caller 在
-     `0x100122f58` 收到 `x0=0`、再经 `mov x21,x0` /
-     `str x0,[x19,#0x18]` 把 `x21/helper+0x18` 一起压空，写回 `0x9000b`。
-2. **C.5**：若 C.2.7 能给出可重复的 child-registration API 签名或完
-   整对象构造路径，PlayTools constructor 里按同样签名补齐。**最小侵
-   入修法。**
-3. **C.4**：若 C.2.7 证实注册路径过深、对象形状无法安全伪造，基于
-   PlayTools 现有 bundle-scoped runtime hook / direct patch 基建做
-   诊断性强制成功验证。
-4. **C.3**：终极野蛮方案——fishhook interpose `0x108878534` 直接返回
+1. **C.2.7**：改用 LLDB 直接对 `0x100122f54` materialize vcall 设 BP，
+   统计 natural run 中命中次数、每次 `x8(target)` 实际值与返回值 `x0`，
+   关联 `hok014_ngr_alert_suppressed` 时序。关键注意：natural run 中
+   `x8(target)` 实际是 `0x100128c6c`（dispatch stub），不是 dual-force
+   锁定的 `0x10432a068`（本地 compare ladder）；dual-force 的 C27 §14
+   target-side trace 不能直接套用。详见 `HOK-016-appendix-C27.md` §14。
+2. **C.4**：若 C.2.7 通过 LLDB trace 仍无法收敛，进入诊断性强制成功
+   验证（直接 patch `0x100122f58` 返回值或在 `0x100122f5c` 后注入
+   non-null object）。详见 `HOK-016-appendix-C27.md`。
+3. **C.3**：终极野蛮方案——fishhook interpose `0x108878534` 直接返回
    1，跳过整条 readiness B。稳定性风险极高，仅作最后兜底。
+4. **C.5**：因 `__DATA_CONST` 写保护导致 alt1 vtable slot 不可写
+   （`mprotect`/`vm_protect`/`vm_write` 均失败），当前 macOS 环境下
+   vtable patch 不可行。`alt1-dispatch` 日志代码保留，待找到写保护突破
+   方法或环境变化后再评估。详见 `HOK-016-appendix-C27.md` §15。
 5. **C.6（降级）**：若必须依赖用户外部资源/登录态，才降级到 HOK-009
    方向。
 

@@ -307,13 +307,9 @@
 >  / `lldb.backtrace` / `lldb.blockingDialogWindows` / `lldb.watchpointHits`，
 >  不要把完整 transcript 当人工日志用。`timedOut=true` + `didStop=true`
 >  + 完整 fault 字段 = 证据有效。
-- **HOK-016 LLDB BP / watchpoint 踩坑**：对 NGR 主 image 内的固定地址
->  设 BP 必须用 `breakpoint set --shlib NGR --address <unslid>`；
->  `breakpoint set` **不支持** `--script-type python -F <func>`，必须
->  拆成 `breakpoint set ...` + `breakpoint command add -s python -F
->  <func>` 两步；`-C 'shell cmd'` 与 `command add -s python -F` 不能
->  同时作用于同一 BP。完整脚本清单与踩坑汇总见
->  `HOK-016-appendix-tooling.md`。
+- **HOK-016 LLDB BP / watchpoint 踩坑**：完整脚本清单与踩坑汇总见
+>  `HOK-016-appendix-tooling.md`。**阅读建议：需要新增 LLDB probe 或
+>  复用 Python callback helper 时按需读取。**
 
 ## 参考信息
 
@@ -389,8 +385,9 @@
 >  → `HOK-006-LLDB归因与crash-window压缩.md`
 - `Scripts/hok016c27_*`：HOK-016-C.2.7 系列 locator / watchpoint / trace
 >  脚本；复用其 probe 模式时参考 `HOK-016-appendix-tooling.md`。
-- `Scripts/pdt001_ngr_materializer_literal_extractor.py`（待建）：
->  提取 `0x10432a068` 内部 compare literal 的离线扫描器。
+- `Scripts/pdt001_ngr_materializer_literal_extractor.py`：
+>  提取 `0x10432a068` 内部 compare literal 的离线扫描器。产物
+>  `build/pdt-001a-compare-literals.json`。
 
 ### 不需默认读取
 

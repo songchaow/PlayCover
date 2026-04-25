@@ -56,74 +56,39 @@
 
 ### 当前状态摘要
 
-- 外层防线已全部稳定：HOK-013 stub preheat、HOK-015 cmdline preseed、
-  HOK-010 rootWorkDir self-heal、HOK-014 `UIAlertController` 压制全部 apply。
-- 真因已下钻到 storage create-table 链（`0x1001a5014 → 0x10012bb7c`）；
-  natural run 的直接现象是 null table + `storage+0x30 = 0x9000b`。
-- dual-force 诊断已证明 dormant writer path（`0x10432dfdc → ... →
-  0x1001c6da4`）真实存在，只在双 checkpoint 顶开后才激活。
-- materialization target trace 已把差异收紧到 pre-`1c8` state：同一
-  target 内 post-`1c8` pair 已收敛，success / fail 的分叉只剩 entry tuple
-  / helper state 差异导致 `0x10432a224` vs `0x10432a2c8/0x10432a2e0` 的分流。
-  详细 checkpoint 证据见 `HOK-016-appendix-C27.md` §14。
-- PathDifferenceTrial 的 `PDT-001-A` 已完成：`Scripts/pdt001_ngr_materializer_literal_extractor.py`
-  从 `0x10432a068` 提取到的 fixed literal 为 UTF-16 `"r"` / `"rb"`，不含路径前缀、
-  文件名或数据库片段；因此"materializer fixed literal 直接做路径相关 compare"
-  这层假设已被排除。但 UE4 `FIOSPlatformFile::ConvertToPlatformPath` 的源码显示
-  `/var/` 透传、`/Users/` 转换，说明**上层路径转换差异可能通过改变 selected buffer
-  来间接影响 compare accumulator**；PathDifferenceTrial 因此继续推进 `PDT-001-B-revised`
-  与 `PDT-004`，而不是关闭。详见 `PathDifferenceTrial/PDT-001A-compare-literals.md`、
-  `PathDifferenceTrial/00-Dashboard.md` 与 `build/pdt-001a-compare-literals.json`。
-
-- `branch-238` / `branch-3e0` / `branch-580` 经 natural run 验证：**natural
-  failing path 在 `branch-224` 分流后直接返回 0 到 caller（`0x100122f58`），
-  未进入 `branch-238` compare ladder 及后续 tail**。LLDB trace 在
-  `0x100122f98`（err direct writer）捕获到 `x21=0`、`x8=0x9000b`，与
-  `build/hok-016c27-mainchunk-subtree-trace.json` 一致。
-- **本轮关键新发现**：natural run 中 `0x100122f54` 的 materialize vcall
-  实际 `x8(target)=0x100128c6c`（或 `0x115a5eb30`），**不是**静态分析锁定的
-  `0x10432a068`。这意味着 dual-force / 附录 C27 中基于 `0x10432a068` 的
-  target-side trace 与 natural run 的实际 target 不同；C.5 安装在
-  `0x10432a068` vtable slot 上的 hook **从未被 natural run 触发**。
-- HOK-016-C.5 materialize shim 现状更新：
-  - 原 hook（`0x10432a068`）在 natural run 中从未被触发；`cache-probe` +
-    `cache` 实际来自 primary hook 的 provider-clone 路径，不是 alt1。
-  - 已修复 `installed-provider-clone` 路径会跳过 alt1 安装的 bug：将 alt1
-    安装逻辑提取为 `pt_ngr_c5_install_alt1_hook()`，在 provider-clone
-    return 前也调用。
-  - 已在 `pt_ngr_c5_materialize_dispatch_hook_alt1` 中增加每调用细粒度日志
-    (`action=alt1-dispatch`)，含 `callIndex` / `path` / `originalRetObj` /
-    `selectedObj`，用于区分同一路径多次调用 vs 独立第二条 failure path。
-  - **新卡点**：`__DATA_CONST` 写保护导致 alt1 slot 不可写；
-    `pt_ngr_make_patch_writable`（`mprotect` + `vm_protect`）失败，
-    `vm_write` fallback 也失败，记录 `alt1-not-writable`。当前 macOS 下
-    C.5 无法通过 vtable patch 拦截 `0x100128c6c` 路径。
-  - live 验证（`build/hok-004-ngr-startup-report.json`，pid 97177，
-    processLaunchId=`launch-97177-272c5ad8-f770-4e3b-92da-c691f042b89a`）
-    确认 alt1 hook **未能安装**，`hok014_ngr_alert_suppressed` 仍出现 1 次。
-    materialize shim 在当前系统环境下无法完成 alt1 部署，需降级评估。
+- 外层防线已全部稳定：HOK-013/014/015/010 全部 apply，进程不再秒崩。
+- 真因已下钻到 storage create-table 链：`0x1001a5014` → `0x10012bb7c`
+  返回 null table，`storage+0x30 = 0x9000b`。
+- **关键新发现（影响后续所有分析口径）**：natural run 中 `0x100122f54`
+  的 materialize vcall 实际 target 是 `0x100128c6c`（dispatch stub），
+  **不是** dual-force 分析锁定的 `0x10432a068`（本地 compare ladder）。
+  因此 dual-force / 附录 C27 中基于 `0x10432a068` 的 target-side trace
+  **不直接适用于 natural run**。详见 `HOK-016-appendix-C27.md` §14 与
+  §15。**阅读建议：总是读取。**
+- C.5 因 `__DATA_CONST` 写保护无法安装 alt1 hook（`mprotect` / `vm_protect`
+  / `vm_write` 均失败），已降级为 BLOCKED。详见 `HOK-016-qts-fs-create-failed.md`
+  与 `HOK-016-appendix-C27.md` §15。**阅读建议：做 C.5 相关复盘时按需读取。**
+- PathDifferenceTrial 的 `PDT-001-A` 已完成（`0x10432a068` fixed literal
+  为 UTF-16 `"r"` / `"rb"`，与路径无关）；`PDT-004` 已完成（natural run
+  target `0x100128c6c` 是 dispatch stub，无 compare literal）。两结论
+  共同说明：natural run 与 dual-force 的 materialize 路径存在**结构性差异**。
+  PathDifferenceTrial 因此继续推进 `PDT-001-B-revised`，验证 UE4
+  `ConvertToPlatformPath` 的上层路径转换差异是否是根因。详见
+  `PathDifferenceTrial/00-Dashboard.md`。**阅读建议：总是读取。**
 
 ### 修复路线（优先级从高到低）
 
-1. **`HOK-016-C.2.7`（当前主线）**：
-   - (a) natural run 中 `0x1001a588c` 已观测到一次 success 命中（`pkg+0x10=0x0`
-     `pkg+0xa8=0x2` `pkg+0xb0=0x0` `pkg+0x110=0x1`），label=`gate1-ret`；
-     natural fail 路径在 `branch-224` 后直接返回 0，未进入 `branch-238`
-     tail，因此 (a) 的 OpenNodeStorage gate 可能**不是** natural fail 的直
-     接来源。
-   - (b) `ba720(key="1")` 的时序差异已在 dual-force run 中闭合；natural
-     run 中 `mainChunk+0x60` 为 0 时 `ba720` 返回 0 是预期行为。
-   - **(c) 新口径**：natural run 中 `0x100122f54` 的 `x8(target)` 实际是
-     `0x100128c6c` / `0x115a5eb30`，不是 `0x10432a068`。dual-force run 与
-     natural run 的 materialize target 不同，附录 C27 §14 的 target-side
-     分析需要重新评估是否适用于 natural path。
-2. **`HOK-016-C.5`**：alt1 hook 因 `__DATA_CONST` 写保护无法安装（`alt1-not-writable`），
-   `vm_write` fallback 同样失败。在当前 macOS 环境下，vtable patch 方案对
-   `0x100128c6c` 不可行。C.5 已收集到足够证据（`alt1-dispatch` 日志代码保留），
-   但不再作为主线推进，待环境变化或找到新的写 `__DATA_CONST` 方法后再评估。
-3. **`HOK-016-C.4`**：由于 natural run 的 materialize target 与 dual-force
-   不同，对象形状假设需要重新验证。若 C.5 修正后仍无法覆盖，进入诊断性
-   强制成功验证。
+1. **`HOK-016-C.2.7`（当前主线）**：改用 LLDB 直接对 `0x100122f54`
+   materialize vcall 设 BP，统计 natural run 中命中次数、每次 `x8(target)`
+   实际值（`0x100128c6c` vs 堆地址）、返回值 `x0`，与 `hok014_ngr_alert_suppressed`
+   时序关联，区分 (a) 同一路径多次调用部分失败 vs (b) 独立第二条 failure path。
+   详情与历史 dual-force 证据见 `HOK-016-appendix-C27.md` §14。
+2. **`PathDifferenceTrial / PDT-001-B-revised`（并行主线）**：验证 UE4
+   `ConvertToPlatformPath` 的上层路径转换差异是否是根因。详见
+   `PathDifferenceTrial/00-Dashboard.md`。
+3. **`HOK-016-C.4`**：若 C.2.7 通过 LLDB trace 仍无法收敛，进入诊断性强制
+   成功验证（直接 patch `0x100122f58` 返回值或在 `0x100122f5c` 后注入
+   non-null object）。详情见 `HOK-016-qts-fs-create-failed.md`。
 4. **`HOK-016-C.3`**：fishhook interpose `0x108878534` 直接返回 1，
    稳定性风险极高，仅作最后兜底。
 5. **`HOK-016-C.6`**：若必须依赖用户外部资源 / 登录态，才降级到 HOK-009。
@@ -164,36 +129,34 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
 
 ### 当前卡点
 
-四层未闭合问题：
-1. `0x1001a588c` 在 natural run 中观测到一次 success 命中（`pkg+0x10=0x0`
-   `pkg+0xb0=0x0`），但 natural fail 走 `branch-224` 直接返 0；OpenNodeStorage
-   gate 可能不是 natural fail 的直接来源。
-2. **C.5 alt1 hook 安装被 `__DATA_CONST` 写保护阻塞**：`pt_ngr_make_patch_writable`
-   与 `vm_write` 均无法修改 alt1 vtable slot，导致 `0x100128c6c` 路径无法被
-   hook。`cache-probe` + `cache` 来自 primary hook（provider-clone），不是
-   alt1；natural run 的 materialize target（`0x100128c6c` 或堆地址
-   `0x115a5eb30`）仍未被 intercept。
-3. **C.2.7 (c) 新口径**：dual-force 与 natural run 的 materialize target
-   不同；C.5 因系统写保护证伪，需换方向下钻。需要确认 natural run 中
-   `0x100128c6c` 被调用的次数、返回值、以及是否存在多条独立调用路径。
-4. **细粒度日志已就绪但无法触发**：`alt1-dispatch` 日志代码已写入
-   `pt_ngr_c5_materialize_dispatch_hook_alt1`，只要 alt1 hook 安装成功即可
-   输出每调用参数；当前 blocked by 卡点 2。
+1. **natural run 的 materialize target 与 dual-force 不同**：natural run
+   走 `0x100128c6c`（dispatch stub → `__stubs` → 外部函数），不是 dual-force
+   的 `0x10432a068`（本地 compare ladder）。dual-force 的 C27 §14 分析不能直接
+   套用，需要重新确认 natural run 中 `0x100128c6c` 被调用的次数、返回值、
+   以及是否存在多条独立调用路径。
+2. **C.5 被 `__DATA_CONST` 写保护阻塞**：`mprotect` / `vm_protect` / `vm_write`
+   均无法修改 alt1 vtable slot，vtable patch 在当前 macOS 环境下不可行。
+   已降级为 BLOCKED；`alt1-dispatch` 日志代码保留，待找到新的写保护突破方法
+   或环境变化后再评估。详情见 `HOK-016-appendix-C27.md` §15。
+3. **PathDifferenceTrial 尚未验证上层路径转换差异**：UE4
+   `ConvertToPlatformPath` 源码显示 `/var/` 透传、`/Users/` 转换，但 NGR
+   在 PlayCover 中实际构造出的 `entryX1="/Users/..."` 是否确实经过该转换、
+   以及转换后的结果如何影响 external function 的输入参数，仍待 live trace
+   或静态定位确认。详见 `PathDifferenceTrial/00-Dashboard.md`。
 
 ### 下一步默认规划
 
-1. **评估 C.5 路线是否继续**：`__DATA_CONST` 写保护在当前 macOS 版本下
-   不可绕过。若短期内无法找到新的写保护突破方法（如 `vm_remap` 可写映射、
-   `pthread_jit_write_protect_np`、或利用 `dyld` 的 `__DATA_CONST` 重绑定
-   机制），C.5 降级为 blocked，优先切回 C.2.7 / C.4。
-2. **继续下钻 C.2.7（当前主线）**：不依赖 vtable hook，改用 LLDB 直接对
-   `0x100122f54`（materialize vcall）设 BP，统计 natural run 中该 BP 的
-   命中次数、每次 `x8(target)` 实际值（`0x100128c6c` vs 堆地址）、每次返回值
-   `x0`，与 `hok014_ngr_alert_suppressed` 的时序做关联分析。目标：确认
-   (a) 同一路径被调用多次、部分返回 0；还是 (b) 存在独立第二条 failure path。
-3. 若 C.2.7 通过 LLDB trace 仍无法收敛，进入 **`HOK-016-C.4`**（诊断性强
-   制成功验证：直接 patch `0x100122f58` 返回值或在 `0x100122f5c` 后注入
-   non-null object）。
+1. **执行 `HOK-016-C.2.7`**：用 LLDB 对 `0x100122f54` 设 BP，统计 natural
+   run 中命中次数、每次 `x8(target)` 实际值与返回值 `x0`，关联
+   `hok014_ngr_alert_suppressed` 时序。区分 (a) 同一路径多次调用部分失败
+   vs (b) 独立第二条 failure path。产物：`build/hok-016c27-natural-materialize-bp.json`。
+2. **执行 `PathDifferenceTrial / PDT-001-B-revised`**：在 PlayTools 层对
+   `NSBundle` / `NSSearchPathForDirectoriesInDomains` 做临时 swizzle，让
+   NGR 构造出的路径前缀从 `/Users/...` 变成 `/var/...`，观察 `entryX1` 与
+   `hok014_ngr_alert_suppressed` 是否收敛。产物：
+   `build/pdt-001b-revised-path-redirect-report.json`。详见
+   `PathDifferenceTrial/00-Dashboard.md`。
+3. 若 C.2.7 无法收敛，进入 **`HOK-016-C.4`** 诊断性强制成功验证。
 4. `HOK-016-C.3` 保留作为最后兜底。
 5. `HOK-016-D` live 验证标准：`hok014_ngr_alert_suppressed = 0` +
    `%CPU/RSS/线程/窗口` 活跃度达标 + 无新 `NGR-*.ips`。
@@ -300,12 +263,15 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
 | HOK-016-C.2.4 | DONE | 收紧到 `0x10017f184` 的 lookup 失败 | `HOK-016-appendix-C23-C24.md` |
 | HOK-016-C.2.5 | DONE | 补齐 rootB writer / insert-helper 的侧证 | `HOK-016-appendix-C25-C26.md` |
 | HOK-016-C.2.6 | DONE | 更正为 `mainChunk` 的 `"1"` 子树缺失，不是 `"main"` 缺失 | `HOK-016-appendix-C25-C26.md` |
-| HOK-016-C.2.7 | TODO（当前主线） | (a) `0x1001a588c` natural run 已观测到一次 success 命中（`pkg+0x10=0x0 pkg+0xa8=0x2 pkg+0xb0=0x0 pkg+0x110=0x1`），label=`gate1-ret`；natural fail 走 `branch-224` 直接返 0，未进入 `branch-238` tail。**(c) 新发现**：natural run 中 `0x100122f54` 的 `x8(target)=0x100128c6c/0x115a5eb30`，不是 `0x10432a068`。PathDifferenceTrial 的 `PDT-001-A` 证实 `0x10432a068` fixed literal 仅为 UTF-16 `"r"` / `"rb"`，排除了 "fixed literal 直接做路径 compare" 的假设；但 UE4 `ConvertToPlatformPath` 源码显示 `/var/` 透传、`/Users/` 转换，说明上层路径转换差异可能通过 selected buffer 间接影响 compare accumulator。PathDifferenceTrial 因此继续推进 `PDT-001-B-revised` 与 `PDT-004`，而非关闭。C.5 因 `__DATA_CONST` 写保护无法安装 alt1 hook，已降级。下一步改用 LLDB 直接对 `0x100122f54` 设 BP，统计命中次数、每次 `x8` 实际值与返回值，关联 `hok014_ngr_alert_suppressed` 时序，区分 (a) 同一路径多次调用部分失败 vs (b) 独立第二条 path。详见 `HOK-016-appendix-C27.md` §14。 | `HOK-016-appendix-C27.md` |
+| HOK-016-C.2.7 | TODO（当前主线） | 改用 LLDB 直接对 `0x100122f54` materialize vcall 设 BP，统计 natural run 中命中次数、每次 `x8(target)` 实际值与返回值 `x0`，关联 `hok014_ngr_alert_suppressed` 时序。历史 dual-force 证据与 target-side trace 见 `HOK-016-appendix-C27.md` §14；C.5 `__DATA_CONST` 阻塞详情见 §15。 | `HOK-016-appendix-C27.md` |
 | HOK-016-C.3 | DEFERRED | 终极野蛮方案：fishhook interpose `0x108878534` 直接返回 1，仅作最后兜底 | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-C.4 | TODO | 若 C.2.7 通过 LLDB trace 仍无法收敛，进入诊断性强制成功验证。natural run 的 materialize target 与 dual-force 不同，对象形状假设需重新验证。 | `HOK-016-appendix-C27.md` |
-| HOK-016-C.5 | BLOCKED | 已修复 provider-clone 路径跳过 alt1 安装的 bug，已增加 `alt1-dispatch` 细粒度日志。但 `__DATA_CONST` 写保护导致 alt1 slot 不可写（`alt1-not-writable`），`vm_write` fallback 也失败。在当前 macOS 环境下无法通过 vtable patch 拦截 `0x100128c6c` 路径。待找到新的写保护突破方法或环境变化后再评估。live 证据：`build/hok-004-ngr-startup-report.json`，pid 97177，processLaunchId=`launch-97177-272c5ad8-f770-4e3b-92da-c691f042b89a`。 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.4 | TODO | 若 C.2.7 无法收敛，进入诊断性强制成功验证（patch `0x100122f58` 返回值或注入 non-null object） | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.5 | BLOCKED | `__DATA_CONST` 写保护导致 alt1 vtable slot 不可写（`mprotect`/`vm_protect`/`vm_write` 均失败），无法拦截 `0x100128c6c` 路径。`alt1-dispatch` 日志代码保留，待找到写保护突破方法或环境变化后再评估。 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.6 | DEFERRED | 仅在必须依赖外部资源或登录态时，才降级到需要用户介入的路线 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-D | TODO | HOK-016-C 落地后做 live 验证，并把 HOK-014 降级为冷备安全网 | `HOK-016-qts-fs-create-failed.md` |
+| PDT-001-B-revised | TODO（并行主线） | 验证 UE4 `ConvertToPlatformPath` 差异是否是根因：对 `NSBundle` / `NSSearchPath...` 做临时 swizzle，让路径前缀从 `/Users/...` 变成 `/var/...`，观察 `entryX1` 与 `hok014_ngr_alert_suppressed` 是否收敛。详见 `PathDifferenceTrial/00-Dashboard.md` | `PathDifferenceTrial/00-Dashboard.md` |
+| PDT-002 | TODO | 若 PDT-001-B-revised 证实路径转换差异是根因，设计 PlayTools 层最小可落地 bundle-scoped 路径伪装方案 | 待建 |
+| PDT-003 | TODO | 若 PDT-001-B-revised 证伪，留下结构化证据并关闭 PathDifferenceTrial | 待建 |
 | HOK-007C | DEFERRED | 下游 crash 的离线映射 + 可逆 patch；当前无触发动机 | `HOK-007-二进制意图分析与callsite映射.md` |
 | HOK-008 | TODO | 把"revert 候选 E → `rootWorkDir=1` → 启动 → 证据采集 → pass 判定"固化成单脚本 | 待建 |
 | HOK-009 | BLOCKED | 需要用户账号 / 手工 UI 的后续验证；执行前必须得到用户确认 | 不执行 |
@@ -339,32 +305,29 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
   只用 `plutil -replace`（会被下一次 GUI launch 覆盖），要走
   `update_app_settings` MCP 或依赖 `PlayApp.launch()` 的 self-heal。
 - **`.ips` 的 image offset 交叉验证**：`usedImage.base` + triggered
-  thread `frames[0].imageOffset` + LLDB `faultPc` 三者应一致。
+  thread `frames[0].imageOffset` + LLDB `faultPc` 三者应一致。详见
+  `HOK-007-二进制意图分析与callsite映射.md`。**阅读建议：需要追查新
+  faulting callsite 时按需读取。**
 - **`launch_app_with_lldb` headless 结构化证据**：消费
   `lldb.stopReason` / `lldb.faultingFrame` / `lldb.faultingInstruction`
   / `lldb.backtrace` / `lldb.blockingDialogWindows` / `lldb.watchpointHits`，
   不要把完整 transcript 当人工日志用。`timedOut=true` + `didStop=true`
-  + 完整 fault 字段 = 证据有效。
+  + 完整 fault 字段 = 证据有效。详见 `HOK-006-LLDB归因与crash-window压缩.md`。
+  **阅读建议：需要改 LLDB 证据 schema 时按需读取。**
 - **`blockingDialogs >= 1` ≠ 回归，也不能立即判定为 pass**：b.0 gate
-  对"NGR onscreen window"本身也会报 1。需要同时看窗口 bounds 是否在
-  主屏 frame 内（`Y + H > 0` 且 `Y < screen.height`）、
-  `kCGWindowMemoryUsage` 是否非 trivial（合法渲染窗口通常 >1MB）。
-- **HOK-016 LLDB BP / watchpoint 踩坑**：对 NGR 主 image 内的固定地址
-  设 BP 必须用 `breakpoint set --shlib NGR --address <unslid>`；
-  `breakpoint set` **不支持** `--script-type python -F <func>`，必须
-  拆成 `breakpoint set ...` + `breakpoint command add -s python -F
-  <func>` 两步；`-C 'shell cmd'` 与 `command add -s python -F` 不能
-  同时作用于同一 BP。完整脚本清单与踩坑汇总见
-  `HOK-016-appendix-tooling.md`。
-- **C.5 vtable hook 的 target 地址可能在 natural run 中变化**：静态分析
-  锁定的 `0x10432a068` 在 dual-force run 中确实被命中，但 natural run 中
-  `0x100122f54` 的 `x8` 实际是 `0x100128c6c`/`0x115a5eb30`。任何基于固定
-  vtable slot 的 hook 方案，都必须先通过 live BP 验证运行期实际 target。
+  对"NGR onscreen window"本身也会报 1。需要同时看窗口 bounds 与
+  `kCGWindowMemoryUsage` 区分 sheet（~260×204）vs 主游戏窗口
+  （≥1024×512）。详见 `HOK-014-alert-suppressor.md` 与
+  `HOK-012-工具链与方法论归档.md`。**阅读建议：需要跑 LLDB watchpoint /
+  解读 b.0 gate 时按需读取。**
+- **HOK-016 LLDB BP / watchpoint 踩坑**：完整脚本清单与踩坑汇总见
+  `HOK-016-appendix-tooling.md`。**阅读建议：需要新增 HOK-016 系列 probe
+  或复用 Python callback helper 时按需读取。**
+- **natural run 的 materialize target 可能与 dual-force 不同**：任何基于
+  固定 vtable slot 的 hook 方案，都必须先通过 live BP 验证运行期实际 target。
 - **`__DATA_CONST` vtable slot 在当前 macOS 下不可写**：`mprotect` /
-  `vm_protect` / `vm_write` 均无法修改 `__DATA_CONST` 中的指针。
-  provider-clone 方案（malloc 新 vtable + redirect provider entry）只对
-  primary hook 可行，alt1 slot 若无对应 provider entry 则无法 clone。
-  任何依赖 runtime vtable patch 的方案，必须先验证页保护是否允许写入。
+  `vm_protect` / `vm_write` 均失败。任何依赖 runtime vtable patch 的方案，
+  必须先验证页保护是否允许写入。
 
 ## 参考信息
 
@@ -375,6 +338,8 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
 - `LocalDocs/HOKCrash/HOK-016-qts-fs-create-failed.md`：当前主线
   HOK-016 的目的、核心证据、根因链、修复方向、已证伪路径。**阅读
   建议：只要在做 HOK-016-C 系列任务就总是读取。**
+- `LocalDocs/HOKCrash/PathDifferenceTrial/00-Dashboard.md`：路径差异
+  trial 的当前主线、TODO 与验证口径。**阅读建议：总是读取。**
 
 ### 当前兜底链路（修改这些代码/文件需要同步更新本 Dashboard）
 
@@ -433,6 +398,12 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
   `HOK-016-appendix-CX.md`：HOK-016 的 5 份附录。**阅读建议：
   `HOK-016-appendix-C27.md` 在做 C.2.7 / C.4 / C.5 时总是读取，只想同步
   最新收紧口径时优先看 §14；其余附录按各自顶部"阅读建议"按需进入。**
+- `PathDifferenceTrial/PDT-001A-compare-literals.md`：PDT-001-A 离线证据
+  （`0x10432a068` compare literal 提取）。**阅读建议：需要复核
+  PathDifferenceTrial 历史证据时按需读取。**
+- `PathDifferenceTrial/PDT-004-natural-target-literal.md`：PDT-004 离线证据
+  （natural run target `0x100128c6c` 的结构分析）。**阅读建议：需要复核
+  natural run 与 dual-force 结构差异时按需读取。**
 
 ### 代码 / 脚本速查
 

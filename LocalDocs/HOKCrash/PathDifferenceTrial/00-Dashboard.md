@@ -44,11 +44,12 @@
 
 ### 当前主线一句话
 
-`PDT-001`：确认 iOS 真实设备上 `com.tencent.ngr` 的 `Library/NGR/Saved/Paks`
-> 等关键目录的**绝对路径前缀**，并与 macOS/PlayCover 当前实际路径做逐
-> 字节对比；评估路径长度差异是否足以解释 HOK-016-C.2.7 中
-> `entryX1="../../../NGR/Content/Paks/1/1.db"`(success) vs
-> `entryX1="/Users/..."`(fail) 的分流行为。
+`PDT-001`：验证路径差异假设。分两步：先通过静态分析提取 materializer
+> 内部 compare literal（PDT-001-A），再设计**上层路径重定向实验**
+>（PDT-001-B）——不依赖 vtable hook（被 `__DATA_CONST` 阻塞），改在
+> `NSBundle` / `NSSearchPathForDirectoriesInDomains` / UE4 `FPaths::` 等
+> 更上层 API 做 swizzle，让 NGR 在调用 materializer 前生成 iOS 风格路径，
+> 观察 `entryX1` 是否随之收敛到 success 分支。
 
 ### 当前状态摘要
 
@@ -63,37 +64,65 @@
 > - 已知 materializer 内部在做"逐字符比较"（对临时 UTF-16 buffer 与固定
 >   literal 做 case-fold compare）。路径字符串前缀不同，极可能改变 compare
 >   accumulator 的演进，从而导致不同的分支决策。
+> - **重要新发现**：HOK-016-C.5 的代码（`PlayLoader.m`）**已经在尝试修复路径
+>   差异**：
+>   - `pt_ngr_c5_should_redirect_saved_path()` 检查 `/Saved/Paks/1/1.db`；
+>   - 匹配时把 `x1` 从 `/Users/...` 重定向为 `"../../../NGR/Content/Paks/1/1.db"`；
+>   - 然后调用原始 materializer，期望走 success 分支。
+>   这证明**路径差异假设有历史工程依据**。但 C.5 因 `__DATA_CONST` 写保护
+>   + natural run target 偏移（`0x100128c6c` 而非 `0x10432a068`）而**从未
+>   在 natural run 中触发**。
 > - **尚未确认的事实**：
->   1. 真实 iOS 设备上，NGR 的沙盒路径前缀到底是什么？（是 `/var/mobile/...`？
->      还是 iOS 15+ 的 `/private/var/mobile/...`？长度多少？）
->   2. materializer 内部比较的"固定 literal"到底是什么？是否包含路径前缀？
->   3. 若把 macOS 上的绝对路径重定向为 iOS 风格前缀，materializer 是否还会
->      走 `0x10432a224` fail 分支？
+>   1. materializer 内部比较的"固定 literal"到底是什么？是否包含路径前缀？
+>   2. 若在上层（`NSBundle` / `FPaths::` 等）做路径重定向，让 NGR 自己生成
+>      `"../../../NGR/Content/Paks/1/1.db"`，materializer 是否还会走
+>      `0x10432a224` fail 分支？
 
 ### 修复路线（优先级从高到低）
 
-1. **`PDT-001`（当前主线）**：
->    - (a) 通过静态反汇编或已有 live trace，确认 `0x10432a068` 内部做 compare
->      的固定 literal 内容；判断这些 literal 是否包含路径前缀或路径相关字符串。
->    - (b) 搜集 iOS 真实设备上 `com.tencent.ngr` 的 `Library/NGR/Saved/Paks`
->      等关键目录的绝对路径样本（可通过公开资料、测试设备、或已有 ipa
->      安装日志推断），与 macOS 路径做长度和层级对比。
->    - (c) 若 literal 确实与路径前缀相关，设计最小验证实验：在 PlayTools
->      constructor 中对相关路径 API 做 swizzle / interpose，让 NGR 读取到的
->      路径前缀临时返回 iOS 风格值，观察 `0x10432a224` 是否仍被命中。
-2. **`PDT-002`**：若 PDT-001 证实路径差异是根因，设计 PlayTools 层
->    bundle-scoped 路径重定向方案（如 `NSBundle` / `NSURL` swizzle、
->   `fopen`/`stat` interpose、或基于 PlayCover container 结构的 symlink）。
-3. **`PDT-003`**：若 PDT-001 证伪路径假设，留下结构化证据，关闭本 trial，
->    回到 `HOK-016-C.2.7` 原有分析线。
+1. **`PDT-001-A`（当前主线）**：提取 materializer 内部 compare literal。
+>    - 静态反汇编 `0x10432a068` 中 `0x10432a17c..0x10432a224` 的 compare
+>      ladder，提取 `x23` 与 `x23+0xca6` 指向的 literal 字符串内容。
+>    - 判断这些 literal 是否包含路径前缀、文件名或数据库相关字符串。
+>    - 产物：`build/pdt-001a-compare-literals.json`。
+2. **`PDT-001-B`**：上层路径重定向 live 验证。
+>    - **不依赖 vtable hook**（`__DATA_CONST` 写保护已阻断 C.5 方案）。
+>    - 在 PlayTools constructor 中对以下 API 做**临时、可开关**的 swizzle：
+>      - `-[NSBundle bundlePath]` / `-[NSBundle resourcePath]` / `-[NSBundle executablePath]`
+>      - `NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, ...)`
+>      - UE4 `FPaths::ProjectSavedDir()` / `FPaths::ProjectContentDir()` 等（若符号可见）
+>    - 目标：让 NGR 在构造 `entryX1` 时生成 `"../../../NGR/Content/Paks/1/1.db"`
+>      而不是 `"/Users/..."`。
+>    - 观察 `launch-events.jsonl` 中 `hok014_ngr_alert_suppressed` 是否归零；
+>      同时用 LLDB BP 观察 `0x100122f54` materialization vcall 返回值是否从 0
+>      变为 non-null。
+>    - 产物：`build/pdt-001b-path-redirect-report.json`。
+3. **`PDT-002`**：若 PDT-001-B 证实路径差异是根因，设计 PlayTools 层
+>    bundle-scoped 最小路径重定向方案。参考 C.5 思路但换一个更稳定的落点：
+>    直接在 `PlaySettings.swift` 中增加 `ngrPathRedirectEnabled` 选项，
+>    在 PlayTools 启动时统一替换 `NSBundle` / `NSSearchPath...` 的返回路径。
+4. **`PDT-003`**：若 PDT-001-A 证伪（literal 与路径无关）或 PDT-001-B 证伪
+>    （重定向后仍 fail），留下结构化证据，关闭本 trial，回到 `HOK-016-C.2.7`
+>    原有分析线。
 
 ### 当前兜底链路（按 PlayTools constructor 执行序）
 
-路径差异 trial 当前**不改动**既有 HOK-013/014/015/010 兜底链路；所有验证
-> 实验在独立的 PlayTools 分支或 runtime hook 中进行，失败时可立即回退。
+路径差异 trial 当前**不改动**既有 HOK-013/014/015/010 兜底链路；这些 hook
+> 继续保留，用于维持 NGR 能稳定走到 HOK-016 的 failure window。它们不是
+> 本 trial 的污染源。
+>
+> 唯一需要单独注意的是 HOK-016-C.5：
+> - `PlayLoader.m` 已存在 `/Users/... → "../../../NGR/Content/Paks/1/1.db"`
+>   的 materializer 重定向尝试；
+> - 但该方案依赖 vtable patch，因 `__DATA_CONST` 写保护与 natural-run target
+>   偏移而未在 natural run 中生效；
+> - 因此本 trial 后续实验应**绕开 C.5 的 patch 落点**，改在更上层 API 做
+>   swizzle / interpose，失败时可立即回退。
+>
 > 唯一新增依赖：
-> - 若 PDT-001(c) 需要 live trace `0x10432a068` 内部的 compare literal，
->   使用 HOK-012 已固化的 LLDB 工具链（`Scripts/hok006_ngr_lldb_runner.py`）。
+> - 若 PDT-001-A / PDT-001-B 需要 live trace `0x10432a068` 内部的 compare literal
+>   或 `0x100122f54` 的返回值，使用 HOK-012 已固化的 LLDB 工具链
+>   （`Scripts/hok006_ngr_lldb_runner.py`）。
 
 ### 已证伪路径（高层记录）
 
@@ -108,32 +137,35 @@
 
 ### 当前卡点
 
-- **iOS 真实路径前缀尚未确认**：当前没有真实 iOS 设备上的 NGR 运行日志，
->  无法确定 iOS 侧的沙盒绝对路径样本。
-- **materializer 内部 compare literal 尚未提取**：`0x10432a068` 内部的
->  `x23` 与 `x23+0xca6` 固定 literal 到底是什么字符串，还需要一轮静态反汇编
->  或 LLDB memory dump 才能确认。
-- **路径重定向的副作用范围未知**：若强行把 macOS 路径改成 iOS 前缀，
->  可能影响 UE4 的 I/O 实际落盘位置，需要验证文件读写是否仍能正确映射到
->  PlayCover container。
+1. **materializer 内部 compare literal 尚未提取**：`0x10432a068` 内部的
+>   `x23` 与 `x23+0xca6` 固定 literal 到底是什么字符串，还需要一轮静态反汇编
+>   或 LLDB memory dump 才能确认。这是 PDT-001-A 的硬前置。
+2. **上层路径重定向的精确落点未确定**：`entryX1` 到底由 NGR 内部哪个 API
+>   生成？是 `NSBundle` 系列、UE4 `FPaths::`、还是 NGR 自研的 path helper？
+>   需要静态定位 `entryX1="/Users/..."` 的构造点，才能知道该 swizzle 谁。
+3. **路径重定向的副作用范围未知**：若强行把 macOS 路径改成 iOS 前缀，
+>   可能影响 UE4 的 I/O 实际落盘位置，需要验证文件读写是否仍能正确映射到
+>   PlayCover container。PDT-001-B 必须设计成**临时、可开关、可回退**的实验，
+>   不能默认 apply。
 
 ### 下一步默认规划
 
-1. **补全 PDT-001(a)**：静态反汇编 `0x10432a068` 中 `0x10432a17c..0x10432a224`
+1. **执行 PDT-001-A**：静态反汇编 `0x10432a068` 中 `0x10432a17c..0x10432a224`
 >    的 compare ladder，提取 `x23` 与 `x23+0xca6` 指向的 literal 字符串内容。
->    产物：`build/pdt-001-compare-literals.json`。
-2. **补全 PDT-001(b)**：通过以下任一方式获取 iOS 路径样本：
->    - 检查现有 `NGR-*.ips` 或 `launch-events.jsonl` 中是否已有 iOS 路径残留；
->    - 搜索 NGR ipa 包内的 `Info.plist` 或配置文件中对路径前缀的引用；
->    - 参考公开 iOS 沙盒路径规范，构造典型路径模板
->      `/var/mobile/Containers/Data/Application/<UUID>/Library/NGR/Saved/Paks`。
-3. **若 literal 与路径无关**：直接关闭路径差异假设，记录证伪证据，回到
->    HOK-016-C.2.7。
-4. **若 literal 与路径有关**：设计最小 live 实验（PDT-001(c)），在 PlayTools
->    中对 `-[NSBundle bundlePath]` / `NSSearchPathForDirectoriesInDomains` /
->    或特定 UE4 `FPaths::` 系列 API 做临时 swizzle，观察 materializer 分支
->    是否收敛。
-5. 收尾执行 `git commit`。
+>    产物：`build/pdt-001a-compare-literals.json`。
+2. **若 literal 与路径无关**：直接关闭路径差异假设，记录证伪证据，更新
+>    Dashboard TODO 状态，回到 HOK-016-C.2.7。
+3. **若 literal 与路径有关**：进入 PDT-001-B：
+>    - (a) 先静态定位 `entryX1="/Users/..."` 在 NGR 二进制中的构造点；
+>    - (b) 根据构造点确定需要 swizzle 的上层 API（`NSBundle` / `NSSearchPath...` /
+>      `FPaths::` 等）；
+>    - (c) 在 PlayTools constructor 中实现临时 swizzle，通过 `launch_app` 做
+>      live 验证；观察 `hok014_ngr_alert_suppressed` 是否归零、
+>      `0x100122f54` 返回值是否变为 non-null。
+>    - 产物：`build/pdt-001b-path-redirect-report.json`。
+4. **若 PDT-001-B 证实路径差异是根因**：进入 PDT-002，设计最小可落地方案。
+5. **若 PDT-001-B 证伪**：更新 Dashboard TODO，关闭本 trial，回到 HOK-016-C.2.7。
+6. 收尾执行 `git commit`。
 
 ## 构建与验证
 
@@ -208,9 +240,10 @@
 
 | ID | 状态 | 任务描述 | 子文档 |
 |---|---|---|---|
-| PDT-001 | TODO（当前主线） | 提取 `0x10432a068` 内部 compare literal；确认 iOS 真实路径前缀；评估路径差异是否足以解释 materializer 分流 | 待建 `PDT-001-materializer-literal-and-ios-path.md` |
-| PDT-002 | TODO | 若 PDT-001 证实路径差异是根因，设计 PlayTools 层 bundle-scoped 路径重定向方案 | 待建 |
-| PDT-003 | TODO | 若 PDT-001 证伪路径假设，留下结构化证据并关闭本 trial | 待建 |
+| PDT-001-A | TODO（当前主线） | 静态反汇编提取 `0x10432a068` 内部 compare literal（`x23` / `x23+0xca6`），判断是否与路径/文件名相关 | 待建 `PDT-001A-compare-literals.md` |
+| PDT-001-B | TODO | 若 PDT-001-A 证实 literal 与路径有关，设计上层路径重定向 live 实验：swizzle `NSBundle` / `NSSearchPath...` / `FPaths::` 等 API，观察 `entryX1` 是否收敛到 success 分支 | 待建 `PDT-001B-path-redirect-live.md` |
+| PDT-002 | TODO | 若 PDT-001-B 证实路径差异是根因，设计 PlayTools 层最小可落地 bundle-scoped 路径重定向方案 | 待建 |
+| PDT-003 | TODO | 若 PDT-001-A 或 PDT-001-B 证伪，留下结构化证据并关闭本 trial | 待建 |
 
 ## 高频复用经验（当前仍适用的）
 
@@ -224,6 +257,15 @@
 >  C27 §14 已指出 success / fail 的 post-`1c8` pair 相同，分流由 pre-`1c8`
 >  state 驱动。任何路径修复方案的目标不是改变 `x21/x22`，而是改变
 >  compare accumulator 的演进，使 `0x10432a224` 不再被选中。
+- **既有 HOK hook 对本 trial 的影响边界要分清**：HOK-013 / HOK-014 /
+>  HOK-015 / HOK-010 不会直接改写 materializer 的路径输入；它们不是本
+>  trial 的污染源。唯一与路径直接相关的是 HOK-016-C.5，但 C.5 因
+>  `__DATA_CONST` 写保护与 natural-run target 偏移而**未在 natural run 中生效**，
+>  因此当前观察到的 `entryX1="/Users/..."` 仍可视为未修正的原始现象。
+- **C.5 更像先验线索，不是当前执行路径**：`PlayLoader.m` 里已有
+>  `/Users/... → "../../../NGR/Content/Paks/1/1.db"` 的重定向尝试，说明
+>  路径差异假设有历史依据；但后续实验应避开 vtable patch，优先选上层 API
+>  swizzle 作为新的验证入口。
 - **`playcover_launch_complete` ≠ app 已安全启动**：NGR 会在该事件之
 >  后进入 UE4 bootstrap、可能进入 fatal 路径。
 - **`session briefly ready → disconnected`** 是比"窗口看起来闪退"更

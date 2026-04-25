@@ -76,14 +76,19 @@
   `0x10432a068`。这意味着 dual-force / 附录 C27 中基于 `0x10432a068` 的
   target-side trace 与 natural run 的实际 target 不同；C.5 安装在
   `0x10432a068` vtable slot 上的 hook **从未被 natural run 触发**。
-- HOK-016-C.5 materialize shim 已修正：原 hook 仅安装在静态锁定的
-  `0x10432a068` vtable slot，但 natural run 实际 target 为 `0x100128c6c`
-  （或堆地址 `0x115a5eb30`），导致旧 hook 从未被触发。已在
-  `PlayLoader.m` 中增加 `NGR_C5_MATERIALIZE_TARGET_ALT1_UNSLID`
-  (`0x100128c6c`) 的 provider 扫描 + `__DATA`/`__DATA_CONST` data 段扫描，
-  并安装独立的 `pt_ngr_c5_materialize_dispatch_hook_alt1`，使用独立的
-  `pt_ngr_c5_alt_original_materialize_target`。PlayTools 已重建并安装。
-  待 live 验证 natural run 是否命中 alt1 hook 并触发 cache/reuse。
+- HOK-016-C.5 materialize shim 已修正并验证：原 hook 仅安装在静态锁定
+  的 `0x10432a068` vtable slot，但 natural run 实际 target 为
+  `0x100128c6c`（或堆地址 `0x115a5eb30`）。已在 `PlayLoader.m` 中增加
+  `NGR_C5_MATERIALIZE_TARGET_ALT1_UNSLID` (`0x100128c6c`) 的 provider 扫描
+  + `__DATA`/`__DATA_CONST` data 段扫描，安装独立的
+  `pt_ngr_c5_materialize_dispatch_hook_alt1`。live 验证（
+  `build/hok-004-ngr-startup-report.json`，pid 64036，
+  processLaunchId=`launch-64036-f6e96eb7-d7ac-45f3-aaa7-262fa8b30422`）
+  确认 alt1 hook **命中并触发 cache/reuse**
+  (`hok016c5_ngr_materialize_shim_reused`，含 `cache-probe` + `cache` 两条
+  事件)。**但 `hok014_ngr_alert_suppressed` 仍出现 1 次**，说明
+  materialize shim 未完全消除 `QtsFileSystem Create Failed!!` 路径，需继续
+  下钻。
 
 ### 修复路线（优先级从高到低）
 
@@ -99,10 +104,10 @@
      `0x100128c6c` / `0x115a5eb30`，不是 `0x10432a068`。dual-force run 与
      natural run 的 materialize target 不同，附录 C27 §14 的 target-side
      分析需要重新评估是否适用于 natural path。
-2. **`HOK-016-C.5`**：已落地修正（见当前状态摘要）。原 hook 只覆盖
+2. **`HOK-016-C.5`**：已验证（见当前状态摘要）。原 hook 只覆盖
    `0x10432a068`，现已增加 `0x100128c6c` 的独立 hook + data 段扫描。
-   待 live 验证是否触发 `cache`/`reuse`。若仍无法覆盖（如 target 为堆地址
-   `0x115a5eb30`），再评估 caller-side patch 或 C.4。
+   live 验证确认命中并触发 `cache`/`reuse`，但 `hok014_ngr_alert_suppressed`
+   仍出现，materialize shim 未完全消除失败路径，继续推进 C.2.7 / C.4。
 3. **`HOK-016-C.4`**：由于 natural run 的 materialize target 与 dual-force
    不同，对象形状假设需要重新验证。若 C.5 修正后仍无法覆盖，进入诊断性
    强制成功验证。
@@ -150,31 +155,37 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
 1. `0x1001a588c` 在 natural run 中观测到一次 success 命中（`pkg+0x10=0x0`
    `pkg+0xb0=0x0`），但 natural fail 走 `branch-224` 直接返 0；OpenNodeStorage
    gate 可能不是 natural fail 的直接来源。
-2. **C.5 hook target 地址错误 → 已修正**：已在 `PlayLoader.m` 中增加
-   `0x100128c6c` 的独立 hook + data 段扫描。待验证 natural run 是否命中。
-   堆地址 `0x115a5eb30` 路径仍可能无法被静态 vtable hook 覆盖，若验证失败
-   再评估 caller-side patch 或 C.4。
-3. **C.2.7 (c) 新口径待验证**：dual-force 与 natural run 的 materialize
-   target 不同，`0x10432a068` 的 pre-`1c8` entry tuple 差异分析是否仍适用
-   于 natural path，需等 C.5 alt1 hook live 验证后再评估。
+2. **C.5 alt1 hook 已命中，但 alert 仍触发**：live 验证确认
+   `hok016c5_ngr_materialize_shim_reused`（`cache-probe` + `cache`）出现，
+   说明 `0x100128c6c` 路径已被 cache/reuse 覆盖。然而
+   `hok014_ngr_alert_suppressed` 仍出现 1 次，意味着 `QtsFileSystem Create
+   Failed!!` 还有未被 materialize shim 拦截的触发源。需进一步区分：是同一
+   path 的多轮调用中部分未命中，还是存在独立的第二条 failure path。
+3. **C.2.7 (c) 新口径**：dual-force 与 natural run 的 materialize target
+   不同；C.5 已证明 natural path 的 `0x100128c6c` 可被 hook，但 cache/reuse
+   未能消除 alert。需要针对 `0x100128c6c` 补做 target-side trace，确认
+   pre-`1c8` entry tuple / helper state 在 natural run 中的实际值。
 
 ### 下一步默认规划
 
-1. **验证 C.5 alt1 hook 的 live 效果**（优先级最高）：已安装
-   `0x100128c6c` 的独立 hook，待跑一次 `launch_app` / `hok004` settle
-   window 验证，检查 `launch-events.jsonl` 是否出现
-   `hok016c5_ngr_materialize_shim_reused`（cache 或 reuse 事件）。若仍无
-   命中，说明 target 为堆地址 `0x115a5eb30`，需进入 caller-side patch 或
-   C.4。
-2. **同步重新验证 C.2.7 (c)**：natural run 的 materialize target 与
-   dual-force 不同，`0x10432a068` 的 pre-`1c8` entry tuple 差异分析是否
-   仍适用于 natural path，待 C.5 验证后再决定是否需要补
-   `0x100128c6c` 的 target-side trace。
-3. `HOK-016-C.3` 保留作为最后兜底。
-4. `HOK-016-D` live 验证标准：`hok014_ngr_alert_suppressed = 0` +
+1. **继续下钻 C.2.7（当前主线）**：C.5 cache/reuse 已命中但
+   `hok014_ngr_alert_suppressed` 仍出现。需要区分：
+   - (a) 是 materialize 同一路径被调用多次、仅部分命中？还是
+   - (b) 存在独立的第二条 failure path？
+   优先通过 `launch-events.jsonl` 中 `hok016c5_ngr_materialize_shim_reused`
+   的出现次数与 `hok014_ngr_alert_suppressed` 的时序关系做初步判断。
+   若 (a)，需在 alt1 hook 中增加更细粒度的日志（如 path 去重计数器）。
+   若 (b)，需回到 `0x108877bd0` 的 caller 做第二条路径扫描。
+2. **补做 `0x100128c6c` 的 target-side trace**：C.5 已证明 natural path
+   的实际 target 是 `0x100128c6c`，但 cache/reuse 未消除 alert。需要验证
+   natural run 中 `0x100128c6c` pre-`1c8` entry tuple / helper state 的
+   实际值，与 dual-force run 的 `0x10432a068` 侧证据对比。
+3. 若 C.2.7 下钻后仍无法收敛，进入 **`HOK-016-C.4`**（诊断性强制成功验证）。
+4. `HOK-016-C.3` 保留作为最后兜底。
+5. `HOK-016-D` live 验证标准：`hok014_ngr_alert_suppressed = 0` +
    `%CPU/RSS/线程/窗口` 活跃度达标 + 无新 `NGR-*.ips`。
-5. 只有 HOK-016 闭合，才把 HOK-014 正式降级为冷备安全网。
-6. 闭合后再做 `HOK-008`：把"revert 候选 E → `rootWorkDir=1` → 启动 →
+6. 只有 HOK-016 闭合，才把 HOK-014 正式降级为冷备安全网。
+7. 闭合后再做 `HOK-008`：把"revert 候选 E → `rootWorkDir=1` → 启动 →
    证据采集 → pass 判定"固化成单脚本。
 
 ## 构建与验证
@@ -279,7 +290,7 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
 | HOK-016-C.2.7 | TODO（当前主线） | (a) `0x1001a588c` natural run 已观测到一次 success 命中（`pkg+0x10=0x0 pkg+0xa8=0x2 pkg+0xb0=0x0 pkg+0x110=0x1`），label=`gate1-ret`；natural fail 走 `branch-224` 直接返 0，未进入 `branch-238` tail。**(c) 新发现**：natural run 中 `0x100122f54` 的 `x8(target)=0x100128c6c/0x115a5eb30`，不是 `0x10432a068`，dual-force 的 target-side 分析需重新评估。详见 `HOK-016-appendix-C27.md` §14、`build/hok-016c27-mainchunk-subtree-trace-post-log.json`、`/tmp/hok016c27-lldb-trace.log`。 | `HOK-016-appendix-C27.md` |
 | HOK-016-C.3 | DEFERRED | 终极野蛮方案：fishhook interpose `0x108878534` 直接返回 1，仅作最后兜底 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.4 | TODO | 若 C.5 修正 target 后仍无法覆盖，进入诊断性强制成功验证。natural run 的 materialize target 与 dual-force 不同，对象形状假设需重新验证。 | `HOK-016-appendix-C27.md` |
-| HOK-016-C.5 | 已修正待验证 | 已在 `PlayLoader.m` 增加 `NGR_C5_MATERIALIZE_TARGET_ALT1_UNSLID` (`0x100128c6c`) 的 provider 扫描 + `__DATA`/`__DATA_CONST` data 段扫描，安装独立 alt1 hook `pt_ngr_c5_materialize_dispatch_hook_alt1`。PlayTools 已重建安装。待 live 验证 natural run 是否命中 alt1 hook 并触发 cache/reuse。若堆地址 `0x115a5eb30` 仍无法覆盖，再评估 caller-side patch 或 C.4。 | `HOK-016-qts-fs-create-failed.md` |
+| HOK-016-C.5 | DONE | 已在 `PlayLoader.m` 增加 `NGR_C5_MATERIALIZE_TARGET_ALT1_UNSLID` (`0x100128c6c`) 的 provider 扫描 + `__DATA`/`__DATA_CONST` data 段扫描，安装独立 alt1 hook `pt_ngr_c5_materialize_dispatch_hook_alt1`。live 验证（`build/hok-004-ngr-startup-report.json`，pid 64036）确认 alt1 hook 命中并触发 `cache`/`reuse`（`hok016c5_ngr_materialize_shim_reused`）。但 `hok014_ngr_alert_suppressed` 仍出现，materialize shim 未完全消除失败路径，继续推进 C.2.7 / C.4。 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.6 | DEFERRED | 仅在必须依赖外部资源或登录态时，才降级到需要用户介入的路线 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-D | TODO | HOK-016-C 落地后做 live 验证，并把 HOK-014 降级为冷备安全网 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-007C | DEFERRED | 下游 crash 的离线映射 + 可逆 patch；当前无触发动机 | `HOK-007-二进制意图分析与callsite映射.md` |

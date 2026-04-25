@@ -311,6 +311,26 @@
 >  目的、核心证据、根因链、修复方向。**阅读建议：只要路径差异假设与
 >  HOK-016-C.2.7 相关就总是读取。**
 
+### UE4 C++ 源码参考（与当前主线直接相关）
+
+> **阅读建议**：任何涉及路径转换、I/O 层行为、或 `FIOSPlatformFile` 相关排查时，
+> 都应结合 UE4 源码一起看，而不是只依赖二进制反汇编推断。
+
+- `/Users/songdogwang/Codes/UnrealEngine/Engine/Source/Runtime/Core/Private/IOS/IOSPlatformFile.cpp`
+>  - `FIOSPlatformFile::ConvertToPlatformPath()`（第 964-1039 行）：核心路径转换函数。
+>    - `/var/` 开头 → **直接透传**，不做任何转换；
+>    - `~/` 开头 → 替换为 `[[NSBundle mainBundle] bundlePath]`；
+>    - `../` 或匹配 `AdditionalRootDirectory` → 经过 `ReplaceInline("../")`、
+>      `FPaths::MakePlatformFilename`、以及基于 `NSSearchPathForDirectoriesInDomains`
+>      (`NSDocumentDirectory` / `NSLibraryDirectory`) 的重新拼接；
+>    - 非 `/var/` 的绝对路径（如 `/Users/...`）→ 落入 write path 分支，被映射到
+>      `NSDocumentDirectory` 或 `NSLibraryDirectory` 下。
+>  - 这意味着 iOS 真机的 `/var/mobile/Containers/...` 路径在 UE4 层是**透传的**，
+>    而 PlayCover 的 `/Users/...` 路径会被 UE4 **重新拼接成不同的绝对路径**。
+>  - 这是 PathDifferenceTrial 当前主线的核心工程依据：路径前缀差异不只是字符串字面量
+>    不同，而是会触发 UE4 I/O 层不同的转换逻辑，从而可能改变 materializer 看到的
+>    selected buffer 内容。
+
 ### 当前兜底链路（修改这些代码/文件需要同步更新本 Dashboard）
 
 代码/文件改动路径：

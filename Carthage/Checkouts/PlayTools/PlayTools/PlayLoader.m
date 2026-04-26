@@ -2237,22 +2237,89 @@ static void pt_ngr_swizzled_presentViewController(id self, SEL _cmd,
             title = nil; message = nil;
         }
 
+        // 计算 action 数量（通过 KVC 读 UIAlertController.actions）。
+        NSArray *actions = nil;
+        @try {
+            id rawActions = [viewControllerToPresent valueForKey:@"actions"];
+            if ([rawActions isKindOfClass:[NSArray class]]) {
+                actions = rawActions;
+            }
+        } @catch (NSException *exception) {
+            actions = nil;
+        }
+
         NSDictionary<NSString *, NSString *> *details = @{
             @"className": NSStringFromClass([viewControllerToPresent class]) ?: @"",
             @"title": title ?: @"",
             @"message": message ?: @"",
             @"animated": animated ? @"true" : @"false",
+            @"actionCount": [NSString stringWithFormat:@"%lu",
+                             (unsigned long)(actions ? actions.count : 0)],
         };
         [PlayCover recordHOK014AlertSuppressedWithDetails:details];
 
-        NSLog(@"[PlayTools] HOK-014 alert-suppressed class=%@ title=%@ message=%@",
+        NSLog(@"[PlayTools] HOK-014 alert-auto-confirm class=%@ title=%@ message=%@ actions=%lu",
               NSStringFromClass([viewControllerToPresent class]),
-              title ?: @"(nil)", message ?: @"(nil)");
+              title ?: @"(nil)", message ?: @"(nil)",
+              (unsigned long)(actions ? actions.count : 0));
 
-        // iOS 约定：completion 可以为 nil，present 成功后同步回调。这里
-        // 直接在当前线程调一次 completion(nil)，模拟"瞬间 present + 瞬间
-        // dismiss"。UE4 fatal alert 本身没注册 handler，completion==nil
-        // 走 no-op 分支。
+        // 不展示 UI，但立即触发 alert action handler，等效于用户瞬间点了
+        // 确认按钮。这样游戏的后续流程（包括 fatal→crash）照常进行，只是
+        // 没有 UI 阻塞。
+        //
+        // UIAlertAction 的 handler 是私有属性 `_handler`（block 类型）。
+        // 通过 KVC 读取并调用。优先找 preferredAction，其次找最后一个
+        // action（UE4 fatal alert 通常只有一个 "OK"）。
+        if (actions.count > 0) {
+            // 找要点击的 action：preferredAction > 最后一个 action
+            id targetAction = nil;
+            @try {
+                id preferred = [viewControllerToPresent valueForKey:@"preferredAction"];
+                if (preferred != nil) {
+                    targetAction = preferred;
+                }
+            } @catch (NSException *exception) {
+                // ignore
+            }
+            if (targetAction == nil) {
+                targetAction = actions.lastObject;
+            }
+
+            // 读取 action 的 handler block 并调用。
+            // UIAlertAction 的 handler 存储在 _handler ivar（block 类型）。
+            // KVC valueForKey:@"handler" 会按标准搜索路径找到该 ivar。
+            if (targetAction != nil) {
+                @try {
+                    id handler = nil;
+                    // 先试 KVC（找 getter 'handler' 或 ivar '_handler'）
+                    @try { handler = [targetAction valueForKey:@"handler"]; }
+                    @catch (NSException *e) { handler = nil; }
+
+                    // fallback：直接读 _handler ivar
+                    if (handler == nil) {
+                        Ivar ivar = class_getInstanceVariable(
+                            [targetAction class], "_handler");
+                        if (ivar != NULL) {
+                            handler = object_getIvar(targetAction, ivar);
+                        }
+                    }
+
+                    if (handler != nil) {
+                        void (^actionBlock)(id) = (void (^)(id))handler;
+                        NSLog(@"[PlayTools] HOK-014 invoking action handler for: %@",
+                              [targetAction valueForKey:@"title"] ?: @"(untitled)");
+                        actionBlock(targetAction);
+                    } else {
+                        NSLog(@"[PlayTools] HOK-014 action has nil handler, skipping");
+                    }
+                } @catch (NSException *exception) {
+                    NSLog(@"[PlayTools] HOK-014 failed to invoke action handler: %@",
+                          exception);
+                }
+            }
+        }
+
+        // 调 presentViewController 的 completion（模拟 present 完成）。
         if (completion != nil) {
             void (^completionBlock)(void) = (void (^)(void))completion;
             completionBlock();

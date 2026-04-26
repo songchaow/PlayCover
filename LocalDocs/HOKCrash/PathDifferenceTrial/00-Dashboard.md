@@ -44,156 +44,53 @@
 
 ### 当前主线一句话
 
-`PDT-006` 已完成：PlayTools runtime patch 已落地。在 `FIOSPlatformFile::ConvertToPlatformPath`（`0x10463f204`）函数入口处写入 16 字节 absolute-branch hook，跳转到 PlayTools 内部的 `pdt006_convert_replacement`。该 replacement 检查 `x1`（`const TCHAR*`）是否以 `/Users/` 开头：若匹配直接返回原指针（透传），否则经 `mmap` exec page 执行原始 prologue 后回退到原函数继续。patch 使用 `mprotect` 解除 `__TEXT` 写保护、保存原机器码确保可逆、仅对 `com.tencent.ngr` 生效。验证重心已切换到 **PDT-007：Live 验证 patch 效果**。
+**路径差异假设已被证伪。** PDT-007-B 对照实验（HOK-014 auto-confirm 模式下）：有 disk patch 和无 disk patch 均 crash（overallPass=False，各产生 1 个 crash report）。`ConvertToPlatformPath` 的 `/Users/` 路径转换不是 crash 的原因。本 trial 应关闭，回到 `HOK-016-C.2.7` 的原有 materializer state 分析。
 
 ### 当前状态摘要
 
-- **现象层差异仍然成立**：HOK-016-C.2.7 的自然 run 中，success / fail 的 pre-`1c8`
->  差异仍表现为 `entryX1` 字符串不同：
->   - success 链：`entryX1="../../../NGR/Content/Paks/1/1.db"`；
->   - fail 链：`entryX1="/Users/songdogwang/..."`。
-- **`PDT-001-A` 结论（已收窄）**：`Scripts/pdt001_ngr_materializer_literal_extractor.py`
->  从 `0x10432a068` 提取到的 fixed literal 为 UTF-16 `"r"` / `"rb"`，确实与路径无关。
->  但这**只排除了** "materializer 内部固定模板直接做路径相关 compare" 这层假设；
->  **没有排除** 上层路径转换差异通过改变 selected buffer 内容来间接影响 compare accumulator 的可能。
-- **UE4 `ConvertToPlatformPath` 新证据（关键）**：`@/Users/songdogwang/Codes/UnrealEngine/Engine/Source/Runtime/Core/Private/IOS/IOSPlatformFile.cpp`
->  第 964-1039 行显示：
->   - `Result.StartsWith(TEXT("/var/"))` → **直接原样返回**，不做任何转换；
->   - `Result.StartsWith(TEXT("~/"))` → 替换为 `[[NSBundle mainBundle] bundlePath]`；
->   - `Result.Contains(TEXT("../"))` 或 `Result.StartsWith(AdditionalRootDirectory)` →
->     经过 `ReplaceInline("../")`、`FPaths::MakePlatformFilename`、以及基于
->     `NSSearchPathForDirectoriesInDomains(NSDocumentDirectory/NSLibraryDirectory)` 的重新拼接；
->   - 非 `/var/` 的绝对路径（如 `/Users/...`）会落入 write path 分支，被映射到
->     `NSDocumentDirectory` 或 `NSLibraryDirectory` 下。
->  这意味着：**iOS 真机上 `/var/mobile/Containers/...` 路径在 UE4 层是透传的，而 PlayCover
->  的 `/Users/...` 路径会被 UE4 重新拼接成不同的绝对路径**。这种差异可能改变：
->   - `entryX1` 在进入 materializer 前的最终字符串内容；
->   - 该字符串被复制到 selected buffer 时的长度、编码、或截断行为；
->   - compare accumulator 在逐字符比较时的演进路径。
-- **`PDT-004` 完成（关键新发现）**：natural run 中 `0x100122f54` 的 `x8(target)`
->  实际是 `0x100128c6c` / `0x115a5eb30`，不是 `0x10432a068`。离线反汇编
->  `0x100128c6c..0x100128f20` 显示该地址不是本地 compare ladder，而是
->  **dispatch stub**（`mov` + `b` 到 `__stubs`），窗口内无任何 `ADRP+ADD` 指向
->  `__TEXT,__ustring`，因此**不存在 compare literal**。这意味着：
->   - `PDT-001-A` 的 `"r"` / `"rb"` 结论**完全不适用于 natural run**；
->   - natural run 与 dual-force 的 materialize 路径存在**结构性差异**：
->     dual-force 走本地 compare ladder（`0x10432a068`），natural run 走 dispatch stub
->     （`0x100128c6c` → `__stubs` → 外部函数）；
->   - 若路径差异假设仍成立，其影响点不应是 "materializer 内部 fixed literal"，
->     而应是 **外部函数的输入参数差异**（由 `ConvertToPlatformPath` 导致）。
->  结构化证据：`build/pdt-004-natural-target-literal.json`；
->  细节：`PDT-004-natural-target-literal.md`。
-- **`PDT-005` 完成（结论已收窄）**：离线扫描了整个 `__TEXT,__text` 的 ADRP+ADD 对，
->  找到 `/var/`（`0x10bf8ac76`）的唯一引用在 `0x107d009c4`，但该引用所在函数并非
->  `ConvertToPlatformPath`。进一步以 `/OnDemandResources/`（`0x10c10053c`）为锚点，
->  定位到唯一引用它的函数（`0x10463f204..0x10463ff48`）。完整反汇编证实该函数行为
->  与 `ConvertToPlatformPath` 高度吻合：`Find("/OnDemandResources/")` → 未找到则
->  `ReplaceInline("../", "")` → `ReplaceInline("..", "")` → `ReplaceInline(BaseDir, "")` →
->  循环 `AdditionalRootDirectory` → 虚函数调用 → `objc_alloc`/`objc_autorelease`/`objc_msgSend`。
->  **结论：`FIOSPlatformFile::ConvertToPlatformPath` 在 NGR 中的地址为 `0x10463f204`**。
->  `/var/` 不在该函数内被直接引用（可能因编译器优化而采用不同的比较方式），
->  但 PDT-006 的 patch 目标已明确：在 `0x10463f204` 函数的 `/OnDemandResources/` 检查之后、
->  `../` 替换之前，插入对 `/Users/` 前缀的透传判断。
->  结构化证据：`build/pdt-005-convert-to-platform-path-locate.json`。
-- **`PDT-006` 完成**：PlayTools runtime patch 已编写、构建并通过 `sync_playtools_xcframework.sh` 同步到预构建产物。核心实现：
->   - 目标地址：`0x10463f204 + slide`；
->   - Hook 格式：16 字节 `ldr x16, #8; br x16; .quad replacement`；
->   - Replacement 检查 `x1` 是否以 `/Users/` 开头，匹配则直接返回原指针（透传）；
->   - 非匹配路径通过 `mmap` exec page 执行原始 16 字节 prologue + 跳回原函数 +16；
->   - 写保护：`pt_ngr_make_patch_writable` / `pt_ngr_restore_patch_protection`；
->   - 指令缓存刷新：`sys_icache_invalidate`；
->   - Bundle gate：复用 `pt_ngr_should_preheat_slot()`（`com.tencent.ngr`）；
->   - 主 image 校验：复用 `pt_ngr_find_main_image()` + `__TEXT.vmaddr == 0x100000000`；
->   - 诊断事件：`pdt006_ngr_convert_patch` 写入 `launch-events.jsonl`；
->   - 已知限制：假设原函数前 16 字节为标准 prologue（无 PC-relative 指令）；假设调用约定为 x0=this, x1=const TCHAR*。
->   代码落点：`Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m`（PDT-006 区块）与 `PlayCover.swift`（`recordPDT006ConvertPatchDiagnostic`）。
->   子文档：`PDT-006-convert-patch-prototype.md`。
-- **对 C.5 历史线索的重新解读**：`PlayLoader.m` 里已有 `/Users/... →
->  "../../../NGR/Content/Paks/1/1.db"` 的重定向尝试。结合 `ConvertToPlatformPath`
->  的源码，这条线索现在有了更具体的工程解释：C.5 的开发者可能观察到 `/Users/...`
->  路径在 UE4 层被转换后与 iOS 透传的 `/var/...` 不同，因此尝试把路径改回相对路径
->  `"../../../..."` 以绕过 `ConvertToPlatformPath` 的转换逻辑。这反而**加强了**
->  路径差异假设的可信度，而不是削弱它。
+- **PDT-007-B 对照实验结果**：
+>  | 条件 | overallPass | disconnected | crash reports |
+>  |---|---|---|---|
+>  | 有 disk patch + auto-confirm | False | True | 1 |
+>  | 无 disk patch + auto-confirm | False | True | 1 |
+>  - 产物：`build/pdt-007b-with-patch.json`、`build/pdt-007b-without-patch.json`
+- **HOK-014 行为**：拦截 `UIAlertController` 的 present 调用，不展示 UI，但立即触发 alert 的确认 action handler（等效于用户瞬间点了 OK）。游戏原始的后续流程（包括 fatal→crash）照常进行，只是没有 UI 阻塞。
+- **结论**：`ConvertToPlatformPath` 对 `/Users/` 路径的重新拼接**不是** `QtsFileSystem Create Failed!!` 后 crash 的原因。crash 发生在 alert 确认之后的 fatal 路径中，与路径转换无关。
 
-### 修复路线（调整后）
+### 修复路线
 
-1. **`PDT-001-A`（已完成，结论已收窄）**：`0x10432a068` fixed literal 为 `"r"` / `"rb"`，
->    与路径无关。结构化证据：`build/pdt-001a-compare-literals.json`；
->    细节：`PDT-001A-compare-literals.md`。
-2. **`PDT-004`（已完成）**：natural run target `0x100128c6c` 不是本地 compare ladder，
->    而是 dispatch stub，窗口内无 compare literal。`PDT-001-A` 结论不适用于 natural run。
->    结构化证据：`build/pdt-004-natural-target-literal.json`；
->    细节：`PDT-004-natural-target-literal.md`。
-3. **`PDT-005`（已完成，结论已收窄）**：`ConvertToPlatformPath` 在 NGR 中的地址已确定为
->    **`0x10463f204`**（边界 `0x10463f204..0x10463ff48`）。`/OnDemandResources/` 的引用
->    在 `0x10463f4f4`，`../` 的引用在 `0x10463f538`，`..` 的引用在 `0x10463f554`，
->    `BaseDir` 的引用在 `0x10463f570`。函数末尾包含 `_CMTimeGetSeconds` 调用，应为
->    NGR 定制引擎的额外逻辑，不影响主体身份判定。
->    结构化证据：`build/pdt-005-convert-to-platform-path-locate.json`。
-4. **`PDT-006`（DONE）**：PlayTools runtime patch 原型已编写、构建并同步。在 `ConvertToPlatformPath`（`0x10463f204`）入口插入 16 字节 hook，使 `/Users/` 前缀路径直接透传。可逆、bundle-scoped、`mprotect` 安全写保护。子文档：`PDT-006-convert-patch-prototype.md`。
-5. **`PDT-007`（当前主线 / TODO）**：Live 验证 patch 效果。
->    - 应用 PDT-006 patch 后启动 NGR，观察 `QtsFileSystem Create Failed!!` 是否消失。
->    - 同时收集 `launch-events.jsonl`、`NGR-*.ips`、LLDB trace 等结构化证据。
->    - 若崩溃消失 → 路径差异假设成立，进入 PDT-008。
->    - 若崩溃仍然出现（且不是路径不存在导致）→ 强证伪路径差异假设，进入 PDT-009。
->    - **产物**：`build/pdt-007-patch-live-report.json`。
-6. **`PDT-008`（TODO）**：若 PDT-007 证实路径差异是根因，设计最小可落地的 bundle-scoped 修复方案。
->    - 固化 PDT-006 的 patch 逻辑，添加 runtime toggle（如 `ngrConvertToPlatformPathPatchEnabled`）。
->    - 确保不影响其他 app。
-7. **`PDT-009`（TODO）**：若 PDT-007 证伪，留下结构化证据，关闭本 trial，回到 `HOK-016-C.2.7`。
+1. **`PDT-001-A`（DONE）**：`0x10432a068` fixed literal 为 `"r"` / `"rb"`，与路径无关。子文档：`PDT-001A-compare-literals.md`。
+2. **`PDT-004`（DONE）**：natural run target `0x100128c6c` 是 dispatch stub，无 compare literal。子文档：`PDT-004-natural-target-literal.md`。
+3. **`PDT-005`（DONE）**：`ConvertToPlatformPath` 在 NGR 中的地址已确定为 **`0x10463f204`**。子文档：`PDT-005-locate-convert-to-platform-path.md`。
+4. **`PDT-006`（DONE，方案已证伪）**：runtime patch 因 `__TEXT` 写保护不可行。子文档：`PDT-006-convert-patch-prototype.md`。
+5. **`PDT-007`（DONE）**：runtime inline hook 不可行。
+6. **`PDT-007-A`（DONE）**：Disk patch 已实现并验证。子文档：`PDT-007A-disk-patch-prototype.md`。
+7. **`PDT-007-B`（DONE，假设证伪）**：对照实验——有 patch / 无 patch 均 crash，路径差异不是 crash 原因。
+8. **`PDT-009-A`（TODO，当前主线）**：留下结构化证据，关闭本 trial，回到 `HOK-016-C.2.7`。
 
 ### 当前兜底链路（按 PlayTools constructor 执行序）
 
-路径差异 trial 当前**不改动**既有 HOK-013/014/015/010 兜底链路；这些 hook
-> 继续保留，用于维持 NGR 能稳定走到 HOK-016 的 failure window。它们不是
-> 本 trial 的污染源。
->
-> 唯一需要单独注意的是 HOK-016-C.5：
-> - `PlayLoader.m` 已存在 `/Users/... → "../../../NGR/Content/Paks/1/1.db"`
->   的 materializer 重定向尝试；
-> - 但该方案依赖 vtable patch，因 `__DATA_CONST` 写保护与 natural-run target
->   偏移而未在 natural run 中生效；
-> - 本 trial 的新验证入口是直接 patch NGR 二进制中 `ConvertToPlatformPath`
->   的判断条件（让 `/User` 也走透传分支），不再走 swizzle 上层 API 的路径；
->   失败时可通过恢复原始机器码立即回退。
->
-> 唯一新增依赖：
-> - 若 PDT-001-A / PDT-001-B 需要 live trace `0x10432a068` 内部的 compare literal
->   或 `0x100122f54` 的返回值，使用 HOK-012 已固化的 LLDB 工具链
->   （`Scripts/hok006_ngr_lldb_runner.py`）。
+HOK-013/015/010 兜底链路继续保留。
+
+HOK-014 拦截 `UIAlertController` 的 present 调用：不展示 UI，但立即触发 alert 的确认 action handler（等效于用户瞬间点了 OK），游戏后续流程照常进行。诊断事件 `hok014_ngr_alert_suppressed` 含 `actionCount`、action `title`。
+
+PDT-006 的 runtime patch 代码保留在 `PlayLoader.m` 中，日常启动时只会静默记录一次 `mprotect-failed`，不影响功能。
 
 ### 已证伪路径（高层记录）
 
+- **路径差异假设（本 trial）**：PDT-007-B 对照实验证伪。有 disk patch / 无 disk patch 均 crash，`ConvertToPlatformPath` 路径转换不是 crash 原因。
 - **"路径差异已被 HOK-016-C.2.4 证伪"**：C.2.4 的结论是两个 FString 路径
 >  `../../../NGR/Content/paks` 与 `/Users/...` **只是 `0x10432dd98` 的参数**，
->  没被 `0x1001ac168` / `0x1001cd114` 实际消费。但这**只证伪了 readiness B
->  dispatcher 层的路径消费**，并未证伪更深层的 materializer（`0x10432a068`）
->  内部是否在做路径相关的字符串比较。路径差异假设关注的是后者，因此
->  C.2.4 的证伪结论不直接覆盖本 trial。
-
-> 每条证伪的具体实验、寄存器值、脚本产物都在对应子文档里。
+>  没被 `0x1001ac168` / `0x1001cd114` 实际消费。
 
 ### 当前卡点
 
-1. **`PDT-004` 已关闭 PDT-001-A 的适用范围问题**：`PDT-004` 证实 natural run
->   target `0x100128c6c` 不是本地 compare ladder，而是 dispatch stub；因此
->   `PDT-001-A` 的 `"r"` / `"rb"` 结论**完全不适用于 natural run**。
->   natural run 与 dual-force 的 materialize 路径存在结构性差异。
-2. **natural run materialize 的真实逻辑尚未定位**：`0x100128c6c` 跳转到的
->   `__stubs` 外部符号尚未识别；若该外部函数本身对路径敏感，路径差异假设
->   仍可能成立，但验证口径需从 "compare literal" 切换到 "外部函数输入参数"。
-3. **`PDT-005` 已完成，`ConvertToPlatformPath` 地址已确定**：函数位于 `0x10463f204..0x10463ff48`，
->   行为与源码吻合。当前需要进一步分析其内部 `/var/` 透传分支的机器码形态，为 PDT-006 patch 提供精确落点。
-4. **ARM64 机器码 patch 的复杂度未知**：`StartsWith` 是内联展开还是外部函数调用，
->   决定了 patch 策略（原位修改 vs trampoline）；需待 PDT-006 开始前评估。
+无。本 trial 已完成，路径差异假设已被证伪。
 
 ### 下一步默认规划
 
-1. **`PDT-006` 已完成**：PlayTools runtime patch 已编写、构建、同步到预构建产物。代码落点：`PlayLoader.m` + `PlayCover.swift`；子文档：`PDT-006-convert-patch-prototype.md`。
-2. **执行 `PDT-007`（当前主线）**：Live 验证 patch 效果，观察 `QtsFileSystem Create Failed!!` 是否消失。
->    - 产物：`build/pdt-007-patch-live-report.json`。
-3. **根据 PDT-007 结果**：进入 `PDT-008`（证实）或 `PDT-009`（证伪）。
-4. 收尾执行 `git commit`。
+1. **执行 `PDT-009-A`**：关闭本 trial，回流结论到母 Dashboard `HOK-016`。
+2. 收尾执行 `git commit`。
 
 ## 构建与验证
 
@@ -268,151 +165,83 @@
 
 | ID | 状态 | 任务描述 | 子文档 |
 |---|---|---|---|
-| PDT-001-A | DONE（结论已收窄） | 已离线提取 `0x10432a068` compare literal；结果为 UTF-16 `"r"` / `"rb"`，与路径/文件名无关。此结论只适用于 `0x10432a068` | `PDT-001A-compare-literals.md` |
-| PDT-004 | DONE | 已离线提取 natural run target `0x100128c6c` 的窗口；结果为 **dispatch stub，无 compare literal**。`PDT-001-A` 结论不适用于 natural run | `PDT-004-natural-target-literal.md` |
-| PDT-005 | DONE（结论已收窄） | 已定位 `FIOSPlatformFile::ConvertToPlatformPath` 在 NGR 二进制中的实现地址为 **`0x10463f204`**（函数边界 `0x10463f204..0x10463ff48`）。关键行为证据：函数内唯一引用 `/OnDemandResources/`（`0x10c10053c`），并依次执行 `FString::Find` → 未找到则 `ReplaceInline("../", "")` → `ReplaceInline("..", "")` → `ReplaceInline(BaseDir, "")` → 循环遍历 `AdditionalRootDirectory` → 调用 `objc_alloc`/`objc_autorelease`/`objc_msgSend` 等 ObjC 运行时函数。末尾的 `_CMTimeGetSeconds` 调用不影响主体身份判定，极可能是 NGR 定制引擎的额外逻辑。`/var/` 的 ADRP+ADD 引用（`0x107d009c4`）位于另一函数，非 `ConvertToPlatformPath` 本体。结构化证据：`build/pdt-005-convert-to-platform-path-locate.json` | 待建 `PDT-005-locate-convert-to-platform-path.md` |
-| PDT-006 | DONE | PlayTools runtime patch 已落地：在 `ConvertToPlatformPath`（`0x10463f204`）入口插入 16 字节 absolute-branch hook，使 `/Users/` 前缀路径直接透传。可逆（保存原机器码 + mmap exec page）、bundle-scoped（`com.tencent.ngr`）、`mprotect` 安全写保护。代码：`PlayLoader.m` PDT-006 区块 + `PlayCover.swift` `recordPDT006ConvertPatchDiagnostic` | `PDT-006-convert-patch-prototype.md` |
-| PDT-007 | TODO（当前主线） | Live 验证 patch 效果：观察 `QtsFileSystem Create Failed!!` 是否消失，收集结构化证据 | 待建 |
-| PDT-008 | TODO | 若 PDT-007 证实，设计最小可落地 bundle-scoped 修复方案（runtime toggle） | 待建 |
-| PDT-009 | TODO | 若 PDT-007 证伪，留下结构化证据并关闭本 trial | 待建 |
+| PDT-001-A | DONE | `0x10432a068` compare literal 为 UTF-16 `"r"` / `"rb"`，与路径无关 | `PDT-001A-compare-literals.md` |
+| PDT-004 | DONE | natural run target `0x100128c6c` 是 dispatch stub，无 compare literal | `PDT-004-natural-target-literal.md` |
+| PDT-005 | DONE | `ConvertToPlatformPath` 地址 `0x10463f204`（边界 `..0x10463ff48`） | `PDT-005-locate-convert-to-platform-path.md` |
+| PDT-006 | DONE（方案已证伪） | runtime patch 因 `__TEXT` 写保护不可行 | `PDT-006-convert-patch-prototype.md` |
+| PDT-007 | DONE | runtime inline hook 不可行 | — |
+| PDT-007-A | DONE | Disk patch 已实现，`/Users/` 路径透传 | `PDT-007A-disk-patch-prototype.md` |
+| PDT-007-B | DONE（假设证伪） | 对照实验：有 patch / 无 patch 均 crash → 路径差异不是 crash 原因 | — |
+| PDT-009-A | TODO（当前主线） | 关闭本 trial，回流结论到母 Dashboard `HOK-016` | — |
 
 ## 高频复用经验（当前仍适用的）
 
-以下经验跨任务复用概率高，写在主文档便于 agent 日常直接记住；更长的
-> 分类细节见对应子文档。
-
-- **"路径差异假设的边界"**：HOK-016-C.2.4 已证伪 `0x10432dd98` 入口处的
->  FString 路径消费；本轮 `PDT-001-A` 证实 `0x10432a068` 的 fixed literal
->  只是 UTF-16 `"r"` / `"rb"`，**不是路径模板**；`PDT-004` 进一步证实 natural run
->  target `0x100128c6c` 是 dispatch stub，**无 compare literal**，因此
->  "materializer fixed literal 直接做路径相关 compare" 这层假设对 natural run
->  **不适用**。但 UE4 `ConvertToPlatformPath` 的源码显示 `/var/` 透传、`/Users/` 转换，
->  这意味着**上层路径转换差异仍可能通过改变外部函数的输入参数来驱动 fail 分支**，
->  这一层尚未被排除。本 trial 当前主线正是验证这一层。
-- **dual-force 与 natural run 的 materialize 路径不同**：
->  `PDT-004` 已确认 natural run target `0x100128c6c` 是 dispatch stub，不是
->  `0x10432a068` 的 compare ladder。因此 C27 §14 中关于 `branch-1c8` /
->  `compare accumulator` 的分析**只适用于 dual-force 路径**，不能直接套用到
->  natural run。natural run 的 fail 可能源于 dispatch stub 调用的外部函数
->  在特定输入下返回 0，而不是本地 compare ladder 的分支选择。
-- **materializer 分流的关键（dual-force 路径）**：C27 §14 已指出 dual-force
->  success / fail 的 post-`1c8` pair 相同，分流由 pre-`1c8` state 驱动。
->  对 dual-force 路径，修复目标不是改变 `x21/x22`，而是改变 compare accumulator
->  的演进，使 `0x10432a224` 不再被选中。
-- **既有 HOK hook 对本 trial 的影响边界要分清**：HOK-013 / HOK-014 /
->  HOK-015 / HOK-010 不会直接改写 materializer 的路径输入；它们不是本
->  trial 的污染源。唯一与路径直接相关的是 HOK-016-C.5，但 C.5 因
->  `__DATA_CONST` 写保护与 natural-run target 偏移而**未在 natural run 中生效**，
->  因此当前观察到的 `entryX1="/Users/..."` 仍可视为未修正的原始现象。
-- **C.5 是先验线索，验证入口已切换**：`PlayLoader.m` 里已有
->  `/Users/... → "../../../NGR/Content/Paks/1/1.db"` 的重定向尝试，说明
->  路径差异假设有历史依据；本 trial 的新验证入口是直接 patch NGR 二进制中
->  `ConvertToPlatformPath` 的判断条件（让 `/User` 也走透传分支），不再走
->  swizzle 上层 API 的路径。
-- **`playcover_launch_complete` ≠ app 已安全启动**：NGR 会在该事件之
->  后进入 UE4 bootstrap、可能进入 fatal 路径。
-- **`session briefly ready → disconnected`** 是比"窗口看起来闪退"更
->  稳定的 automation 判据，但不足以判定"app 活着"——需要配合 CPU / RSS
->  / 窗口可见性指标。
-- **`effectiveLaunchEnvironment` 两侧对齐**：`PlayApp.swift` 与
->  `LaunchService.swift` 必须同步维护
->  `minimalStartupCompatDiagnosticEnvironment`。
-- **PlayCover GUI 内存 vs plist 一致性**：`AppSettings.settings` 的
->  `didSet` 会 encode 回 plist；改 `com.tencent.ngr` 的 settings 不要
->  只用 `plutil -replace`（会被下一次 GUI launch 覆盖），要走
->  `update_app_settings` MCP 或依赖 `PlayApp.launch()` 的 self-heal。
-- **`.ips` 的 image offset 交叉验证**：`usedImage.base` + triggered
->  thread `frames[0].imageOffset` + LLDB `faultPc` 三者应一致。
-- **`launch_app_with_lldb` headless 结构化证据**：消费
->  `lldb.stopReason` / `lldb.faultingFrame` / `lldb.faultingInstruction`
->  / `lldb.backtrace` / `lldb.blockingDialogWindows` / `lldb.watchpointHits`，
->  不要把完整 transcript 当人工日志用。`timedOut=true` + `didStop=true`
->  + 完整 fault 字段 = 证据有效。
-- **HOK-016 LLDB BP / watchpoint 踩坑**：完整脚本清单与踩坑汇总见
->  `HOK-016-appendix-tooling.md`。**阅读建议：需要新增 LLDB probe 或
->  复用 Python callback helper 时按需读取。**
+- **路径差异假设已证伪**：PDT-007-B 对照实验证实 `ConvertToPlatformPath` 对 `/Users/` 路径的重新拼接不是 crash 原因。有 disk patch / 无 disk patch 均 crash。crash 发生在 `QtsFileSystem Create Failed!!` alert 确认之后的 fatal 路径中。
+- **macOS `__TEXT` 段 runtime 不可写**：PDT-006 已证实 `mprotect`、`vm_protect`（max+current）、`vm_write` 均无法修改 code-signed NGR binary 的 `__TEXT` 段。disk patch（修改文件 + 重新签名）是唯一可行路径。
+- **HOK-014 行为**：拦截 `UIAlertController` present，不展示 UI，立即触发确认 action handler（等效用户瞬间点 OK）。游戏后续流程照常，只是没有 UI 阻塞。
+- **`playcover_launch_complete` ≠ app 已安全启动**：NGR 会在该事件之后进入 UE4 bootstrap、可能进入 fatal 路径。
 
 ## 参考信息
 
 ### 默认必读
 
-- `LocalDocs/HOKCrash/PathDifferenceTrial/00-Dashboard.md`：本文件；唯一维护当前主线、
->  TODO 与默认验证口径。**阅读建议：总是读取。**
-- `LocalDocs/HOKCrash/00-Dashboard.md`：母 Dashboard；路径差异 trial 的
->  结果最终需要回流到母 Dashboard 的 HOK-016 主线。**阅读建议：总是读取。**
-- `LocalDocs/HOKCrash/HOK-016-qts-fs-create-failed.md`：当前母线 HOK-016 的
->  目的、核心证据、根因链、修复方向。**阅读建议：只要路径差异假设与
->  HOK-016-C.2.7 相关就总是读取。**
+- `LocalDocs/HOKCrash/PathDifferenceTrial/00-Dashboard.md`：本文件；唯一维护当前主线、TODO 与默认验证口径。**阅读建议：总是读取。**
+- `LocalDocs/HOKCrash/00-Dashboard.md`：母 Dashboard；路径差异 trial 的结果最终需要回流到母 Dashboard 的 HOK-016 主线。**阅读建议：总是读取。**
+- `LocalDocs/HOKCrash/HOK-016-qts-fs-create-failed.md`：当前母线 HOK-016 的目的、核心证据、根因链、修复方向。**阅读建议：只要路径差异假设与 HOK-016-C.2.7 相关就总是读取。**
 
 ### UE4 C++ 源码参考（与当前主线直接相关）
 
-> **阅读建议**：任何涉及路径转换、I/O 层行为、或 `FIOSPlatformFile` 相关排查时，
-> 都应结合 UE4 源码一起看，而不是只依赖二进制反汇编推断。
+> **阅读建议**：任何涉及路径转换、I/O 层行为、或 `FIOSPlatformFile` 相关排查时，都应结合 UE4 源码一起看，而不是只依赖二进制反汇编推断。
 
 - `/Users/songdogwang/Codes/UnrealEngine/Engine/Source/Runtime/Core/Private/IOS/IOSPlatformFile.cpp`
 >  - `FIOSPlatformFile::ConvertToPlatformPath()`（第 964-1039 行）：核心路径转换函数。
 >    - `/var/` 开头 → **直接透传**，不做任何转换；
 >    - `~/` 开头 → 替换为 `[[NSBundle mainBundle] bundlePath]`；
->    - `../` 或匹配 `AdditionalRootDirectory` → 经过 `ReplaceInline("../")`、
->      `FPaths::MakePlatformFilename`、以及基于 `NSSearchPathForDirectoriesInDomains`
->      (`NSDocumentDirectory` / `NSLibraryDirectory`) 的重新拼接；
->    - 非 `/var/` 的绝对路径（如 `/Users/...`）→ 落入 write path 分支，被映射到
->      `NSDocumentDirectory` 或 `NSLibraryDirectory` 下。
->  - 这意味着 iOS 真机的 `/var/mobile/Containers/...` 路径在 UE4 层是**透传的**，
->    而 PlayCover 的 `/Users/...` 路径会被 UE4 **重新拼接成不同的绝对路径**。
->  - 这是 PathDifferenceTrial 当前主线的核心工程依据：路径前缀差异不只是字符串字面量
->    不同，而是会触发 UE4 I/O 层不同的转换逻辑，从而可能改变 materializer 看到的
->    selected buffer 内容。
+>    - `../` 或匹配 `AdditionalRootDirectory` → 经过 `ReplaceInline("../")`、`FPaths::MakePlatformFilename`、以及基于 `NSSearchPathForDirectoriesInDomains` 的重新拼接；
+>    - 非 `/var/` 的绝对路径（如 `/Users/...`）→ 落入 write path 分支，被映射到 `NSDocumentDirectory` 或 `NSLibraryDirectory` 下。
+>  - 这意味着 iOS 真机的 `/var/mobile/Containers/...` 路径在 UE4 层是**透传的**，而 PlayCover 的 `/Users/...` 路径会被 UE4 **重新拼接成不同的绝对路径**。这是 PathDifferenceTrial 当前主线的核心工程依据。
 
 ### 当前兜底链路（修改这些代码/文件需要同步更新本 Dashboard）
 
 代码/文件改动路径：
 
-- `Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m`：PlayTools 的
->  dyld constructor / interpose 入口；若 PDT-002 需要 runtime 路径
->  swizzle，代码落点在这里。
-- `Carthage/Checkouts/PlayTools/PlayTools/PlayCover.swift`：PlayTools
->  启动顺序、compat 诊断事件。
-- `Carthage/Checkouts/PlayTools/PlayTools/PlaySettings.swift`：
->  runtime settings 读取。
-- `PlayCover/Model/PlayApp.swift`：GUI 启动环境、
->  `effectiveLaunchEnvironment()`。
-- `PlayCoverMCP/HostServices/Launch/LaunchService.swift`：MCP 启动环
->  境、`minimalStartupCompatDiagnosticEnvironment`。
+- `Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m`：PlayTools 的 dyld constructor / interpose 入口。
+- `Carthage/Checkouts/PlayTools/PlayTools/PlayCover.swift`：PlayTools 启动顺序、compat 诊断事件。
+- `Carthage/Checkouts/PlayTools/PlayTools/PlaySettings.swift`：runtime settings 读取。
+- `PlayCover/Model/PlayApp.swift`：GUI 启动环境、`effectiveLaunchEnvironment()`。
+- `PlayCoverMCP/HostServices/Launch/LaunchService.swift`：MCP 启动环境、`minimalStartupCompatDiagnosticEnvironment`。
 
 ### 按需读取（与当前主线无直接关系，出问题再翻）
 
-> 下列文档日常不展开；只在具体排查内容涉及时按建议展开。每份文档顶部
-> 都标了自己的"阅读建议"；附录开头同样有"阅读建议"。
+> 下列文档日常不展开；只在具体排查内容涉及时按建议展开。每份文档顶部都标了自己的"阅读建议"。
 
-- `LocalDocs/HOKCrash/HOK-016-appendix-C23-C24.md`：readiness B 内部控制流。
->  **阅读建议：需要复核 C.2.4 "路径只是参数"结论的适用范围时按需读取。**
-- `LocalDocs/HOKCrash/HOK-016-appendix-C25-C26.md`：rootB / mainChunk 缺口。
->  **阅读建议：需要理解 rootB lazy-init 时按需读取。**
-- `LocalDocs/HOKCrash/HOK-016-appendix-C27.md`：HOK-016-C.2.7 完整证据。
->  **阅读建议：需要复盘 materializer compare logic 或 pre-`1c8` state
->  分流机制时总是读取；优先看 §14。**
-- `LocalDocs/HOKCrash/HOK-012-工具链与方法论归档.md`：LLDB 工具链。
->  **阅读建议：需要新增 LLDB probe 或复用 Python callback helper 时按需读取。**
+- `LocalDocs/HOKCrash/HOK-016-appendix-C23-C24.md`：readiness B 内部控制流。**阅读建议：需要复核 C.2.4 "路径只是参数"结论的适用范围时按需读取。**
+- `LocalDocs/HOKCrash/HOK-016-appendix-C25-C26.md`：rootB / mainChunk 缺口。**阅读建议：需要理解 rootB lazy-init 时按需读取。**
+- `LocalDocs/HOKCrash/HOK-016-appendix-C27.md`：HOK-016-C.2.7 完整证据。**阅读建议：需要复盘 materializer compare logic 或 pre-`1c8` state 分流机制时总是读取；优先看 §14。**
+- `LocalDocs/HOKCrash/HOK-012-工具链与方法论归档.md`：LLDB 工具链。**阅读建议：需要新增 LLDB probe 或复用 Python callback helper 时按需读取。**
 
 ### 代码 / 脚本速查
 
-脚本详细说明统一沉淀在对应子文档与附录里，主文档只保留"名字 → 干什么
-> → 想读细节看哪里"的索引：
+脚本详细说明统一沉淀在对应子文档与附录里，主文档只保留"名字 → 干什么 → 想读细节看哪里"的索引：
 
-- `Scripts/hok004_ngr_startup_runner.py`：10s settle window 启动
->  baseline runner。→ `HOK-004-启动验证与settle-window.md`
-- `Scripts/hok006_ngr_lldb_runner.py`：LLDB 自动化入口。
->  → `HOK-006-LLDB归因与crash-window压缩.md`
-- `Scripts/hok016c27_*`：HOK-016-C.2.7 系列 locator / watchpoint / trace
->  脚本；复用其 probe 模式时参考 `HOK-016-appendix-tooling.md`。
-- `Scripts/pdt001_ngr_materializer_literal_extractor.py`：
->  提取 `0x10432a068` 内部 compare literal 的离线扫描器。产物
->  `build/pdt-001a-compare-literals.json`。
+- `Scripts/hok004_ngr_startup_runner.py`：10s settle window 启动 baseline runner。→ `HOK-004-启动验证与settle-window.md`
+- `Scripts/hok006_ngr_lldb_runner.py`：LLDB 自动化入口。→ `HOK-006-LLDB归因与crash-window压缩.md`
+- `Scripts/hok016c27_*`：HOK-016-C.2.7 系列 locator / watchpoint / trace 脚本；复用其 probe 模式时参考 `HOK-016-appendix-tooling.md`。
+- `Scripts/pdt001_ngr_materializer_literal_extractor.py`：提取 `0x10432a068` 内部 compare literal 的离线扫描器。→ `PDT-001A-compare-literals.md`
+- `Scripts/pdt005_ngr_convert_to_platform_path_locator.py`：定位 `ConvertToPlatformPath` 实现地址。→ `PDT-005-locate-convert-to-platform-path.md`
+- `Scripts/pdt007a_disk_patch_ngr.py`：NGR binary disk patch 工具（patch / restore / codesign）。→ `PDT-007A-disk-patch-prototype.md`
+
+### 所有子文档阅读建议速查
+
+| 子文档 | 阅读建议 |
+|---|---|
+| `PDT-001A-compare-literals.md` | 在需要复核 `0x10432a068` compare literal 离线证据时按需读取。 |
+| `PDT-004-natural-target-literal.md` | 在需要复核 natural run target `0x100128c6c` 结构、或对比 dual-force / natural run 差异时按需读取。 |
+| `PDT-005-locate-convert-to-platform-path.md` | 在需要复核 `ConvertToPlatformPath` 地址定位证据、或确认 patch 锚点时按需读取。 |
+| `PDT-006-convert-patch-prototype.md` | 在需要审计 runtime patch 实现细节、或确认"runtime inline hook 不可行"的历史证据时按需读取。 |
+| `PDT-007A-disk-patch-prototype.md` | 在需要实现或审计 disk patch 技术细节时读取；当前主线子文档，执行 A1~A6 前建议先读。 |
 
 ### 不需默认读取
 
-- `LocalDocs/XCodeReleaseShaderDebug/*`、`LocalDocs/MCPFinal/*`：与本
->  trial 无关。
-- 未来若本目录新增 `PDT-xxx-*.md`，默认规则：**只有本 Dashboard 明确
->  点名的当前主线子文档才需要随手读取**。
+- `LocalDocs/XCodeReleaseShaderDebug/*`、`LocalDocs/MCPFinal/*`：与本 trial 无关。
+- 未来若本目录新增 `PDT-xxx-*.md`，默认规则：**只有本 Dashboard 明确点名的当前主线子文档才需要随手读取**。

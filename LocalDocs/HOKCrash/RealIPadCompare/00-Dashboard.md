@@ -37,8 +37,7 @@
 
 ### 当前主线一句话
 
-`RIPC-006`：根据 RIPC-005 定位的根因，在 PlayTools 层做最小 bundle-scoped
-环境对齐修复。
+`RIPC-007`：端到端验证 RIPC-006 Direction A 修复效果。
 
 ### 当前状态摘要
 
@@ -86,36 +85,36 @@ materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
 
 1. ~~**RIPC-001～004**~~（已完成）：环境预检 → 重签名部署 → 双端基线采集。
 2. ~~**RIPC-005**~~（已完成）：结构化差异对比 → 根因定位。
-3. **RIPC-006**（当前主线）：在 PlayTools 层做最小 bundle-scoped 修复，
-   使 materializer 接收到的 pak 路径格式能通过 compare ladder。
-4. **RIPC-007**：端到端验证。
+3. ~~**RIPC-006**~~（已完成）：Direction A — 在 PDT-006 ConvertToPlatformPath
+   hook 中增加 Saved/Paks 路径归一化，使 materializer compare ladder 匹配。
+4. **RIPC-007**（当前主线）：端到端验证。
 
-### RIPC-006 修复方向（待实施，按可行性排序）
+### RIPC-006 修复方案（已实施 Direction A）
 
-1. **方向 A：hook pak-path 注册点，将绝对 macOS 路径归一化为相对路径**。
-   materializer 的 2 次成功调用使用 `../../../NGR/Content/Paks/1/1.db`，
-   失败调用使用 `/Users/.../Saved/Paks/1/1.db`。若能在注册时将后者转为
-   相对形式，compare ladder 即可通过。需找到 pak 路径注册的 callsite。
-2. **方向 B：hook `FPaths::ConvertRelativePathToFull`**，对匹配
-   `Saved/Paks` 模式的路径保留相对形式，防止被转为绝对路径。
-3. **方向 C：在 Saved/Paks/1/ 下创建 1.db 的 symlink 到 bundle**。
-   当前 `Saved/Paks/1/` 目录存在但为空（app crash 前 QtsFS 已创建目录但
-   未完成文件操作）。若 materializer 内部也做 file-existence check，补上
-   symlink 可能帮助通过。风险是仅治标不治本。
+**Direction A：在 ConvertToPlatformPath hook 点归一化 pak-path**。
+materializer 的 2 次成功调用使用 `../../../NGR/Content/Paks/1/1.db`，
+失败调用使用 `/Users/.../Saved/Paks/1/1.db`。Direction A 在 PDT-006 的
+ConvertToPlatformPath 替换函数中增加归一化逻辑：对 `/Users/.../Saved/Paks/<X>`
+格式路径转为 `../../../NGR/Content/Paks/<X>`。实现见
+`ripc006_try_normalize_pak_path()` + `pdt006_convert_replacement()` 增强。
 
-**不推荐**：
-- mock HOME/TMPDIR 为 iOS 路径 → macOS 上这些目录不存在，会破坏所有 I/O。
-- 清理环境变量 → 泄漏的 env vars 与 QtsFS 无关。
-- 强推 readiness B = 1 → HOK-016-C.4 dual-force 已证明不够。
+- **RIPC-006 结论（Direction A 已实施）**：在 PDT-006 的 ConvertToPlatformPath
+  hook 中增加 RIPC-006 Direction A 归一化逻辑：将
+  `/Users/.../Saved/Paks/<X>` 转为 `../../../NGR/Content/Paks/<X>`，使
+  materializer compare ladder 能匹配。代码在 PlayLoader.m 的
+  `ripc006_try_normalize_pak_path()` + `pdt006_convert_replacement()` 增强。
+  诊断事件 `ripc006_pak_path_normalize` 写入 `launch-events.jsonl`。
 
 ### 当前卡点
 
-1. 暂无阻塞。RIPC-005 已完成，可直接进入 RIPC-006。
+1. 暂无阻塞。RIPC-006 已完成，待 RIPC-007 端到端验证。
 
 ### 下一步默认规划
 
-1. 进入 `RIPC-006`：按修复方向 A/B/C 逐一评估可行性，选定方案后实施。
-2. 修复后进入 RIPC-007 端到端验证。
+1. 进入 `RIPC-007`：在 PlayCover 中启动 NGR，验证 `QtsFileSystem Create
+   Failed!!` 不再出现。
+2. 检查 `launch-events.jsonl` 确认 `ripc006_pak_path_normalize` 事件正常记录。
+3. 若通过，更新 HOKCrash 主线 Dashboard 标记 QtsFS 问题已修复。
 
 ## 构建与验证
 
@@ -167,8 +166,8 @@ materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
 | RIPC-003 | DONE | 真机基线采集：RIPCProbe dylib 注入 + console 捕获，17 类运行时上下文。真机无 QtsFS 失败 | `RIPC-003-真机启动行为基线采集.md` |
 | RIPC-004 | DONE | PlayCover 环境同构采集：LLDB attach + ObjC expression evaluation，17 类运行时上下文 | — |
 | RIPC-005 | DONE | 结构化差异对比与根因定位：根因是 materializer compare ladder 不匹配绝对 macOS pak 路径 | `build/ripc-005-diff.json` |
-| RIPC-006 | TODO（当前主线） | PlayTools 环境对齐修复：使 QtsFS materializer 接收到的 pak 路径能通过 compare ladder | 待建 |
-| RIPC-007 | TODO | 端到端验证：PlayCover 启动不再触发 `QtsFileSystem Create Failed`，且满足 HOKCrash 主线最终目标 | 待建 |
+| RIPC-006 | DONE | Direction A：ConvertToPlatformPath hook 增加 Saved/Paks 路径归一化 | — |
+| RIPC-007 | TODO（当前主线） | 端到端验证：PlayCover 启动不再触发 `QtsFileSystem Create Failed`，且满足 HOKCrash 主线最终目标 | 待建 |
 
 ## 高频复用经验
 
@@ -234,7 +233,8 @@ materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
   及 `1_0.db` ~ `1_15.db`（各 ~200 MB）。
 - **PDT-006 已有但不够**：`ConvertToPlatformPath` patch 透传 `/Users/` 前缀
   路径，防止进一步拼接错误；但路径 **已经** 是绝对形式了，materializer
-  compare ladder 仍不匹配。
+  compare ladder 仍不匹配。**RIPC-006 Direction A 在此基础上增加归一化**：
+  对 `/Users/.../Saved/Paks/<X>` 转为 `../../../NGR/Content/Paks/<X>`。
 
 ## 参考信息
 

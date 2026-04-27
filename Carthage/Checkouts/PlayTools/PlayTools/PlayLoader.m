@@ -2371,14 +2371,20 @@ static void pt_ngr_install_alert_suppressor_once(void) {
     });
 }
 // ---------------------------------------------------------------------------
-// PDT-006: Patch `FIOSPlatformFile::ConvertToPlatformPath` for `com.tencent.ngr`
-// 使 `/Users/` 前缀路径与 `/var/` 同等处理（直接透传）。
+// PDT-006 + RIPC-006: Patch `FIOSPlatformFile::ConvertToPlatformPath` for
+// `com.tencent.ngr`。
+//
+// PDT-006（原）：使 `/Users/` 前缀路径与 `/var/` 同等处理（直接透传）。
+// RIPC-006 Direction A（增强）：对 `/Users/.../Saved/Paks/<X>` 路径做
+// 归一化，转为 `../../../NGR/Content/Paks/<X>` 相对形式，使 QtsFileSystem
+// materializer 的 UTF-16 compare ladder 能正常匹配。
 //
 // 背景：UE4 `ConvertToPlatformPath` 在 iOS 真机上对 `/var/` 开头路径直接
 // 原样返回，而对 `/Users/...`（PlayCover/macOS 路径）会经过重新拼接，
 // 导致 materializer 看到的最终路径不同。本 patch 在函数入口处拦截：
-// 若参数（x1，const TCHAR*）以 `/Users/` 开头，直接返回原指针，跳过所有
-// 后续转换逻辑。
+// 1. (RIPC-006) 若参数匹配 `/Users/.../Saved/Paks/<X>`，归一化为相对路径
+// 2. (PDT-006) 若参数以 `/Users/` 开头但不是 Saved/Paks，直接返回原指针
+// 3. 其余走原函数逻辑
 //
 // 约束：
 //   - 仅对 `com.tencent.ngr` 生效。
@@ -2401,12 +2407,55 @@ static BOOL pdt006_should_pass_through(const char *path) {
     return strncmp(path, "/Users/", 7) == 0;
 }
 
+// ---------------------------------------------------------------------------
+// RIPC-006 Direction A: Normalize absolute macOS Saved/Paks paths to relative
+// form at the ConvertToPlatformPath hook point (pak-path registration site).
+//
+// 根因（RIPC-005）：UE4 将 Saved/Paks/1/1.db 解析为
+//   `/Users/.../Library/NGR/Saved/Paks/1/1.db`（绝对 macOS 路径）
+// 而 QtsFileSystem materializer 的 UTF-16 compare ladder 只匹配相对形式
+//   `../../../NGR/Content/Paks/1/1.db`（x22=0x21→0x3 → success）
+// 绝对路径导致 x22=0x31→0x4 → mismatch → materializer 返 0 → Create Failed。
+//
+// 修复：在 ConvertToPlatformPath 拦截点（最上游的 pak-path 注册时机），
+// 将 `/Users/.../Saved/Paks/<X>` 归一化为 `../../../NGR/Content/Paks/<X>`，
+// 使 materializer compare ladder 能正常匹配。
+// ---------------------------------------------------------------------------
+
+// 前向声明 log 函数（定义在下方 pdt006_log_event 之后）
+static void ripc006_log_normalize_event(const char *original, const char *normalized);
+
+static const char *ripc006_try_normalize_pak_path(const char *path) {
+    if (path == NULL || strncmp(path, "/Users/", 7) != 0) { return NULL; }
+    const char *savedPaks = strstr(path, "/Saved/Paks/");
+    if (savedPaks == NULL) { return NULL; }
+    const char *suffix = savedPaks + strlen("/Saved/Paks/");
+    if (suffix[0] == '\0') { return NULL; }
+    // Fast path: 已知 RIPC-005 失败 case
+    if (strcmp(suffix, "1/1.db") == 0) {
+        return pt_ngr_c5_content_pak_path; // "../../../NGR/Content/Paks/1/1.db"
+    }
+    // General case: 其它 Saved/Paks/<X> → ../../../NGR/Content/Paks/<X>
+    static char ripc006_buf[1024];
+    snprintf(ripc006_buf, sizeof(ripc006_buf),
+             "../../../NGR/Content/Paks/%s", suffix);
+    return ripc006_buf;
+}
+
 // Replacement 函数，匹配 ARM64 调用约定
 // x0 = this (FIOSPlatformFile*), x1 = filename (const TCHAR*)
 // 返回 x0 = const TCHAR*
 static uint64_t pdt006_convert_replacement(uint64_t x0, uint64_t x1) {
     const char *path = (const char *)(uintptr_t)x1;
+
+    // RIPC-006 Direction A: 对 /Users/ 开头路径优先尝试 Saved/Paks 归一化
     if (pdt006_should_pass_through(path)) {
+        const char *normalized = ripc006_try_normalize_pak_path(path);
+        if (normalized != NULL) {
+            ripc006_log_normalize_event(path, normalized);
+            return (uint64_t)(uintptr_t)normalized;
+        }
+        // PDT-006 原逻辑：非 Saved/Paks 的 /Users/ 路径直接透传
         return x1;
     }
 
@@ -2432,6 +2481,18 @@ static void pdt006_log_event(const char *status,
         @"detail": detail ? [NSString stringWithUTF8String:detail] : @"",
     };
     [PlayCover recordPDT006ConvertPatchDiagnosticWithDetails:details];
+}
+
+// RIPC-006 Direction A: 记录 pak-path 归一化事件
+static void ripc006_log_normalize_event(const char *original, const char *normalized) {
+    NSLog(@"[PlayTools] RIPC-006 pak-path normalize: '%s' -> '%s'",
+          original ?: "", normalized ?: "");
+    NSDictionary<NSString *, NSString *> *details = @{
+        @"action": @"normalize",
+        @"original": original ? [NSString stringWithUTF8String:original] : @"",
+        @"normalized": normalized ? [NSString stringWithUTF8String:normalized] : @"",
+    };
+    [PlayCover recordRIPC006PakPathNormalizeDiagnosticWithDetails:details];
 }
 
 static void pdt006_install_convert_patch_once(void) {

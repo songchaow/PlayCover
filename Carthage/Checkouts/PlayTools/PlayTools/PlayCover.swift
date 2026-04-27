@@ -253,6 +253,19 @@ public class PlayCover: NSObject {
         )
     }
 
+    /// RIPC-006 Direction A: 供 PlayLoader.m 的 `ripc006_log_normalize_event()`
+    /// 回调使用，把 pak-path 归一化事件落盘到 `launch-events.jsonl`。
+    /// 事件字段含 `action` / `original` / `normalized`。
+    @objc static public func recordRIPC006PakPathNormalizeDiagnostic(details: [String: String]) {
+        let runtimeBundleId = Bundle.main.bundleIdentifier
+            ?? "playtools.runtime.\(ProcessInfo.processInfo.processIdentifier)"
+        RuntimeLaunchDiagnostics.record(
+            event: "ripc006_pak_path_normalize",
+            bundleId: runtimeBundleId,
+            details: details
+        )
+    }
+
     static public func quitWhenClose() {
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name(rawValue: "NSWindowWillCloseNotification"),

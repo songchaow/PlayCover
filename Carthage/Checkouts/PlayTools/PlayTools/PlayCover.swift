@@ -253,6 +253,22 @@ public class PlayCover: NSObject {
         )
     }
 
+    /// RIPC-006: 供 PlayLoader.m 的 `ripc006_mock_environment_once()` 回调使用，
+    /// 把 environment variable mocking 的安装事件落盘到 `launch-events.jsonl`。
+    /// 事件字段含 `status` / `detail`。
+    /// 
+    /// 触发时机：dyld constructor 中，在 PlayCover.launch() 前
+    /// 事件类型：ripc006_ngr_environment_mock
+    /// 目的：记录 HOME/TMPDIR 环境变量 mocking 成功/失败，用于诊断
+    @objc static public func recordRIPC006EnvironmentMockDiagnostic(details: [String: String]) {
+        let runtimeBundleId = Bundle.main.bundleIdentifier
+            ?? "playtools.runtime.\(ProcessInfo.processInfo.processIdentifier)"
+        RuntimeLaunchDiagnostics.record(
+            event: "ripc006_ngr_environment_mock",
+            bundleId: runtimeBundleId,
+            details: details
+        )
+    }
     static public func quitWhenClose() {
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name(rawValue: "NSWindowWillCloseNotification"),

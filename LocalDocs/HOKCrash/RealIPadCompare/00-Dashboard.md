@@ -37,7 +37,9 @@
 
 ### 当前主线一句话
 
-RIPC 全线任务已完成。`QtsFileSystem Create Failed!!` 根因已修复。
+`RIPC-008`：W^X 修复已使全部 hook 安装成功，但 QtsFileSystem 仍然失败。
+失败点不在 materializer 调用层，而在下游——materializer 返回的 object
+内嵌了绝对 macOS 路径的 UTF-16 字符串，下游 compare ladder 仍然不匹配。
 
 ### 当前状态摘要
 
@@ -87,38 +89,44 @@ materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
 2. ~~**RIPC-005**~~（已完成）：结构化差异对比 → 根因定位。
 3. ~~**RIPC-006**~~（已完成）：Direction A — 在 PDT-006 ConvertToPlatformPath
    hook 中增加 Saved/Paks 路径归一化，使 materializer compare ladder 匹配。
-4. ~~**RIPC-007**~~（已完成）：端到端验证 + W^X 修复 → PASS。
+4. ~~**RIPC-007**~~（已完成）：W^X 合规修复 → 全部 hook 安装成功。
+5. **RIPC-008**（当前主线）：materializer hook 层面已生效，但下游 object
+   内嵌路径仍是绝对 macOS 形式，需要进一步定位失败点。
 
-### RIPC-006 修复方案 + RIPC-007 W^X 修复
+### RIPC-007 W^X 修复 + RIPC-007 验证结论
 
-**RIPC-006 Direction A**：在 PDT-006 的 ConvertToPlatformPath hook 中增加
-归一化逻辑：对 `/Users/.../Saved/Paks/<X>` 路径转为
-`../../../NGR/Content/Paks/<X>`。实现见 PlayLoader.m 的
-`ripc006_try_normalize_pak_path()` + `pdt006_convert_replacement()` 增强。
-
-**RIPC-007 W^X 修复**：RIPC-006 的代码之前从未执行，因为
-`pt_ngr_make_patch_writable()` 请求 `PROT_READ|PROT_WRITE|PROT_EXEC`
-同时设置，违反 Apple Silicon W^X（Write XOR Execute）策略，导致
-mprotect/vm_protect 100% 失败。修复为两阶段：
+**RIPC-007 W^X 修复（代码已落地，hook 安装成功）**：
+`pt_ngr_make_patch_writable()` 改为 W^X 合规两阶段：
 - 写入阶段：`PROT_READ|PROT_WRITE`（不含 EXEC）
 - 执行阶段：`PROT_READ|PROT_EXEC`（不含 WRITE）
 - vm_protect 回退使用 `VM_PROT_COPY` 触发 copy-on-write
 
-W^X 修复后：
+修复后全部 3 个 hook 安装成功：
 - PDT-006 `ConvertToPlatformPath` patch：`mprotect-failed` → `installed`
 - HOK-016c5 `consumer-family-hook`：`install-failed` → `installed`
 - HOK-016c5 `alt1`：`not-writable` → `installed-alt1`
-- 全部 3 个 hook 安装成功 → materializer 正确拦截 → **QtsFS Create Failed
-  不再出现**（11+ 分钟进程稳定运行，零告警）。
+
+**RIPC-007 端到端验证结论（FAIL — materializer 拦截不够）**：
+- materializer shim 成功拦截了 `1/1.db` 调用，返回 non-null object（`0x6000004dead0`）
+- 但 **QtsFileSystem 仍然失败**——失败点在返回的 object 的下游处理：
+  object 内嵌了 UTF-16 字符串 `"/Users/songdogwang/Library/Containers/io.playcover.PlayCover/Applications/com.tencent.ngr.app/c..."`
+  （绝对 macOS 路径），下游 compare ladder 仍然不匹配
+- 进程 SIGABRT（fatal 处理 → `abort()`）
+- 新 crash report：`NGR-2026-04-27-183734.ips`（Thread 6 GameThread abort）
+- 验证报告：`build/ripc-007-verification-report.json`（需更新 verdict）
 
 ### 当前卡点
 
-无。RIPC 全线任务已完成。
+1. materializer shim 成功拦截并返回 non-null，但下游 object 内嵌路径
+   仍是绝对 macOS 形式，下游 compare ladder 不匹配 → QtsFS 仍 fail。
+   需要在更深层（object 内容层面或 compare ladder 自身）做修复。
 
 ### 下一步默认规划
 
-1. 更新 HOKCrash 主线 Dashboard，标记 QtsFS 问题已修复。
-2. 持续观察 NGR 在 PlayCover 中的运行稳定性。
+1. 进入 `RIPC-008`：分析 materializer 返回的 object 结构，定位下游
+   compare ladder 读取内嵌路径的位置，确定新的拦截/修改点。
+2. 比对真机 iPad 上 materializer 返回 object 的内容，确认真机上该字段
+   是什么值。
 
 ## 构建与验证
 
@@ -171,7 +179,8 @@ W^X 修复后：
 | RIPC-004 | DONE | PlayCover 环境同构采集：LLDB attach + ObjC expression evaluation，17 类运行时上下文 | — |
 | RIPC-005 | DONE | 结构化差异对比与根因定位：根因是 materializer compare ladder 不匹配绝对 macOS pak 路径 | `build/ripc-005-diff.json` |
 | RIPC-006 | DONE | Direction A：ConvertToPlatformPath hook 增加 Saved/Paks 路径归一化 | — |
-| RIPC-007 | DONE | 端到端验证 PASS：W^X 修复使全部 hook 安装成功，QtsFS Create Failed 不再出现（11+ 分钟零告警） | `build/ripc-007-verification-report.json` |
+| RIPC-007 | DONE（hook 安装成功，但 QtsFS 仍 fail） | W^X 修复使全部 hook 安装成功；端到端验证发现失败点在 materializer 返回 object 的下游 compare ladder | `build/ripc-007-verification-report.json` |
+| RIPC-008 | TODO（当前主线） | 定位下游 compare ladder 读取内嵌 UTF-16 路径的位置，在 object 内容层面或 ladder 自身做修复 | 待建 |
 
 ## 高频复用经验
 

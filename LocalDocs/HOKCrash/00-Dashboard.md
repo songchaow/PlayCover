@@ -50,32 +50,29 @@
 
 ### 当前主线一句话
 
-**QtsFileSystem Create Failed!! 已修复**（RIPC-007）。W^X 合规修复使全部
-runtime hook 成功安装，NGR 启动后 11+ 分钟无 QtsFS 告警、进程稳定存活。
-下一步：验证是否达成最终目标（进入真正的游戏主循环）。
+RIPC-007 W^X 修复使全部 runtime hook 安装成功，但 `QtsFileSystem Create
+Failed!!` **仍然触发**——失败点不在 materializer 调用层，而在下游 object
+内嵌的 UTF-16 路径。当前主线：RIPC-008 定位下游失败点。
 
 ### 当前状态摘要
 
 - 外层防线已全部稳定：HOK-013/014/015/010 全部 apply，进程不再秒崩。
-- **RIPC-007 已修复 QtsFS Create Failed 根因**：`pt_ngr_make_patch_writable()`
-  的 W^X 违规是所有 hook install 失败的根因。修复后 PDT-006 ConvertToPlatformPath
-  patch、HOK-016c5 consumer-family-hook、alt1 hook 全部成功安装。
-  验证报告：`build/ripc-007-verification-report.json`。
+- **RIPC-007 W^X 修复已落地**：`pt_ngr_make_patch_writable()` 改为 W^X
+  合规两阶段，PDT-006 / HOK-016c5 consumer-family / alt1 全部安装成功。
+- **QtsFS Create Failed 仍然触发**：materializer shim 成功拦截 `1/1.db`
+  并返回 non-null object，但该 object 内嵌了绝对 macOS 路径 UTF-16 字符串，
+  下游 compare ladder 不匹配 → QtsFS fail → fatal → SIGABRT。
   详情见 `RealIPadCompare/00-Dashboard.md`。
-- **HOK-014 `hok014_ngr_alert_suppressed` 降为 0**：修复后不再触发
-  `QtsFileSystem Create Failed!!` 弹框。
-- HOK-016-C.2.7 / C.4 / C.5 等原主线任务被 RIPC-007 **superseded**——
-  根因通过真机对比方向（RIPC 系列）找到并修复。
+- HOK-014 仍承担 alert 压制，`hok014_ngr_alert_suppressed = 1`。
 
 ### 修复路线（优先级从高到低）
 
-1. ~~**RIPC-007（已完成）**~~：W^X 合规修复 → 全部 hook 安装成功 →
-   QtsFS Create Failed 消除。详见 `RealIPadCompare/00-Dashboard.md`。
-2. **HOK-016-D（当前主线）**：live 验证最终目标——进程进入真正的游戏
-   主循环（CPU ≥5%、RSS 增长到 UE4 典型量级、Metal frame 推进）。
-   若通过，HOK-014 正式降级为冷备安全网。
-3. ~~HOK-016-C.2.7 / C.4 / C.5~~（被 RIPC-007 superseded）。
-4. ~~PathDifferenceTrial / PDT-001-B-revised~~（被 RIPC-007 superseded）。
+1. ~~**RIPC-007（已完成）**~~：W^X 合规修复 → 全部 hook 安装成功。但端到端
+   验证仍 FAIL（下游 object 内嵌路径问题）。
+2. **RIPC-008（当前主线）**：定位 materializer 返回 object 的下游 compare
+   ladder 读取 UTF-16 路径的位置，在 object 内容层面做修复。
+3. **HOK-016-D**：RIPC-008 通过后做 live 验证最终目标。
+4. ~~HOK-016-C.2.7 / C.4 / C.5~~（与 RIPC 方向合并推进）。
 
 ### 当前兜底链路（按 PlayTools constructor 执行序）
 
@@ -113,17 +110,18 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
 
 ### 当前卡点
 
-1. **待验证最终目标**：QtsFS Create Failed 已消除，但尚未确认 app 是否进入
-   真正的游戏主循环（CPU ≥5%、RSS 增长、Metal frame 推进）。当前观察到
-   进程稳定但 CPU 仅 2%、RSS ~316MB（低于 UE4 典型量级），可能还需要
-   用户手工操作（如点击"开始游戏"按钮）。
+1. **materializer 返回 object 内嵌路径问题**：materializer shim 成功拦截
+   `1/1.db` 并返回 non-null object，但 object 内嵌了绝对 macOS 路径的
+   UTF-16 字符串（`/Users/.../io.playcover.PlayCover/Applications/com.tencent.ngr.app/c...`），
+   下游 compare ladder 不匹配 → QtsFS fail → fatal → SIGABRT。
+   需要在 object 内容层面或 compare ladder 自身做修复。
 
 ### 下一步默认规划
 
-1. **执行 `HOK-016-D`**：进行完整 live 验证，确认最终目标是否达成。
-2. 若需要用户手工操作推进游戏初始化，向用户报告并请求协助。
-3. HOK-016-D 通过后，正式把 HOK-014 降级为冷备安全网。
-4. 闭合后做 `HOK-008`：固化启动验证单脚本。
+1. **执行 RIPC-008**：分析 materializer 返回 object 的内存布局，定位下游
+   compare ladder 读取 UTF-16 路径的偏移，确定修复点。
+2. 比对真机 iPad 上对应 object 的内容。
+3. RIPC-008 完成后进入 HOK-016-D live 验证。
 
 ## 构建与验证
 
@@ -224,15 +222,15 @@ HOK-007B 候选 E（NGR 二进制 4 字节 patch）已 **revert**；磁盘备份
 | HOK-016-C.2.4 | DONE | 收紧到 `0x10017f184` 的 lookup 失败 | `HOK-016-appendix-C23-C24.md` |
 | HOK-016-C.2.5 | DONE | 补齐 rootB writer / insert-helper 的侧证 | `HOK-016-appendix-C25-C26.md` |
 | HOK-016-C.2.6 | DONE | 更正为 `mainChunk` 的 `"1"` 子树缺失，不是 `"main"` 缺失 | `HOK-016-appendix-C25-C26.md` |
-| HOK-016-C.2.7 | DONE（被 RIPC-007 superseded） | QtsFS 根因通过 RIPC 真机对比方向修复：W^X 合规修复使全部 hook 安装成功。 | `RealIPadCompare/00-Dashboard.md`、`build/ripc-007-verification-report.json` |
+| HOK-016-C.2.7 | DONE（W^X 部分被 RIPC-007 修复） | hook 安装成功但 QtsFS 仍 fail；失败点在 materializer 返回 object 的下游 compare ladder。与 RIPC-008 合并推进。 | `RealIPadCompare/00-Dashboard.md`、`build/ripc-007-verification-report.json` |
 | HOK-016-C.3 | DEFERRED | 终极野蛮方案：fishhook interpose `0x108878534` 直接返回 1，仅作最后兜底（当前不需要） | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.4 | DONE（被 RIPC-007 superseded） | 诊断性强制成功验证，不再需要 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.5 | DONE（被 RIPC-007 superseded） | `__DATA_CONST` 写保护问题被 W^X 修复绕过 | `HOK-016-qts-fs-create-failed.md` |
 | HOK-016-C.6 | DEFERRED | 仅在必须依赖外部资源或登录态时，才降级到需要用户介入的路线 | `HOK-016-qts-fs-create-failed.md` |
-| HOK-016-D | TODO（当前主线） | live 验证最终目标：进程进入游戏主循环（CPU ≥5%、RSS 增长、Metal frame）+ `hok014_ngr_alert_suppressed = 0` + 无新 `NGR-*.ips` | `HOK-016-qts-fs-create-failed.md` |
-| PDT-001-B-revised | DONE（被 RIPC-007 superseded） | 路径转换差异验证不再需要，QtsFS 已通过 W^X 修复解决 | `PathDifferenceTrial/00-Dashboard.md` |
-| PDT-002 | DONE（被 RIPC-007 superseded） | 不再需要独立路径伪装方案 | — |
-| PDT-003 | DONE（被 RIPC-007 superseded） | PathDifferenceTrial 不再需要 | — |
+| HOK-016-D | TODO | RIPC-008 通过后做 live 验证最终目标 | `HOK-016-qts-fs-create-failed.md` |
+| PDT-001-B-revised | DEFERRED | 与 RIPC 方向合并推进，暂不独立执行 | `PathDifferenceTrial/00-Dashboard.md` |
+| PDT-002 | DEFERRED | 依赖 PDT-001-B-revised | — |
+| PDT-003 | DEFERRED | 依赖 PDT-001-B-revised | — |
 | HOK-007C | DEFERRED | 下游 crash 的离线映射 + 可逆 patch；当前无触发动机 | `HOK-007-二进制意图分析与callsite映射.md` |
 | HOK-008 | TODO | 把"revert 候选 E → `rootWorkDir=1` → 启动 → 证据采集 → pass 判定"固化成单脚本 | 待建 |
 | HOK-009 | BLOCKED | 需要用户账号 / 手工 UI 的后续验证；执行前必须得到用户确认 | 不执行 |

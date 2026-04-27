@@ -37,9 +37,9 @@
 
 ### 当前主线一句话
 
-`RIPC-001-C`：最小 test app 已完成签名构建与真机安装；当前卡在 iPad 对开发者
-app/profile 的显式信任，信任完成后继续验证启动与 `ios-deploy --debug` /
-LLDB attach。
+`RIPC-001-C`：最小 test app 已完成签名构建、真机安装与真机启动；当前主线只剩
+LLDB attach 验证，其中 `ios-deploy --debug` 仍卡在旧式 `DeviceSupport` 查找，
+本机 `lldb device select` 也尚未稳定完成设备选择。
 
 ### 当前状态摘要
 
@@ -71,18 +71,23 @@ LLDB attach。
 - **001C 安装成功**：`ios-deploy` 已将 `RIPCProfileBootstrap.app` 安装到 iPad，且
   `devicectl device info apps` 能在真机侧枚举到 `com.songdog.ripc.debug`；见
   `build/ripc-001c-deploy.log`、`build/ripc-001c-apps.json`。
-- **001C 启动被系统安全策略拒绝**：`devicectl device process launch` 返回
-  `CoreDeviceError 10002 / RequestDenied`；当前已证实的是 `SBMainWorkspace`
-  因 `Security` 拒绝启动，而底层候选原因仍包括“profile 尚未被用户显式信任”
-  与“签名/entitlements 不被系统接受”。当前最高优先级、且需要用户介入的
-  验证动作仍是**先在 iPad 上显式信任该开发者 app/profile**。证据见
-  `build/ripc-001c-launch.json`。
-- **`ios-deploy --debug` 另有工具链兼容阻塞**：当前 host 上 `xcrun devicectl list preferredDDI`
+- **001C 真机启动成功**：`devicectl device process launch` 已可成功启动
+  `com.songdog.ripc.debug`，普通启动进程 PID 为 `1389`，`--start-stopped` 启动进程
+  PID 为 `1397`；见 `build/ripc-001c-launch-after-trust.json` 与
+  `build/ripc-001c-launch-start-stopped.json`。
+- **`ios-deploy --debug` 仍有工具链兼容阻塞**：在启动已成功的前提下重新执行
+  `ios-deploy --debug`，仍停在旧式 `DeviceSupport/*/DeveloperDiskImage.dmg` 查找；
+  当前 host 上 `xcrun devicectl list preferredDDI`
   显示 Xcode 16.4 走的是 CoreDevice 外置 DDI
   `file:///Library/Developer/DeveloperDiskImages/iOS_DDI/`，但 `ios-deploy 1.12.2`
   的 debug 启动路径仍在查找旧式 `DeviceSupport/*/DeveloperDiskImage.dmg`，因此
-  install 成功后仍会在 debug 阶段失败；见 `build/ripc-001c-deploy.log` 与
+  install / launch 已成功后仍会在 debug 阶段失败；见 `build/ripc-001c-deploy-after-trust.log` 与
   `build/ripc-001c-summary.json`。
+- **现代 LLDB CLI attach 仍未打通**：当前直接 attach 尝试里，
+  `device select DBE867A3-4E28-5C1C-B3B3-07BD0521C3CE` 会报
+  `timed out waiting for shell command to complete`，随后
+  `device process attach -p 1397` 提示 `no device selected`；见
+  `build/ripc-001c-lldb-expect-attach.log`。
 
 ### 修复路线概览（优先级从高到低）
 
@@ -107,21 +112,19 @@ LLDB attach。
 
 ### 当前卡点
 
-1. 当前已确认的直接阻塞是：最小 test app 会被系统以 `Security / RequestDenied`
-   拒绝启动；首个需要用户介入的排障动作仍是先在 iPad 上对开发者 app/profile
-   做显式信任，见 `build/ripc-001c-launch.json`。
-2. 用户信任解除后，还需要再次验证 `ios-deploy --debug` 是否能 attach；当前
-   `ios-deploy 1.12.2` 在本机上仍停留在旧式 `DeviceSupport` 查找路径，和 Xcode 16.4
-   的 CoreDevice DDI 路径不一致，见 `build/ripc-001c-summary.json`。
+1. `ios-deploy 1.12.2` 的 debug 启动链仍停留在旧式 `DeviceSupport` 查找路径，和
+   Xcode 16.4 的 CoreDevice DDI 路径不一致，见 `build/ripc-001c-deploy-after-trust.log`
+   与 `build/ripc-001c-summary.json`。
+2. 本机 `lldb` 的 `device select` 目前仍会超时，随后 CLI attach 会因为
+   `no device selected` 未完成，见 `build/ripc-001c-lldb-expect-attach.log`。
 
 ### 下一步默认规划
 
-1. 先请用户在 iPad 上显式信任 `com.songdog.ripc.debug` 对应的开发者 app/profile，
-   再重跑 `devicectl device process launch`；若仍失败，再回到签名 / entitlements
-   方向继续排查，确认最小 test app 已能正常启动。
-2. 若启动成功，再重试 debug attach：先验证 `ios-deploy --debug` 是否仍受旧式
-   `DeviceSupport` 查找路径限制；若仍失败，则把 `RIPC-001-C` 的 attach 验证切换到
-   现代 CoreDevice/Xcode 调试链路，同时保留 `ios-deploy` 作为 install-only 工具。
+1. 保持 `com.songdog.ripc.debug` 作为最小 attach 验证目标，继续聚焦现代
+   CoreDevice / LLDB 调试链路，而不再把启动问题与 attach 问题混在一起。
+2. 继续收敛 `lldb device select` 超时的具体原因；若 CLI attach 始终不稳定，则把
+   `RIPC-001-C` 的 attach 验证切换到 Xcode 调试入口，同时保留 `ios-deploy` 作为
+   install-only 工具。
 3. 只有在“可启动 + 可 attach”都拿到结构化证据后，才将 `RIPC-001-C` 标记完成，
    并结束 `RIPC-001`；完成后再进入 `RIPC-002`。
 
@@ -165,10 +168,10 @@ LLDB attach。
 
 | ID | 状态 | 任务描述 | 子文档 |
 |---|---|---|---|
-| RIPC-001 | BLOCKED（当前主线） | 环境预检与工具链准备：签名构建与真机安装已验证，当前卡在启动被设备安全策略拒绝后的根因收敛与 LLDB attach 验证 | 待建 |
+| RIPC-001 | BLOCKED（当前主线） | 环境预检与工具链准备：签名构建、真机安装与真机启动已验证，当前卡在现代 LLDB attach 链路验证 | 待建 |
 | RIPC-001-A | DONE | 安装 `ios-deploy`（`brew install ios-deploy`），并用 `ios-deploy --version` 验证为 `1.12.2` | — |
 | RIPC-001-B | DONE | 通过 Xcode 空项目为 iPad 自动生成 provisioning profile；当前采用 Team `Songchao Wang`（`L7CZY6S98T`），产出显式 profile `87ea3316-9677-4523-a1eb-ec9a4a55f7f8.mobileprovision` | — |
-| RIPC-001-C | BLOCKED（待缩小 Security 根因） | 用最小 test app 验证签名 → 真机部署 → LLDB attach 全链路；目前已完成构建签名与安装，启动被设备安全策略拒绝，首个待验证的人工作是显式信任开发者 app/profile，且 `ios-deploy --debug` 仍受旧式 `DeviceSupport` 查找路径限制 | — |
+| RIPC-001-C | BLOCKED（当前主线） | 用最小 test app 验证签名 → 真机部署 → LLDB attach 全链路；目前已完成构建签名、安装与启动，`ios-deploy --debug` 仍受旧式 `DeviceSupport` 查找路径限制，本机 `lldb device select` 也尚未稳定完成 attach 前的设备选择 | — |
 | RIPC-002 | TODO | 重签名 NGR：解包 .app → 修改 bundle ID → 注入 profile → 重签主二进制 + 41 frameworks → 部署到 iPad | 待建 |
 | RIPC-002-A | TODO | 编写重签名脚本 `Scripts/ripc_resign.sh` | — |
 | RIPC-002-B | TODO | 执行重签名并部署到 iPad，验证 app 可启动 | — |
@@ -196,11 +199,9 @@ LLDB attach。
   `DeviceSupport/*/DeveloperDiskImage.dmg` 路径查找并失败；应把 install 结果与
   attach 结果分开取证，并用 `xcrun devicectl list preferredDDI` 确认 host 实际走的
   是 CoreDevice 外置 DDI。
-- **用户信任是首个待验证的人工作**：即使 profile 覆盖设备、bundle ID 正确且
-  `get-task-allow=true`，`devicectl device process launch` 仍可能被
-  `SBMainWorkspace` 以 `Security / RequestDenied` 拒绝；当前证据尚未把根因收敛到
-  “仅剩未信任 profile”，但显式信任开发者 app/profile 仍是最高优先级、且必须先
-  由用户完成的验证动作。
+- **launch 成功 ≠ attach 成功**：即使 `devicectl device process launch` 已能正常拉起
+  app，LLDB attach 仍可能独立卡在工具链层；当前证据里 `ios-deploy --debug` 与
+  `lldb device select` 都还没有给出可复用的 attach 成功链路。
 - **真机 bundle ID 必须修改**：原 `com.tencent.ngr` 不在开发者账号下，
   必须改为 provisioning profile 覆盖的 ID（如 wildcard `*` 或自定义
   `com.dev.ngr-debug`）。改 bundle ID 可能影响 app 运行时的

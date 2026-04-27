@@ -1146,9 +1146,8 @@ static BOOL pt_ngr_c5_try_fix_utf16_at_address(uint64_t address, size_t maxScanB
     for (size_t offset = 0; offset + sizeof(usersPrefix) < maxScanBytes; offset += 2) {
         if (memcmp(buf + offset, usersPrefix, sizeof(usersPrefix)) != 0) continue;
 
-        // Found "/Users/" — search for any Paks marker
-        size_t searchLimit = offset + 2048;
-        if (searchLimit > maxScanBytes) searchLimit = maxScanBytes;
+        // Found "/Users/" — search for any Paks marker within the entire scan range
+        size_t searchLimit = maxScanBytes;
 
         for (size_t mi = 0; mi < markerCount; mi++) {
             if (searchLimit < markers[mi].len) continue;
@@ -1215,31 +1214,75 @@ static BOOL pt_ngr_c5_try_fix_utf16_at_address(uint64_t address, size_t maxScanB
     return fixed;
 }
 
-static void pt_ngr_c5_fix_embedded_paths(uint64_t selectedObj) {
-    if (selectedObj <= 0x100000000ULL) { return; }
-    pt_ngr_c5_try_fix_utf16_at_address(selectedObj, 0x100);
-    uint64_t downstreamObj = 0;
-    if (pt_ngr_vm_read_u64(selectedObj + 0x10, &downstreamObj)
-        && downstreamObj > 0x100000000ULL) {
-        pt_ngr_c5_try_fix_utf16_at_address(downstreamObj, 0x400);
-        for (size_t fo = 0; fo <= 0x38; fo += 8) {
-            uint64_t subPtr = 0;
-            if (pt_ngr_vm_read_u64(downstreamObj + fo, &subPtr)
-                && subPtr > 0x100000000ULL && subPtr != downstreamObj && subPtr != selectedObj) {
-                pt_ngr_c5_try_fix_utf16_at_address(subPtr, 0x200);
+static BOOL pt_ngr_c5_is_known_ptr(uint64_t ptr, uint64_t *known, size_t knownCount) {
+    for (size_t i = 0; i < knownCount; i++) {
+        if (known[i] == ptr) return YES;
+    }
+    return NO;
+}
+
+static void pt_ngr_c5_scan_object_graph_for_paths(uint64_t rootObj) {
+    if (rootObj <= 0x100000000ULL) { return; }
+    
+    // Shared dedup buffer across all depths (expanded to 128)
+    uint64_t known[128] = {0};
+    size_t knownCount = 0;
+    
+    #define ADD_KNOWN(p) do { \
+        if (knownCount < sizeof(known)/sizeof(known[0])) { \
+            known[knownCount++] = (p); \
+        } \
+    } while(0)
+    
+    // Scan sizes per depth
+    const size_t scanSizes[] = {0x1000, 0x1000, 0x800, 0x400, 0x200};
+    const size_t pointerRanges[] = {0x200, 0x200, 0x100, 0x80, 0x40};
+    const size_t maxNodes[] = {1, 64, 64, 32, 16};
+    
+    // depth 0: root itself
+    pt_ngr_c5_try_fix_utf16_at_address(rootObj, scanSizes[0]);
+    ADD_KNOWN(rootObj);
+    
+    uint64_t nodes[5][64] = {{0}};
+    size_t nodeCounts[5] = {0};
+    nodes[0][0] = rootObj;
+    nodeCounts[0] = 1;
+    
+    for (int depth = 0; depth < 4; depth++) {
+        size_t parentCount = nodeCounts[depth];
+        size_t childCap = maxNodes[depth + 1];
+        size_t childRange = pointerRanges[depth + 1];
+        size_t childScan = scanSizes[depth + 1];
+        
+        for (size_t pi = 0; pi < parentCount && nodeCounts[depth + 1] < childCap; pi++) {
+            uint64_t parent = nodes[depth][pi];
+            // Scan parent memory itself at this depth (redundant for depth 0, but harmless)
+            pt_ngr_c5_try_fix_utf16_at_address(parent, childScan);
+            
+            for (size_t off = 0; off < childRange && nodeCounts[depth + 1] < childCap; off += 8) {
+                uint64_t ptr = 0;
+                if (!pt_ngr_vm_read_u64(parent + off, &ptr)) continue;
+                if (ptr <= 0x100000000ULL) continue;
+                if (pt_ngr_c5_is_known_ptr(ptr, known, knownCount)) continue;
+                ADD_KNOWN(ptr);
+                nodes[depth + 1][nodeCounts[depth + 1]++] = ptr;
             }
         }
     }
-    uint64_t plus28Obj = 0;
-    if (pt_ngr_vm_read_u64(selectedObj + 0x28, &plus28Obj)
-        && plus28Obj > 0x100000000ULL && plus28Obj != selectedObj && plus28Obj != downstreamObj) {
-        pt_ngr_c5_try_fix_utf16_at_address(plus28Obj, 0x200);
+    
+    // Scan all collected nodes at their respective depths
+    for (int depth = 1; depth <= 4; depth++) {
+        for (size_t i = 0; i < nodeCounts[depth]; i++) {
+            pt_ngr_c5_try_fix_utf16_at_address(nodes[depth][i], scanSizes[depth]);
+        }
     }
-    uint64_t plus30Obj = 0;
-    if (pt_ngr_vm_read_u64(selectedObj + 0x30, &plus30Obj)
-        && plus30Obj > 0x100000000ULL && plus30Obj != selectedObj && plus30Obj != downstreamObj && plus30Obj != plus28Obj) {
-        pt_ngr_c5_try_fix_utf16_at_address(plus30Obj, 0x200);
-    }
+    
+    #undef ADD_KNOWN
+}
+
+static void pt_ngr_c5_fix_embedded_paths(uint64_t selectedObj) {
+    if (selectedObj <= 0x100000000ULL) { return; }
+    pt_ngr_c5_scan_object_graph_for_paths(selectedObj);
 }
 
 static void pt_ngr_c5_schedule_vtable_stabilizer(uint64_t objAddr) {

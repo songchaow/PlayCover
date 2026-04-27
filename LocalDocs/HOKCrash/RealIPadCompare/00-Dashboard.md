@@ -37,9 +37,11 @@
 
 ### 当前主线一句话
 
-`RIPC-008`：embedded path rewrite 机制已验证可行——成功将 materializer
-返回对象内嵌的绝对 macOS UTF-16 路径重写为相对形式，但 QtsFileSystem
-仍然失败。下游 compare ladder 还在其他位置读取路径。
+`RIPC-008`：已将 `pt_ngr_c5_fix_embedded_paths` 从手工枚举偏移升级为系统化
+4 层深度 object graph 扫描器（root 0x1000 + depth1~4 可达节点统一去重），
+并移除了 `pt_ngr_c5_try_fix_utf16_at_address` 的 2048 bytes marker 搜索限制。
+每次启动可捕获并修复 2~4 处嵌入的 `/Users/…` UTF-16 路径，但 **QtsFileSystem
+仍然失败**。现有扩大扫描策略进入收益递减区间。
 
 ### 当前状态摘要
 
@@ -95,32 +97,49 @@ materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
 
 ### RIPC-008 embedded path rewrite + 验证结论
 
-**RIPC-008 代码（已落地，downstreamObj 路径重写成功）**：
-`pt_ngr_c5_fix_embedded_paths()` 在 materializer 返回 object 后：
-- 扫描 object 及其 `+0x10`（downstreamObj）链接的内存区域
-- 查找 UTF-16 `/Users/.../content/paks/` 或 `/Saved/Paks/` 模式
-- 就地重写为 `../../../NGR/Content/Paks/<suffix>` 相对形式
+**RIPC-008 代码演进**：
+- **v1（原始）**：手工枚举 selectedObj、downstreamObj、plus28、plus30 等
+  固定偏移，仅修复 1~2 处路径。
+- **v2（三层深度扫描）**：引入系统化 object graph 遍历（root 0x400 +
+  depth1 子指针 0x80 范围 + depth2 孙指针 0x40 范围），修复数量提升到
+  2~4 处。
+- **v3（四层深度 + 无限制 marker 搜索）**：扩展到 4 层深度（root 0x1000 +
+  depth1~4，统一 128 条目去重表），并将 `pt_ngr_c5_try_fix_utf16_at_address`
+  的 marker 搜索范围从 `offset + 2048` 放开到 `maxScanBytes`。
 
-验证结果：
-- `ripc008-embedded-path-fix` 事件成功触发，`suffix=1/1.db`
-- `downstreamPreview` 从 `/Users/.../Applications/com.tencent.ngr.app/c...`
-  变为 `../../../NGR/Content/Paks/1/1.db`
-- 但 **QtsFileSystem 仍然失败** → 说明 compare ladder 还在 object graph
-  的其他位置读取路径
+**验证结果**：
+- 每次启动平均捕获并修复 2~4 处 `/Users/…` UTF-16 路径（地址因 ASLR 变化）。
+- 典型修复地址分布：downstreamObj（selectedPlus10）+ 1~3 个深层子节点。
+- 但 **QtsFileSystem 仍然失败**（`hok014_ngr_alert_suppressed` 事件持续出现）。
+- 结论：单纯扩大内存扫描范围进入收益递减区间，object graph 中可能还有
+  **非连续存储的 `/Users/` 字段**，或 compare ladder 实际读取的是字符串
+  对象的 **length/size 元数据**（如 `std::u16string` 的 `__size_`），而
+  `pt_ngr_c5_try_fix_utf16_at_address` 仅重写了字符缓冲区，未同步更新
+  长度字段，导致 compare ladder 在长度比较阶段即 mismatch。
 
 ### 当前卡点
 
-1. `downstreamObj` 中的嵌入路径已成功重写，但 QtsFS 仍然 fail。
-   **下游 compare ladder 从 object graph 中的其他字段读取路径**。
-   需要在 LLDB 下追踪 compare ladder 的实际读取地址，或扩大扫描范围
-   覆盖 object graph 中所有可能的路径存储位置。
+1. **扩大扫描范围已触达收益递减**：从手工枚举 → 3 层 → 4 层深度扫描，
+   修复数量未显著增加，QtsFS 仍 100% 失败。
+2. **新假设：字符串长度字段未同步更新**。C++ `std::u16string`（libc++）
+   长字符串模式下，对象内部有 `data` + `size` + `cap` 三元组。若 compare
+   ladder 先比较 `size` 再比较内容，则仅修改堆上字符缓冲区而保留旧
+   `size`（如 60 chars → 30 chars，但 size 仍为 60）会导致长度不匹配。
+3. **需要精确定位 compare ladder 实际读取的字段**：无法仅凭猜测继续扩大
+   扫描，必须通过 LLDB 在 materializer 返回后 dump 完整 object 内存，离线
+   分析所有 `/Users/` 出现位置及其周围的结构元数据（length、pointer、
+   capacity 等）。
 
 ### 下一步默认规划
 
-1. 使用 LLDB headless 在 materializer 返回后、compare ladder 运行前
-   dump 完整 object graph（0x200 字节范围），定位所有包含 `/Users/` 的
-   UTF-16 字段。
-2. 扩大 `pt_ngr_c5_fix_embedded_paths` 的扫描范围，覆盖新发现的字段。
+1. **RIPC-008-A（精确定位）**：编写 LLDB Python 脚本，在
+   `pt_ngr_c5_fix_embedded_paths` 入口处自动断点，dump selectedObj 及
+   其可达子对象的完整内存（0x2000 bytes），离线搜索所有 `/Users/` UTF-16
+   字段并分析其周围的 length/size 元数据布局。
+2. **RIPC-008-B（针对性修复）**：根据 dump 结果，在 `pt_ngr_c5_fix_embedded_paths`
+   中增加对 `std::u16string`（或 UE4 `FString`）size 字段的同步修复。
+3. 若 size 字段假设被证伪，则回溯到 HOK-016 根因链，检查 readiness B 的
+   create-table 阶段是否存在第二个独立失败点。
 
 ## 构建与验证
 
@@ -182,7 +201,7 @@ materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
 | RIPC-005 | DONE | 结构化差异对比与根因定位：根因是 materializer compare ladder 不匹配绝对 macOS pak 路径 | `build/ripc-005-diff.json` |
 | RIPC-006 | DONE | Direction A：ConvertToPlatformPath hook 增加 Saved/Paks 路径归一化 | — |
 | RIPC-007 | DONE | W^X 修复使全部 hook 安装成功；端到端验证发现失败点在 materializer 返回 object 的下游 compare ladder | `build/ripc-007-verification-report.json` |
-| RIPC-008 | IN-PROGRESS（当前主线） | embedded path rewrite 已验证可行（downstreamObj 路径已重写），但 QtsFS 仍 fail。下游 compare ladder 从 object graph 其他位置读取路径，需扩大扫描 | 待建 |
+| RIPC-008 | IN-PROGRESS（当前主线） | embedded path rewrite 已从手工枚举升级到 4 层深度扫描器，每次修复 2~4 处路径，但 QtsFS 仍 100% 失败。新假设：C++ `std::u16string` size 字段未同步更新。下一步需 LLDB dump 精确定位 | 待建 |
 
 ## 高频复用经验
 
@@ -255,6 +274,12 @@ materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
   路径，防止进一步拼接错误；但路径 **已经** 是绝对形式了，materializer
   compare ladder 仍不匹配。**RIPC-006 Direction A 在此基础上增加归一化**：
   对 `/Users/.../Saved/Paks/<X>` 转为 `../../../NGR/Content/Paks/<X>`。
+- **RIPC-008 扩展扫描教训**：从手工枚举 → 3 层 → 4 层深度扫描，每次启动
+  可修复的 `/Users/` 路径数量稳定在 2~4 处，QtsFS 仍 100% 失败。盲目扩大
+  扫描范围进入收益递减区间。**关键假设转向**：C++ `std::u16string` 的
+  `__size_` 字段可能未随字符缓冲区同步缩短，导致 compare ladder 在长度
+  比较阶段即 mismatch。后续必须先通过 LLDB dump 精确定位所有 `/Users/`
+  字段及其元数据布局，再实施针对性修复，不能继续靠猜测扩大扫描。
 
 ## 参考信息
 

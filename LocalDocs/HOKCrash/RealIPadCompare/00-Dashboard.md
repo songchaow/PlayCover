@@ -37,8 +37,8 @@
 
 ### 当前主线一句话
 
-`RIPC-003`：在真机上通过 Xcode LLDB attach，采集 QtsFileSystem 初始化路径的
-关键运行时上下文，为后续与 PlayCover 环境的结构化差异对比做准备。
+`RIPC-004`：在 PlayCover 环境下采集同一组运行时上下文数据，为结构化差异
+对比做准备。
 
 ### 当前状态摘要
 
@@ -55,18 +55,14 @@
 - **Provisioning Profile**：已生成显式 iOS App Development profile
   （`87ea3316-9677-4523-a1eb-ec9a4a55f7f8.mobileprovision`），
   `get-task-allow=true`，已包含目标 iPad UDID。
-- **RIPC-001 结论**：最小 test app 的签名 → 安装 → 启动 → Xcode 原生
-  debug/attach 全链路已验证通过；`ios-deploy` 仅作为 install-only 工具，
-  debug/attach 统一走 Xcode 原生入口。详情与完整产物索引见
-  `RIPC-001-环境预检与工具链准备.md`。
-- **RIPC-002-A 结论**：重签名脚本 `Scripts/ripc_resign.sh` 已落地。脚本默认
-  从原始 IPA 解包获取原生 iOS 二进制（含平台安全检查），自动完成全流程
-  重签名。支持 `--dry-run`、`--ipa`、`--source` 等全部参数覆盖。
-- **RIPC-002-B 结论**：重签名后的 NGR 已成功部署到 iPad 并验证启动。
-  App 经 `ios-deploy` 安装后通过 `xcrun devicectl` 启动，UE4 引擎成功初始化
-  至 LANDSCAPE mode，进程持续存活直至外部 SIGTERM。真机沙盒路径示例：
-  Documents=`/var/mobile/Containers/Data/Application/<UUID>/Documents`，
-  Caches=`.../Library/Caches`。
+- **RIPC-001 结论**：签名→安装→启动→调试全链路已验证。
+- **RIPC-002 结论**：重签名脚本 + 部署 + UE4 启动验证通过。
+- **RIPC-003 结论**：真机基线采集完成。通过 RIPCProbe dylib 注入 +
+  console 捕获，采集了全部 17 类运行时上下文数据。**真机上无
+  `QtsFileSystem Create Failed`**，app 正常启动。完整结构化数据见
+  `build/ripc-003-ipad-baseline.json`。关键发现：真机 cwd=`/`，
+  HOME/TMPDIR 指向 `/private/var/mobile/Containers/Data/Application/<UUID>`，
+  sandbox uid=501(mobile)，home 不可写但 Documents/Library/tmp 可写。
 
 ### 修复路线概览（优先级从高到低）
 
@@ -91,16 +87,14 @@
 
 ### 当前卡点
 
-1. 暂无阻塞。RIPC-002 全链路已验证完成，可直接进入 RIPC-003。
+1. 暂无阻塞。RIPC-003 已完成，可直接进入 RIPC-004。
 
 ### 下一步默认规划
 
-1. 进入 `RIPC-003`：通过 Xcode 原生调试入口 LLDB attach 到真机上的 NGR，
-   采集 QtsFileSystem 初始化路径的关键运行时上下文。
-2. 重点采集：`NSHomeDirectory()`、`NSBundle.mainBundle.bundlePath`、
-   `NSSearchPathForDirectoriesInDomains`、`NSTemporaryDirectory()`、
-   环境变量、cwd、entitlements 实际值、文件系统可写性。
-3. 采集完成后进入 RIPC-004，在 PlayCover 环境下采集同组数据。
+1. 进入 `RIPC-004`：在 PlayCover 环境下采集同一组运行时上下文数据。
+   复用 RIPCProbe dylib 的相同代码（编译为 macCatalyst），注入 PlayCover
+   侧的 NGR app 或通过 LLDB attach 采集。
+2. 采集完成后进入 RIPC-005，结构化对比两组数据。
 
 ## 构建与验证
 
@@ -151,8 +145,8 @@
 | RIPC-002 | DONE | 重签名 NGR 并部署到 iPad：从原始 IPA 解包 → 重签 39 frameworks + 主 bundle → 部署 → 启动验证通过 | — |
 | RIPC-002-A | DONE | 重签名脚本 `Scripts/ripc_resign.sh`（含 IPA 解包、平台安全检查） | — |
 | RIPC-002-B | DONE | 执行重签名、部署到 iPad、UE4 引擎启动验证通过 | — |
-| RIPC-003 | TODO（当前主线） | 真机启动行为基线采集：LLDB attach 后采集 QtsFileSystem 初始化路径的关键运行时上下文（文件路径、沙盒结构、环境变量、entitlements 等） | 待建 |
-| RIPC-004 | TODO | PlayCover 环境同构采集：在 PlayCover 下采集同一组上下文数据 | 待建 |
+| RIPC-003 | DONE | 真机基线采集：RIPCProbe dylib 注入 + console 捕获，17 类运行时上下文数据。真机无 `QtsFileSystem Create Failed` | `RIPC-003-真机启动行为基线采集.md` |
+| RIPC-004 | TODO（当前主线） | PlayCover 环境同构采集：在 PlayCover 下采集同一组上下文数据 | 待建 |
 | RIPC-005 | TODO | 结构化差异对比与根因定位：对比真机与 PlayCover 两组数据，定位导致 `QtsFileSystem Create Failed` 的环境差异根因 | 待建 |
 | RIPC-006 | TODO | PlayTools 环境对齐修复：在 PlayTools 层做最小 bundle-scoped 环境对齐 | 待建 |
 | RIPC-007 | TODO | 端到端验证：PlayCover 启动不再触发 `QtsFileSystem Create Failed`，且满足 HOKCrash 主线最终目标 | 待建 |
@@ -191,11 +185,16 @@
 - **真机调试需要 `get-task-allow=true`**：开发者 provisioning profile
   自动包含此 entitlement，允许 LLDB attach。
 - **真机启动验证基线**：重签名后的 NGR 在 iPad 上成功启动，UE4 引擎完成
-  初始化进入 LANDSCAPE mode。启动过程中的 SDK 初始化日志（GCloudCore、
-  GCloudVoice、GPM 等）与真机沙盒路径（`/var/mobile/Containers/Data/
-  Application/<UUID>/Documents`）均正常。可用
-  `xcrun devicectl device process launch --console <bundle-id>` 捕获
-  启动控制台输出。
+  初始化进入 LANDSCAPE mode。**无 `QtsFileSystem Create Failed`**。
+- **RIPCProbe dylib 采集方法**：编译 ObjC dylib → `insert_dylib` 注入
+  LC_LOAD_DYLIB → 重签名 → 部署 → `--console` 捕获 NSLog。比 CLI LLDB
+  attach 更稳定（CoreDevice 下 CLI `lldb` 无法直接 attach 真机进程）。
+  `insert_dylib` 从 [github.com/tyilo/insert_dylib](https://github.com/tyilo/insert_dylib)
+  源码编译。
+- **真机 iOS sandbox 路径规范**：`/var/mobile` = `/private/var/mobile`
+  （symlink）。NSHomeDirectory 不带 `/private`，NSTemporaryDirectory 带
+  `/private`。cwd 为 `/`。Home 目录本身不可写，Documents/Library/tmp 可写。
+  sandbox uid=501(mobile)，bundle uid=33(_www)。
 
 ## 参考信息
 
@@ -208,6 +207,8 @@
 - 签名身份：`BB36AD6577F23F304F93A1A75A940DAE92559A7B`（Apple Development）
 - iPad UDID：`00008103-0011050A0E3B001E`（iPadOS 26.4.1）
 - 真机证据产物：`build/ripc-*.json` / `build/ripc-*.log`
+- RIPC-003 结构化基线：`build/ripc-003-ipad-baseline.json`
+- RIPC-003 Probe 源码：`build/ripc-003-probe/RIPCProbe.m`
 
 ### 关联文档
 
@@ -220,3 +221,7 @@
 - `RIPC-001-环境预检与工具链准备.md`：RIPC-001 完整实验细节、验证产物
   与踩坑记录。**阅读建议：需要复现具体命令、核查原始产物、或排查
   profile / codesign / deploy / attach 异常时按需读取；一般无需读取。**
+- `RIPC-003-真机启动行为基线采集.md`：真机 iPad 运行时上下文详细数据
+  表格、Probe 方法说明与产物索引。**阅读建议：进行 RIPC-004/005 对比
+  时需要查阅真机侧具体路径值时读取。一般使用
+  `build/ripc-003-ipad-baseline.json` 即可。**

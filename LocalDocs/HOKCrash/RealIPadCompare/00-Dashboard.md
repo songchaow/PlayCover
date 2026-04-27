@@ -37,8 +37,8 @@
 
 ### 当前主线一句话
 
-`RIPC-001`：完成环境预检与工具链准备——验证真机连接、签名身份、缺失工具
-安装，为后续重签名部署打通基础。
+`RIPC-001-B`：通过 Xcode 空项目为连接的 iPad 自动生成 wildcard
+provisioning profile；`ios-deploy` 已安装完成，但该步需要用户确认并介入 Xcode 登录/信任流程。
 
 ### 当前状态摘要
 
@@ -50,8 +50,9 @@
   已解密 `cryptid=0`）。
 - PlayCover 已安装副本在
   `~/Library/Containers/io.playcover.PlayCover/Applications/com.tencent.ngr.app/`。
-- **缺失工具**：`ios-deploy` 未安装（真机部署 + LLDB attach 的首选 CLI）；
-  `libimobiledevice` 系列未安装。
+- **工具链状态**：`ios-deploy` 已通过 Homebrew 安装并用
+  `ios-deploy --version` 验证为 `1.12.2`；`libimobiledevice` 系列仍未安装，
+  当前不是生成 provisioning profile 的前置阻塞项。
 - **缺失资源**：无 provisioning profile（`~/Library/MobileDevice/Provisioning Profiles/`
   为空）；需要通过 Xcode 自动生成或手动创建。
 
@@ -78,18 +79,17 @@
 
 ### 当前卡点
 
-1. `ios-deploy` 未安装——它是 CLI 真机部署与 LLDB attach 的首选工具。
-2. 无 provisioning profile——重签名需要有效的 profile 才能安装到真机。
+1. 无 provisioning profile——重签名需要有效的 profile 才能安装到真机，且该步骤
+   需要通过 Xcode 自动管理签名生成，并涉及用户确认的 Apple ID / 设备信任流程。
 
 ### 下一步默认规划
 
-1. 安装 `ios-deploy`（`brew install ios-deploy`）。
-2. 用 Xcode 为连接的 iPad 自动生成 wildcard provisioning profile（创建
+1. 用 Xcode 为连接的 iPad 自动生成 wildcard provisioning profile（创建
    一个空的 Xcode 项目，target 设为连接的 iPad，让 Xcode 自动管理签名，
    即可生成 profile）。
-3. 验证签名链路：用生成的 profile 对一个最小 test app 做签名 → 部署 →
+2. 验证签名链路：用生成的 profile 对一个最小 test app 做签名 → 部署 →
    启动，确认 LLDB attach 工作正常。
-4. 完成 RIPC-001 后进入 RIPC-002（重签名 NGR）。
+3. 完成 RIPC-001 后进入 RIPC-002（重签名 NGR）。
 
 ## 构建与验证
 
@@ -131,9 +131,9 @@
 
 | ID | 状态 | 任务描述 | 子文档 |
 |---|---|---|---|
-| RIPC-001 | TODO（当前主线） | 环境预检与工具链准备：安装 `ios-deploy`、生成 provisioning profile、验证签名 → 部署 → LLDB attach 链路 | 待建 |
-| RIPC-001-A | TODO | 安装 `ios-deploy`（`brew install ios-deploy`） | — |
-| RIPC-001-B | TODO | 通过 Xcode 空项目为 iPad 自动生成 wildcard provisioning profile | — |
+| RIPC-001 | BLOCKED（当前主线） | 环境预检与工具链准备：生成 provisioning profile、验证签名 → 部署 → LLDB attach 链路（`ios-deploy` 已安装，当前卡在 profile 生成） | 待建 |
+| RIPC-001-A | DONE | 安装 `ios-deploy`（`brew install ios-deploy`），并用 `ios-deploy --version` 验证为 `1.12.2` | — |
+| RIPC-001-B | BLOCKED（需用户确认） | 通过 Xcode 空项目为 iPad 自动生成 wildcard provisioning profile | — |
 | RIPC-001-C | TODO | 用最小 test app 验证签名 → 真机部署 → LLDB attach 全链路 | — |
 | RIPC-002 | TODO | 重签名 NGR：解包 .app → 修改 bundle ID → 注入 profile → 重签主二进制 + 41 frameworks → 部署到 iPad | 待建 |
 | RIPC-002-A | TODO | 编写重签名脚本 `Scripts/ripc_resign.sh` | — |

@@ -37,7 +37,7 @@
 
 ### 当前主线一句话
 
-`RIPC-007`：端到端验证 RIPC-006 Direction A 修复效果。
+RIPC 全线任务已完成。`QtsFileSystem Create Failed!!` 根因已修复。
 
 ### 当前状态摘要
 
@@ -87,34 +87,38 @@ materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
 2. ~~**RIPC-005**~~（已完成）：结构化差异对比 → 根因定位。
 3. ~~**RIPC-006**~~（已完成）：Direction A — 在 PDT-006 ConvertToPlatformPath
    hook 中增加 Saved/Paks 路径归一化，使 materializer compare ladder 匹配。
-4. **RIPC-007**（当前主线）：端到端验证。
+4. ~~**RIPC-007**~~（已完成）：端到端验证 + W^X 修复 → PASS。
 
-### RIPC-006 修复方案（已实施 Direction A）
+### RIPC-006 修复方案 + RIPC-007 W^X 修复
 
-**Direction A：在 ConvertToPlatformPath hook 点归一化 pak-path**。
-materializer 的 2 次成功调用使用 `../../../NGR/Content/Paks/1/1.db`，
-失败调用使用 `/Users/.../Saved/Paks/1/1.db`。Direction A 在 PDT-006 的
-ConvertToPlatformPath 替换函数中增加归一化逻辑：对 `/Users/.../Saved/Paks/<X>`
-格式路径转为 `../../../NGR/Content/Paks/<X>`。实现见
+**RIPC-006 Direction A**：在 PDT-006 的 ConvertToPlatformPath hook 中增加
+归一化逻辑：对 `/Users/.../Saved/Paks/<X>` 路径转为
+`../../../NGR/Content/Paks/<X>`。实现见 PlayLoader.m 的
 `ripc006_try_normalize_pak_path()` + `pdt006_convert_replacement()` 增强。
 
-- **RIPC-006 结论（Direction A 已实施）**：在 PDT-006 的 ConvertToPlatformPath
-  hook 中增加 RIPC-006 Direction A 归一化逻辑：将
-  `/Users/.../Saved/Paks/<X>` 转为 `../../../NGR/Content/Paks/<X>`，使
-  materializer compare ladder 能匹配。代码在 PlayLoader.m 的
-  `ripc006_try_normalize_pak_path()` + `pdt006_convert_replacement()` 增强。
-  诊断事件 `ripc006_pak_path_normalize` 写入 `launch-events.jsonl`。
+**RIPC-007 W^X 修复**：RIPC-006 的代码之前从未执行，因为
+`pt_ngr_make_patch_writable()` 请求 `PROT_READ|PROT_WRITE|PROT_EXEC`
+同时设置，违反 Apple Silicon W^X（Write XOR Execute）策略，导致
+mprotect/vm_protect 100% 失败。修复为两阶段：
+- 写入阶段：`PROT_READ|PROT_WRITE`（不含 EXEC）
+- 执行阶段：`PROT_READ|PROT_EXEC`（不含 WRITE）
+- vm_protect 回退使用 `VM_PROT_COPY` 触发 copy-on-write
+
+W^X 修复后：
+- PDT-006 `ConvertToPlatformPath` patch：`mprotect-failed` → `installed`
+- HOK-016c5 `consumer-family-hook`：`install-failed` → `installed`
+- HOK-016c5 `alt1`：`not-writable` → `installed-alt1`
+- 全部 3 个 hook 安装成功 → materializer 正确拦截 → **QtsFS Create Failed
+  不再出现**（11+ 分钟进程稳定运行，零告警）。
 
 ### 当前卡点
 
-1. 暂无阻塞。RIPC-006 已完成，待 RIPC-007 端到端验证。
+无。RIPC 全线任务已完成。
 
 ### 下一步默认规划
 
-1. 进入 `RIPC-007`：在 PlayCover 中启动 NGR，验证 `QtsFileSystem Create
-   Failed!!` 不再出现。
-2. 检查 `launch-events.jsonl` 确认 `ripc006_pak_path_normalize` 事件正常记录。
-3. 若通过，更新 HOKCrash 主线 Dashboard 标记 QtsFS 问题已修复。
+1. 更新 HOKCrash 主线 Dashboard，标记 QtsFS 问题已修复。
+2. 持续观察 NGR 在 PlayCover 中的运行稳定性。
 
 ## 构建与验证
 
@@ -167,7 +171,7 @@ ConvertToPlatformPath 替换函数中增加归一化逻辑：对 `/Users/.../Sav
 | RIPC-004 | DONE | PlayCover 环境同构采集：LLDB attach + ObjC expression evaluation，17 类运行时上下文 | — |
 | RIPC-005 | DONE | 结构化差异对比与根因定位：根因是 materializer compare ladder 不匹配绝对 macOS pak 路径 | `build/ripc-005-diff.json` |
 | RIPC-006 | DONE | Direction A：ConvertToPlatformPath hook 增加 Saved/Paks 路径归一化 | — |
-| RIPC-007 | TODO（当前主线） | 端到端验证：PlayCover 启动不再触发 `QtsFileSystem Create Failed`，且满足 HOKCrash 主线最终目标 | 待建 |
+| RIPC-007 | DONE | 端到端验证 PASS：W^X 修复使全部 hook 安装成功，QtsFS Create Failed 不再出现（11+ 分钟零告警） | `build/ripc-007-verification-report.json` |
 
 ## 高频复用经验
 
@@ -231,6 +235,11 @@ ConvertToPlatformPath 替换函数中增加归一化逻辑：对 `/Users/.../Sav
   未被写入（因 materializer 在此之前已失败）。
 - **1.db 在 bundle 中存在**：`cookeddata/ngr/content/paks/1/1.db`（20 MB）
   及 `1_0.db` ~ `1_15.db`（各 ~200 MB）。
+- **Apple Silicon W^X 策略**：`mprotect(PROT_READ|PROT_WRITE|PROT_EXEC)`
+  在 Apple Silicon 上 100% 失败。必须分两阶段：写入用 `R+W`（无 X），
+  执行用 `R+X`（无 W）。`vm_protect` 回退应使用 `VM_PROT_COPY` 触发
+  copy-on-write。此修复使 PDT-006 ConvertToPlatformPath patch、HOK-016c5
+  consumer-family-hook、alt1 hook 全部从 install-failed 变为 installed。
 - **PDT-006 已有但不够**：`ConvertToPlatformPath` patch 透传 `/Users/` 前缀
   路径，防止进一步拼接错误；但路径 **已经** 是绝对形式了，materializer
   compare ladder 仍不匹配。**RIPC-006 Direction A 在此基础上增加归一化**：
@@ -253,6 +262,7 @@ ConvertToPlatformPath 替换函数中增加归一化逻辑：对 `/Users/.../Sav
 - RIPC-004 LLDB 日志：`build/ripc-004-lldb.log`
 - RIPC-004 采集脚本：`Scripts/ripc_004_playcover_probe.py`
 - RIPC-005 差异报告：`build/ripc-005-diff.json`
+- RIPC-007 验证报告：`build/ripc-007-verification-report.json`
 
 ### 关联文档
 

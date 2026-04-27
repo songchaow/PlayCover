@@ -1769,14 +1769,29 @@ static BOOL pt_ngr_make_patch_writable(void *address, size_t length) {
     uintptr_t end = (((uintptr_t)address) + length + (uintptr_t)pageSize - 1ULL)
         & ~((uintptr_t)pageSize - 1ULL);
     size_t size = (size_t)(end - start);
-    if (mprotect((void *)start, size, PROT_READ | PROT_WRITE | PROT_EXEC) == 0) {
+    // RIPC-007: Apple Silicon enforces W^X (Write XOR Execute) — requesting
+    // PROT_WRITE | PROT_EXEC simultaneously is always rejected. Use two-phase:
+    // drop EXEC when making writable; the caller restores R+X after writing.
+    if (mprotect((void *)start, size, PROT_READ | PROT_WRITE) == 0) {
         return YES;
     }
+    // Fallback: VM_PROT_COPY triggers copy-on-write for code-signed __TEXT
+    // pages — the kernel copies the page so we can modify the copy without
+    // invalidating the original signature hash.  No EXECUTE in the request.
     kern_return_t kr = vm_protect(mach_task_self(),
                                   (vm_address_t)start,
                                   (vm_size_t)size,
-                                  TRUE,
-                                  VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY | VM_PROT_EXECUTE);
+                                  FALSE,
+                                  VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+    if (kr == KERN_SUCCESS) {
+        return YES;
+    }
+    // Last resort: raise max protection to include WRITE, then set current.
+    kr = vm_protect(mach_task_self(),
+                    (vm_address_t)start,
+                    (vm_size_t)size,
+                    TRUE,
+                    VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE);
     if (kr != KERN_SUCCESS) {
         return NO;
     }
@@ -1784,7 +1799,7 @@ static BOOL pt_ngr_make_patch_writable(void *address, size_t length) {
                     (vm_address_t)start,
                     (vm_size_t)size,
                     FALSE,
-                    VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY | VM_PROT_EXECUTE);
+                    VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
     return kr == KERN_SUCCESS;
 }
 
@@ -2527,8 +2542,11 @@ static void pdt006_install_convert_patch_once(void) {
             return;
         }
 
+        // RIPC-007: Allocate trampoline page using W^X-safe two-phase approach:
+        // Phase 1: allocate R+W, write trampoline code.
+        // Phase 2: flip to R+X before execution.
         long pageSize = sysconf(_SC_PAGESIZE);
-        void *execPage = mmap(NULL, (size_t)pageSize, PROT_READ | PROT_WRITE | PROT_EXEC,
+        void *execPage = mmap(NULL, (size_t)pageSize, PROT_READ | PROT_WRITE,
                               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (execPage == MAP_FAILED) {
             pdt006_log_event("mmap-failed", target, slide, "cannot allocate exec page");
@@ -2544,6 +2562,16 @@ static void pdt006_install_convert_patch_once(void) {
         execTrampoline[1] = 0xd61f0200;
         uint64_t *execLiteral = (uint64_t *)(execTrampoline + 2);
         *execLiteral = target + PDT006_PATCH_SIZE;
+
+        // Phase 2: Flip trampoline page from R+W to R+X
+        if (mprotect(execPage, (size_t)pageSize, PROT_READ | PROT_EXEC) != 0) {
+            pdt006_log_event("exec-page-protect-failed", target, slide,
+                             "cannot make trampoline executable");
+            munmap(execPage, (size_t)pageSize);
+            pt_ngr_restore_patch_protection((void *)(uintptr_t)target, PDT006_PATCH_SIZE,
+                                            VM_PROT_READ | VM_PROT_EXECUTE);
+            return;
+        }
 
         sys_icache_invalidate(execPage, (size_t)pageSize);
 

@@ -37,9 +37,8 @@
 
 ### 当前主线一句话
 
-`RIPC-001-C`：最小 test app 已完成签名构建、真机安装与真机启动；当前主线只剩
-LLDB attach 验证，其中 `ios-deploy --debug` 仍卡在旧式 `DeviceSupport` 查找，
-本机 `lldb device select` 也尚未稳定完成设备选择。
+`RIPC-002-A`：把已验证的真机签名 / 安装 / Xcode 调试链路迁移到 NGR，先落地
+`Scripts/ripc_resign.sh`，为后续 bundle ID 修改、profile 注入和整包重签名做准备。
 
 ### 当前状态摘要
 
@@ -75,19 +74,18 @@ LLDB attach 验证，其中 `ios-deploy --debug` 仍卡在旧式 `DeviceSupport`
   `com.songdog.ripc.debug`，普通启动进程 PID 为 `1389`，`--start-stopped` 启动进程
   PID 为 `1397`；见 `build/ripc-001c-launch-after-trust.json` 与
   `build/ripc-001c-launch-start-stopped.json`。
-- **`ios-deploy --debug` 仍有工具链兼容阻塞**：在启动已成功的前提下重新执行
-  `ios-deploy --debug`，仍停在旧式 `DeviceSupport/*/DeveloperDiskImage.dmg` 查找；
-  当前 host 上 `xcrun devicectl list preferredDDI`
-  显示 Xcode 16.4 走的是 CoreDevice 外置 DDI
-  `file:///Library/Developer/DeveloperDiskImages/iOS_DDI/`，但 `ios-deploy 1.12.2`
-  的 debug 启动路径仍在查找旧式 `DeviceSupport/*/DeveloperDiskImage.dmg`，因此
-  install / launch 已成功后仍会在 debug 阶段失败；见 `build/ripc-001c-deploy-after-trust.log` 与
-  `build/ripc-001c-summary.json`。
-- **现代 LLDB CLI attach 仍未打通**：当前直接 attach 尝试里，
-  `device select DBE867A3-4E28-5C1C-B3B3-07BD0521C3CE` 会报
-  `timed out waiting for shell command to complete`，随后
-  `device process attach -p 1397` 提示 `no device selected`；见
-  `build/ripc-001c-lldb-expect-attach.log`。
+- **001C Xcode 原生 debug/attach 阶段已验证成功**：在 Xcode 中处理
+  `Replace “RIPCProfileBootstrap”?` 对话框后，调试栏进入活动状态
+  （`pause=true`、`Stop=true`），且真机侧同时存在 `dtdebugproxyd`、`debugserver`
+  和 `RIPCProfileBootstrap` 进程，证明最小 test app 的 **debug/attach 阶段** 已运行在
+  Xcode 原生调试链路下；见 `build/ripc-001c-xcode-debug-state.json`。
+- **`ios-deploy --debug` 结论已固定**：在同一 host / device 组合上，`ios-deploy 1.12.2`
+  仍停在旧式 `DeviceSupport/*/DeveloperDiskImage.dmg` 查找，因此后续只把它视为
+  install-only 工具；真机 **debug/attach** 统一走 Xcode 原生调试入口。见
+  `build/ripc-001c-deploy-after-trust.log` 与 `build/ripc-001c-summary.json`。
+- **LLDB CLI 现状已降级为旁路问题**：`lldb device select` 仍会触发内部
+  `Running Xcode first launch:` shell 步骤并在 60s 后超时，但这已不再阻塞
+  `RIPC-001-C` 完成；见 `build/ripc-001c-lldb-select-after-prepare.log`。
 
 ### 修复路线概览（优先级从高到低）
 
@@ -112,21 +110,18 @@ LLDB attach 验证，其中 `ios-deploy --debug` 仍卡在旧式 `DeviceSupport`
 
 ### 当前卡点
 
-1. `ios-deploy 1.12.2` 的 debug 启动链仍停留在旧式 `DeviceSupport` 查找路径，和
-   Xcode 16.4 的 CoreDevice DDI 路径不一致，见 `build/ripc-001c-deploy-after-trust.log`
-   与 `build/ripc-001c-summary.json`。
-2. 本机 `lldb` 的 `device select` 目前仍会超时，随后 CLI attach 会因为
-   `no device selected` 未完成，见 `build/ripc-001c-lldb-expect-attach.log`。
+1. 暂无 `RIPC-001` 方向的新阻塞；最小 test app 的签名 → 安装 → 启动 → Xcode 原生
+   LLDB attach 链路已验证完成。
 
 ### 下一步默认规划
 
-1. 保持 `com.songdog.ripc.debug` 作为最小 attach 验证目标，继续聚焦现代
-   CoreDevice / LLDB 调试链路，而不再把启动问题与 attach 问题混在一起。
-2. 继续收敛 `lldb device select` 超时的具体原因；若 CLI attach 始终不稳定，则把
-   `RIPC-001-C` 的 attach 验证切换到 Xcode 调试入口，同时保留 `ios-deploy` 作为
-   install-only 工具。
-3. 只有在“可启动 + 可 attach”都拿到结构化证据后，才将 `RIPC-001-C` 标记完成，
-   并结束 `RIPC-001`；完成后再进入 `RIPC-002`。
+1. 进入 `RIPC-002-A`：编写 `Scripts/ripc_resign.sh`，把当前已验证的 Team / profile /
+   codesign 顺序沉淀为可复用脚本。
+2. 用 `~/Library/Containers/io.playcover.PlayCover/Applications/com.tencent.ngr.app/` 作为
+   输入样本，先完成 bundle ID 修改、profile 注入和 frameworks → main bundle 的重签名
+   流程。
+3. 完成脚本后执行 `RIPC-002-B`，把重签后的 NGR 部署到 iPad，并复用本次已验证通过的
+   Xcode 原生调试入口继续推进 `RIPC-003`。
 
 ## 构建与验证
 
@@ -136,8 +131,10 @@ LLDB attach 验证，其中 `ios-deploy --debug` 仍卡在旧式 `DeviceSupport`
 - **重签名工具链**：`codesign` + `security` + `/usr/libexec/PlistBuddy`，
   脚本化后存放在 `Scripts/ripc_resign.sh`（待建）。
 - **真机部署**：`ios-deploy --bundle <path>` 或 Xcode Devices window。
-- **真机 LLDB**：`ios-deploy --debug --bundle <path>` 启动并自动 attach
-  LLDB；或 Xcode Debug → Attach to Process。
+- **真机 LLDB**：优先使用 Xcode 原生调试入口（如 Xcode Debug → Attach to Process
+  或直接从 Xcode 发起调试会话）；`ios-deploy --debug` 在当前
+  `Xcode 16.4 + iPadOS 26.4.1` 组合下仅保留为已知不兼容对照项，不再作为默认 attach
+  方法。
 - **PlayCover 侧验证**：复用 HOKCrash 主线的 `launch_app` +
   `launch-events.jsonl` 流程。
 - **证据存放**：真机 trace 产物 → `build/ripc-*.json`；对比报告 →
@@ -168,12 +165,12 @@ LLDB attach 验证，其中 `ios-deploy --debug` 仍卡在旧式 `DeviceSupport`
 
 | ID | 状态 | 任务描述 | 子文档 |
 |---|---|---|---|
-| RIPC-001 | BLOCKED（当前主线） | 环境预检与工具链准备：签名构建、真机安装与真机启动已验证，当前卡在现代 LLDB attach 链路验证 | 待建 |
+| RIPC-001 | DONE | 环境预检与工具链准备：已完成最小 test app 的签名构建、真机安装、真机启动与 Xcode 原生 debug/attach 阶段验证 | 待建 |
 | RIPC-001-A | DONE | 安装 `ios-deploy`（`brew install ios-deploy`），并用 `ios-deploy --version` 验证为 `1.12.2` | — |
 | RIPC-001-B | DONE | 通过 Xcode 空项目为 iPad 自动生成 provisioning profile；当前采用 Team `Songchao Wang`（`L7CZY6S98T`），产出显式 profile `87ea3316-9677-4523-a1eb-ec9a4a55f7f8.mobileprovision` | — |
-| RIPC-001-C | BLOCKED（当前主线） | 用最小 test app 验证签名 → 真机部署 → LLDB attach 全链路；目前已完成构建签名、安装与启动，`ios-deploy --debug` 仍受旧式 `DeviceSupport` 查找路径限制，本机 `lldb device select` 也尚未稳定完成 attach 前的设备选择 | — |
-| RIPC-002 | TODO | 重签名 NGR：解包 .app → 修改 bundle ID → 注入 profile → 重签主二进制 + 41 frameworks → 部署到 iPad | 待建 |
-| RIPC-002-A | TODO | 编写重签名脚本 `Scripts/ripc_resign.sh` | — |
+| RIPC-001-C | DONE | 用最小 test app 验证签名 → 真机部署 → LLDB attach 全链路；已分别完成签名构建、安装、启动，并通过 Xcode 原生调试入口完成 debug/attach 阶段验证，`ios-deploy --debug` 保留为已知不兼容旁路 | — |
+| RIPC-002 | TODO（当前主线） | 重签名 NGR：解包 .app → 修改 bundle ID → 注入 profile → 重签主二进制 + 41 frameworks → 部署到 iPad | 待建 |
+| RIPC-002-A | TODO（当前主线） | 编写重签名脚本 `Scripts/ripc_resign.sh` | — |
 | RIPC-002-B | TODO | 执行重签名并部署到 iPad，验证 app 可启动 | — |
 | RIPC-003 | TODO | 真机启动行为基线采集：LLDB attach 后采集 QtsFileSystem 初始化路径的关键运行时上下文（文件路径、沙盒结构、环境变量、entitlements 等） | 待建 |
 | RIPC-004 | TODO | PlayCover 环境同构采集：在 PlayCover 下采集同一组上下文数据 | 待建 |
@@ -199,9 +196,13 @@ LLDB attach 验证，其中 `ios-deploy --debug` 仍卡在旧式 `DeviceSupport`
   `DeviceSupport/*/DeveloperDiskImage.dmg` 路径查找并失败；应把 install 结果与
   attach 结果分开取证，并用 `xcrun devicectl list preferredDDI` 确认 host 实际走的
   是 CoreDevice 外置 DDI。
-- **launch 成功 ≠ attach 成功**：即使 `devicectl device process launch` 已能正常拉起
-  app，LLDB attach 仍可能独立卡在工具链层；当前证据里 `ios-deploy --debug` 与
-  `lldb device select` 都还没有给出可复用的 attach 成功链路。
+- **Xcode 原生调试入口可作为真机 attach 基线**：当 `ios-deploy --debug` 与直接
+  `lldb device select` 不稳定时，可直接复用 Xcode GUI 调试入口；本次最小 test app
+  已通过该路径验证出 `pause/Stop` 活跃、且真机侧有 `debugserver` / `dtdebugproxyd`
+  陪同进程，因此可把它作为已验证的 debug/attach 阶段基线。
+- **Xcode 自动化需要显式处理 sheet / 动态子菜单**：`Attach to Process` 会经历
+  `Getting Process List…` 的动态阶段，`Run` 还可能弹出 `Replace “<App>”?` 对话框；
+  自动化脚本必须把这两类 UI 都纳入状态机。
 - **真机 bundle ID 必须修改**：原 `com.tencent.ngr` 不在开发者账号下，
   必须改为 provisioning profile 覆盖的 ID（如 wildcard `*` 或自定义
   `com.dev.ngr-debug`）。改 bundle ID 可能影响 app 运行时的

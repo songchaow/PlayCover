@@ -1023,6 +1023,7 @@ static BOOL pt_ngr_make_patch_writable(void *address, size_t length);
 static void pt_ngr_restore_patch_protection(void *address, size_t length, vm_prot_t protection);
 static BOOL pt_ngr_c5_install_consumer_handle_family_hook(uint64_t slide);
 static void pt_ngr_c5_remember_reuse_object(uint64_t selectedObj);
+static void pt_ngr_c5_dump_region(uint64_t addr, size_t len, const char *tag, int seq);
 static void pt_ngr_c5_schedule_consumer_handle_guard_scan(uint64_t payloadObj);
 
 static const char pt_ngr_c5_content_pak_path[] = "../../../NGR/Content/Paks/1/1.db";
@@ -1107,7 +1108,7 @@ static size_t pt_ngr_c5_ascii_to_utf16le(const char *src, uint8_t *dst, size_t d
     return n + 1;
 }
 
-static BOOL pt_ngr_c5_try_fix_utf16_at_address(uint64_t address, size_t maxScanBytes) {
+static BOOL pt_ngr_c5_try_fix_utf16_at_address_with_parent(uint64_t address, size_t maxScanBytes, uint64_t parent, size_t parentOff) {
     if (address <= 0x100000000ULL || maxScanBytes < 4) { return NO; }
     uint8_t *buf = (uint8_t *)calloc(1, maxScanBytes + 4);
     if (buf == NULL) { return NO; }
@@ -1189,12 +1190,24 @@ static BOOL pt_ngr_c5_try_fix_utf16_at_address(uint64_t address, size_t maxScanB
                 origEndOffset += 2;
             }
             size_t originalBytes = origEndOffset - offset + 2;
+            size_t originalChars = originalBytes / 2;
             if (replacementBytes > originalBytes) continue;
 
             // Patch in-place
             uint8_t patchBuf[1024] = {0};
             memcpy(patchBuf, replacementUtf16, replacementBytes);
             uint64_t patchAddr = address + offset;
+
+            // RIPC-008-A: dump memory context around the hit before patching
+            {
+                static int dumpSeq = 1;
+                uint64_t dumpAddr = (patchAddr >= 0x100) ? (patchAddr - 0x100) : patchAddr;
+                size_t dumpLen = 0x400;
+                pt_ngr_c5_dump_region(dumpAddr, dumpLen, "users-hit-context", dumpSeq++);
+                NSLog(@"[PlayTools] RIPC-008A-context: patchAddr=0x%llx origBytes=%zu replBytes=%zu",
+                      patchAddr, originalBytes, replacementBytes);
+            }
+
             memcpy((void *)(uintptr_t)patchAddr, patchBuf, originalBytes);
 
             NSLog(@"[PlayTools] RIPC-008 embedded-path-fix: addr=0x%llx suffix=%s replacement=%s",
@@ -1206,6 +1219,32 @@ static BOOL pt_ngr_c5_try_fix_utf16_at_address(uint64_t address, size_t maxScanB
                 @"replacement": [NSString stringWithUTF8String:replacement],
             };
             [PlayCover recordHOK016C5MaterializeShimReuseWithDetails:details];
+
+            // RIPC-008-B: Sync FString size fields in parent object
+            if (parent > 0x100000000ULL) {
+                uint32_t arrayNum = 0, arrayMax = 0;
+                BOOL hasNum = pt_ngr_vm_read_bytes(parent + parentOff + 8, &arrayNum, sizeof(arrayNum));
+                BOOL hasMax = pt_ngr_vm_read_bytes(parent + parentOff + 12, &arrayMax, sizeof(arrayMax));
+                FILE *dbg = fopen("/tmp/ripc-008b-debug.log", "a");
+                if (dbg) {
+                    fprintf(dbg, "RIPC-008B-debug: parent=0x%llx off=0x%zx hasNum=%d hasMax=%d arrayNum=%u arrayMax=%u origChars=%zu replChars=%zu\n",
+                            parent, parentOff, hasNum, hasMax, arrayNum, arrayMax, originalChars, replacementChars);
+                    fclose(dbg);
+                }
+                if (hasNum && hasMax && arrayNum == arrayMax && (arrayNum == originalChars || arrayNum == originalChars + 1)) {
+                    uint32_t newNum = (uint32_t)replacementChars;
+                    uint32_t newMax = (uint32_t)replacementChars;
+                    memcpy((void *)(uintptr_t)(parent + parentOff + 8), &newNum, sizeof(newNum));
+                    memcpy((void *)(uintptr_t)(parent + parentOff + 12), &newMax, sizeof(newMax));
+                    FILE *syncLog = fopen("/tmp/ripc-008b-debug.log", "a");
+                    if (syncLog) {
+                        fprintf(syncLog, "RIPC-008B FString-sync: parent=0x%llx off=0x%zx oldNum=%u newNum=%u\n",
+                                parent, parentOff, arrayNum, newNum);
+                        fclose(syncLog);
+                    }
+                }
+            }
+
             fixed = YES;
             break; // Fixed this occurrence, move to next /Users/ hit
         }
@@ -1214,11 +1253,33 @@ static BOOL pt_ngr_c5_try_fix_utf16_at_address(uint64_t address, size_t maxScanB
     return fixed;
 }
 
+static BOOL pt_ngr_c5_try_fix_utf16_at_address(uint64_t address, size_t maxScanBytes) {
+    return pt_ngr_c5_try_fix_utf16_at_address_with_parent(address, maxScanBytes, 0, 0);
+}
+
 static BOOL pt_ngr_c5_is_known_ptr(uint64_t ptr, uint64_t *known, size_t knownCount) {
     for (size_t i = 0; i < knownCount; i++) {
         if (known[i] == ptr) return YES;
     }
     return NO;
+}
+
+static void pt_ngr_c5_dump_region(uint64_t addr, size_t len, const char *tag, int seq) {
+    NSString *tmpDir = NSTemporaryDirectory();
+    if (!tmpDir) tmpDir = @"/tmp";
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/ripc-008a-dump-%04d-%s-0x%llx-0x%zx.bin",
+             [tmpDir UTF8String], seq, tag, addr, len);
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    uint8_t *buf = (uint8_t *)malloc(len);
+    if (buf && pt_ngr_vm_read_bytes(addr, buf, len)) {
+        fwrite(buf, 1, len, f);
+    }
+    if (buf) free(buf);
+    fclose(f);
+    NSLog(@"[PlayTools] RIPC-008A-DUMP seq=%d tag=%s addr=0x%llx len=%zu path=%s",
+          seq, tag, addr, len, path);
 }
 
 static void pt_ngr_c5_scan_object_graph_for_paths(uint64_t rootObj) {
@@ -1256,24 +1317,17 @@ static void pt_ngr_c5_scan_object_graph_for_paths(uint64_t rootObj) {
         
         for (size_t pi = 0; pi < parentCount && nodeCounts[depth + 1] < childCap; pi++) {
             uint64_t parent = nodes[depth][pi];
-            // Scan parent memory itself at this depth (redundant for depth 0, but harmless)
-            pt_ngr_c5_try_fix_utf16_at_address(parent, childScan);
             
             for (size_t off = 0; off < childRange && nodeCounts[depth + 1] < childCap; off += 8) {
                 uint64_t ptr = 0;
                 if (!pt_ngr_vm_read_u64(parent + off, &ptr)) continue;
                 if (ptr <= 0x100000000ULL) continue;
                 if (pt_ngr_c5_is_known_ptr(ptr, known, knownCount)) continue;
+                // RIPC-008-B: Fix embedded paths with parent context for FString size sync
+                pt_ngr_c5_try_fix_utf16_at_address_with_parent(ptr, childScan, parent, off);
                 ADD_KNOWN(ptr);
                 nodes[depth + 1][nodeCounts[depth + 1]++] = ptr;
             }
-        }
-    }
-    
-    // Scan all collected nodes at their respective depths
-    for (int depth = 1; depth <= 4; depth++) {
-        for (size_t i = 0; i < nodeCounts[depth]; i++) {
-            pt_ngr_c5_try_fix_utf16_at_address(nodes[depth][i], scanSizes[depth]);
         }
     }
     
@@ -1282,6 +1336,8 @@ static void pt_ngr_c5_scan_object_graph_for_paths(uint64_t rootObj) {
 
 static void pt_ngr_c5_fix_embedded_paths(uint64_t selectedObj) {
     if (selectedObj <= 0x100000000ULL) { return; }
+    // RIPC-008-A: dump root object before any patching
+    pt_ngr_c5_dump_region(selectedObj, 0x2000, "selectedObj-root", 0);
     pt_ngr_c5_scan_object_graph_for_paths(selectedObj);
 }
 

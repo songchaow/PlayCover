@@ -37,8 +37,8 @@
 
 ### 当前主线一句话
 
-`RIPC-001-B`：通过 Xcode 空项目为连接的 iPad 自动生成 wildcard
-provisioning profile；`ios-deploy` 已安装完成，但该步需要用户确认并介入 Xcode 登录/信任流程。
+`RIPC-001-C`：使用已生成的开发者 provisioning profile，验证最小 test app 的
+签名 → 真机部署 → `ios-deploy --debug` / LLDB attach 全链路。
 
 ### 当前状态摘要
 
@@ -53,8 +53,16 @@ provisioning profile；`ios-deploy` 已安装完成，但该步需要用户确�
 - **工具链状态**：`ios-deploy` 已通过 Homebrew 安装并用
   `ios-deploy --version` 验证为 `1.12.2`；`libimobiledevice` 系列仍未安装，
   当前不是生成 provisioning profile 的前置阻塞项。
-- **缺失资源**：无 provisioning profile（`~/Library/MobileDevice/Provisioning Profiles/`
-  为空）；需要通过 Xcode 自动生成或手动创建。
+- **常用 Xcode Team**：后续自动签名默认使用 `Songchao Wang`
+  （Team ID `L7CZY6S98T`）；不要再把 `WSA8H7MN7D` 当作 RIPC 主线的默认
+  auto-sign Team。
+- **001B bootstrap 工程**：已在 `build/ripc-profile-bootstrap/` 生成一次性
+  iOS 工程 `RIPCProfileBootstrap.xcodeproj`；当前工程已持久化为 Team
+  `L7CZY6S98T`，bundle ID 为 `com.songdog.ripc.debug`。
+- **001B 产物**：Xcode 已生成显式 iOS App Development profile
+  `~/Library/Developer/Xcode/UserData/Provisioning Profiles/87ea3316-9677-4523-a1eb-ec9a4a55f7f8.mobileprovision`，
+  名称 `iOS Team Provisioning Profile: com.songdog.ripc.debug`，`get-task-allow=true`，
+  且 `ProvisionedDevices` 已包含 iPad UDID `00008103-0011050A0E3B001E`。
 
 ### 修复路线概览（优先级从高到低）
 
@@ -79,16 +87,16 @@ provisioning profile；`ios-deploy` 已安装完成，但该步需要用户确�
 
 ### 当前卡点
 
-1. 无 provisioning profile——重签名需要有效的 profile 才能安装到真机，且该步骤
-   需要通过 Xcode 自动管理签名生成，并涉及用户确认的 Apple ID / 设备信任流程。
+1. 暂无新的人工阻塞；当前待验证点是：在已生成 profile 的前提下，最小 test app
+   是否能完成真机安装、启动以及 `ios-deploy --debug` / LLDB attach。
 
 ### 下一步默认规划
 
-1. 用 Xcode 为连接的 iPad 自动生成 wildcard provisioning profile（创建
-   一个空的 Xcode 项目，target 设为连接的 iPad，让 Xcode 自动管理签名，
-   即可生成 profile）。
-2. 验证签名链路：用生成的 profile 对一个最小 test app 做签名 → 部署 →
+1. 复用 `build/ripc-profile-bootstrap/RIPCProfileBootstrap.xcodeproj` 与已生成的
+   `com.songdog.ripc.debug` development profile，完成最小 test app 的签名 → 部署 →
    启动，确认 LLDB attach 工作正常。
+2. 若 `ios-deploy --debug --bundle <app>` 可稳定 attach，则将 `RIPC-001-C`
+   标记完成，并结束 `RIPC-001`。
 3. 完成 RIPC-001 后进入 RIPC-002（重签名 NGR）。
 
 ## 构建与验证
@@ -131,10 +139,10 @@ provisioning profile；`ios-deploy` 已安装完成，但该步需要用户确�
 
 | ID | 状态 | 任务描述 | 子文档 |
 |---|---|---|---|
-| RIPC-001 | BLOCKED（当前主线） | 环境预检与工具链准备：生成 provisioning profile、验证签名 → 部署 → LLDB attach 链路（`ios-deploy` 已安装，当前卡在 profile 生成） | 待建 |
+| RIPC-001 | TODO（当前主线） | 环境预检与工具链准备：验证签名 → 部署 → LLDB attach 链路（`ios-deploy` 与 development profile 已就位） | 待建 |
 | RIPC-001-A | DONE | 安装 `ios-deploy`（`brew install ios-deploy`），并用 `ios-deploy --version` 验证为 `1.12.2` | — |
-| RIPC-001-B | BLOCKED（需用户确认） | 通过 Xcode 空项目为 iPad 自动生成 wildcard provisioning profile | — |
-| RIPC-001-C | TODO | 用最小 test app 验证签名 → 真机部署 → LLDB attach 全链路 | — |
+| RIPC-001-B | DONE | 通过 Xcode 空项目为 iPad 自动生成 provisioning profile；当前采用 Team `Songchao Wang`（`L7CZY6S98T`），产出显式 profile `87ea3316-9677-4523-a1eb-ec9a4a55f7f8.mobileprovision` | — |
+| RIPC-001-C | TODO（当前主线） | 用最小 test app 验证签名 → 真机部署 → LLDB attach 全链路 | — |
 | RIPC-002 | TODO | 重签名 NGR：解包 .app → 修改 bundle ID → 注入 profile → 重签主二进制 + 41 frameworks → 部署到 iPad | 待建 |
 | RIPC-002-A | TODO | 编写重签名脚本 `Scripts/ripc_resign.sh` | — |
 | RIPC-002-B | TODO | 执行重签名并部署到 iPad，验证 app 可启动 | — |
@@ -154,6 +162,9 @@ provisioning profile；`ios-deploy` 已安装完成，但该步需要用户确�
   `BB36AD6577F23F304F93A1A75A940DAE92559A7B`（Apple Development）；
   另外 2 个已 REVOKED。如果是免费个人开发者账号，profile 7 天过期、
   最多 3 个 app、10 个设备 UDID。
+- **001B 实际产物是显式 profile，不是 wildcard**：Xcode 最终为
+  `com.songdog.ripc.debug` 生成了显式 iOS Team Provisioning Profile；对
+  `RIPC-001-C` 的最小 test app 验证已经足够，不必强求 wildcard。
 - **真机 bundle ID 必须修改**：原 `com.tencent.ngr` 不在开发者账号下，
   必须改为 provisioning profile 覆盖的 ID（如 wildcard `*` 或自定义
   `com.dev.ngr-debug`）。改 bundle ID 可能影响 app 运行时的

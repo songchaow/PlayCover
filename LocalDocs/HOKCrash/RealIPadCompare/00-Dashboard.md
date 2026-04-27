@@ -37,9 +37,9 @@
 
 ### 当前主线一句话
 
-`RIPC-008`：W^X 修复已使全部 hook 安装成功，但 QtsFileSystem 仍然失败。
-失败点不在 materializer 调用层，而在下游——materializer 返回的 object
-内嵌了绝对 macOS 路径的 UTF-16 字符串，下游 compare ladder 仍然不匹配。
+`RIPC-008`：embedded path rewrite 机制已验证可行——成功将 materializer
+返回对象内嵌的绝对 macOS UTF-16 路径重写为相对形式，但 QtsFileSystem
+仍然失败。下游 compare ladder 还在其他位置读取路径。
 
 ### 当前状态摘要
 
@@ -90,43 +90,37 @@ materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
 3. ~~**RIPC-006**~~（已完成）：Direction A — 在 PDT-006 ConvertToPlatformPath
    hook 中增加 Saved/Paks 路径归一化，使 materializer compare ladder 匹配。
 4. ~~**RIPC-007**~~（已完成）：W^X 合规修复 → 全部 hook 安装成功。
-5. **RIPC-008**（当前主线）：materializer hook 层面已生效，但下游 object
-   内嵌路径仍是绝对 macOS 形式，需要进一步定位失败点。
+5. **RIPC-008**（当前主线）：embedded path rewrite 已验证可行（`downstreamObj`
+   UTF-16 已被重写为相对形式），但 QtsFS 仍 fail，需定位更多路径存储位置。
 
-### RIPC-007 W^X 修复 + RIPC-007 验证结论
+### RIPC-008 embedded path rewrite + 验证结论
 
-**RIPC-007 W^X 修复（代码已落地，hook 安装成功）**：
-`pt_ngr_make_patch_writable()` 改为 W^X 合规两阶段：
-- 写入阶段：`PROT_READ|PROT_WRITE`（不含 EXEC）
-- 执行阶段：`PROT_READ|PROT_EXEC`（不含 WRITE）
-- vm_protect 回退使用 `VM_PROT_COPY` 触发 copy-on-write
+**RIPC-008 代码（已落地，downstreamObj 路径重写成功）**：
+`pt_ngr_c5_fix_embedded_paths()` 在 materializer 返回 object 后：
+- 扫描 object 及其 `+0x10`（downstreamObj）链接的内存区域
+- 查找 UTF-16 `/Users/.../content/paks/` 或 `/Saved/Paks/` 模式
+- 就地重写为 `../../../NGR/Content/Paks/<suffix>` 相对形式
 
-修复后全部 3 个 hook 安装成功：
-- PDT-006 `ConvertToPlatformPath` patch：`mprotect-failed` → `installed`
-- HOK-016c5 `consumer-family-hook`：`install-failed` → `installed`
-- HOK-016c5 `alt1`：`not-writable` → `installed-alt1`
-
-**RIPC-007 端到端验证结论（FAIL — materializer 拦截不够）**：
-- materializer shim 成功拦截了 `1/1.db` 调用，返回 non-null object（`0x6000004dead0`）
-- 但 **QtsFileSystem 仍然失败**——失败点在返回的 object 的下游处理：
-  object 内嵌了 UTF-16 字符串 `"/Users/songdogwang/Library/Containers/io.playcover.PlayCover/Applications/com.tencent.ngr.app/c..."`
-  （绝对 macOS 路径），下游 compare ladder 仍然不匹配
-- 进程 SIGABRT（fatal 处理 → `abort()`）
-- 新 crash report：`NGR-2026-04-27-183734.ips`（Thread 6 GameThread abort）
-- 验证报告：`build/ripc-007-verification-report.json`（需更新 verdict）
+验证结果：
+- `ripc008-embedded-path-fix` 事件成功触发，`suffix=1/1.db`
+- `downstreamPreview` 从 `/Users/.../Applications/com.tencent.ngr.app/c...`
+  变为 `../../../NGR/Content/Paks/1/1.db`
+- 但 **QtsFileSystem 仍然失败** → 说明 compare ladder 还在 object graph
+  的其他位置读取路径
 
 ### 当前卡点
 
-1. materializer shim 成功拦截并返回 non-null，但下游 object 内嵌路径
-   仍是绝对 macOS 形式，下游 compare ladder 不匹配 → QtsFS 仍 fail。
-   需要在更深层（object 内容层面或 compare ladder 自身）做修复。
+1. `downstreamObj` 中的嵌入路径已成功重写，但 QtsFS 仍然 fail。
+   **下游 compare ladder 从 object graph 中的其他字段读取路径**。
+   需要在 LLDB 下追踪 compare ladder 的实际读取地址，或扩大扫描范围
+   覆盖 object graph 中所有可能的路径存储位置。
 
 ### 下一步默认规划
 
-1. 进入 `RIPC-008`：分析 materializer 返回的 object 结构，定位下游
-   compare ladder 读取内嵌路径的位置，确定新的拦截/修改点。
-2. 比对真机 iPad 上 materializer 返回 object 的内容，确认真机上该字段
-   是什么值。
+1. 使用 LLDB headless 在 materializer 返回后、compare ladder 运行前
+   dump 完整 object graph（0x200 字节范围），定位所有包含 `/Users/` 的
+   UTF-16 字段。
+2. 扩大 `pt_ngr_c5_fix_embedded_paths` 的扫描范围，覆盖新发现的字段。
 
 ## 构建与验证
 
@@ -143,8 +137,16 @@ materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
   或直接从 Xcode 发起调试会话）；`ios-deploy --debug` 在当前
   `Xcode 16.4 + iPadOS 26.4.1` 组合下仅保留为已知不兼容对照项，不再作为默认 attach
   方法。
-- **PlayCover 侧验证**：复用 HOKCrash 主线的 `launch_app` +
-  `launch-events.jsonl` 流程。
+- **PlayCover 侧验证**：使用 PlayCover MCP `launch_app` 工具启动 app，
+  通过 `launch-events.jsonl` 检查 hook 事件和 QtsFS 状态。
+- **PlayTools 构建部署流程**：
+  1. 修改 `Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m`
+  2. `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh Debug`
+  3. `FASTLANE=1 ./BuildScripts/build_gui.sh Debug`（**必须 FASTLANE=1**，
+     否则 Carthage Bootstrap 会重置 Checkouts 源码）
+  4. 复制 framework 到运行时位置：
+     `rm -rf ~/Library/Frameworks/PlayTools.framework && cp -R build/Build/Products/Release/PlayCover.app/Contents/Frameworks/PlayTools.framework ~/Library/Frameworks/PlayTools.framework`
+  5. MCP `launch_app` 验证
 - **证据存放**：真机 trace 产物 → `build/ripc-*.json`；对比报告 →
   `build/ripc-*-diff.json`。
 
@@ -179,8 +181,8 @@ materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
 | RIPC-004 | DONE | PlayCover 环境同构采集：LLDB attach + ObjC expression evaluation，17 类运行时上下文 | — |
 | RIPC-005 | DONE | 结构化差异对比与根因定位：根因是 materializer compare ladder 不匹配绝对 macOS pak 路径 | `build/ripc-005-diff.json` |
 | RIPC-006 | DONE | Direction A：ConvertToPlatformPath hook 增加 Saved/Paks 路径归一化 | — |
-| RIPC-007 | DONE（hook 安装成功，但 QtsFS 仍 fail） | W^X 修复使全部 hook 安装成功；端到端验证发现失败点在 materializer 返回 object 的下游 compare ladder | `build/ripc-007-verification-report.json` |
-| RIPC-008 | TODO（当前主线） | 定位下游 compare ladder 读取内嵌 UTF-16 路径的位置，在 object 内容层面或 ladder 自身做修复 | 待建 |
+| RIPC-007 | DONE | W^X 修复使全部 hook 安装成功；端到端验证发现失败点在 materializer 返回 object 的下游 compare ladder | `build/ripc-007-verification-report.json` |
+| RIPC-008 | IN-PROGRESS（当前主线） | embedded path rewrite 已验证可行（downstreamObj 路径已重写），但 QtsFS 仍 fail。下游 compare ladder 从 object graph 其他位置读取路径，需扩大扫描 | 待建 |
 
 ## 高频复用经验
 

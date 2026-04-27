@@ -1080,6 +1080,168 @@ static NSString *pt_ngr_c5_utf16_preview_string(uint64_t address) {
                                   encoding:NSUTF16LittleEndianStringEncoding] ?: @"";
 }
 
+// ---------------------------------------------------------------------------
+// RIPC-008: Fix embedded UTF-16 path strings inside materializer return objects.
+//
+// Problem: The materializer returns an object whose downstream fields embed
+// absolute macOS paths in UTF-16-LE format. A downstream compare ladder only
+// matches the relative form ("../../../NGR/Content/Paks/...").
+//
+// Fix: After materializer returns a non-null object, walk the object graph,
+// find embedded UTF-16 strings matching "/Users/.../Saved/Paks/<suffix>",
+// and overwrite them in-place with "../../../NGR/Content/Paks/<suffix>".
+// The relative form is always shorter, so the in-place overwrite is safe.
+// ---------------------------------------------------------------------------
+
+static size_t pt_ngr_c5_ascii_to_utf16le(const char *src, uint8_t *dst, size_t dstSize) {
+    size_t n = 0;
+    while (src[n] != '\0' && (n + 1) * 2 < dstSize) {
+        dst[n * 2]     = (uint8_t)src[n];
+        dst[n * 2 + 1] = 0x00;
+        n++;
+    }
+    if ((n + 1) * 2 <= dstSize) {
+        dst[n * 2]     = 0x00;
+        dst[n * 2 + 1] = 0x00;
+    }
+    return n + 1;
+}
+
+static BOOL pt_ngr_c5_try_fix_utf16_at_address(uint64_t address, size_t maxScanBytes) {
+    if (address <= 0x100000000ULL || maxScanBytes < 4) { return NO; }
+    uint8_t *buf = (uint8_t *)calloc(1, maxScanBytes + 4);
+    if (buf == NULL) { return NO; }
+    if (!pt_ngr_vm_read_bytes(address, buf, maxScanBytes)) { free(buf); return NO; }
+
+    // "/Users/" in UTF-16-LE
+    static const uint8_t usersPrefix[] = {
+        0x2F,0x00,0x55,0x00,0x73,0x00,0x65,0x00,0x72,0x00,0x73,0x00,0x2F,0x00
+    };
+
+    // Multiple marker patterns to match different path forms:
+    // 1. "/Saved/Paks/" (original RIPC-005 case)
+    static const uint8_t savedPaksMarker[] = {
+        0x2F,0x00,0x53,0x00,0x61,0x00,0x76,0x00,0x65,0x00,0x64,0x00,
+        0x2F,0x00,0x50,0x00,0x61,0x00,0x6B,0x00,0x73,0x00,0x2F,0x00
+    };
+    // 2. "/content/paks/" (UE4 uses lowercase for cookeddata paths on disk)
+    static const uint8_t contentPaksLower[] = {
+        0x2F,0x00,0x63,0x00,0x6F,0x00,0x6E,0x00,0x74,0x00,0x65,0x00,0x6E,0x00,0x74,0x00,
+        0x2F,0x00,0x70,0x00,0x61,0x00,0x6B,0x00,0x73,0x00,0x2F,0x00
+    };
+    // 3. "/Content/Paks/" (UE4 title-case)
+    static const uint8_t contentPaksTitle[] = {
+        0x2F,0x00,0x43,0x00,0x6F,0x00,0x6E,0x00,0x74,0x00,0x65,0x00,0x6E,0x00,0x74,0x00,
+        0x2F,0x00,0x50,0x00,0x61,0x00,0x6B,0x00,0x73,0x00,0x2F,0x00
+    };
+
+    struct { const uint8_t *marker; size_t len; } markers[] = {
+        { savedPaksMarker, sizeof(savedPaksMarker) },
+        { contentPaksLower, sizeof(contentPaksLower) },
+        { contentPaksTitle, sizeof(contentPaksTitle) },
+    };
+    size_t markerCount = sizeof(markers) / sizeof(markers[0]);
+
+    BOOL fixed = NO;
+    for (size_t offset = 0; offset + sizeof(usersPrefix) < maxScanBytes; offset += 2) {
+        if (memcmp(buf + offset, usersPrefix, sizeof(usersPrefix)) != 0) continue;
+
+        // Found "/Users/" — search for any Paks marker
+        size_t searchLimit = offset + 2048;
+        if (searchLimit > maxScanBytes) searchLimit = maxScanBytes;
+
+        for (size_t mi = 0; mi < markerCount; mi++) {
+            if (searchLimit < markers[mi].len) continue;
+            size_t markerSearchLimit = searchLimit - markers[mi].len;
+            size_t foundOffset = 0;
+            BOOL found = NO;
+            for (size_t s = offset + sizeof(usersPrefix); s <= markerSearchLimit; s += 2) {
+                if (memcmp(buf + s, markers[mi].marker, markers[mi].len) == 0) {
+                    foundOffset = s; found = YES; break;
+                }
+            }
+            if (!found) continue;
+
+            // Extract suffix after the marker
+            size_t suffixStart = foundOffset + markers[mi].len;
+            char suffixUtf8[256] = {0};
+            size_t suffixLen = 0;
+            for (size_t i = suffixStart; i + 1 < maxScanBytes; i += 2) {
+                uint16_t ch = (uint16_t)(buf[i] | (buf[i + 1] << 8));
+                if (ch == 0) break;
+                if (ch < 0x80) { suffixUtf8[suffixLen++] = (char)ch; if (suffixLen >= sizeof(suffixUtf8) - 1) break; }
+                else break;
+            }
+            suffixUtf8[suffixLen] = '\0';
+            if (suffixLen == 0) continue;
+
+            // Build replacement: "../../../NGR/Content/Paks/<suffix>"
+            char replacement[512] = {0};
+            snprintf(replacement, sizeof(replacement), "../../../NGR/Content/Paks/%s", suffixUtf8);
+            uint8_t replacementUtf16[1024] = {0};
+            size_t replacementChars = pt_ngr_c5_ascii_to_utf16le(replacement, replacementUtf16, sizeof(replacementUtf16));
+            size_t replacementBytes = replacementChars * 2;
+
+            // Find original string end
+            size_t origEndOffset = suffixStart;
+            while (origEndOffset + 1 < maxScanBytes) {
+                uint16_t ch = (uint16_t)(buf[origEndOffset] | (buf[origEndOffset + 1] << 8));
+                if (ch == 0) break;
+                origEndOffset += 2;
+            }
+            size_t originalBytes = origEndOffset - offset + 2;
+            if (replacementBytes > originalBytes) continue;
+
+            // Patch in-place
+            uint8_t patchBuf[1024] = {0};
+            memcpy(patchBuf, replacementUtf16, replacementBytes);
+            uint64_t patchAddr = address + offset;
+            memcpy((void *)(uintptr_t)patchAddr, patchBuf, originalBytes);
+
+            NSLog(@"[PlayTools] RIPC-008 embedded-path-fix: addr=0x%llx suffix=%s replacement=%s",
+                  patchAddr, suffixUtf8, replacement);
+            NSDictionary<NSString *, NSString *> *details = @{
+                @"action": @"ripc008-embedded-path-fix",
+                @"patchAddr": [NSString stringWithFormat:@"0x%llx", patchAddr],
+                @"suffix": [NSString stringWithUTF8String:suffixUtf8],
+                @"replacement": [NSString stringWithUTF8String:replacement],
+            };
+            [PlayCover recordHOK016C5MaterializeShimReuseWithDetails:details];
+            fixed = YES;
+            break; // Fixed this occurrence, move to next /Users/ hit
+        }
+    }
+    free(buf);
+    return fixed;
+}
+
+static void pt_ngr_c5_fix_embedded_paths(uint64_t selectedObj) {
+    if (selectedObj <= 0x100000000ULL) { return; }
+    pt_ngr_c5_try_fix_utf16_at_address(selectedObj, 0x100);
+    uint64_t downstreamObj = 0;
+    if (pt_ngr_vm_read_u64(selectedObj + 0x10, &downstreamObj)
+        && downstreamObj > 0x100000000ULL) {
+        pt_ngr_c5_try_fix_utf16_at_address(downstreamObj, 0x400);
+        for (size_t fo = 0; fo <= 0x38; fo += 8) {
+            uint64_t subPtr = 0;
+            if (pt_ngr_vm_read_u64(downstreamObj + fo, &subPtr)
+                && subPtr > 0x100000000ULL && subPtr != downstreamObj && subPtr != selectedObj) {
+                pt_ngr_c5_try_fix_utf16_at_address(subPtr, 0x200);
+            }
+        }
+    }
+    uint64_t plus28Obj = 0;
+    if (pt_ngr_vm_read_u64(selectedObj + 0x28, &plus28Obj)
+        && plus28Obj > 0x100000000ULL && plus28Obj != selectedObj && plus28Obj != downstreamObj) {
+        pt_ngr_c5_try_fix_utf16_at_address(plus28Obj, 0x200);
+    }
+    uint64_t plus30Obj = 0;
+    if (pt_ngr_vm_read_u64(selectedObj + 0x30, &plus30Obj)
+        && plus30Obj > 0x100000000ULL && plus30Obj != selectedObj && plus30Obj != downstreamObj && plus30Obj != plus28Obj) {
+        pt_ngr_c5_try_fix_utf16_at_address(plus30Obj, 0x200);
+    }
+}
+
 static void pt_ngr_c5_schedule_vtable_stabilizer(uint64_t objAddr) {
     if (objAddr <= 0x100000000ULL) {
         return;
@@ -1605,6 +1767,8 @@ uint64_t pt_ngr_c5_materialize_select(uint64_t retObj,
         : NULL;
 
     if (retObj != 0 && pt_ngr_c5_should_cache_path(path)) {
+        // RIPC-008: Fix embedded UTF-16 paths before caching
+        pt_ngr_c5_fix_embedded_paths(retObj);
         pt_ngr_c5_cached_materialize_obj = retObj;
         pt_ngr_c5_have_materialize_template = pt_ngr_vm_read_bytes(
             retObj,
@@ -1644,6 +1808,8 @@ uint64_t pt_ngr_c5_materialize_select(uint64_t retObj,
         && pt_ngr_c5_should_reuse_path(path)) {
         uint64_t replacement = pt_ngr_c5_wait_for_late_linked_graph(pt_ngr_c5_cached_materialize_obj);
         if (replacement != 0) {
+            // RIPC-008: Fix embedded paths in the replacement
+            pt_ngr_c5_fix_embedded_paths(replacement);
             pt_ngr_c5_clear_error_slot(errSlotAddr);
             pt_ngr_log_c5_reuse_event("reuse-late-linked",
                                       replacement,
@@ -1659,6 +1825,8 @@ uint64_t pt_ngr_c5_materialize_select(uint64_t retObj,
         }
 
         replacement = pt_ngr_c5_cached_materialize_obj;
+        // RIPC-008: Fix embedded paths in the fallback
+        pt_ngr_c5_fix_embedded_paths(replacement);
         pt_ngr_c5_schedule_vtable_stabilizer(replacement);
         pt_ngr_c5_log_first_fallback_probe(retObj,
                                            replacement,

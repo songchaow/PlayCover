@@ -37,8 +37,8 @@
 
 ### 当前主线一句话
 
-`RIPC-002-A`：把已验证的真机签名 / 安装 / Xcode 调试链路迁移到 NGR，先落地
-`Scripts/ripc_resign.sh`，为后续 bundle ID 修改、profile 注入和整包重签名做准备。
+`RIPC-002-B`：用 `Scripts/ripc_resign.sh` 执行 NGR 整包重签名并部署到 iPad，
+验证 app 可安装启动，为后续 RIPC-003 真机基线采集做准备。
 
 ### 当前状态摘要
 
@@ -59,6 +59,11 @@
   debug/attach 全链路已验证通过；`ios-deploy` 仅作为 install-only 工具，
   debug/attach 统一走 Xcode 原生入口。详情与完整产物索引见
   `RIPC-001-环境预检与工具链准备.md`。
+- **RIPC-002-A 结论**：重签名脚本 `Scripts/ripc_resign.sh` 已落地并通过
+  dry-run 验证。脚本自动完成：复制 .app → 修改 bundle ID → 注入 profile →
+  删除旧签名 → 重签 39 frameworks + 16 resource bundles → 重签主 bundle
+  （附带 `get-task-allow=true` entitlements）。支持 `--dry-run` 预检和全部
+  参数覆盖。
 
 ### 修复路线概览（优先级从高到低）
 
@@ -83,26 +88,26 @@
 
 ### 当前卡点
 
-1. 暂无 `RIPC-001` 方向的新阻塞；最小 test app 的签名 → 安装 → 启动 → Xcode 原生
-   LLDB attach 链路已验证完成。
+1. 暂无 `RIPC-002-A` 方向的新阻塞；重签名脚本已落地。下一步需要执行实际
+   重签名（约 3 GB 复制 + 签名），并部署到 iPad 验证安装与启动。
 
 ### 下一步默认规划
 
-1. 进入 `RIPC-002-A`：编写 `Scripts/ripc_resign.sh`，把当前已验证的 Team / profile /
-   codesign 顺序沉淀为可复用脚本。
-2. 用 `~/Library/Containers/io.playcover.PlayCover/Applications/com.tencent.ngr.app/` 作为
-   输入样本，先完成 bundle ID 修改、profile 注入和 frameworks → main bundle 的重签名
-   流程。
-3. 完成脚本后执行 `RIPC-002-B`，把重签后的 NGR 部署到 iPad，并复用本次已验证通过的
-   Xcode 原生调试入口继续推进 `RIPC-003`。
+1. 进入 `RIPC-002-B`：执行 `Scripts/ripc_resign.sh` 完成 NGR 整包重签名
+   （输出到 `build/ripc-resigned/com.tencent.ngr.app`）。
+2. 用 `ios-deploy --bundle` 或 Xcode Devices 窗口将重签后的 NGR 部署到 iPad，
+   验证 app 可安装并至少启动到初始化阶段。
+3. 部署验证通过后进入 `RIPC-003`，通过 Xcode 原生调试入口 LLDB attach，
+   采集 QtsFileSystem 初始化路径的关键运行时上下文。
 
 ## 构建与验证
 
 ### 日常默认方法
 
 - **真机连接验证**：`xcrun xctrace list devices` 确认 iPad 在线。
-- **重签名工具链**：`codesign` + `security` + `/usr/libexec/PlistBuddy`，
-  脚本化后存放在 `Scripts/ripc_resign.sh`（待建）。
+- **重签名工具链**：`Scripts/ripc_resign.sh`（封装了 `codesign` + `security` +
+  `/usr/libexec/PlistBuddy`）。用法：`./Scripts/ripc_resign.sh [--dry-run]`，
+  支持 `--source`、`--bundle-id`、`--profile`、`--identity`、`--output` 覆盖。
 - **真机部署**：`ios-deploy --bundle <path>` 或 Xcode Devices window。
 - **真机 LLDB**：优先使用 Xcode 原生调试入口（如 Xcode Debug → Attach to Process
   或直接从 Xcode 发起调试会话）；`ios-deploy --debug` 在当前
@@ -139,9 +144,9 @@
 | ID | 状态 | 任务描述 | 子文档 |
 |---|---|---|---|
 | RIPC-001 | DONE | 环境预检与工具链准备：最小 test app 的签名构建、真机安装、启动与 Xcode 原生 debug/attach 全链路已验证 | `RIPC-001-环境预检与工具链准备.md` |
-| RIPC-002 | TODO（当前主线） | 重签名 NGR：解包 .app → 修改 bundle ID → 注入 profile → 重签主二进制 + 41 frameworks → 部署到 iPad | 待建 |
-| RIPC-002-A | TODO（当前主线） | 编写重签名脚本 `Scripts/ripc_resign.sh` | — |
-| RIPC-002-B | TODO | 执行重签名并部署到 iPad，验证 app 可启动 | — |
+| RIPC-002 | TODO（当前主线） | 重签名 NGR：解包 .app → 修改 bundle ID → 注入 profile → 重签主二进制 + 39 frameworks → 部署到 iPad | 待建 |
+| RIPC-002-A | DONE | 重签名脚本 `Scripts/ripc_resign.sh` 已落地，dry-run 验证通过 | — |
+| RIPC-002-B | TODO（当前主线） | 执行重签名并部署到 iPad，验证 app 可启动 | — |
 | RIPC-003 | TODO | 真机启动行为基线采集：LLDB attach 后采集 QtsFileSystem 初始化路径的关键运行时上下文（文件路径、沙盒结构、环境变量、entitlements 等） | 待建 |
 | RIPC-004 | TODO | PlayCover 环境同构采集：在 PlayCover 下采集同一组上下文数据 | 待建 |
 | RIPC-005 | TODO | 结构化差异对比与根因定位：对比真机与 PlayCover 两组数据，定位导致 `QtsFileSystem Create Failed` 的环境差异根因 | 待建 |
@@ -151,9 +156,9 @@
 ## 高频复用经验
 
 - **IPA 已解密**：`com.tencent.ngr` 的 `cryptid=0`，无需额外脱壳。
-- **app 体积巨大**：主二进制 230 MB + 41 个 embedded framework + 资产，
-  IPA 总计 3.07 GB。重签名时必须对每个 framework 单独 `codesign`，
-  否则安装失败。签名顺序：先 frameworks → 再主 bundle。
+- **app 体积巨大**：主二进制 230 MB + 39 个 embedded framework + 16 个
+  resource bundle + 资产，IPA 总计 3.07 GB。重签名时必须对每个 framework
+  单独 `codesign`，否则安装失败。签名顺序：先 frameworks → 再主 bundle。
 - **开发者证书限制**：当前只有 1 个有效签名身份
   `BB36AD6577F23F304F93A1A75A940DAE92559A7B`（Apple Development）；
   另外 2 个已 REVOKED。如果是免费个人开发者账号，profile 7 天过期、

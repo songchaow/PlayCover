@@ -167,7 +167,11 @@ python3 $OPS/xcode_gpu_ops.py walk -o /tmp/screenshots -n 50
 python3 $OPS/xcode_general_ops.py windows     # 列出所有窗口
 python3 $OPS/xcode_general_ops.py menubar      # 菜单栏所有项
 python3 $OPS/xcode_general_ops.py menu Debug   # Debug 菜单详情
+python3 $OPS/xcode_general_ops.py submenu Debug "Attach to Process"   # 子菜单详情
 python3 $OPS/xcode_general_ops.py click Debug "Step to Next Draw/Dispatch Call"
+python3 $OPS/xcode_general_ops.py click-submenu Debug "Attach to Process" "RIPCProfileBootstrap"  # 点击子菜单项
+python3 $OPS/xcode_general_ops.py sheets       # 当前窗口的 sheet / alert 摘要
+python3 $OPS/xcode_general_ops.py click-sheet Replace  # 点击 sheet 按钮
 python3 $OPS/xcode_general_ops.py navigator    # 当前 Navigator 名称
 python3 $OPS/xcode_general_ops.py show-nav Debug  # 切换 Navigator
 python3 $OPS/xcode_general_ops.py toolbar      # 工具栏按钮
@@ -184,8 +188,11 @@ python3 $OPS/xcode_general_ops.py uitree -n 300  # UI 元素树 (调试)
 | `get_document_path()` | 当前文档路径 |
 | `get_menu_bar_items()` | 菜单栏所有项名称 |
 | `get_menu_items(menu)` | 指定菜单的所有项 → `[{name, enabled}]` |
+| `get_submenu_items(menu, submenu)` | 指定子菜单的所有项 → `[{name, enabled}]` |
 | `click_menu(menu, item)` | 点击菜单项 (JXA) |
 | `click_submenu(menu, sub, item)` | 点击子菜单项 (AppleScript) |
+| `get_sheets()` | 当前窗口的 sheet / alert 摘要 |
+| `click_sheet_button(name, sheet_index)` | 点击 sheet / alert 按钮 |
 | `show_navigator(name)` | 切换 Navigator |
 | `hide_navigator()` | 隐藏 Navigator |
 | `get_current_navigator()` | 当前激活的 Navigator 名称 |

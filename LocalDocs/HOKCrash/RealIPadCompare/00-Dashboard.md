@@ -37,8 +37,8 @@
 
 ### 当前主线一句话
 
-`RIPC-005`：结构化差异对比真机 vs PlayCover 两组运行时上下文数据，定位
-`QtsFileSystem Create Failed` 的环境差异根因。
+`RIPC-006`：根据 RIPC-005 定位的根因，在 PlayTools 层做最小 bundle-scoped
+环境对齐修复。
 
 ### 当前状态摘要
 
@@ -55,54 +55,67 @@
 - **Provisioning Profile**：已生成显式 iOS App Development profile
   （`87ea3316-9677-4523-a1eb-ec9a4a55f7f8.mobileprovision`），
   `get-task-allow=true`，已包含目标 iPad UDID。
-- **RIPC-001 结论**：签名→安装→启动→调试全链路已验证。
-- **RIPC-002 结论**：重签名脚本 + 部署 + UE4 启动验证通过。
-- **RIPC-003 结论**：真机基线采集完成。通过 RIPCProbe dylib 注入 +
-  console 捕获，采集了全部 17 类运行时上下文数据。**真机上无
-  `QtsFileSystem Create Failed`**，app 正常启动。完整结构化数据见
-  `build/ripc-003-ipad-baseline.json`。关键发现：真机 cwd=`/`，
-  HOME/TMPDIR 指向 `/private/var/mobile/Containers/Data/Application/<UUID>`，
-  sandbox uid=501(mobile)，home 不可写但 Documents/Library/tmp 可写。
-- **RIPC-004 结论**：PlayCover 侧采集完成。通过 LLDB attach + ObjC
-  expression evaluation，采集同一组 17 类运行时上下文数据。完整结构化
-  数据见 `build/ripc-004-playcover-baseline.json`。关键发现：PlayCover
-  HOME 指向 `~/Library/Containers/com.tencent.ngr/Data`（macOS sandbox
-  container），cwd=`/`，uid=501(songdogwang)/gid=20(staff)，home **可写**，
-  环境变量包含大量 macOS 宿主泄漏（HOMEBREW_*、VSCODE_*、NVM_*、
-  DYLD_PRINT_* 等），Library 下有 31 个 macOS 标准子目录（真机仅 12 个）。
+- **RIPC-001～004 结论**：签名→部署→真机/PlayCover 双端基线采集完成。
+  数据见 `build/ripc-003-ipad-baseline.json` / `build/ripc-004-playcover-baseline.json`。
+- **RIPC-005 结论（根因已定位）**：完整差异报告见 `build/ripc-005-diff.json`。
+  根因 **不是** HOME/TMPDIR/环境变量值本身，而是 **UE4 pak 路径在
+  QtsFileSystem materializer 的 UTF-16 compare ladder 中不匹配**。具体见
+  下方"根因链"小节。
 
-### 修复路线概览（优先级从高到低）
+### RIPC-005 根因链
 
-1. **环境预检与工具链准备**（RIPC-001 系列）：安装缺失工具、生成
-   provisioning profile、验证签名链路。
-2. **重签名与真机部署**（RIPC-002 系列）：对 `com.tencent.ngr.app`
-   做完整重签名（主二进制 + 41 个 embedded framework）、修改 bundle ID、
-   注入 provisioning profile、部署到真机。
-3. **真机启动行为基线采集**（RIPC-003 系列）：在真机上启动 app 并
-   通过 LLDB 采集 QtsFileSystem 初始化路径的关键上下文：
-   `NSHomeDirectory()`、`NSBundle.mainBundle`、
-   `NSSearchPathForDirectoriesInDomains`、`NSTemporaryDirectory()`、
-   环境变量、cwd、entitlements 实际值等。
-4. **PlayCover 环境同构采集**（RIPC-004 系列）：在 PlayCover 环境下
-   采集同一组上下文数据。
-5. **结构化差异对比与根因定位**（RIPC-005 系列）：对比两组数据，
-   定位导致 `QtsFileSystem Create Failed` 的环境差异根因。
-6. **PlayTools 环境对齐修复**（RIPC-006 系列）：在 PlayTools 层
-   做最小 bundle-scoped 环境对齐，消除差异根因。
-7. **端到端验证**（RIPC-007）：验证修复后 PlayCover 启动不再触发
-   `QtsFileSystem Create Failed`。
+```
+App 在 PlayCover 启动 → HOME = macOS container '/Users/…/Containers/…/Data'
+→ UE4 FPaths 用 HOME 派生 SavedDir → 所有 Saved 路径带 '/Users/' 前缀
+→ QtsFileSystem init → 创建 main chunk 到 rootB（成功）
+→ readiness B 调用 materializer（0x10432a068），共 3 次调用：
+   ✓ 2× entryX1 = "../../../NGR/Content/Paks/1/1.db"（UE4 相对路径，
+     compare ladder x22=0x21→0x3，match → 返回 non-null）
+   ✗ 1× entryX1 = "/Users/…/Saved/Paks/1/1.db"（绝对 macOS 路径，
+     compare ladder x22=0x31→0x4，mismatch → 返回 0）
+→ materializer 返 0 → helper+0x18=NULL → err=9 → storage+0x30=0x9000b
+→ create-table 返 null → readiness B = 0 → "QtsFileSystem Create Failed!!"
+→ GameThread 退出 → 僵尸态
+```
+
+**关键结论**：根因不是 HOME/TMPDIR 的值本身，也不是环境变量泄漏，
+而是 **UE4 将 Saved/Paks 路径解析为绝对 macOS 路径后，QtsFileSystem
+materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
+
+### 修复路线概览
+
+1. ~~**RIPC-001～004**~~（已完成）：环境预检 → 重签名部署 → 双端基线采集。
+2. ~~**RIPC-005**~~（已完成）：结构化差异对比 → 根因定位。
+3. **RIPC-006**（当前主线）：在 PlayTools 层做最小 bundle-scoped 修复，
+   使 materializer 接收到的 pak 路径格式能通过 compare ladder。
+4. **RIPC-007**：端到端验证。
+
+### RIPC-006 修复方向（待实施，按可行性排序）
+
+1. **方向 A：hook pak-path 注册点，将绝对 macOS 路径归一化为相对路径**。
+   materializer 的 2 次成功调用使用 `../../../NGR/Content/Paks/1/1.db`，
+   失败调用使用 `/Users/.../Saved/Paks/1/1.db`。若能在注册时将后者转为
+   相对形式，compare ladder 即可通过。需找到 pak 路径注册的 callsite。
+2. **方向 B：hook `FPaths::ConvertRelativePathToFull`**，对匹配
+   `Saved/Paks` 模式的路径保留相对形式，防止被转为绝对路径。
+3. **方向 C：在 Saved/Paks/1/ 下创建 1.db 的 symlink 到 bundle**。
+   当前 `Saved/Paks/1/` 目录存在但为空（app crash 前 QtsFS 已创建目录但
+   未完成文件操作）。若 materializer 内部也做 file-existence check，补上
+   symlink 可能帮助通过。风险是仅治标不治本。
+
+**不推荐**：
+- mock HOME/TMPDIR 为 iOS 路径 → macOS 上这些目录不存在，会破坏所有 I/O。
+- 清理环境变量 → 泄漏的 env vars 与 QtsFS 无关。
+- 强推 readiness B = 1 → HOK-016-C.4 dual-force 已证明不够。
 
 ### 当前卡点
 
-1. 暂无阻塞。RIPC-004 已完成，可直接进入 RIPC-005。
+1. 暂无阻塞。RIPC-005 已完成，可直接进入 RIPC-006。
 
 ### 下一步默认规划
 
-1. 进入 `RIPC-005`：结构化对比 `build/ripc-003-ipad-baseline.json` 与
-   `build/ripc-004-playcover-baseline.json`，输出差异报告
-   `build/ripc-005-diff.json`，定位导致 `QtsFileSystem Create Failed`
-   的环境差异根因。
-2. 根因定位后进入 RIPC-006，在 PlayTools 层做最小 bundle-scoped 环境对齐。
+1. 进入 `RIPC-006`：按修复方向 A/B/C 逐一评估可行性，选定方案后实施。
+2. 修复后进入 RIPC-007 端到端验证。
 
 ## 构建与验证
 
@@ -149,14 +162,12 @@
 
 | ID | 状态 | 任务描述 | 子文档 |
 |---|---|---|---|
-| RIPC-001 | DONE | 环境预检与工具链准备：最小 test app 的签名构建、真机安装、启动与 Xcode 原生 debug/attach 全链路已验证 | `RIPC-001-环境预检与工具链准备.md` |
-| RIPC-002 | DONE | 重签名 NGR 并部署到 iPad：从原始 IPA 解包 → 重签 39 frameworks + 主 bundle → 部署 → 启动验证通过 | — |
-| RIPC-002-A | DONE | 重签名脚本 `Scripts/ripc_resign.sh`（含 IPA 解包、平台安全检查） | — |
-| RIPC-002-B | DONE | 执行重签名、部署到 iPad、UE4 引擎启动验证通过 | — |
-| RIPC-003 | DONE | 真机基线采集：RIPCProbe dylib 注入 + console 捕获，17 类运行时上下文数据。真机无 `QtsFileSystem Create Failed` | `RIPC-003-真机启动行为基线采集.md` |
-| RIPC-004 | DONE | PlayCover 环境同构采集：LLDB attach + ObjC expression evaluation，17 类运行时上下文数据 | — |
-| RIPC-005 | TODO（当前主线） | 结构化差异对比与根因定位：对比真机与 PlayCover 两组数据，定位导致 `QtsFileSystem Create Failed` 的环境差异根因 | 待建 |
-| RIPC-006 | TODO | PlayTools 环境对齐修复：在 PlayTools 层做最小 bundle-scoped 环境对齐 | 待建 |
+| RIPC-001 | DONE | 环境预检与工具链准备：签名构建、真机安装、启动与 debug 全链路已验证 | `RIPC-001-环境预检与工具链准备.md` |
+| RIPC-002 | DONE | 重签名 NGR 并部署到 iPad：IPA 解包 → 重签 → 部署 → UE4 启动验证通过 | — |
+| RIPC-003 | DONE | 真机基线采集：RIPCProbe dylib 注入 + console 捕获，17 类运行时上下文。真机无 QtsFS 失败 | `RIPC-003-真机启动行为基线采集.md` |
+| RIPC-004 | DONE | PlayCover 环境同构采集：LLDB attach + ObjC expression evaluation，17 类运行时上下文 | — |
+| RIPC-005 | DONE | 结构化差异对比与根因定位：根因是 materializer compare ladder 不匹配绝对 macOS pak 路径 | `build/ripc-005-diff.json` |
+| RIPC-006 | TODO（当前主线） | PlayTools 环境对齐修复：使 QtsFS materializer 接收到的 pak 路径能通过 compare ladder | 待建 |
 | RIPC-007 | TODO | 端到端验证：PlayCover 启动不再触发 `QtsFileSystem Create Failed`，且满足 HOKCrash 主线最终目标 | 待建 |
 
 ## 高频复用经验
@@ -212,6 +223,18 @@
   均可写。uid=501(当前 macOS 用户)/gid=20(staff)。环境变量大量泄漏宿主
   macOS 状态（43 个，真机仅 13 个）。Library 下 31 个 macOS 标准子目录
   （真机仅 12 个）。
+- **RIPC-005 根因定位**：QtsFS 失败的直接原因是 materializer compare
+  ladder（UTF-16 case-fold）不匹配绝对 macOS 路径 `/Users/.../Saved/Paks/1/1.db`。
+  成功路径用相对形式 `../../../NGR/Content/Paks/1/1.db`。根因不是
+  HOME/TMPDIR 值本身，不是 env var 泄漏，不是 uid/gid，不是目录结构差异。
+- **Saved/Paks/1 目录已存在但为空**：QtsFS 在 crash 前成功创建了
+  `Library/NGR/Saved/Paks/1/` 目录和 `main/Watchdog/*.db`，但 `1/1.db`
+  未被写入（因 materializer 在此之前已失败）。
+- **1.db 在 bundle 中存在**：`cookeddata/ngr/content/paks/1/1.db`（20 MB）
+  及 `1_0.db` ~ `1_15.db`（各 ~200 MB）。
+- **PDT-006 已有但不够**：`ConvertToPlatformPath` patch 透传 `/Users/` 前缀
+  路径，防止进一步拼接错误；但路径 **已经** 是绝对形式了，materializer
+  compare ladder 仍不匹配。
 
 ## 参考信息
 
@@ -229,6 +252,7 @@
 - RIPC-004 结构化基线：`build/ripc-004-playcover-baseline.json`
 - RIPC-004 LLDB 日志：`build/ripc-004-lldb.log`
 - RIPC-004 采集脚本：`Scripts/ripc_004_playcover_probe.py`
+- RIPC-005 差异报告：`build/ripc-005-diff.json`
 
 ### 关联文档
 
@@ -242,6 +266,9 @@
   与踩坑记录。**阅读建议：需要复现具体命令、核查原始产物、或排查
   profile / codesign / deploy / attach 异常时按需读取；一般无需读取。**
 - `RIPC-003-真机启动行为基线采集.md`：真机 iPad 运行时上下文详细数据
-  表格、Probe 方法说明与产物索引。**阅读建议：进行 RIPC-004/005 对比
+  表格、Probe 方法说明与产物索引。**阅读建议：进行 RIPC-006 修复
   时需要查阅真机侧具体路径值时读取。一般使用
   `build/ripc-003-ipad-baseline.json` 即可。**
+- `HOK-016-appendix-C27.md`（HOKCrash 子文档）：materializer compare
+  ladder 的逐层证据，是 RIPC-005 根因定位的关键证据来源。**阅读建议：
+  需要理解 materializer 内部控制流、success/fail tuple 差异时读取。**

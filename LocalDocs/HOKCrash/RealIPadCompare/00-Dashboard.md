@@ -50,42 +50,15 @@
   已解密 `cryptid=0`）。
 - PlayCover 已安装副本在
   `~/Library/Containers/io.playcover.PlayCover/Applications/com.tencent.ngr.app/`。
-- **工具链状态**：`ios-deploy` 已通过 Homebrew 安装并用
-  `ios-deploy --version` 验证为 `1.12.2`；`libimobiledevice` 系列仍未安装，
-  当前不是生成 provisioning profile 的前置阻塞项。
 - **常用 Xcode Team**：后续自动签名默认使用 `Songchao Wang`
-  （Team ID `L7CZY6S98T`）；不要再把 `WSA8H7MN7D` 当作 RIPC 主线的默认
-  auto-sign Team。
-- **001B bootstrap 工程**：已在 `build/ripc-profile-bootstrap/` 生成一次性
-  iOS 工程 `RIPCProfileBootstrap.xcodeproj`；当前工程已持久化为 Team
-  `L7CZY6S98T`，bundle ID 为 `com.songdog.ripc.debug`。
-- **001B 产物**：Xcode 已生成显式 iOS App Development profile
-  `~/Library/Developer/Xcode/UserData/Provisioning Profiles/87ea3316-9677-4523-a1eb-ec9a4a55f7f8.mobileprovision`，
-  名称 `iOS Team Provisioning Profile: com.songdog.ripc.debug`，`get-task-allow=true`，
-  且 `ProvisionedDevices` 已包含 iPad UDID `00008103-0011050A0E3B001E`。
-- **001C 构建重跑成功**：`xcodebuild` 已重新完成 `RIPCProfileBootstrap` 的真机构建与
-  签名，产物仍带 `application-identifier=L7CZY6S98T.com.songdog.ripc.debug`
-  与 `get-task-allow=true`；见 `build/ripc-001c-bootstrap-build.log` 与
-  `build/ripc-001c-summary.json`。
-- **001C 安装成功**：`ios-deploy` 已将 `RIPCProfileBootstrap.app` 安装到 iPad，且
-  `devicectl device info apps` 能在真机侧枚举到 `com.songdog.ripc.debug`；见
-  `build/ripc-001c-deploy.log`、`build/ripc-001c-apps.json`。
-- **001C 真机启动成功**：`devicectl device process launch` 已可成功启动
-  `com.songdog.ripc.debug`，普通启动进程 PID 为 `1389`，`--start-stopped` 启动进程
-  PID 为 `1397`；见 `build/ripc-001c-launch-after-trust.json` 与
-  `build/ripc-001c-launch-start-stopped.json`。
-- **001C Xcode 原生 debug/attach 阶段已验证成功**：在 Xcode 中处理
-  `Replace “RIPCProfileBootstrap”?` 对话框后，调试栏进入活动状态
-  （`pause=true`、`Stop=true`），且真机侧同时存在 `dtdebugproxyd`、`debugserver`
-  和 `RIPCProfileBootstrap` 进程，证明最小 test app 的 **debug/attach 阶段** 已运行在
-  Xcode 原生调试链路下；见 `build/ripc-001c-xcode-debug-state.json`。
-- **`ios-deploy --debug` 结论已固定**：在同一 host / device 组合上，`ios-deploy 1.12.2`
-  仍停在旧式 `DeviceSupport/*/DeveloperDiskImage.dmg` 查找，因此后续只把它视为
-  install-only 工具；真机 **debug/attach** 统一走 Xcode 原生调试入口。见
-  `build/ripc-001c-deploy-after-trust.log` 与 `build/ripc-001c-summary.json`。
-- **LLDB CLI 现状已降级为旁路问题**：`lldb device select` 仍会触发内部
-  `Running Xcode first launch:` shell 步骤并在 60s 后超时，但这已不再阻塞
-  `RIPC-001-C` 完成；见 `build/ripc-001c-lldb-select-after-prepare.log`。
+  （Team ID `L7CZY6S98T`）。
+- **Provisioning Profile**：已生成显式 iOS App Development profile
+  （`87ea3316-9677-4523-a1eb-ec9a4a55f7f8.mobileprovision`），
+  `get-task-allow=true`，已包含目标 iPad UDID。
+- **RIPC-001 结论**：最小 test app 的签名 → 安装 → 启动 → Xcode 原生
+  debug/attach 全链路已验证通过；`ios-deploy` 仅作为 install-only 工具，
+  debug/attach 统一走 Xcode 原生入口。详情与完整产物索引见
+  `RIPC-001-环境预检与工具链准备.md`。
 
 ### 修复路线概览（优先级从高到低）
 
@@ -165,10 +138,7 @@
 
 | ID | 状态 | 任务描述 | 子文档 |
 |---|---|---|---|
-| RIPC-001 | DONE | 环境预检与工具链准备：已完成最小 test app 的签名构建、真机安装、真机启动与 Xcode 原生 debug/attach 阶段验证 | 待建 |
-| RIPC-001-A | DONE | 安装 `ios-deploy`（`brew install ios-deploy`），并用 `ios-deploy --version` 验证为 `1.12.2` | — |
-| RIPC-001-B | DONE | 通过 Xcode 空项目为 iPad 自动生成 provisioning profile；当前采用 Team `Songchao Wang`（`L7CZY6S98T`），产出显式 profile `87ea3316-9677-4523-a1eb-ec9a4a55f7f8.mobileprovision` | — |
-| RIPC-001-C | DONE | 用最小 test app 验证签名 → 真机部署 → LLDB attach 全链路；已分别完成签名构建、安装、启动，并通过 Xcode 原生调试入口完成 debug/attach 阶段验证，`ios-deploy --debug` 保留为已知不兼容旁路 | — |
+| RIPC-001 | DONE | 环境预检与工具链准备：最小 test app 的签名构建、真机安装、启动与 Xcode 原生 debug/attach 全链路已验证 | `RIPC-001-环境预检与工具链准备.md` |
 | RIPC-002 | TODO（当前主线） | 重签名 NGR：解包 .app → 修改 bundle ID → 注入 profile → 重签主二进制 + 41 frameworks → 部署到 iPad | 待建 |
 | RIPC-002-A | TODO（当前主线） | 编写重签名脚本 `Scripts/ripc_resign.sh` | — |
 | RIPC-002-B | TODO | 执行重签名并部署到 iPad，验证 app 可启动 | — |
@@ -197,12 +167,8 @@
   attach 结果分开取证，并用 `xcrun devicectl list preferredDDI` 确认 host 实际走的
   是 CoreDevice 外置 DDI。
 - **Xcode 原生调试入口可作为真机 attach 基线**：当 `ios-deploy --debug` 与直接
-  `lldb device select` 不稳定时，可直接复用 Xcode GUI 调试入口；本次最小 test app
-  已通过该路径验证出 `pause/Stop` 活跃、且真机侧有 `debugserver` / `dtdebugproxyd`
-  陪同进程，因此可把它作为已验证的 debug/attach 阶段基线。
-- **Xcode 自动化需要显式处理 sheet / 动态子菜单**：`Attach to Process` 会经历
-  `Getting Process List…` 的动态阶段，`Run` 还可能弹出 `Replace “<App>”?` 对话框；
-  自动化脚本必须把这两类 UI 都纳入状态机。
+  `lldb device select` 不稳定时，可直接复用 Xcode GUI 调试入口。详情见
+  `RIPC-001-环境预检与工具链准备.md` §最小 Test App 全链路验证。
 - **真机 bundle ID 必须修改**：原 `com.tencent.ngr` 不在开发者账号下，
   必须改为 provisioning profile 覆盖的 ID（如 wildcard `*` 或自定义
   `com.dev.ngr-debug`）。改 bundle ID 可能影响 app 运行时的
@@ -232,3 +198,6 @@
 - `LocalDocs/HOKCrash/HOK-016-qts-fs-create-failed.md`：QtsFileSystem
   失败的详细根因链与已证伪路径。**阅读建议：需要确定真机对比的具体
   断点地址或需要理解 storage create-table 链时读取。**
+- `RIPC-001-环境预检与工具链准备.md`：RIPC-001 完整实验细节、验证产物
+  与踩坑记录。**阅读建议：需要复现具体命令、核查原始产物、或排查
+  profile / codesign / deploy / attach 异常时按需读取；一般无需读取。**

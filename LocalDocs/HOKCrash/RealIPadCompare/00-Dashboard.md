@@ -37,8 +37,8 @@
 
 ### 当前主线一句话
 
-`RIPC-004`：在 PlayCover 环境下采集同一组运行时上下文数据，为结构化差异
-对比做准备。
+`RIPC-005`：结构化差异对比真机 vs PlayCover 两组运行时上下文数据，定位
+`QtsFileSystem Create Failed` 的环境差异根因。
 
 ### 当前状态摘要
 
@@ -63,6 +63,13 @@
   `build/ripc-003-ipad-baseline.json`。关键发现：真机 cwd=`/`，
   HOME/TMPDIR 指向 `/private/var/mobile/Containers/Data/Application/<UUID>`，
   sandbox uid=501(mobile)，home 不可写但 Documents/Library/tmp 可写。
+- **RIPC-004 结论**：PlayCover 侧采集完成。通过 LLDB attach + ObjC
+  expression evaluation，采集同一组 17 类运行时上下文数据。完整结构化
+  数据见 `build/ripc-004-playcover-baseline.json`。关键发现：PlayCover
+  HOME 指向 `~/Library/Containers/com.tencent.ngr/Data`（macOS sandbox
+  container），cwd=`/`，uid=501(songdogwang)/gid=20(staff)，home **可写**，
+  环境变量包含大量 macOS 宿主泄漏（HOMEBREW_*、VSCODE_*、NVM_*、
+  DYLD_PRINT_* 等），Library 下有 31 个 macOS 标准子目录（真机仅 12 个）。
 
 ### 修复路线概览（优先级从高到低）
 
@@ -87,14 +94,15 @@
 
 ### 当前卡点
 
-1. 暂无阻塞。RIPC-003 已完成，可直接进入 RIPC-004。
+1. 暂无阻塞。RIPC-004 已完成，可直接进入 RIPC-005。
 
 ### 下一步默认规划
 
-1. 进入 `RIPC-004`：在 PlayCover 环境下采集同一组运行时上下文数据。
-   复用 RIPCProbe dylib 的相同代码（编译为 macCatalyst），注入 PlayCover
-   侧的 NGR app 或通过 LLDB attach 采集。
-2. 采集完成后进入 RIPC-005，结构化对比两组数据。
+1. 进入 `RIPC-005`：结构化对比 `build/ripc-003-ipad-baseline.json` 与
+   `build/ripc-004-playcover-baseline.json`，输出差异报告
+   `build/ripc-005-diff.json`，定位导致 `QtsFileSystem Create Failed`
+   的环境差异根因。
+2. 根因定位后进入 RIPC-006，在 PlayTools 层做最小 bundle-scoped 环境对齐。
 
 ## 构建与验证
 
@@ -146,8 +154,8 @@
 | RIPC-002-A | DONE | 重签名脚本 `Scripts/ripc_resign.sh`（含 IPA 解包、平台安全检查） | — |
 | RIPC-002-B | DONE | 执行重签名、部署到 iPad、UE4 引擎启动验证通过 | — |
 | RIPC-003 | DONE | 真机基线采集：RIPCProbe dylib 注入 + console 捕获，17 类运行时上下文数据。真机无 `QtsFileSystem Create Failed` | `RIPC-003-真机启动行为基线采集.md` |
-| RIPC-004 | TODO（当前主线） | PlayCover 环境同构采集：在 PlayCover 下采集同一组上下文数据 | 待建 |
-| RIPC-005 | TODO | 结构化差异对比与根因定位：对比真机与 PlayCover 两组数据，定位导致 `QtsFileSystem Create Failed` 的环境差异根因 | 待建 |
+| RIPC-004 | DONE | PlayCover 环境同构采集：LLDB attach + ObjC expression evaluation，17 类运行时上下文数据 | — |
+| RIPC-005 | TODO（当前主线） | 结构化差异对比与根因定位：对比真机与 PlayCover 两组数据，定位导致 `QtsFileSystem Create Failed` 的环境差异根因 | 待建 |
 | RIPC-006 | TODO | PlayTools 环境对齐修复：在 PlayTools 层做最小 bundle-scoped 环境对齐 | 待建 |
 | RIPC-007 | TODO | 端到端验证：PlayCover 启动不再触发 `QtsFileSystem Create Failed`，且满足 HOKCrash 主线最终目标 | 待建 |
 
@@ -195,6 +203,15 @@
   （symlink）。NSHomeDirectory 不带 `/private`，NSTemporaryDirectory 带
   `/private`。cwd 为 `/`。Home 目录本身不可写，Documents/Library/tmp 可写。
   sandbox uid=501(mobile)，bundle uid=33(_www)。
+- **PlayCover 环境 LLDB 采集方法**：直接 `lldb --batch --source` attach 到
+  运行中的 NGR 进程，逐一 evaluate ObjC 表达式。对标量用 `expr -l objc --`，
+  对集合（NSArray/NSDictionary）用 `po`。采集脚本为
+  `Scripts/ripc_004_playcover_probe.py`。
+- **PlayCover sandbox 特征**：HOME 在 `~/Library/Containers/<bundleId>/Data`
+  （macOS App Sandbox container），非 iOS 标准路径。home/Documents/Library/tmp
+  均可写。uid=501(当前 macOS 用户)/gid=20(staff)。环境变量大量泄漏宿主
+  macOS 状态（43 个，真机仅 13 个）。Library 下 31 个 macOS 标准子目录
+  （真机仅 12 个）。
 
 ## 参考信息
 
@@ -209,6 +226,9 @@
 - 真机证据产物：`build/ripc-*.json` / `build/ripc-*.log`
 - RIPC-003 结构化基线：`build/ripc-003-ipad-baseline.json`
 - RIPC-003 Probe 源码：`build/ripc-003-probe/RIPCProbe.m`
+- RIPC-004 结构化基线：`build/ripc-004-playcover-baseline.json`
+- RIPC-004 LLDB 日志：`build/ripc-004-lldb.log`
+- RIPC-004 采集脚本：`Scripts/ripc_004_playcover_probe.py`
 
 ### 关联文档
 

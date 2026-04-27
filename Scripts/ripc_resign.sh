@@ -2,8 +2,14 @@
 # ripc_resign.sh — Re-sign com.tencent.ngr for iPad debug deployment (RIPC-002-A)
 #
 # Usage:
-#   ./Scripts/ripc_resign.sh [--source <path>] [--bundle-id <id>] [--profile <path>]
-#                            [--identity <hash>] [--output <dir>] [--dry-run]
+#   ./Scripts/ripc_resign.sh [--ipa <path>] [--source <path>] [--bundle-id <id>]
+#                            [--profile <path>] [--identity <hash>] [--output <dir>]
+#                            [--dry-run]
+#
+# By default, extracts the .app from the original IPA to get the native iOS
+# binary (platform=2). The PlayCover installed copy has platform=6 (macCatalyst)
+# and CANNOT be deployed to a real iPad (dyld will refuse to load system
+# frameworks with "wrong platform").
 #
 # Defaults are tuned for the RIPC workflow documented in
 # LocalDocs/HOKCrash/RealIPadCompare/00-Dashboard.md.
@@ -27,13 +33,14 @@ die()   { echo "${RED}[FAIL]${RESET}  $*" >&2; exit 1; }
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-DEFAULT_SOURCE="$HOME/Library/Containers/io.playcover.PlayCover/Applications/com.tencent.ngr.app"
+DEFAULT_IPA="$HOME/Downloads/com.tencent.ngr_1.0.8_und3fined.ipa"
 DEFAULT_BUNDLE_ID="com.songdog.ripc.debug"
 DEFAULT_PROFILE="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/87ea3316-9677-4523-a1eb-ec9a4a55f7f8.mobileprovision"
 DEFAULT_IDENTITY="BB36AD6577F23F304F93A1A75A940DAE92559A7B"
 DEFAULT_OUTPUT="$REPO_ROOT/build/ripc-resigned"
 
-SOURCE_APP="${DEFAULT_SOURCE}"
+IPA_PATH="${DEFAULT_IPA}"
+SOURCE_APP=""
 BUNDLE_ID="${DEFAULT_BUNDLE_ID}"
 PROFILE="${DEFAULT_PROFILE}"
 IDENTITY="${DEFAULT_IDENTITY}"
@@ -43,7 +50,8 @@ DRY_RUN=0
 # ── argument parsing ─────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --source)     SOURCE_APP="$2"; shift 2 ;;
+    --ipa)        IPA_PATH="$2"; SOURCE_APP=""; shift 2 ;;
+    --source)     SOURCE_APP="$2"; IPA_PATH=""; shift 2 ;;
     --bundle-id)  BUNDLE_ID="$2";  shift 2 ;;
     --profile)    PROFILE="$2";    shift 2 ;;
     --identity)   IDENTITY="$2";   shift 2 ;;
@@ -59,7 +67,6 @@ done
 # ── pre-flight checks ───────────────────────────────────────────────────────
 info "Pre-flight checks..."
 
-[ -d "$SOURCE_APP" ] || die "Source .app not found: $SOURCE_APP"
 [ -f "$PROFILE" ]    || die "Provisioning profile not found: $PROFILE"
 
 # Verify signing identity is valid (not revoked)
@@ -71,6 +78,61 @@ command -v codesign >/dev/null        || die "codesign not found"
 command -v /usr/libexec/PlistBuddy >/dev/null || die "PlistBuddy not found"
 
 ok "Pre-flight passed"
+
+# ── resolve source .app (from IPA or direct path) ───────────────────────────
+if [ -z "$SOURCE_APP" ]; then
+  # Default: extract from IPA
+  [ -f "$IPA_PATH" ] || die "IPA not found: $IPA_PATH (use --ipa or --source)"
+  info "Extracting .app from IPA: $IPA_PATH"
+  IPA_EXTRACT_DIR="$REPO_ROOT/build/ripc-ipa-extract"
+  mkdir -p "$IPA_EXTRACT_DIR"
+
+  # Find the .app directory name inside the IPA.
+  # First check if we already extracted it (avoids slow unzip -l on 3GB IPA).
+  EXISTING_APP=$(find "$IPA_EXTRACT_DIR/Payload" -maxdepth 1 -name "*.app" -type d 2>/dev/null | head -1)
+  if [ -n "$EXISTING_APP" ]; then
+    APP_BASENAME=$(basename "$EXISTING_APP")
+    info "IPA already extracted at $EXISTING_APP, reusing"
+  else
+    # Scan IPA listing to find the .app name
+    APP_DIR_IN_IPA=$(unzip -Z1 "$IPA_PATH" 2>/dev/null | grep -oE '^Payload/[^/]+\.app' | sort -u | head -1 || true)
+    [ -n "$APP_DIR_IN_IPA" ] || die "No .app found inside IPA"
+    APP_BASENAME=$(basename "$APP_DIR_IN_IPA")
+    info "Found in IPA: $APP_DIR_IN_IPA"
+    info "Extracting (this may take a while for a 3 GB IPA)..."
+    unzip -o "$IPA_PATH" "Payload/$APP_BASENAME/*" -d "$IPA_EXTRACT_DIR/" >/dev/null 2>&1 \
+      || die "Failed to extract IPA"
+    ok "IPA extracted"
+  fi
+  SOURCE_APP="$IPA_EXTRACT_DIR/Payload/$APP_BASENAME"
+fi
+
+[ -d "$SOURCE_APP" ] || die "Source .app not found: $SOURCE_APP"
+
+# ── platform safety check ───────────────────────────────────────────────────
+# Detect the main executable and verify it's a native iOS binary (platform 2).
+# PlayCover installed copies are macCatalyst (platform 6) and will fail on
+# real iPad with: "wrong platform to load into process".
+MAIN_EXEC_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$SOURCE_APP/Info.plist" 2>/dev/null)
+[ -n "$MAIN_EXEC_NAME" ] || MAIN_EXEC_NAME="NGR"
+MAIN_EXEC="$SOURCE_APP/$MAIN_EXEC_NAME"
+
+if [ -f "$MAIN_EXEC" ]; then
+  PLATFORM=$(otool -l "$MAIN_EXEC" 2>/dev/null | awk '/LC_BUILD_VERSION/{found=1} found && /platform/{print $2; exit}')
+  case "$PLATFORM" in
+    2)
+      ok "Binary platform: iOS (platform 2) — correct for iPad deployment" ;;
+    6)
+      die "Binary platform: macCatalyst (platform 6) — this is a PlayCover-modified copy.
+  PlayCover rewrites LC_BUILD_VERSION to macCatalyst for macOS execution.
+  Real iPad requires the original iOS binary (platform 2).
+  Use --ipa to extract from the original IPA instead of --source." ;;
+    *)
+      warn "Binary platform: $PLATFORM (unexpected). Proceeding, but verify deployment works." ;;
+  esac
+else
+  warn "Main executable not found at $MAIN_EXEC, skipping platform check"
+fi
 
 # ── extract entitlements from provisioning profile ───────────────────────────
 info "Extracting entitlements from profile..."
@@ -100,7 +162,7 @@ ok "Entitlements ready (get-task-allow=$(/usr/libexec/PlistBuddy -c 'Print :get-
 
 # ── dry-run bail-out ─────────────────────────────────────────────────────────
 if [ "$DRY_RUN" -eq 1 ]; then
-  info "[DRY-RUN] Would copy $SOURCE_APP → $OUTPUT_DIR/com.tencent.ngr.app"
+  info "[DRY-RUN] Would copy $SOURCE_APP → $OUTPUT_DIR/$(basename "$SOURCE_APP")"
   info "[DRY-RUN] Would change bundle ID → $BUNDLE_ID"
   info "[DRY-RUN] Would inject profile → embedded.mobileprovision"
   FW_COUNT=$(find "$SOURCE_APP/Frameworks" -maxdepth 1 -name "*.framework" -type d 2>/dev/null | wc -l | tr -d ' ')

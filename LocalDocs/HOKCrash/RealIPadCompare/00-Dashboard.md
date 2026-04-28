@@ -161,6 +161,16 @@ materializer 断点采集，从路径生成源头重新定位根因。
   或直接从 Xcode 发起调试会话）；`ios-deploy --debug` 在当前
   `Xcode 16.4 + iPadOS 26.4.1` 组合下仅保留为已知不兼容对照项，不再作为默认 attach
   方法。
+- **Xcode GUI 自动化（agent 必须自主使用）**：`LocalDocs/XCodeOperation/`
+  目录提供了一套基于 JXA/Accessibility API 的 Xcode GUI 自动化工具库
+  (`xcode_general_ops.py` / `xcode_gpu_ops.py`)。agent 在执行任何涉及
+  Xcode 交互式操作的步骤时，**必须优先使用这套工具**，通过菜单点击、
+  Navigator 操作、Debug Console 读写等方式完成自动化。**如果现有脚本
+  缺少所需功能，agent 必须自行扫描 Xcode UI 结构（`dump_ui_tree` /
+  `uitree`），定位目标控件后立刻将可复用操作沉淀回
+  `xcode_general_ops.py`，严禁以"缺少功能"为由向用户求助。** 已沉淀的
+  通用操作包括：Breakpoint Navigator 切换、Create breakpoint 按钮点击、
+  Debug Console 显示/读取/命令发送等。
 - **PlayCover 侧验证**：使用 PlayCover MCP `launch_app` 工具启动 app，
   通过 `launch-events.jsonl` 检查 hook 事件和 QtsFS 状态。
 - **PlayTools 构建部署流程**：
@@ -203,10 +213,10 @@ materializer 断点采集，从路径生成源头重新定位根因。
 | RIPC-007 | DONE | W^X 修复使全部 hook 安装成功；端到端验证发现失败点在 materializer 返回 object 的下游 compare ladder | `build/ripc-007-verification-report.json` |
 | RIPC-008 | DONE | 内存 dump 定位 `selectedObj + 0x10` 处 UE4 `FString`；parent-aware `ArrayNum/ArrayMax` 同步修复（129→33）已验证生效，但 QtsFS 仍 100% 失败，size 字段假设被证伪。产物：`build/ripc-008a/` | — |
 | RIPC-010 | IN-PROGRESS（当前主线） | 真机 materializer 断点采集与双端参数对比：在真机 iPad 上对 materializer 下断点，采集 3 次调用的 entryX1 实参与返回值，与 PlayCover 侧做结构化对比，直接区分"路径生成差异"与"materializer 跨平台行为差异" | 待建 |
-| RIPC-010-A1 | IN-PROGRESS | 开发 LLDB Python 采集脚本 `Scripts/ripc_010a_materializer_probe.py`：在 materializer entry/return 处设置断点，自动采集 x1/x0/lr，输出结构化 JSON | — |
-| RIPC-010-A2 | TODO | 开发 Xcode GUI 自动化 attach 脚本 `LocalDocs/XCodeOperation/ripc_010a_xcode_debug_automation.py`：利用 xcode_general_ops.py 基础能力自动执行 Debug → Attach to Process | — |
-| RIPC-010-A3 | TODO | 验证并迭代 Debug Console 命令输入自动化：向 Xcode Debug Console 自动输入 `command script import` 及断点命令 | — |
-| RIPC-010-A4 | TODO | 端到端真机采集验证：运行完整流程，采集 3 次 materializer 调用参数，产物为 `build/ripc-010a-ipad-materializer-args.json` | — |
+| RIPC-010-A1 | **DONE** | 开发 LLDB Python 采集脚本 `Scripts/ripc_010a_materializer_probe.py`：在 materializer entry/return 处设置断点，自动采集 x1/x0/lr，输出结构化 JSON | — |
+| RIPC-010-A2 | **DONE** | 开发 Xcode GUI 自动化 attach 脚本 `LocalDocs/XCodeOperation/ripc_010a_xcode_debug_automation.py`：利用 xcode_general_ops.py 基础能力自动执行 Debug → Attach to Process | — |
+| RIPC-010-A3 | **DONE** | 验证并迭代 Debug Console 命令输入自动化：向 Xcode Debug Console 自动输入 `command script import` 及断点命令。UI 结构已探测，`read_debug_console` 已验证，`send_debug_console_command` 需调试会话最终验证 | — |
+| RIPC-010-A4 | IN-PROGRESS（当前主线） | 端到端真机采集验证：运行完整流程，采集 3 次 materializer 调用参数，产物为 `build/ripc-010a-ipad-materializer-args.json` | — |
 | RIPC-010-B | TODO | 双端 materializer 调用参数对比：将真机采集结果与 PlayCover 侧已有参数做结构化对比矩阵 | 待建 |
 
 ## 高频复用经验

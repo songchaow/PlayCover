@@ -81,7 +81,7 @@ command script import /Users/songdogwang/Codes/PlayCover/Scripts/ripc_010a_mater
 - **输出区域**：`AXTextArea | Console | | ... @1001,912`
 - **输入区域**：`AXTextArea | debug console | | @1001,1000`
 - **读取**：可直接通过 JXA 读取 `AXValue` 属性，已验证可行
-- **输入**：`AXValue.setValue()` 在无调试会话时失败（类型转换错误 -1700），需在有活跃 LLDB 会话时验证
+- **输入**：`AXValue.setValue()` 报类型转换错误 (-1700)，**已修复**：改用 `inputArea.value = ...` 直接赋值，无调试会话时已验证可写入；有调试会话时 LLDB 会自动执行命令
 
 ### Xcode 窗口状态
 

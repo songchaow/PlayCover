@@ -357,6 +357,8 @@ class XcodeGeneral:
         time.sleep(0.5)
 
         # 通过 JXA 设置 debug console 的 value
+        # 注意：attributes["AXValue"].setValue() 会报 "不能转换类型" (-1700)，
+        # 必须使用 inputArea.value = ... 或 inputArea.attributes.AXValue.value = ...
         _jxa(_JXA_PREAMBLE + f"""
         let all = win.entireContents();
         let inputArea = null;
@@ -369,7 +371,7 @@ class XcodeGeneral:
             }} catch(e) {{}}
         }}
         if (!inputArea) {{ throw new Error("debug console input area not found"); }}
-        inputArea.attributes["AXValue"].setValue({json.dumps(command, ensure_ascii=False)});
+        inputArea.value = {json.dumps(command, ensure_ascii=False)};
         "ok";
         """)
 

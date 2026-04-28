@@ -136,40 +136,16 @@ class XcodeDeviceDebug:
             return {"output": "", "input": "", "output_pos": [0, 0], "input_pos": [0, 0]}
 
     def send_to_debug_console(self, command: str) -> bool:
-        """尝试向 Debug Console 输入命令并执行。
+        """向 Debug Console 输入命令并执行。
 
-        优先使用 xcode_general_ops.send_debug_console_command（JXA 直接设置
-        AXTextArea value），如果失败则回退到 AppleScript keystroke。
+        使用 xcode_general_ops.send_debug_console_command（JXA 直接设置
+        AXTextArea value 后发送回车键）。
         """
         self.activate_xcode()
         self.show_debug_console()
         time.sleep(0.5)
-
-        # 尝试方法 1: JXA 直接设置 debug console value
-        try:
-            self.xc.send_debug_console_command(command)
-            return True
-        except RuntimeError as e:
-            print(f"[ripc-010a-xcode] JXA send failed: {e}, falling back to keystroke")
-
-        # 回退方法 2: AppleScript keystroke
-        try:
-            subprocess.run(
-                ["osascript", "-e",
-                 f'tell application "System Events" to keystroke "{command}"'],
-                check=True, timeout=5,
-            )
-            time.sleep(0.2)
-            subprocess.run(
-                ["osascript", "-e",
-                 'tell application "System Events" to key code 36'],
-                check=True, timeout=5,
-            )
-            time.sleep(0.5)
-            return True
-        except Exception as e:
-            print(f"[ripc-010a-xcode] keystroke fallback failed: {e}")
-            return False
+        self.xc.send_debug_console_command(command)
+        return True
 
     # ═══════════════════ Breakpoint Navigator ═══════════════════
 

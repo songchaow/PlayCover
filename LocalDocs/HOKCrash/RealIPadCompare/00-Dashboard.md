@@ -93,69 +93,47 @@ materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
 3. ~~**RIPC-006**~~（已完成）：Direction A — 在 PDT-006 ConvertToPlatformPath
    hook 中增加 Saved/Paks 路径归一化，使 materializer compare ladder 匹配。
 4. ~~**RIPC-007**~~（已完成）：W^X 合规修复 → 全部 hook 安装成功。
-5. **RIPC-008**（当前主线）：embedded path rewrite 已验证可行（`downstreamObj`
-   UTF-16 已被重写为相对形式），但 QtsFS 仍 fail，需定位更多路径存储位置。
+5. ~~**RIPC-008**~~（已完成）：embedded path rewrite 已验证可行，但 QtsFS 仍
+   fail，size 字段假设被证伪。
+6. **RIPC-009**（当前主线）：回溯 HOK-016 根因链，排查 materializer 覆盖完整性
+   与第二个独立失败点。
 
 ### RIPC-008 embedded path rewrite + 验证结论
 
-**RIPC-008 代码演进**：
-- **v1（原始）**：手工枚举 selectedObj、downstreamObj、plus28、plus30 等
-  固定偏移，仅修复 1~2 处路径。
-- **v2（三层深度扫描）**：引入系统化 object graph 遍历（root 0x400 +
-  depth1 子指针 0x80 范围 + depth2 孙指针 0x40 范围），修复数量提升到
-  2~4 处。
-- **v3（四层深度 + 无限制 marker 搜索）**：扩展到 4 层深度（root 0x1000 +
-  depth1~4，统一 128 条目去重表），并将 `pt_ngr_c5_try_fix_utf16_at_address`
-  的 marker 搜索范围从 `offset + 2048` 放开到 `maxScanBytes`。
+**核心结论**：通过系统化 object graph 遍历（4 层深度扫描 + 128 条目去重），
+每次启动可修复 2~4 处 `/Users/…` UTF-16 路径。进一步通过内存 dump 精确定位
+`selectedObj + 0x10` 处为 UE4 `FString` 结构（`Data` 指针 + `ArrayNum` +
+`ArrayMax`），并实现了 parent-aware 同步修复（`ArrayNum/ArrayMax` 129→33）。
+`launch-events.jsonl` 验证长度字段已正确改写。
 
-**验证结果**：
-- 每次启动平均捕获并修复 2~4 处 `/Users/…` UTF-16 路径（地址因 ASLR 变化）。
-- **RIPC-008-A 精确定位**：dump 分析确认 `selectedObj + 0x10` 处为 UE4 `FString`
-  结构（`Data` 指针 + `ArrayNum` + `ArrayMax`），原始值为 `0x8100000081`（129/129）。
-- **RIPC-008-B 已实施**：引入 `pt_ngr_c5_try_fix_utf16_at_address_with_parent`，
-  在 object graph 扫描时传入 parent 地址和字段偏移，字符缓冲区重写后同步修改
-  parent 中的 `ArrayNum/ArrayMax`。`launch-events.jsonl` 验证 `selectedPlus18`
-  已变为 `0x2100000021`（33/33），与替换字符串长度（33 chars 含 null）完全吻合。
-- 但 **`hok014_ngr_alert_suppressed`（QtsFileSystem Create Failed!!）仍然 100% 出现**。
-- **结论：size 字段假设被证伪**。QtsFS 失败的根本原因 **不是** `ArrayNum/ArrayMax`
-  不匹配。需回溯到 HOK-016 根因链，检查 readiness B 的 create-table 阶段
-  是否存在第二个独立失败点。
+**但 QtsFS 仍 100% 失败**，说明 compare ladder 的失败点 **不在** `FString`
+长度元数据。size 字段假设被证伪，需回溯 HOK-016 根因链排查其他失败点。
+
+> 详细演进过程（v1→v2→v3 的扫描策略迭代、dump 分析方法、parent-aware 修复
+> 实现细节）见 `build/ripc-008a/` 产物与 `Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m`
+> 代码注释。**一般无需读取。**
 
 ### 当前卡点
 
-1. **RIPC-008-B size 字段假设被证伪**：通过 dump 精确定位并修复了 UE4 `FString`
-   的 `ArrayNum/ArrayMax`（129→33），但 QtsFS 仍 100% 失败。说明 compare
-   ladder 的失败点 **不在** `FString` 长度元数据。
-2. **需回溯 HOK-016 根因链**：readiness B 的 create-table 链中，materializer
-   返回 0 后，即使我们用缓存对象替换并清除 error slot，QtsFS 仍然失败。
-   可能原因：
-   - compare ladder 比较的不是 `FString` 对象本身，而是 `std::u16string`
-     临时对象的 `__size_`（字节数），而 `FString→std::u16string` 的构造
-     过程中 `__size_` 被设为 `ArrayNum * 2` 或其他值，但我们的 `ArrayNum`
-     修改仍未能匹配。
-   - 或者，materializer 的 3 次调用中，有 1 次在 `pt_ngr_c5_should_redirect_saved_path`
-     覆盖之前就已经使用了绝对路径的 `x1`，导致 compare ladder 直接失败，
-     `retObj=0`，而我们的复用策略未能完全覆盖该失败路径。
-   - 或者，readiness B 的 create-table 阶段存在 **第二个独立失败点**
-    （如 `storage+0x30=0x9000b` 之外的另一个错误码路径）。
-3. **需要精确定位 compare ladder 实际读取的字段**：无法仅凭猜测继续扩大
-   扫描，必须通过 LLDB 在 materializer 返回后 dump 完整 object 内存，离线
-   分析所有 `/Users/` 出现位置及其周围的结构元数据（length、pointer、
-   capacity 等）。
+1. **RIPC-008 size 字段假设被证伪**：parent-aware `ArrayNum/ArrayMax` 同步修复
+   已验证生效，但 QtsFS 仍 100% 失败。compare ladder 的失败点 **不在**
+   `FString` 长度元数据。
+2. **需回溯 HOK-016 根因链**：可能原因包括：
+   - `FString→std::u16string` 构造过程中存在其他长度字段未被同步修复；
+   - materializer 3 次调用中存在未被 `pt_ngr_c5_should_redirect_saved_path`
+     覆盖的 early-fail 路径；
+   - readiness B create-table 阶段存在 **第二个独立失败点**。
+3. **下一步需要 LLDB 精确定位**：在 materializer 返回后 dump 完整 object 内存，
+   离线分析所有 `/Users/` 出现位置及其周围结构元数据。
 
 ### 下一步默认规划
 
-1. ~~**RIPC-008-A（已完成）**~~：通过内存 dump 精确定位 `selectedObj + 0x10`
-   处的 UE4 `FString` 结构。产物见 `build/ripc-008a/`。
-2. ~~**RIPC-008-B（已落地）**~~：已实现 parent-aware `ArrayNum/ArrayMax` 同步修复，
-   验证 `selectedPlus18` 从 `0x8100000081` 变为 `0x2100000021`，但 QtsFS 仍失败。
-3. **RIPC-009（当前主线）**：回溯 HOK-016 根因链，重点检查：
-   - materializer 3 次调用的具体路径参数和返回值差异（是否所有调用都经过
-     `pt_ngr_c5_should_redirect_saved_path` 的 `x1` 重定向）。
-   - `pt_ngr_c5_materialize_select` 的复用策略（cache/reuse-late-linked/
-     reuse-early-fallback）是否成功拦截了所有 materializer 返回 0 的情况。
-   - 若复用策略已覆盖，则检查 readiness B create-table 链 downstream
-     是否还有第二个独立失败点（非 materializer 返回 0 导致的失败）。
+1. ~~**RIPC-008（已完成）**~~：embedded path rewrite 与 parent-aware size 修复已落地，
+   产物见 `build/ripc-008a/`。
+2. **RIPC-009（当前主线）**：回溯 HOK-016 根因链，重点检查：
+   - materializer 3 次调用的参数/返回值差异及覆盖完整性；
+   - `pt_ngr_c5_materialize_select` 复用策略是否拦截了所有 materializer 返回 0 的情况；
+   - readiness B create-table 链 downstream 是否存在第二个独立失败点。
 
 ## 构建与验证
 
@@ -217,93 +195,54 @@ materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
 | RIPC-005 | DONE | 结构化差异对比与根因定位：根因是 materializer compare ladder 不匹配绝对 macOS pak 路径 | `build/ripc-005-diff.json` |
 | RIPC-006 | DONE | Direction A：ConvertToPlatformPath hook 增加 Saved/Paks 路径归一化 | — |
 | RIPC-007 | DONE | W^X 修复使全部 hook 安装成功；端到端验证发现失败点在 materializer 返回 object 的下游 compare ladder | `build/ripc-007-verification-report.json` |
-| RIPC-008 | DONE | 通过内存 dump 精确定位 `selectedObj + 0x10` 处的 UE4 `FString` 结构；已实现 parent-aware `ArrayNum/ArrayMax` 同步修复（129→33）。但 QtsFS 仍 100% 失败，size 字段假设被证伪。产物：`build/ripc-008a/` | — |
+| RIPC-008 | DONE | 内存 dump 定位 `selectedObj + 0x10` 处 UE4 `FString`；parent-aware `ArrayNum/ArrayMax` 同步修复（129→33）已验证生效，但 QtsFS 仍 100% 失败，size 字段假设被证伪。产物：`build/ripc-008a/` | — |
 | RIPC-009 | IN-PROGRESS（当前主线） | 回溯 HOK-016 根因链：检查 materializer 3 次调用的参数/返回值差异、复用策略覆盖完整性，以及 readiness B create-table 是否存在第二个独立失败点 | 待建 |
 
 ## 高频复用经验
 
+### 真机部署与签名
+
 - **IPA 已解密**：`com.tencent.ngr` 的 `cryptid=0`，无需额外脱壳。
-- **app 体积巨大**：主二进制 230 MB + 39 个 embedded framework + 16 个
-  resource bundle + 资产，IPA 总计 3.07 GB。重签名时必须对每个 framework
-  单独 `codesign`，否则安装失败。签名顺序：先 frameworks → 再主 bundle。
-- **开发者证书限制**：当前只有 1 个有效签名身份
-  `BB36AD6577F23F304F93A1A75A940DAE92559A7B`（Apple Development）；
-  另外 2 个已 REVOKED。如果是免费个人开发者账号，profile 7 天过期、
-  最多 3 个 app、10 个设备 UDID。
-- **001B 实际产物是显式 profile，不是 wildcard**：Xcode 最终为
-  `com.songdog.ripc.debug` 生成了显式 iOS Team Provisioning Profile；对
-  `RIPC-001-C` 的最小 test app 验证已经足够，不必强求 wildcard。
-- **install 成功 ≠ debug 可用**：在当前 `Xcode 16.4 + iPadOS 26.4.1` 组合下，
-  `ios-deploy 1.12.2` 可以成功安装 app，但 debug 启动仍会沿旧式
-  `DeviceSupport/*/DeveloperDiskImage.dmg` 路径查找并失败；应把 install 结果与
-  attach 结果分开取证，并用 `xcrun devicectl list preferredDDI` 确认 host 实际走的
-  是 CoreDevice 外置 DDI。
-- **Xcode 原生调试入口可作为真机 attach 基线**：当 `ios-deploy --debug` 与直接
-  `lldb device select` 不稳定时，可直接复用 Xcode GUI 调试入口。详情见
-  `RIPC-001-环境预检与工具链准备.md` §最小 Test App 全链路验证。
-- **真机 bundle ID 必须修改**：原 `com.tencent.ngr` 不在开发者账号下，
-  必须改为 provisioning profile 覆盖的 ID（如 wildcard `*` 或自定义
-  `com.dev.ngr-debug`）。改 bundle ID 可能影响 app 运行时的
-  `keychain-access-groups` 和部分 SDK 初始化，但对我们关注的
-  QtsFileSystem 路径差异无影响。
-- **PlayCover 安装副本不能用于真机部署**：PlayCover 会将二进制的
-  `LC_BUILD_VERSION` 从 `platform 2`（iOS）改写为 `platform 6`
-  （macCatalyst），导致真机上 dyld 拒绝加载系统框架（"wrong platform to
-  load into process"）。**真机部署必须从原始 IPA 解包**获取原生 iOS 二进制。
-  `ripc_resign.sh` 已内置平台安全检查，会自动拦截 macCatalyst 源。
-- **真机调试需要 `get-task-allow=true`**：开发者 provisioning profile
-  自动包含此 entitlement，允许 LLDB attach。
-- **真机启动验证基线**：重签名后的 NGR 在 iPad 上成功启动，UE4 引擎完成
-  初始化进入 LANDSCAPE mode。**无 `QtsFileSystem Create Failed`**。
-- **RIPCProbe dylib 采集方法**：编译 ObjC dylib → `insert_dylib` 注入
-  LC_LOAD_DYLIB → 重签名 → 部署 → `--console` 捕获 NSLog。比 CLI LLDB
-  attach 更稳定（CoreDevice 下 CLI `lldb` 无法直接 attach 真机进程）。
-  `insert_dylib` 从 [github.com/tyilo/insert_dylib](https://github.com/tyilo/insert_dylib)
-  源码编译。
-- **真机 iOS sandbox 路径规范**：`/var/mobile` = `/private/var/mobile`
-  （symlink）。NSHomeDirectory 不带 `/private`，NSTemporaryDirectory 带
-  `/private`。cwd 为 `/`。Home 目录本身不可写，Documents/Library/tmp 可写。
-  sandbox uid=501(mobile)，bundle uid=33(_www)。
-- **PlayCover 环境 LLDB 采集方法**：直接 `lldb --batch --source` attach 到
-  运行中的 NGR 进程，逐一 evaluate ObjC 表达式。对标量用 `expr -l objc --`，
-  对集合（NSArray/NSDictionary）用 `po`。采集脚本为
-  `Scripts/ripc_004_playcover_probe.py`。
+- **app 体积巨大**：IPA 总计 3.07 GB，含 39 个 embedded framework。重签名顺序：
+  先 frameworks → 再主 bundle，缺一不可。
+- **开发者证书限制**：当前仅 1 个有效签名身份（Apple Development）；另外 2 个
+  已 REVOKED。个人开发者账号 profile 7 天过期、最多 3 个 app、10 个设备。
+- **真机 bundle ID 必须修改**：原 `com.tencent.ngr` 不在开发者账号下，需改为
+  profile 覆盖的 ID（如 `com.songdog.ripc.debug`）。对 QtsFileSystem 路径差异
+  无影响。
+- **PlayCover 安装副本不能用于真机部署**：PlayCover 会将 `LC_BUILD_VERSION`
+  从 `platform 2`（iOS）改写为 `platform 6`（macCatalyst），导致真机 dyld
+  拒绝加载。**真机部署必须从原始 IPA 解包**。`ripc_resign.sh` 已内置平台安全检查。
+- **真机调试需要 `get-task-allow=true`**：开发者 provisioning profile 自动包含。
+
+### 双端环境特征
+
+- **真机 iOS sandbox 路径规范**：`/var/mobile` = `/private/var/mobile`（symlink）。
+  NSHomeDirectory 不带 `/private`，NSTemporaryDirectory 带 `/private`。Home 本身
+  不可写，Documents/Library/tmp 可写。uid=501(mobile)，bundle uid=33(_www)。
 - **PlayCover sandbox 特征**：HOME 在 `~/Library/Containers/<bundleId>/Data`
-  （macOS App Sandbox container），非 iOS 标准路径。home/Documents/Library/tmp
-  均可写。uid=501(当前 macOS 用户)/gid=20(staff)。环境变量大量泄漏宿主
-  macOS 状态（43 个，真机仅 13 个）。Library 下 31 个 macOS 标准子目录
-  （真机仅 12 个）。
-- **RIPC-005 根因定位**：QtsFS 失败的直接原因是 materializer compare
-  ladder（UTF-16 case-fold）不匹配绝对 macOS 路径 `/Users/.../Saved/Paks/1/1.db`。
-  成功路径用相对形式 `../../../NGR/Content/Paks/1/1.db`。根因不是
-  HOME/TMPDIR 值本身，不是 env var 泄漏，不是 uid/gid，不是目录结构差异。
-- **Saved/Paks/1 目录已存在但为空**：QtsFS 在 crash 前成功创建了
-  `Library/NGR/Saved/Paks/1/` 目录和 `main/Watchdog/*.db`，但 `1/1.db`
-  未被写入（因 materializer 在此之前已失败）。
-- **1.db 在 bundle 中存在**：`cookeddata/ngr/content/paks/1/1.db`（20 MB）
-  及 `1_0.db` ~ `1_15.db`（各 ~200 MB）。
-- **Apple Silicon W^X 策略**：`mprotect(PROT_READ|PROT_WRITE|PROT_EXEC)`
-  在 Apple Silicon 上 100% 失败。必须分两阶段：写入用 `R+W`（无 X），
-  执行用 `R+X`（无 W）。`vm_protect` 回退应使用 `VM_PROT_COPY` 触发
-  copy-on-write。此修复使 PDT-006 ConvertToPlatformPath patch、HOK-016c5
-  consumer-family-hook、alt1 hook 全部从 install-failed 变为 installed。
-- **PDT-006 已有但不够**：`ConvertToPlatformPath` patch 透传 `/Users/` 前缀
-  路径，防止进一步拼接错误；但路径 **已经** 是绝对形式了，materializer
-  compare ladder 仍不匹配。**RIPC-006 Direction A 在此基础上增加归一化**：
-  对 `/Users/.../Saved/Paks/<X>` 转为 `../../../NGR/Content/Paks/<X>`。
-- **RIPC-008 扩展扫描教训**：从手工枚举 → 3 层 → 4 层深度扫描，每次启动
-  可修复的 `/Users/` 路径数量稳定在 2~4 处，QtsFS 仍 100% 失败。盲目扩大
-  扫描范围进入收益递减区间。
-- **RIPC-008-A 关键发现**：`selectedObj + 0x10` 处是 UE4 `FString` 结构：
-  - `selectedObj + 0x10` = `Data` 指针（指向字符缓冲区）
-  - `selectedObj + 0x18` = `ArrayNum`（含 null 的字符数）
-  - `selectedObj + 0x1c` = `ArrayMax`（容量）
-  原始 `ArrayNum/ArrayMax` = 129（对应 128-char `/Users/…` 路径），替换后
-  应为 33（`../../../NGR/Content/Paks/1/1.db` 含 null）。
-- **RIPC-008-B 已证伪**：已实现 parent-aware 同步修复（`pt_ngr_c5_try_fix_utf16_at_address_with_parent`），
-  `launch-events.jsonl` 验证 `selectedPlus18` 从 `0x8100000081` 成功变为
-  `0x2100000021`，但 `hok014_ngr_alert_suppressed` 仍然 100% 出现。QtsFS
-  失败的根本原因 **不在** `FString` 长度元数据，需回溯 HOK-016 根因链。
+  （macOS App Sandbox）。uid=501/gid=20。环境变量 43 个（真机仅 13 个），大量
+  泄漏宿主 macOS 状态。
+- **真机启动验证基线**：重签名后的 NGR 在 iPad 上成功启动，UE4 初始化正常，
+  **无 `QtsFileSystem Create Failed`**。
+
+### 采集与调试方法
+
+- **RIPCProbe dylib 采集**：编译 ObjC dylib → `insert_dylib` 注入 → 重签名 →
+  部署 → `--console` 捕获 NSLog。CoreDevice 下 CLI LLDB 无法直接 attach 真机，
+  dylib 注入更稳定。
+- **PlayCover LLDB 采集**：`lldb --batch --source` attach 运行中进程，标量用
+  `expr -l objc --`，集合用 `po`。脚本：`Scripts/ripc_004_playcover_probe.py`。
+
+### 关键技术约束
+
+- **RIPC-005 根因定位**：QtsFS 失败的直接原因是 materializer compare ladder
+  不匹配绝对 macOS 路径 `/Users/.../Saved/Paks/1/1.db`；成功路径用相对形式
+  `../../../NGR/Content/Paks/1/1.db`。根因不是 HOME/TMPDIR、env var、uid/gid
+  或目录结构差异。
+- **Apple Silicon W^X 策略**：`mprotect(R|W|X)` 在 Apple Silicon 上 100% 失败。
+  必须分阶段：写入用 `R+W`（无 X），执行用 `R+X`（无 W）。`vm_protect` 回退使用
+  `VM_PROT_COPY` 触发 copy-on-write。
 
 ## 参考信息
 
@@ -338,8 +277,8 @@ materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
   与踩坑记录。**阅读建议：需要复现具体命令、核查原始产物、或排查
   profile / codesign / deploy / attach 异常时按需读取；一般无需读取。**
 - `RIPC-003-真机启动行为基线采集.md`：真机 iPad 运行时上下文详细数据
-  表格、Probe 方法说明与产物索引。**阅读建议：进行 RIPC-006 修复
-  时需要查阅真机侧具体路径值时读取。一般使用
+  表格、Probe 方法说明与产物索引。**阅读建议：需要核查真机侧具体路径值、
+  沙盒结构或 Probe 实现细节时按需读取；一般使用
   `build/ripc-003-ipad-baseline.json` 即可。**
 - `HOK-016-appendix-C27.md`（HOKCrash 子文档）：materializer compare
   ladder 的逐层证据，是 RIPC-005 根因定位的关键证据来源。**阅读建议：

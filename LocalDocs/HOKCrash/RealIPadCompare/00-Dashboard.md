@@ -37,12 +37,12 @@
 
 ### 当前主线一句话
 
-`RIPC-010-A4 是当前主线`：执行端到端真机 materializer 断点采集验证。在 Xcode
-attach 到真机 NGR 进程后，通过 Debug Console 自动加载 LLDB probe 脚本，在
-materializer（`0x10432a068`）entry/return 处设置断点，精确采集 3 次调用的
-`entryX1` 实参与返回值（x0），产物为 `build/ripc-010a-ipad-materializer-args.json`。
-通过与 PlayCover 侧已采集参数对比，直接区分**路径生成阶段差异**与
-**materializer 跨平台行为差异**。
+`RIPC-010-A4 是当前主线，但已阻塞`：端到端真机 materializer 断点采集受阻——LLDB
+断点在 `_dyld_start` 阶段设置后 dyld 链接完成时变为 unresolved。已尝试 7+ 次
+（pexpect/batch/Xcode GUI/两阶段策略），均受此限制。运行态断点可触发
+（objc_msgSend 已验证），但 materializer 初始化调用已过。完整调试经验整理在
+`debug_experience/`。推荐后续方案：(A) 手动两阶段调试 (B) RIPCProbe dylib
+内联 hook (C) LLDB stop-hook 自动化。
 
 ### 当前状态摘要
 
@@ -125,10 +125,14 @@ materializer 断点采集，从路径生成源头重新定位根因。
 
 ### 当前卡点
 
-1. **A4 端到端采集尚未执行**：RIPC-010-A1~A3 脚本基础设施全部就绪，但完整的
-   `attach → load probe → 断点采集 → 保存产物` 流程尚未在真机调试会话中跑通。
-   `send_debug_console_command` 的 JXA 赋值方案在无调试会话时已验证，有调试
-   会话时的最终验证即包含在 A4 中。
+1. **A4 端到端采集受阻——LLDB 断点在 dyld 链接后失效**：
+   RIPC-010-A1~A3 脚本基础设施全部就绪，LLDB 可以成功 attach 真机进程、
+   正确计算 ASLR slide、设置断点（显示 resolved），但存在核心阻塞：
+   **在 `_dyld_start` 阶段设置的断点，当 dyld 完成动态链接后会变为 unresolved，
+   永远不会触发。** 已通过 7+ 次不同方式的尝试确认此行为（详见
+   `debug_experience/02-LLDB-Session-Logs.md`）。运行态下设置断点可以触发
+   （`objc_msgSend` 已验证命中），但此时 materializer 已被调用过。
+   完整调试经验已整理至 `debug_experience/` 目录。
 2. **无法区分两类根因（依赖 A4 数据）**：
    - **假设 A**：真机 entryX1 为相对路径，PlayCover 因 HOME 是 macOS 路径传入
      绝对路径 → 根因在 **UE4 路径生成阶段**。
@@ -246,7 +250,7 @@ materializer 断点采集，从路径生成源头重新定位根因。
 | RIPC-010-A1 | **DONE** | 开发 LLDB Python 采集脚本 `Scripts/ripc_010a_materializer_probe.py`：在 materializer entry/return 处设置断点，自动采集 x1/x0/lr，输出结构化 JSON | — |
 | RIPC-010-A2 | **DONE** | 开发 Xcode GUI 自动化 attach 脚本 `LocalDocs/XCodeOperation/ripc_010a_xcode_debug_automation.py`：利用 xcode_general_ops.py 基础能力自动执行 Debug → Attach to Process | — |
 | RIPC-010-A3 | **DONE** | 验证并迭代 Debug Console 命令输入自动化：JXA `inputArea.value` 直接赋值方案已验证可行，绕过 `AXValue.setValue()` 类型转换错误 (-1700)；`read_debug_console` 已验证。有调试会话时的最终验证归入 A4 | — |
-| RIPC-010-A4 | IN-PROGRESS（当前主线） | 端到端真机采集验证：运行完整流程，采集 3 次 materializer 调用参数，产物为 `build/ripc-010a-ipad-materializer-args.json` | — |
+| RIPC-010-A4 | BLOCKED | 端到端真机采集验证：LLDB 断点在 `_dyld_start` 阶段设置后 dyld 链接完成时变为 unresolved，无法在初始化阶段捕获 materializer。运行态断点可触发但 materializer 已被调用。详见 `debug_experience/` | — |
 | RIPC-010-B | TODO | 双端 materializer 调用参数对比：将真机采集结果与 PlayCover 侧已有参数做结构化对比矩阵 | 待建 |
 
 ## 高频复用经验

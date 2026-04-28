@@ -37,11 +37,12 @@
 
 ### 当前主线一句话
 
-`RIPC-010 是当前主线`：在真机 iPad 上对 materializer（`0x10432a068`）下断点，
-精确采集 3 次调用的 `entryX1`（x1 寄存器）实参与返回值（x0）。通过与 PlayCover
-侧已采集的调用参数做结构化对比，直接回答：失败是因为 PlayCover 上 UE4 传入的
-路径格式与真机不同（**路径生成阶段差异**），还是两端传入相同格式但 materializer
-在 macOS 环境下行为不同（**materializer 跨平台行为差异**）。
+`RIPC-010-A4 是当前主线`：执行端到端真机 materializer 断点采集验证。在 Xcode
+attach 到真机 NGR 进程后，通过 Debug Console 自动加载 LLDB probe 脚本，在
+materializer（`0x10432a068`）entry/return 处设置断点，精确采集 3 次调用的
+`entryX1` 实参与返回值（x0），产物为 `build/ripc-010a-ipad-materializer-args.json`。
+通过与 PlayCover 侧已采集参数对比，直接区分**路径生成阶段差异**与
+**materializer 跨平台行为差异**。
 
 ### 当前状态摘要
 
@@ -64,6 +65,15 @@
   根因 **不是** HOME/TMPDIR/环境变量值本身，而是 **UE4 pak 路径在
   QtsFileSystem materializer 的 UTF-16 compare ladder 中不匹配**。具体见
   下方"根因链"小节。
+- **RIPC-010-A1～A3 结论（脚本基础设施已完成）**：
+  - **A1**：LLDB Python probe 脚本 `Scripts/ripc_010a_materializer_probe.py`
+    已完成，支持 entry/return 双断点自动采集 x1/x0/lr，ASLR slide 自动解析，
+    Pascal 字符串解码，增量 JSON 输出。
+  - **A2**：Xcode GUI 自动化协调脚本
+    `LocalDocs/XCodeOperation/ripc_010a_xcode_debug_automation.py` 已完成，
+    支持 `attach → show console → load probe` 组合流程。
+  - **A3**：Debug Console 命令输入自动化已验证可行（JXA 直接赋值
+    `inputArea.value = ...` 绕过 `setValue` 类型转换错误）。
 
 ### RIPC-005 根因链
 
@@ -115,36 +125,42 @@ materializer 断点采集，从路径生成源头重新定位根因。
 
 ### 当前卡点
 
-1. **真机 materializer 输入从未直接采集**：当前所有分析都基于 PlayCover 侧的
-   单端猜测，真机侧 materializer 实际接收到的 `entryX1` 是什么路径（相对、
-   绝对 iOS、还是混合）完全未知。
-2. **无法区分两类根因**：
-   - **假设 A**：真机上 UE4 传给 materializer 的就是相对路径，而 PlayCover 上
-     因为 HOME 是 macOS 路径导致传入绝对路径 → 根因在 **UE4 路径生成阶段**。
-   - **假设 B**：真机和 PlayCover 上传入的都是绝对路径，但真机的 `/var/mobile/…`
-     能被 materializer 接受，PlayCover 的 `/Users/…` 不能 → 根因在
-     **materializer 的路径格式容忍度**。
-3. **RIPC-008 结论**：运行时内存修补（object graph 扫描 + FString 字段修复）
-   已证明不可靠，同一套修补逻辑在真机侧没有对应验证基准，思路终止。
+1. **A4 端到端采集尚未执行**：RIPC-010-A1~A3 脚本基础设施全部就绪，但完整的
+   `attach → load probe → 断点采集 → 保存产物` 流程尚未在真机调试会话中跑通。
+   `send_debug_console_command` 的 JXA 赋值方案在无调试会话时已验证，有调试
+   会话时的最终验证即包含在 A4 中。
+2. **无法区分两类根因（依赖 A4 数据）**：
+   - **假设 A**：真机 entryX1 为相对路径，PlayCover 因 HOME 是 macOS 路径传入
+     绝对路径 → 根因在 **UE4 路径生成阶段**。
+   - **假设 B**：两端均为绝对路径，但真机 `/var/mobile/…` 能被 materializer
+     接受 → 根因在 **materializer 路径格式容忍度**。
+3. **~~RIPC-008~~**：运行时内存修补（object graph 扫描 + FString 字段修复）
+   已证明不可靠，思路已终止。
 
 ### 下一步默认规划
 
 1. ~~**RIPC-008（已完成）**~~：embedded path rewrite 与 parent-aware size 修复已落地，
    产物见 `build/ripc-008a/`。结论：运行时内存修补不可靠，换路线。
-2. **RIPC-010-A（当前主线）**：真机 materializer 断点采集
-   - 在 Xcode LLDB 中对 `0x10432a068`（materializer）设置断点；
-   - 记录每次 hit 时的 x1（entryX1）、x0（返回值）、lr（调用方）；
-   - 同时采集调用方（readiness B）中生成 entryX1 的上游路径；
+2. ~~**RIPC-010-A1（已完成）**~~：LLDB Python probe 脚本
+   `Scripts/ripc_010a_materializer_probe.py` 开发完成，支持 entry/return 双断点
+   自动采集 x1/x0/lr、ASLR slide 解析、Pascal 字符串解码、增量 JSON 输出。
+3. ~~**RIPC-010-A2（已完成）**~~：Xcode GUI 自动化协调脚本
+   `LocalDocs/XCodeOperation/ripc_010a_xcode_debug_automation.py` 开发完成，
+   支持 Debug → Attach to Process 自动附加到真机 NGR。
+4. ~~**RIPC-010-A3（已完成）**~~：Debug Console 命令输入自动化验证完成。
+   JXA `inputArea.value = ...` 直接赋值方案绕过 `setValue` 类型转换错误 (-1700)。
+5. **RIPC-010-A4（当前主线）**：端到端真机采集验证
+   - 确保真机 NGR 已启动；
+   - Xcode Debug → Attach to Process → 选择 NGR；
+   - Debug Console 中执行 `command script import Scripts/ripc_010a_materializer_probe.py`；
+   - 脚本自动设置断点并采集 3 次 materializer 调用；
    - 产物：`build/ripc-010a-ipad-materializer-args.json`。
-3. **RIPC-010-B**：双端 materializer 调用参数对比
-   - 将真机采集结果与 PlayCover 侧已有参数做结构化对比矩阵（调用次数、
-     entryX1、返回值、路径格式）；
+6. **RIPC-010-B**：双端 materializer 调用参数对比
+   - 将真机采集结果与 PlayCover 侧已有参数做结构化对比矩阵；
    - 产物：`build/ripc-010b-diff.json`。
-4. **RIPC-010-C**：根据对比结论确定修复方向
-   - 若真机 entryX1 为相对路径 → 修复方向为 **源头拦截**（在
-     ConvertToPlatformPath / FPaths 层阻止绝对路径生成）；
-   - 若真机 entryX1 为绝对路径但成功 → 修复方向为 **路径伪装**（让
-     PlayCover 的 HOME / SavedDir 看起来像 iOS 路径格式）。
+7. **RIPC-010-C**：根据对比结论确定修复方向
+   - 若真机 entryX1 为相对路径 → 修复方向为 **源头拦截**；
+   - 若真机 entryX1 为绝对路径但成功 → 修复方向为 **路径伪装**。
 
 ## 构建与验证
 
@@ -168,9 +184,19 @@ materializer 断点采集，从路径生成源头重新定位根因。
   Navigator 操作、Debug Console 读写等方式完成自动化。**如果现有脚本
   缺少所需功能，agent 必须自行扫描 Xcode UI 结构（`dump_ui_tree` /
   `uitree`），定位目标控件后立刻将可复用操作沉淀回
-  `xcode_general_ops.py`，严禁以"缺少功能"为由向用户求助。** 已沉淀的
-  通用操作包括：Breakpoint Navigator 切换、Create breakpoint 按钮点击、
-  Debug Console 显示/读取/命令发送等。
+  `xcode_general_ops.py`，严禁以"缺少功能"为由向用户求助。**
+  已沉淀并验证的通用操作：
+  - `show_breakpoint_navigator()` — Breakpoint Navigator 切换（JXA 直接点击
+    Breakpoints radio button）。
+  - `click_create_breakpoint_button()` — 点击 "+" 按钮并返回菜单项列表。
+    **关键发现**：菜单中没有 "Address Breakpoint" 选项，地址断点**必须**
+    通过 Debug Console 的 LLDB 命令 `breakpoint set -a 0x<address>` 设置。
+  - `show_debug_console()` / `read_debug_console()` — Debug Area 显示与文本读取。
+  - `send_debug_console_command(cmd)` — 向 debug console 输入命令并回车。
+    使用 `inputArea.value = ...` 直接赋值绕过 `AXValue.setValue()` 的
+    JXA 类型转换错误 (-1700)。
+  - `activate()` — 使用 `System Events` 的 `frontmost = true` 激活 Xcode，
+    避免 `Application("Xcode").activate()` 导致 JXA 永久挂起。
 - **PlayCover 侧验证**：使用 PlayCover MCP `launch_app` 工具启动 app，
   通过 `launch-events.jsonl` 检查 hook 事件和 QtsFS 状态。
 - **PlayTools 构建部署流程**：
@@ -215,7 +241,7 @@ materializer 断点采集，从路径生成源头重新定位根因。
 | RIPC-010 | IN-PROGRESS（当前主线） | 真机 materializer 断点采集与双端参数对比：在真机 iPad 上对 materializer 下断点，采集 3 次调用的 entryX1 实参与返回值，与 PlayCover 侧做结构化对比，直接区分"路径生成差异"与"materializer 跨平台行为差异" | 待建 |
 | RIPC-010-A1 | **DONE** | 开发 LLDB Python 采集脚本 `Scripts/ripc_010a_materializer_probe.py`：在 materializer entry/return 处设置断点，自动采集 x1/x0/lr，输出结构化 JSON | — |
 | RIPC-010-A2 | **DONE** | 开发 Xcode GUI 自动化 attach 脚本 `LocalDocs/XCodeOperation/ripc_010a_xcode_debug_automation.py`：利用 xcode_general_ops.py 基础能力自动执行 Debug → Attach to Process | — |
-| RIPC-010-A3 | **DONE** | 验证并迭代 Debug Console 命令输入自动化：向 Xcode Debug Console 自动输入 `command script import` 及断点命令。UI 结构已探测，`read_debug_console` 已验证，`send_debug_console_command` 需调试会话最终验证 | — |
+| RIPC-010-A3 | **DONE** | 验证并迭代 Debug Console 命令输入自动化：JXA `inputArea.value` 直接赋值方案已验证可行，绕过 `AXValue.setValue()` 类型转换错误 (-1700)；`read_debug_console` 已验证。有调试会话时的最终验证归入 A4 | — |
 | RIPC-010-A4 | IN-PROGRESS（当前主线） | 端到端真机采集验证：运行完整流程，采集 3 次 materializer 调用参数，产物为 `build/ripc-010a-ipad-materializer-args.json` | — |
 | RIPC-010-B | TODO | 双端 materializer 调用参数对比：将真机采集结果与 PlayCover 侧已有参数做结构化对比矩阵 | 待建 |
 
@@ -254,6 +280,21 @@ materializer 断点采集，从路径生成源头重新定位根因。
   dylib 注入更稳定。
 - **PlayCover LLDB 采集**：`lldb --batch --source` attach 运行中进程，标量用
   `expr -l objc --`，集合用 `po`。脚本：`Scripts/ripc_004_playcover_probe.py`。
+- **真机 materializer 断点采集（RIPC-010-A）**：
+  1. Xcode Debug → Attach to Process → 选择真机 NGR；
+  2. Debug Console 执行 `command script import Scripts/ripc_010a_materializer_probe.py`；
+  3. 脚本自动解析 ASLR slide、设置 entry/return 断点、采集 x1/x0/lr；
+  4. 产物：`build/ripc-010a-ipad-materializer-args.json` + `/tmp/ripc-010a-materializer-log.jsonl`。
+
+### Xcode GUI 自动化
+
+- **Attach to Process 菜单动态子菜单**：展开后需等待 `Getting Process List…` 完成，
+  再扫描子菜单项。目标进程名可能带设备前缀（如 `NGR on Songchao的iPad`）。
+- **Debug Console 输入框**：`AXTextArea | debug console | | @x,y`，使用
+  `inputArea.value = command` 直接赋值后发送回车键，比 `keystroke` 更可靠。
+- **Breakpoint Navigator "+" 菜单**：仅含 Swift Error / Exception / Symbolic /
+  Runtime Issue / Constraint Error / Test Failure Breakpoint，**不含 Address Breakpoint**。
+  地址断点必须通过 Debug Console 的 LLDB 命令设置。
 
 ### 关键技术约束
 
@@ -285,6 +326,8 @@ materializer 断点采集，从路径生成源头重新定位根因。
 - RIPC-007 验证报告：`build/ripc-007-verification-report.json`
 - RIPC-008A 内存 dump 产物：`build/ripc-008a/`
 - RIPC-008A/B 代码变更：`Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m`
+- RIPC-010-A1 LLDB 采集脚本：`Scripts/ripc_010a_materializer_probe.py`
+- RIPC-010-A2 Xcode 自动化脚本：`LocalDocs/XCodeOperation/ripc_010a_xcode_debug_automation.py`
 - RIPC-010-A 真机 materializer 断点产物：`build/ripc-010a-ipad-materializer-args.json`
 - RIPC-010-B 双端对比报告：`build/ripc-010b-diff.json`
 

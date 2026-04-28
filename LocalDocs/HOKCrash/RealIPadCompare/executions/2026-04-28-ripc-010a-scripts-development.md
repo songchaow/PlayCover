@@ -61,15 +61,58 @@ command script import /Users/songdogwang/Codes/PlayCover/Scripts/ripc_010a_mater
 - `add_address_breakpoint` 尚未实现（需要 Breakpoint Navigator 中 '+' 按钮的精确 UI 路径）
 - 需要实际 Xcode attach 场景验证和迭代
 
+## UI 探测结果（已沉淀到 xcode_general_ops.py）
+
+### Breakpoint Navigator
+
+- **切换方式**：通过 JXA 遍历 `nav.radioButtons()`，找到 `description === "Breakpoints"` 的 radio button 并点击。比 AppleScript `click_submenu` 更可靠。
+- **"+" 按钮**：`AXMenuButton | Create breakpoint | | null @170,1002`，尺寸 23x22
+- **菜单项**（经实际点击验证）：
+  - Swift Error Breakpoint
+  - Exception Breakpoint…
+  - Symbolic Breakpoint…
+  - Runtime Issue Breakpoint…
+  - Constraint Error Breakpoint
+  - Test Failure Breakpoint
+- **关键结论**：没有 "Address Breakpoint" 选项！地址断点**必须**通过 Debug Console 的 LLDB 命令设置。
+
+### Debug Console
+
+- **输出区域**：`AXTextArea | Console | | ... @1001,912`
+- **输入区域**：`AXTextArea | debug console | | @1001,1000`
+- **读取**：可直接通过 JXA 读取 `AXValue` 属性，已验证可行
+- **输入**：`AXValue.setValue()` 在无调试会话时失败（类型转换错误 -1700），需在有活跃 LLDB 会话时验证
+
+### Xcode 窗口状态
+
+- 当前文档：`file:///Users/songdogwang/Codes/PlayCover/build/ripc-profile-bootstrap/RIPCProfileBootstrap.xcodeproj`
+- 项目名：`RIPCProfileBootstrap`
+- 最近运行目标：`Songchao的iPad`
+- 运行状态：`Finished running RIPCProfileBootstrap on Songchao的iPad`
+
+## 沉淀到 xcode_general_ops.py 的新操作
+
+| 方法 | 说明 | 验证状态 |
+|------|------|----------|
+| `show_breakpoint_navigator()` | JXA 直接点击 Breakpoints radio button | ✅ 已验证 |
+| `get_create_breakpoint_button_info()` | 返回 "Create breakpoint" 按钮的位置信息 | ✅ 已验证 |
+| `click_create_breakpoint_button()` | 点击按钮并返回菜单项列表 | ✅ 已验证 |
+| `show_debug_console()` | 显示 Debug Area 并激活 Console | ✅ 已验证 |
+| `read_debug_console()` | 读取 Console 输出和 debug console 输入区域 | ✅ 已验证 |
+| `send_debug_console_command()` | 向 debug console 设置 value 并回车 | ⚠️ 需调试会话验证 |
+
+## Bug 修复
+
+修复了 `xcode_general_ops.py` 中 `activate()` 使用 `Application("Xcode").activate()` 导致 JXA 永久挂起的问题，改为 `System Events` 的 `frontmost = true`（与 README 中记录的修复方案一致）。
+
 ## 下一步
 
-1. **人工配合验证 A2**：由用户在 Xcode 中手动 Attach to Process → NGR，然后运行 `python3 ripc_010a_xcode_debug_automation.py attach` 验证菜单自动化是否成功
-2. **UI 探测迭代 A3**：在 attach 成功的 Xcode 窗口上运行 `xcode_general_ops.py uitree` 和 `dump_ui_tree`，定位 Debug Console 输入框和 Breakpoint Navigator '+' 按钮的精确 Accessibility 路径
-3. **端到端采集 A4**：A2/A3 验证通过后，运行完整流程，自动采集 materializer 调用参数
+1. **验证 A3（send_debug_console_command）**：需要在 Xcode attach 到真机 NGR 进程的调试会话中验证 `AXValue.setValue()` 是否可写入 debug console 输入框
+2. **端到端采集 A4**：A3 验证通过后，运行完整流程 `python3 ripc_010a_xcode_debug_automation.py full /path/to/probe.py`
 
 ## 环境状态
 
 - 真机：`Songchao的iPad` (iPadOS 26.4.1) 已连接
-- Xcode 16.4 可用
+- Xcode 16.4 可用，已打开 `RIPCProfileBootstrap` 项目
 - `com.songdog.ripc.debug` 已安装在真机上
 - `ios-deploy 1.12.2` 已确认与当前环境不兼容

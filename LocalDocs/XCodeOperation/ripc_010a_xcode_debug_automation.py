@@ -116,93 +116,43 @@ class XcodeDeviceDebug:
         """显示 Debug Console (View → Debug Area → Activate Console)。"""
         self.activate_xcode()
         try:
-            # 先显示 Debug Area
-            self.xc.show_debug_area()
-            time.sleep(0.3)
-            # 再激活 Console（Cmd+Shift+C 或菜单）
-            # Xcode 菜单: View → Debug Area → Activate Console
-            self.xc.click_submenu("View", "Debug Area", "Activate Console")
-            time.sleep(0.3)
+            self.xc.show_debug_console()
             return True
         except RuntimeError as e:
             print(f"[ripc-010a-xcode] show_debug_console failed: {e}")
             return False
 
-    def read_debug_console(self) -> str:
-        """尝试读取 Debug Console 中的文本内容。
+    def read_debug_console(self) -> dict:
+        """读取 Debug Console 的输出区域和输入区域文本。
 
-        通过遍历 Xcode 窗口的 AXStaticText 元素，提取位于 Debug Console
-        区域（窗口下半部分）的文本。
+        Returns:
+            {"output": "...", "input": "...", "output_pos": [x, y], "input_pos": [x, y]}
         """
         self.activate_xcode()
         try:
-            # 获取窗口大小以判断区域
-            wins = self.xc.get_windows()
-            if not wins:
-                return ""
-            win = wins[0]
-            win_y = win.get("y", 0)
-            win_h = win.get("height", 1200)
-            # Debug Console 大致在窗口下半部分
-            console_threshold_y = win_y + win_h * 0.6
-
-            # 遍历所有静态文本
-            result = _jxa("""
-const se = Application("System Events");
-const xcode = se.processes["Xcode"];
-const win = xcode.windows[0];
-let all = win.entireContents();
-let out = [];
-for (let i = 0; i < all.length; i++) {
-    try {
-        let el = all[i];
-        if (el.role() === "AXStaticText" || el.role() === "AXTextArea") {
-            let pos = el.position();
-            let val = "";
-            try { val = el.value(); } catch(e) {}
-            if (val && val.length > 0) {
-                out.push({text: val, x: pos[0], y: pos[1]});
-            }
-        }
-    } catch(e) {}
-}
-JSON.stringify(out);
-""", timeout=30)
-            texts = json.loads(result)
-            # 筛选位于下半部分的文本
-            console_texts = [
-                t["text"] for t in texts
-                if t.get("y", 0) > console_threshold_y
-            ]
-            return "\n".join(console_texts)
+            return self.xc.read_debug_console()
         except Exception as e:
             print(f"[ripc-010a-xcode] read_debug_console error: {e}")
-            return ""
+            return {"output": "", "input": "", "output_pos": [0, 0], "input_pos": [0, 0]}
 
     def send_to_debug_console(self, command: str) -> bool:
         """尝试向 Debug Console 输入命令并执行。
 
-        当前实现：通过 cliclick 或 key event 发送文本。
-        需要先聚焦 Debug Console 输入框。
+        优先使用 xcode_general_ops.send_debug_console_command（JXA 直接设置
+        AXTextArea value），如果失败则回退到 AppleScript keystroke。
         """
         self.activate_xcode()
         self.show_debug_console()
         time.sleep(0.5)
 
-        # 尝试通过 AppleScript 发送按键到 Xcode
-        # 先聚焦到 Debug Console 的输入区域（通常是底部的一行输入框）
+        # 尝试方法 1: JXA 直接设置 debug console value
         try:
-            # 使用 Tab 键循环聚焦到 Console 输入框
-            subprocess.run(
-                ["osascript", "-e",
-                 'tell application "System Events" to key code 48 control down'],
-                check=True, timeout=5,
-            )
-            time.sleep(0.2)
-        except Exception:
-            pass
+            self.xc.send_debug_console_command(command)
+            return True
+        except RuntimeError as e:
+            print(f"[ripc-010a-xcode] JXA send failed: {e}, falling back to keystroke")
 
-        # 输入命令
+        # 回退方法 2: AppleScript keystroke
         try:
             subprocess.run(
                 ["osascript", "-e",
@@ -210,7 +160,6 @@ JSON.stringify(out);
                 check=True, timeout=5,
             )
             time.sleep(0.2)
-            # 按回车
             subprocess.run(
                 ["osascript", "-e",
                  'tell application "System Events" to key code 36'],
@@ -219,35 +168,49 @@ JSON.stringify(out);
             time.sleep(0.5)
             return True
         except Exception as e:
-            print(f"[ripc-010a-xcode] send_to_debug_console failed: {e}")
+            print(f"[ripc-010a-xcode] keystroke fallback failed: {e}")
             return False
 
     # ═══════════════════ Breakpoint Navigator ═══════════════════
 
     def show_breakpoint_navigator(self) -> bool:
-        """切换到 Breakpoint Navigator。"""
+        """切换到 Breakpoint Navigator（使用 JXA 直接点击 radio button）。"""
         try:
-            self.xc.show_navigator("Breakpoints")
-            time.sleep(0.5)
+            self.xc.show_breakpoint_navigator()
             return True
         except RuntimeError as e:
             print(f"[ripc-010a-xcode] show_breakpoint_navigator failed: {e}")
             return False
 
+    def get_create_breakpoint_menu(self) -> list[str]:
+        """点击 Breakpoint Navigator 的 '+' 按钮并返回菜单项列表。"""
+        self.activate_xcode()
+        try:
+            return self.xc.click_create_breakpoint_button()
+        except RuntimeError as e:
+            print(f"[ripc-010a-xcode] get_create_breakpoint_menu failed: {e}")
+            return []
+
     def add_address_breakpoint(self, address: int) -> bool:
         """在 Breakpoint Navigator 中添加地址断点。
 
-        流程:
-        1. 显示 Breakpoint Navigator
-        2. 点击底部 '+' 按钮 → Add Address Breakpoint
-        3. 在弹出的输入框中输入地址
-        4. 确认
+        重要发现：Breakpoint Navigator 的 '+' 按钮菜单项为：
+        - Swift Error Breakpoint
+        - Exception Breakpoint…
+        - Symbolic Breakpoint…
+        - Runtime Issue Breakpoint…
+        - Constraint Error Breakpoint
+        - Test Failure Breakpoint
 
-        TODO: 需要根据实际 Xcode UI 结构迭代实现。
+        没有 "Address Breakpoint" 选项！因此地址断点必须通过 Debug Console
+        的 LLDB 命令设置：breakpoint set -a 0x<address>
         """
         self.show_breakpoint_navigator()
         time.sleep(0.5)
-        print(f"[ripc-010a-xcode] TODO: add_address_breakpoint(0x{address:x}) 需要实际 UI 探测")
+        print(
+            f"[ripc-010a-xcode] Address breakpoints must be set via LLDB command. "
+            f"Use: send_to_debug_console('breakpoint set -a 0x{address:x}')"
+        )
         return False
 
     # ═══════════════════ 组合流程 ═══════════════════
@@ -309,6 +272,7 @@ def main():
     sub.add_parser("show-console", help="Show and activate Debug Console")
     sub.add_parser("read-console", help="Read current Debug Console text")
     sub.add_parser("show-bp-nav", help="Show Breakpoint Navigator")
+    sub.add_parser("bp-menu", help="Click '+' in Breakpoint Navigator and list menu items")
 
     p = sub.add_parser("load-script", help="Load LLDB probe script via Debug Console")
     p.add_argument("path", help="Path to .py LLDB script")
@@ -331,6 +295,10 @@ def main():
     elif args.command == "show-bp-nav":
         ok = auto.show_breakpoint_navigator()
         sys.exit(0 if ok else 1)
+    elif args.command == "bp-menu":
+        items = auto.get_create_breakpoint_menu()
+        for item in items:
+            print(f"  {item}")
     elif args.command == "load-script":
         ok = auto.send_to_debug_console(f"command script import {Path(args.path).resolve()}")
         sys.exit(0 if ok else 1)

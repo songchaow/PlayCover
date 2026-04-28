@@ -52,8 +52,12 @@ class XcodeGeneral:
     # ═══════════════════ 窗口 ═══════════════════
 
     def activate(self):
-        """将 Xcode 置为前台。"""
-        _jxa('Application("Xcode").activate();')
+        """将 Xcode 置为前台。
+
+        注意：Application("Xcode").activate() 会导致 JXA 永久挂起，
+        改用 System Events 的 frontmost 属性。
+        """
+        _jxa('Application("System Events").processes["Xcode"].frontmost = true;')
         time.sleep(0.3)
 
     def get_windows(self) -> list[dict]:
@@ -219,6 +223,163 @@ class XcodeGeneral:
         except RuntimeError:
             pass
 
+    # ═══════════════════ Breakpoint Navigator ═══════════════════
+
+    def show_breakpoint_navigator(self):
+        """切换到 Breakpoint Navigator（使用 JXA 直接点击 radio button，比菜单更可靠）。"""
+        _jxa(_JXA_PREAMBLE + """
+        let nav = win.groups.whose({description: "navigator"});
+        if (nav.length === 0) { throw new Error("navigator not found"); }
+        let radios = nav[0].radioButtons();
+        let found = false;
+        for (let i = 0; i < radios.length; i++) {
+            try {
+                if (radios[i].description() === "Breakpoints") {
+                    radios[i].click();
+                    found = true;
+                    break;
+                }
+            } catch(e) {}
+        }
+        if (!found) { throw new Error("Breakpoints radio button not found"); }
+        delay(0.5);
+        "ok";
+        """)
+
+    def get_create_breakpoint_button_info(self) -> dict:
+        """获取 Breakpoint Navigator 中 'Create breakpoint' 按钮的信息。"""
+        result = _jxa(_JXA_PREAMBLE + """
+        let nav = win.groups.whose({description: "navigator"});
+        if (nav.length === 0) { JSON.stringify({found: false, reason: "no navigator"}); }
+        else {
+            let all = nav[0].entireContents();
+            let btn = null;
+            for (let i = 0; i < all.length; i++) {
+                try {
+                    if (all[i].role() === "AXMenuButton" && all[i].description() === "Create breakpoint") {
+                        let pos = all[i].position();
+                        let sz = all[i].size();
+                        btn = {index: i, x: pos[0], y: pos[1], width: sz[0], height: sz[1]};
+                        break;
+                    }
+                } catch(e) {}
+            }
+            JSON.stringify({found: btn !== null, button: btn});
+        }
+        """)
+        return json.loads(result)
+
+    def click_create_breakpoint_button(self) -> list[str]:
+        """点击 Breakpoint Navigator 的 'Create breakpoint' 按钮并返回菜单项列表。"""
+        result = _jxa(_JXA_PREAMBLE + """
+        let nav = win.groups.whose({description: "navigator"});
+        if (nav.length === 0) { throw new Error("navigator not found"); }
+        let all = nav[0].entireContents();
+        let btn = null;
+        for (let i = 0; i < all.length; i++) {
+            try {
+                if (all[i].role() === "AXMenuButton" && all[i].description() === "Create breakpoint") {
+                    btn = all[i];
+                    break;
+                }
+            } catch(e) {}
+        }
+        if (!btn) { throw new Error("Create breakpoint button not found"); }
+        btn.click();
+        delay(0.5);
+        let items = btn.menus()[0].menuItems();
+        let out = [];
+        for (let mi of items) {
+            try { out.push(mi.name()); } catch(e) {}
+        }
+        JSON.stringify(out);
+        """)
+        return json.loads(result)
+
+    # ═══════════════════ Debug Console ═══════════════════
+
+    def show_debug_console(self):
+        """显示 Debug Area 并激活 Console。"""
+        try:
+            self.click_submenu("View", "Debug Area", "Show Debug Area")
+        except RuntimeError:
+            pass
+        time.sleep(0.3)
+        try:
+            self.click_submenu("View", "Debug Area", "Activate Console")
+        except RuntimeError:
+            pass
+        time.sleep(0.3)
+
+    def read_debug_console(self) -> dict:
+        """读取 Debug Console 的输出区域和输入区域文本。
+
+        Returns:
+            {"output": "...", "input": "...", "output_pos": [x, y], "input_pos": [x, y]}
+        """
+        result = _jxa(_JXA_PREAMBLE + """
+        let all = win.entireContents();
+        let output = {text: "", pos: [0, 0]};
+        let input = {text: "", pos: [0, 0]};
+        for (let i = 0; i < all.length; i++) {
+            try {
+                let el = all[i];
+                if (el.role() === "AXTextArea") {
+                    let desc = "";
+                    try { desc = el.description(); } catch(e) {}
+                    let val = "";
+                    try { val = el.attributes["AXValue"].value(); } catch(e) {}
+                    let pos = el.position();
+                    if (desc === "Console") {
+                        output = {text: val || "", pos: pos};
+                    } else if (desc === "debug console") {
+                        input = {text: val || "", pos: pos};
+                    }
+                }
+            } catch(e) {}
+        }
+        JSON.stringify({output: output.text, input: input.text, output_pos: output.pos, input_pos: input.pos});
+        """)
+        return json.loads(result)
+
+    def send_debug_console_command(self, command: str) -> bool:
+        """向 Debug Console 输入框发送命令并回车。
+
+        实现方式：
+        1. 找到 debug console 输入框 (AXTextArea, description="debug console")
+        2. 设置其 AXValue 为命令文本
+        3. 发送回车键 (key code 36)
+
+        注意：需要当前有活跃的 LLDB 调试会话，否则输入框可能不可编辑。
+        """
+        # 先确保 Debug Console 显示
+        self.show_debug_console()
+        time.sleep(0.5)
+
+        # 通过 JXA 设置 debug console 的 value
+        _jxa(_JXA_PREAMBLE + f"""
+        let all = win.entireContents();
+        let inputArea = null;
+        for (let i = 0; i < all.length; i++) {{
+            try {{
+                if (all[i].role() === "AXTextArea" && all[i].description() === "debug console") {{
+                    inputArea = all[i];
+                    break;
+                }}
+            }} catch(e) {{}}
+        }}
+        if (!inputArea) {{ throw new Error("debug console input area not found"); }}
+        inputArea.attributes["AXValue"].setValue({json.dumps(command, ensure_ascii=False)});
+        "ok";
+        """)
+
+        # 发送回车键
+        _applescript(
+            'tell application "System Events" to key code 36'
+        )
+        time.sleep(0.5)
+        return True
+
     # ═══════════════════ Sheet / Alert ═══════════════════
 
     def get_sheets(self) -> list[dict]:
@@ -357,6 +518,14 @@ def main():
     p = sub.add_parser("show-nav", help="切换 Navigator")
     p.add_argument("name", help="Navigator 名")
 
+    p = sub.add_parser("show-bp-nav", help="切换到 Breakpoint Navigator")
+    p = sub.add_parser("bp-button", help="查看 Create breakpoint 按钮信息")
+    p = sub.add_parser("bp-menu", help="点击 Create breakpoint 按钮并列出菜单项")
+    p = sub.add_parser("show-console", help="显示并激活 Debug Console")
+    p = sub.add_parser("read-console", help="读取 Debug Console 内容")
+    p = sub.add_parser("send-console", help="向 Debug Console 发送命令")
+    p.add_argument("command", help="要发送的 LLDB 命令")
+
     p = sub.add_parser("uitree", help="导出 UI 树")
     p.add_argument("-n", "--max", type=int, default=200)
 
@@ -396,6 +565,25 @@ def main():
     elif args.command == "show-nav":
         xc.show_navigator(args.name)
         print(f"Switched to {args.name}")
+    elif args.command == "show-bp-nav":
+        xc.show_breakpoint_navigator()
+        print("Switched to Breakpoint Navigator")
+    elif args.command == "bp-button":
+        info = xc.get_create_breakpoint_button_info()
+        print(json.dumps(info, indent=2, ensure_ascii=False))
+    elif args.command == "bp-menu":
+        items = xc.click_create_breakpoint_button()
+        for item in items:
+            print(f"  {item}")
+    elif args.command == "show-console":
+        xc.show_debug_console()
+        print("Debug Console activated")
+    elif args.command == "read-console":
+        text = xc.read_debug_console()
+        print(json.dumps(text, indent=2, ensure_ascii=False))
+    elif args.command == "send-console":
+        ok = xc.send_debug_console_command(args.command)
+        print("ok" if ok else "failed")
     elif args.command == "click-sheet":
         xc.click_sheet_button(args.button, args.sheet_index)
         print("ok")

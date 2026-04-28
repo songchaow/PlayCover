@@ -150,11 +150,15 @@ materializer 断点采集，从路径生成源头重新定位根因。
 4. ~~**RIPC-010-A3（已完成）**~~：Debug Console 命令输入自动化验证完成。
    JXA `inputArea.value = ...` 直接赋值方案绕过 `setValue` 类型转换错误 (-1700)。
 5. **RIPC-010-A4（当前主线）**：端到端真机采集验证
-   - 确保真机 NGR 已启动；
+   - 确保真机 NGR 已启动且**尚未到达 materializer 调用时机**（UE4 初始化早期
+     attach 最佳；若错过需重启 app 重新 attach）；
    - Xcode Debug → Attach to Process → 选择 NGR；
    - Debug Console 中执行 `command script import Scripts/ripc_010a_materializer_probe.py`；
-   - 脚本自动设置断点并采集 3 次 materializer 调用；
+   - 脚本自动解析 ASLR slide、设置断点并采集 3 次 materializer 调用；
    - 产物：`build/ripc-010a-ipad-materializer-args.json`。
+   - **风险与 fallback**：`send_debug_console_command` 在有调试会话时的最终验证
+     包含在本步骤中；若 JXA 赋值失效，fallback 为在 Debug Console 中**手工输入**
+     `command script import /Users/songdogwang/Codes/PlayCover/Scripts/ripc_010a_materializer_probe.py`。
 6. **RIPC-010-B**：双端 materializer 调用参数对比
    - 将真机采集结果与 PlayCover 侧已有参数做结构化对比矩阵；
    - 产物：`build/ripc-010b-diff.json`。

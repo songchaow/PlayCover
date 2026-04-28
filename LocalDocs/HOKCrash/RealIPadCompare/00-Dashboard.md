@@ -37,12 +37,11 @@
 
 ### 当前主线一句话
 
-`RIPC-008-B 已落地，size 字段假设被证伪`：通过 RIPC-008-A 的内存 dump 精确定位
-了 `selectedObj + 0x10` 处的 UE4 `FString` 结构（`Data` 指针 + `ArrayNum` + `ArrayMax`）。
-已在 `pt_ngr_c5_scan_object_graph_for_paths` 中实现 parent-aware 修复，字符缓冲区
-重写的同时同步修改 `ArrayNum/ArrayMax`（129→33）。`launch-events.jsonl` 已验证
-`selectedPlus18` 从 `0x8100000081` 变为 `0x2100000021`。但 **`hok014_ngr_alert_suppressed`
-仍然出现**，QtsFS 仍 100% 失败。size 字段假设被证伪，需回溯 HOK-016 根因链。
+`RIPC-010 是当前主线`：在真机 iPad 上对 materializer（`0x10432a068`）下断点，
+精确采集 3 次调用的 `entryX1`（x1 寄存器）实参与返回值（x0）。通过与 PlayCover
+侧已采集的调用参数做结构化对比，直接回答：失败是因为 PlayCover 上 UE4 传入的
+路径格式与真机不同（**路径生成阶段差异**），还是两端传入相同格式但 materializer
+在 macOS 环境下行为不同（**materializer 跨平台行为差异**）。
 
 ### 当前状态摘要
 
@@ -94,9 +93,9 @@ materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
    hook 中增加 Saved/Paks 路径归一化，使 materializer compare ladder 匹配。
 4. ~~**RIPC-007**~~（已完成）：W^X 合规修复 → 全部 hook 安装成功。
 5. ~~**RIPC-008**~~（已完成）：embedded path rewrite 已验证可行，但 QtsFS 仍
-   fail，size 字段假设被证伪。
-6. **RIPC-009**（当前主线）：回溯 HOK-016 根因链，排查 materializer 覆盖完整性
-   与第二个独立失败点。
+   fail，size 字段假设被证伪。结论：运行时内存修补不可靠，需换路线。
+6. **RIPC-010**（当前主线）：真机 materializer 断点采集与双端参数对比，
+   直接确定失败根因属于路径生成阶段还是 materializer 行为差异。
 
 ### RIPC-008 embedded path rewrite + 验证结论
 
@@ -107,7 +106,8 @@ materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
 `launch-events.jsonl` 验证长度字段已正确改写。
 
 **但 QtsFS 仍 100% 失败**，说明 compare ladder 的失败点 **不在** `FString`
-长度元数据。size 字段假设被证伪，需回溯 HOK-016 根因链排查其他失败点。
+长度元数据。size 字段假设被证伪，**运行时内存修补思路终止**，转向真机
+materializer 断点采集，从路径生成源头重新定位根因。
 
 > 详细演进过程（v1→v2→v3 的扫描策略迭代、dump 分析方法、parent-aware 修复
 > 实现细节）见 `build/ripc-008a/` 产物与 `Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m`
@@ -115,25 +115,36 @@ materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
 
 ### 当前卡点
 
-1. **RIPC-008 size 字段假设被证伪**：parent-aware `ArrayNum/ArrayMax` 同步修复
-   已验证生效，但 QtsFS 仍 100% 失败。compare ladder 的失败点 **不在**
-   `FString` 长度元数据。
-2. **需回溯 HOK-016 根因链**：可能原因包括：
-   - `FString→std::u16string` 构造过程中存在其他长度字段未被同步修复；
-   - materializer 3 次调用中存在未被 `pt_ngr_c5_should_redirect_saved_path`
-     覆盖的 early-fail 路径；
-   - readiness B create-table 阶段存在 **第二个独立失败点**。
-3. **下一步需要 LLDB 精确定位**：在 materializer 返回后 dump 完整 object 内存，
-   离线分析所有 `/Users/` 出现位置及其周围结构元数据。
+1. **真机 materializer 输入从未直接采集**：当前所有分析都基于 PlayCover 侧的
+   单端猜测，真机侧 materializer 实际接收到的 `entryX1` 是什么路径（相对、
+   绝对 iOS、还是混合）完全未知。
+2. **无法区分两类根因**：
+   - **假设 A**：真机上 UE4 传给 materializer 的就是相对路径，而 PlayCover 上
+     因为 HOME 是 macOS 路径导致传入绝对路径 → 根因在 **UE4 路径生成阶段**。
+   - **假设 B**：真机和 PlayCover 上传入的都是绝对路径，但真机的 `/var/mobile/…`
+     能被 materializer 接受，PlayCover 的 `/Users/…` 不能 → 根因在
+     **materializer 的路径格式容忍度**。
+3. **RIPC-008 结论**：运行时内存修补（object graph 扫描 + FString 字段修复）
+   已证明不可靠，同一套修补逻辑在真机侧没有对应验证基准，思路终止。
 
 ### 下一步默认规划
 
 1. ~~**RIPC-008（已完成）**~~：embedded path rewrite 与 parent-aware size 修复已落地，
-   产物见 `build/ripc-008a/`。
-2. **RIPC-009（当前主线）**：回溯 HOK-016 根因链，重点检查：
-   - materializer 3 次调用的参数/返回值差异及覆盖完整性；
-   - `pt_ngr_c5_materialize_select` 复用策略是否拦截了所有 materializer 返回 0 的情况；
-   - readiness B create-table 链 downstream 是否存在第二个独立失败点。
+   产物见 `build/ripc-008a/`。结论：运行时内存修补不可靠，换路线。
+2. **RIPC-010-A（当前主线）**：真机 materializer 断点采集
+   - 在 Xcode LLDB 中对 `0x10432a068`（materializer）设置断点；
+   - 记录每次 hit 时的 x1（entryX1）、x0（返回值）、lr（调用方）；
+   - 同时采集调用方（readiness B）中生成 entryX1 的上游路径；
+   - 产物：`build/ripc-010a-ipad-materializer-args.json`。
+3. **RIPC-010-B**：双端 materializer 调用参数对比
+   - 将真机采集结果与 PlayCover 侧已有参数做结构化对比矩阵（调用次数、
+     entryX1、返回值、路径格式）；
+   - 产物：`build/ripc-010b-diff.json`。
+4. **RIPC-010-C**：根据对比结论确定修复方向
+   - 若真机 entryX1 为相对路径 → 修复方向为 **源头拦截**（在
+     ConvertToPlatformPath / FPaths 层阻止绝对路径生成）；
+   - 若真机 entryX1 为绝对路径但成功 → 修复方向为 **路径伪装**（让
+     PlayCover 的 HOME / SavedDir 看起来像 iOS 路径格式）。
 
 ## 构建与验证
 
@@ -196,7 +207,7 @@ materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
 | RIPC-006 | DONE | Direction A：ConvertToPlatformPath hook 增加 Saved/Paks 路径归一化 | — |
 | RIPC-007 | DONE | W^X 修复使全部 hook 安装成功；端到端验证发现失败点在 materializer 返回 object 的下游 compare ladder | `build/ripc-007-verification-report.json` |
 | RIPC-008 | DONE | 内存 dump 定位 `selectedObj + 0x10` 处 UE4 `FString`；parent-aware `ArrayNum/ArrayMax` 同步修复（129→33）已验证生效，但 QtsFS 仍 100% 失败，size 字段假设被证伪。产物：`build/ripc-008a/` | — |
-| RIPC-009 | IN-PROGRESS（当前主线） | 回溯 HOK-016 根因链：检查 materializer 3 次调用的参数/返回值差异、复用策略覆盖完整性，以及 readiness B create-table 是否存在第二个独立失败点 | 待建 |
+| RIPC-010 | IN-PROGRESS（当前主线） | 真机 materializer 断点采集与双端参数对比：在真机 iPad 上对 materializer 下断点，采集 3 次调用的 entryX1 实参与返回值，与 PlayCover 侧做结构化对比，直接区分"路径生成差异"与"materializer 跨平台行为差异" | 待建 |
 
 ## 高频复用经验
 
@@ -264,6 +275,8 @@ materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
 - RIPC-007 验证报告：`build/ripc-007-verification-report.json`
 - RIPC-008A 内存 dump 产物：`build/ripc-008a/`
 - RIPC-008A/B 代码变更：`Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m`
+- RIPC-010-A 真机 materializer 断点产物：`build/ripc-010a-ipad-materializer-args.json`
+- RIPC-010-B 双端对比报告：`build/ripc-010b-diff.json`
 
 ### 关联文档
 

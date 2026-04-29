@@ -26,6 +26,7 @@
   - 但没有任何 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`
   - 同轮仍出现 `hok014_ngr_alert_suppressed message="QtsFileSystem Create Failed!!"`
 - 因此当前待解释的问题已进一步收紧为：**为什么 `ConvertToPlatformPath` replacement 没有留下调用 / 命中证据**。这一步完成前，不应把默认主线切到 `RIPC-010-C2`。
+- 进一步说，当前 `C1` 的**唯一最高优先级子任务**应固定为：先证明 failing `/Users/.../Saved/Paks/1/1.db` 流量到底有没有进入 `ConvertToPlatformPath`，以及若已进入，`x1` 到达 `pdt006_convert_replacement()` 时到底是什么形态。
 
 ### A4 打通后的长期有效结论
 
@@ -85,7 +86,7 @@
 - **代码侧复核结果**：`PlayLoader.m` 已经存在 bundle-scoped 的 `Saved/Paks` 归一化实现与安装调用链：`ripc006_try_normalize_pak_path()`、`pdt006_convert_replacement()`、`pdt006_install_convert_patch_once()`。因此 `C` 阶段的真实首任务不是“重想一遍 remap 方向”，而是验证这条现有链是否真的安装并命中 `/Users/.../Saved/Paks/...` failing class。
 - **installed GUI fresh run 的直接含义已经固定**：它已经足够排除“工作区 app 副本 / move-to-Applications 提示”变量，也足够再次证明 patch installed；但它**没有**证明 replacement 已被进入。
 - **默认优先顺序**：
-  1. `RIPC-010-C1`：先解释现有 normalize 链为什么没有产生 replacement 调用证据；
+  1. `RIPC-010-C1`：先证明 failing `/Users/.../Saved/Paks/1/1.db` 是否进入 `ConvertToPlatformPath`，以及进入时 `x1` 的真实形态；
   2. `RIPC-010-C2`：仅当 `C1` 已证实 normalize 命中但 QtsFS 仍 fail，再转向 pre-`1c8` caller/helper state。
 - **残余不确定性**：矩阵仍未证明“只有 path text 一项差异”；更准确的说法是：**path class 已足以支撑验证优先级，而 pre-`1c8` caller/helper state 仍是机制层面的 residual uncertainty。**
 - **因此 `B2` 不再是默认下一步**：只有当 `C1/C2` 验证后仍暴露新的未闭合 path class / caller tuple 时，才回到定向补采。
@@ -147,6 +148,10 @@ python3 Scripts/ripc_010a_real_ipad_lldb_driver.py \
   - 若完全没有 `pdt006_ngr_convert_call`，优先判断 failing path 根本未经过 `ConvertToPlatformPath`；
   - 若有 `pdt006_ngr_convert_call` 但 `matchesUsers=false` / `looksUtf16UsersPrefix=true`，优先怀疑 `x1` 形态与当前 UTF-8 `/Users/...` 假设不一致；
   - 若已有 `normalize-hit` 但 QtsFS 仍 fail，才把主分叉升级为 `RIPC-010-C2` 的 pre-`1c8` caller/helper state。
+- **因此当前最该做的事不是泛化 `C1`，而是把它压缩成一条更窄的问题链**：
+  1. failing `/Users/.../Saved/Paks/1/1.db` 有没有进入 `ConvertToPlatformPath`；
+  2. 若有，`x1` 到达 replacement 时究竟是 UTF-8、UTF-16，还是别的结构；
+  3. 只有在这两点已回答后，才讨论是否还需要新的 remap 或升级到 `C2`。
 - `v5` 中仍有部分 `materializer` 记录呈现 `return_orphaned`，但它们当前不足以阻塞 `RIPC-010-C1/C2`。只有当验证后仍出现未闭合分叉时，才回到 `RIPC-010-B2` 做围绕缺失 path class / caller tuple 的定向补采。
 
 ### 产物与脚本索引

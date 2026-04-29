@@ -253,6 +253,21 @@ public class PlayCover: NSObject {
         )
     }
 
+    /// PDT-006: 供 PlayLoader.m 的 `pdt006_log_convert_call_event()` 回调使用，
+    /// 把 `ConvertToPlatformPath` replacement 的实参观测事件落盘到
+    /// `launch-events.jsonl`。事件字段含 `action` / `callIndex` / `pathPreview` /
+    /// `pathBytesHex` / `matchesUsers` / `containsSavedPaks` /
+    /// `looksUtf16UsersPrefix` / `normalized` / `note`。
+    @objc static public func recordPDT006ConvertCallDiagnostic(details: [String: String]) {
+        let runtimeBundleId = Bundle.main.bundleIdentifier
+            ?? "playtools.runtime.\(ProcessInfo.processInfo.processIdentifier)"
+        RuntimeLaunchDiagnostics.record(
+            event: "pdt006_ngr_convert_call",
+            bundleId: runtimeBundleId,
+            details: details
+        )
+    }
+
     /// RIPC-006 Direction A: 供 PlayLoader.m 的 `ripc006_log_normalize_event()`
     /// 回调使用，把 pak-path 归一化事件落盘到 `launch-events.jsonl`。
     /// 事件字段含 `action` / `original` / `normalized`。

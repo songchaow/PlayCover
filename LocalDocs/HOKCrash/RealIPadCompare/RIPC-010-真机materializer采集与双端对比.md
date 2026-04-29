@@ -25,9 +25,12 @@
   - iOS sandbox absolute path：
     `/var/mobile/.../Library/NGR/Saved/Paks/1/1_0.db`
   - UE4 relative pak path：`../../../NGR/Content/Paks/1/1_0.db`
-- 因此当前待解释的问题已经从“真机到底是相对路径还是绝对路径”收紧为：
-  **PlayCover failing `/Users/.../Saved/Paks/...` path class 及其 caller /
-  helper state，与真机 accepted path classes 到底差在哪一层。**
+- `2026-04-29` 已追加一次 **完整 `Release` GUI 重建 + 已安装 `~/Applications/PlayCover.app` fresh run** 的 `RIPC-010-C1` 验证：
+  - `build/ripc-010c1-live-report-v2.json` 选中 `processLaunchId=launch-48548-f2a3231c-a329-4b88-aca4-39a1081c7405`
+  - 同轮出现 `pdt006_ngr_convert_patch status=installed`
+  - 但没有任何 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`
+  - 同轮仍出现 `hok014_ngr_alert_suppressed message="QtsFileSystem Create Failed!!"`
+- 因此当前待解释的问题已进一步收紧为：**为什么 `ConvertToPlatformPath` replacement 没有留下调用/命中证据**；在回答这个问题前，不应把默认主线切到 `RIPC-010-C2`。
 
 ### A4 打通后的长期有效结论
 
@@ -98,9 +101,13 @@ return semantics** 汇总后的稳定结论如下：
   `pdt006_convert_replacement()`、`pdt006_install_convert_patch_once()`。
   因此 `C` 阶段的真实首任务不是“重想一遍 remap 方向”，而是验证这条现有链是否
   真的安装并命中 `/Users/.../Saved/Paks/...` failing class。
+- **`2026-04-29` installed GUI fresh run 补充**：已用完整 `Release` GUI 重建与
+  已安装 `~/Applications/PlayCover.app` 再次验证，补丁安装事件 `pdt006_ngr_convert_patch`
+  稳定出现，但仍未见 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`。
+  因此当前 `C1` 的首要问题已从“补丁是否真的装上”收紧为“replacement 为什么没有留下
+  调用/命中证据”。
 - **默认优先顺序**：
-  1. `RIPC-010-C1`：验证现有 normalize 链是否成功安装、成功命中、成功把 failing
-     sample 收敛到真机已接受的 path class；
+  1. `RIPC-010-C1`：先解释现有 normalize 链为什么没有产生 replacement 调用证据；
   2. `RIPC-010-C2`：仅当 `C1` 已证实 normalize 命中但 QtsFS 仍 fail，再转向
      pre-`1c8` caller/helper state。
 - **残余不确定性**：矩阵仍未证明“只有 path text 一项差异”；更准确的说法是：
@@ -162,9 +169,17 @@ python3 Scripts/ripc_010a_real_ipad_lldb_driver.py \
 ### 当前仍待闭合的问题
 
 - `RIPC-010-B1` 已经落盘为 `build/ripc-010b-diff.json`，当前不再缺“统一 diff”；
-  剩余问题首先转为：**现有 `RIPC-006` normalize 链是否真的在 PlayCover 端安装并命中**
-  `/Users/.../Saved/Paks/...` 这条稳定 failing class。
-- 若 `C1` 证明 normalize 已命中但 QtsFS 仍 fail，则剩余问题才进一步收紧为
+  剩余问题首先转为：**现有 `RIPC-006` normalize 链为什么没有产生 replacement 调用证据**。
+- `2026-04-29` 的 installed GUI fresh run 已再次确认：
+  - `pdt006_ngr_convert_patch status=installed`
+  - 无 `pdt006_ngr_convert_call`
+  - 无 `ripc006_pak_path_normalize`
+  - `QtsFileSystem Create Failed!!` 仍发生
+- 因此当前需要优先判断 failing `/Users/.../Saved/Paks/...` 流量是否：
+  1. 根本未经过 `ConvertToPlatformPath`；
+  2. 经过了 replacement，但 `x1` 参数并非当前假设的 UTF-8 `/Users/...` 文本；
+  3. 或落在另一条未被 `RIPC-006` 覆盖的路径生成链。
+- 若 `C1` 后续证明 normalize 已命中但 QtsFS 仍 fail，则剩余问题才进一步收紧为
   **pre-`1c8` caller/helper state** 是否仍参与 materializer compare ladder 分流。
 - `v5` 中仍有部分 `materializer` 记录呈现 `return_orphaned`，但它们当前不足以阻塞
   `RIPC-010-C1/C2`。只有当验证后仍出现未闭合分叉时，才回到 `RIPC-010-B2`

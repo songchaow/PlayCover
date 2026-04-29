@@ -37,7 +37,7 @@
 
 ### 当前主线一句话
 
-`RIPC-010-C1 是默认下一主线`：`RIPC-010-B1` 已完成并落盘 `build/ripc-010b-diff.json`，且代码侧复核已确认 `Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m` 中已经存在 bundle-scoped 的 `Saved/Paks` 归一化链（`ripc006_try_normalize_pak_path()`、`pdt006_convert_replacement()`、构造函数中的 `pdt006_install_convert_patch_once()`）。因此当前最高优先级不再是“选择或重新实现 remap 方向”，而是先验证这条现有链路在 PlayCover 端是否**真正安装并命中** `/Users/.../Saved/Paks/...` failing class；只有在 `normalize` 已命中但 QtsFS 仍 fail 时，才转向 `RIPC-010-C2` 收紧 pre-`1c8` caller / helper state，必要时再回开 `RIPC-010-B2`。长期方法、产物与调试经验统一下沉到 `RIPC-010-真机materializer采集与双端对比.md`。
+`RIPC-010-C1 仍是默认当前主线`：`RIPC-010-B1` 已完成并落盘 `build/ripc-010b-diff.json`，且代码侧复核已确认 `Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m` 中已经存在 bundle-scoped 的 `Saved/Paks` 归一化链（`ripc006_try_normalize_pak_path()`、`pdt006_convert_replacement()`、构造函数中的 `pdt006_install_convert_patch_once()`）。`2026-04-29` 已用**完整 `Release` GUI 重建 + 已安装 `~/Applications/PlayCover.app` fresh run** 再次验证：`pdt006_ngr_convert_patch status=installed` 稳定出现，但同轮没有 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`，`QtsFileSystem Create Failed!!` 仍然发生。因此当前最高优先级不再是“证明补丁已安装”，而是解释 **`ConvertToPlatformPath` replacement 为什么没有留下调用 / 命中证据**；只有在后续已证实 `normalize` 命中但 QtsFS 仍 fail 时，才转向 `RIPC-010-C2` 收紧 pre-`1c8` caller / helper state，必要时再回开 `RIPC-010-B2`。长期方法、产物与调试经验统一下沉到 `RIPC-010-真机materializer采集与双端对比.md`，本轮 execution note 见 `executions/2026-04-29-1735-ripc-010-c1-installed-gui-fresh-run.md`。
 
 ### 当前状态摘要
 
@@ -86,6 +86,11 @@
   `ripc006_try_normalize_pak_path()` → `pdt006_convert_replacement()` →
   `pdt006_install_convert_patch_once()`。因此 `RIPC-010-C` 的真实首任务不是“再设计
   remap”，而是验证这条现有链路为什么尚未把 `B1` 的 failing class 闭合。
+- **RIPC-010-C1 最新验证（2026-04-29 17:35，installed GUI fresh run）**：
+  - `PLAYCOVER_INSTALL_MODE=user ./BuildScripts/build_and_install.sh Release` 成功，正式安装路径固定为 `~/Applications/PlayCover.app`。
+  - `python3 Scripts/hok015_ngr_live_verify.py --playcover-app-path ~/Applications/PlayCover.app --observe-seconds 20 --poll-interval 2 --output build/ripc-010c1-live-report-v2.json` 选中 `processLaunchId=launch-48548-f2a3231c-a329-4b88-aca4-39a1081c7405`。
+  - 同轮事件中出现 `pdt006_ngr_convert_patch status=installed`，但没有 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`；同时出现 `hok014_ngr_alert_suppressed message="QtsFileSystem Create Failed!!"` 与新 crash `NGR-2026-04-29-173545.ips`。
+  - 结论：可排除“工作区 app 副本 / move-to-Applications 提示”变量，`C1` 当前剩余问题已收紧为 replacement 调用证据缺失。
 - **文档整合状态**：`RIPC-010-B1` 的上一轮执行记录中的核心证据、判断与触发条件，
   现已统一回收到本文与 `RIPC-010-真机materializer采集与双端对比.md`；本目录下不再
   保留同主题的独立 execution note 作为事实来源。
@@ -146,10 +151,11 @@ materializer 断点采集，从路径生成源头重新定位根因。
 
 ### 当前卡点
 
-1. **当前缺的不是 remap 实现，而是现有实现的闭环验证**：`RIPC-010-B1` 已落盘，且
-   `PlayLoader.m` 中已经存在 bundle-scoped `Saved/Paks` 归一化链。当前首要问题是：
-   这条链在 PlayCover 端是否**成功安装、实际命中** `/Users/.../Saved/Paks/...`
-   failing class，并把它改写成预期的 iOS-semantic / relative class。
+1. **当前缺的不是补丁安装证据，而是 replacement 调用证据**：已通过完整 `Release`
+   GUI 重建 + 已安装实例 fresh run 再次确认 `pdt006_install_convert_patch_once()`
+   安装成功，但同轮没有 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`。
+   当前首要问题是：failing `/Users/.../Saved/Paks/...` 流量究竟没有经过
+   `ConvertToPlatformPath`，还是 `x1` 参数形态与当前 UTF-8 `/Users/...` 假设不符。
 2. **若 normalize 已命中但 QtsFS 仍 fail，才说明主分叉不止 path class**：这时才把
    优先级切到 pre-`1c8` caller/helper state，对 `RIPC-010-C2` 做机制收紧。
 3. **补采仍是条件性回退项**：只有当 `RIPC-010-C1/C2` 验证后仍暴露新的未闭合
@@ -166,11 +172,13 @@ materializer 断点采集，从路径生成源头重新定位根因。
    `build/ripc-010a-ipad-materializer-args-v5.json` 与 PlayCover 侧
    `HOK-016-C.2.7` 证据，已产出 path class / caller tuple / return semantics
    结构化对比矩阵 `build/ripc-010b-diff.json`。
-4. **RIPC-010-C1（当前默认主线）**：验证现有 `RIPC-006` 归一化链是否真正闭环
-   - 核查 `pdt006_install_convert_patch_once()` 是否成功安装；
-   - 核查启动日志 / `launch-events.jsonl` 是否出现 `normalize` 命中；
-   - 核查命中后 failing sample 是否从 `/Users/.../Saved/Paks/...` 收敛为
-     真机已接受的 path class。
+4. **RIPC-010-C1（当前默认主线）**：解释现有 `RIPC-006` 归一化链为何未闭环
+   - 已通过完整 `Release` GUI 重建 + 已安装实例 fresh run 确认
+     `pdt006_ngr_convert_patch status=installed`；
+   - 当前未闭合项是 `pdt006_convert_replacement()` 为什么没有产生
+     `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`；
+   - 需要判断 failing `/Users/.../Saved/Paks/...` path flow 是否根本未经过
+     `ConvertToPlatformPath`，或参数编码/形态与现有 replacement 假设不一致。
 5. **RIPC-010-C2（条件性第二优先级）**：仅当 `C1` 已证实现有 normalize 链命中但
    QtsFS 仍 fail，再转向 **pre-`1c8` caller/helper state 对齐**。
 6. **RIPC-010-B2（条件性回退项）**：仅当 `C1/C2` 验证后仍有未闭合样本时，
@@ -209,14 +217,19 @@ materializer 断点采集，从路径生成源头重新定位根因。
   `RIPC-010-B / RIPC-010-C` 时总是建议读取。**
 - **PlayCover 侧验证**：使用 PlayCover MCP `launch_app` 工具启动 app，
   通过 `launch-events.jsonl` 检查 hook 事件和 QtsFS 状态。
-- **PlayTools 构建部署流程**：
-  1. 修改 `Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m`
-  2. `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh Debug`
-  3. `FASTLANE=1 ./BuildScripts/build_gui.sh Debug`（**必须 FASTLANE=1**，
-     否则 Carthage Bootstrap 会重置 Checkouts 源码）
-  4. 复制 framework 到运行时位置：
-     `rm -rf ~/Library/Frameworks/PlayTools.framework && cp -R build/Build/Products/Release/PlayCover.app/Contents/Frameworks/PlayTools.framework ~/Library/Frameworks/PlayTools.framework`
-  5. MCP `launch_app` 验证
+- **PlayTools 构建部署流程（结论性 GUI 验证）**：
+  1. 修改 `Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m` /
+     `Carthage/Checkouts/PlayTools/PlayTools/PlayCover.swift`
+  2. `FORCE_PLAYTOOLS_REBUILD=1 ./BuildScripts/sync_playtools_xcframework.sh Release`
+  3. `PLAYCOVER_INSTALL_MODE=user ./BuildScripts/build_and_install.sh Release`
+  4. `python3 Scripts/hok015_ngr_live_verify.py --playcover-app-path ~/Applications/PlayCover.app --output build/ripc-010c1-live-report-vN.json`
+  5. 读取 `~/Library/Containers/io.playcover.PlayCover/RuntimeLaunchDiagnostics/com.tencent.ngr/launch-events.jsonl`
+  6. 如需专看本轮事件，按 `processLaunchId` 过滤 `pdt006_ngr_convert_patch` /
+     `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize` /
+     `hok014_ngr_alert_suppressed`
+
+  **备注**：当前 `PlayCover` target 只有 `Release` / `Nightly` 两套 GUI 配置；
+  `build_gui.sh Debug` 不应用作 `RIPC-010-C1` 的结论性证据。
 - **证据存放**：真机 trace 产物 → `build/ripc-*.json`；对比报告 →
   `build/ripc-*-diff.json`。
 
@@ -257,7 +270,7 @@ materializer 断点采集，从路径生成源头重新定位根因。
 | RIPC-010-B1 | DONE | 已基于真机 `v5` 与 PlayCover `HOK-016-C.2.7` 证据，对齐 path class / caller tuple / return semantics，并产出 `build/ripc-010b-diff.json` | `RIPC-010-真机materializer采集与双端对比.md` |
 | RIPC-010-B2 | TODO | 若 `RIPC-010-C1/C2` 验证后仍有未闭合 path class / caller tuple，再做定向真机补采；默认 `--pre-inject-delay 5` | `RIPC-010-真机materializer采集与双端对比.md` |
 | RIPC-010-C | IN-PROGRESS | `C1` 为默认当前主线：优先验证现有 `RIPC-006` `Saved/Paks` 归一化链是否成功安装并命中 failing class；仅当 `C1` 已命中但仍失败时，再进入 `C2` 做 pre-`1c8` caller/helper state 对齐 | `RIPC-010-真机materializer采集与双端对比.md` |
-| RIPC-010-C1 | TODO（默认下一主线） | 验证 `pdt006_install_convert_patch_once()` 是否安装成功，且 `ripc006_try_normalize_pak_path()` / `pdt006_convert_replacement()` 是否真正把 `/Users/.../Saved/Paks/...` 命中并改写到预期 class | `RIPC-010-真机materializer采集与双端对比.md` |
+| RIPC-010-C1 | IN-PROGRESS（默认当前主线） | 已确认 installed GUI fresh run 中 `pdt006_install_convert_patch_once()` 安装成功，但尚未出现 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`；当前继续追 replacement 调用缺口 | `executions/2026-04-29-1735-ripc-010-c1-installed-gui-fresh-run.md` |
 | RIPC-010-C2 | TODO（条件性） | 若 `C1` 已证实 normalize 命中但 QtsFS 仍失败，再转向 pre-`1c8` caller/helper state 对齐 | `RIPC-010-真机materializer采集与双端对比.md` |
 
 ## 高频复用经验

@@ -2706,6 +2706,11 @@ static BOOL pdt006_should_pass_through(const char *path) {
 
 // 前向声明 log 函数（定义在下方 pdt006_log_event 之后）
 static void ripc006_log_normalize_event(const char *original, const char *normalized);
+static void pdt006_log_convert_call_event(const char *action,
+                                          uint64_t callIndex,
+                                          const char *path,
+                                          const char *normalized,
+                                          const char *note);
 
 static const char *ripc006_try_normalize_pak_path(const char *path) {
     if (path == NULL || strncmp(path, "/Users/", 7) != 0) { return NULL; }
@@ -2728,17 +2733,34 @@ static const char *ripc006_try_normalize_pak_path(const char *path) {
 // x0 = this (FIOSPlatformFile*), x1 = filename (const TCHAR*)
 // 返回 x0 = const TCHAR*
 static uint64_t pdt006_convert_replacement(uint64_t x0, uint64_t x1) {
+    static uint64_t pdt006_call_counter = 0;
+    const uint64_t callIndex = ++pdt006_call_counter;
     const char *path = (const char *)(uintptr_t)x1;
+
+    if (callIndex <= 12) {
+        pdt006_log_convert_call_event("enter", callIndex, path, NULL, "replacement-enter");
+    }
 
     // RIPC-006 Direction A: 对 /Users/ 开头路径优先尝试 Saved/Paks 归一化
     if (pdt006_should_pass_through(path)) {
         const char *normalized = ripc006_try_normalize_pak_path(path);
         if (normalized != NULL) {
+            pdt006_log_convert_call_event("normalize-hit", callIndex, path, normalized,
+                                          "users-path matched Saved/Paks");
             ripc006_log_normalize_event(path, normalized);
             return (uint64_t)(uintptr_t)normalized;
         }
+        if (callIndex <= 12) {
+            pdt006_log_convert_call_event("users-pass-through", callIndex, path, NULL,
+                                          "users-path without Saved/Paks match");
+        }
         // PDT-006 原逻辑：非 Saved/Paks 的 /Users/ 路径直接透传
         return x1;
+    }
+
+    if (callIndex <= 12) {
+        pdt006_log_convert_call_event("delegate-original", callIndex, path, NULL,
+                                      "non-/Users/ path delegated to original");
     }
 
     if (pdt006_original_exec_page != NULL) {
@@ -2763,6 +2785,59 @@ static void pdt006_log_event(const char *status,
         @"detail": detail ? [NSString stringWithUTF8String:detail] : @"",
     };
     [PlayCover recordPDT006ConvertPatchDiagnosticWithDetails:details];
+}
+
+static void pdt006_log_convert_call_event(const char *action,
+                                          uint64_t callIndex,
+                                          const char *path,
+                                          const char *normalized,
+                                          const char *note) {
+    char preview[256] = {0};
+    char bytesHex[64] = {0};
+    BOOL matchesUsers = NO;
+    BOOL containsSavedPaks = NO;
+    BOOL looksUtf16UsersPrefix = NO;
+
+    if (path != NULL) {
+        uintptr_t addr = (uintptr_t)path;
+        if (addr > 0x100000000ULL) {
+            snprintf(preview, sizeof(preview), "%s", path);
+            matchesUsers = (strncmp(path, "/Users/", 7) == 0);
+            containsSavedPaks = (strstr(path, "/Saved/Paks/") != NULL);
+
+            const unsigned char *bytes = (const unsigned char *)path;
+            size_t byteCount = 0;
+            for (; byteCount < 8; ++byteCount) {
+                unsigned char value = bytes[byteCount];
+                if (value == '\0' && byteCount > 0) {
+                    break;
+                }
+            }
+            if (byteCount == 0) {
+                byteCount = 8;
+            }
+            for (size_t i = 0; i < byteCount && (i * 2 + 1) < sizeof(bytesHex); ++i) {
+                snprintf(bytesHex + i * 2, sizeof(bytesHex) - i * 2, "%02x", bytes[i]);
+            }
+            looksUtf16UsersPrefix =
+                bytes[0] == '/' && bytes[1] == 0x00 &&
+                bytes[2] == 'U' && bytes[3] == 0x00 &&
+                bytes[4] == 's' && bytes[5] == 0x00;
+        }
+    }
+
+    NSDictionary<NSString *, NSString *> *details = @{
+        @"action": action ? [NSString stringWithUTF8String:action] : @"",
+        @"callIndex": [NSString stringWithFormat:@"%llu", callIndex],
+        @"pathPreview": preview[0] ? [NSString stringWithUTF8String:preview] : @"",
+        @"pathBytesHex": bytesHex[0] ? [NSString stringWithUTF8String:bytesHex] : @"",
+        @"matchesUsers": matchesUsers ? @"true" : @"false",
+        @"containsSavedPaks": containsSavedPaks ? @"true" : @"false",
+        @"looksUtf16UsersPrefix": looksUtf16UsersPrefix ? @"true" : @"false",
+        @"normalized": normalized ? [NSString stringWithUTF8String:normalized] : @"",
+        @"note": note ? [NSString stringWithUTF8String:note] : @"",
+    };
+    [PlayCover recordPDT006ConvertCallDiagnosticWithDetails:details];
 }
 
 // RIPC-006 Direction A: 记录 pak-path 归一化事件

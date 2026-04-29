@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-04-29T14:20:30+0800",
+  "task": "RIPC-010-B1",
+  "status": "completed",
+  "question": "Is the PlayCover failure primarily driven by the macOS /Users/.../Saved/Paks path class, or do we still need to tighten the explanation to pre-1c8 caller/helper state?",
+  "sources": {
+    "realDevice": {
+      "runSummaryPath": "build/ripc-010a-real-ipad-lldb-run-v5.json",
+      "baselinePath": "build/ripc-010a-ipad-materializer-args-v5.json",
+      "preInjectDelay": 5.0,
+      "recordCount": 71,
+      "materializerCompleteCount": 15
+    },
+    "playcover": {
+      "vcallTracePath": "build/hok-016c27-materialize-vcall-trace-v3.json",
+      "targetTracePath": "build/hok-016c27-materialize-target-trace-v2.json",
+      "appendixPath": "LocalDocs/HOKCrash/HOK-016-appendix-C27.md"
+    }
+  },
+  "matrix": [
+    {
+      "platform": "real-device",
+      "pathClass": "ios_absolute_saved_paks",
+      "samplePath": "/var/mobile/Containers/Data/Application/62B518C9-5AEB-430D-BC70-30ADD238D0F8/Library/NGR/Saved/Paks/1/1_0.db",
+      "sampleCount": 2,
+      "callerTuple": {
+        "entryX2": "0x10b8f264a",
+        "targetUnslid": "0x10432a068",
+        "backtraceClasses": [
+          "0x100fc2f58 > 0x100fb4170 > 0x100fb509c > 0x100fc61a8 > 0x1010538fc",
+          "0x100fc2f58 > 0x100fb4684 > 0x100fb8cfc > 0x100fb9088 > 0x100fb964c"
+        ]
+      },
+      "returnSemantics": {
+        "materializerReturn": "non-null (0x100000000000)",
+        "accepted": true
+      },
+      "notes": "Real device accepts an absolute Saved/Paks class, so the problem is not the idea of absolute paths by itself."
+    },
+    {
+      "platform": "real-device",
+      "pathClass": "ue4_relative_paks",
+      "samplePath": "../../../NGR/Content/Paks/1/1_0.db",
+      "sampleCount": 13,
+      "callerTuple": {
+        "entryX2": "0x10b8f264a",
+        "targetUnslid": "0x10432a068",
+        "backtraceClasses": [
+          "0x100fc2f58 > 0x100fb4170 > 0x100fb509c > 0x100fc61a8 > 0x1010538fc",
+          "0x100fc2f58 > 0x100fb4684 > 0x100fb8cfc > 0x100fb8b18 > 0x100fb967c",
+          "0x100fc2f58 > 0x100fb4684 > 0x100fb8cfc > 0x100fb9088 > 0x100fb964c"
+        ]
+      },
+      "returnSemantics": {
+        "materializerReturn": "non-null (0x100000000000)",
+        "accepted": true
+      },
+      "notes": "Real device also accepts the UE4 relative pak class."
+    },
+    {
+      "platform": "playcover",
+      "pathClass": "ue4_relative_paks",
+      "samplePath": "../../../NGR/Content/Paks/1/1.db",
+      "sampleCount": 2,
+      "callerTuple": {
+        "entryX2": "0x10aa5264a",
+        "targetUnslid": "0x10432a068",
+        "pre1c8State": "x22=0x21 -> 0x3",
+        "post1c8Pair": "x21=0x10b248b8c, x22=0x10b308bee",
+        "route": "0x10432a2c8 -> 0x10432a2e0 -> 0x10432a31c"
+      },
+      "returnSemantics": {
+        "materializerReturn": "non-null",
+        "helperPlus18": "written non-null",
+        "errProvider": "not taken"
+      },
+      "notes": "This is the PlayCover success control sample documented in HOK-016-C.2.7."
+    },
+    {
+      "platform": "playcover",
+      "pathClass": "macos_absolute_saved_paks",
+      "samplePath": "/Users/.../Saved/Paks/1/1.db",
+      "sampleCount": 1,
+      "callerTuple": {
+        "entryX2": "0x10aa4678c",
+        "targetUnslid": "0x10432a068",
+        "pre1c8State": "x22=0x31 -> 0x4",
+        "post1c8Pair": "x21=0x10b248b8c, x22=0x10b308bee",
+        "route": "0x10432a224 -> 0x10432a31c"
+      },
+      "returnSemantics": {
+        "materializerReturn": "0",
+        "helperPlus10": "0x3200080a0",
+        "helperPlus18": "remains 0",
+        "callerJoin": "x30=0x100122f88",
+        "errProvider": "taken",
+        "errValue": "0x9000b"
+      },
+      "notes": "This is the only stable failing path class in the combined evidence set."
+    }
+  ],
+  "findings": [
+    "Across the combined evidence set, only the macOS /Users/.../Saved/Paks/... class fails stably.",
+    "The real-device acceptance of /var/mobile/.../Saved/Paks/... proves that the failure is not caused by absolute-path semantics in general.",
+    "PlayCover success and fail hits share the same target identity and converge to the same post-1c8 pointer pair, so the remaining mechanism-level split lives in pre-1c8 compare and caller/helper state rather than in target identity.",
+    "For fix-direction choice, path class is a sufficient operational discriminator; for full mechanism closure, pre-1c8 caller/helper state remains residual uncertainty."
+  ],
+  "decision": {
+    "b1Conclusion": "B1 closes enough evidence to stop treating additional sampling as the default next step.",
+    "primaryFixDirection": "bundle-scoped ios-semantic path remap / normalization for /Users/.../Saved/Paks/...",
+    "whyNotB2Now": "The current matrix already isolates a single stable failing path class and a consistent caller-side failure semantic. Extra sampling should be conditional on the remap failing or leaving a new gap.",
+    "residualUncertainty": "The failing PlayCover hit still carries a distinct pre-1c8 caller/helper state, so the matrix does not prove that path text alone is the sole mechanistic cause.",
+    "nextDefaultTask": "RIPC-010-C"
+  }
+}

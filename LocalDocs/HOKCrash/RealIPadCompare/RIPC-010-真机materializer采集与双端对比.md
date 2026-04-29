@@ -79,39 +79,45 @@
 
 ### 当前最重要的工作：`RIPC-010-B`
 
-#### 建议的对比矩阵维度
+#### `RIPC-010-B1` 已完成的矩阵结论
 
-1. **path class**
-   - 真机 iOS absolute Saved/Paks
-   - 真机 UE4 relative pak
-   - PlayCover macOS absolute Saved/Paks（`/Users/...`）
-2. **caller tuple**
-   - `entry_x2`
-   - module-relative target identity
-   - backtrace class
-   - helper / err slot 的关键语义位
-3. **结果语义**
-   - `materializer return_x0` 是否为 null
-   - caller 侧 `helper+0x18` 是否为空
-   - downstream 是否继续进入 `err=9` / `storage+0x30=0x9000b`
+`build/ripc-010b-diff.json` 已落盘，当前矩阵按 **path class / caller tuple /
+return semantics** 汇总后的稳定结论如下：
 
-#### 推荐对照的稳定证据
+1. **真机 accepted path classes 已闭合**
+   - iOS absolute Saved/Paks：`/var/mobile/.../Library/NGR/Saved/Paks/...`
+   - UE4 relative pak：`../../../NGR/Content/Paks/...`
+   - 两类在真机 `v5` 中都对应 non-null materializer return，说明问题不能再表述成
+     “绝对路径 vs 相对路径”。
+2. **PlayCover success control sample 已闭合**
+   - path class：`../../../NGR/Content/Paks/1/1.db`
+   - caller tuple：`entryX2=0x10aa5264a`
+   - target-side pre-`1c8` state：`x22=0x21 -> 0x3`
+   - route：`0x10432a2c8 -> 0x10432a2e0 -> 0x10432a31c`
+   - caller-side 语义：success 返 non-null，并写回 `helper+0x18`
+3. **PlayCover stable failing class 已闭合**
+   - path class：`/Users/.../Saved/Paks/1/1.db`
+   - caller tuple：`entryX2=0x10aa4678c`
+   - target-side pre-`1c8` state：`x22=0x31 -> 0x4`
+   - route：`0x10432a224 -> 0x10432a31c`
+   - caller-side 语义：`materializer return = 0`、`helper+0x18 = 0`、
+     `x30=0x100122f88`、`errValue=0x9000b`
+4. **post-`1c8` pair 不是当前主分叉解释**
+   - `HOK-016-C.2.7` 已表明 observed success / fail hits 在 post-`1c8` 读到同一组
+     pair；剩余机制差异更像是 pre-`1c8` compare / caller-helper state。
 
-- **真机侧**：
-  - `build/ripc-010a-ipad-materializer-args-v5.json`
-  - `build/ripc-010a-real-ipad-lldb-run-v5.json`
-- **PlayCover 侧**：
-  - `build/hok-016c27-materialize-vcall-trace-v3.json`
-  - `build/hok-016c27-materialize-target-trace-v2.json`
-  - `LocalDocs/HOKCrash/HOK-016-qts-fs-create-failed.md`
-  - `LocalDocs/HOKCrash/HOK-016-appendix-C27.md`
+#### `B1` 对决策的直接含义
 
-#### 决策门槛
-
-- 若矩阵显示**只有** macOS `/Users/.../Saved/Paks/...` path class 稳定分叉，
-  优先做 **bundle-scoped 路径语义归一化 / iOS-semantic remap**。
-- 若 path class 仍不足以解释全部差异，则把下一步收紧到
-  **pre-`1c8` caller / helper state 对齐**，而不是泛化地继续猜测路径问题。
+- **可操作结论**：当前证据已足够把默认主线从“继续补采”切到
+  **`RIPC-010-C` 修复方向选择**。
+- **默认优先修复方向**：对 `com.tencent.ngr` 做 **bundle-scoped
+  iOS-semantic path remap / normalization**，只处理
+  `/Users/.../Saved/Paks/...` 这一稳定 failing class。
+- **残余不确定性**：矩阵仍未证明“只有 path text 一项差异”；更准确的说法是：
+  **path class 已足以支撑修复优先级，而 pre-`1c8` caller/helper state`
+  仍是机制层面的 residual uncertainty。**
+- **因此 `B2` 不再是默认下一步**：只有当 `RIPC-010-C` 的 remap / normalization
+  方案失败，或暴露出新的未闭合 path class / caller tuple 时，才回到定向补采。
 
 ### 稳定采集方法
 
@@ -162,11 +168,12 @@ python3 Scripts/ripc_010a_real_ipad_lldb_driver.py \
 
 ### 当前仍待闭合的问题
 
-- `v5` 已经足以支撑 `RIPC-010-B`，但还没有把真机与 PlayCover 侧证据收束成
-  一份统一 diff。
-- `v5` 中仍有部分 `materializer` 记录呈现 `return_orphaned`；如果 `RIPC-010-B`
-  需要更严的 caller-side 配对，再做**围绕缺失 path class / caller tuple 的
-  定向补采**，而不是泛化重跑 A4。
+- `RIPC-010-B1` 已经落盘为 `build/ripc-010b-diff.json`，当前不再缺“统一 diff”；
+  剩余问题转为：**bundle-scoped iOS-semantic path remap / normalization**
+  是否足以消除 `/Users/.../Saved/Paks/...` 这条稳定 failing class。
+- `v5` 中仍有部分 `materializer` 记录呈现 `return_orphaned`，但它们当前不足以阻塞
+  `RIPC-010-C`。只有当修复验证后仍出现未闭合分叉时，才回到 `RIPC-010-B2`
+  做围绕缺失 path class / caller tuple 的定向补采。
 
 ### 产物与脚本索引
 

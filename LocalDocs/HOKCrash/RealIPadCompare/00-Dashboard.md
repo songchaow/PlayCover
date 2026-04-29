@@ -37,7 +37,7 @@
 
 ### 当前主线一句话
 
-`RIPC-010-B1 是当前主线`：真机 materializer 采集已经在 `v5` 跑通，当前最高优先级不再是"证明能否抓到 materializer"，而是基于现有真机基线与 PlayCover 侧 `HOK-016-C.2.7` 证据，产出一份按 **path class / caller tuple / return semantics** 组织的结构化对比矩阵，判断 PlayCover fail 是否由 `/Users/.../Saved/Paks/...` 这一 macOS path class 本身驱动，或仍需继续收紧到 pre-`1c8` caller / helper state。长期方法、产物与调试经验统一下沉到 `RIPC-010-真机materializer采集与双端对比.md`。
+`RIPC-010-C 是默认下一主线`：`RIPC-010-B1` 已完成并落盘 `build/ripc-010b-diff.json`。当前最高优先级不再是补矩阵，而是基于已闭合的双端对比结果，优先验证 **bundle-scoped iOS-semantic path remap / normalization** 是否足以消除 PlayCover 上 `/Users/.../Saved/Paks/...` 这一稳定 failing class；只有当该方向失败或暴露新分叉时，才回到 `RIPC-010-B2` 继续收紧 pre-`1c8` caller / helper state。长期方法、产物与调试经验统一下沉到 `RIPC-010-真机materializer采集与双端对比.md`。
 
 ### 当前状态摘要
 
@@ -66,12 +66,21 @@
   - 当前稳定真机基线：`build/ripc-010a-real-ipad-lldb-run-v5.json` /
     `build/ripc-010a-ipad-materializer-args-v5.json`，其中 `preInjectDelay=5`、
     `recordCount=71`。
-  - 真机已确认可捕获两类 accepted `entry_x1_text`：
+  - 真机已确认 accepted path class 至少包含
     `/var/mobile/.../Library/NGR/Saved/Paks/...` 与
     `../../../NGR/Content/Paks/...`。
-  - 因此当前问题已不能再简化为"真机相对路径 vs PlayCover 绝对路径"；
-    更像是 **PlayCover `/Users/.../Saved/Paks/...` path class 及其
-    caller/helper state** 的特有分叉。
+- **RIPC-010-B1 结论（本轮已完成）**：`build/ripc-010b-diff.json` 已将双端证据按
+  **path class / caller tuple / return semantics** 收束成统一矩阵：
+  - 真机 accepted class：`/var/mobile/.../Saved/Paks/...`、`../../../NGR/Content/Paks/...`
+  - PlayCover success control sample：`../../../NGR/Content/Paks/1/1.db`
+    （`entryX2=0x10aa5264a`，`x22=0x21 -> 0x3`，route
+    `0x10432a2c8 -> 0x10432a2e0 -> 0x10432a31c`）
+  - PlayCover stable failing class：`/Users/.../Saved/Paks/1/1.db`
+    （`entryX2=0x10aa4678c`，`x22=0x31 -> 0x4`，route
+    `0x10432a224 -> 0x10432a31c`，caller-side 为 `helper+0x18 = 0` /
+    `errValue=0x9000b`）
+  - 结论：当前证据已经足够把默认主线切到 `RIPC-010-C`；但从机制解释上说，
+    pre-`1c8` caller/helper state 仍是 residual uncertainty，而不是已被完全排除。
 
 ### RIPC-005 根因链
 
@@ -129,17 +138,15 @@ materializer 断点采集，从路径生成源头重新定位根因。
 
 ### 当前卡点
 
-1. **当前缺的不是采集，而是统一对比矩阵**：真机 `v5` 已足够作为 stable baseline，
-   但还没有形成一份把 real-device vs PlayCover 证据按
-   **path class / caller tuple / return semantics** 对齐的 `RIPC-010-B`
-   报告。
-2. **仍需明确 fail 的最小判别条件**：现有证据显示真机 accepted class 同时包含
-   `/var/mobile/...` 与 `../../../...`，PlayCover 稳定 failing class 是
-   `/Users/...`；但还需确认分叉是否仅由 path class 解释，还是还依赖
-   pre-`1c8` caller/helper state。
-3. **补采应只做定向补采**：`v5` 已能支撑当前主线；只有当 `B1` 矩阵仍存在
-   未闭合 path class / caller tuple 时，才应围绕缺失样本重跑，而不是重新
-   泛化执行 `A4`。
+1. **当前缺的不是矩阵，而是修复验证**：`RIPC-010-B1` 已落盘为
+   `build/ripc-010b-diff.json`；当前首要问题转为：bundle-scoped
+   iOS-semantic path remap / normalization 是否足以消除
+   `/Users/.../Saved/Paks/...` 这条稳定 failing class。
+2. **机制层仍有 residual uncertainty**：当前矩阵已经足以支撑修复优先级，
+   但仍未把分叉机制收紧到“只有 path text 本身”；pre-`1c8` caller/helper
+   state 仍可能是 materializer compare ladder 分流的一部分。
+3. **补采不再默认展开**：只有当 `RIPC-010-C` 的修复验证失败，或暴露新的未闭合
+   path class / caller tuple 时，才应打开 `RIPC-010-B2` 做定向补采。
 
 ### 下一步默认规划
 
@@ -148,18 +155,18 @@ materializer 断点采集，从路径生成源头重新定位根因。
 2. ~~**RIPC-010-A1～A4（已完成）**~~：probe、driver、Xcode GUI 自动化与
    delayed injection 方案已形成稳定真机基线，详见
    `RIPC-010-真机materializer采集与双端对比.md`。
-3. **RIPC-010-B1（当前主线）**：基于
+3. ~~**RIPC-010-B1（已完成）**~~：基于
    `build/ripc-010a-ipad-materializer-args-v5.json` 与 PlayCover 侧
-   `HOK-016-C.2.7` 证据，产出 path class / caller tuple / return semantics
-   结构化对比矩阵。目标产物：`build/ripc-010b-diff.json`。
-4. **RIPC-010-B2**：若 `B1` 仍存在未闭合样本，只围绕缺失 path class /
-   caller tuple 做定向真机补采；默认沿用 `--pre-inject-delay 5`，不再泛化
-   重跑 `A4`。
-5. **RIPC-010-C**：根据 `B1/B2` 结论决定修复方向
-   - 若 `/Users/.../Saved/Paks/...` 是唯一稳定 fail class → 优先做
-     **bundle-scoped iOS-semantic path remap / 归一化**；
-   - 若 path class 仍不足以解释分叉 → 转向 **pre-`1c8` caller/helper state
+   `HOK-016-C.2.7` 证据，已产出 path class / caller tuple / return semantics
+   结构化对比矩阵 `build/ripc-010b-diff.json`。
+4. **RIPC-010-C（当前默认主线）**：基于 `B1` 结论选择修复方向
+   - 当前优先：**bundle-scoped iOS-semantic path remap / 归一化**，只针对
+     `/Users/.../Saved/Paks/...` 这一稳定 failing class；
+   - 若该方向不能解释或消除失败 → 转向 **pre-`1c8` caller/helper state
      对齐**。
+5. **RIPC-010-B2（条件性回退项）**：仅当 `RIPC-010-C` 失败或暴露新的未闭合样本时，
+   再围绕缺失 path class / caller tuple 做定向真机补采；默认沿用
+   `--pre-inject-delay 5`，不再泛化重跑 `A4`。
 
 ## 构建与验证
 
@@ -237,10 +244,10 @@ materializer 断点采集，从路径生成源头重新定位根因。
 | RIPC-010-A2 | **DONE** | 开发 Xcode GUI 自动化 attach 脚本 `LocalDocs/XCodeOperation/ripc_010a_xcode_debug_automation.py`：利用 xcode_general_ops.py 基础能力自动执行 Debug → Attach to Process | `RIPC-010-真机materializer采集与双端对比.md` |
 | RIPC-010-A3 | **DONE** | 验证并迭代 Debug Console 命令输入自动化：JXA `inputArea.value` 直接赋值方案已验证可行，绕过 `AXValue.setValue()` 类型转换错误 (-1700) | `RIPC-010-真机materializer采集与双端对比.md` |
 | RIPC-010-A4 | DONE | delayed injection + decoder fix 已形成稳定真机基线 `v5`；不再是阻塞项 | `RIPC-010-真机materializer采集与双端对比.md` |
-| RIPC-010-B | IN-PROGRESS | 双端 materializer 对比阶段：先用现有证据产出结构化矩阵，再决定是否需要定向补采 | `RIPC-010-真机materializer采集与双端对比.md` |
-| RIPC-010-B1 | IN-PROGRESS（当前主线） | 基于真机 `v5` 与 PlayCover `HOK-016-C.2.7` 证据，对齐 path class / caller tuple / return semantics，产出 `build/ripc-010b-diff.json` | `RIPC-010-真机materializer采集与双端对比.md` |
-| RIPC-010-B2 | TODO | 若 `B1` 仍有未闭合 path class / caller tuple，再做定向真机补采；默认 `--pre-inject-delay 5` | `RIPC-010-真机materializer采集与双端对比.md` |
-| RIPC-010-C | TODO | 根据 `B1/B2` 结论选择 bundle-scoped 修复：优先 iOS-semantic path remap，其次 pre-`1c8` caller/helper state 对齐 | 待建 |
+| RIPC-010-B | IN-PROGRESS | 双端 materializer 对比阶段：`B1` 已完成并落盘，后续仅在修复验证失败时再按需打开 `B2` | `RIPC-010-真机materializer采集与双端对比.md` |
+| RIPC-010-B1 | DONE | 已基于真机 `v5` 与 PlayCover `HOK-016-C.2.7` 证据，对齐 path class / caller tuple / return semantics，并产出 `build/ripc-010b-diff.json` | `RIPC-010-真机materializer采集与双端对比.md` |
+| RIPC-010-B2 | TODO | 若 `RIPC-010-C` 验证后仍有未闭合 path class / caller tuple，再做定向真机补采；默认 `--pre-inject-delay 5` | `RIPC-010-真机materializer采集与双端对比.md` |
+| RIPC-010-C | TODO（默认下一主线） | 根据 `B1` 结论优先尝试 bundle-scoped iOS-semantic path remap；若不足以解释分叉，再转向 pre-`1c8` caller/helper state 对齐 | 待建 |
 
 ## 高频复用经验
 

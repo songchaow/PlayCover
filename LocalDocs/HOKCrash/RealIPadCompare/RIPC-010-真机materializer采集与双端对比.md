@@ -92,16 +92,23 @@ return semantics** 汇总后的稳定结论如下：
 #### `B1` 对决策的直接含义
 
 - **可操作结论**：当前证据已足够把默认主线从“继续补采”切到
-  **`RIPC-010-C` 修复方向选择**。
-- **默认优先修复方向**：对 `com.tencent.ngr` 做 **bundle-scoped
-  iOS-semantic path remap / normalization**，只处理
-  `/Users/.../Saved/Paks/...` 这一稳定 failing class。
+  **`RIPC-010-C` 修复闭环验证**。
+- **代码侧复核结果**：`PlayLoader.m` 已经存在 bundle-scoped 的 `Saved/Paks`
+  归一化实现与安装调用链：`ripc006_try_normalize_pak_path()`、
+  `pdt006_convert_replacement()`、`pdt006_install_convert_patch_once()`。
+  因此 `C` 阶段的真实首任务不是“重想一遍 remap 方向”，而是验证这条现有链是否
+  真的安装并命中 `/Users/.../Saved/Paks/...` failing class。
+- **默认优先顺序**：
+  1. `RIPC-010-C1`：验证现有 normalize 链是否成功安装、成功命中、成功把 failing
+     sample 收敛到真机已接受的 path class；
+  2. `RIPC-010-C2`：仅当 `C1` 已证实 normalize 命中但 QtsFS 仍 fail，再转向
+     pre-`1c8` caller/helper state。
 - **残余不确定性**：矩阵仍未证明“只有 path text 一项差异”；更准确的说法是：
-  **path class 已足以支撑修复优先级，而 pre-`1c8` caller/helper state`
+  **path class 已足以支撑验证优先级，而 pre-`1c8` caller/helper state`
   仍是机制层面的 residual uncertainty。**
-- **因此 `B2` 不再是默认下一步**：只有当 `RIPC-010-C` 的 remap / normalization
-  方案失败，或暴露出新的未闭合 path class / caller tuple 时，才回到定向补采。
-- **阅读建议**：当前只要任务涉及 `RIPC-010-B` 证据解释、`RIPC-010-C` 方向判断、
+- **因此 `B2` 不再是默认下一步**：只有当 `C1/C2` 验证后仍暴露新的未闭合
+  path class / caller tuple 时，才回到定向补采。
+- **阅读建议**：当前只要任务涉及 `RIPC-010-B` 证据解释、`RIPC-010-C1/C2` 方向判断、
   或修复验证口径，**总是建议读取本文**；它已经吸收上一轮 `B1` execution note 的
   长期有效信息。
 
@@ -155,10 +162,12 @@ python3 Scripts/ripc_010a_real_ipad_lldb_driver.py \
 ### 当前仍待闭合的问题
 
 - `RIPC-010-B1` 已经落盘为 `build/ripc-010b-diff.json`，当前不再缺“统一 diff”；
-  剩余问题转为：**bundle-scoped iOS-semantic path remap / normalization**
-  是否足以消除 `/Users/.../Saved/Paks/...` 这条稳定 failing class。
+  剩余问题首先转为：**现有 `RIPC-006` normalize 链是否真的在 PlayCover 端安装并命中**
+  `/Users/.../Saved/Paks/...` 这条稳定 failing class。
+- 若 `C1` 证明 normalize 已命中但 QtsFS 仍 fail，则剩余问题才进一步收紧为
+  **pre-`1c8` caller/helper state** 是否仍参与 materializer compare ladder 分流。
 - `v5` 中仍有部分 `materializer` 记录呈现 `return_orphaned`，但它们当前不足以阻塞
-  `RIPC-010-C`。只有当修复验证后仍出现未闭合分叉时，才回到 `RIPC-010-B2`
+  `RIPC-010-C1/C2`。只有当验证后仍出现未闭合分叉时，才回到 `RIPC-010-B2`
   做围绕缺失 path class / caller tuple 的定向补采。
 
 ### 产物与脚本索引

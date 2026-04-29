@@ -37,7 +37,7 @@
 
 ### 当前主线一句话
 
-`RIPC-010-C 是默认下一主线`：`RIPC-010-B1` 已完成并落盘 `build/ripc-010b-diff.json`。当前最高优先级不再是补矩阵，而是基于已闭合的双端对比结果，优先验证 **bundle-scoped iOS-semantic path remap / normalization** 是否足以消除 PlayCover 上 `/Users/.../Saved/Paks/...` 这一稳定 failing class；只有当该方向失败或暴露新分叉时，才回到 `RIPC-010-B2` 继续收紧 pre-`1c8` caller / helper state。长期方法、产物与调试经验统一下沉到 `RIPC-010-真机materializer采集与双端对比.md`。
+`RIPC-010-C1 是默认下一主线`：`RIPC-010-B1` 已完成并落盘 `build/ripc-010b-diff.json`，且代码侧复核已确认 `Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m` 中已经存在 bundle-scoped 的 `Saved/Paks` 归一化链（`ripc006_try_normalize_pak_path()`、`pdt006_convert_replacement()`、构造函数中的 `pdt006_install_convert_patch_once()`）。因此当前最高优先级不再是“选择或重新实现 remap 方向”，而是先验证这条现有链路在 PlayCover 端是否**真正安装并命中** `/Users/.../Saved/Paks/...` failing class；只有在 `normalize` 已命中但 QtsFS 仍 fail 时，才转向 `RIPC-010-C2` 收紧 pre-`1c8` caller / helper state，必要时再回开 `RIPC-010-B2`。长期方法、产物与调试经验统一下沉到 `RIPC-010-真机materializer采集与双端对比.md`。
 
 ### 当前状态摘要
 
@@ -81,6 +81,11 @@
     `errValue=0x9000b`）
   - 结论：当前证据已经足够把默认主线切到 `RIPC-010-C`；但从机制解释上说，
     pre-`1c8` caller/helper state 仍是 residual uncertainty，而不是已被完全排除。
+- **RIPC-010-C 代码现状（本轮新增校正）**：`Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m`
+  已存在 bundle-scoped 的 `Saved/Paks` 归一化实现与安装调用链：
+  `ripc006_try_normalize_pak_path()` → `pdt006_convert_replacement()` →
+  `pdt006_install_convert_patch_once()`。因此 `RIPC-010-C` 的真实首任务不是“再设计
+  remap”，而是验证这条现有链路为什么尚未把 `B1` 的 failing class 闭合。
 - **文档整合状态**：`RIPC-010-B1` 的上一轮执行记录中的核心证据、判断与触发条件，
   现已统一回收到本文与 `RIPC-010-真机materializer采集与双端对比.md`；本目录下不再
   保留同主题的独立 execution note 作为事实来源。
@@ -141,15 +146,14 @@ materializer 断点采集，从路径生成源头重新定位根因。
 
 ### 当前卡点
 
-1. **当前缺的不是矩阵，而是修复验证**：`RIPC-010-B1` 已落盘为
-   `build/ripc-010b-diff.json`；当前首要问题转为：bundle-scoped
-   iOS-semantic path remap / normalization 是否足以消除
-   `/Users/.../Saved/Paks/...` 这条稳定 failing class。
-2. **机制层仍有 residual uncertainty**：当前矩阵已经足以支撑修复优先级，
-   但仍未把分叉机制收紧到“只有 path text 本身”；pre-`1c8` caller/helper
-   state 仍可能是 materializer compare ladder 分流的一部分。
-3. **补采不再默认展开**：只有当 `RIPC-010-C` 的修复验证失败，或暴露新的未闭合
-   path class / caller tuple 时，才应打开 `RIPC-010-B2` 做定向补采。
+1. **当前缺的不是 remap 实现，而是现有实现的闭环验证**：`RIPC-010-B1` 已落盘，且
+   `PlayLoader.m` 中已经存在 bundle-scoped `Saved/Paks` 归一化链。当前首要问题是：
+   这条链在 PlayCover 端是否**成功安装、实际命中** `/Users/.../Saved/Paks/...`
+   failing class，并把它改写成预期的 iOS-semantic / relative class。
+2. **若 normalize 已命中但 QtsFS 仍 fail，才说明主分叉不止 path class**：这时才把
+   优先级切到 pre-`1c8` caller/helper state，对 `RIPC-010-C2` 做机制收紧。
+3. **补采仍是条件性回退项**：只有当 `RIPC-010-C1/C2` 验证后仍暴露新的未闭合
+   path class / caller tuple，才应打开 `RIPC-010-B2` 做定向补采。
 
 ### 下一步默认规划
 
@@ -162,12 +166,14 @@ materializer 断点采集，从路径生成源头重新定位根因。
    `build/ripc-010a-ipad-materializer-args-v5.json` 与 PlayCover 侧
    `HOK-016-C.2.7` 证据，已产出 path class / caller tuple / return semantics
    结构化对比矩阵 `build/ripc-010b-diff.json`。
-4. **RIPC-010-C（当前默认主线）**：基于 `B1` 结论选择修复方向
-   - 当前优先：**bundle-scoped iOS-semantic path remap / 归一化**，只针对
-     `/Users/.../Saved/Paks/...` 这一稳定 failing class；
-   - 若该方向不能解释或消除失败 → 转向 **pre-`1c8` caller/helper state
-     对齐**。
-5. **RIPC-010-B2（条件性回退项）**：仅当 `RIPC-010-C` 失败或暴露新的未闭合样本时，
+4. **RIPC-010-C1（当前默认主线）**：验证现有 `RIPC-006` 归一化链是否真正闭环
+   - 核查 `pdt006_install_convert_patch_once()` 是否成功安装；
+   - 核查启动日志 / `launch-events.jsonl` 是否出现 `normalize` 命中；
+   - 核查命中后 failing sample 是否从 `/Users/.../Saved/Paks/...` 收敛为
+     真机已接受的 path class。
+5. **RIPC-010-C2（条件性第二优先级）**：仅当 `C1` 已证实现有 normalize 链命中但
+   QtsFS 仍 fail，再转向 **pre-`1c8` caller/helper state 对齐**。
+6. **RIPC-010-B2（条件性回退项）**：仅当 `C1/C2` 验证后仍有未闭合样本时，
    再围绕缺失 path class / caller tuple 做定向真机补采；默认沿用
    `--pre-inject-delay 5`，不再泛化重跑 `A4`。
 
@@ -247,10 +253,12 @@ materializer 断点采集，从路径生成源头重新定位根因。
 | RIPC-010-A2 | **DONE** | 开发 Xcode GUI 自动化 attach 脚本 `LocalDocs/XCodeOperation/ripc_010a_xcode_debug_automation.py`：利用 xcode_general_ops.py 基础能力自动执行 Debug → Attach to Process | `RIPC-010-真机materializer采集与双端对比.md` |
 | RIPC-010-A3 | **DONE** | 验证并迭代 Debug Console 命令输入自动化：JXA `inputArea.value` 直接赋值方案已验证可行，绕过 `AXValue.setValue()` 类型转换错误 (-1700) | `RIPC-010-真机materializer采集与双端对比.md` |
 | RIPC-010-A4 | DONE | delayed injection + decoder fix 已形成稳定真机基线 `v5`；不再是阻塞项 | `RIPC-010-真机materializer采集与双端对比.md` |
-| RIPC-010-B | IN-PROGRESS | 双端 materializer 对比阶段：`B1` 已完成并落盘，后续仅在修复验证失败时再按需打开 `B2` | `RIPC-010-真机materializer采集与双端对比.md` |
+| RIPC-010-B | IN-PROGRESS | 双端 materializer 对比阶段：`B1` 已完成并落盘，后续仅在 `C1/C2` 验证失败时再按需打开 `B2` | `RIPC-010-真机materializer采集与双端对比.md` |
 | RIPC-010-B1 | DONE | 已基于真机 `v5` 与 PlayCover `HOK-016-C.2.7` 证据，对齐 path class / caller tuple / return semantics，并产出 `build/ripc-010b-diff.json` | `RIPC-010-真机materializer采集与双端对比.md` |
-| RIPC-010-B2 | TODO | 若 `RIPC-010-C` 验证后仍有未闭合 path class / caller tuple，再做定向真机补采；默认 `--pre-inject-delay 5` | `RIPC-010-真机materializer采集与双端对比.md` |
-| RIPC-010-C | TODO（默认下一主线） | 根据 `B1` 结论优先尝试 bundle-scoped iOS-semantic path remap；若不足以解释分叉，再转向 pre-`1c8` caller/helper state 对齐 | 待建 |
+| RIPC-010-B2 | TODO | 若 `RIPC-010-C1/C2` 验证后仍有未闭合 path class / caller tuple，再做定向真机补采；默认 `--pre-inject-delay 5` | `RIPC-010-真机materializer采集与双端对比.md` |
+| RIPC-010-C | IN-PROGRESS | `C1` 为默认当前主线：优先验证现有 `RIPC-006` `Saved/Paks` 归一化链是否成功安装并命中 failing class；仅当 `C1` 已命中但仍失败时，再进入 `C2` 做 pre-`1c8` caller/helper state 对齐 | `RIPC-010-真机materializer采集与双端对比.md` |
+| RIPC-010-C1 | TODO（默认下一主线） | 验证 `pdt006_install_convert_patch_once()` 是否安装成功，且 `ripc006_try_normalize_pak_path()` / `pdt006_convert_replacement()` 是否真正把 `/Users/.../Saved/Paks/...` 命中并改写到预期 class | `RIPC-010-真机materializer采集与双端对比.md` |
+| RIPC-010-C2 | TODO（条件性） | 若 `C1` 已证实 normalize 命中但 QtsFS 仍失败，再转向 pre-`1c8` caller/helper state 对齐 | `RIPC-010-真机materializer采集与双端对比.md` |
 
 ## 高频复用经验
 
@@ -352,8 +360,8 @@ materializer 断点采集，从路径生成源头重新定位根因。
   失败的详细根因链与已证伪路径。**阅读建议：需要确定真机对比的具体
   断点地址或需要理解 storage create-table 链时读取。**
 - `RIPC-010-真机materializer采集与双端对比.md`：RIPC-010 阶段的稳定方法、
-  真机 `v5` 基线、调试经验、`B1` 矩阵结论与后续修复判断口径。
-  **阅读建议：当前主线涉及 `RIPC-010-B / RIPC-010-C` 时总是建议读取。**
+  真机 `v5` 基线、`B1` 矩阵结论，以及 `C1/C2` 验证与分叉判断口径。
+  **阅读建议：当前主线涉及 `RIPC-010-B / RIPC-010-C1 / RIPC-010-C2` 时总是建议读取。**
   该文档已经吸收同主题 execution note 的长期有效内容，作为唯一维护入口。
 - `RIPC-001-环境预检与工具链准备.md`：RIPC-001 完整实验细节、验证产物
   与踩坑记录。**阅读建议：需要复现具体命令、核查原始产物、或排查

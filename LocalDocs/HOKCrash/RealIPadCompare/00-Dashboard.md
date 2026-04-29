@@ -37,12 +37,7 @@
 
 ### 当前主线一句话
 
-`RIPC-010-A4 是当前主线，但已阻塞`：端到端真机 materializer 断点采集受阻——LLDB
-断点在 `_dyld_start` 阶段设置后 dyld 链接完成时变为 unresolved。已尝试 7+ 次
-（pexpect/batch/Xcode GUI/两阶段策略），均受此限制。运行态断点可触发
-（objc_msgSend 已验证），但 materializer 初始化调用已过。完整调试经验整理在
-`debug_experience/`。推荐后续方案：(A) 手动两阶段调试 (B) RIPCProbe dylib
-内联 hook (C) LLDB stop-hook 自动化。
+`RIPC-010-B1 是当前主线`：真机 materializer 采集已经在 `v5` 跑通，当前最高优先级不再是"证明能否抓到 materializer"，而是基于现有真机基线与 PlayCover 侧 `HOK-016-C.2.7` 证据，产出一份按 **path class / caller tuple / return semantics** 组织的结构化对比矩阵，判断 PlayCover fail 是否由 `/Users/.../Saved/Paks/...` 这一 macOS path class 本身驱动，或仍需继续收紧到 pre-`1c8` caller / helper state。长期方法、产物与调试经验统一下沉到 `RIPC-010-真机materializer采集与双端对比.md`。
 
 ### 当前状态摘要
 
@@ -61,19 +56,22 @@
   `get-task-allow=true`，已包含目标 iPad UDID。
 - **RIPC-001～004 结论**：签名→部署→真机/PlayCover 双端基线采集完成。
   数据见 `build/ripc-003-ipad-baseline.json` / `build/ripc-004-playcover-baseline.json`。
-- **RIPC-005 结论（根因已定位）**：完整差异报告见 `build/ripc-005-diff.json`。
-  根因 **不是** HOME/TMPDIR/环境变量值本身，而是 **UE4 pak 路径在
-  QtsFileSystem materializer 的 UTF-16 compare ladder 中不匹配**。具体见
-  下方"根因链"小节。
-- **RIPC-010-A1～A3 结论（脚本基础设施已完成）**：
-  - **A1**：LLDB Python probe 脚本 `Scripts/ripc_010a_materializer_probe.py`
-    已完成，支持 entry/return 双断点自动采集 x1/x0/lr，ASLR slide 自动解析，
-    Pascal 字符串解码，增量 JSON 输出。
-  - **A2**：Xcode GUI 自动化协调脚本
-    `LocalDocs/XCodeOperation/ripc_010a_xcode_debug_automation.py` 已完成，
-    支持 `attach → show console → load probe` 组合流程。
-  - **A3**：Debug Console 命令输入自动化已验证可行（JXA 直接赋值
-    `inputArea.value = ...` 绕过 `setValue` 类型转换错误）。
+- **RIPC-005 结论（PlayCover fail class 已定位）**：完整差异报告见
+  `build/ripc-005-diff.json`。PlayCover 侧稳定 fail 的不是 HOME/TMPDIR 值本身，
+  而是 **`/Users/.../Saved/Paks/...` 这类 macOS path class 进入
+  QtsFileSystem materializer compare ladder 后发生分叉**。
+- **RIPC-010-A1～A4 结论（真机采集链已闭合）**：
+  - probe / driver / Xcode 自动化链路均已完成，长期方法见
+    `RIPC-010-真机materializer采集与双端对比.md`。
+  - 当前稳定真机基线：`build/ripc-010a-real-ipad-lldb-run-v5.json` /
+    `build/ripc-010a-ipad-materializer-args-v5.json`，其中 `preInjectDelay=5`、
+    `recordCount=71`。
+  - 真机已确认可捕获两类 accepted `entry_x1_text`：
+    `/var/mobile/.../Library/NGR/Saved/Paks/...` 与
+    `../../../NGR/Content/Paks/...`。
+  - 因此当前问题已不能再简化为"真机相对路径 vs PlayCover 绝对路径"；
+    更像是 **PlayCover `/Users/.../Saved/Paks/...` path class 及其
+    caller/helper state** 的特有分叉。
 
 ### RIPC-005 根因链
 
@@ -95,6 +93,12 @@ App 在 PlayCover 启动 → HOME = macOS container '/Users/…/Containers/…/D
 而是 **UE4 将 Saved/Paks 路径解析为绝对 macOS 路径后，QtsFileSystem
 materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
 
+**2026-04-29 补充**：`RIPC-010-A4 v5` 已确认真机 accepted path class 同时包含
+`/var/mobile/.../Saved/Paks/...` 与 `../../../NGR/Content/Paks/...`。因此这里的
+结论应读作：**出问题的是 PlayCover 上的 `/Users/.../Saved/Paks/...` path class，
+而不是"absolute path"这一概念本身。** 当前最高优先级就是把这层差异做成
+双端矩阵。
+
 ### 修复路线概览
 
 1. ~~**RIPC-001～004**~~（已完成）：环境预检 → 重签名部署 → 双端基线采集。
@@ -104,8 +108,8 @@ materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
 4. ~~**RIPC-007**~~（已完成）：W^X 合规修复 → 全部 hook 安装成功。
 5. ~~**RIPC-008**~~（已完成）：embedded path rewrite 已验证可行，但 QtsFS 仍
    fail，size 字段假设被证伪。结论：运行时内存修补不可靠，需换路线。
-6. **RIPC-010**（当前主线）：真机 materializer 断点采集与双端参数对比，
-   直接确定失败根因属于路径生成阶段还是 materializer 行为差异。
+6. **RIPC-010**（当前主线）：真机 materializer 采集已形成稳定基线，当前进入
+   双端参数对比与修复方向收敛阶段。
 
 ### RIPC-008 embedded path rewrite + 验证结论
 
@@ -125,50 +129,37 @@ materializer 断点采集，从路径生成源头重新定位根因。
 
 ### 当前卡点
 
-1. **A4 端到端采集受阻——LLDB 断点在 dyld 链接后失效**：
-   RIPC-010-A1~A3 脚本基础设施全部就绪，LLDB 可以成功 attach 真机进程、
-   正确计算 ASLR slide、设置断点（显示 resolved），但存在核心阻塞：
-   **在 `_dyld_start` 阶段设置的断点，当 dyld 完成动态链接后会变为 unresolved，
-   永远不会触发。** 已通过 7+ 次不同方式的尝试确认此行为（详见
-   `debug_experience/02-LLDB-Session-Logs.md`）。运行态下设置断点可以触发
-   （`objc_msgSend` 已验证命中），但此时 materializer 已被调用过。
-   完整调试经验已整理至 `debug_experience/` 目录。
-2. **无法区分两类根因（依赖 A4 数据）**：
-   - **假设 A**：真机 entryX1 为相对路径，PlayCover 因 HOME 是 macOS 路径传入
-     绝对路径 → 根因在 **UE4 路径生成阶段**。
-   - **假设 B**：两端均为绝对路径，但真机 `/var/mobile/…` 能被 materializer
-     接受 → 根因在 **materializer 路径格式容忍度**。
-3. **~~RIPC-008~~**：运行时内存修补（object graph 扫描 + FString 字段修复）
-   已证明不可靠，思路已终止。
+1. **当前缺的不是采集，而是统一对比矩阵**：真机 `v5` 已足够作为 stable baseline，
+   但还没有形成一份把 real-device vs PlayCover 证据按
+   **path class / caller tuple / return semantics** 对齐的 `RIPC-010-B`
+   报告。
+2. **仍需明确 fail 的最小判别条件**：现有证据显示真机 accepted class 同时包含
+   `/var/mobile/...` 与 `../../../...`，PlayCover 稳定 failing class 是
+   `/Users/...`；但还需确认分叉是否仅由 path class 解释，还是还依赖
+   pre-`1c8` caller/helper state。
+3. **补采应只做定向补采**：`v5` 已能支撑当前主线；只有当 `B1` 矩阵仍存在
+   未闭合 path class / caller tuple 时，才应围绕缺失样本重跑，而不是重新
+   泛化执行 `A4`。
 
 ### 下一步默认规划
 
 1. ~~**RIPC-008（已完成）**~~：embedded path rewrite 与 parent-aware size 修复已落地，
    产物见 `build/ripc-008a/`。结论：运行时内存修补不可靠，换路线。
-2. ~~**RIPC-010-A1（已完成）**~~：LLDB Python probe 脚本
-   `Scripts/ripc_010a_materializer_probe.py` 开发完成，支持 entry/return 双断点
-   自动采集 x1/x0/lr、ASLR slide 解析、Pascal 字符串解码、增量 JSON 输出。
-3. ~~**RIPC-010-A2（已完成）**~~：Xcode GUI 自动化协调脚本
-   `LocalDocs/XCodeOperation/ripc_010a_xcode_debug_automation.py` 开发完成，
-   支持 Debug → Attach to Process 自动附加到真机 NGR。
-4. ~~**RIPC-010-A3（已完成）**~~：Debug Console 命令输入自动化验证完成。
-   JXA `inputArea.value = ...` 直接赋值方案绕过 `setValue` 类型转换错误 (-1700)。
-5. **RIPC-010-A4（当前主线）**：端到端真机采集验证
-   - 确保真机 NGR 已启动且**尚未到达 materializer 调用时机**（UE4 初始化早期
-     attach 最佳；若错过需重启 app 重新 attach）；
-   - Xcode Debug → Attach to Process → 选择 NGR；
-   - Debug Console 中执行 `command script import Scripts/ripc_010a_materializer_probe.py`；
-   - 脚本自动解析 ASLR slide、设置断点并采集 3 次 materializer 调用；
-   - 产物：`build/ripc-010a-ipad-materializer-args.json`。
-   - **风险与 fallback**：`send_debug_console_command` 在有调试会话时的最终验证
-     包含在本步骤中；若 JXA 赋值失效，fallback 为在 Debug Console 中**手工输入**
-     `command script import /Users/songdogwang/Codes/PlayCover/Scripts/ripc_010a_materializer_probe.py`。
-6. **RIPC-010-B**：双端 materializer 调用参数对比
-   - 将真机采集结果与 PlayCover 侧已有参数做结构化对比矩阵；
-   - 产物：`build/ripc-010b-diff.json`。
-7. **RIPC-010-C**：根据对比结论确定修复方向
-   - 若真机 entryX1 为相对路径 → 修复方向为 **源头拦截**；
-   - 若真机 entryX1 为绝对路径但成功 → 修复方向为 **路径伪装**。
+2. ~~**RIPC-010-A1～A4（已完成）**~~：probe、driver、Xcode GUI 自动化与
+   delayed injection 方案已形成稳定真机基线，详见
+   `RIPC-010-真机materializer采集与双端对比.md`。
+3. **RIPC-010-B1（当前主线）**：基于
+   `build/ripc-010a-ipad-materializer-args-v5.json` 与 PlayCover 侧
+   `HOK-016-C.2.7` 证据，产出 path class / caller tuple / return semantics
+   结构化对比矩阵。目标产物：`build/ripc-010b-diff.json`。
+4. **RIPC-010-B2**：若 `B1` 仍存在未闭合样本，只围绕缺失 path class /
+   caller tuple 做定向真机补采；默认沿用 `--pre-inject-delay 5`，不再泛化
+   重跑 `A4`。
+5. **RIPC-010-C**：根据 `B1/B2` 结论决定修复方向
+   - 若 `/Users/.../Saved/Paks/...` 是唯一稳定 fail class → 优先做
+     **bundle-scoped iOS-semantic path remap / 归一化**；
+   - 若 path class 仍不足以解释分叉 → 转向 **pre-`1c8` caller/helper state
+     对齐**。
 
 ## 构建与验证
 
@@ -193,18 +184,13 @@ materializer 断点采集，从路径生成源头重新定位根因。
   缺少所需功能，agent 必须自行扫描 Xcode UI 结构（`dump_ui_tree` /
   `uitree`），定位目标控件后立刻将可复用操作沉淀回
   `xcode_general_ops.py`，严禁以"缺少功能"为由向用户求助。**
-  已沉淀并验证的通用操作：
-  - `show_breakpoint_navigator()` — Breakpoint Navigator 切换（JXA 直接点击
-    Breakpoints radio button）。
-  - `click_create_breakpoint_button()` — 点击 "+" 按钮并返回菜单项列表。
-    **关键发现**：菜单中没有 "Address Breakpoint" 选项，地址断点**必须**
-    通过 Debug Console 的 LLDB 命令 `breakpoint set -a 0x<address>` 设置。
-  - `show_debug_console()` / `read_debug_console()` — Debug Area 显示与文本读取。
-  - `send_debug_console_command(cmd)` — 向 debug console 输入命令并回车。
-    使用 `inputArea.value = ...` 直接赋值绕过 `AXValue.setValue()` 的
-    JXA 类型转换错误 (-1700)。
-  - `activate()` — 使用 `System Events` 的 `frontmost = true` 激活 Xcode，
-    避免 `Application("Xcode").activate()` 导致 JXA 永久挂起。
+- **真机 materializer 采集（RIPC-010）**：默认使用
+  `Scripts/ripc_010a_real_ipad_lldb_driver.py` + `--pre-inject-delay 5`
+  生成 per-run 产物；当前稳定基线是
+  `build/ripc-010a-real-ipad-lldb-run-v5.json` /
+  `build/ripc-010a-ipad-materializer-args-v5.json`。详细步骤、fallback 与
+  调试经验见 `RIPC-010-真机materializer采集与双端对比.md`。**当前主线涉及
+  `RIPC-010-B / RIPC-010-C` 时总是建议读取。**
 - **PlayCover 侧验证**：使用 PlayCover MCP `launch_app` 工具启动 app，
   通过 `launch-events.jsonl` 检查 hook 事件和 QtsFS 状态。
 - **PlayTools 构建部署流程**：
@@ -242,16 +228,19 @@ materializer 断点采集，从路径生成源头重新定位根因。
 | RIPC-002 | DONE | 重签名 NGR 并部署到 iPad：IPA 解包 → 重签 → 部署 → UE4 启动验证通过 | — |
 | RIPC-003 | DONE | 真机基线采集：RIPCProbe dylib 注入 + console 捕获，17 类运行时上下文。真机无 QtsFS 失败 | `RIPC-003-真机启动行为基线采集.md` |
 | RIPC-004 | DONE | PlayCover 环境同构采集：LLDB attach + ObjC expression evaluation，17 类运行时上下文 | — |
-| RIPC-005 | DONE | 结构化差异对比与根因定位：根因是 materializer compare ladder 不匹配绝对 macOS pak 路径 | `build/ripc-005-diff.json` |
+| RIPC-005 | DONE | 结构化差异对比与根因定位：PlayCover 稳定 fail 的是 `/Users/.../Saved/Paks/...` path class，而不是绝对路径概念本身 | `build/ripc-005-diff.json` |
 | RIPC-006 | DONE | Direction A：ConvertToPlatformPath hook 增加 Saved/Paks 路径归一化 | — |
 | RIPC-007 | DONE | W^X 修复使全部 hook 安装成功；端到端验证发现失败点在 materializer 返回 object 的下游 compare ladder | `build/ripc-007-verification-report.json` |
 | RIPC-008 | DONE | 内存 dump 定位 `selectedObj + 0x10` 处 UE4 `FString`；parent-aware `ArrayNum/ArrayMax` 同步修复（129→33）已验证生效，但 QtsFS 仍 100% 失败，size 字段假设被证伪。产物：`build/ripc-008a/` | — |
-| RIPC-010 | IN-PROGRESS（当前主线） | 真机 materializer 断点采集与双端参数对比：在真机 iPad 上对 materializer 下断点，采集 3 次调用的 entryX1 实参与返回值，与 PlayCover 侧做结构化对比，直接区分"路径生成差异"与"materializer 跨平台行为差异" | 待建 |
-| RIPC-010-A1 | **DONE** | 开发 LLDB Python 采集脚本 `Scripts/ripc_010a_materializer_probe.py`：在 materializer entry/return 处设置断点，自动采集 x1/x0/lr，输出结构化 JSON | — |
-| RIPC-010-A2 | **DONE** | 开发 Xcode GUI 自动化 attach 脚本 `LocalDocs/XCodeOperation/ripc_010a_xcode_debug_automation.py`：利用 xcode_general_ops.py 基础能力自动执行 Debug → Attach to Process | — |
-| RIPC-010-A3 | **DONE** | 验证并迭代 Debug Console 命令输入自动化：JXA `inputArea.value` 直接赋值方案已验证可行，绕过 `AXValue.setValue()` 类型转换错误 (-1700)；`read_debug_console` 已验证。有调试会话时的最终验证归入 A4 | — |
-| RIPC-010-A4 | BLOCKED | 端到端真机采集验证：LLDB 断点在 `_dyld_start` 阶段设置后 dyld 链接完成时变为 unresolved，无法在初始化阶段捕获 materializer。运行态断点可触发但 materializer 已被调用。详见 `debug_experience/` | — |
-| RIPC-010-B | TODO | 双端 materializer 调用参数对比：将真机采集结果与 PlayCover 侧已有参数做结构化对比矩阵 | 待建 |
+| RIPC-010 | IN-PROGRESS | 真机 materializer 采集已形成稳定基线，当前转入双端对比与修复方向收敛 | `RIPC-010-真机materializer采集与双端对比.md` |
+| RIPC-010-A1 | **DONE** | 开发 LLDB Python 采集脚本 `Scripts/ripc_010a_materializer_probe.py`：在 materializer entry/return 处设置断点，自动采集 x1/x0/lr，输出结构化 JSON | `RIPC-010-真机materializer采集与双端对比.md` |
+| RIPC-010-A2 | **DONE** | 开发 Xcode GUI 自动化 attach 脚本 `LocalDocs/XCodeOperation/ripc_010a_xcode_debug_automation.py`：利用 xcode_general_ops.py 基础能力自动执行 Debug → Attach to Process | `RIPC-010-真机materializer采集与双端对比.md` |
+| RIPC-010-A3 | **DONE** | 验证并迭代 Debug Console 命令输入自动化：JXA `inputArea.value` 直接赋值方案已验证可行，绕过 `AXValue.setValue()` 类型转换错误 (-1700) | `RIPC-010-真机materializer采集与双端对比.md` |
+| RIPC-010-A4 | DONE | delayed injection + decoder fix 已形成稳定真机基线 `v5`；不再是阻塞项 | `RIPC-010-真机materializer采集与双端对比.md` |
+| RIPC-010-B | IN-PROGRESS | 双端 materializer 对比阶段：先用现有证据产出结构化矩阵，再决定是否需要定向补采 | `RIPC-010-真机materializer采集与双端对比.md` |
+| RIPC-010-B1 | IN-PROGRESS（当前主线） | 基于真机 `v5` 与 PlayCover `HOK-016-C.2.7` 证据，对齐 path class / caller tuple / return semantics，产出 `build/ripc-010b-diff.json` | `RIPC-010-真机materializer采集与双端对比.md` |
+| RIPC-010-B2 | TODO | 若 `B1` 仍有未闭合 path class / caller tuple，再做定向真机补采；默认 `--pre-inject-delay 5` | `RIPC-010-真机materializer采集与双端对比.md` |
+| RIPC-010-C | TODO | 根据 `B1/B2` 结论选择 bundle-scoped 修复：优先 iOS-semantic path remap，其次 pre-`1c8` caller/helper state 对齐 | 待建 |
 
 ## 高频复用经验
 
@@ -288,11 +277,13 @@ materializer 断点采集，从路径生成源头重新定位根因。
   dylib 注入更稳定。
 - **PlayCover LLDB 采集**：`lldb --batch --source` attach 运行中进程，标量用
   `expr -l objc --`，集合用 `po`。脚本：`Scripts/ripc_004_playcover_probe.py`。
-- **真机 materializer 断点采集（RIPC-010-A）**：
-  1. Xcode Debug → Attach to Process → 选择真机 NGR；
-  2. Debug Console 执行 `command script import Scripts/ripc_010a_materializer_probe.py`；
-  3. 脚本自动解析 ASLR slide、设置 entry/return 断点、采集 x1/x0/lr；
-  4. 产物：`build/ripc-010a-ipad-materializer-args.json` + `/tmp/ripc-010a-materializer-log.jsonl`。
+- **真机 materializer 采集（RIPC-010）**：默认使用
+  `Scripts/ripc_010a_real_ipad_lldb_driver.py` + `--pre-inject-delay 5`
+  生成 per-run 产物；当前稳定基线是
+  `build/ripc-010a-real-ipad-lldb-run-v5.json` /
+  `build/ripc-010a-ipad-materializer-args-v5.json`。详细步骤、fallback 与
+  调试经验见 `RIPC-010-真机materializer采集与双端对比.md`。**当前主线涉及
+  `RIPC-010-B / RIPC-010-C` 时总是建议读取。**
 
 ### Xcode GUI 自动化
 
@@ -306,10 +297,11 @@ materializer 断点采集，从路径生成源头重新定位根因。
 
 ### 关键技术约束
 
-- **RIPC-005 根因定位**：QtsFS 失败的直接原因是 materializer compare ladder
-  不匹配绝对 macOS 路径 `/Users/.../Saved/Paks/1/1.db`；成功路径用相对形式
-  `../../../NGR/Content/Paks/1/1.db`。根因不是 HOME/TMPDIR、env var、uid/gid
-  或目录结构差异。
+- **RIPC-005 + RIPC-010 联合结论**：PlayCover 稳定 failing class 仍是 macOS
+  absolute `/Users/.../Saved/Paks/...`；真机 accepted classes 现已确认同时包含
+  iOS absolute `/var/mobile/.../Saved/Paks/...` 与 UE4 relative
+  `../../../NGR/Content/Paks/...`。当前需要比较的不是"绝对 vs 相对"本身，
+  而是 **path class + caller/helper state**。
 - **Apple Silicon W^X 策略**：`mprotect(R|W|X)` 在 Apple Silicon 上 100% 失败。
   必须分阶段：写入用 `R+W`（无 X），执行用 `R+X`（无 W）。`vm_protect` 回退使用
   `VM_PROT_COPY` 触发 copy-on-write。
@@ -336,7 +328,9 @@ materializer 断点采集，从路径生成源头重新定位根因。
 - RIPC-008A/B 代码变更：`Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m`
 - RIPC-010-A1 LLDB 采集脚本：`Scripts/ripc_010a_materializer_probe.py`
 - RIPC-010-A2 Xcode 自动化脚本：`LocalDocs/XCodeOperation/ripc_010a_xcode_debug_automation.py`
-- RIPC-010-A 真机 materializer 断点产物：`build/ripc-010a-ipad-materializer-args.json`
+- RIPC-010-A driver：`Scripts/ripc_010a_real_ipad_lldb_driver.py`
+- RIPC-010-A 稳定 run 摘要：`build/ripc-010a-real-ipad-lldb-run-v5.json`
+- RIPC-010-A 稳定真机基线：`build/ripc-010a-ipad-materializer-args-v5.json`
 - RIPC-010-B 双端对比报告：`build/ripc-010b-diff.json`
 
 ### 关联文档
@@ -347,6 +341,9 @@ materializer 断点采集，从路径生成源头重新定位根因。
 - `LocalDocs/HOKCrash/HOK-016-qts-fs-create-failed.md`：QtsFileSystem
   失败的详细根因链与已证伪路径。**阅读建议：需要确定真机对比的具体
   断点地址或需要理解 storage create-table 链时读取。**
+- `RIPC-010-真机materializer采集与双端对比.md`：RIPC-010 阶段的稳定方法、
+  真机 `v5` 基线、调试经验与对比口径。**阅读建议：当前主线涉及
+  `RIPC-010-B / RIPC-010-C` 时总是建议读取。**
 - `RIPC-001-环境预检与工具链准备.md`：RIPC-001 完整实验细节、验证产物
   与踩坑记录。**阅读建议：需要复现具体命令、核查原始产物、或排查
   profile / codesign / deploy / attach 异常时按需读取；一般无需读取。**
@@ -355,5 +352,6 @@ materializer 断点采集，从路径生成源头重新定位根因。
   沙盒结构或 Probe 实现细节时按需读取；一般使用
   `build/ripc-003-ipad-baseline.json` 即可。**
 - `HOK-016-appendix-C27.md`（HOKCrash 子文档）：materializer compare
-  ladder 的逐层证据，是 RIPC-005 根因定位的关键证据来源。**阅读建议：
-  需要理解 materializer 内部控制流、success/fail tuple 差异时读取。**
+  ladder 的逐层证据，是 RIPC-005 根因定位与 `RIPC-010-B` PlayCover 侧对照的
+  关键证据来源。**阅读建议：需要理解 materializer 内部控制流、success/fail
+  tuple 差异，或继续收紧 pre-`1c8` caller/helper state 时读取。**

@@ -1,5 +1,11 @@
 ## RIPC-003 真机启动行为基线采集
 
+> **阅读建议**：本文档沉淀 RIPC-003 阶段的真机运行时上下文基线。
+> 若只需知道真机侧已验证“无 `QtsFileSystem Create Failed`”以及关键路径/环境
+> 差异，阅读 `00-Dashboard.md` 即可；当需要核查 iOS sandbox 具体返回值、
+> entitlement、目录结构或与 `RIPC-010` 的真机 materializer 样本交叉验证时，
+> 再展开本文。一般无需逐条通读全部表格。
+
 ### 采集方法
 
 通过构建 `RIPCProbe.dylib`（Objective-C `__attribute__((constructor))` + 5s

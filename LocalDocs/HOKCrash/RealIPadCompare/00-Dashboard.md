@@ -69,7 +69,7 @@
   - 真机已确认 accepted path class 至少包含
     `/var/mobile/.../Library/NGR/Saved/Paks/...` 与
     `../../../NGR/Content/Paks/...`。
-- **RIPC-010-B1 结论（本轮已完成）**：`build/ripc-010b-diff.json` 已将双端证据按
+- **RIPC-010-B1 结论（已沉淀）**：`build/ripc-010b-diff.json` 已将双端证据按
   **path class / caller tuple / return semantics** 收束成统一矩阵：
   - 真机 accepted class：`/var/mobile/.../Saved/Paks/...`、`../../../NGR/Content/Paks/...`
   - PlayCover success control sample：`../../../NGR/Content/Paks/1/1.db`
@@ -81,6 +81,9 @@
     `errValue=0x9000b`）
   - 结论：当前证据已经足够把默认主线切到 `RIPC-010-C`；但从机制解释上说，
     pre-`1c8` caller/helper state 仍是 residual uncertainty，而不是已被完全排除。
+- **文档整合状态**：`RIPC-010-B1` 的上一轮执行记录中的核心证据、判断与触发条件，
+  现已统一回收到本文与 `RIPC-010-真机materializer采集与双端对比.md`；本目录下不再
+  保留同主题的独立 execution note 作为事实来源。
 
 ### RIPC-005 根因链
 
@@ -349,8 +352,9 @@ materializer 断点采集，从路径生成源头重新定位根因。
   失败的详细根因链与已证伪路径。**阅读建议：需要确定真机对比的具体
   断点地址或需要理解 storage create-table 链时读取。**
 - `RIPC-010-真机materializer采集与双端对比.md`：RIPC-010 阶段的稳定方法、
-  真机 `v5` 基线、调试经验与对比口径。**阅读建议：当前主线涉及
-  `RIPC-010-B / RIPC-010-C` 时总是建议读取。**
+  真机 `v5` 基线、调试经验、`B1` 矩阵结论与后续修复判断口径。
+  **阅读建议：当前主线涉及 `RIPC-010-B / RIPC-010-C` 时总是建议读取。**
+  该文档已经吸收同主题 execution note 的长期有效内容，作为唯一维护入口。
 - `RIPC-001-环境预检与工具链准备.md`：RIPC-001 完整实验细节、验证产物
   与踩坑记录。**阅读建议：需要复现具体命令、核查原始产物、或排查
   profile / codesign / deploy / attach 异常时按需读取；一般无需读取。**

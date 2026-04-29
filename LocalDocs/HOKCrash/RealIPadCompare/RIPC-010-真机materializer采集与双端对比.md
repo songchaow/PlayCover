@@ -29,33 +29,16 @@
   **PlayCover failing `/Users/.../Saved/Paks/...` path class 及其 caller /
   helper state，与真机 accepted path classes 到底差在哪一层。**
 
-### A4 从“阻塞”到“打通”的最小结论链
+### A4 打通后的长期有效结论
 
-#### `v3`：0-hit，但仍混有 stale artifact 风险
-
-- 现象：只看到断点安装，`recordCount = 0`。
-- 问题：当时 probe JSON / log 仍可能复用共享默认路径，不能完全排除旧产物
-  被误读为新结果。
-- 阅读建议：只在需要复盘“为什么当时会误判为 blocked”时按需读取；一般无
-  需读取。
-
-#### `v4`：artifact isolation 后，证明 immediate injection 确实会 miss window
-
-- 现象：per-run artifact isolation 补齐后，`preInjectDelay = 0` 仍是
-  `recordCount = 0`。
-- 结论：这次 0-hit 是**真实结果**，而不是旧 JSON 混入导致的假阴性。
-- 阅读建议：需要论证“为什么默认值必须是 delayed injection”时按需读取；
-  一般无需读取。
-
-#### `v5`：延迟注入 + 新解码口径后，形成稳定真机基线
-
-- 使用 `--pre-inject-delay 5` 后，真机稳定抓到 materializer 相关记录。
-- 关键产物：
-  - `build/ripc-010a-real-ipad-lldb-run-v5.json`
-  - `build/ripc-010a-ipad-materializer-args-v5.json`
-- 这轮结果足以支撑 `RIPC-010-B`，不应再把“能否采到 materializer”当作
-  当前主问题。
-- 阅读建议：**当前主线涉及 `RIPC-010-B / RIPC-010-C` 时总是建议读取。**
+- 早期 `0-hit` 现象已经完成去伪存真：问题不在“真机无法采到 materializer”，
+  而在 **immediate injection 容易 miss window** 以及早期产物隔离不充分。
+- 当前长期有效的默认口径只有两条：
+  - 默认使用 `--pre-inject-delay 5`
+  - 默认以 `build/ripc-010a-real-ipad-lldb-run-v5.json` /
+    `build/ripc-010a-ipad-materializer-args-v5.json` 作为真机稳定基线
+- 若只是在推进 `RIPC-010-B / RIPC-010-C`，无需再按时间顺序回看 `v3` / `v4`
+  的会话演进；只有在怀疑采集链本身再次失稳时，才需要回溯这些早期样本。
 
 ### 当前 real-device baseline（`v5`）
 
@@ -118,6 +101,9 @@ return semantics** 汇总后的稳定结论如下：
   仍是机制层面的 residual uncertainty。**
 - **因此 `B2` 不再是默认下一步**：只有当 `RIPC-010-C` 的 remap / normalization
   方案失败，或暴露出新的未闭合 path class / caller tuple 时，才回到定向补采。
+- **阅读建议**：当前只要任务涉及 `RIPC-010-B` 证据解释、`RIPC-010-C` 方向判断、
+  或修复验证口径，**总是建议读取本文**；它已经吸收上一轮 `B1` execution note 的
+  长期有效信息。
 
 ### 稳定采集方法
 

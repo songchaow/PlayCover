@@ -37,153 +37,61 @@
 
 ### 当前主线一句话
 
-`RIPC-010-C1 仍是默认当前主线`：`RIPC-010-B1` 已完成并落盘 `build/ripc-010b-diff.json`，且代码侧复核已确认 `Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m` 中已经存在 bundle-scoped 的 `Saved/Paks` 归一化链（`ripc006_try_normalize_pak_path()`、`pdt006_convert_replacement()`、构造函数中的 `pdt006_install_convert_patch_once()`）。`2026-04-29` 已用**完整 `Release` GUI 重建 + 已安装 `~/Applications/PlayCover.app` fresh run** 再次验证：`pdt006_ngr_convert_patch status=installed` 稳定出现，但同轮没有 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`，`QtsFileSystem Create Failed!!` 仍然发生。因此当前最高优先级不再是“证明补丁已安装”，而是解释 **`ConvertToPlatformPath` replacement 为什么没有留下调用 / 命中证据**；只有在后续已证实 `normalize` 命中但 QtsFS 仍 fail 时，才转向 `RIPC-010-C2` 收紧 pre-`1c8` caller / helper state，必要时再回开 `RIPC-010-B2`。长期方法、产物与调试经验统一下沉到 `RIPC-010-真机materializer采集与双端对比.md`，本轮 execution note 见 `executions/2026-04-29-1735-ripc-010-c1-installed-gui-fresh-run.md`。
+`RIPC-010-C1` 仍是默认当前主线：`RIPC-010-B1` 已完成并落盘 `build/ripc-010b-diff.json`，代码侧复核也已确认 `Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m` 中已经存在 bundle-scoped 的 `Saved/Paks` 归一化链（`ripc006_try_normalize_pak_path()`、`pdt006_convert_replacement()`、构造函数中的 `pdt006_install_convert_patch_once()`）。`2026-04-29` 的 **完整 `Release` GUI 重建 + 已安装 `~/Applications/PlayCover.app` fresh run** 再次证明：`pdt006_ngr_convert_patch status=installed` 稳定出现，但同轮仍没有 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`，`QtsFileSystem Create Failed!!` 继续发生。因此当前最高优先级不是继续证明“补丁已安装”，也不是直接进入 `RIPC-010-C2`，而是解释 **`ConvertToPlatformPath` replacement 为什么没有留下调用 / 命中证据**。只有在后续已证实 normalize 命中但 QtsFS 仍 fail 时，才转向 `RIPC-010-C2` 收紧 pre-`1c8` caller / helper state；只有在 `C1/C2` 之后仍出现新的未闭合样本时，才回开 `RIPC-010-B2`。长期方法、矩阵结论与 installed-GUI `C1` 结果统一维护在 `RIPC-010-真机materializer采集与双端对比.md`；同主题独立 execution note 不再作为事实来源。
 
 ### 当前状态摘要
 
-- 真机已连接：`Songchao的iPad`（iPadOS 26.4.1），UDID
-  `00008103-0011050A0E3B001E`。
-- Xcode 16.4 可用，签名身份 `BB36AD6577F23F304F93A1A75A940DAE92559A7B`
-  （Apple Development）有效。
-- IPA 源文件：`~/Downloads/com.tencent.ngr_1.0.8_und3fined.ipa`（3.07 GB，
-  已解密 `cryptid=0`）。
-- PlayCover 已安装副本在
-  `~/Library/Containers/io.playcover.PlayCover/Applications/com.tencent.ngr.app/`。
-- **常用 Xcode Team**：后续自动签名默认使用 `Songchao Wang`
-  （Team ID `L7CZY6S98T`）。
-- **Provisioning Profile**：已生成显式 iOS App Development profile
-  （`87ea3316-9677-4523-a1eb-ec9a4a55f7f8.mobileprovision`），
-  `get-task-allow=true`，已包含目标 iPad UDID。
-- **RIPC-001～004 结论**：签名→部署→真机/PlayCover 双端基线采集完成。
-  数据见 `build/ripc-003-ipad-baseline.json` / `build/ripc-004-playcover-baseline.json`。
-- **RIPC-005 结论（PlayCover fail class 已定位）**：完整差异报告见
-  `build/ripc-005-diff.json`。PlayCover 侧稳定 fail 的不是 HOME/TMPDIR 值本身，
-  而是 **`/Users/.../Saved/Paks/...` 这类 macOS path class 进入
-  QtsFileSystem materializer compare ladder 后发生分叉**。
-- **RIPC-010-A1～A4 结论（真机采集链已闭合）**：
-  - probe / driver / Xcode 自动化链路均已完成，长期方法见
-    `RIPC-010-真机materializer采集与双端对比.md`。
-  - 当前稳定真机基线：`build/ripc-010a-real-ipad-lldb-run-v5.json` /
-    `build/ripc-010a-ipad-materializer-args-v5.json`，其中 `preInjectDelay=5`、
-    `recordCount=71`。
-  - 真机已确认 accepted path class 至少包含
-    `/var/mobile/.../Library/NGR/Saved/Paks/...` 与
-    `../../../NGR/Content/Paks/...`。
-- **RIPC-010-B1 结论（已沉淀）**：`build/ripc-010b-diff.json` 已将双端证据按
-  **path class / caller tuple / return semantics** 收束成统一矩阵：
-  - 真机 accepted class：`/var/mobile/.../Saved/Paks/...`、`../../../NGR/Content/Paks/...`
-  - PlayCover success control sample：`../../../NGR/Content/Paks/1/1.db`
-    （`entryX2=0x10aa5264a`，`x22=0x21 -> 0x3`，route
-    `0x10432a2c8 -> 0x10432a2e0 -> 0x10432a31c`）
-  - PlayCover stable failing class：`/Users/.../Saved/Paks/1/1.db`
-    （`entryX2=0x10aa4678c`，`x22=0x31 -> 0x4`，route
-    `0x10432a224 -> 0x10432a31c`，caller-side 为 `helper+0x18 = 0` /
-    `errValue=0x9000b`）
-  - 结论：当前证据已经足够把默认主线切到 `RIPC-010-C`；但从机制解释上说，
-    pre-`1c8` caller/helper state 仍是 residual uncertainty，而不是已被完全排除。
-- **RIPC-010-C 代码现状（本轮新增校正）**：`Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m`
-  已存在 bundle-scoped 的 `Saved/Paks` 归一化实现与安装调用链：
-  `ripc006_try_normalize_pak_path()` → `pdt006_convert_replacement()` →
-  `pdt006_install_convert_patch_once()`。因此 `RIPC-010-C` 的真实首任务不是“再设计
-  remap”，而是验证这条现有链路为什么尚未把 `B1` 的 failing class 闭合。
-- **RIPC-010-C1 最新验证（2026-04-29 17:35，installed GUI fresh run）**：
-  - `PLAYCOVER_INSTALL_MODE=user ./BuildScripts/build_and_install.sh Release` 成功，正式安装路径固定为 `~/Applications/PlayCover.app`。
-  - `python3 Scripts/hok015_ngr_live_verify.py --playcover-app-path ~/Applications/PlayCover.app --observe-seconds 20 --poll-interval 2 --output build/ripc-010c1-live-report-v2.json` 选中 `processLaunchId=launch-48548-f2a3231c-a329-4b88-aca4-39a1081c7405`。
-  - 同轮事件中出现 `pdt006_ngr_convert_patch status=installed`，但没有 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`；同时出现 `hok014_ngr_alert_suppressed message="QtsFileSystem Create Failed!!"` 与新 crash `NGR-2026-04-29-173545.ips`。
-  - 结论：可排除“工作区 app 副本 / move-to-Applications 提示”变量，`C1` 当前剩余问题已收紧为 replacement 调用证据缺失。
-- **文档整合状态**：`RIPC-010-B1` 的上一轮执行记录中的核心证据、判断与触发条件，
-  现已统一回收到本文与 `RIPC-010-真机materializer采集与双端对比.md`；本目录下不再
-  保留同主题的独立 execution note 作为事实来源。
+- 真机环境、签名与双端基线已闭合：`RIPC-001～004` 完成，真机稳定基线见 `build/ripc-003-ipad-baseline.json`，PlayCover 同构基线见 `build/ripc-004-playcover-baseline.json`。
+- `RIPC-005` + `RIPC-010-B1` 的联合结论已稳定：问题不是 HOME/TMPDIR 的值本身，也不是“绝对路径”这一概念本身，而是 PlayCover 的 **`/Users/.../Saved/Paks/...`** path class 与当前 caller/helper state 组合在 materializer compare ladder 上稳定落到 fail 语义；真机 accepted classes 现已确认至少包含 `/var/mobile/.../Saved/Paks/...` 与 `../../../NGR/Content/Paks/...`。
+- `RIPC-010-B1` 的默认决策已经成立：`build/ripc-010b-diff.json` 足以让主线从“继续补采”切到 `RIPC-010-C` 的闭环验证。pre-`1c8` caller/helper state 仍是 residual uncertainty，但不是当前第一优先级。
+- 代码侧复核已确认 `PlayLoader.m` 中存在现成链路：`ripc006_try_normalize_pak_path()` → `pdt006_convert_replacement()` → `pdt006_install_convert_patch_once()`。因此当前不是重想 remap 方向，而是解释这条链为什么没有留下 replacement 调用证据。
+- `2026-04-29 17:35` 的 installed GUI fresh run 已吸收到长期维护文档中：使用 `Release` 完整 GUI 重建与 `~/Applications/PlayCover.app` fresh run，`build/ripc-010c1-live-report-v2.json` 选中 `processLaunchId=launch-48548-f2a3231c-a329-4b88-aca4-39a1081c7405`，同轮出现 `pdt006_ngr_convert_patch status=installed`，但没有 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`，且仍出现 `hok014_ngr_alert_suppressed message="QtsFileSystem Create Failed!!"` 与新 crash `NGR-2026-04-29-173545.ips`。这已经排除了“工作区 app 副本 / move-to-Applications”变量。
+- 文档整合状态：`RIPC-010-B1` 与 installed-GUI `RIPC-010-C1` 的长期有效信息现已统一回收到本文与 `RIPC-010-真机materializer采集与双端对比.md`；本目录下同主题独立 execution note 不再保留为事实来源。
 
 ### RIPC-005 根因链
 
 ```
-App 在 PlayCover 启动 → HOME = macOS container '/Users/…/Containers/…/Data'
-→ UE4 FPaths 用 HOME 派生 SavedDir → 所有 Saved 路径带 '/Users/' 前缀
-→ QtsFileSystem init → 创建 main chunk 到 rootB（成功）
-→ readiness B 调用 materializer（0x10432a068），共 3 次调用：
-   ✓ 2× entryX1 = "../../../NGR/Content/Paks/1/1.db"（UE4 相对路径，
-     compare ladder x22=0x21→0x3，match → 返回 non-null）
-   ✗ 1× entryX1 = "/Users/…/Saved/Paks/1/1.db"（绝对 macOS 路径，
-     compare ladder x22=0x31→0x4，mismatch → 返回 0）
-→ materializer 返 0 → helper+0x18=NULL → err=9 → storage+0x30=0x9000b
-→ create-table 返 null → readiness B = 0 → "QtsFileSystem Create Failed!!"
-→ GameThread 退出 → 僵尸态
+PlayCover 启动 → UE4 用 macOS sandbox HOME 派生 SavedDir
+→ 出现 `/Users/.../Saved/Paks/...` path class
+→ readiness B 进入 materializer compare ladder
+→ `../../../NGR/Content/Paks/1/1.db` 在 PlayCover 可成功返回 non-null
+→ `/Users/.../Saved/Paks/1/1.db` 稳定走 fail 分支并返回 0
+→ helper+0x18 保持 0 / errValue=0x9000b
+→ create-table 返 null → "QtsFileSystem Create Failed!!"
 ```
 
-**关键结论**：根因不是 HOME/TMPDIR 的值本身，也不是环境变量泄漏，
-而是 **UE4 将 Saved/Paks 路径解析为绝对 macOS 路径后，QtsFileSystem
-materializer 的 UTF-16 compare ladder 无法匹配该路径格式**。
-
-**2026-04-29 补充**：`RIPC-010-A4 v5` 已确认真机 accepted path class 同时包含
-`/var/mobile/.../Saved/Paks/...` 与 `../../../NGR/Content/Paks/...`。因此这里的
-结论应读作：**出问题的是 PlayCover 上的 `/Users/.../Saved/Paks/...` path class，
-而不是"absolute path"这一概念本身。** 当前最高优先级就是把这层差异做成
-双端矩阵。
+**关键结论**：问题不是 HOME/TMPDIR 值本身，也不是“absolute path”这一概念本身，而是 **PlayCover 的 `/Users/.../Saved/Paks/...` path class 没有被当前 materializer 匹配链接受**。`RIPC-010-B1` 之后，这个结论应始终与“caller/helper state 仍可能参与分流”一起理解。
 
 ### 修复路线概览
 
-1. ~~**RIPC-001～004**~~（已完成）：环境预检 → 重签名部署 → 双端基线采集。
-2. ~~**RIPC-005**~~（已完成）：结构化差异对比 → 根因定位。
-3. ~~**RIPC-006**~~（已完成）：Direction A — 在 PDT-006 ConvertToPlatformPath
-   hook 中增加 Saved/Paks 路径归一化，使 materializer compare ladder 匹配。
-4. ~~**RIPC-007**~~（已完成）：W^X 合规修复 → 全部 hook 安装成功。
-5. ~~**RIPC-008**~~（已完成）：embedded path rewrite 已验证可行，但 QtsFS 仍
-   fail，size 字段假设被证伪。结论：运行时内存修补不可靠，需换路线。
-6. **RIPC-010**（当前主线）：真机 materializer 采集已形成稳定基线，当前进入
-   双端参数对比与修复方向收敛阶段。
+1. ~~**RIPC-001～004**~~（已完成）：环境预检、重签名部署、真机/PlayCover 双端基线采集已完成。
+2. ~~**RIPC-005**~~（已完成）：结构化差异对比与根因定位已完成。
+3. ~~**RIPC-006**~~（已完成）：`ConvertToPlatformPath` 的 `Saved/Paks` 归一化链已在代码中存在。
+4. ~~**RIPC-007**~~（已完成）：W^X 合规修复完成，patch 安装不再是主阻塞。
+5. ~~**RIPC-008**~~（已完成）：embedded path rewrite / size 字段假设已证伪，路线终止。
+6. **RIPC-010**（当前主线）：主线已从“继续补采 / 重想修复”收敛到 **先闭合 `RIPC-010-C1` 的 replacement 调用缺口，再决定是否进入 `RIPC-010-C2`**。
 
 ### RIPC-008 embedded path rewrite + 验证结论
 
-**核心结论**：通过系统化 object graph 遍历（4 层深度扫描 + 128 条目去重），
-每次启动可修复 2~4 处 `/Users/…` UTF-16 路径。进一步通过内存 dump 精确定位
-`selectedObj + 0x10` 处为 UE4 `FString` 结构（`Data` 指针 + `ArrayNum` +
-`ArrayMax`），并实现了 parent-aware 同步修复（`ArrayNum/ArrayMax` 129→33）。
-`launch-events.jsonl` 验证长度字段已正确改写。
-
-**但 QtsFS 仍 100% 失败**，说明 compare ladder 的失败点 **不在** `FString`
-长度元数据。size 字段假设被证伪，**运行时内存修补思路终止**，转向真机
-materializer 断点采集，从路径生成源头重新定位根因。
-
-> 详细演进过程（v1→v2→v3 的扫描策略迭代、dump 分析方法、parent-aware 修复
-> 实现细节）见 `build/ripc-008a/` 产物与 `Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m`
-> 代码注释。**一般无需读取。**
+`RIPC-008` 已经给出稳定否定结论：运行时 object graph / `FString` 长度元数据修补**不能**消除 `QtsFileSystem Create Failed!!`。因此这条路线只保留为已证伪背景，不再占用当前主线；需要复盘扫描策略、dump 方法或 parent-aware 修补细节时，再回看 `build/ripc-008a/` 与 `PlayLoader.m` 代码注释。**一般无需读取。**
 
 ### 当前卡点
 
-1. **当前缺的不是补丁安装证据，而是 replacement 调用证据**：已通过完整 `Release`
-   GUI 重建 + 已安装实例 fresh run 再次确认 `pdt006_install_convert_patch_once()`
-   安装成功，但同轮没有 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`。
-   当前首要问题是：failing `/Users/.../Saved/Paks/...` 流量究竟没有经过
-   `ConvertToPlatformPath`，还是 `x1` 参数形态与当前 UTF-8 `/Users/...` 假设不符。
-2. **若 normalize 已命中但 QtsFS 仍 fail，才说明主分叉不止 path class**：这时才把
-   优先级切到 pre-`1c8` caller/helper state，对 `RIPC-010-C2` 做机制收紧。
-3. **补采仍是条件性回退项**：只有当 `RIPC-010-C1/C2` 验证后仍暴露新的未闭合
-   path class / caller tuple，才应打开 `RIPC-010-B2` 做定向补采。
+1. **当前第一缺口是 replacement 调用证据，而不是 patch 安装证据**：`pdt006_ngr_convert_patch` 已稳定出现，但 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize` 仍为 0。当前首要问题是：PlayCover 的 `/Users/.../Saved/Paks/...` 流量究竟没有经过 `ConvertToPlatformPath`，还是 `x1` 参数形态与当前 UTF-8 `/Users/...` 假设不符。
+2. **只有当 normalize 已命中但 QtsFS 仍 fail，`C2` 才成立**：这时才说明主分叉不止 path class，需要把优先级切到 pre-`1c8` caller/helper state。
+3. **补采仍是条件性回退项**：只有在 `RIPC-010-C1/C2` 之后仍暴露新的未闭合 path class / caller tuple，才应打开 `RIPC-010-B2` 做定向真机补采。
 
 ### 下一步默认规划
 
-1. ~~**RIPC-008（已完成）**~~：embedded path rewrite 与 parent-aware size 修复已落地，
-   产物见 `build/ripc-008a/`。结论：运行时内存修补不可靠，换路线。
-2. ~~**RIPC-010-A1～A4（已完成）**~~：probe、driver、Xcode GUI 自动化与
-   delayed injection 方案已形成稳定真机基线，详见
-   `RIPC-010-真机materializer采集与双端对比.md`。
-3. ~~**RIPC-010-B1（已完成）**~~：基于
-   `build/ripc-010a-ipad-materializer-args-v5.json` 与 PlayCover 侧
-   `HOK-016-C.2.7` 证据，已产出 path class / caller tuple / return semantics
-   结构化对比矩阵 `build/ripc-010b-diff.json`。
+1. ~~**RIPC-008（已完成）**~~：保留为已证伪背景，当前不再投入时间。
+2. ~~**RIPC-010-A1～A4（已完成）**~~：真机 LLDB 采集链与 `v5` 基线稳定可复用，详见 `RIPC-010-真机materializer采集与双端对比.md`。
+3. ~~**RIPC-010-B1（已完成）**~~：`build/ripc-010b-diff.json` 已提供 path class / caller tuple / return semantics 决策矩阵。
 4. **RIPC-010-C1（当前默认主线）**：解释现有 `RIPC-006` 归一化链为何未闭环
-   - 已通过完整 `Release` GUI 重建 + 已安装实例 fresh run 确认
-     `pdt006_ngr_convert_patch status=installed`；
-   - 当前未闭合项是 `pdt006_convert_replacement()` 为什么没有产生
-     `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`；
-   - 需要判断 failing `/Users/.../Saved/Paks/...` path flow 是否根本未经过
-     `ConvertToPlatformPath`，或参数编码/形态与现有 replacement 假设不一致。
-5. **RIPC-010-C2（条件性第二优先级）**：仅当 `C1` 已证实现有 normalize 链命中但
-   QtsFS 仍 fail，再转向 **pre-`1c8` caller/helper state 对齐**。
-6. **RIPC-010-B2（条件性回退项）**：仅当 `C1/C2` 验证后仍有未闭合样本时，
-   再围绕缺失 path class / caller tuple 做定向真机补采；默认沿用
-   `--pre-inject-delay 5`，不再泛化重跑 `A4`。
+   - 已通过完整 `Release` GUI 重建 + 已安装实例 fresh run 确认 `pdt006_ngr_convert_patch status=installed`；
+   - 当前未闭合项是 `pdt006_convert_replacement()` 为什么没有产生 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`；
+   - 需要判断 failing `/Users/.../Saved/Paks/...` path flow 是否根本未经过 `ConvertToPlatformPath`，或参数编码 / 形态与现有 replacement 假设不一致。
+5. **RIPC-010-C2（条件性第二优先级）**：仅当 `C1` 已证实现有 normalize 链命中但 QtsFS 仍 fail，再转向 **pre-`1c8` caller/helper state 对齐**。
+6. **RIPC-010-B2（条件性回退项）**：仅当 `C1/C2` 验证后仍有未闭合样本时，再围绕缺失 path class / caller tuple 做定向真机补采；默认沿用 `--pre-inject-delay 5`。
 
 ## 构建与验证
 
@@ -261,16 +169,16 @@ materializer 断点采集，从路径生成源头重新定位根因。
 | RIPC-006 | DONE | Direction A：ConvertToPlatformPath hook 增加 Saved/Paks 路径归一化 | — |
 | RIPC-007 | DONE | W^X 修复使全部 hook 安装成功；端到端验证发现失败点在 materializer 返回 object 的下游 compare ladder | `build/ripc-007-verification-report.json` |
 | RIPC-008 | DONE | 内存 dump 定位 `selectedObj + 0x10` 处 UE4 `FString`；parent-aware `ArrayNum/ArrayMax` 同步修复（129→33）已验证生效，但 QtsFS 仍 100% 失败，size 字段假设被证伪。产物：`build/ripc-008a/` | — |
-| RIPC-010 | IN-PROGRESS | 真机 materializer 采集已形成稳定基线，当前转入双端对比与修复方向收敛 | `RIPC-010-真机materializer采集与双端对比.md` |
+| RIPC-010 | IN-PROGRESS | 真机 materializer 采集与对比基线已稳定；当前主线是解释 replacement 调用证据为何缺失，而不是继续泛化补采 | `RIPC-010-真机materializer采集与双端对比.md` |
 | RIPC-010-A1 | **DONE** | 开发 LLDB Python 采集脚本 `Scripts/ripc_010a_materializer_probe.py`：在 materializer entry/return 处设置断点，自动采集 x1/x0/lr，输出结构化 JSON | `RIPC-010-真机materializer采集与双端对比.md` |
 | RIPC-010-A2 | **DONE** | 开发 Xcode GUI 自动化 attach 脚本 `LocalDocs/XCodeOperation/ripc_010a_xcode_debug_automation.py`：利用 xcode_general_ops.py 基础能力自动执行 Debug → Attach to Process | `RIPC-010-真机materializer采集与双端对比.md` |
 | RIPC-010-A3 | **DONE** | 验证并迭代 Debug Console 命令输入自动化：JXA `inputArea.value` 直接赋值方案已验证可行，绕过 `AXValue.setValue()` 类型转换错误 (-1700) | `RIPC-010-真机materializer采集与双端对比.md` |
 | RIPC-010-A4 | DONE | delayed injection + decoder fix 已形成稳定真机基线 `v5`；不再是阻塞项 | `RIPC-010-真机materializer采集与双端对比.md` |
-| RIPC-010-B | IN-PROGRESS | 双端 materializer 对比阶段：`B1` 已完成并落盘，后续仅在 `C1/C2` 验证失败时再按需打开 `B2` | `RIPC-010-真机materializer采集与双端对比.md` |
+| RIPC-010-B | IN-PROGRESS | `B1` 已完成并落盘；`B2` 仅在 `C1/C2` 验证后仍有新的未闭合样本时按需打开 | `RIPC-010-真机materializer采集与双端对比.md` |
 | RIPC-010-B1 | DONE | 已基于真机 `v5` 与 PlayCover `HOK-016-C.2.7` 证据，对齐 path class / caller tuple / return semantics，并产出 `build/ripc-010b-diff.json` | `RIPC-010-真机materializer采集与双端对比.md` |
 | RIPC-010-B2 | TODO | 若 `RIPC-010-C1/C2` 验证后仍有未闭合 path class / caller tuple，再做定向真机补采；默认 `--pre-inject-delay 5` | `RIPC-010-真机materializer采集与双端对比.md` |
-| RIPC-010-C | IN-PROGRESS | `C1` 为默认当前主线：优先验证现有 `RIPC-006` `Saved/Paks` 归一化链是否成功安装并命中 failing class；仅当 `C1` 已命中但仍失败时，再进入 `C2` 做 pre-`1c8` caller/helper state 对齐 | `RIPC-010-真机materializer采集与双端对比.md` |
-| RIPC-010-C1 | IN-PROGRESS（默认当前主线） | 已确认 installed GUI fresh run 中 `pdt006_install_convert_patch_once()` 安装成功，但尚未出现 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`；当前继续追 replacement 调用缺口 | `executions/2026-04-29-1735-ripc-010-c1-installed-gui-fresh-run.md` |
+| RIPC-010-C | IN-PROGRESS | `C1` 为默认当前主线：优先解释现有 `RIPC-006` 归一化链为何没有留下 replacement 调用证据；仅当 `C1` 已命中但仍失败时，再进入 `C2` 做 pre-`1c8` caller/helper state 对齐 | `RIPC-010-真机materializer采集与双端对比.md` |
+| RIPC-010-C1 | IN-PROGRESS（默认当前主线） | 已确认 installed GUI fresh run 中 patch installed，但尚未出现 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`；当前继续追 replacement 调用缺口 | `RIPC-010-真机materializer采集与双端对比.md` |
 | RIPC-010-C2 | TODO（条件性） | 若 `C1` 已证实 normalize 命中但 QtsFS 仍失败，再转向 pre-`1c8` caller/helper state 对齐 | `RIPC-010-真机materializer采集与双端对比.md` |
 
 ## 高频复用经验
@@ -372,10 +280,7 @@ materializer 断点采集，从路径生成源头重新定位根因。
 - `LocalDocs/HOKCrash/HOK-016-qts-fs-create-failed.md`：QtsFileSystem
   失败的详细根因链与已证伪路径。**阅读建议：需要确定真机对比的具体
   断点地址或需要理解 storage create-table 链时读取。**
-- `RIPC-010-真机materializer采集与双端对比.md`：RIPC-010 阶段的稳定方法、
-  真机 `v5` 基线、`B1` 矩阵结论，以及 `C1/C2` 验证与分叉判断口径。
-  **阅读建议：当前主线涉及 `RIPC-010-B / RIPC-010-C1 / RIPC-010-C2` 时总是建议读取。**
-  该文档已经吸收同主题 execution note 的长期有效内容，作为唯一维护入口。
+- `RIPC-010-真机materializer采集与双端对比.md`：RIPC-010 阶段的稳定方法、真机 `v5` 基线、`B1` 矩阵结论，以及 installed-GUI `C1` 验证与 `C1/C2` 分叉判断口径。**阅读建议：当前主线涉及 `RIPC-010-B / RIPC-010-C1 / RIPC-010-C2` 时总是建议读取。** 该文档已经吸收同主题 execution note 的长期有效内容，作为唯一维护入口。
 - `RIPC-001-环境预检与工具链准备.md`：RIPC-001 完整实验细节、验证产物
   与踩坑记录。**阅读建议：需要复现具体命令、核查原始产物、或排查
   profile / codesign / deploy / attach 异常时按需读取；一般无需读取。**

@@ -37,7 +37,7 @@
 
 ### 当前主线一句话
 
-`RIPC-010-C1` 仍是默认当前主线，但当前应继续收紧为**单一子任务**：先锁定 failing `/Users/.../Saved/Paks/1/1.db` 流量到底**有没有进入** `ConvertToPlatformPath`，以及若已进入，`x1` 到达 `pdt006_convert_replacement()` 时到底是什么形态。`RIPC-010-B1` 已完成并落盘 `build/ripc-010b-diff.json`，代码侧复核也已确认 `Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m` 中已经存在 bundle-scoped 的 `Saved/Paks` 归一化链（`ripc006_try_normalize_pak_path()`、`pdt006_convert_replacement()`、构造函数中的 `pdt006_install_convert_patch_once()`）。`2026-04-29` 的 **完整 `Release` GUI 重建 + 已安装 `~/Applications/PlayCover.app` fresh run** 再次证明：`pdt006_ngr_convert_patch status=installed` 稳定出现，但同轮仍没有 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`，`QtsFileSystem Create Failed!!` 继续发生。因此当前最高优先级不是继续证明"补丁已安装"，也不是直接进入 `RIPC-010-C2`，而是先回答 **`/Users/.../Saved/Paks/1/1.db` 为何没有在 `ConvertToPlatformPath` replacement 留下任何调用 / 命中证据**。只有在后续已证实 normalize 命中但 QtsFS 仍 fail 时，才转向 `RIPC-010-C2` 收紧 pre-`1c8` caller / helper state；只有在 `C1/C2` 之后仍出现新的未闭合样本时，才回开 `RIPC-010-B2`。长期方法、矩阵结论与 installed-GUI `C1` 结果统一维护在 `RIPC-010-真机materializer采集与双端对比.md`；同主题独立 execution note 不再作为事实来源。
+`RIPC-010-C1` 仍是默认当前主线，但当前应继续收紧为**单一子任务**：先锁定 failing `/Users/.../Saved/Paks/1/1.db` 流量到底**有没有进入** `ConvertToPlatformPath`，以及若已进入，`x1` 到达 `pdt006_convert_replacement()` 时到底是什么形态。`RIPC-010-B1` 已完成并落盘 `build/ripc-010b-diff.json`，代码侧复核也已确认 `Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m` 中已经存在 bundle-scoped 的 `Saved/Paks` 归一化链（`ripc006_try_normalize_pak_path()`、`pdt006_convert_replacement()`、构造函数中的 `pdt006_install_convert_patch_once()`）。`2026-04-29` 的 **完整 `Release` GUI 重建 + 已安装 `~/Applications/PlayCover.app` fresh run** 再次证明：`pdt006_ngr_convert_patch status=installed` 稳定出现，但同轮仍没有 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`，`QtsFileSystem Create Failed!!` 继续发生。`2026-04-30` 的离线 installed-binary 复核进一步显示：当前硬编码 `PDT006_CONVERT_FUNC_UNSLID = 0x10463f204` 已不能直接等同于"当前 `ConvertToPlatformPath` 热路径入口"——该地址首条指令会立即 branch 到 `0x1000a4a08` 的 `/Users/` fast-path helper，而同轮用 `Scripts/pdt005_ngr_convert_to_platform_path_locator.py` 对已安装 `NGR` 重新定位得到的 `/var/` 字面量窗口落在 `build/pdt-005-current-installed.json` 所示的 `0x107d009c4` 一带。因此当前最高优先级不是继续证明"补丁已安装"，也不是直接进入 `RIPC-010-C2`，而是先回答 **当前 replacement 零调用证据究竟来自 failing flow 未进入旧锚点覆盖范围，还是来自进入后 `x1` 形态与现有假设不符**。只有在后续已证实旧锚点覆盖范围成立且 normalize 命中但 QtsFS 仍 fail 时，才转向 `RIPC-010-C2` 收紧 pre-`1c8` caller / helper state；只有在 `C1/C2` 之后仍出现新的未闭合样本时，才回开 `RIPC-010-B2`。长期方法、矩阵结论与 installed-GUI `C1` 结果统一维护在 `RIPC-010-真机materializer采集与双端对比.md`；同主题独立 execution note 不再作为事实来源。
 
 ### 当前状态摘要
 
@@ -46,7 +46,8 @@
 - `RIPC-010-B1` 的默认决策已经成立：`build/ripc-010b-diff.json` 足以让主线从"继续补采"切到 `RIPC-010-C` 的闭环验证。pre-`1c8` caller/helper state 仍是 residual uncertainty，但不是当前第一优先级。
 - 代码侧复核已确认 `PlayLoader.m` 中存在现成链路：`ripc006_try_normalize_pak_path()` → `pdt006_convert_replacement()` → `pdt006_install_convert_patch_once()`。因此当前不是重想 remap 方向，而是先锁定 failing `/Users/.../Saved/Paks/1/1.db` 是否真的经过 `ConvertToPlatformPath`；若经过，再判断 `x1` 到达 replacement 时是 UTF-8、UTF-16 还是其它形态。
 - `2026-04-29 17:35` 的 installed GUI fresh run 已吸收到长期维护文档中：使用 `Release` 完整 GUI 重建与 `~/Applications/PlayCover.app` fresh run，`build/ripc-010c1-live-report-v2.json` 选中 `processLaunchId=launch-48548-f2a3231c-a329-4b88-aca4-39a1081c7405`，同轮出现 `pdt006_ngr_convert_patch status=installed`，但没有 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`，且仍出现 `hok014_ngr_alert_suppressed message="QtsFileSystem Create Failed!!"` 与新 crash `NGR-2026-04-29-173545.ips`。这已经排除了"工作区 app 副本 / move-to-Applications"变量。
-- 文档整合状态：`RIPC-010-B1` 与 installed-GUI `RIPC-010-C1` 的长期有效信息现已统一回收到本文与 `RIPC-010-真机materializer采集与双端对比.md`；本目录下同主题独立 execution note 不再保留为事实来源。
+- `2026-04-30` 的离线 installed-binary 复核已完成并落盘 `build/pdt-005-current-installed.json`：脚本 `Scripts/pdt005_ngr_convert_to_platform_path_locator.py` 在当前已安装 `~/Library/Containers/io.playcover.PlayCover/Applications/com.tencent.ngr.app/NGR` 中重新找到 `/var/` 字面量窗口 `0x107d009c4`，而不是旧文档长期引用的 `0x10463f204`。同时对 `0x10463f204` 的直接反汇编显示其首条指令立即 branch 到 `0x1000a4a08` 的 `/Users/` fast-path helper，这说明当前 `pdt006_ngr_convert_patch status=installed` 只能证明"旧锚点地址可写并已打补丁"，**还不能单独证明 failing flow 必然经过当前 replacement 覆盖范围**。
+- 文档整合状态：`RIPC-010-B1`、installed-GUI `RIPC-010-C1` 与本轮 installed-binary 锚点复核的长期有效信息现已统一回收到本文与 `RIPC-010-真机materializer采集与双端对比.md`；本目录下 execution note 仅保留本轮执行细节与原始命令。
 
 ### RIPC-005 根因链
 
@@ -77,10 +78,11 @@ PlayCover 启动 → UE4 用 macOS sandbox HOME 派生 SavedDir
 
 ### 当前卡点
 
-1. **当前第一缺口不是 patch 安装，而是 failing `/Users/.../Saved/Paks/1/1.db` 的入口证明**：`pdt006_ngr_convert_patch` 已稳定出现，但 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize` 仍为 0。当前首要问题必须收紧为：这个 failing path flow 究竟根本没有经过 `ConvertToPlatformPath`，还是已经进入 replacement 但 `x1` 参数形态与当前 UTF-8 `/Users/...` 假设不符。
-2. **`C1` 的判断口径已经足够具体**：当前代码已为 `pdt006_ngr_convert_call` 增加 `pathPreview`、`pathBytesHex`、`matchesUsers`、`containsSavedPaks`、`looksUtf16UsersPrefix`、`normalized` 字段；下一轮应直接围绕这些字段判断"未进入 replacement"还是"进入了但参数形态不符"。
-3. **只有当 normalize 已命中但 QtsFS 仍 fail，`C2` 才成立**：这时才说明主分叉不止 path class，需要把优先级切到 pre-`1c8` caller/helper state。
-4. **补采仍是条件性回退项**：只有在 `RIPC-010-C1/C2` 之后仍暴露新的未闭合 path class / caller tuple，才应打开 `RIPC-010-B2` 做定向真机补采。
+1. **当前第一缺口不是 patch 安装，而是 failing `/Users/.../Saved/Paks/1/1.db` 的入口证明**：`pdt006_ngr_convert_patch` 已稳定出现，但 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize` 仍为 0。当前首要问题必须先分成两层：旧锚点 `0x10463f204` 是否仍覆盖当前 failing flow 所在的 `ConvertToPlatformPath` 热路径；若覆盖成立，再继续判断该 flow 是否进入 replacement 但 `x1` 参数形态与当前 UTF-8 `/Users/...` 假设不符。
+2. **`2026-04-30` 的 installed-binary 复核已把第一分叉收紧为“锚点覆盖范围”问题**：`build/pdt-005-current-installed.json` 说明当前 `/var/` 相关窗口落在 `0x107d009c4`，而 `0x10463f204` 首条指令立即 branch 到 `0x1000a4a08` 的 `/Users/` fast-path helper；因此下一轮不能再把 `pdt006_ngr_convert_patch status=installed` 直接解读成"replacement 必然能看到所有 failing flow"。
+3. **只有在旧锚点覆盖范围已证实成立时，`pdt006_ngr_convert_call` 的新字段才是第一判读口径**：这时才围绕 `pathPreview`、`pathBytesHex`、`matchesUsers`、`containsSavedPaks`、`looksUtf16UsersPrefix`、`normalized` 判断"进入 replacement 但参数形态不符"。
+4. **只有当 normalize 已命中但 QtsFS 仍 fail，`C2` 才成立**：这时才说明主分叉不止 path class，需要把优先级切到 pre-`1c8` caller/helper state。
+5. **补采仍是条件性回退项**：只有在 `RIPC-010-C1/C2` 之后仍暴露新的未闭合 path class / caller tuple，才应打开 `RIPC-010-B2` 做定向真机补采。
 
 ### 下一步默认规划
 
@@ -88,8 +90,8 @@ PlayCover 启动 → UE4 用 macOS sandbox HOME 派生 SavedDir
 2. ~~**RIPC-010-A1～A4（已完成）**~~：真机 LLDB 采集链与 `v5` 基线稳定可复用，详见 `RIPC-010-真机materializer采集与双端对比.md`。
 3. ~~**RIPC-010-B1（已完成）**~~：`build/ripc-010b-diff.json` 已提供 path class / caller tuple / return semantics 决策矩阵。
 4. **RIPC-010-C1（当前默认主线）**：先闭合 failing `/Users/.../Saved/Paks/1/1.db` 的 `ConvertToPlatformPath` 入口证明
-   - 先判断该 failing path flow 是否根本未经过 `ConvertToPlatformPath`；
-   - 若已进入 `pdt006_convert_replacement()`，则直接利用 `pdt006_ngr_convert_call` 的 `pathPreview` / `pathBytesHex` / `matchesUsers` / `containsSavedPaks` / `looksUtf16UsersPrefix` / `normalized` 判断 `x1` 的真实编码与形态；
+   - 先验证旧锚点 `0x10463f204` 与其 branch 到的 `0x1000a4a08` 是否仍覆盖当前 failing flow；
+   - 若覆盖成立，再利用 `pdt006_ngr_convert_call` 的 `pathPreview` / `pathBytesHex` / `matchesUsers` / `containsSavedPaks` / `looksUtf16UsersPrefix` / `normalized` 判断 `x1` 的真实编码与形态；
    - 只有在入口已证实命中且 normalize 已发生的前提下，才继续判断是否需要升级到 `RIPC-010-C2`。
 5. **RIPC-010-C2（条件性第二优先级）**：仅当 `C1` 已证实现有 normalize 链命中但 QtsFS 仍 fail，再转向 **pre-`1c8` caller/helper state 对齐**。
 6. **RIPC-010-B2（条件性回退项）**：仅当 `C1/C2` 验证后仍有未闭合样本时，再围绕缺失 path class / caller tuple 做定向真机补采；默认沿用 `--pre-inject-delay 5`。
@@ -155,7 +157,7 @@ PlayCover 启动 → UE4 用 macOS sandbox HOME 派生 SavedDir
 3. 若最高优先级任务已阻塞（如需人工或外部协助），立即停止并汇报；严禁转做与解除该阻塞无关的任务。手头所有工作都搁置，不要进行收尾、git commit。等待用户指示
 4. 若任务过大，先拆出新的子任务并追加到 TODO 的原位置，再只完成其中一个。
 5. 若本次实现了新功能，尽可能靠 skills 或 mcp 做**实际测试**；受环境限制时，至少做**模拟性质、离线或最小样本测试**。
-6. 写文档，必须将本次执行的信息完整写到独立的新文档。新文档放到与主文档同目录的executions文件夹下，文件名带上时间戳。
+6. 写文档，必须将本次执行的信息完整写到独立的新文档。新文档放到与主文档同目录的 `executions/` 文件夹下，文件名带上时间戳。
 8. 收尾后执行 `git commit`。
 
 ## 所有任务 TODO 状态

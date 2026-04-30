@@ -25,8 +25,9 @@
   - 同轮出现 `pdt006_ngr_convert_patch status=installed`
   - 但没有任何 `pdt006_ngr_convert_call` / `ripc006_pak_path_normalize`
   - 同轮仍出现 `hok014_ngr_alert_suppressed message="QtsFileSystem Create Failed!!"`
-- 因此当前待解释的问题已进一步收紧为：**为什么 `ConvertToPlatformPath` replacement 没有留下调用 / 命中证据**。这一步完成前，不应把默认主线切到 `RIPC-010-C2`。
-- 进一步说，当前 `C1` 的**唯一最高优先级子任务**应固定为：先证明 failing `/Users/.../Saved/Paks/1/1.db` 流量到底有没有进入 `ConvertToPlatformPath`，以及若已进入，`x1` 到达 `pdt006_convert_replacement()` 时到底是什么形态。
+- `2026-04-30` 的离线 installed-binary 复核已把 `C1` 的第一分叉进一步收紧：`Scripts/pdt005_ngr_convert_to_platform_path_locator.py` 对当前已安装 `NGR` 生成 `build/pdt-005-current-installed.json`，其中 `/var/` 字面量窗口落在 `0x107d009c4`；与此同时，对旧锚点 `0x10463f204` 的反汇编显示其首条指令立即 branch 到 `0x1000a4a08` 的 `/Users/` fast-path helper。这说明当前 `pdt006_ngr_convert_patch status=installed` **只能证明旧锚点地址可写并已打补丁，尚不能单独证明 failing flow 一定进入当前 replacement 覆盖范围**。
+- 因此当前待解释的问题已进一步收紧为：**为什么 `ConvertToPlatformPath` replacement 没有留下调用 / 命中证据**，而且第一优先级要先回答这是否属于**旧锚点覆盖范围不足**。这一步完成前，不应把默认主线切到 `RIPC-010-C2`。
+- 进一步说，当前 `C1` 的**唯一最高优先级子任务**应固定为：先证明 failing `/Users/.../Saved/Paks/1/1.db` 流量到底有没有进入旧锚点 `0x10463f204` / `0x1000a4a08` 所覆盖的 `ConvertToPlatformPath` 路径；只有覆盖范围成立后，才继续判断 `x1` 到达 `pdt006_convert_replacement()` 时到底是什么形态。
 
 ### A4 打通后的长期有效结论
 
@@ -140,16 +141,17 @@ python3 Scripts/ripc_010a_real_ipad_lldb_driver.py \
   - 无 `pdt006_ngr_convert_call`
   - 无 `ripc006_pak_path_normalize`
   - `QtsFileSystem Create Failed!!` 仍发生
-- 因此当前需要优先判断 failing `/Users/.../Saved/Paks/...` 流量是否：
-  1. 根本未经过 `ConvertToPlatformPath`；
-  2. 经过了 replacement，但 `x1` 参数并非当前假设的 UTF-8 `/Users/...` 文本；
-  3. 或落在另一条未被 `RIPC-006` 覆盖的路径生成链。
-- **当前 `C1` 的判读口径应固定使用 `pdt006_ngr_convert_call` 新增诊断字段**：`pathPreview`、`pathBytesHex`、`matchesUsers`、`containsSavedPaks`、`looksUtf16UsersPrefix`、`normalized`。这些字段的意义是：
-  - 若完全没有 `pdt006_ngr_convert_call`，优先判断 failing path 根本未经过 `ConvertToPlatformPath`；
+- `2026-04-30` 的 installed-binary 复核又把这个问题进一步拆成了更具体的三分叉：
+  1. failing `/Users/.../Saved/Paks/...` 根本未进入 `ConvertToPlatformPath`；
+  2. failing flow 进入了 `ConvertToPlatformPath`，但并**不**经过旧锚点 `0x10463f204` / `0x1000a4a08` 所覆盖的路径；
+  3. failing flow 进入了旧锚点覆盖范围，但 `x1` 参数并非当前假设的 UTF-8 `/Users/...` 文本。
+- **因此当前 `C1` 的判读顺序必须先看“锚点覆盖范围”，再看 `pdt006_ngr_convert_call` 字段**：
+  - 若尚未证明旧锚点覆盖范围成立，则 `pdt006_ngr_convert_patch status=installed` 不能推出 replacement 必然应有调用证据；
+  - 若旧锚点覆盖范围成立但仍完全没有 `pdt006_ngr_convert_call`，才优先判断 failing path 根本未经过 replacement；
   - 若有 `pdt006_ngr_convert_call` 但 `matchesUsers=false` / `looksUtf16UsersPrefix=true`，优先怀疑 `x1` 形态与当前 UTF-8 `/Users/...` 假设不一致；
   - 若已有 `normalize-hit` 但 QtsFS 仍 fail，才把主分叉升级为 `RIPC-010-C2` 的 pre-`1c8` caller/helper state。
 - **因此当前最该做的事不是泛化 `C1`，而是把它压缩成一条更窄的问题链**：
-  1. failing `/Users/.../Saved/Paks/1/1.db` 有没有进入 `ConvertToPlatformPath`；
+  1. failing `/Users/.../Saved/Paks/1/1.db` 有没有进入旧锚点 `0x10463f204` / `0x1000a4a08` 覆盖的 `ConvertToPlatformPath` 路径；
   2. 若有，`x1` 到达 replacement 时究竟是 UTF-8、UTF-16，还是别的结构；
   3. 只有在这两点已回答后，才讨论是否还需要新的 remap 或升级到 `C2`。
 - `v5` 中仍有部分 `materializer` 记录呈现 `return_orphaned`，但它们当前不足以阻塞 `RIPC-010-C1/C2`。只有当验证后仍出现未闭合分叉时，才回到 `RIPC-010-B2` 做围绕缺失 path class / caller tuple 的定向补采。

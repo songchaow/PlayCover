@@ -2,18 +2,7 @@
 #
 # gitignore contributors: remember to update Global/Xcode.gitignore, Objective-C.gitignore & Swift.gitignore
 
-# PlayTools 源码完全纳入主仓库管理（不再依赖 Carthage checkout）
-# 仅忽略 PlayTools 的构建中间产物
-/Carthage/Checkouts/PlayTools/build/
-/Carthage/Checkouts/PlayTools/DerivedData/
-/Carthage/Checkouts/PlayTools/.build/
-/Carthage/Checkouts/PlayTools/PlayTools.xcodeproj/project.xcworkspace/
-/Carthage/Checkouts/PlayTools/PlayTools.xcodeproj/xcuserdata/
 .DS_store
-/vendor
-/output
-/apikey.json
-Package.resolved
 
 ## User settings
 xcuserdata/
@@ -102,14 +91,3 @@ fastlane/test_output
 
 iOSInjectionProject/
 xcuserdata/*
-# Python
-__pycache__/
-*.pyc
-
-# Logs
-*.log
-
-# Temporary analysis data
-LocalDocs/XCodeOperation/renderanalysistask/pipeline_passes.json
-LocalDocs/XCodeOperation/renderanalysistask/re_breadcrumbs.json
-dependencies/

@@ -66,7 +66,7 @@ PlayCover 项目的标准化构建与测试脚本，封装了 ad-hoc 签名参�
 | `CODE_SIGN_IDENTITY="-"` | ad-hoc 签名，无需开发者证书 |
 | `CODE_SIGNING_REQUIRED=NO` | 跳过签名强制要求 |
 | `CODE_SIGNING_ALLOWED=YES` | 允许 ad-hoc 签名 |
-| `FASTLANE=1` | 跳过 Carthage Bootstrap 和 SwiftLint |
+| `FASTLANE=1` | 跳过 SwiftLint 等可选 build phase |
 | `-destination 'platform=macOS,arch=arm64'` | macOS ARM64 测试平台 |
 
 ## 对应文档

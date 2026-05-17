@@ -4,12 +4,14 @@
 # =============================================================================
 #
 # 用途:
-#   当 Carthage/Checkouts/PlayTools 源码有变更时，重建 iOS PlayTools.framework，
+#   当 PlayTools 源码有变更时，重建 iOS PlayTools.framework，
 #   并回写到 Carthage/Build/PlayTools.xcframework/ios-arm64/PlayTools.framework。
 #
 # 说明:
+#   - PlayTools 源码位于 Carthage/Checkouts/PlayTools/，作为主仓库的一部分
+#     直接被 git 跟踪（不依赖 Carthage 包管理器）。
 #   - PlayCover GUI 打包时实际复制的是 Carthage/Build 下的预构建产物，
-#     而不是直接编译 Carthage/Checkouts/PlayTools 源码。
+#     而不是直接编译源码目录。
 #   - 如果只改源码、不刷新该 xcframework slice，真实 app 仍会加载旧 runtime。
 #
 # 用法:
@@ -95,7 +97,7 @@ xcodebuild -project "$PLAYTOOLS_PROJECT" \
 
 echo ""
 
-echo "--- [2/2] 回写 Carthage 预构建产物 ---"
+echo "--- [2/2] 回写预构建产物 ---"
 if [[ ! -d "$BUILT_FRAMEWORK" ]]; then
     echo "❌ 未找到重建后的 PlayTools.framework: $BUILT_FRAMEWORK"
     exit 1

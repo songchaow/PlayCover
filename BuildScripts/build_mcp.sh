@@ -11,7 +11,7 @@
 #   CODE_SIGN_IDENTITY="-"         ad-hoc 签名，无需开发者证书
 #   CODE_SIGNING_REQUIRED=NO       跳过严格签名检查
 #   CODE_SIGNING_ALLOWED=YES       允许 ad-hoc 签名
-#   FASTLANE=1                     跳过 Carthage Bootstrap 和 SwiftLint build phase
+#   FASTLANE=1                     跳过 SwiftLint 等可选 build phase
 #
 # 对应文档: LocalDocs/MCP/03-共享前置信息.md, LocalDocs/MCPWithGUITask/00-主文档.md
 # =============================================================================

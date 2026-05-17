@@ -34,6 +34,8 @@
 !/Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter+BodyTranslation.swift
 !/Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter+InstructionTranslation.swift
 !/Carthage/Checkouts/PlayTools/PlayTools/IRToMSLConverter+CodeGeneration.swift
+!/Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.h
+!/Carthage/Checkouts/PlayTools/PlayTools/PlayLoader.m
 !/Carthage/Checkouts/PlayTools/PlayTools/Controls/
 /Carthage/Checkouts/PlayTools/PlayTools/Controls/*
 !/Carthage/Checkouts/PlayTools/PlayTools/Controls/Backend/

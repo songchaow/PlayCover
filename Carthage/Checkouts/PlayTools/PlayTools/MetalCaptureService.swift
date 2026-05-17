@@ -248,9 +248,18 @@ private final class CommandBufferActivitySwizzles: NSObject {
     /// capture 开始时间，用于把 `durationMs` 真正接入 stop 语义
     private var captureStartTime: CFTimeInterval = 0
     /// 本次 capture 至少持续多久后才允许停止
-    private var minimumCaptureDurationMs = 100
-    /// 在第几个 vsync 后才允许停止（至少等 2 个 vsync 确保覆盖完整 1 帧）
-    private let minimumVsyncStopThreshold = 2
+    /// RC-017: Increased from 100ms to 200ms — some Unity apps render at 30fps
+    /// (~33ms/frame), so 100ms might only cover 2-3 frames. 200ms ensures at
+    /// least 6 frames at 30fps, giving a better chance of capturing a present.
+    private var minimumCaptureDurationMs = 200
+    /// 在第几个 vsync 后才允许停止。
+    /// RC-017: Increased from 2 to 4 to ensure the capture window covers at least
+    /// one full presentDrawable cycle. Unity apps (e.g. LYSK) may not call
+    /// presentDrawable on every vsync if rendering at < display refresh rate.
+    /// With threshold=2, the capture could end before any present event occurs,
+    /// resulting in Xcode reporting "GPU Capture is empty" even though draw call
+    /// data exists in the trace. 4 vsyncs at 120Hz = ~33ms, at 60Hz = ~67ms.
+    private let minimumVsyncStopThreshold = 4
     /// 本次 capture 使用的 target 策略
     private var activeCaptureTarget: CaptureTarget = .queueScope
     /// scope 模式下的临时 capture scope
@@ -296,9 +305,14 @@ private final class CommandBufferActivitySwizzles: NSObject {
             return true
         }
 
-        let libPath = "/usr/lib/libmtlcapture.dylib"
-        guard FileManager.default.fileExists(atPath: libPath) else {
-            logStatusProbe("ensureGPUToolsCaptureLoaded: library not found at \(libPath)")
+        // RC-017: On newer macOS, libmtlcapture.dylib was removed from /usr/lib/.
+        // The equivalent functionality is in GPUToolsCapture.framework.
+        let libCandidates = [
+            "/usr/lib/libmtlcapture.dylib",
+            "/System/Library/PrivateFrameworks/GPUToolsCapture.framework/GPUToolsCapture"
+        ]
+        guard let libPath = libCandidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+            logStatusProbe("ensureGPUToolsCaptureLoaded: library not found at any candidate path: \(libCandidates)")
             return false
         }
 
@@ -464,7 +478,7 @@ private final class CommandBufferActivitySwizzles: NSObject {
     /// - Returns: 截帧结果
     @objc public func captureFrame(
         outputURL: URL? = nil,
-        durationMs: Int = 100,
+        durationMs: Int = 200,
         captureTargetRawValue: String? = nil
     ) -> CaptureResult {
         // RC-013: Reset empty trace flag at the start of each capture attempt
@@ -502,7 +516,16 @@ private final class CommandBufferActivitySwizzles: NSObject {
             }
             captureTarget = parsedTarget
         } else {
-            captureTarget = .queueScope
+            // RC-017: Auto-select capture target based on injection mode.
+            // - Startup injection (CaptureMTLDevice exists): use .device because we
+            //   skip swizzle installation to avoid breaking Capture* proxy chains,
+            //   so there are no tracked queues for queue_scope.
+            // - Delayed dlopen: use .queueScope with PlayTools-tracked queues.
+            if NSClassFromString("CaptureMTLDevice") != nil {
+                captureTarget = .device
+            } else {
+                captureTarget = .queueScope
+            }
         }
 
         let normalizedDurationMs = max(1, durationMs)
@@ -774,7 +797,7 @@ private final class CommandBufferActivitySwizzles: NSObject {
         }
         captureStartTime = 0
         vsyncCount = 0
-        minimumCaptureDurationMs = 100
+        minimumCaptureDurationMs = 200
         activeCaptureTarget = .queueScope
         activeCaptureScope = nil
         hasBegunActiveCaptureScope = false
@@ -797,6 +820,19 @@ private final class CommandBufferActivitySwizzles: NSObject {
         withStateLock {
             queueDiscoveryInstalled = true
         }
+
+        // RC-017: When GPUToolsCapture was loaded via DYLD_INSERT_LIBRARIES at startup,
+        // all Metal objects are already wrapped by Capture* proxy classes (CaptureMTLDevice,
+        // CaptureMTLCommandQueue, etc.). These proxies handle all tracing internally.
+        // Installing PlayTools' method swizzles on these proxy classes can break the
+        // proxy's internal dispatch chain, causing the .gputrace to lack command-level
+        // data (Xcode shows "GPU Capture is empty" despite having resource/memory data).
+        // Skip swizzle installation when startup injection is active.
+        if NSClassFromString("CaptureMTLDevice") != nil {
+            logStatusProbe("queue discovery SKIPPED — CaptureMTLDevice exists (startup injection active). Swizzling Capture* proxies would break trace recording.")
+            return
+        }
+
         guard let device = MTLCreateSystemDefaultDevice() else {
             logStatusProbe("queue discovery skipped because default Metal device is unavailable")
             return

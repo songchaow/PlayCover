@@ -79,14 +79,24 @@ public final class LaunchService: Sendable {
         "METAL_CAPTURE_ENABLED": "1",
         "METAL_FRAME_CAPTURE_ENABLED": "1",
         "MTLCaptureEnabled": "1",
-        "DYLD_INSERT_LIBRARIES": "/usr/lib/libmtlcapture.dylib",
+        "DYLD_INSERT_LIBRARIES": gpuToolsCaptureLibrary,
     ]
 
     /// The system library that enables `MTLCaptureManager.supportsDestination(.gpuTraceDocument)`.
     /// Xcode injects this automatically during GPU Frame Capture debug sessions.
     /// Without it, `supportsDestination(.gpuTraceDocument)` always returns `false`,
     /// making programmatic `.gputrace` export impossible.
-    private static let gpuToolsCaptureLibrary = "/usr/lib/libmtlcapture.dylib"
+    ///
+    /// RC-017: On newer macOS, `libmtlcapture.dylib` was removed from `/usr/lib/`.
+    /// The equivalent functionality is in the `GPUToolsCapture.framework` private framework.
+    private static let gpuToolsCaptureLibrary: String = {
+        let candidates = [
+            "/usr/lib/libmtlcapture.dylib",
+            "/System/Library/PrivateFrameworks/GPUToolsCapture.framework/GPUToolsCapture"
+        ]
+        return candidates.first { FileManager.default.fileExists(atPath: $0) }
+            ?? candidates[0]
+    }()
 
     /// Create a LaunchService with custom paths (useful for testing).
     public init(appDirectory: URL, aliasDirectory: URL) {

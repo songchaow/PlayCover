@@ -102,7 +102,7 @@ public enum CaptureTools {
                 durationMs = 100 // default
             }
 
-            let captureTarget: CaptureTarget
+            let captureTarget: CaptureTarget?
             if let rawCaptureTarget = args["capture_target"] as? String {
                 guard let parsedTarget = CaptureTarget(rawValue: rawCaptureTarget) else {
                     throw PlayCoverMCPError(
@@ -112,7 +112,8 @@ public enum CaptureTools {
                 }
                 captureTarget = parsedTarget
             } else {
-                captureTarget = .queueScope
+                // RC-017: Let runtime auto-select based on injection mode
+                captureTarget = nil
             }
 
             let params = CaptureFrameParams(

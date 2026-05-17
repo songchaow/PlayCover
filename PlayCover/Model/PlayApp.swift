@@ -161,7 +161,18 @@ extension PlayApp {
     /// Xcode injects this automatically during GPU Frame Capture debug sessions.
     /// Without it, `supportsDestination(.gpuTraceDocument)` always returns `false`,
     /// making programmatic `.gputrace` export impossible.
-    private static let gpuToolsCaptureLibrary = "/usr/lib/libmtlcapture.dylib"
+    ///
+    /// RC-017: On newer macOS, `libmtlcapture.dylib` was removed from `/usr/lib/`.
+    /// The equivalent functionality is in the `GPUToolsCapture.framework` private framework.
+    /// We detect which path exists at runtime.
+    private static let gpuToolsCaptureLibrary: String = {
+        let candidates = [
+            "/usr/lib/libmtlcapture.dylib",
+            "/System/Library/PrivateFrameworks/GPUToolsCapture.framework/GPUToolsCapture"
+        ]
+        return candidates.first { FileManager.default.fileExists(atPath: $0) }
+            ?? candidates[0]
+    }()
 
     func effectiveLaunchEnvironment() -> [String: String] {
         var environment = ProcessInfo.processInfo.environment

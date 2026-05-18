@@ -231,6 +231,8 @@
 "settings.help.injectMetalCaptureEnvironment" = "启动应用时注入 Metal 截帧相关环境变量。关闭后将不再在启动阶段加载截帧相关 hook。需要重启应用生效。";
 "settings.toggle.shaderSourceReplacement" = "Shader 源码替换";
 "settings.help.shaderSourceReplacement" = "Hook makeLibrary API，并在可用时用重新编译的源码替换从 metallib 加载的 shader。需要重启应用生效。";
+"settings.toggle.shaderDebugInfoExtraction" = "提取 Shader 调试信息";
+"settings.help.shaderDebugInfoExtraction" = "运行时提取并保存 shader 的 bitcode 和 metallib 数据，不修改渲染行为。适用于离线 shader 分析。需要重启应用生效。";
 "settings.info.bundleVersion" = "Bundle 版本号：";
 "playapp.deleteConfirm" = "确认卸载";
 "playapp.deleteMessage" = "确认卸载 %@ 吗?";

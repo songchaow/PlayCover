@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-set_shader_replacement_mode.py — 切换单个 App Settings plist 中的 shader replacement 开关。
+set_shader_replacement_mode.py — 切换单个 App Settings plist 中的 shader replacement / extraction 开关。
 
 示例：
     python3 Scripts/set_shader_replacement_mode.py \
@@ -10,6 +10,11 @@ set_shader_replacement_mode.py — 切换单个 App Settings plist 中的 shader
     python3 Scripts/set_shader_replacement_mode.py \
         --bundle-id com.miHoYo.Yuanshen \
         --mode on \
+        --print-path
+
+    python3 Scripts/set_shader_replacement_mode.py \
+        --bundle-id com.papegames.lysk \
+        --mode extraction \
         --print-path
 """
 
@@ -22,19 +27,20 @@ from pathlib import Path
 
 
 DEFAULT_CONTAINER = Path.home() / "Library/Containers/io.playcover.PlayCover"
-SETTINGS_KEY = "shaderSourceReplacementEnabled"
+REPLACEMENT_KEY = "shaderSourceReplacementEnabled"
+EXTRACTION_KEY = "shaderDebugInfoExtractionEnabled"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Toggle shader source replacement for one PlayCover app settings plist"
+        description="Toggle shader source replacement / debug info extraction for one PlayCover app settings plist"
     )
     parser.add_argument("--bundle-id", required=True, help="target app bundle identifier")
     parser.add_argument(
         "--mode",
         required=True,
-        choices=("on", "off"),
-        help="desired replacement mode",
+        choices=("on", "off", "extraction"),
+        help="desired mode: 'on' enables full replacement, 'extraction' enables lightweight extraction only, 'off' disables both",
     )
     parser.add_argument(
         "--container",
@@ -62,15 +68,25 @@ def main() -> int:
     if not isinstance(payload, dict):
         raise SystemExit(f"unexpected plist root type at {settings_path}")
 
-    enabled = args.mode == "on"
-    previous = payload.get(SETTINGS_KEY)
-    payload[SETTINGS_KEY] = enabled
+    prev_replacement = payload.get(REPLACEMENT_KEY)
+    prev_extraction = payload.get(EXTRACTION_KEY)
+
+    if args.mode == "on":
+        payload[REPLACEMENT_KEY] = True
+        payload[EXTRACTION_KEY] = True
+    elif args.mode == "extraction":
+        payload[REPLACEMENT_KEY] = False
+        payload[EXTRACTION_KEY] = True
+    else:  # off
+        payload[REPLACEMENT_KEY] = False
+        payload[EXTRACTION_KEY] = False
 
     with settings_path.open("wb") as handle:
         plistlib.dump(payload, handle, sort_keys=False)
 
     print(
-        f"{args.bundle_id}: {SETTINGS_KEY} {previous!r} -> {enabled!r}",
+        f"{args.bundle_id}: {REPLACEMENT_KEY} {prev_replacement!r} -> {payload[REPLACEMENT_KEY]!r}, "
+        f"{EXTRACTION_KEY} {prev_extraction!r} -> {payload[EXTRACTION_KEY]!r}",
         file=sys.stdout,
     )
     if args.print_path:

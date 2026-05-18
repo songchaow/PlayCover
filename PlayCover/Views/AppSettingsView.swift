@@ -739,6 +739,12 @@ struct MiscView: View {
                         .disabled(!(hasPlayTools ?? true))
                     Spacer()
                 }
+                HStack {
+                    Toggle("settings.toggle.shaderDebugInfoExtraction", isOn: $settings.settings.shaderDebugInfoExtractionEnabled)
+                        .help("settings.help.shaderDebugInfoExtraction")
+                        .disabled(!(hasPlayTools ?? true))
+                    Spacer()
+                }
                 Spacer()
                     .frame(height: 20)
                 HStack {

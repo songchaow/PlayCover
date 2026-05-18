@@ -156,8 +156,10 @@ private final class LibrarySourceInjectionSwizzles: NSObject {
         originalLibrary: AnyObject?,
         selector: String
     ) -> AnyObject? {
-        guard PlaySettings.shared.shaderSourceReplacementEnabled else {
-            NSLog("[PlayTools] LibrarySourceInjection: %@ — replacement disabled by settings; returning original library", selector)
+        let replacementEnabled = PlaySettings.shared.shaderSourceReplacementEnabled
+        let extractionEnabled = PlaySettings.shared.shaderDebugInfoExtractionEnabled
+        guard replacementEnabled || extractionEnabled else {
+            NSLog("[PlayTools] LibrarySourceInjection: %@ — both replacement and extraction disabled; returning original library", selector)
             return originalLibrary
         }
         let cacheKey = LibrarySourceInjectionService.shared.cacheKey(for: metallibData)
@@ -165,6 +167,19 @@ private final class LibrarySourceInjectionSwizzles: NSObject {
             from: metallibData,
             selector: selector
         )
+        // Extraction-only mode: save bitcode + metallib data without replacement
+        if extractionEnabled {
+            LibrarySourceInjectionService.shared.extractAndSaveDebugInfo(
+                metallibData: metallibData,
+                modules: modules,
+                selector: selector,
+                cacheKey: cacheKey
+            )
+        }
+        // If full replacement is not enabled, return original library without modification
+        guard replacementEnabled else {
+            return originalLibrary
+        }
         return LibrarySourceInjectionService.shared.attemptLibraryReplacement(
             originalLibrary: originalLibrary,
             device: self,
@@ -394,6 +409,117 @@ class LibrarySourceInjectionService {
         let snapshot = bitcodeCache
         bitcodeCacheLock.unlock()
         return snapshot
+    }
+
+    // MARK: - Lightweight Debug Info Extraction (no runtime interference)
+
+    /// 已保存过的 metallib cache key 集合（防止重复写入同一 metallib）
+    private var savedDebugInfoKeys: Set<String> = []
+    private let savedDebugInfoLock = NSLock()
+
+    /// 轻量提取模式的输出目录
+    private lazy var shaderDebugInfoDirectoryURL: URL = {
+        playCoverContainerURL
+            .appendingPathComponent("ShaderDebugInfo", isDirectory: true)
+            .appendingPathComponent(runtimeBundleIdentifier, isDirectory: true)
+    }()
+
+    /// 提取并保存 shader 调试信息（bitcode + raw metallib），不干涉运行时行为。
+    /// 此方法在 `shaderDebugInfoExtractionEnabled` 开关开启时被调用。
+    /// 写入到 `ShaderDebugInfo/<bundleId>/` 目录。
+    func extractAndSaveDebugInfo(
+        metallibData: Data,
+        modules: [MetallibParser.BitcodeModule],
+        selector: String,
+        cacheKey: String
+    ) {
+        // 去重：同一 metallib 只保存一次
+        savedDebugInfoLock.lock()
+        let alreadySaved = savedDebugInfoKeys.contains(cacheKey)
+        if !alreadySaved {
+            savedDebugInfoKeys.insert(cacheKey)
+        }
+        savedDebugInfoLock.unlock()
+
+        guard !alreadySaved else {
+            NSLog("[PlayTools] ShaderDebugInfoExtraction: %@ — already saved (cacheKey=%@)", selector, cacheKey)
+            return
+        }
+
+        let fileManager = FileManager.default
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let entryDirectoryName = sanitizeDiagnosticFilenameComponent("\(cacheKey)")
+        let entryDirectoryURL = shaderDebugInfoDirectoryURL.appendingPathComponent(entryDirectoryName, isDirectory: true)
+
+        do {
+            try fileManager.createDirectory(at: entryDirectoryURL, withIntermediateDirectories: true)
+
+            // 保存原始 metallib 二进制
+            let metallibURL = entryDirectoryURL.appendingPathComponent("library.metallib")
+            if !fileManager.fileExists(atPath: metallibURL.path) {
+                try metallibData.write(to: metallibURL, options: .atomic)
+            }
+
+            // 保存各 bitcode 模块
+            let modulesDirectoryURL = entryDirectoryURL.appendingPathComponent("modules", isDirectory: true)
+            try fileManager.createDirectory(at: modulesDirectoryURL, withIntermediateDirectories: true)
+
+            for (index, module) in modules.enumerated() {
+                let moduleKey = sha256Hex(for: module.data)
+                let moduleDirectoryURL = modulesDirectoryURL.appendingPathComponent(moduleKey, isDirectory: true)
+                try fileManager.createDirectory(at: moduleDirectoryURL, withIntermediateDirectories: true)
+
+                let bitcodeURL = moduleDirectoryURL.appendingPathComponent("module.bc")
+                if !fileManager.fileExists(atPath: bitcodeURL.path) {
+                    try module.data.write(to: bitcodeURL, options: .atomic)
+                }
+
+                // 保存模块元数据
+                let metaURL = moduleDirectoryURL.appendingPathComponent("module.meta.json")
+                if !fileManager.fileExists(atPath: metaURL.path) {
+                    let meta: [String: Any] = [
+                        "moduleIndex": index,
+                        "moduleKey": moduleKey,
+                        "functionNames": module.functionNames,
+                        "functionTypes": module.functionTypes,
+                        "bitcodeSize": module.data.count,
+                        "isValidLLVMBitcode": module.isValidLLVMBitcode,
+                        "relativeOffset": module.relativeOffset ?? -1,
+                    ]
+                    if let jsonData = try? JSONSerialization.data(withJSONObject: meta, options: [.prettyPrinted, .sortedKeys]) {
+                        try jsonData.write(to: metaURL, options: .atomic)
+                    }
+                }
+            }
+
+            // 保存整体提取元数据
+            let manifestURL = entryDirectoryURL.appendingPathComponent("extraction.meta.json")
+            let manifest: [String: Any] = [
+                "schemaVersion": 1,
+                "bundleId": runtimeBundleIdentifier,
+                "cacheKey": cacheKey,
+                "selector": selector,
+                "timestamp": timestamp,
+                "metallibSize": metallibData.count,
+                "moduleCount": modules.count,
+                "validLLVMModuleCount": modules.filter({ $0.isValidLLVMBitcode }).count,
+                "totalFunctionNames": modules.flatMap({ $0.functionNames }),
+                "mode": "extraction_only",
+            ]
+            if let jsonData = try? JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys]) {
+                try jsonData.write(to: manifestURL, options: .atomic)
+            }
+
+            NSLog("[PlayTools] ShaderDebugInfoExtraction: %@ — saved metallib (%d bytes) + %d modules to %@",
+                  selector,
+                  metallibData.count,
+                  modules.count,
+                  entryDirectoryURL.path)
+        } catch {
+            NSLog("[PlayTools] ShaderDebugInfoExtraction: %@ — failed to save debug info: %@",
+                  selector,
+                  error.localizedDescription)
+        }
     }
 
     /// **E-005a / E-005b**: 在 `newLibraryWithData:error:` 成功后，

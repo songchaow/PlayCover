@@ -52,8 +52,14 @@ public class PlayCover: NSObject {
 
         // E-003 / E-004f3: 安装 makeLibrary swizzle（运行时 shader corpus 导出 + 源码替换入口）
         // 若启用了 capture + replacement，上面的 preload 必须先于 swizzle / replacement 发生。
+        // Hook 也在 extraction-only 模式下安装（轻量提取 shader 调试信息）。
         LibrarySourceInjectionService.shared.installIfNeeded()
-        RuntimeLaunchDiagnostics.record(event: "playcover_library_injection_installed", bundleId: runtimeBundleId)
+        RuntimeLaunchDiagnostics.record(event: "playcover_library_injection_installed", bundleId: runtimeBundleId,
+            details: [
+                "shaderSourceReplacementEnabled": PlaySettings.shared.shaderSourceReplacementEnabled ? "true" : "false",
+                "shaderDebugInfoExtractionEnabled": PlaySettings.shared.shaderDebugInfoExtractionEnabled ? "true" : "false",
+            ]
+        )
 
         NSLog("%@", "[PlayTools] PlayCover.launch bundleId=\(runtimeBundleId)")
         RuntimeLaunchDiagnostics.record(event: "playcover_bridge_listener_start_requested", bundleId: runtimeBundleId)

@@ -289,6 +289,8 @@
 "settings.help.injectMetalCaptureEnvironment" = "Inject Metal capture environment variables when launching the app. Turn this off to avoid loading capture-related hooks at startup. Requires app restart.";
 "settings.toggle.shaderSourceReplacement" = "Shader Source Replacement";
 "settings.help.shaderSourceReplacement" = "Hook makeLibrary APIs and replace metallib-loaded shaders with recompiled source when available. Requires app restart.";
+"settings.toggle.shaderDebugInfoExtraction" = "Extract Shader Debug Info";
+"settings.help.shaderDebugInfoExtraction" = "Extract and save shader bitcode and metallib data at runtime without modifying rendering behavior. Useful for offline shader analysis. Requires app restart.";
 "settings.text.debugger" = "Debugger:";
 "settings.toggle.lldb" = "Open with LLDB";
 "settings.toggle.lldbWithTerminal" = "Open in terminal";

@@ -101,6 +101,8 @@ let settings = PlaySettings.shared
     @objc lazy var injectMetalCaptureEnvironment = settingsData.injectMetalCaptureEnvironment
 
     @objc lazy var shaderSourceReplacementEnabled = settingsData.shaderSourceReplacementEnabled
+
+    @objc lazy var shaderDebugInfoExtractionEnabled = settingsData.shaderDebugInfoExtractionEnabled
 }
 
 struct AppSettingsData: Codable {
@@ -137,4 +139,5 @@ struct AppSettingsData: Codable {
     var metalCaptureEnabled = false
     var injectMetalCaptureEnvironment = false
     var shaderSourceReplacementEnabled = true
+    var shaderDebugInfoExtractionEnabled = false
 }

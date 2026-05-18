@@ -57,7 +57,7 @@
 |------|------|------|
 | 0 | `unity_SpecCube0` | 环境反射 cubemap (IBL) |
 | 1 | `_LightIndexMap` | 附加光源索引图 |
-| 2 | `_MainTex` | 基础漫射贴图 |
+| 2 | `_MainTex` | 基础漫射贴图（RGB=皮肤色, A=眼部闪片遮罩） |
 | 3 | `_SpecularTex` | 高光贴图（R=perceptualRoughness, B=specular强度, A=遮罩） |
 | 4 | `_NormalTex` | 法线贴图 |
 | 5 | `_EyebrowTex` | 眉毛贴图 |
@@ -184,6 +184,37 @@ for each neighbor tile (i,j) in {(0,0),(1,0),(0,1),(1,1)}:
 
 // 6. 最终闪片贡献
 sparkleColor = sparkleAccum * _MakeupMultiplyColor;
+```
+
+#### 闪片区域遮罩（`_MainTex.a` 的用途）
+
+`_MainTex` 的 alpha 通道**不是**传统的透明度，而是被复用为**眼部闪片区域遮罩**：
+
+```hlsl
+// mainTex.a 标记哪些区域可以显示眼部 sparkle
+half eyeSparkleStrength = mainTex.a * _EyeSparkle;
+
+// 构建 sparkle 强度向量（按区域选择 eye vs lip）
+half3 sparkleControl;
+sparkleControl.xy = _EyeSparkleColor.xy;
+sparkleControl.z  = eyeSparkleStrength;          // 眼部: mainTex.a × _EyeSparkle
+
+half3 lipSparkleControl;
+lipSparkleControl.xy = _LipSparkleColor.xy;
+lipSparkleControl.z  = lipTex.a * _LipSparkle;   // 唇部: lipTex.a × _LipSparkle
+
+// 基于面部区域（TEXCOORD0.y <= 0.5 判断）做 lerp
+half3 finalSparkleControl = lerp(sparkleControl, lipSparkleControl, regionSelect);
+```
+
+**IR 证据** (Line 123–144):
+```
+%149 = extractelement %64, i64 3              // mainTex.a
+%151 = load field 58                           // _EyeSparkle
+%152 = fmul %149, %151                        // mainTex.a * _EyeSparkle
+%156 = half3(_EyeSparkleColor.xy, %152)       // 组装 eye sparkle 参数
+%163 = fma(lipTex.a, _LipSparkle, -(%152))    // lip 和 eye 的差值
+%169 = fma(regionSelect, diff, sparkleParams) // lerp 选择
 ```
 
 #### 闪片参数

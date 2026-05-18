@@ -19,17 +19,32 @@
 3. **注入脚本** `scripts/inject_shader_debug_info.py` 能生成 IR 注释增强的 .metal stub 文件并放入 gputrace bundle
 4. **gputrace 逆向工程工具** `External/gputrace`（Go 实现）提供了 MTSP 格式的解析能力
 
-### Xcode 的源码关联机制（已验证）
+### Xcode 的源码显示机制（已验证 2026-05-18 17:04）
 
-Xcode 只为通过 `makeLibrary(source:)` 创建的 library 显示源码。具体机制：
+**核心发现：Xcode 从 metallib 的 bitcode 反编译源码，不是从 sidecar 文件读取！**
 
-1. `makeLibrary(source:)` 被调用时，Xcode 截帧引擎捕获源码文本
-2. 源码以 hex ID 为文件名保存在 gputrace bundle 中（纯文本 .metal 文件）
-3. 在 `unused-device-resources-*` MTSP 流中写入 `CU<b>Ut` 记录，将 library 指针映射到源码文件
-4. 编译统计（bplist 格式）通过 `CiUul` 记录关联
-5. 查看时 Xcode 沿链路：pipeline → library → `CU<b>Ut` → 源码文件
+#### 对于 `makeLibrary(source:)` 路径：
+1. 编译时源码被嵌入 metallib 的 bitcode section（AIR bitcode）
+2. Xcode 截帧引擎将 metallib 保存到 gputrace bundle
+3. Xcode 打开时从 metallib bitcode **反编译**回 Metal 源码（变量名如 `u_xlat0` 是自动生成的）
+4. Sidecar 文件（hex ID 命名的 .metal 文件）可能只是辅助/备份，**不是主要源码来源**
+5. `CU<b>Ut` 和 `CiUul` 记录建立 pipeline → library → stats 的关联
 
-对于 `makeLibrary(data:)` 路径，步骤 1-3 不发生，因此无源码。
+#### 对于 `makeLibrary(data:)` 路径：
+- metallib 是预编译的，可能**不包含可反编译的 bitcode**
+- 因此 Xcode 无法恢复源码 → 显示 "Shader source not found"
+
+#### 实验证据：
+- 替换 sidecar 文件内容 → Xcode 仍显示原始源码（从 metallib 反编译的）
+- 清除所有 GPU Tools 缓存后 → Xcode 仍显示原始源码
+- 修改 MTSP 中 CU<b>Ut 的 source_id → Xcode 仍显示原始源码
+- 追加新的 CU<b>Ut 记录 → 不被 Xcode 识别
+- `CalcLighting.CSMain` 显示的源码含 `u_xlat0` 等自动生成的变量名，证实是反编译产物
+
+#### GPU Tools 缓存位置：
+- `/private/var/folders/.../T/com.apple.gputools.replay/` — replay packets
+- `/private/var/folders/.../T/GPUSourceIndexer-*` — source index
+- `/private/var/folders/.../C/com.apple.gputools.GPUToolsReplayService/com.apple.metal/` — compiled shader cache
 
 ---
 
@@ -199,77 +214,132 @@ offset 0x123be0:
 
 ---
 
-## 下一步需要深挖的方向
+## ❌ 方案 4: 追加/修改 MTSP 记录 + sidecar 文件（2026-05-18，失败）
 
-### 方向 A: 精确理解 MTSP 记录的字段布局
+### 结论：Xcode 不从 sidecar 文件读取源码
 
-**当前知识缺口**：我们通过 hex dump 逆向了大致的记录结构，但几个关键问题未解决：
+**实验**：
+1. 追加 CSuwuw + CU<b>Ut 到 unused-device-resources → Xcode 不识别
+2. 原地替换 CU<b>Ut 的 source_id → Xcode 仍显示旧源码
+3. 直接替换已有 sidecar 文件内容（AED3C8F89AA20821）→ Xcode 仍显示原始源码
+4. 清除所有已知 GPU Tools 缓存后重试 → 仍然无效
 
-1. **prefix 字段的含义**：`CUt` 的 `01 10 00 00` vs `CU<b>Ut` 的 `01 00 00 00`，第二个字节 `0x10` vs `0x00` 是什么？是子类型？是 flag？还是后续字段的偏移？
-2. **footer 字段**：`74 00 00 00`、`8c 00 00 00`、`10 d0 ff ff`、`39 d8 ff ff` 等值是什么？可能是相对偏移（负数用补码）或大小字段
-3. **record_size 和实际记录边界**：MTSP 记录的开头 4 字节是 record_size（如 `46 00 00 00` = 70），但 `CU<b>Ut` 记录的前缀是 `01 00 00 00`（=1），这显然不是 size。可能 CSuwuw 和 CU<b>Ut 是同一条大记录的两部分？
+**决定性证据**：`AED3C8F89AA20821` 当前内容为 694 字节的注入测试文件（含 `★ INJECTION SUCCESS ★` 标记），但 Xcode 显示的是完全不同的、含 `_LightBoxs[50]` 的长源码。该长源码**不存在于任何 sidecar 文件中**。
 
-**建议做法**：
-- 用 `External/gputrace` 的 `ParseMTSPRecords()` 函数作为参考，它已经实现了记录边界检测（`detectRecordType`）
-- 对 `unused-device-resources` 做完整的记录解析 dump，逐条输出每条记录的偏移、大小、类型、payload
-- 重点对比 CSuwuw "library" + CU<b>Ut 记录对 和 CSuwuw "render-pipeline-state" + CUt 记录对的完整字段差异
+**真正的源码显示机制**：Xcode 从 metallib 内嵌的 LLVM bitcode 反编译出源码，sidecar 文件只是辅助/导出用途。
+- `makeLibrary(source:)` 编译时将源码嵌入 bitcode → Xcode 能反编译 → 显示源码
+- `makeLibrary(data:)` 的 metallib 也可能含 bitcode（ShaderDebugInfo 证实），但 gputrace 截帧时保存的 MTLB 被剥离了 bitcode
 
-### 方向 B: 修改 MTSP header 使追加的记录生效
+---
 
-**假设**：方案 2 追加到 `unused-device-resources` 末尾没有生效，可能是因为 MTSP header 中的 size/offset 字段限制了解析范围。
+## 新的攻坚方向
 
-**需要验证**：
-1. MTSP header 的 `size` 和 `offset` 字段的确切含义
-2. 如果 `size` 表示有效数据长度，则追加后需要更新 header
-3. 如果有 `index` 文件引用偏移量，也需要同步更新
+### 方向 F: 替换 device-resources 中 MTLB 的 GPU binary 为含 bitcode 的版本
 
-**建议做法**：
-- 分别解析 `device-resources` 和 `unused-device-resources` 的 MTSP header
-- 对比修改前后的文件大小和 header 值
-- 尝试追加记录后同时更新 MTSP header 的 size 字段
+**核心思路**：既然 Xcode 从 metallib bitcode 反编译源码，那在 gputrace 中**替换 stripped MTLB 为含 bitcode 的完整 MTLB** 应该能让 Xcode 反编译出源码。
 
-### 方向 C: 在正确的位置插入记录（而非追加或原地替换）
-
-**思路**：不是在文件末尾追加，也不是原地替换，而是在 SkinMakeupNew 的 CSuwuw "render-pipeline-state" 记录之后**插入**一条新的 `CU<b>Ut` 记录。
+**已有条件**：
+- ShaderDebugInfo 中有 154 个含 LLVM bitcode 的完整 metallib
+- gputrace 的 device-resources 中有 137 个 stripped MTLB
+- 需要建立 gputrace MTLB → ShaderDebugInfo metallib 的映射
 
 **挑战**：
-1. 插入会改变所有后续记录的偏移，如果 MTSP 中有绝对偏移引用会失效
-2. `index` 文件可能缓存了偏移量，需要重建
-3. 需要精确控制插入点和记录大小
+1. MTLB 在 MTSP 流中的嵌入方式需要理解（大小变化会破坏偏移）
+2. 需要找到 MTLB → ShaderDebugInfo entry 的精确对应关系
+3. MTLB 大小变化后可能需要重建整个 MTSP 流
 
-**建议做法**：
-- 先确认 MTSP 是否使用绝对偏移（如果全是顺序扫描则插入是安全的）
-- 在 `unused-device-resources` 中（而非 `device-resources` 中）尝试插入，因为 `unused-device-resources` 可能不被 Xcode 的 replay 引擎直接用于命令回放
-- 对比两个 resources 文件的记录结构差异
+### 方向 G: 运行时 hook makeLibrary(data:) 附加 bitcode
 
-### 方向 D: 利用 `External/gputrace` Go 工具进行精确修改
+**核心思路**：在截帧前，hook `makeLibrary(data:)` 使其在创建 library 时附加 bitcode 信息，让 Xcode 截帧引擎认为这是有源码的 library。
 
-**优势**：`External/gputrace` 已经实现了完整的 MTSP 记录解析（`ParseMTSPRecords`、`detectRecordType`、各种 `Parse*Record` 函数），可以：
+**优势**：不需要修改 gputrace 文件
+**挑战**：需要在运行时修改 Metal API 行为
 
-1. 完整解析 MTSP 流为记录列表
-2. 在正确位置插入新记录
-3. 重新序列化整个 MTSP 流
-4. 更新 header
+### 方向 H: 利用 "Import Sources" 按钮
 
-**需要新增的能力**：
-- MTSP 序列化（目前只有反序列化）
-- 记录构造器（目前只有解析器）
-- 可能需要扩展 `CU<b>Ut` 记录的解析（当前工具可能不识别这种类型）
+**核心思路**：Xcode 的 "Shader source not found" 对话框有 "Import Sources" 按钮。研究这个功能的工作方式，可能可以通过它直接导入我们准备的源码。
 
-**建议做法**：
-- 在 Go 工具中添加 `WriteMTSP` 功能
-- 添加 `InjectSourceRecord` 命令
-- 先用工具解析现有的 `unused-device-resources`，验证所有记录都能正确 round-trip
+- `size` 字段（76, 60, 180）远小于文件实际大小（3.4MB, 1.4MB, 623KB）
+- `offset` 是负数（补码），可能是某种结构偏移而非数据范围
+- **结论：追加数据到文件末尾不需要修改 header**
 
-### 方向 E: 深入分析 Xcode 的源码查找逻辑
+**关键发现 3: CU<b>Ut 完整记录布局（Format A, 108 bytes）**
 
-**思路**：通过逆向 Xcode 的 GPU Debugger 框架，理解它如何关联 shader 和源码。
+```
++0x00: record_size = 108 (uint32, 0x6c)
++0x04: flags = 0xffffc04f (uint32)
++0x08: zeros (24 bytes)
++0x20: prefix = 1 (uint32)
++0x24: "CU<b>Ut\0" (8 bytes tag)
++0x2c: device_ptr (uint64)
++0x34: source_hex_id (17 bytes = 16 hex chars + null)
++0x45: stats_hex_id (17 bytes = 16 hex chars + null)
++0x56: zeros (10 bytes)
++0x60: footer_magic = 0x74 (uint32)
++0x64: library_ptr (uint64)
++0x6c: END
+```
 
-**可能的切入点**：
-- Hook Xcode 加载 gputrace 时的文件读取系统调用（`fs_usage` 或 `dtrace`）
-- 在 Xcode 打开已有源码的 gputrace 时，观察它读取了哪些文件、以什么顺序
-- 搜索 Xcode 框架中的 "source not found" 字符串，反向追踪源码查找逻辑
-- 检查 `/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/GPUTools/` 下的 dylib
+**关键发现 4: CSuwuw "library" 完整记录布局（Format A, 76 bytes）**
+
+```
++0x00: record_size = 76 (uint32, 0x4c)
++0x04: flags = 0xffffd007 (uint32)
++0x08: zeros (24 bytes)
++0x20: inner_size = 70 (uint32, 0x46)
++0x24: "CSuwuw\0\0" (8 bytes tag)
++0x2c: device_ptr (uint64)
++0x34: "library\0" (8 bytes label)
++0x3c: library_ptr (uint64)
++0x44: zeros (8 bytes)
++0x4c: END
+```
+
+**关键发现 5: Go 解析器验证**
+
+Go 的 `ParseMTSPFromData()` 使用 `record_size` 做顺序扫描，成功识别了 `unused-device-resources` 中的：
+- 244 个 CU<b>Ut 记录
+- 2958 个 CSuwuw 记录
+- 追加的新记录能被正确扫描
+
+### 注入方案实现
+
+**操作步骤**：
+1. 构造 76 字节 CSuwuw "library" 记录（Format A）
+2. 构造 108 字节 CU<b>Ut 记录（Format A）
+3. 追加到 `unused-device-resources` 文件末尾
+4. 在 gputrace bundle 中创建 sidecar 源码文件（文件名 = source_hex_id）
+5. 无需修改 MTSP header 或 index 文件
+
+**注入脚本**: `scripts/inject_source_records.py`
+
+**已执行测试**：
+- ✅ 参考 gputrace: 为 `reference_data_kernel` 注入源码 → 文件格式正确
+- ✅ 恋与深空 gputrace: 为 SkinMakeupNew (library 0x7b12cd8c0) 注入源码
+- 🔬 等待 Xcode 验证: gputrace 是否正常加载 + 源码是否显示
+
+### 当前状态
+
+- 96 个无源码的 library 已识别（from `device-resources` but not in `unused-device-resources`）
+- 注入工具完成，支持单条和批量模式
+- **待验证**: Xcode 是否在注入后显示源码
+
+### 如果方案 4 失败，备选分析方向
+
+可能的失败原因及应对：
+1. **library_ptr 不匹配**: CU<b>Ut 中的 library_ptr 需要精确匹配创建该 shader 的 library → 需要找到 pipeline→library 的映射
+2. **记录顺序问题**: CU<b>Ut 必须出现在特定位置（如 library 注册之后）→ 尝试在现有 CU<b>Ut 之间插入而非追加
+3. **index 文件缓存**: `index`(xdic) 可能缓存了 sidecar 文件列表 → 需要更新 index
+4. **flags 值不对**: 0xffffc04f 可能包含偏移信息 → 分析更多样本确认 flags 的语义
+
+---
+
+## 下一步（如果方案 4 验证通过）
+
+1. **批量注入**: 为所有 96 个无源码 library 注入 IR 增强的 .metal stub
+2. **精确映射**: 建立 library_ptr → ShaderDebugInfo entry 的精确对应关系
+3. **集成到 inject_shader_debug_info.py**: 合并文件创建 + 二进制注入为一步
+4. **自动化**: 截帧后自动注入离线准备的源码
 
 ---
 
@@ -280,7 +350,11 @@ offset 0x123be0:
 | MTSP 解析器 | `External/gputrace/internal/trace/mtsp.go` | 完整的 MTSP 记录解析实现 |
 | Trace 解析入口 | `External/gputrace/internal/trace/trace.go` | gputrace bundle 加载逻辑 |
 | Index 解析 | `External/gputrace/internal/trace/index.go` | xdic 索引文件格式 |
-| 注入脚本 | `LocalDocs/OfflineSourceRecovery/scripts/inject_shader_debug_info.py` | 生成 IR 增强 stub 源码 |
+| **二进制注入工具** | `LocalDocs/OfflineSourceRecovery/scripts/inject_source_records.py` | **核心：构造 CSuwuw+CU<b>Ut 记录并追加** |
+| MTSP 分析工具 | `LocalDocs/OfflineSourceRecovery/scripts/analyze_reference_gputrace.py` | 逐字节分析 MTSP 记录结构 |
+| 截帧生成器 | `LocalDocs/OfflineSourceRecovery/scripts/generate_reference_gputrace.swift` | 生成带源码的参考 gputrace |
+| 注入目标列表 | `LocalDocs/OfflineSourceRecovery/scripts/injection_targets.json` | 96 个无源码 library 地址 |
+| Stub 源码生成 | `LocalDocs/OfflineSourceRecovery/scripts/inject_shader_debug_info.py` | 生成 IR 增强 stub 源码 |
 | ShaderDebugInfo | `~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/com.papegames.lysk/` | 运行时提取的 metallib + bitcode |
 | MetallibParser | `Carthage/Checkouts/PlayTools/PlayTools/MetallibParser.swift` | metallib 格式解析器 |
 

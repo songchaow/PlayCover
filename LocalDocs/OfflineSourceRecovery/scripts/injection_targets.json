@@ -1,0 +1,293 @@
+{
+  "device_ptr": "0x7991e1800",
+  "targets": [
+    {
+      "library_ptr": "0x7991ed5c0"
+    },
+    {
+      "library_ptr": "0x7991ed900"
+    },
+    {
+      "library_ptr": "0x7991ee140"
+    },
+    {
+      "library_ptr": "0x7991ee5c0"
+    },
+    {
+      "library_ptr": "0x7991eee00"
+    },
+    {
+      "library_ptr": "0x7991eee40"
+    },
+    {
+      "library_ptr": "0x7991ef4c0"
+    },
+    {
+      "library_ptr": "0x7991ef900"
+    },
+    {
+      "library_ptr": "0x7991ef980"
+    },
+    {
+      "library_ptr": "0x7991efb40"
+    },
+    {
+      "library_ptr": "0x7992247c0"
+    },
+    {
+      "library_ptr": "0x799224d80"
+    },
+    {
+      "library_ptr": "0x799224f80"
+    },
+    {
+      "library_ptr": "0x799225180"
+    },
+    {
+      "library_ptr": "0x799225500"
+    },
+    {
+      "library_ptr": "0x799225680"
+    },
+    {
+      "library_ptr": "0x7992258c0"
+    },
+    {
+      "library_ptr": "0x799225c00"
+    },
+    {
+      "library_ptr": "0x799225cc0"
+    },
+    {
+      "library_ptr": "0x7994a5fc0"
+    },
+    {
+      "library_ptr": "0x799b24400"
+    },
+    {
+      "library_ptr": "0x799b24640"
+    },
+    {
+      "library_ptr": "0x79a4f2500"
+    },
+    {
+      "library_ptr": "0x79a4f26c0"
+    },
+    {
+      "library_ptr": "0x79a4f2cc0"
+    },
+    {
+      "library_ptr": "0x79a4f2e00"
+    },
+    {
+      "library_ptr": "0x79a4f2fc0"
+    },
+    {
+      "library_ptr": "0x79a4f3a80"
+    },
+    {
+      "library_ptr": "0x79a517080"
+    },
+    {
+      "library_ptr": "0x79a517240"
+    },
+    {
+      "library_ptr": "0x79a54a800"
+    },
+    {
+      "library_ptr": "0x79c9ac7c0"
+    },
+    {
+      "library_ptr": "0x79c9ac900"
+    },
+    {
+      "library_ptr": "0x79c9aca00"
+    },
+    {
+      "library_ptr": "0x79e4fa680"
+    },
+    {
+      "library_ptr": "0x79e595740"
+    },
+    {
+      "library_ptr": "0x79e595840"
+    },
+    {
+      "library_ptr": "0x79e595900"
+    },
+    {
+      "library_ptr": "0x79e595f80"
+    },
+    {
+      "library_ptr": "0x79e596340"
+    },
+    {
+      "library_ptr": "0x79e596400"
+    },
+    {
+      "library_ptr": "0x79e5964c0"
+    },
+    {
+      "library_ptr": "0x79e596940"
+    },
+    {
+      "library_ptr": "0x79e596b80"
+    },
+    {
+      "library_ptr": "0x79e5970c0"
+    },
+    {
+      "library_ptr": "0x79e597180"
+    },
+    {
+      "library_ptr": "0x79e5979c0"
+    },
+    {
+      "library_ptr": "0x79e597b80"
+    },
+    {
+      "library_ptr": "0x7a095c300"
+    },
+    {
+      "library_ptr": "0x7a3970ec0"
+    },
+    {
+      "library_ptr": "0x7a3978800"
+    },
+    {
+      "library_ptr": "0x7a3979b00"
+    },
+    {
+      "library_ptr": "0x7b12cc300"
+    },
+    {
+      "library_ptr": "0x7b12cc500"
+    },
+    {
+      "library_ptr": "0x7b12cc8c0"
+    },
+    {
+      "library_ptr": "0x7b12ccb00"
+    },
+    {
+      "library_ptr": "0x7b12cce00"
+    },
+    {
+      "library_ptr": "0x7b12cd0c0"
+    },
+    {
+      "library_ptr": "0x7b12cd1c0"
+    },
+    {
+      "library_ptr": "0x7b12cd440"
+    },
+    {
+      "library_ptr": "0x7b12cd4c0"
+    },
+    {
+      "library_ptr": "0x7b12cd8c0"
+    },
+    {
+      "library_ptr": "0x7b12ce240"
+    },
+    {
+      "library_ptr": "0x7b12ce280"
+    },
+    {
+      "library_ptr": "0x7b12ce380"
+    },
+    {
+      "library_ptr": "0x7b12ce4c0"
+    },
+    {
+      "library_ptr": "0x7b12ce680"
+    },
+    {
+      "library_ptr": "0x7b12ce700"
+    },
+    {
+      "library_ptr": "0x7b12ceac0"
+    },
+    {
+      "library_ptr": "0x7b12cf000"
+    },
+    {
+      "library_ptr": "0x7b12cf580"
+    },
+    {
+      "library_ptr": "0x7b12cf840"
+    },
+    {
+      "library_ptr": "0x7b12cf940"
+    },
+    {
+      "library_ptr": "0x7b13880c0"
+    },
+    {
+      "library_ptr": "0x7b1388180"
+    },
+    {
+      "library_ptr": "0x7b1388300"
+    },
+    {
+      "library_ptr": "0x7b1388480"
+    },
+    {
+      "library_ptr": "0x7b1388680"
+    },
+    {
+      "library_ptr": "0x7b1388a40"
+    },
+    {
+      "library_ptr": "0x7b1389140"
+    },
+    {
+      "library_ptr": "0x7b13895c0"
+    },
+    {
+      "library_ptr": "0x7b1389940"
+    },
+    {
+      "library_ptr": "0x7b1389a00"
+    },
+    {
+      "library_ptr": "0x7b1389c80"
+    },
+    {
+      "library_ptr": "0x7b1389e40"
+    },
+    {
+      "library_ptr": "0x7b1389f80"
+    },
+    {
+      "library_ptr": "0x7b138a040"
+    },
+    {
+      "library_ptr": "0x7b138a200"
+    },
+    {
+      "library_ptr": "0x7b138ad00"
+    },
+    {
+      "library_ptr": "0x7b138b340"
+    },
+    {
+      "library_ptr": "0x7b138b3c0"
+    },
+    {
+      "library_ptr": "0x7b138b700"
+    },
+    {
+      "library_ptr": "0x7b138bac0"
+    },
+    {
+      "library_ptr": "0x7b138bc00"
+    },
+    {
+      "library_ptr": "0x7b138bdc0"
+    },
+    {
+      "library_ptr": "0x7b1626140"
+    }
+  ]
+}

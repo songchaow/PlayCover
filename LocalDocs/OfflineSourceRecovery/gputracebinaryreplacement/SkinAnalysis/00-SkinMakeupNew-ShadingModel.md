@@ -58,7 +58,7 @@
 | 0 | `unity_SpecCube0` | 环境反射 cubemap (IBL) |
 | 1 | `_LightIndexMap` | 附加光源索引图 |
 | 2 | `_MainTex` | 基础漫射贴图 |
-| 3 | `_SpecularTex` | 高光贴图（R=高光强度, A=遮罩） |
+| 3 | `_SpecularTex` | 高光贴图（R=perceptualRoughness, B=specular强度, A=遮罩） |
 | 4 | `_NormalTex` | 法线贴图 |
 | 5 | `_EyebrowTex` | 眉毛贴图 |
 | 6 | `_EyeshadowTex` | 眼影贴图 |
@@ -296,17 +296,59 @@ float NdotH_main = dot(worldNormal, H_main);
 float NdotV = max(dot(worldNormal, viewDir), 0);
 ```
 
-### 3.4 Roughness 预处理
+### 3.4 Roughness 计算（已从 IR 精确验证）
+
+粗糙度来自 `_SpecularTex.r`（高光贴图红通道），并受口红层调制：
 
 ```hlsl
-half roughness = NdotL²;  // 这里用 NdotL² 作为粗糙度的某种映射（非标准）
-half roughness2 = max(roughness², epsilon);
-// 用于 GGX:
-float invRoughness2 = 1.0 / roughness2;
-float roughnessDiff = roughness2 - invRoughness2;  // α² - 1/α²
+// === 步骤 1: 从 _SpecularTex 采样 ===
+half4 specTex = sample(_SpecularTex, mainUV);
+// specTex.r = perceptualRoughness 基础值
+// specTex.b = specular 基础值
+
+// === 步骤 2: 口红层对粗糙度的修改 ===
+// lipTex.a 是口红遮罩，_LipRoughness 是口红区域的目标粗糙度
+half lipRoughnessBlend = lipTex.a * (_LipRoughness - 1.0) + 1.0;
+// 等价于: lerp(1.0, _LipRoughness, lipTex.a)
+// 非嘴唇区域 lipTex.a=0 → 乘数=1.0（不变）
+// 嘴唇区域 lipTex.a=1 → 乘数=_LipRoughness
+
+// 同理，specular 也被口红修改:
+half lipSpecularBlend = lipTex.a * (_LipSpecular - 1.0) + 1.0;
+
+// === 步骤 3: 最终 perceptualRoughness ===
+half perceptualRoughness = specTex.r * lipRoughnessBlend;
+perceptualRoughness = max(perceptualRoughness, 0.001);  // epsilon clamp (0xH211F ≈ 0.001)
+
+// === 步骤 4: perceptual → linear roughness (α² = perceptualRoughness²) ===
+half alpha2 = perceptualRoughness * perceptualRoughness;
+alpha2 = max(alpha2, 0.001);  // 再次 clamp
+
+// 注意：GGX 还用了第二个 clamp: max(alpha2, 0.05) 用于 Visibility term
+half alpha2_forV = max(alpha2, 0.05);  // 0xH2E66 ≈ 0.05
+
+// === 步骤 5: GGX D term 的分母参数 ===
+float invAlpha2 = 1.0 / alpha2;
+float roughnessDiff = alpha2 - invAlpha2;  // 用于 D = 1/(NdotH² * roughnessDiff + invAlpha2)
 ```
 
-实际上从 IR 分析，真正的粗糙度来自 `_NonMetalSpecular` 区域的处理。
+**IR 证据** (Line 78–85, 437–447):
+```
+%103 = load _LipRoughness        (field 43)
+%106 = load _LipSpecular         (field 44)
+%108 = fadd <_LipRoughness, _LipSpecular>, <-1.0, -1.0>
+%109 = splat lipTex.a
+%110 = fma(%109, %108, <1.0, 1.0>)    // lerp(1, lipParam, lipAlpha)
+%111 = specTex.xz * %110              // half2(roughness, specular)
+
+%463 = %447[0] = max(roughnessBase, 0.001)   // perceptualRoughness
+%464 = %463 * %463                            // α²
+%469 = max(%464, 0.001)                       // clamped α²
+%470 = 1.0 / %469                             // 1/α²
+%473 = %469 - %470                            // α² - 1/α² = roughnessDiff
+```
+
+**总结**: `_SpecularTex.r` 存储的是皮肤的 perceptual roughness，口红通过 `_LipRoughness × lipTex.a` 对嘴唇区域进行局部修改，使嘴唇可以有独立于皮肤其余部分的光泽度。
 
 ---
 
@@ -616,6 +658,7 @@ output.SV_TARGET1 = dofAlpha;  // 同一值写入第二个 RT
 | 特性 | 实现方式 | 备注 |
 |------|----------|------|
 | **BRDF 模型** | 简化 Cook-Torrance (D·F·V) | 非完整版，省略了部分归一化 |
+| **Roughness 来源** | `_SpecularTex.r` × lip blend | 口红通过 `_LipRoughness × lipTex.a` 局部修改 |
 | **NDF (D)** | GGX 分布，clamped | `D = 1/(NdotH²*(α²-1/α²)+1/α²)`, clamp to 10 |
 | **Geometry (G/V)** | Smith-Hammon 近似 | `V = 0.5 / ((NdotL*(1-α²)+α²) * (NdotV*(1-α²)+α²))` |
 | **Fresnel (F)** | Schlick 5 次幂 | `F = F0 + (1-F0) * (1-VdotH)^5` |
@@ -624,7 +667,7 @@ output.SV_TARGET1 = dofAlpha;  // 同一值写入第二个 RT
 | **IBL 漫射** | Spherical Harmonics (L0+L1+L2) | 自定义 SH 系数 from `PapePerRendererCB` |
 | **IBL 镜面** | Cubemap + HDR 解码 | `unity_SpecCube0` + `unity_SpecCube0_HDR` |
 | **阴影** | 屏幕空间阴影 + 逐光阴影权重 | `_ScreenShadowTexture` + `_AdditionalLightShadowWeight[]` |
-| **化妆系统** | 8 层 alpha blend over | 逐层叠加，口红层额外修改材质属性 |
+| **化妆系统** | 8 层 alpha blend over | 逐层叠加，口红层额外修改材质属性（roughness + specular） |
 | **闪片** | 程序化 tile-based 4-sample | Voronoi 近似，hash + 距离衰减 |
 | **附加光** | 最多 4 盏，完整 PBR | 支持点光/聚光/方向光 + 距离/角度衰减 |
 | **角色光** | 独立于场景的专用补光 | `_CharLightPosition` / `_CharLightColor` |

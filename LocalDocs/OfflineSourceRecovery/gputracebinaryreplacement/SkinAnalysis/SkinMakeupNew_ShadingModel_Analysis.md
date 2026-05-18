@@ -576,15 +576,35 @@ screenUV = clip.xy / clip.w \cdot 0.5 + 0.5
 - `SpecularTex.r`：roughness-like。
 - `SpecularTex.b`：specular intensity/mask-like。
 
-唇部会覆盖/调制：
+唇部会覆盖/调制。这里要特别注意：**粗糙度/specular 覆盖使用的是 `LipTex.a`，不是已经乘过 `_LipDensity` 的唇色混合 mask**。IR 对应 `%99 = LipTex.a`，然后直接用它对 `_LipRoughness` / `_LipSpecular` 做插值。
 
 \[
-roughness = SpecularTex.r \cdot lerp(1, \_LipRoughness, lipMask)
+roughnessRaw = SpecularTex.r \cdot lerp(1, \_LipRoughness, LipTex.a)
 \]
 
 \[
-specMask = SpecularTex.b \cdot lerp(1, \_LipSpecular, lipMask)
+specMask = SpecularTex.b \cdot lerp(1, \_LipSpecular, LipTex.a)
 \]
+
+随后用于 cubemap LOD 的 perceptual roughness 是：
+
+\[
+perceptualRoughness = \max(roughnessRaw, 0.010002136)
+\]
+
+对应 IR：
+
+```llvm
+%46  = SpecularTex.rb
+%99  = LipTex.a
+%107 = half2(_LipRoughness, _LipSpecular)
+%108 = %107 - 1
+%110 = fma(%99.xx, %108, 1)          ; lerp(1, lip override, LipTex.a)
+%111 = %46 * %110                   ; (roughnessRaw, specMask)
+%447.x = max(%111.x, 0xH211F)        ; perceptualRoughness, 0xH211F=0.010002136
+```
+
+也就是说它不是从 `NdotL`、`NdotV` 或 Fresnel 算出来的，而是直接来自 **材质 specular 贴图的 r 通道 + 唇部 roughness 覆盖**。
 
 `_NonMetalSpecular` 也参与整体 specular 强度：
 
@@ -609,67 +629,146 @@ IR 形态：
 - `rsqrt`
 - `H *= rsqrt`
 
-### 10.3 GGX NDF
+### 10.3 GGX NDF：IR 级实现
 
-能看到典型 GGX 分母结构：
+这里不要只写“GGX”，因为 IR 里的写法不是教科书公式直写，而是一个为移动端重排过的 reciprocal 形式。
+
+相关 IR 变量关系：
+
+```c
+// %463：前面算出的 perceptual roughness / roughness-like 值
+half r = roughness;
+
+// %464, %467, %469
+half r2 = max(r * r, 0.010002136h);   // 0xH211F
+
+// %470, %471, %472, %473
+float invR2 = 1.0 / r2;
+float r2f = (float)r2;
+float ggxA = r2f - invR2;
+```
+
+对每个 specular evaluation，IR 会对 `NdotH` 做如下计算：
+
+```c
+float ndh = saturate(dot(N, H));
+ndh = min(ndh, 0.99902344f);          // IR 中常见 0x3FEFF7CEE...，约等于 0.999
+float ndh2 = ndh * ndh;
+
+float denom = mad(ndh2, ggxA, invR2);
+float invDenom = 1.0 / denom;
+invDenom = min(invDenom, 10.0);
+
+float D = invDenom * invDenom * 0.3173828125f; // 约 1/pi
+```
+
+把它展开：
+
+\[
+\begin{aligned}
+r_2 &= \max(r^2, 0.010002136) \\
+inv &= \frac{1}{r_2} \\
+denom &= (N\cdot H)^2\cdot(r_2-inv)+inv \\
+D &= \min\left(\frac{1}{denom},10\right)^2\cdot0.3173828125
+\end{aligned}
+\]
+
+这个 `denom` 和标准 GGX NDF 是等价重排：
+
+\[
+denominator
+= \frac{(N\cdot H)^2(r_2^2-1)+1}{r_2}
+\]
+
+所以：
+
+\[
+\left(\frac{1}{denom}\right)^2
+= \frac{r_2^2}{((N\cdot H)^2(r_2^2-1)+1)^2}
+\]
+
+再乘 `1/pi` 就是：
 
 \[
 D_{GGX}
 =
-\frac{a^2}{\pi\left((N\cdot H)^2(a^2-1)+1\right)^2}
+\frac{r_2^2}{\pi\left((N\cdot H)^2(r_2^2-1)+1\right)^2}
 \]
 
-IR 中常见形式：
+关键细节：
 
-1. `roughness` 平方得到 `a` 或 `a2`。
-2. `NdotH` clamp。
-3. 计算：
+- `r2` 最小值不是 0，而是 `0.010002136`。
+- reciprocal 会 clamp 到 `10.0`，所以 `D` 最大约为 `10^2 * 0.3173828125 = 31.73828125`。
+- `NdotH` 也会被限制在略小于 1 的值，避免极端 grazing/镜面尖峰导致数值爆炸。
 
-\[
-denom=(NdotH^2\cdot(a^2-1)+1)
-\]
+### 10.4 Fresnel：不是只写 Schlick，要看 IR 里的混合形式
 
-4. reciprocal。
-5. square。
-6. 乘近似 `1/pi`。
-7. `min(..., 10)` 防止高光过曝。
-
-这说明 shader 的 specular 不是 Blinn-Phong，而是 GGX microfacet。
-
-### 10.4 Fresnel：Schlick pow5
-
-IR 中有典型五次方：
+IR 中确实出现 Schlick pow5 模式，但它不是单纯：
 
 ```c
-float x = 1 - saturate(VdotH);
-float x2 = x * x;
-float x5 = x2 * x2 * x;
-F = F0 + (F90 - F0) * x5;
+F = F0 + (1 - F0) * pow5(1 - VdotH);
 ```
 
-也就是 Schlick Fresnel：
+更接近下面这种“两个端点之间按 pow5 插值”的形式：
+
+```c
+float vdoth = saturate(dot(V, H));
+float x = 1.0 - vdoth;
+float x2 = x * x;
+float x4 = x2 * x2;
+float x5 = x4 * x;
+
+// IR 中常见：
+// oneMinusX5 = mad(-x4, x, 1.0)
+float oneMinusX5 = 1.0 - x5;
+
+// specBase 通常来自 specMask、_NonMetalSpecular、AO/全局缩放等。
+// grazingTerm / edgeTerm 在不同路径里由角色光、sparkle 或其它局部项提供。
+float F = specBase * oneMinusX5 + grazingTerm * x5;
+```
+
+也就是：
 
 \[
-F = F_0 + (F_{90}-F_0)(1-V\cdot H)^5
+F = specBase\cdot(1-(1-V\cdot H)^5)+grazingTerm\cdot(1-V\cdot H)^5
 \]
 
-其中 `F90`/grazing term 被一些经验参数、shadow/spec factor、skin-specific 值调制。
-
-### 10.5 Geometry/visibility 项
-
-IR 中不是非常清晰地呈现完整 Smith GGX `G` 项，但有多个类似：
+等价于：
 
 \[
-\frac{1}{NdotL\cdot(1-k)+k}
+F = lerp(specBase, grazingTerm, (1-V\cdot H)^5)
 \]
 
-或经验 denominator 形式，例如：
+所以当前 shader 的 Fresnel 不是完全固定的 dielectric Fresnel，而是一个角色定制的 Schlick-style 端点插值。
 
-- `fma(NdotL, something, something)`
-- reciprocal
-- 乘 `0.5` 或 `1/pi`
+### 10.5 Direct specular lobe 的组合形式
 
-整体更像 Unity/移动端优化版的 GGX visibility，而不是严格完整公式。
+综合上面，单盏灯的 specular lobe 可以写成：
+
+```c
+float3 H = normalize(L + V);
+float ndl = max(dot(N, L), 0.0);
+float ndh = saturate(dot(N, H));
+float vdh = saturate(dot(V, H));
+
+float D = Skin_GGX_D(roughness, ndh);
+float F = Skin_Fresnel(specBase, grazingTerm, vdh);
+
+// IR 里没有看到完整教科书 Smith G 的直写，更多是移动端合并项。
+// attenuation 包含：距离、spot、screen shadow、light index 权重等。
+float3 spec = lightColor.rgb * ndl * attenuation * D * F * extraSpecScale;
+```
+
+其中 `extraSpecScale` 在不同路径里会包含：
+
+- `_NonMetalSpecular`
+- `_AOIntensity` 或类似全局调制
+- `_LipSpecular`
+- `_LipRoughness`
+- sparkle mask
+- additional light shadow/spot/distance attenuation
+
+所以准确说：**BRDF 的核心 NDF/Fresnel 是 GGX + Schlick-style，但最终 specular 是角色 shader 合并过的经验模型，不是完整未改造的 Cook-Torrance。**
 
 ---
 
@@ -859,60 +958,275 @@ shadow_i = 1 - \_CharShadowIntensity\cdot dot(1-screenShadow, shadowWeight_i)
 
 ---
 
-## 15. 间接光与环境反射
+## 15. 间接光与环境反射：cubemap IBL 的具体实现
 
-### 15.1 Reflection cubemap
+这一段之前写得太概括。根据 IR，`unity_SpecCube0` 的 cubemap IBL 可以比较明确地还原为下面几个函数。
 
-shader 计算 reflection vector：
+### 15.1 Reflection vector
 
-\[
-R=reflect(-V,N)
-\]
-
-然后用 roughness 推导 mip：
-
-\[
-mip=f(roughness)\cdot maxMip
-\]
-
-采样：
+IR 先取已经归一化的视线方向和 world normal：
 
 ```c
-unity_SpecCube0.SampleLevel(samplerunity_SpecCube0, R, mip)
+// %387：由 TEXCOORD3.w / TEXCOORD4.w / TEXCOORD5.w 组成并 normalize 后的方向，按使用方式可视为 V。
+// %401：TBN 变换后的 world normal N。
+half3 V = normalize(half3(TEXCOORD3.w, TEXCOORD4.w, TEXCOORD5.w));
+half3 N = normalize(worldNormal);
 ```
 
-然后用 `unity_SpecCube0_HDR` decode HDR：
+反射方向不是调用高级函数，而是直接展开：
+
+```c
+half3 I = -V;
+half d = dot(I, N);
+half3 R_half = mad(N, half3(-2.0h * d), I); // I - 2*N*dot(I,N)
+float3 R = float3(R_half);
+```
+
+对应：
 
 \[
-envSpec = DecodeHDREnvironment(sample, unity\_SpecCube0\_HDR)
+R = reflect(-V, N) = -V - 2N\cdot dot(-V,N)
 \]
 
-IR 中可见 `log2`、`exp2`、HDR 参数乘法，这正是 Unity 风格 reflection probe decode 的典型形态。
+对应 IR：
 
-### 15.2 SH / probe diffuse
+- `%520 = -%387`
+- `%521 = dot(%520, %401)`
+- `%522 = %521 + %521`
+- `%525 = -%522`
+- `%526 = fma(%401, %525, %520)`
 
-`PapePerRendererCB` 中有：
+### 15.2 Roughness 到 cubemap mip：这里不是模糊的 `f(roughness)`
 
-- `_SHMaps[7]`
-- `_CubeSHs[7]`
+IR 中的 LOD 公式非常明确：
 
-IR 中对 normal 构造了：
+```llvm
+%527 = -roughness
+%528 = fma(%527, 0xH399A, 0xH3ECD)
+%529 = roughness * %528
+%530 = %529 * 0xH4600
+```
 
-- `half4(N, 1)` dot 若干 SH 系数。
-- 二阶项如 `N.yxzz * N.xyz...` dot 若干系数。
-- 最后 `max(..., 0)`。
+把 half 常量解出来：
 
-这对应低阶 spherical harmonics / probe diffuse：
+- `0xH399A = 0.7001953125`
+- `0xH3ECD = 1.7001953125`
+- `0xH4600 = 6.0`
+
+所以：
+
+```c
+half PerceptualRoughnessToSpecCubeMip(half roughness) {
+    // 注意：这里使用的是前面已经处理过的 roughness-like 值 %463。
+    // 它至少经过 specTex/lip 调制，并被下游路径 clamp。
+    return roughness * (1.7001953125h - 0.7001953125h * roughness) * 6.0h;
+}
+```
+
+数学形式：
 
 \[
-E(N)=SH_0+SH_1(N)+SH_2(N)
+mip = r\cdot(1.7001953125 - 0.7001953125r)\cdot6
 \]
 
-间接漫反射：
+也就是：
 
 \[
-C_{indirectDiffuse}=albedo\cdot E(N)
+mip = 10.201171875r - 4.201171875r^2
 \]
+
+几个采样点：
+
+| `r` | `mip` |
+|---:|---:|
+| 0.0 | 0.0 |
+| 0.25 | 2.2873535 |
+| 0.5 | 4.0502930 |
+| 0.75 | 5.2873535 |
+| 1.0 | 6.0 |
+
+这就是 Unity 常见的 `perceptualRoughnessToMipmapLevel` 形态：
+
+```c
+mip = perceptualRoughness * (1.7 - 0.7 * perceptualRoughness) * UNITY_SPECCUBE_LOD_STEPS;
+```
+
+但在当前 IR 里 `UNITY_SPECCUBE_LOD_STEPS` 已经常量折叠成 `6.0`，没有读取 `Pape_SpecCubeArrayMaxMip`。
+
+### 15.3 Cubemap sample
+
+采样调用对应：
+
+```c
+half4 encoded = unity_SpecCube0.sample(samplerunity_SpecCube0, R, level(mip));
+```
+
+IR 形式：
+
+```llvm
+%533 = air.sample_texture_cube(..., %R, i1 true, float %mip, float 0.0, i32 0)
+```
+
+这里可以理解为显式 LOD/level 采样：
+
+- 坐标：`R`
+- LOD：上面的 `mip`
+- 额外 bias：`0`
+
+### 15.4 Unity HDR cubemap decode：具体公式
+
+采样结果记为：
+
+```c
+half4 encoded = sampleCube(...);
+float4 hdr = unity_SpecCube0_HDR;
+```
+
+IR 对 RGB 的 decode 是：
+
+```c
+float decodeArg = hdr.w * ((float)encoded.a - 1.0) + 1.0;
+decodeArg = max((half)decodeArg, 0.0h); // IR 里转 half 后 fmax 0
+
+float decodeScale = hdr.x * exp2(hdr.y * log2(decodeArg));
+half3 decodedCube = encoded.rgb * (half)decodeScale;
+```
+
+等价数学式：
+
+\[
+decodeArg = \max(1 + hdr_w(encoded_a - 1), 0)
+\]
+
+\[
+decodeScale = hdr_x\cdot decodeArg^{hdr_y}
+\]
+
+\[
+C_{cube} = encoded_{rgb}\cdot decodeScale
+\]
+
+对应 IR：
+
+- `%1224 = encoded.a - 1`
+- `%1226 = hdr.w * %1224 + 1`
+- `%1228 = max(%1226, 0)`
+- `%1229 = log2(%1228)`
+- `%1231 = hdr.y * log2(...)`
+- `%1233 = exp2(...)`
+- `%1235 = hdr.x * exp2(...)`
+- `%1239 = encoded.rgb * %1235`
+
+注意：当前路径只使用了 `unity_SpecCube0_HDR.x`、`.y`、`.w`，没有看到 `.z` 参与 decode。
+
+### 15.5 Pape SH / probe 项：具体 basis
+
+`PapePerRendererCB` 中的 `_SHMaps[7]` 被加载为 7 个 `half4`：
+
+```c
+half4 sh0 = _SHMaps[0];
+half4 sh1 = _SHMaps[1];
+half4 sh2 = _SHMaps[2];
+half4 sh3 = _SHMaps[3];
+half4 sh4 = _SHMaps[4];
+half4 sh5 = _SHMaps[5];
+half4 sh6 = _SHMaps[6];
+```
+
+IR 里的 SH-like evaluate 可以写成：
+
+```c
+half3 EvaluatePapeSH(half3 N) {
+    half4 n4 = half4(N.x, N.y, N.z, 1.0h);
+
+    half3 linear;
+    linear.r = dot(sh0, n4);
+    linear.g = dot(sh1, n4);
+    linear.b = dot(sh2, n4);
+
+    half4 quadBasis = half4(
+        N.y * N.x,
+        N.z * N.y,
+        N.z * N.z,
+        N.x * N.z
+    );
+
+    half3 quad;
+    quad.r = dot(sh3, quadBasis);
+    quad.g = dot(sh4, quadBasis);
+    quad.b = dot(sh5, quadBasis);
+
+    half nx2MinusNy2 = N.x * N.x - N.y * N.y;
+
+    return max(linear + quad + sh6.rgb * nx2MinusNy2, 0.0h);
+}
+```
+
+这不是泛泛地说“SH”，而是当前 IR 实际使用的 basis：
+
+\[
+[ N_x, N_y, N_z, 1 ]
+\]
+
+\[
+[ N_yN_x, N_zN_y, N_zN_z, N_xN_z ]
+\]
+
+\[
+N_x^2 - N_y^2
+\]
+
+最后 clamp 到非负。
+
+### 15.6 Cubemap IBL 最终进入颜色前的组合
+
+IR 中 cubemap decode 后并不是直接 `envSpec = decodedCube`。它又乘了上面的 SH/probe 项和一个 spec scale：
+
+```c
+half3 decodedCube = DecodeUnitySpecCube(encoded, unity_SpecCube0_HDR);
+half3 shProbe = EvaluatePapeSH(N);
+
+// %433 是前面算出的 spec/ao 缩放：大致来自 SpecularTex 调制结果、_AOIntensity、0.08 等。
+float specScale = previousSpecScale;
+
+half3 envSpecPre = decodedCube * shProbe;
+half3 envSpec = half3(float3(envSpecPre) * specScale);
+```
+
+后面在主光/角色光组合处又乘了 `_CharShIntensity`：
+
+```c
+half3 indirectSpec = envSpec * _CharShIntensity;
+```
+
+因此当前 shader 的 cubemap IBL 路径更准确地写成：
+
+```c
+half3 Skin_CubemapIBL(half3 N, half3 V, half roughness, float4 unity_SpecCube0_HDR) {
+    half3 I = -V;
+    half3 R = mad(N, half3(-2.0h * dot(I, N)), I);
+
+    half mip = roughness * (1.7001953125h - 0.7001953125h * roughness) * 6.0h;
+    half4 encoded = unity_SpecCube0.sample(samplerunity_SpecCube0, float3(R), level((float)mip));
+
+    float decodeArg = unity_SpecCube0_HDR.w * ((float)encoded.a - 1.0) + 1.0;
+    decodeArg = max(decodeArg, 0.0);
+    float decodeScale = unity_SpecCube0_HDR.x * exp2(unity_SpecCube0_HDR.y * log2(decodeArg));
+
+    half3 decodedCube = encoded.rgb * (half)decodeScale;
+    half3 shProbe = EvaluatePapeSH(N);
+
+    return decodedCube * shProbe * (half)specScale * _CharShIntensity;
+}
+```
+
+这里唯一还不能从这一个小段独立命名的变量是 `specScale`，但它不是未知函数：它在 IR 前面已经算好并以 `%433` 形式参与 IBL。其来源链路大致是：
+
+```c
+specScale = adjustedSpecularMask * _AOIntensity * 0.08;
+```
+
+其中 `adjustedSpecularMask` 来自 `_SpecularTex` 通道并经过唇部 `_LipSpecular` 等参数调制。
 
 ---
 
@@ -1081,10 +1395,21 @@ FragmentOut xlatMtlMain(...) {
         screenShadow, sssSkin
     );
 
-    // --- indirect ---
-    half3 indirectDiffuse = albedo * EvaluateSH(N, _SHMaps, _CubeSHs);
-    half3 envSpec = DecodeHDR(unity_SpecCube0.SampleLevel(reflect(-V, N), RoughnessToMip(roughness)),
-                              unity_SpecCube0_HDR);
+    // --- indirect / cubemap IBL ---
+    half3 shProbe = EvaluatePapeSH(N); // 具体 basis 见第 15.5 节
+    half3 indirectDiffuse = albedo * shProbe;
+
+    half3 I = -V;
+    half3 R = mad(N, half3(-2.0h * dot(I, N)), I);
+    half mip = roughness * (1.7001953125h - 0.7001953125h * roughness) * 6.0h;
+    half4 encodedCube = unity_SpecCube0.sample(samplerunity_SpecCube0, float3(R), level((float)mip));
+
+    float decodeArg = unity_SpecCube0_HDR.w * ((float)encodedCube.a - 1.0) + 1.0;
+    decodeArg = max(decodeArg, 0.0);
+    float decodeScale = unity_SpecCube0_HDR.x * exp2(unity_SpecCube0_HDR.y * log2(decodeArg));
+    half3 decodedCube = encodedCube.rgb * (half)decodeScale;
+
+    half3 envSpec = decodedCube * shProbe * (half)specScale * _CharShIntensity;
 
     // --- SSS diffuse ---
     half3 sssDiffuse = albedo * sssSkin.rgb;

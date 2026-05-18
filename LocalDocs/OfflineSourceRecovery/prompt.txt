@@ -1,0 +1,8 @@
+当前，我们已经完成了恋与深空的截帧。当前最新的能被 xcode 打开的gputrace 位于 /Users/songdogwang/Library/Containers/com.papegames.lysk/Data/Documents/Captures/capture_20260518_110050.gputrace
+接下来，我们需要做：设法从运行时提取到该 gputrace 中所涉及到的 shader 的源码，或者比较接近源码的表示（比如metal ir）。
+一个已经验证过的方法是：hook 一些用于编译 shader （PSO）或者 创建 metal library 的 metal api，这部分可以参考以前已经做完了的 LocalDocs/XCodeReleaseShaderDebug/RoadE-HookMakeLibraryWithSrc 任务。
+但我们不要全按照 HookMakeLibraryWithSrc 的流程来做。它的问题就是：过多的修改了运行时的行为：不仅 hook 了 library 创建，还在现场进行反编译，再把反编译的 metal 代码再输入到运行时的库里面（它这个任务的目的就是希望 gputrace 能够带有可调试的源码）。
+但我们这次，希望尽量将调试信息（包括 ir，反编译的 metal 代码等等）保存到外部。在运行时，唯一做的事情，就是提取并保存 make library 等过程时能拿到的 ir 或者其他有用的信息，但并不干涉它的后续渲染 api 行为。然后在后期截帧完成之后，在外部进行反编译等操作，并最终通过修改 gputrace 文件，使其能够带有我们在外部处理好的调试信息。
+当前我们已经有"Shader 源码替换"的开关。我们还是保留这个开关。但我们要增加一个更轻量的开关： "提取 shader 调试信息"，这会保留"Shader 源码替换"的一部分操作，也就是运行时提取 shader 的 ir 或者其他任何能提取的对 shader 分析有用的信息并存储到本地。但是不会做后续的任何干扰运行时行为的操作：包括 on the fly 进行反编译，这个也不能在运行时做，不然会导致严重的卡顿阻塞。这些都是在后期离线的时候做的。
+将 整个任务分成 2 个阶段：playcover 的改造：添加我说的这种更轻量的模式并实现完整的数据收集（可能已经有了，或者你按需补充即可）。第二阶段是后续对调试信息以及 gputrace 文件的处理，我们先不实现，以后再说。
+最后你需要构建做测试（用 BuildScripts 内的脚本）、运行现有的测试，以及用 mcp 运行一下恋与深空 app 几分钟，验证你的代码是否正常工作，是否正确收集。

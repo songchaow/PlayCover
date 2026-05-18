@@ -61,13 +61,63 @@
 
 ---
 
-## 阶段二：离线后处理（待实施）
+## 阶段二：离线后处理（进行中）
 
-目标：在截帧完成后，利用阶段一提取的数据：
-1. 离线使用 `llvm-dis` 将 bitcode 反汇编为 LLVM IR
-2. 使用 IRToMSLConverter 或其他工具将 IR 转换为 MSL
-3. 修改 `.gputrace` 文件，注入 shader 源码/调试信息
-4. 使 Xcode 打开 gputrace 时能显示 shader 源码
+### 已完成
+
+**注入 IR 增强的 shader stub 到 gputrace**：
+
+脚本 `LocalDocs/OfflineSourceRecovery/scripts/inject_shader_debug_info.py` 实现了：
+1. 读取 ShaderDebugInfo 中的 bitcode 模块
+2. 离线使用 `llvm-dis` 反汇编为 LLVM IR 文本
+3. 生成注释增强的 .metal stub 文件（包含完整 IR + 资源列表 + MSL 编译桩）
+4. 注入到 gputrace bundle 中缺失源码的 pipeline 位置
+
+**注入结果**：
+- 对 `capture_20260518_110050.gputrace` 注入了 154 个 shader stub
+- 每个文件包含：元数据头 + 结构体定义 + 纹理/Buffer 列表 + 完整 LLVM IR + MSL stub
+- gputrace 中源码文件从 23 增加到 177
+
+**生成文件格式示例**：
+```metal
+// === PlayCover Shader Debug Info ===
+// Pipeline: 1005856DD0954091
+// Function: xlatMtlMain
+// Type: fragment
+// Selector: newLibraryWithData:error:
+// MetallibCacheKey: 04DEF5F04015AEEC_23809
+// Structs: AsukaPerShader_PerCamera_Type, UnityPerMaterial_Type, ...
+// Resources: _MainTex, _NormalMap, _ScreenShadowTexture, unity_SpecCube0
+// Intrinsics: air.sample_texture_2d, air.fma, air.dot, ...
+//
+// === LLVM IR BEGIN ===
+// ; ModuleID = 'xlatMtlMain'
+// target triple = "air64_v24-apple-ios15.0.0"
+// define <{ <4 x half>, half }> @xlatMtlMain(...) {
+//   %43 = call { <4 x half>, i8 } @air.sample_texture_2d.v4f16(...)
+//   ...
+// }
+// === LLVM IR END ===
+
+#include <metal_stdlib>
+using namespace metal;
+
+fragment half4 xlatMtlMain(float4 position [[position]]) {
+    return half4(1.0h, 0.0h, 1.0h, 1.0h); // magenta = placeholder
+}
+```
+
+### 当前限制
+
+- **Pipeline ID ↔ metallib 映射不精确**：当前按顺序填充，不保证对应关系正确
+- **需要运行时收集映射**：后续需在 hook 中记录每个 `makeLibrary` 返回的 library 对象地址或 pipeline hash 与 metallib cacheKey 的关联
+- **剩余 1576 个 pipeline 无源码**：index 中有 1730 个缺失，目前只注入了 154 个
+
+### 后续计划
+
+1. 在运行时 hook 中收集 pipeline hex ID → metallib 的精确映射
+2. 实现 IR → MSL 的离线反编译（可复用 IRToMSLConverter）
+3. 用真实 MSL 替换 stub，使 Xcode 能 Apply 修改后的 shader
 
 ### 相关 gputrace
 
@@ -94,4 +144,15 @@ python3 Scripts/set_shader_replacement_mode.py --bundle-id com.papegames.lysk --
 # 同步 PlayTools 到系统
 rm -rf ~/Library/Frameworks/PlayTools.framework
 cp -R build/Build/Products/Release/PlayCover.app/Contents/Frameworks/PlayTools.framework ~/Library/Frameworks/PlayTools.framework
+
+# 注入 IR 增强源码到 gputrace
+python3 LocalDocs/OfflineSourceRecovery/scripts/inject_shader_debug_info.py \
+    --gputrace /path/to/capture.gputrace \
+    --debug-info ~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/com.papegames.lysk
+
+# 注入前先预览（dry-run + 输出到单独目录）
+python3 LocalDocs/OfflineSourceRecovery/scripts/inject_shader_debug_info.py \
+    --gputrace /path/to/capture.gputrace \
+    --debug-info ~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/com.papegames.lysk \
+    --dry-run --max-inject 5 --output-dir /tmp/preview
 ```

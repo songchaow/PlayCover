@@ -2,11 +2,27 @@
 
 ## 概述
 
-**目标**：从运行时轻量提取 shader 调试信息（metallib + bitcode），后续离线进行反编译和 gputrace 修改。
+**目标**：从运行时轻量提取 shader 调试信息（metallib + bitcode），后续离线进行反编译和 gputrace 修改，使 Xcode 打开 gputrace 时能显示原本缺失的 shader 源码。
 
 **分两阶段**：
 1. ✅ **PlayCover 改造**：添加轻量 "提取 shader 调试信息" 模式（已完成）
-2. ⬜ **离线后处理**：反编译 IR、修改 gputrace 文件注入调试信息（待实施）
+2. ⬜ **离线后处理**：反编译 IR、修改 gputrace 文件注入调试信息（研究中）
+
+---
+
+## Xcode 源码显示机制（核心认知）
+
+Xcode 从 gputrace 的 `store0` 中读取 shader 源码。`store0` 是多段 zlib 压缩的数据存储，解压后包含：
+- 所有被 app 使用的 **metallib 二进制**
+- 对于 `makeLibrary(source:)` 路径的 metallib，其后紧跟一份**独立的源码文本 blob**
+
+**关键事实**：
+- 源码文本**不嵌入** metallib 二进制内部（metallib 的 `file_size` 字段之外）
+- Xcode **不从 bitcode 反编译**源码（即使 metallib 含完整 LLVM bitcode，若无配套源码 blob 则显示 "source not found"）
+- gputrace 中的 sidecar 文件（hex ID 命名的 .metal 文件）**不是** Xcode 显示源码的来源，替换其内容不影响显示
+- `makeLibrary(data:)` 路径的 metallib 在 store0 中只存储了 metallib 本身，没有配套源码 blob
+
+**结论**：要让 Xcode 显示源码，唯一可靠的方式是在截帧时让 shader 走 `makeLibrary(source:)` 路径，或者离线修改 store0 注入源码 blob。
 
 ---
 
@@ -61,22 +77,19 @@
 
 ---
 
-## 阶段二：离线后处理（进行中）
+## 阶段二：离线后处理（研究中）
 
 ### 已完成
 
-**注入 IR 增强的 shader stub 到 gputrace**：
+**注入 IR 增强的 shader stub 到 gputrace sidecar**：
 
 脚本 `LocalDocs/OfflineSourceRecovery/scripts/inject_shader_debug_info.py` 实现了：
 1. 读取 ShaderDebugInfo 中的 bitcode 模块
 2. 离线使用 `llvm-dis` 反汇编为 LLVM IR 文本
 3. 生成注释增强的 .metal stub 文件（包含完整 IR + 资源列表 + MSL 编译桩）
-4. 注入到 gputrace bundle 中缺失源码的 pipeline 位置
+4. 放入 gputrace bundle 的 sidecar 位置
 
-**注入结果**：
-- 对 `capture_20260518_110050.gputrace` 注入了 154 个 shader stub
-- 每个文件包含：元数据头 + 结构体定义 + 纹理/Buffer 列表 + 完整 LLVM IR + MSL stub
-- gputrace 中源码文件从 23 增加到 177
+**注意**：这些 sidecar 文件无法让 Xcode 显示源码（因为 Xcode 不从 sidecar 读取源码），但仍可作为人工参考使用。
 
 **生成文件格式示例**：
 ```metal
@@ -107,17 +120,30 @@ fragment half4 xlatMtlMain(float4 position [[position]]) {
 }
 ```
 
+### 可行攻坚方向
+
+#### 方向 A: 运行时截帧时启用源码替换模式（最直接）
+
+PlayCover 已有的 `shaderSourceReplacementEnabled` 模式会拦截 `makeLibrary(data:)` → 反编译 bitcode 为 MSL → 通过 `makeLibrary(source:)` 重新编译。如果在截帧时启用此模式，Xcode 截帧引擎会自动保存源码到 store0，后续打开 gputrace 即可看到源码。
+
+**优势**：完全利用 Xcode 原生机制，无需破解 gputrace 格式
+**代价**：运行时性能开销；反编译的 MSL 可能含错误导致部分 shader 编译失败
+
+#### 方向 B: 离线修改 store0 注入源码 blob
+
+解压 store0 → 在 metallib 后插入源码 blob → 更新所有引用偏移 → 重新压缩写回。
+
+**挑战**：需要完全理解 store0 的 blob 索引/引用机制
+
+#### 方向 C: 研究 Xcode "Import Sources" 功能
+
+Xcode "Shader source not found" 对话框有 "Import Sources" 按钮，研究其工作方式。
+
 ### 当前限制
 
 - **Pipeline ID ↔ metallib 映射不精确**：当前按顺序填充，不保证对应关系正确
-- **需要运行时收集映射**：后续需在 hook 中记录每个 `makeLibrary` 返回的 library 对象地址或 pipeline hash 与 metallib cacheKey 的关联
-- **剩余 1576 个 pipeline 无源码**：index 中有 1730 个缺失，目前只注入了 154 个
-
-### 后续计划
-
-1. 在运行时 hook 中收集 pipeline hex ID → metallib 的精确映射
-2. 实现 IR → MSL 的离线反编译（可复用 IRToMSLConverter）
-3. 用真实 MSL 替换 stub，使 Xcode 能 Apply 修改后的 shader
+- **需要运行时收集映射**：后续需在 hook 中记录每个 `makeLibrary` 返回的 library 对象地址与 metallib cacheKey 的关联
+- **IR → MSL 反编译**：没有公开的 AIR bitcode → MSL 反编译工具，需自行实现 `IRToMSLConverter` 或利用 Xcode 私有能力
 
 ### 相关 gputrace
 
@@ -145,7 +171,7 @@ python3 Scripts/set_shader_replacement_mode.py --bundle-id com.papegames.lysk --
 rm -rf ~/Library/Frameworks/PlayTools.framework
 cp -R build/Build/Products/Release/PlayCover.app/Contents/Frameworks/PlayTools.framework ~/Library/Frameworks/PlayTools.framework
 
-# 注入 IR 增强源码到 gputrace
+# 注入 IR 增强源码到 gputrace（sidecar，仅供人工参考）
 python3 LocalDocs/OfflineSourceRecovery/scripts/inject_shader_debug_info.py \
     --gputrace /path/to/capture.gputrace \
     --debug-info ~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/com.papegames.lysk

@@ -1,0 +1,14 @@
+{
+  "0x7b12cf580": {
+    "cacheKey": "C2F2D89403D39FBF_7593",
+    "functionType": "vertex",
+    "shaderName": "Papegame/SkinMakeupNew",
+    "note": "SkinMakeupNew vertex shader"
+  },
+  "0x7b12cd4c0": {
+    "cacheKey": "61F4807E5636D024_28097",
+    "functionType": "fragment",
+    "shaderName": "Papegame/SkinMakeupNew",
+    "note": "SkinMakeupNew fragment shader"
+  }
+}

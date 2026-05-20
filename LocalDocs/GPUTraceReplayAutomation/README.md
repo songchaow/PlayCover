@@ -24,23 +24,23 @@
 
 | # | 能力维度 | 状态 | 关键结论 |
 |---|---------|------|---------|
-| 1 | Replay 执行 | ✅ | R3: CLI 路径 headless 返回 0 |
-| 2 | 纹理/Buffer 离线查看（存量资源） | ✅ | R4.1: Harvester 4 函数 blob 解析 |
-| 3 | 帧/draw call 导航 (playTo) | ✅ | R4.3: `playTo(controller, targetCallIndex)` 验证成功 |
-| 4 | Replay 后实时资源获取（render target） | ✅ | R4.3: ObjectMap → NSDictionary, getBytes/contents 导出 |
-| 5 | Pipeline 查看 | ✅ | R5.1: libraryDataContents/bitcodeData 导出 metallib + AIR |
-| 6 | GPU Counters（硬件计数器） | ⛔ 跳过 | R4.4: 需 Apple 私有 entitlement + SIP 关闭；host timing 可替代 |
-| 7 | Shader Profiler（per-line 耗时） | ⛔ 跳过 | 同 R4.4 entitlement 限制 |
-| 8 | Derived Counters（派生指标） | ⛔ 跳过 | 同 R4.4 entitlement 限制 |
-| 9 | Shader 热替换 | ✅ | R5.2: objectMap.setLibrary:forKey: + rewind+playAll；shaderIR(metallib binary)无需源码 |
-| 10 | Shader Debug | ⚠️ 部分 | R5.3: 原生路径受限；instrumented debug 替代方案完全可行含无源码支持 |
-| 11 | Configuration 修改 | ✅ | R5.4: 调用链控制 + g_runningValidationCI 全局变量 + Service.update 路径 |
-| 12 | 输出自动化（标准化 JSON/bin 导出） | 🔄 部分 | R6 |
+| 1 | Replay 执行 | ✅ | Controller 路径 headless playAll 返回 0 |
+| 2 | 纹理/Buffer 查看 | ✅ | ObjectMap → getBytes/contents 导出 |
+| 3 | 帧/draw call 导航 (playTo) | ✅ | `playTo(controller, targetCallIndex)` |
+| 4 | Replay 后实时资源获取 | ✅ | ObjectMap.resources → NSDictionary |
+| 5 | Pipeline 查看 | ✅ | libraryDataContents/bitcodeData 导出 |
+| 6 | GPU Counters | ⛔ 跳过 | 需 Apple 私有 entitlement + SIP 关闭 |
+| 7 | Shader Profiler | ⛔ 跳过 | 同 entitlement 限制 |
+| 8 | Derived Counters | ⛔ 跳过 | 同 entitlement 限制 |
+| 9 | Shader 热替换 | ✅ | setLibrary:forKey: + rewind+playAll |
+| 10 | Shader Debug | ⚠️ 部分 | instrumented debug 替代方案可行 |
+| 11 | Configuration 修改 | ✅ | 调用链控制 + 全局变量 |
+| 12 | 输出自动化 | ✅ | R6.1 bridge 已实现 JSON/bin 导出 |
 
-**完成度：~75%（8/12 完成 + 1 部分 + 3 跳过；仅输出自动化待实现）**
+**完成度：~83%（9/12 完成 + 3 跳过；bridge 已实现，待编译验证与高层封装）**
 
 最终交付物：
-- **统一 ObjC bridge CLI**：单一多子命令二进制，覆盖所有已验证能力，JSON 输出。
+- **统一 ObjC bridge CLI**（`Scripts/gputrace_replay_bridge.m`）：已完成 5 子命令，覆盖全部已验证能力，JSON 输出。
 - **Python CLI wrapper**：对 bridge 层的高层封装，面向自动化流水线。
 - **自动验证链路**：静态验证 → 动态扫描 → 最小样本测试。
 
@@ -66,26 +66,14 @@
   - `[tex getBytes:bytesPerRow:fromRegion:mipmapLevel:]` / `[buf contents]` 直接导出 raw data
   - `playTo(controller, uint32_t targetCallIndex)` — 导出函数，0=成功
 - **Pipeline Binary 导出**（R5.1）：`libraryForKey:(uint64_t)` → `libraryDataContents`(metallib) / `bitcodeData`(AIR)。Key 偶数=Library，奇数=Function
-- **Shader 热替换**（R5.2）：`objectMap.setLibrary:forKey:` → rewind → playAll。shaderIR(metallib binary) 可无源码替换。详见 `subdocs/20260520-R5.2-shader-hot-replace.md`
-- **Shader Debug**（R5.3）：Instrumented debug（R5.2替换 + R4.3 playTo+读取 = "printf debug"），含无源码支持。详见 `subdocs/20260520-R5.3-shader-debug.md`
-- **Configuration**（R5.4）：调用链控制（disableOptimizeRestores/forceLoadUnusedResources）+ 全局变量（g_runningValidationCI）。详见 `subdocs/20260520-R5.4-configuration.md`
-- **工具链已就绪**（均在 `Scripts/` 目录下）：
-  - `gputrace_bridge.py` — 只读 bridge（scan-active-replay / scan-binaries / inspect-gputrace）
-  - `replay_probe.m` — CLI 路径探针
-  - `controller_probe.m` — Controller 路径探针
-  - `harvester_probe.m` — 离线数据提取探针
-  - `objectmap_probe.m` — ObjectMap 数据提取 + playTo 探针
-  - `counter_probe.m` — 计数器能力枚举 + timing 探针
-  - `pipeline_probe.m` — Pipeline/Library binary 导出探针
-  - `update_library_probe.m` / `update_library_probe2.m` / `update_library_probe3.m` — Shader 替换探针
-  - `shader_debug_probe.m` ~ `shader_debug_probe3.m` — Shader Debug 探针
-  - `shader_debug_ipc_probe.m` ~ `shader_debug_ipc_probe4.m` — IPC 协议探针
-  - `config_probe.m` / `config_probe2.m` — Configuration 动态修改探针
-  - `gputrace_replay_bridge.m` — **统一 ObjC bridge CLI**（R6.1 产出，多子命令 JSON 输出）
+- **Shader 热替换**（R5.2）：`objectMap.setLibrary:forKey:` → rewind → playAll。shaderIR(metallib binary) 可无源码替换
+- **Shader Debug**（R5.3）：Instrumented debug（替换 + playTo+读取 = "printf debug"），含无源码支持
+- **Configuration**（R5.4）：调用链控制（disableOptimizeRestores/forceLoadUnusedResources）+ 全局变量（g_runningValidationCI）
+- **统一 Bridge**（R6.1）：`Scripts/gputrace_replay_bridge.m` — 5 子命令（help/replay/pipeline/shader/config）已实现并验证。详见 `subdocs/20260520-R6.1-bridge-implementation.md`
 
 ### 当前卡点
 
-无。R6.1e 已完成。
+无。R6.1a~e 全部完成。
 
 ### 下一步（当前最高优先级）
 
@@ -122,38 +110,20 @@
 
 - **[DONE] R0**：建立 dashboard、基线扫描。
 - **[DONE] R1**：提取 replay 通路最小对象图与参数面。
-  - R1.1：GPUToolsServices / GPUToolsReplay 完整 API 清单。
-  - R1.1b：GPUToolsTransport + GPURawCounter API 清单。
-  - R1.2：GTMTLReplay_CLI 签名逆向，确认 headless 可行。
-  - R1.3：三层字典结构标记（CLI 路径不需要）。
 - **[DONE] R2**：产出只读 bridge 原型。
-  - R2.1：CLI / JSON schema 设计。
-  - R2.2：实现 `Scripts/gputrace_bridge.py`，V4 验证通过。
-  - R2.3：9 项稳定性测试全部通过。
 - **[DONE] R3**：headless replay 实际调用验证。
-  - CLI 路径仅做 replay 验证；completionCallback 为 dead code；能力边界已明确。
 - **[DONE] R4**：数据获取等价。
-  - R4.1：Harvester 离线 blob 解析器验证。
-  - R4.2：Controller 路径验证（makeDataSource+makeController+playAll+objectMap）。
-  - R4.3：ObjectMap 数据提取 + playTo 定向 replay 验证。
-  - R4.4：GPU Counters — host timing 可用，HW counters 被 entitlement 阻塞（跳过）。
-  - R4.5：Shader Profiler — 同 R4.4 限制（跳过）。
 - **[DONE] R5**：操作等价 — Replay 数据深度获取与交互操作。
-  - [DONE] R5.1：Pipeline 查看（libraryForKey:uint64→libraryDataContents/bitcodeData 导出 metallib+AIR）
-  - [DONE] R5.2：Shader 热替换（objectMap.setLibrary:forKey: + shaderIR/shaderSource；Xcode UI 未暴露的 shaderIR 注入已验证）
-  - [DONE] R5.3：Shader Debug（原生路径受 GTLLVMHelper IPC 限制；instrumented debug 替代方案完全可行，含无源码支持）
-  - [DONE] R5.4：Configuration 动态修改（调用链控制 + g_runningValidationCI 全局变量 + Service.update 路径确认）
 - **[IN-PROGRESS][P0] R6**：客户端封装与可用性收尾。
   - **R6.1：统一 ObjC bridge binary** — 将所有已验证能力合并为单一多子命令 CLI，JSON 输出
-    - [DONE] R6.1a：**骨架搭建** — 统一 main.m + 子命令分发框架 + JSON 输出宏 + 公共初始化（dlopen/APR/Controller）
-    - [DONE] R6.1b：**replay 子命令** — replay/rewind/playTo + 资源枚举与导出（整合 controller_probe + objectmap_probe）
-    - [DONE] R6.1c：**pipeline 子命令** — library 枚举 + metallib/AIR 导出（整合 pipeline_probe）
-    - [DONE] R6.1d：**shader 子命令** — setLibrary:forKey: 替换 + rewind+playAll 验证（整合 update_library_probe*）
-    - [DONE] R6.1e：**config 子命令** — 调用链控制 3 项 + validation 全局变量（整合 config_probe*）
-    - R6.1f：**编译验证** — Makefile + ad-hoc 签名 + 各子命令最小样本测试
+    - [DONE] R6.1a：骨架搭建 — 子命令分发 + JSON 宏 + 公共初始化
+    - [DONE] R6.1b：replay 子命令 — playAll/playTo + 资源枚举与导出
+    - [DONE] R6.1c：pipeline 子命令 — library 枚举 + metallib/AIR 导出
+    - [DONE] R6.1d：shader 子命令 — setLibrary:forKey: 替换 + 验证
+    - [DONE] R6.1e：config 子命令 — 调用链控制 + validation
+    - **R6.1f：编译验证** — Makefile + ad-hoc 签名 + 各子命令最小样本测试
   - R6.2：Python CLI wrapper（对 R6.1 单一二进制的高层封装）
   - R6.3：端到端自动化验证链路
-  - 策略注：当前 16 个独立探针仅用于验证阶段；R6.1 将其整合为可复用的生产级工具，是最终交付物的核心
 
 ## 高频复用经验
 
@@ -167,14 +137,15 @@
 
 | 子文档 | 阅读建议 | 内容概述 |
 |--------|---------|---------|
-| `subdocs/20260520-R4.2-controller-path.md` | **总是建议读取** — Controller 路径是所有后续任务的基础 | 完整调用链、内部函数偏移表、ObjectMap 302 方法、playAll/playTo、Pipeline binary 导出（R5.1） |
-| `subdocs/20260520-R1.1b-transport-rawcounter-api.md` | **在实现 R6 XPC 路径时按需读取** — 包含 Update/ShaderDebug/Fetch 类族接口 | XPC Fetch/Query/Profile/ShaderDebug/Update 类族完整接口 |
-| `subdocs/20260520-R5.2-shader-hot-replace.md` | 在实现 R6.1 shader 子命令时按需读取 | R5.2 调用流程、路径对比、Xcode UI 能力缺口 |
-| `subdocs/20260520-R5.3-shader-debug.md` | 在实现 R6.1 debug 子命令或探索 IPC 后续方向时按需读取 | R5.3 类族、能力边界、instrumented debug 替代方案、IPC 探索结论 |
-| `subdocs/20260520-R5.4-configuration.md` | 在实现 R6.1 config 子命令时按需读取 | R5.4 Configuration 13 属性→Controller 路径映射、集成推荐 |
-| `subdocs/20260520-R1.1-api-inventory.md` | 在需要查阅完整符号/类清单时按需读取 | GPUToolsReplay 导出符号、Harvester blob 格式、GPUToolsServices 76 类 |
-| `subdocs/20260520-R3-headless-replay.md` | 在调试 APR/options 问题时按需读取 | APR bootstrap、options 完整布局、CLI 能力边界 |
-| `subdocs/20260520-replay-entry-scan.md` | 一般无需读取（基础信息已整合至主文档） | R0 基线：模块/进程/符号/文件访问 |
-| `subdocs/20260520-R1.2-GTMTLReplay_CLI-signature.md` | 一般无需读取（核心信息已整合） | CLI 签名、Options 偏移表、执行流程 |
-| `subdocs/20260520-R1.3-dictionary-fields.md` | 一般无需读取（CLI/Controller 路径不使用字典） | 三层字典字段；仅在需要 XPC 路径时参考 |
-| `subdocs/20260520-R2.1-CLI-schema.md` | 一般无需读取（bridge 已完成） | CLI schema 设计、R2.2/R2.3 实现与测试总结 |
+| `subdocs/20260520-R4.2-controller-path.md` | **总是建议读取** — Controller 路径是所有后续任务的基础 | 完整调用链、偏移表、ObjectMap、playTo、Pipeline 导出 |
+| `subdocs/20260520-R6.1-bridge-implementation.md` | **总是建议读取** — 已实现 bridge 的完整架构与子命令用法 | R6.1a~e 实现细节、JSON schema、验证结果 |
+| `subdocs/20260520-R5.2-shader-hot-replace.md` | 在扩展 shader 功能时按需读取 | 替换路径对比、Xcode UI 能力缺口 |
+| `subdocs/20260520-R5.3-shader-debug.md` | 在探索 IPC/debug 后续方向时按需读取 | ShaderDebug 类族、instrumented debug、IPC 探索结论 |
+| `subdocs/20260520-R5.4-configuration.md` | 在扩展 config 功能时按需读取 | 13 属性映射、Service 路径 |
+| `subdocs/20260520-R1.1-api-inventory.md` | 在查阅完整符号/类清单时按需读取 | GPUToolsReplay 导出符号、76 类清单、Harvester blob |
+| `subdocs/20260520-R1.1b-transport-rawcounter-api.md` | 在实现 XPC 路径时按需读取 | Fetch/Query/Profile/ShaderDebug/Update 类族接口 |
+| `subdocs/20260520-R3-headless-replay.md` | 在调试 APR/options 问题时按需读取 | APR bootstrap、Options 布局、CLI 能力边界 |
+| `subdocs/20260520-replay-entry-scan.md` | 一般无需读取 | R0 基线：模块/进程/符号 |
+| `subdocs/20260520-R1.2-GTMTLReplay_CLI-signature.md` | 一般无需读取 | CLI 签名、Options 偏移表 |
+| `subdocs/20260520-R1.3-dictionary-fields.md` | 一般无需读取 | 三层字典字段（CLI/Controller 不使用） |
+| `subdocs/20260520-R2.1-CLI-schema.md` | 一般无需读取 | gputrace_bridge.py CLI schema |

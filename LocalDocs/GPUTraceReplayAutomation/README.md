@@ -38,23 +38,24 @@
 - **Shader 热替换路径**：`GTReplayUpdateLibrary`(shaderSource/shaderIR/shaderURL) 直接支持运行时 shader 替换
 - **GPU 硬件计数器**：`GPURawCounter.framework` 提供 `GRCCopyAllCounterSourceGroup` 低层直接访问
 - **实际动态观察已验证**：完整 replay 进程链（Xcode → CompatService → AgentService → ReplayService → LLVMHelper）已通过 bridge 确认
+- **GTMTLReplay_CLI 实际调用已验证**：探针 `Scripts/replay_probe.m` 证明外部进程可直接 dlopen+dlsym 调用，无需 entitlement/Xcode（详见 R3.1 子文档）
+- **APR Bootstrap 方案已确认**：GPUToolsReplay 内部静态链接 APR，需在调用 CLI 前通过 GT_ENV-0x30 偏移手动构造 global pool + allocator（详见 R3.1 子文档）
 
 ### 当前卡点
 
-- 还未对 `GTMTLReplay_CLI` 做过实际最小调用验证 — 这是从"知道可以做"到"证明能做"的关键跨越
+- 已证明 `GTMTLReplay_CLI` 可被直接调用（APR 初始化已解决），但测试样本为 Git LFS 指针（未拉取），无法验证完整 replay 流程
+- **下一步需要**：`git lfs pull` 获取真实 .gputrace 样本，或手动用 Xcode capture 一个最小样本
 
 ### 下一步（当前最高优先级）
 
-- **R3.1**：编写最小 C/ObjC 探针（dlopen + dlsym GTMTLReplay_CLI），用已有 .gputrace 样本做实际调用验证。
-- **目标**：证明 headless replay 基础执行可行，获得 completionCallback 返回的实际数据。
-- **策略依据**：R0-R2 已完成全部 API 发现与只读 bridge 验证。下一步必须跨入实际调用层面，否则无法推进数据获取与操作等价目标。
-- **R3.1 实施要点**：
-  1. 创建 `Scripts/replay_probe.m`（单文件 ObjC，`clang -framework Foundation -framework Metal -ldl`）
-  2. `dlopen("/System/Library/PrivateFrameworks/GPUToolsReplay.framework/GPUToolsReplay", RTLD_LAZY)` → `dlsym("GTMTLReplay_CLI")`
-  3. 准备 0xC0 字节 options 结构体（清零 + loopCount=1），传入已有 .gputrace 路径
-  4. 设置 completionCallback 打印 NSData 长度和 NSURL
-  5. 观察返回值和 stderr 输出，记录成功/失败及错误信息
-  6. 若失败，逐步排查：framework 路径、Metal device 可用性、.gputrace 合法性、SIP 限制
+- **R3.2**：用真实 .gputrace 样本验证完整 replay 流程，探索 completionCallback 返回数据。
+- **目标**：获得 completionCallback 实际数据（NSData 内容 + NSURL），证明 headless replay 可产出有意义的输出。
+- **前置**：需要 `git lfs pull` 获取真实 .gputrace 样本，或从 Xcode 手动 capture。
+- **R3.2 实施要点**：
+  1. 获取真实 .gputrace（`git lfs pull` 或 Xcode capture）
+  2. 用 `replay_probe` 传入真实样本，观察 completionCallback 返回
+  3. 尝试设置 options.profilingFlags 和 gpuStateLevel
+  4. 解析 callback 中的 NSData（可能是 profiling 结果/JSON/plist）
 
 ## 构建与验证的方法
 
@@ -92,7 +93,7 @@
   - **[DONE] R2.2**：实现最小只读 bridge（`Scripts/gputrace_bridge.py`），V4 实际运行验证通过。
   - **[DONE] R2.3**：9 项稳定性测试全部通过，metadata 解析已修复。
 - **[TODO][P0] R3**：headless replay 实际调用验证 — 证明 CLI 路径可行。
-  - **[TODO][P0] R3.1**：编写最小 C/ObjC 探针（dlopen + dlsym GTMTLReplay_CLI），实际调用验证。
+  - **[DONE][P0] R3.1**：编写最小 C/ObjC 探针（dlopen + dlsym GTMTLReplay_CLI），实际调用验证通过。APR bootstrap 问题已解决。
   - **[TODO][P1] R3.2**：探索 completionCallback 返回数据内容 + profilingFlags 配置注入。
   - **[TODO][P1] R3.3**：验证 GPU counters / shader profiler 数据获取。
 - **[TODO][P2] R4**：数据获取等价 — 实现 Xcode GUI 中各类数据的 CLI 导出。
@@ -122,5 +123,6 @@
 | `subdocs/20260520-R1.1-api-inventory.md` | 在执行 R3+ 时按需读取 | GPUToolsReplay 导出符号、GPUToolsServices 76 类、关键 ivar/selector、对象图 |
 | `subdocs/20260520-R1.1b-transport-rawcounter-api.md` | **在执行 R3/R4/R5 时必须读取** | XPC 代理完整接口、Fetch/Query/Profile/ShaderDebug/Update 类族（定义了 Xcode GUI 全操作集）、GPURawCounter API |
 | `subdocs/20260520-R1.2-GTMTLReplay_CLI-signature.md` | **在执行 R3 时必须读取** | GTMTLReplay_CLI 签名、Options 结构体偏移、执行流程、headless 最小调用条件 |
+| `executions/20260520-R3.1-replay-probe-verification.md` | **在执行 R3.2+ 时必须读取** | APR bootstrap 方案、allocator/pool 结构体布局、偏移量验证、调用验证结果 |
 | `subdocs/20260520-R1.3-dictionary-fields.md` | 一般无需读取（仅在需要 XPC 路径时参考） | 三层字典完整字段；CLI 路径不使用这些字典 |
 | `subdocs/20260520-R2.1-CLI-schema.md` | 一般无需读取（bridge 已完成） | CLI 入口结构、子命令 JSON schema、分类规则 |

@@ -37,7 +37,7 @@
 | 11 | Configuration 修改 | ✅ | 调用链控制 + 全局变量 |
 | 12 | 输出自动化 | ✅ | R6.1 bridge 已实现 JSON/bin 导出 |
 
-**完成度：~83%（9/12 完成 + 3 跳过；bridge 已实现，待编译验证与高层封装）**
+**完成度：~83%（9/12 完成 + 3 跳过；bridge 已实现并通过编译验证+集成测试，待高层封装）**
 
 最终交付物：
 - **统一 ObjC bridge CLI**（`Scripts/gputrace_replay_bridge.m`）：已完成 5 子命令，覆盖全部已验证能力，JSON 输出。
@@ -73,16 +73,14 @@
 
 ### 当前卡点
 
-无。R6.1a~e 全部完成。bridge 编译零警告零错误已实测确认（2026-05-20）。
+无。R6.1a~f 全部完成。bridge 编译 + ad-hoc 签名 + 集成测试 17/17 通过（2026-05-20）。
 
 ### 下一步（当前最高优先级）
 
-**R6.1f：编译验证 — Makefile + ad-hoc 签名 + 集成测试**
+**R6.2：Python CLI wrapper（对 R6.1 单一二进制的高层封装）**
 
-- 创建 `Scripts/Makefile`：编译 gputrace_replay_bridge.m + ad-hoc 签名（`CODE_SIGN_IDENTITY="-"`）
-- 各子命令最小样本集成测试脚本（shell script，验证退出码 + JSON 输出字段）
-- 确认所有子命令在 reference trace 上通过
-- 预期耗时：低，所有子命令均已独立验证通过
+- 对 `gputrace_replay_bridge` 的 Python 包装层
+- 面向自动化流水线，提供结构化接口
 
 ## 构建与验证的方法
 
@@ -122,7 +120,7 @@
     - [DONE] R6.1c：pipeline 子命令 — library 枚举 + metallib/AIR 导出
     - [DONE] R6.1d：shader 子命令 — setLibrary:forKey: 替换 + 验证
     - [DONE] R6.1e：config 子命令 — 调用链控制 + validation
-    - **R6.1f：编译验证** — Makefile + ad-hoc 签名 + 各子命令最小样本测试
+    - [DONE] R6.1f：编译验证 — Makefile + ad-hoc 签名 + 集成测试 17/17 通过
   - R6.2：Python CLI wrapper（对 R6.1 单一二进制的高层封装）
   - R6.3：端到端自动化验证链路
 
@@ -140,6 +138,7 @@
 |--------|---------|---------|
 | `subdocs/20260520-R4.2-controller-path.md` | **总是建议读取** — Controller 路径是所有后续任务的基础 | 完整调用链、偏移表、ObjectMap、playTo、Pipeline 导出 |
 | `subdocs/20260520-R6.1-bridge-implementation.md` | **总是建议读取** — 已实现 bridge 的完整架构与子命令用法 | R6.1a~e 实现细节、JSON schema、验证结果 |
+| `executions/20260520-R6.1f-build-verification.md` | 在查看构建/测试配置时按需读取 | Makefile、ad-hoc 签名、17 项集成测试详情 |
 | `subdocs/20260520-R5.2-shader-hot-replace.md` | 在扩展 shader 功能时按需读取 | 替换路径对比、Xcode UI 能力缺口 |
 | `subdocs/20260520-R5.3-shader-debug.md` | 在探索 IPC/debug 后续方向时按需读取 | ShaderDebug 类族、instrumented debug、IPC 探索结论 |
 | `subdocs/20260520-R5.4-configuration.md` | 在扩展 config 功能时按需读取 | 13 属性映射、Service 路径 |

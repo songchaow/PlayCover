@@ -1,0 +1,158 @@
+#!/bin/bash
+# test_gputrace_replay_bridge.sh — R6.1f 集成测试
+#
+# 验证编译后的 bridge 各子命令基本功能：
+#   1. help 子命令输出正确 JSON
+#   2. 无参数时退出码 = 1
+#   3. 各子命令无参数时退出码 = 1 (usage)
+#   4. (可选) 若提供 GPUTRACE_PATH 环境变量，执行 replay/pipeline/config 最小样本测试
+#
+# 用法：
+#   ./test_gputrace_replay_bridge.sh                    # 仅离线测试
+#   GPUTRACE_PATH=/path/to/sample.gputrace ./test_gputrace_replay_bridge.sh  # 含实际 trace
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BRIDGE="$SCRIPT_DIR/gputrace_replay_bridge"
+
+PASS=0
+FAIL=0
+TOTAL=0
+
+pass() { PASS=$((PASS + 1)); TOTAL=$((TOTAL + 1)); echo "  [PASS] $1"; }
+fail() { FAIL=$((FAIL + 1)); TOTAL=$((TOTAL + 1)); echo "  [FAIL] $1"; }
+
+echo "=== gputrace_replay_bridge Integration Tests ==="
+echo ""
+
+# --- Pre-check: binary exists ---
+if [ ! -x "$BRIDGE" ]; then
+    echo "[ERROR] Binary not found or not executable: $BRIDGE"
+    echo "        Run 'make' in Scripts/ first."
+    exit 1
+fi
+
+# --- Test 1: No arguments → exit code 1 ---
+echo "[T1] No arguments → exit code 1"
+set +e
+"$BRIDGE" >/dev/null 2>&1
+rc=$?
+set -e
+if [ "$rc" -eq 1 ]; then pass "exit code = 1"; else fail "exit code = $rc (expected 1)"; fi
+
+# --- Test 2: help → exit code 0 + valid JSON ---
+echo "[T2] help subcommand"
+set +e
+OUTPUT=$("$BRIDGE" help 2>/dev/null)
+rc=$?
+set -e
+if [ "$rc" -eq 0 ]; then pass "exit code = 0"; else fail "exit code = $rc (expected 0)"; fi
+
+# Check JSON has expected fields
+if echo "$OUTPUT" | grep -q '"tool"'; then pass "JSON has 'tool' field"; else fail "missing 'tool' field"; fi
+if echo "$OUTPUT" | grep -q '"commands"'; then pass "JSON has 'commands' array"; else fail "missing 'commands'"; fi
+if echo "$OUTPUT" | grep -q '"version"'; then pass "JSON has 'version' field"; else fail "missing 'version'"; fi
+
+# Check all 5 commands listed
+for cmd in help replay pipeline shader config; do
+    if echo "$OUTPUT" | grep -q "\"$cmd\""; then
+        pass "commands contains '$cmd'"
+    else
+        fail "commands missing '$cmd'"
+    fi
+done
+
+# --- Test 3: Unknown command → exit code 1 ---
+echo "[T3] Unknown command → exit code 1"
+set +e
+"$BRIDGE" nonexistent_cmd >/dev/null 2>&1
+rc=$?
+set -e
+if [ "$rc" -eq 1 ]; then pass "exit code = 1"; else fail "exit code = $rc (expected 1)"; fi
+
+# --- Test 4: Subcommands without required args → exit code 1 ---
+echo "[T4] Subcommands without required args → exit code 1"
+for cmd in replay pipeline shader config; do
+    set +e
+    "$BRIDGE" "$cmd" >/dev/null 2>&1
+    rc=$?
+    set -e
+    if [ "$rc" -eq 1 ]; then pass "$cmd no-args → exit 1"; else fail "$cmd no-args → exit $rc (expected 1)"; fi
+done
+
+# --- Test 5: replay with invalid path → exit code 2 ---
+echo "[T5] replay with invalid path → exit code 2"
+set +e
+"$BRIDGE" replay /nonexistent/path.gputrace >/dev/null 2>&1
+rc=$?
+set -e
+if [ "$rc" -eq 2 ]; then pass "exit code = 2 (bad input)"; else fail "exit code = $rc (expected 2)"; fi
+
+# --- Test 6: codesign verification ---
+echo "[T6] codesign verification"
+set +e
+codesign -v "$BRIDGE" 2>/dev/null
+rc=$?
+set -e
+if [ "$rc" -eq 0 ]; then pass "codesign valid"; else fail "codesign invalid (rc=$rc)"; fi
+
+# --- Test 7+ (Optional): Live trace tests ---
+if [ -n "${GPUTRACE_PATH:-}" ] && [ -d "$GPUTRACE_PATH" ]; then
+    echo ""
+    echo "[T7] Live trace tests (GPUTRACE_PATH=$GPUTRACE_PATH)"
+
+    # T7a: replay
+    echo "  [T7a] replay subcommand"
+    set +e
+    OUTPUT=$("$BRIDGE" replay "$GPUTRACE_PATH" 2>/dev/null)
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ]; then pass "replay exit code = 0"; else fail "replay exit code = $rc"; fi
+    if echo "$OUTPUT" | grep -q '"success":true'; then pass "replay success=true"; else fail "replay success!=true"; fi
+    if echo "$OUTPUT" | grep -q '"resource_count"'; then pass "replay has resource_count"; else fail "missing resource_count"; fi
+    if echo "$OUTPUT" | grep -q '"elapsed_ms"'; then pass "replay has elapsed_ms"; else fail "missing elapsed_ms"; fi
+
+    # T7b: replay --list-resources
+    echo "  [T7b] replay --list-resources"
+    set +e
+    OUTPUT=$("$BRIDGE" replay "$GPUTRACE_PATH" --list-resources 2>/dev/null)
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ]; then pass "list-resources exit code = 0"; else fail "exit code = $rc"; fi
+    if echo "$OUTPUT" | grep -q '"resources"'; then pass "has resources array"; else fail "missing resources"; fi
+
+    # T7c: pipeline
+    echo "  [T7c] pipeline subcommand"
+    TMPDIR_PIPE=$(mktemp -d)
+    set +e
+    OUTPUT=$("$BRIDGE" pipeline "$GPUTRACE_PATH" "$TMPDIR_PIPE" 2>/dev/null)
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ]; then pass "pipeline exit code = 0"; else fail "pipeline exit code = $rc"; fi
+    if echo "$OUTPUT" | grep -q '"libraries_count"'; then pass "has libraries_count"; else fail "missing libraries_count"; fi
+    METALLIB_COUNT=$(ls "$TMPDIR_PIPE"/*.metallib 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$METALLIB_COUNT" -gt 0 ]; then pass "exported $METALLIB_COUNT metallib(s)"; else fail "no metallibs exported"; fi
+    rm -rf "$TMPDIR_PIPE"
+
+    # T7d: config (default)
+    echo "  [T7d] config subcommand (defaults)"
+    set +e
+    OUTPUT=$("$BRIDGE" config "$GPUTRACE_PATH" 2>/dev/null)
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ]; then pass "config exit code = 0"; else fail "config exit code = $rc"; fi
+    if echo "$OUTPUT" | grep -q '"config"'; then pass "has config object"; else fail "missing config object"; fi
+    if echo "$OUTPUT" | grep -q '"success":true'; then pass "config success=true"; else fail "config success!=true"; fi
+else
+    echo ""
+    echo "[INFO] Skipping live trace tests (set GPUTRACE_PATH to enable)"
+fi
+
+# --- Summary ---
+echo ""
+echo "=== Results: $PASS passed, $FAIL failed, $TOTAL total ==="
+if [ "$FAIL" -gt 0 ]; then
+    exit 1
+fi
+exit 0

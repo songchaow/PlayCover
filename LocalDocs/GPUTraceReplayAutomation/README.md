@@ -33,17 +33,16 @@
 | 7 | Shader Profiler（per-line 耗时） | ⛔ 跳过 | 同 R4.4 entitlement 限制 |
 | 8 | Derived Counters（派生指标） | ⛔ 跳过 | 同 R4.4 entitlement 限制 |
 | 9 | Shader 热替换 | ✅ | R5.2: objectMap.setLibrary:forKey: + rewind+playAll；shaderIR(metallib binary)无需源码 |
-| 10 | Shader Debug | ⚠️ 部分 | R5.3: 原生路径受限(需GTLLVMHelper IPC)；instrumented debug 替代方案完全可行含无源码支持 |
-| 11 | Configuration 修改 | ✅ | R5.4: 调用链控制(optimizeRestores/populateUnused) + 全局变量(g_runningValidationCI) + Service.update 路径 |
+| 10 | Shader Debug | ⚠️ 部分 | R5.3: 原生路径受限；instrumented debug 替代方案完全可行含无源码支持 |
+| 11 | Configuration 修改 | ✅ | R5.4: 调用链控制 + g_runningValidationCI 全局变量 + Service.update 路径 |
 | 12 | 输出自动化（标准化 JSON/bin 导出） | 🔄 部分 | R6 |
 
 **完成度：~75%（8/12 完成 + 1 部分 + 3 跳过；仅输出自动化待实现）**
 
 最终交付物：
-- **C/ObjC bridge 层**：探针 + 结构化调用接口，提供 headless replay 全功能调用能力。
+- **统一 ObjC bridge CLI**：单一多子命令二进制，覆盖所有已验证能力，JSON 输出。
 - **Python CLI wrapper**：对 bridge 层的高层封装，面向自动化流水线。
 - **自动验证链路**：静态验证 → 动态扫描 → 最小样本测试。
-- **持续维护文档**：本 dashboard + 子文档体系。
 
 ## 全局约束
 
@@ -65,37 +64,11 @@
 - **数据获取核心**：`GTMTLReplayObjectMap`（302 方法 NSObject 子类），replay 后通过 `resources`/`bufferForKey:`/`textureForKey:` 直接读取 GPU 数据
   - playAll 后 `objectMap.resources` → NSDictionary（key=NSNumber 资源 ID, value=MTLTexture/MTLBuffer）
   - `[tex getBytes:bytesPerRow:fromRegion:mipmapLevel:]` / `[buf contents]` 直接导出 raw data
-  - `playTo(controller, uint32_t targetCallIndex)` — 导出函数，0=成功；resources count 随 target 变化证明定向控制有效
-- **离线数据提取**：`GTHarvester*` 4 个纯 blob 解析器，可在无 replay 情况下提取 .gputrace 中已存储的纹理/buffer
-- **XPC 操作全集已清点**：`GTMTLReplayServiceXPCProxy` 定义了 Xcode GUI 所有 replay 操作范围（fetch/query/profile/shaderdebug/update），为后续能力对齐提供完整参照。详见 `subdocs/20260520-R1.1b-transport-rawcounter-api.md`
-- **GPU Counters 能力边界**（R4.4）：GPURawCounter 需 `com.apple.private.agx.performance-spi`（Apple 签名 + SIP 关闭）；host timing via `mach_absolute_time` + playTo per-segment 可替代
-- **Pipeline Binary 导出**（R5.1）：
-  - ObjectMap 的所有 `ForKey:` 方法接受 **uint64_t** 参数（type encoding `Q`），非 NSObject
-  - `libraryForKey:(uint64_t)` → `_MTLLibrary`（MTLLibrary 协议）
-  - `_MTLLibrary.libraryDataContents` → NSData（metallib binary，magic 0x424C544D "BLTM"）
-  - `_MTLLibrary.bitcodeData` → NSData（AIR/LLVM bitcode，magic 0x0B17C0DE）
-  - Key 空间模式：library key = function key - 1（偶数/奇数交替）
-- **Shader 热替换**（R5.2）：
-  - 路径 A（推荐）：`objectMap.setLibrary:forKey:` → `rewind` → `playAll` — 直接替换，无需 XPC
-  - **shaderSource**：编译 MSL → MTLLibrary → 替换 ✅
-  - **shaderIR**：加载 metallib binary → MTLLibrary → 替换（**无需源码**）✅
-  - **Xcode UI 缺口**：GUI 只暴露 Edit Source；shaderIR binary 注入是 API-only 能力
-  - 详见 `subdocs/20260520-R5.2-shader-hot-replace.md`
-- **Shader Debug 架构**（R5.3）：
-  - 原生路径：GTMTLReplayService.shaderdebug → GTLLVMHelper IPC → 受限（需 flatbuffers 协议逆向）
-  - **替代方案**（推荐）：Instrumented shader debugging — 组合 R5.2(替换) + R4.3(playTo+读取) = "printf debug"
-  - 无源码调试：metallib→反汇编→修改IR→重编译→注入→对比输出 ✅
-  - IPC 连接层已打通（connect+ACK），协议层需 flatbuffers 逆向（后续增强方向，不阻塞主线）
-  - 详见 `subdocs/20260520-R5.3-shader-debug.md`
-- **Configuration 动态修改**（R5.4）：
-  - GTReplayConfiguration 13 BOOL 属性全可实例化/读写 ✅
-  - **Controller 路径映射**（3 个核心属性已验证）：
-    - `disableOptimizeRestores` → 跳过 `GTMTLReplayController_optimizeRestores`（CLI+0x96c）— 168–188% 性能差异
-    - `forceLoadUnusedResources` → 调用 `populateUnusedResources(ds, om)`
-    - `enableValidation` → 全局变量 `g_runningValidationCI`（导出符号）— 3.7–21.6% overhead
-  - **Service 路径**：`GTMTLReplayService.update:(GTReplayUpdateConfiguration)` — 需完整 GTMTLReplayClient context
-  - GTMTLReplayClient 结构体含 4 个 config bitfield（通过 initWithContext: type encoding 确认）
-  - 详见 `executions/20260520-R5.4-configuration.md`
+  - `playTo(controller, uint32_t targetCallIndex)` — 导出函数，0=成功
+- **Pipeline Binary 导出**（R5.1）：`libraryForKey:(uint64_t)` → `libraryDataContents`(metallib) / `bitcodeData`(AIR)。Key 偶数=Library，奇数=Function
+- **Shader 热替换**（R5.2）：`objectMap.setLibrary:forKey:` → rewind → playAll。shaderIR(metallib binary) 可无源码替换。详见 `subdocs/20260520-R5.2-shader-hot-replace.md`
+- **Shader Debug**（R5.3）：Instrumented debug（R5.2替换 + R4.3 playTo+读取 = "printf debug"），含无源码支持。详见 `subdocs/20260520-R5.3-shader-debug.md`
+- **Configuration**（R5.4）：调用链控制（disableOptimizeRestores/forceLoadUnusedResources）+ 全局变量（g_runningValidationCI）。详见 `subdocs/20260520-R5.4-configuration.md`
 - **工具链已就绪**（均在 `Scripts/` 目录下）：
   - `gputrace_bridge.py` — 只读 bridge（scan-active-replay / scan-binaries / inspect-gputrace）
   - `replay_probe.m` — CLI 路径探针
@@ -186,10 +159,10 @@
 | 子文档 | 阅读建议 | 内容概述 |
 |--------|---------|---------|
 | `subdocs/20260520-R4.2-controller-path.md` | **总是建议读取** — Controller 路径是所有后续任务的基础 | 完整调用链、内部函数偏移表、ObjectMap 302 方法、playAll/playTo、Pipeline binary 导出（R5.1） |
-| `subdocs/20260520-R1.1b-transport-rawcounter-api.md` | **在执行 R5 时必须读取** — 包含 Update/ShaderDebug 类族接口 | XPC Fetch/Query/Profile/ShaderDebug/Update 类族完整接口 |
-| `subdocs/20260520-R5.2-shader-hot-replace.md` | 在需要 shader 替换细节时按需读取 | R5.2 调用流程、路径对比、Xcode UI 能力缺口 |
-| `subdocs/20260520-R5.3-shader-debug.md` | 在需要 shader debug 架构细节或 IPC 后续方向时按需读取 | R5.3 类族、能力边界、instrumented debug 替代方案、IPC 探索结论与后续增强方向评估 |
-| `executions/20260520-R5.4-configuration.md` | 在需要 Configuration 属性映射细节时按需读取 | R5.4 Configuration 13 属性→Controller 路径映射、GTMTLReplayClient 结构体、验证数据 |
+| `subdocs/20260520-R1.1b-transport-rawcounter-api.md` | **在实现 R6 XPC 路径时按需读取** — 包含 Update/ShaderDebug/Fetch 类族接口 | XPC Fetch/Query/Profile/ShaderDebug/Update 类族完整接口 |
+| `subdocs/20260520-R5.2-shader-hot-replace.md` | 在实现 R6.1 shader 子命令时按需读取 | R5.2 调用流程、路径对比、Xcode UI 能力缺口 |
+| `subdocs/20260520-R5.3-shader-debug.md` | 在实现 R6.1 debug 子命令或探索 IPC 后续方向时按需读取 | R5.3 类族、能力边界、instrumented debug 替代方案、IPC 探索结论 |
+| `subdocs/20260520-R5.4-configuration.md` | 在实现 R6.1 config 子命令时按需读取 | R5.4 Configuration 13 属性→Controller 路径映射、集成推荐 |
 | `subdocs/20260520-R1.1-api-inventory.md` | 在需要查阅完整符号/类清单时按需读取 | GPUToolsReplay 导出符号、Harvester blob 格式、GPUToolsServices 76 类 |
 | `subdocs/20260520-R3-headless-replay.md` | 在调试 APR/options 问题时按需读取 | APR bootstrap、options 完整布局、CLI 能力边界 |
 | `subdocs/20260520-replay-entry-scan.md` | 一般无需读取（基础信息已整合至主文档） | R0 基线：模块/进程/符号/文件访问 |

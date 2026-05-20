@@ -5,7 +5,7 @@
 - 最终交付物固定为三类：
   - **bridge 调用层**：提供给客户端稳定调用，优先 CLI/脚本/JSON 输出。
   - **自动验证链路**：能由 agent 自主完成的静态验证、动态扫描、最小样本测试。
-  - **持续维护文档**：本 dashboard、execution 记录、必要子文档。
+  - **持续维护文档**：本 dashboard、必要子文档。
 
 ## 全局约束
 
@@ -14,53 +14,40 @@
 - 优先使用**只读、低侵入**方法：静态扫描 > 动态观察 > 最小调用验证 > attach / 注入 / 替换。
 - 未经用户确认，不做会明显干扰当前 Xcode replay 或系统稳定性的动作，包括但不限于：LLDB attach、代码注入、修改 Xcode 包内容、写入系统目录、关闭/重启 Xcode、替换私有 framework。
 - 新增 bridge 或脚本必须优先满足：**headless、可重复执行、失败可诊断、输出 JSON**。
-- 主文档保持简洁；详细发现、命令摘要、实验记录写入子文档或 `executions/`。
+- 主文档保持简洁；详细发现写入子文档。
 
 ## 主线任务
 
-- **已建立的知识**：
-  - 主线模块：`GPUDebugger.ideplugin` → `GPUToolsServices`(76 类) → XPC Services → `GPUToolsReplay.framework`(C API)
-  - replay 通路是 **ObjC 私有对象模型 + XPC + Mach memory** 的多层协作，非单一公开 ABI
-  - `GPUToolsReplayService.xpc` 只是 thin stub；所有 replay 逻辑在 `GPUToolsReplay.framework`
-  - 最有价值的自动化入口：`GTMTLReplay_CLI`(CLI 入口)、`GTHarvesterGet*`(只读数据提取)、`g_runningInCI`(CI 模式)
-  - **[R1.2 已确认]** `GTMTLReplay_CLI` 签名：`int GTMTLReplay_CLI(const char *path, GTMTLReplayCLIOptions *options, void (*callback)(NSData*, NSURL*))`
-  - **[R1.2 已确认]** headless replay **可行**：该函数自行初始化 Metal device 和 replay controller，不依赖 Xcode/GUI/XPC
-  - **[R1.2 已确认]** `g_runningInCI` 仅控制日志格式（`#CI-INFO#`/`#CI_ERROR#`），不影响实际 replay 逻辑
-  - **[R1.2 已确认]** XPC 职责：CompatService=bundle 预处理, ReplayService=thin stub 仅做进程隔离, AgentService=设备代理
-  - **[R1.2 已确认]** 环境变量：`ATF_RESULTSDIRECTORY`(输出目录), `MTLOverrideDeviceCreationFlags`, `GPUMTLOverrideDeviceFamily`
-  - **[R1.2 已确认]** `GTMTLReplayCLIOptions` 部分字段：+0x18=loopCount, +0x25=waitForCompletion(bool), +0x30=saveDestination(char*), +0xa4=gpuStateLevel, +0xb8=profilingFlags(bitfield)
-  - **[R1.3 已确认]** 三层字典结构：L1=`finalLaunchDictionary`(10键,启动参数), L2=`replayerLaunchDictionary`(7键,L1缩减+bool开关), L3=`traceConfigurationDictionary`(7键,profiling运行时配置)
-  - **[R1.3 已确认]** `replayerLaunchDictionary` 核心键：`kDYGuestAppLaunchReplayer`(bool), `kDYGuestAppLaunchCapture`(bool), `kDYGuestAppLaunchDiagnostics`(bool), `kDYGuestAppLaunchUUIDKey`, `kDYGuestAppPlatformPrefixKey`, `kDYGuestAppLaunchEnvironmentKey`, `kDYGuestAppLaunchArgumentsKey`
-  - **[R1.3 已确认]** `hardwareCountersConfiguration` 作为 `_kDYTraceProfilingHardwareCountersConfigurationKey` 的值嵌入 L3 字典；候选内部键：`CounterSampleBufferCounterSetName`, `CounterSampleBufferSampleCount`
-  - **[R1.3 已确认]** headless replay（`GTMTLReplay_CLI` 路径）**不需要** `replayerLaunchDictionary`；该字典仅在 XPC/DYGuestAppSession 通路有意义
-  - **[R1.3 已确认]** 环境变量级控制键补充：`MTLREPLAYER_ALLOW_PROGRAM_ADDRESS_TABLES`, `MTLREPLAYER_OVERRIDE_DEVICE_REGISTRY_ID`, `GPUTOOLS_FORCE_ROSETTA`
-  - **[R2.1 已确认]** CLI 采用统一入口 `gputrace_bridge.py` + 子命令模式（`scan-active-replay`, `scan-binaries`, `inspect-gputrace`）
-  - **[R2.1 已确认]** 输出格式：所有子命令默认 `--json`，错误输出统一为 `{error: {code, message, context}}`
-  - **[R2.1 已确认]** `scan-active-replay` 输出包含：进程列表（含 role 分类）、open_files（含 category 分类）、active_gputrace_path、metal_cache_dir
-  - **[R2.1 已确认]** `scan-binaries` 输出包含：模块路径/存在性/架构/大小/key_symbols/matched_strings
-  - **[R2.1 已确认]** `inspect-gputrace` 输出包含：valid/total_size/metadata（uuid, captured_frames_count, graphics_api 等）/files 列表（含类型分类）
-  - **[R2.1 已确认]** 实现约束：纯 Python 3.9+ 标准库，无第三方依赖
-- **当前卡点**：
-  - 还未对 `GTMTLReplay_CLI` 做过实际最小调用验证（属于 R3 范畴）
-- **下一步（当前最高优先级）**：
-  - **R2.2**：实现最小只读 bridge（`Scripts/gputrace_bridge.py`），不触发 replay。
-  - **策略依据**：R2.1 schema 设计完成，可直接编码实现。
+### 已建立的核心知识
+
+- **主线模块链**：`GPUDebugger.ideplugin` → `GPUToolsServices`(76 类) → XPC Services → `GPUToolsReplay.framework`(C API)
+- **突破口已确认**：`GTMTLReplay_CLI` 是独立 C 函数，可 headless replay，不依赖 Xcode/GUI/XPC（详见 R1.2 子文档）
+- **三层字典结构已标记**：L1(启动)、L2(replayer)、L3(profiling)，但 CLI 路径不需要这些字典（详见 R1.3 子文档）
+- **CLI schema 已设计**：`gputrace_bridge.py` 含 3 个子命令（scan-active-replay, scan-binaries, inspect-gputrace），纯 Python 标准库（详见 R2.1 子文档）
+- **关键环境变量**：`ATF_RESULTSDIRECTORY`(输出目录)、`GPUMTLOverrideDeviceFamily`(设备覆盖)、`MTLREPLAYER_OVERRIDE_DEVICE_REGISTRY_ID`(GPU 覆盖)
+
+### 当前卡点
+
+- 还未对 `GTMTLReplay_CLI` 做过实际最小调用验证（属于 R3 范畴）
+
+### 下一步（当前最高优先级）
+
+- **R2.2**：实现最小只读 bridge（`Scripts/gputrace_bridge.py`），不触发 replay。
+- **策略依据**：R2.1 schema 设计完成，可直接编码实现。
 
 ## 构建与验证的方法
 
 - **默认验证顺序**：
-  - **V1 静态扫描**：`find`、`strings`、`nm -m`、`plutil -p`、`grep`，面向 Xcode 私有模块、package、plist、文档资源。
-  - **V2 动态观察**：`pgrep`、`ps`、`lsof`、`sample 1 1`，面向当前运行中的 Xcode / replay 相关进程。
-  - **V3 bridge 干跑**：新增 bridge 后，必须先提供 `--json`、`--dry-run` 或等效只读模式；先做语法检查，再对活动 replay 或离线样本执行最小查询。
-  - **V4 最小样本测试**：优先验证只读输出是否稳定、字段是否可复现；能不触发新 replay 就不触发。
+  - **V1 静态扫描**：`find`、`strings`、`nm -m`、`plutil -p`、`grep`，面向 Xcode 私有模块。
+  - **V2 动态观察**：`pgrep`、`ps`、`lsof`、`sample 1 1`，面向运行中的 replay 进程。
+  - **V3 bridge 干跑**：新增 bridge 提供 `--json`、`--dry-run`；先语法检查，再对活动 replay 或离线样本执行最小查询。
+  - **V4 最小样本测试**：验证只读输出是否稳定、字段是否可复现。
 - **平时的构建/验证原则**：
   - 优先利用**当前正在 replay 的 Xcode**做动态观察。
-  - 没有活动 replay 时，优先退回静态扫描和离线样本，不要求用户介入。
-  - 新增 Python 脚本优先用 `python3 -m py_compile`；新增 Swift/ObjC 小工具优先做 `swiftc -typecheck` 或等效最小编译检查；仅在任务确实需要时再进入功能测试。
+  - 没有活动 replay 时，退回静态扫描和离线样本。
+  - Python 脚本优先 `python3 -m py_compile`；Swift/ObjC 优先 `swiftc -typecheck`。
 - **必须先得到用户确认的情况**：
-  - 需要写 workspace 外目录。
-  - 需要 attach / 注入 / 提权 / 修改 Xcode 或系统文件。
-  - 需要用户手动操作 UI 才能继续，而现有静态扫描、动态观察、离线样本都不足以推进当前最高优先级任务。
+  - 写 workspace 外目录 / attach / 注入 / 提权 / 修改系统文件 / 需要 UI 手操。
 
 ## agent的工作流程介绍
 1. 读取本文档，先理解**当前主线**与**TODO**的最新状态。
@@ -76,31 +63,32 @@
 - **[DONE][P0] R0**：建立 dashboard、基线扫描。
 - **[DONE][P0] R1**：提取 replay 通路最小对象图与参数面。
   - **[DONE][P0] R1.1**：导出 GPUToolsServices / GPUToolsReplay 的完整类/selector/ivar/property 清单。
-  - **[DONE][P0] R1.2**：探索 `GTMTLReplay_CLI` 参数签名，确认 headless replay 可行性；同时理清各 XPC Service 职责分工。
-  - **[DONE][P1] R1.3**：标记 `replayerLaunchDictionary` / `hardwareCountersConfiguration` 的候选字段并做静态比对。
+  - **[DONE][P0] R1.2**：探索 `GTMTLReplay_CLI` 参数签名，确认 headless replay 可行性。
+  - **[DONE][P1] R1.3**：标记三层字典结构（finalLaunch/replayerLaunch/traceConfiguration）字段。
 - **[WIP][P1] R2**：产出只读 bridge 原型。
-  - **[DONE][P1] R2.1**：设计 CLI / JSON schema，至少覆盖 `scan-active-replay`、`scan-binaries`、`inspect-gputrace` 三类能力。
+  - **[DONE][P1] R2.1**：设计 CLI / JSON schema（3 个子命令）。
   - **[TODO][P1] R2.2**：实现最小只读 bridge，不触发 replay。
   - **[TODO][P1] R2.3**：完成 dry-run 与样本输出稳定性测试。
 - **[TODO][P2] R3**：尝试最小 replay / profiler 调用。
-  - **[TODO][P2] R3.1**：构造最小 `replayerLaunchDictionary` 候选。
+  - **[TODO][P2] R3.1**：构造最小 `GTMTLReplayCLIOptions` 并执行 dry-run 调用。
   - **[TODO][P2] R3.2**：探索 counter / shader profiler 配置注入点。
   - **[TODO][P2] R3.3**：验证是否能产出可消费的 replay / profiler 结果。
 - **[TODO][P3] R4**：客户端可用性收尾。
 
 ## 高频复用经验
 
-- **动态确认 replay 是否真的在跑**：优先看 `pgrep -fl 'Xcode|GPUTools|Instruments|GTLLVMHelper'`；若出现 `GPUToolsReplayService.xpc`，说明已进入更深的 replay 通路。
-- **当前最高信号的动态命令**：`lsof -p <pid>`。它能直接告诉你哪个进程在读 `.gputrace/store0`、`device-resources-*` 或 replay 缓存文件。
-- **当前最高信号的静态锚点**：`GPUDebugger`、`GPUToolsServices`、`GPUToolsReplayService`、`GPUToolsShaderProfiler` 四个二进制上的 `strings` / `nm -m` 结果。
-- **当前最有价值的已确认缓存路径**：`/private/var/folders/.../C/com.apple.gputools.GPUToolsReplayService/com.apple.metal/...`，其中的 `functions.*` / `libraries.*` 值得持续跟踪，但路径本身可能随系统或会话变化。
-- **Instruments package 文档可快速对齐 schema**：`GPU.instrdst` 对应 `com.apple.gpu-tracing`；`GPUCounters.instrdst` 对应 `com.apple.gpu-counters`，适合拿来对齐 counters 与 modeler 语义。
+- **动态确认 replay 是否在跑**：`pgrep -fl 'Xcode|GPUTools|Instruments|GTLLVMHelper'`
+- **最高信号动态命令**：`lsof -p <pid>` — 直接看进程读哪些 gputrace/缓存文件。
+- **最高信号静态锚点**：`GPUDebugger`、`GPUToolsServices`、`GPUToolsReplayService`、`GPUToolsShaderProfiler` 上的 `strings` / `nm -m`。
+- **已确认缓存路径**：`/private/var/folders/.../C/com.apple.gputools.GPUToolsReplayService/com.apple.metal/...`
+- **Instruments schema 对齐**：`GPU.instrdst` (com.apple.gpu-tracing), `GPUCounters.instrdst` (com.apple.gpu-counters)
 
 ## 参考信息
 
-- **总是建议读取**：`subdocs/20260520-replay-entry-scan.md` — 已确认的进程、模块、符号、缓存路径与文件访问关系。
-- **在执行 R2/R3 时按需读取**：`subdocs/20260520-R1.1-api-inventory.md` — GPUToolsReplay 导出符号、GPUToolsServices 76 类清单、关键 ivar、selector、最小对象图。
-- **在执行 R2/R3 时建议读取**：`executions/20260520-R1.2-GTMTLReplay_CLI-signature.md` — `GTMTLReplay_CLI` 完整签名、`GTMTLReplayCLIOptions` 结构体布局、执行流程、headless 可行性结论。
-- **在执行 R2/R3 时建议读取**：`executions/20260520-R1.3-replayerLaunchDictionary-fields.md` — 三层字典结构、replayerLaunchDictionary/hardwareCountersConfiguration 完整字段清单与静态比对。
-- **在执行 R2.2 时必须读取**：`executions/20260520-R2.1-CLI-JSON-schema-design.md` — CLI 入口结构、三个子命令 JSON schema、文件/进程分类规则、实现约束。
-- **一般无需读取**：`../OfflineSourceRecovery/scripts/README_extract_shader_raw.md` — 仅在需要把 replay 自动化与 shader/raw 提取链路对齐时阅读。
+| 子文档 | 阅读建议 | 内容概述 |
+|--------|---------|---------|
+| `subdocs/20260520-replay-entry-scan.md` | **总是建议读取** | 已确认模块/进程/符号/文件访问关系 |
+| `subdocs/20260520-R1.1-api-inventory.md` | 在执行 R2/R3 时按需读取 | GPUToolsReplay 导出符号、GPUToolsServices 76 类、关键 ivar/selector、对象图 |
+| `subdocs/20260520-R1.2-GTMTLReplay_CLI-signature.md` | 在执行 R3 时按需读取 | GTMTLReplay_CLI 签名、Options 结构体、执行流程、headless 可行性 |
+| `subdocs/20260520-R1.3-dictionary-fields.md` | 在执行 R3 时按需读取 | 三层字典完整字段、hardwareCountersConfiguration、环境变量控制键 |
+| `subdocs/20260520-R2.1-CLI-schema.md` | **在执行 R2.2 时必须读取** | CLI 入口结构、子命令 JSON schema、分类规则、实现约束 |

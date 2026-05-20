@@ -186,10 +186,11 @@
   - [DONE] R5.3：Shader Debug（原生路径受 GTLLVMHelper IPC 限制；instrumented debug 替代方案完全可行，含无源码支持）
   - [TODO] R5.4：Configuration 动态修改（GTReplayUpdateConfiguration — 13 个 BOOL 属性）
   - 策略注：R5.2/R5.3 验证了 Service 层 API 的能力边界（update 同步可用，shaderdebug 需 IPC）；R5.4 应当简单（同 update 路径）
-- **[TODO][P2] R6**：客户端封装与可用性收尾。
-  - R6.1：Python CLI wrapper（统一调用入口）
-  - R6.2：JSON schema 统一输出格式定义
+- **[TODO][P1] R6**：客户端封装与可用性收尾。
+  - R6.1：**统一 ObjC bridge binary**（将 controller/objectMap/pipeline/shader-replace/config 所有已验证能力合并为一个多子命令 CLI 工具，JSON 输出）
+  - R6.2：Python CLI wrapper（对 R6.1 单一二进制的高层封装）
   - R6.3：端到端自动化验证链路
+  - 策略注：当前 16 个独立探针仅用于验证阶段；R6.1 将其整合为可复用的生产级工具，是最终交付物的核心
 
 ## 高频复用经验
 

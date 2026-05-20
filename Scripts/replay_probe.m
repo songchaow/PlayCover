@@ -211,6 +211,7 @@ int main(int argc, const char *argv[]) {
         char options[0xC0];
         memset(options, 0, sizeof(options));
         *(int32_t *)(options + 0x18) = 1;  // loopCount = 1
+        *(uint8_t *)(options + 0x25) = 1;  // waitForCompletion = 1 (R3.3: 确保 finish→rewind 完成)
 
         // R3.2: 修复 NULL 字符串字段
         // +0x28: errorLogPath (推测) — 填入 /dev/null 防止 NSString stringWithUTF8String: NULL
@@ -220,14 +221,29 @@ int main(int argc, const char *argv[]) {
         const char *saveDestination = "/tmp/replay_output";
         *(const char **)(options + 0x30) = saveDestination;
 
-        // 创建 saveDestination 目录
+        // R3.3: gpuStateLevel 和 profilingFlags
+        // +0xa4: gpuStateLevel — bit31=禁用; 正值时 clamp≥2, 作为 @"GPUState" 值
+        //        设置为 2 以触发 DerivedCounters 收集 → completionCallback
+        *(int32_t *)(options + 0xa4) = 2;  // gpuStateLevel = 2
+        // +0xb8: profilingFlags 位域 — bit6=ATF_RESULTSDIRECTORY override
+        //        设置 bit6 以启用结果目录输出
+        *(uint32_t *)(options + 0xb8) = (1 << 6);  // profilingFlags = 0x40
+
+        // 创建 saveDestination 目录（清空旧内容）
         NSString *saveDest = @"/tmp/replay_output";
+        [fm removeItemAtPath:saveDest error:nil];
         [fm createDirectoryAtPath:saveDest withIntermediateDirectories:YES attributes:nil error:nil];
 
+        // 设置环境变量 ATF_RESULTSDIRECTORY（与 profilingFlags bit6 配合）
+        setenv("ATF_RESULTSDIRECTORY", "/tmp/replay_output", 1);
+
         fprintf(stdout, "[INFO] Options fields set:\n");
-        fprintf(stdout, "  +0x18 loopCount    = 1\n");
-        fprintf(stdout, "  +0x28 errorLogPath = %s\n", errorLogPath);
-        fprintf(stdout, "  +0x30 saveDest     = %s\n", saveDestination);
+        fprintf(stdout, "  +0x18 loopCount       = 1\n");
+        fprintf(stdout, "  +0x25 waitForComplete = 1\n");
+        fprintf(stdout, "  +0x28 errorLogPath    = %s\n", errorLogPath);
+        fprintf(stdout, "  +0x30 saveDest        = %s\n", saveDestination);
+        fprintf(stdout, "  +0xa4 gpuStateLevel   = 2\n");
+        fprintf(stdout, "  +0xb8 profilingFlags  = 0x%x\n", *(uint32_t *)(options + 0xb8));
 
         // --- 执行 GTMTLReplay_CLI (with @try/@catch) ---
         fprintf(stdout, "\n[INFO] Calling GTMTLReplay_CLI(\"%s\", options, callback)...\n", gputrace_path);
@@ -258,6 +274,12 @@ int main(int argc, const char *argv[]) {
 
         fprintf(stdout, "\n[RESULT] GTMTLReplay_CLI returned: %d\n", result);
 
+        // R3.3: callback 可能在 async dispatch queue 上执行
+        // 等待一段时间让 async 操作完成
+        fprintf(stdout, "[R3.3] Waiting 5 seconds for async callback...\n");
+        fflush(stdout);
+        [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:5.0]];
+
         if (result == 0) {
             fprintf(stdout, "[SUCCESS] Headless replay completed successfully!\n");
         } else {
@@ -268,6 +290,39 @@ int main(int argc, const char *argv[]) {
             fprintf(stderr, "  - SIP restrictions preventing framework access\n");
             fprintf(stderr, "  - Missing entitlements\n");
             fprintf(stderr, "  - APR allocator struct incomplete\n");
+        }
+
+        // R3.3: 检查 saveDestination 目录产物
+        fprintf(stdout, "\n[R3.3-CHECK] Checking /tmp/replay_output for output files...\n");
+        NSError *listErr = nil;
+        NSArray *outputFiles = [fm contentsOfDirectoryAtPath:saveDest error:&listErr];
+        if (listErr) {
+            fprintf(stderr, "[R3.3-CHECK] Error listing dir: %s\n", [[listErr localizedDescription] UTF8String]);
+        } else if ([outputFiles count] == 0) {
+            fprintf(stdout, "[R3.3-CHECK] Directory is empty — no profiling output produced.\n");
+        } else {
+            fprintf(stdout, "[R3.3-CHECK] Found %lu file(s):\n", (unsigned long)[outputFiles count]);
+            for (NSString *f in outputFiles) {
+                NSString *fullPath = [saveDest stringByAppendingPathComponent:f];
+                NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
+                unsigned long long sz = [attrs fileSize];
+                fprintf(stdout, "  %s (%llu bytes)\n", [f UTF8String], sz);
+            }
+        }
+
+        // 也检查 /tmp/com.apple.gputools.profiling
+        NSString *profilingDir = @"/var/folders";  // 已知缓存可能在 var/folders
+        NSString *gpuToolsProf = [NSTemporaryDirectory() stringByAppendingPathComponent:@"com.apple.gputools.profiling"];
+        NSArray *profFiles = [fm contentsOfDirectoryAtPath:gpuToolsProf error:nil];
+        if (profFiles && [profFiles count] > 0) {
+            fprintf(stdout, "[R3.3-CHECK] Profiling temp dir (%s) has %lu file(s):\n",
+                    [gpuToolsProf UTF8String], (unsigned long)[profFiles count]);
+            for (NSString *f in profFiles) {
+                NSString *fullPath = [gpuToolsProf stringByAppendingPathComponent:f];
+                NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
+                unsigned long long sz = [attrs fileSize];
+                fprintf(stdout, "  %s (%llu bytes)\n", [f UTF8String], sz);
+            }
         }
 
         dlclose(handle);

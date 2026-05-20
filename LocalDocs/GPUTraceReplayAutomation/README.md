@@ -33,7 +33,7 @@
 | 7 | Shader Profiler（per-line 耗时） | ⛔ 跳过 | 同 R4.4 entitlement 限制 |
 | 8 | Derived Counters（派生指标） | ⛔ 跳过 | 同 R4.4 entitlement 限制 |
 | 9 | Shader 热替换 | ✅ | R5.2: objectMap.setLibrary:forKey: + rewind+playAll；shaderIR(metallib binary)无需源码 |
-| 10 | Shader Debug | ⚠️ 部分 | R5.3: 原生 GTLLVMHelper 路径需 IPC；替代方案(instrumented shader+replay)完全可行，含无源码支持 |
+| 10 | Shader Debug | ⚠️ 部分 | R5.3: IPC 连接层打通(connect+ACK ✅)；flatbuffers 协议层待逆向；instrumented debug 替代方案完全可行含无源码支持 |
 | 11 | Configuration 修改 | ❌ 待实现 | R5.4 |
 | 12 | 输出自动化（标准化 JSON/bin 导出） | 🔄 部分 | R6 |
 
@@ -85,10 +85,13 @@
   - **Xcode UI 缺口**：GUI 只暴露 Edit Source；shaderIR binary 注入是 API-only 能力
   - `setLibrary:forKey:` 签名：`v32@0:8@16Q24`（void, id+uint64_t）
   - AIR bitcode 不能直接 `newLibraryWithData:`，需先 `xcrun metallib` 转换
-- **Shader Debug 架构**（R5.3）：
+- **Shader Debug 架构**（R5.3 + R5.3b IPC）：
   - GTMTLReplayService(pool+ctrl).shaderdebug:(request) → GTReplayRequestToken（异步）
-  - 原生路径需 GTLLVMHelper IPC（Unix socket `/tmp/unixsocketipc_gtd`）
-  - 最小 client 可提交请求（token 返回）但无法完成（缺 IPC 连接）
+  - **IPC 连接层已打通**：Unix socket `/tmp/unixsocketipc_gtd` connect 成功 ✅
+  - 协议：`[uint32 clientIdx][uint32 cmd][uint32 len][data]` → ACK `[uint64 0x3a][echo]`
+  - 协议层阻塞：GTLLVMHelper 使用 flatbuffers 序列化，原始 bytes 只获得通用 ACK
+  - GTLLVMHelper 可私有启动：`GTLLVMHelper g16s Host 0 <pid> 0 <socket_path>`
+  - GTMTLReplayService 6 个 ivar：`_clientContext`, `_gputrace`, `_terminatePath/Connection`, `_observers`, `_servicePort`
   - **替代方案**：Instrumented shader debugging — 组合 R5.2(替换) + R4.3(playTo+读取) = "printf debug"
   - 无源码调试：metallib→反汇编→修改IR→重编译→注入→对比输出 ✅
 - **工具链已就绪**（均在 `Scripts/` 目录下）：
@@ -105,6 +108,10 @@
   - `shader_debug_probe.m` — R5.3 ShaderDebug introspection 探针
   - `shader_debug_probe2.m` — R5.3 completionHandler + 超时验证
   - `shader_debug_probe3.m` — R5.3 observer + load + 替代方案确认
+  - `shader_debug_ipc_probe.m` — R5.3b IPC 连接 + 协议格式探测
+  - `shader_debug_ipc_probe2.m` — R5.3b 系统性协议逆向
+  - `shader_debug_ipc_probe3.m` — R5.3b shader binary 发送 + 私有 helper 启动
+  - `shader_debug_ipc_probe4.m` — R5.3b Service ivar 分析 + socket 集成
 
 ### 当前卡点
 
@@ -217,6 +224,10 @@
   - `clang -framework Foundation -framework Metal -ldl -lobjc -o shader_debug_probe shader_debug_probe.m`
   - `clang -framework Foundation -framework Metal -ldl -lobjc -o shader_debug_probe2 shader_debug_probe2.m`
   - `clang -framework Foundation -framework Metal -ldl -lobjc -o shader_debug_probe3 shader_debug_probe3.m`
+  - `clang -framework Foundation -ldl -lobjc -o shader_debug_ipc_probe shader_debug_ipc_probe.m`
+  - `clang -framework Foundation -ldl -lobjc -o shader_debug_ipc_probe2 shader_debug_ipc_probe2.m`
+  - `clang -framework Foundation -framework Metal -ldl -lobjc -o shader_debug_ipc_probe3 shader_debug_ipc_probe3.m`
+  - `clang -framework Foundation -framework Metal -ldl -lobjc -o shader_debug_ipc_probe4 shader_debug_ipc_probe4.m`
 
 ## 参考信息
 

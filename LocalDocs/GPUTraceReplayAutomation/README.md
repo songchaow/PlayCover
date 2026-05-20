@@ -163,6 +163,7 @@
   - [TODO] R5.2：Shader 热替换（GTReplayUpdateLibrary — shaderSource/shaderIR/shaderURL）
   - [TODO] R5.3：Shader Debug（fragment/vertex/kernel — 需确认 Controller 路径下可行性）
   - [TODO] R5.4：Configuration 动态修改（GTReplayUpdateConfiguration — 13 个 BOOL 属性）
+  - 策略注：R5.2 是关键突破点 — 若验证 Controller 路径可处理 update/shaderdebug 类请求，R5.3/R5.4 仅需换 request 对象即可快速收尾
 - **[TODO][P2] R6**：客户端封装与可用性收尾。
   - R6.1：Python CLI wrapper（统一调用入口）
   - R6.2：JSON schema 统一输出格式定义

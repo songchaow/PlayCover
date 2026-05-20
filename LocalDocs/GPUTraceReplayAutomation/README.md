@@ -18,21 +18,21 @@
 | **Configuration 修改** | Replay Options 面板 | UpdateConfiguration |
 | **输出自动化** | 手动截图/导出 | 所有结果 JSON/二进制文件输出 |
 
-优先级排序：headless replay 基础执行 > 只读数据获取 > profiling/counters > shader debug/替换 > 高级交互。
+优先级排序：headless replay 基础执行 > 只读数据获取 > shader 替换/调试 > profiling/counters > 高级交互。
 
 ### 能力对齐进度总览
 
-| # | 能力维度 | 状态 | 完成阶段/计划任务 |
-|---|---------|------|-----------------|
-| 1 | Replay 执行 | ✅ 已完成 | R3 |
-| 2 | 纹理/Buffer 离线查看（存量资源） | ✅ 已完成 | R4.1 |
-| 3 | 帧/draw call 导航 (playTo) | ✅ 已完成 | R4.3 playTo 定向 replay 验证成功 |
-| 4 | Replay 后实时资源获取（render target） | ✅ 已完成 | R4.3 ObjectMap 数据提取验证成功 |
-| 5 | Pipeline 查看 | ❌ 待实现 | R4.3 (FetchPipelineBinaries) |
-| 6 | GPU Counters（硬件计数器） | ⛔ 跳过 | R4.4 需 Apple 私有 entitlement + SIP 关闭，host timing 可用作替代 |
-| 7 | Shader Profiler（per-line 耗时） | ⛔ 跳过 | R4.5 同受 entitlement 限制 |
+| # | 能力维度 | 状态 | 关键结论 |
+|---|---------|------|---------|
+| 1 | Replay 执行 | ✅ | R3: CLI 路径 headless 返回 0 |
+| 2 | 纹理/Buffer 离线查看（存量资源） | ✅ | R4.1: Harvester 4 函数 blob 解析 |
+| 3 | 帧/draw call 导航 (playTo) | ✅ | R4.3: `playTo(controller, targetCallIndex)` 验证成功 |
+| 4 | Replay 后实时资源获取（render target） | ✅ | R4.3: ObjectMap → NSDictionary, getBytes/contents 导出 |
+| 5 | Pipeline 查看 | ❌ 待实现 | R5.1 (FetchPipelineBinaries) |
+| 6 | GPU Counters（硬件计数器） | ⛔ 跳过 | R4.4: 需 Apple 私有 entitlement + SIP 关闭；host timing 可替代 |
+| 7 | Shader Profiler（per-line 耗时） | ⛔ 跳过 | 同 R4.4 entitlement 限制 |
 | 8 | Derived Counters（派生指标） | ⛔ 跳过 | 同 R4.4 entitlement 限制 |
-| 9 | Shader 热替换 | ❌ 待实现 | R5.2 |
+| 9 | Shader 热替换 | ❌ 待实现 | R5.2 (GTReplayUpdateLibrary) |
 | 10 | Shader Debug | ❌ 待实现 | R5.3 |
 | 11 | Configuration 修改 | ❌ 待实现 | R5.4 |
 | 12 | 输出自动化（标准化 JSON/bin 导出） | 🔄 部分 | R6 |
@@ -63,13 +63,19 @@
   - **CLI 路径**（R3）：`GTMTLReplay_CLI` — 仅做 replay 健康检查（返回 0/非 0），不产出数据。详见 `subdocs/20260520-R3-headless-replay.md`
   - **Controller 路径**（R4.2，主力）：`makeDataSource → makeController → playAll/playTo` — 完整 replay + 对象访问 + 定向 replay，无 XPC/entitlement 依赖。详见 `subdocs/20260520-R4.2-controller-path.md`
 - **数据获取核心**：`GTMTLReplayObjectMap`（302 方法 NSObject 子类），replay 后通过 `resources`/`bufferForKey:`/`textureForKey:` 直接读取 GPU 数据
+  - playAll 后 `objectMap.resources` → NSDictionary（key=NSNumber 资源 ID, value=MTLTexture/MTLBuffer）
+  - `[tex getBytes:bytesPerRow:fromRegion:mipmapLevel:]` / `[buf contents]` 直接导出 raw data
+  - `playTo(controller, uint32_t targetCallIndex)` — 导出函数，0=成功；resources count 随 target 变化证明定向控制有效
 - **离线数据提取**：`GTHarvester*` 4 个纯 blob 解析器，可在无 replay 情况下提取 .gputrace 中已存储的纹理/buffer
 - **XPC 操作全集已清点**：`GTMTLReplayServiceXPCProxy` 定义了 Xcode GUI 所有 replay 操作范围（fetch/query/profile/shaderdebug/update），为后续能力对齐提供完整参照。详见 `subdocs/20260520-R1.1b-transport-rawcounter-api.md`
-- **内部函数定位**：非导出函数通过 CLI 中 BL 偏移计算（偏移表见 `subdocs/20260520-R4.2-controller-path.md` §2）
-- **工具链已就绪**：只读 bridge `Scripts/gputrace_bridge.py`、replay 探针 `Scripts/replay_probe.m`、controller 探针 `Scripts/controller_probe.m`、harvester 探针 `Scripts/harvester_probe.m`、objectmap 探针 `Scripts/objectmap_probe.m`、counter 探针 `Scripts/counter_probe.m`
-- **ObjectMap 数据提取已验证**（R4.3）：playAll 后 `objectMap.resources` 返回完整 NSDictionary（key=NSNumber 资源 ID，value=MTLTexture/MTLBuffer），`[tex getBytes:...]` / `[buf contents]` 可直接导出 raw data
-- **playTo 定向 replay 已验证**（R4.3）：`GTMTLReplayController_playTo(controller, uint32_t targetCallIndex)` — 导出函数，2 参数，返回 0=成功；resources count 随 target 变化证明定向控制有效
-- **GPU Counters 能力边界**（R4.4）：GPURawCounter 需 `com.apple.private.agx.performance-spi`（Apple 签名 + SIP 关闭才生效）；host timing via `mach_absolute_time` + playTo per-segment 可替代；MTLCommandBuffer.GPUStartTime 可用但需拦截 replay 内部 cmdBuf
+- **GPU Counters 能力边界**（R4.4）：GPURawCounter 需 `com.apple.private.agx.performance-spi`（Apple 签名 + SIP 关闭）；host timing via `mach_absolute_time` + playTo per-segment 可替代
+- **工具链已就绪**（均在 `Scripts/` 目录下）：
+  - `gputrace_bridge.py` — 只读 bridge（scan-active-replay / scan-binaries / inspect-gputrace）
+  - `replay_probe.m` — CLI 路径探针
+  - `controller_probe.m` — Controller 路径探针
+  - `harvester_probe.m` — 离线数据提取探针
+  - `objectmap_probe.m` — ObjectMap 数据提取 + playTo 探针
+  - `counter_probe.m` — 计数器能力枚举 + timing 探针
 
 ### 当前卡点
 
@@ -77,17 +83,23 @@
 
 ### 下一步（当前最高优先级）
 
-**R5.1：Shader 热替换（GTReplayUpdateLibrary）**
+**R5.1：Pipeline 查看（FetchPipelineBinaries）**
 
-背景：Controller 路径已完整验证（playAll/playTo/objectMap 数据提取均正常）。Shader 热替换不依赖 GPU 硬件计数器 entitlement，走 replay 逻辑层即可。
+背景：Controller 路径已完整验证（playAll/playTo/objectMap 数据提取均正常）。Pipeline 查看是最直接的"从 objectMap 获取更多数据类型"延伸，技术上最接近已验证路径（objectMap 中已包含 pipeline state 对象），风险最低。
 
-1. 确认 `GTReplayUpdateLibrary` 在 Controller 路径下的调用方式（是否需要 XPC？还是可直接操作 objectMap？）
-2. 定位 objectMap 中 library/pipeline 对象的替换接口
-3. 编译新 shader（Metal Shading Language → metallib）并注入 replay
-4. 验证替换后 playAll 输出变化
+1. 确认 objectMap 中 pipeline state 对象的类型和方法（通过 runtime introspection）
+2. 尝试获取 pipeline binary（metallib / AIR）— 可能需要 `FetchPipelineBinaries` request 或直接 `objectMap.pipelineForKey:` 
+3. 导出 pipeline 编译产物并验证格式
 
 成功标准：
-- 在 headless replay 中替换至少一个 shader library，playAll 后确认替换生效（输出数据与原始不同）
+- 在 headless replay 后从 objectMap 导出至少一个 pipeline 的编译产物（metallib 或 AIR binary），并验证格式正确
+
+**R5.2：Shader 热替换（GTReplayUpdateLibrary）**
+
+在 R5.1 确认 pipeline/library 对象结构后顺序推进：
+1. 确认 `GTReplayUpdateLibrary` 在 Controller 路径下的调用方式
+2. 编译新 shader（Metal Shading Language → metallib）并注入 replay
+3. 验证替换后 playAll 输出变化
 
 ## 构建与验证的方法
 
@@ -125,21 +137,19 @@
   - R2.2：实现 `Scripts/gputrace_bridge.py`，V4 验证通过。
   - R2.3：9 项稳定性测试全部通过。
 - **[DONE] R3**：headless replay 实际调用验证。
-  - R3.1：最小 ObjC 探针调用验证通过，APR bootstrap 已解决。
-  - R3.2：修复 options NULL 字符串字段，headless replay 返回 0。
-  - R3.3：[N/A] completionCallback 为 dead code，CLI 路径不产出 profiling 数据。能力边界已明确。
-- **[IN-PROGRESS][P0] R4**：数据获取等价 — 在 headless replay 成功后提取资源数据。
-  - [DONE] R4.1：Harvester API 探索与验证 — 4 个函数均为纯离线 blob 解析器，直接提取 .gputrace 资源数据，无需 replay
-  - [DONE] R4.2：**Controller 路径探索** — makeDataSource+makeController 完整验证，headless in-process controller 可创建并 playAll 成功，objectMap 可访问所有 GPU 对象
-  - [DONE] R4.3：ObjectMap 数据提取 + playTo 定向 replay（A: resources 枚举+导出验证；B: playTo 签名确认+定向控制验证）
-  - [BLOCKED] R4.4：GPU Counters 采集 — Host timing 可用，GPURawCounter 被 entitlement 阻塞（需 com.apple.private.agx.performance-spi + SIP 关闭，已确认跳过）
-  - [SKIPPED] R4.5：Shader Profiler — 同 R4.4 受 entitlement 限制，跳过
-- **[TODO][P2] R5**：操作等价 — Replay 交互操作的 CLI 触发。
-  - R5.1：Shader 热替换（GTReplayUpdateLibrary — shaderSource/shaderIR/shaderURL）
-  - R5.2：Shader Debug（fragment/vertex/kernel/mesh/object — 需确认 Controller 路径下的可行性）
-  - R5.3：Configuration 动态修改（GTReplayUpdateConfiguration — 13 个 BOOL 属性）
-  - R5.4：ICB/AS Decode（Indirect Command Buffer / Acceleration Structure 解码）
-- **[TODO][P3] R6**：客户端封装与可用性收尾 — Python CLI wrapper + 自动化集成。
+  - CLI 路径仅做 replay 验证；completionCallback 为 dead code；能力边界已明确。
+- **[DONE] R4**：数据获取等价。
+  - R4.1：Harvester 离线 blob 解析器验证。
+  - R4.2：Controller 路径验证（makeDataSource+makeController+playAll+objectMap）。
+  - R4.3：ObjectMap 数据提取 + playTo 定向 replay 验证。
+  - R4.4：GPU Counters — host timing 可用，HW counters 被 entitlement 阻塞（跳过）。
+  - R4.5：Shader Profiler — 同 R4.4 限制（跳过）。
+- **[IN-PROGRESS][P0] R5**：操作等价 — Replay 数据深度获取与交互操作。
+  - [TODO] R5.1：Pipeline 查看（objectMap 中 pipeline state introspection + binary 导出）
+  - [TODO] R5.2：Shader 热替换（GTReplayUpdateLibrary — shaderSource/shaderIR/shaderURL）
+  - [TODO] R5.3：Shader Debug（fragment/vertex/kernel — 需确认 Controller 路径下可行性）
+  - [TODO] R5.4：Configuration 动态修改（GTReplayUpdateConfiguration — 13 个 BOOL 属性）
+- **[TODO][P2] R6**：客户端封装与可用性收尾。
   - R6.1：Python CLI wrapper（统一调用入口）
   - R6.2：JSON schema 统一输出格式定义
   - R6.3：端到端自动化验证链路
@@ -161,12 +171,10 @@
 
 | 子文档 | 阅读建议 | 内容概述 |
 |--------|---------|---------|
-| `executions/20260520-R4.3-objectmap-playTo.md` | 在调试 objectMap/playTo 问题时读取 | R4.3 完整执行记录：ObjectMap 枚举、texture/buffer 导出、playTo 签名与验证 |
-| `executions/20260520-R4.4-gpu-counters.md` | 在探索 GPU counters/entitlement 时读取 | R4.4 执行记录：GPURawCounter 阻塞分析、可用 timing 方法、entitlement 枚举 |
-| `subdocs/20260520-R4.2-controller-path.md` | **在执行 R4.4+ 时必须读取** | Controller 路径完整调用链、内部函数偏移表、ObjectMap 302 方法、playTo 策略 |
-| `subdocs/20260520-R1.1b-transport-rawcounter-api.md` | **在执行 R4.4+/R5 时必须读取** | XPC Fetch/Query/Profile/ShaderDebug/Update 类族完整接口、GPURawCounter API |
+| `subdocs/20260520-R4.2-controller-path.md` | **总是建议读取** — Controller 路径是所有后续任务的基础 | 完整调用链、内部函数偏移表、ObjectMap 302 方法、playAll/playTo |
+| `subdocs/20260520-R1.1b-transport-rawcounter-api.md` | **在执行 R5 时必须读取** | XPC Fetch/Query/Profile/ShaderDebug/Update 类族完整接口 |
 | `subdocs/20260520-R1.1-api-inventory.md` | 在需要查阅完整符号/类清单时按需读取 | GPUToolsReplay 导出符号、Harvester blob 格式、GPUToolsServices 76 类 |
-| `subdocs/20260520-R3-headless-replay.md` | 在调试 APR/options 问题时按需读取 | APR bootstrap 方案、options 完整布局、CLI 能力边界反汇编 |
+| `subdocs/20260520-R3-headless-replay.md` | 在调试 APR/options 问题时按需读取 | APR bootstrap、options 完整布局、CLI 能力边界 |
 | `subdocs/20260520-replay-entry-scan.md` | 一般无需读取（基础信息已整合至主文档） | R0 基线：模块/进程/符号/文件访问 |
 | `subdocs/20260520-R1.2-GTMTLReplay_CLI-signature.md` | 一般无需读取（核心信息已整合） | CLI 签名、Options 偏移表、执行流程 |
 | `subdocs/20260520-R1.3-dictionary-fields.md` | 一般无需读取（CLI/Controller 路径不使用字典） | 三层字典字段；仅在需要 XPC 路径时参考 |

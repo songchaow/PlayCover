@@ -73,15 +73,16 @@
 
 ### 当前卡点
 
-无。R6.1a~e 全部完成。
+无。R6.1a~e 全部完成。bridge 编译零警告零错误已实测确认（2026-05-20）。
 
 ### 下一步（当前最高优先级）
 
 **R6.1f：编译验证 — Makefile + ad-hoc 签名 + 集成测试**
 
-- 创建 `Scripts/Makefile`：编译 gputrace_replay_bridge.m + ad-hoc 签名
-- 各子命令最小样本集成测试脚本
+- 创建 `Scripts/Makefile`：编译 gputrace_replay_bridge.m + ad-hoc 签名（`CODE_SIGN_IDENTITY="-"`）
+- 各子命令最小样本集成测试脚本（shell script，验证退出码 + JSON 输出字段）
 - 确认所有子命令在 reference trace 上通过
+- 预期耗时：低，所有子命令均已独立验证通过
 
 ## 构建与验证的方法
 

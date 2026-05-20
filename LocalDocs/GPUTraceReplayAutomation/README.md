@@ -25,6 +25,9 @@
 - **三层字典结构已标记**：L1(启动)、L2(replayer)、L3(profiling)，但 CLI 路径不需要这些字典（详见 R1.3 子文档）
 - **CLI schema 已设计**：`gputrace_bridge.py` 含 3 个子命令（scan-active-replay, scan-binaries, inspect-gputrace），纯 Python 标准库（详见 R2.1 子文档）
 - **关键环境变量**：`ATF_RESULTSDIRECTORY`(输出目录)、`GPUMTLOverrideDeviceFamily`(设备覆盖)、`MTLREPLAYER_OVERRIDE_DEVICE_REGISTRY_ID`(GPU 覆盖)
+- **XPC 传输层完整 API**：`GTMTLReplayServiceXPCProxy` 暴露 fetch/query/profile/shaderdebug/update 完整操作集（详见 R1.1b 子文档）
+- **Shader 热替换路径**：`GTReplayUpdateLibrary`(shaderSource/shaderIR/shaderURL) 直接支持运行时 shader 替换
+- **GPU 硬件计数器**：`GPURawCounter.framework` 提供 `GRCCopyAllCounterSourceGroup` 低层直接访问
 
 ### 当前卡点
 
@@ -63,6 +66,7 @@
 - **[DONE][P0] R0**：建立 dashboard、基线扫描。
 - **[DONE][P0] R1**：提取 replay 通路最小对象图与参数面。
   - **[DONE][P0] R1.1**：导出 GPUToolsServices / GPUToolsReplay 的完整类/selector/ivar/property 清单。
+  - **[DONE][P0] R1.1b**：补充 GPUToolsTransport（120+ 类）+ GPURawCounter API 清单。
   - **[DONE][P0] R1.2**：探索 `GTMTLReplay_CLI` 参数签名，确认 headless replay 可行性。
   - **[DONE][P1] R1.3**：标记三层字典结构（finalLaunch/replayerLaunch/traceConfiguration）字段。
 - **[DONE][P1] R2**：产出只读 bridge 原型。
@@ -89,6 +93,7 @@
 |--------|---------|---------|
 | `subdocs/20260520-replay-entry-scan.md` | **总是建议读取** | 已确认模块/进程/符号/文件访问关系 |
 | `subdocs/20260520-R1.1-api-inventory.md` | 在执行 R2/R3 时按需读取 | GPUToolsReplay 导出符号、GPUToolsServices 76 类、关键 ivar/selector、对象图 |
+| `subdocs/20260520-R1.1b-transport-rawcounter-api.md` | **在执行 R3 时必须读取** | GPUToolsTransport 完整类/方法、XPC 代理接口、Fetch/Query/Profile/ShaderDebug/Update 类族、GPURawCounter API |
 | `subdocs/20260520-R1.2-GTMTLReplay_CLI-signature.md` | 在执行 R3 时按需读取 | GTMTLReplay_CLI 签名、Options 结构体、执行流程、headless 可行性 |
 | `subdocs/20260520-R1.3-dictionary-fields.md` | 在执行 R3 时按需读取 | 三层字典完整字段、hardwareCountersConfiguration、环境变量控制键 |
 | `subdocs/20260520-R2.1-CLI-schema.md` | **在执行 R2.2 时必须读取** | CLI 入口结构、子命令 JSON schema、分类规则、实现约束 |

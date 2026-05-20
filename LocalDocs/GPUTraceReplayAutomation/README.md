@@ -33,7 +33,7 @@
 | 7 | Shader Profiler（per-line 耗时） | ⛔ 跳过 | 同 R4.4 entitlement 限制 |
 | 8 | Derived Counters（派生指标） | ⛔ 跳过 | 同 R4.4 entitlement 限制 |
 | 9 | Shader 热替换 | ✅ | R5.2: objectMap.setLibrary:forKey: + rewind+playAll；shaderIR(metallib binary)无需源码 |
-| 10 | Shader Debug | ⚠️ 部分 | R5.3: IPC 连接层打通(connect+ACK ✅)；flatbuffers 协议层待逆向；instrumented debug 替代方案完全可行含无源码支持 |
+| 10 | Shader Debug | ⚠️ 部分 | R5.3: 原生路径受限(需GTLLVMHelper IPC)；instrumented debug 替代方案完全可行含无源码支持 |
 | 11 | Configuration 修改 | ❌ 待实现 | R5.4 |
 | 12 | 输出自动化（标准化 JSON/bin 导出） | 🔄 部分 | R6 |
 
@@ -74,26 +74,19 @@
   - `libraryForKey:(uint64_t)` → `_MTLLibrary`（MTLLibrary 协议）
   - `_MTLLibrary.libraryDataContents` → NSData（metallib binary，magic 0x424C544D "BLTM"）
   - `_MTLLibrary.bitcodeData` → NSData（AIR/LLVM bitcode，magic 0x0B17C0DE）
-  - `renderPipelineStateForKey:` → `AGXG16XFamilyRenderPipeline`
-  - `computePipelineStateForKey:` → `AGXG16XFamilyComputePipeline`
   - Key 空间模式：library key = function key - 1（偶数/奇数交替）
 - **Shader 热替换**（R5.2）：
   - 路径 A（推荐）：`objectMap.setLibrary:forKey:` → `rewind` → `playAll` — 直接替换，无需 XPC
-  - 路径 B：`GTMTLReplayService.update:(GTReplayUpdateLibrary)` — 需 GTMTLReplayClient context
   - **shaderSource**：编译 MSL → MTLLibrary → 替换 ✅
   - **shaderIR**：加载 metallib binary → MTLLibrary → 替换（**无需源码**）✅
   - **Xcode UI 缺口**：GUI 只暴露 Edit Source；shaderIR binary 注入是 API-only 能力
-  - `setLibrary:forKey:` 签名：`v32@0:8@16Q24`（void, id+uint64_t）
-  - AIR bitcode 不能直接 `newLibraryWithData:`，需先 `xcrun metallib` 转换
-- **Shader Debug 架构**（R5.3 + R5.3b IPC）：
-  - GTMTLReplayService(pool+ctrl).shaderdebug:(request) → GTReplayRequestToken（异步）
-  - **IPC 连接层已打通**：Unix socket `/tmp/unixsocketipc_gtd` connect 成功 ✅
-  - 协议：`[uint32 clientIdx][uint32 cmd][uint32 len][data]` → ACK `[uint64 0x3a][echo]`
-  - 协议层阻塞：GTLLVMHelper 使用 flatbuffers 序列化，原始 bytes 只获得通用 ACK
-  - GTLLVMHelper 可私有启动：`GTLLVMHelper g16s Host 0 <pid> 0 <socket_path>`
-  - GTMTLReplayService 6 个 ivar：`_clientContext`, `_gputrace`, `_terminatePath/Connection`, `_observers`, `_servicePort`
-  - **替代方案**：Instrumented shader debugging — 组合 R5.2(替换) + R4.3(playTo+读取) = "printf debug"
+  - 详见 `subdocs/20260520-R5.2-shader-hot-replace.md`
+- **Shader Debug 架构**（R5.3）：
+  - 原生路径：GTMTLReplayService.shaderdebug → GTLLVMHelper IPC → 受限（需 flatbuffers 协议逆向）
+  - **替代方案**（推荐）：Instrumented shader debugging — 组合 R5.2(替换) + R4.3(playTo+读取) = "printf debug"
   - 无源码调试：metallib→反汇编→修改IR→重编译→注入→对比输出 ✅
+  - IPC 连接层已打通（connect+ACK），协议层需 flatbuffers 逆向（后续增强方向，不阻塞主线）
+  - 详见 `subdocs/20260520-R5.3-shader-debug.md`
 - **工具链已就绪**（均在 `Scripts/` 目录下）：
   - `gputrace_bridge.py` — 只读 bridge（scan-active-replay / scan-binaries / inspect-gputrace）
   - `replay_probe.m` — CLI 路径探针
@@ -102,16 +95,9 @@
   - `objectmap_probe.m` — ObjectMap 数据提取 + playTo 探针
   - `counter_probe.m` — 计数器能力枚举 + timing 探针
   - `pipeline_probe.m` — Pipeline/Library binary 导出探针
-  - `update_library_probe.m` — R5.2 Shader 替换 introspection 探针
-  - `update_library_probe2.m` — R5.2 替换验证探针（shaderSource + 对比）
-  - `update_library_probe3.m` — R5.2 shaderIR 无源码替换专项验证
-  - `shader_debug_probe.m` — R5.3 ShaderDebug introspection 探针
-  - `shader_debug_probe2.m` — R5.3 completionHandler + 超时验证
-  - `shader_debug_probe3.m` — R5.3 observer + load + 替代方案确认
-  - `shader_debug_ipc_probe.m` — R5.3b IPC 连接 + 协议格式探测
-  - `shader_debug_ipc_probe2.m` — R5.3b 系统性协议逆向
-  - `shader_debug_ipc_probe3.m` — R5.3b shader binary 发送 + 私有 helper 启动
-  - `shader_debug_ipc_probe4.m` — R5.3b Service ivar 分析 + socket 集成
+  - `update_library_probe.m` / `update_library_probe2.m` / `update_library_probe3.m` — Shader 替换探针
+  - `shader_debug_probe.m` ~ `shader_debug_probe3.m` — Shader Debug 探针
+  - `shader_debug_ipc_probe.m` ~ `shader_debug_ipc_probe4.m` — IPC 协议探针
 
 ### 当前卡点
 
@@ -211,23 +197,7 @@
 - **最高信号动态命令**：`lsof -p <pid>` — 看进程读哪些 gputrace/缓存文件
 - **最高信号静态锚点**：`GPUToolsReplay`、`GPUToolsServices` 上的 `strings` / `nm -m`
 - **关键环境变量**：`ATF_RESULTSDIRECTORY`(输出目录)、`GPUMTLOverrideDeviceFamily`(设备覆盖)
-- **探针编译**（均在 `Scripts/` 目录下）：
-  - `clang -framework Foundation -framework Metal -ldl -o replay_probe replay_probe.m`
-  - `clang -framework Foundation -framework Metal -ldl -lobjc -o controller_probe controller_probe.m`
-  - `clang -framework Foundation -framework Metal -ldl -o harvester_probe harvester_probe.m`
-  - `clang -framework Foundation -framework Metal -ldl -lobjc -o objectmap_probe objectmap_probe.m`
-  - `clang -framework Foundation -framework Metal -ldl -lobjc -o counter_probe counter_probe.m`
-  - `clang -framework Foundation -framework Metal -ldl -lobjc -o pipeline_probe pipeline_probe.m`
-  - `clang -framework Foundation -framework Metal -ldl -lobjc -o update_library_probe update_library_probe.m`
-  - `clang -framework Foundation -framework Metal -ldl -lobjc -o update_library_probe2 update_library_probe2.m`
-  - `clang -framework Foundation -framework Metal -ldl -lobjc -o update_library_probe3 update_library_probe3.m`
-  - `clang -framework Foundation -framework Metal -ldl -lobjc -o shader_debug_probe shader_debug_probe.m`
-  - `clang -framework Foundation -framework Metal -ldl -lobjc -o shader_debug_probe2 shader_debug_probe2.m`
-  - `clang -framework Foundation -framework Metal -ldl -lobjc -o shader_debug_probe3 shader_debug_probe3.m`
-  - `clang -framework Foundation -ldl -lobjc -o shader_debug_ipc_probe shader_debug_ipc_probe.m`
-  - `clang -framework Foundation -ldl -lobjc -o shader_debug_ipc_probe2 shader_debug_ipc_probe2.m`
-  - `clang -framework Foundation -framework Metal -ldl -lobjc -o shader_debug_ipc_probe3 shader_debug_ipc_probe3.m`
-  - `clang -framework Foundation -framework Metal -ldl -lobjc -o shader_debug_ipc_probe4 shader_debug_ipc_probe4.m`
+- **探针编译模板**：`clang -framework Foundation -framework Metal -ldl -lobjc -o <probe> <probe>.m`
 
 ## 参考信息
 
@@ -235,11 +205,11 @@
 |--------|---------|---------|
 | `subdocs/20260520-R4.2-controller-path.md` | **总是建议读取** — Controller 路径是所有后续任务的基础 | 完整调用链、内部函数偏移表、ObjectMap 302 方法、playAll/playTo、Pipeline binary 导出（R5.1） |
 | `subdocs/20260520-R1.1b-transport-rawcounter-api.md` | **在执行 R5 时必须读取** — 包含 Update/ShaderDebug 类族接口 | XPC Fetch/Query/Profile/ShaderDebug/Update 类族完整接口 |
+| `subdocs/20260520-R5.2-shader-hot-replace.md` | 在需要 shader 替换细节时按需读取 | R5.2 调用流程、路径对比、Xcode UI 能力缺口 |
+| `subdocs/20260520-R5.3-shader-debug.md` | 在需要 shader debug 架构细节或 IPC 后续方向时按需读取 | R5.3 类族、能力边界、instrumented debug 替代方案、IPC 探索结论与后续增强方向评估 |
 | `subdocs/20260520-R1.1-api-inventory.md` | 在需要查阅完整符号/类清单时按需读取 | GPUToolsReplay 导出符号、Harvester blob 格式、GPUToolsServices 76 类 |
 | `subdocs/20260520-R3-headless-replay.md` | 在调试 APR/options 问题时按需读取 | APR bootstrap、options 完整布局、CLI 能力边界 |
 | `subdocs/20260520-replay-entry-scan.md` | 一般无需读取（基础信息已整合至主文档） | R0 基线：模块/进程/符号/文件访问 |
 | `subdocs/20260520-R1.2-GTMTLReplay_CLI-signature.md` | 一般无需读取（核心信息已整合） | CLI 签名、Options 偏移表、执行流程 |
 | `subdocs/20260520-R1.3-dictionary-fields.md` | 一般无需读取（CLI/Controller 路径不使用字典） | 三层字典字段；仅在需要 XPC 路径时参考 |
 | `subdocs/20260520-R2.1-CLI-schema.md` | 一般无需读取（bridge 已完成） | CLI schema 设计、R2.2/R2.3 实现与测试总结 |
-| `executions/20260520-R5.2-shader-hot-replace.md` | **在需要 shader 替换细节时读取** | R5.2 完整验证结果、调用流程、shaderIR 能力缺口分析 |
-| `executions/20260520-R5.3-shader-debug.md` | 在需要 shader debug 架构细节时读取 | R5.3 ShaderDebug 类族、GTLLVMHelper 限制、instrumented debug 替代方案 |

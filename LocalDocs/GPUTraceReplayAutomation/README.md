@@ -81,22 +81,21 @@
   - `shader_debug_probe.m` ~ `shader_debug_probe3.m` — Shader Debug 探针
   - `shader_debug_ipc_probe.m` ~ `shader_debug_ipc_probe4.m` — IPC 协议探针
   - `config_probe.m` / `config_probe2.m` — Configuration 动态修改探针
+  - `gputrace_replay_bridge.m` — **统一 ObjC bridge CLI**（R6.1 产出，多子命令 JSON 输出）
 
 ### 当前卡点
 
-无。R5.4 已完成。
+无。R6.1a 已完成。
 
 ### 下一步（当前最高优先级）
 
-**R6.1a：统一 ObjC bridge 骨架搭建**
+**R6.1b：replay 子命令增强**
 
-产出：`Scripts/gputrace_replay_bridge.m`（统一 main.m）
-- 子命令分发框架（replay / pipeline / shader / config / help）
-- 公共初始化：dlopen GPUToolsReplay → APR bootstrap → makeDataSource → makeController（参考 controller_probe.m）
-- JSON 输出辅助宏（`JSON_BEGIN`/`JSON_KV`/`JSON_END`）
-- 统一错误处理 + 退出码
-- 编译：`clang -framework Foundation -framework Metal -ldl -lobjc -o gputrace_replay_bridge gputrace_replay_bridge.m`
-- 验证：`./gputrace_replay_bridge help` 输出子命令列表；`./gputrace_replay_bridge replay <trace>` 完成 headless replay 返回 JSON
+在 `Scripts/gputrace_replay_bridge.m` 的 `cmd_replay` 中增加：
+- `playTo <trace> <call_index>` — 定向 replay 到指定 draw call
+- 资源枚举：列出 objectMap.resources 中所有 MTLTexture/MTLBuffer 的 ID、类型、尺寸
+- 资源导出：`--export <resource_id> <output_path>` — 将指定 texture/buffer 导出为 raw binary
+- 验证：playTo 不同 call index 时 resource_count 变化；导出文件与 objectmap_probe 结果一致
 
 ## 构建与验证的方法
 
@@ -148,7 +147,7 @@
   - [DONE] R5.4：Configuration 动态修改（调用链控制 + g_runningValidationCI 全局变量 + Service.update 路径确认）
 - **[IN-PROGRESS][P0] R6**：客户端封装与可用性收尾。
   - **R6.1：统一 ObjC bridge binary** — 将所有已验证能力合并为单一多子命令 CLI，JSON 输出
-    - R6.1a：**骨架搭建** — 统一 main.m + 子命令分发框架 + JSON 输出宏 + 公共初始化（dlopen/APR/Controller）
+    - [DONE] R6.1a：**骨架搭建** — 统一 main.m + 子命令分发框架 + JSON 输出宏 + 公共初始化（dlopen/APR/Controller）
     - R6.1b：**replay 子命令** — replay/rewind/playTo + 资源枚举与导出（整合 controller_probe + objectmap_probe）
     - R6.1c：**pipeline 子命令** — library 枚举 + metallib/AIR 导出（整合 pipeline_probe）
     - R6.1d：**shader 子命令** — setLibrary:forKey: 替换 + rewind+playAll 验证（整合 update_library_probe*）

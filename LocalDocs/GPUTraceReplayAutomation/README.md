@@ -28,7 +28,8 @@
   - 还未拿到 `replayerLaunchDictionary` 的最小字段集合
   - 还未确认各 XPC Service 的具体分工职责
 - **下一步（当前最高优先级）**：
-  - **R1.2**：探索 `GTMTLReplay_CLI` 的参数签名（反汇编或运行时观察），确认其是否能实现 headless replay
+  - **R1.2**：通过反汇编/运行时观察探索 `GTMTLReplay_CLI` 的参数签名，验证其能否直接做 headless replay。同步关注 `g_runningInCI` 全局变量对行为的影响。
+  - **策略依据**：`GTMTLReplay_CLI` + `g_runningInCI` 暗示苹果自己有 CI headless 路径；如果能复用此路径，可跳过 XPC 职责链复原直达最终目标。若 CLI 不通，则退回探索 `GTHarvesterGet*` 只读数据提取。
   - R1.2 完成前，严禁跳去做 bridge 实现或触发式 replay 实验
 
 ## 构建与验证的方法

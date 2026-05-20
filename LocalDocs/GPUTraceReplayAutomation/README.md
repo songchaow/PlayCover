@@ -29,9 +29,9 @@
 | 3 | 帧/draw call 导航 (playTo) | ✅ 已完成 | R4.3 playTo 定向 replay 验证成功 |
 | 4 | Replay 后实时资源获取（render target） | ✅ 已完成 | R4.3 ObjectMap 数据提取验证成功 |
 | 5 | Pipeline 查看 | ❌ 待实现 | R4.3 (FetchPipelineBinaries) |
-| 6 | GPU Counters（硬件计数器） | ⚠️ 部分阻塞 | R4.4 timing 可用，完整 HW counters 需 entitlement |
-| 7 | Shader Profiler（per-line 耗时） | ❌ 待实现 | R4.5 🆕 |
-| 8 | Derived Counters（派生指标） | ⚠️ 阻塞 | 同 R4.4 entitlement 限制 |
+| 6 | GPU Counters（硬件计数器） | ⛔ 跳过 | R4.4 需 Apple 私有 entitlement + SIP 关闭，host timing 可用作替代 |
+| 7 | Shader Profiler（per-line 耗时） | ⛔ 跳过 | R4.5 同受 entitlement 限制 |
+| 8 | Derived Counters（派生指标） | ⛔ 跳过 | 同 R4.4 entitlement 限制 |
 | 9 | Shader 热替换 | ❌ 待实现 | R5.2 |
 | 10 | Shader Debug | ❌ 待实现 | R5.3 |
 | 11 | Configuration 修改 | ❌ 待实现 | R5.4 |
@@ -69,30 +69,25 @@
 - **工具链已就绪**：只读 bridge `Scripts/gputrace_bridge.py`、replay 探针 `Scripts/replay_probe.m`、controller 探针 `Scripts/controller_probe.m`、harvester 探针 `Scripts/harvester_probe.m`、objectmap 探针 `Scripts/objectmap_probe.m`、counter 探针 `Scripts/counter_probe.m`
 - **ObjectMap 数据提取已验证**（R4.3）：playAll 后 `objectMap.resources` 返回完整 NSDictionary（key=NSNumber 资源 ID，value=MTLTexture/MTLBuffer），`[tex getBytes:...]` / `[buf contents]` 可直接导出 raw data
 - **playTo 定向 replay 已验证**（R4.3）：`GTMTLReplayController_playTo(controller, uint32_t targetCallIndex)` — 导出函数，2 参数，返回 0=成功；resources count 随 target 变化证明定向控制有效
+- **GPU Counters 能力边界**（R4.4）：GPURawCounter 需 `com.apple.private.agx.performance-spi`（Apple 签名 + SIP 关闭才生效）；host timing via `mach_absolute_time` + playTo per-segment 可替代；MTLCommandBuffer.GPUStartTime 可用但需拦截 replay 内部 cmdBuf
 
 ### 当前卡点
 
-**R4.4 部分阻塞**：GPURawCounter.framework 需要 `com.apple.private.agx.performance-spi` entitlement（仅 GPUToolsReplayService.xpc 拥有）。Host timing + playTo per-segment timing 已可用，但完整 GPU 硬件计数器（ALU/cache/bandwidth）不可从 headless 探针直接获取。
-
-可能的解除方式（需用户确认）：
-1. Ad-hoc 签名 + entitlement 注入
-2. 通过 Instruments GPU 模板间接获取
-3. 逆向 GPUToolsReplayService XPC 协议
-4. IOKit 直接访问（需 SIP 关闭）
+无。R4.4/R4.5 因 SIP 开启 + Apple 私有 entitlement 限制已确认跳过。
 
 ### 下一步（当前最高优先级）
 
-**R4.4 阻塞等待用户指示**
+**R5.1：Shader 热替换（GTReplayUpdateLibrary）**
 
-已完成部分：
-- Host timing (mach_absolute_time + playTo) ✅ — per-segment performance profiling
-- GPU timing (MTLCommandBuffer.GPUStartTime) ✅ — 独立 command buffer 可用
-- Counter 能力全面枚举 + JSON 输出 ✅
+背景：Controller 路径已完整验证（playAll/playTo/objectMap 数据提取均正常）。Shader 热替换不依赖 GPU 硬件计数器 entitlement，走 replay 逻辑层即可。
 
-需要用户决定：
-- 是否接受 host timing 作为 R4.4 的完成标准？
-- 是否需要探索 entitlement 签名方案以获取完整 HW counters？
-- 或跳过 R4.4/R4.5 直接推进 R5（Shader 热替换）？
+1. 确认 `GTReplayUpdateLibrary` 在 Controller 路径下的调用方式（是否需要 XPC？还是可直接操作 objectMap？）
+2. 定位 objectMap 中 library/pipeline 对象的替换接口
+3. 编译新 shader（Metal Shading Language → metallib）并注入 replay
+4. 验证替换后 playAll 输出变化
+
+成功标准：
+- 在 headless replay 中替换至少一个 shader library，playAll 后确认替换生效（输出数据与原始不同）
 
 ## 构建与验证的方法
 
@@ -137,8 +132,8 @@
   - [DONE] R4.1：Harvester API 探索与验证 — 4 个函数均为纯离线 blob 解析器，直接提取 .gputrace 资源数据，无需 replay
   - [DONE] R4.2：**Controller 路径探索** — makeDataSource+makeController 完整验证，headless in-process controller 可创建并 playAll 成功，objectMap 可访问所有 GPU 对象
   - [DONE] R4.3：ObjectMap 数据提取 + playTo 定向 replay（A: resources 枚举+导出验证；B: playTo 签名确认+定向控制验证）
-  - [BLOCKED] R4.4：GPU Counters 采集 — Host timing 可用，GPURawCounter 被 entitlement 阻塞（需 com.apple.private.agx.performance-spi）
-  - R4.5：Shader Profiler — ProfileTimeline.shaderProfiling + profiler stream data 解析
+  - [BLOCKED] R4.4：GPU Counters 采集 — Host timing 可用，GPURawCounter 被 entitlement 阻塞（需 com.apple.private.agx.performance-spi + SIP 关闭，已确认跳过）
+  - [SKIPPED] R4.5：Shader Profiler — 同 R4.4 受 entitlement 限制，跳过
 - **[TODO][P2] R5**：操作等价 — Replay 交互操作的 CLI 触发。
   - R5.1：Shader 热替换（GTReplayUpdateLibrary — shaderSource/shaderIR/shaderURL）
   - R5.2：Shader Debug（fragment/vertex/kernel/mesh/object — 需确认 Controller 路径下的可行性）

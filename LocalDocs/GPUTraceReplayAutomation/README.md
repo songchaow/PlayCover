@@ -37,7 +37,7 @@
 | 11 | Configuration 修改 | ❌ 待实现 | R5.4 |
 | 12 | 输出自动化（标准化 JSON/bin 导出） | 🔄 部分 | R6 |
 
-**完成度：~50%（6/12 能力维度已完成）**
+**完成度：~50%（6/12 能力维度已完成，3 个因系统限制跳过）**
 
 最终交付物：
 - **C/ObjC bridge 层**：探针 + 结构化调用接口，提供 headless replay 全功能调用能力。
@@ -96,9 +96,21 @@
 
 背景：R5.1 已确认 pipeline/library 对象结构 — library key 已知（uint64_t），metallib binary 可导出/对比。
 
-1. 确认 `GTReplayUpdateLibrary` 在 Controller 路径下的调用方式
-2. 编译新 shader（Metal Shading Language → metallib）并注入 replay
-3. 验证替换后 playAll 输出变化
+已知接口（来自 `subdocs/20260520-R1.1b-transport-rawcounter-api.md` §8 Update 类族）：
+```objc
+@interface GTReplayUpdateLibrary
+@property dispatchUID;    // 目标 dispatch（draw call）
+@property streamRef;      // 目标 stream
+@property shaderURL;      // 新 shader 文件 URL
+@property shaderIR;       // 新 shader 的 IR/metallib 数据
+@property shaderSource;   // 新 shader 源码（Metal Shading Language）
+@end
+```
+
+验证路径：
+1. 确认 `GTReplayUpdateLibrary` 在 Controller 路径下的调用方式（是否可直接实例化并提交给 controller？还是需通过某个 update 入口函数？）
+2. 编译新 shader（Metal Shading Language → metallib）并通过 shaderIR/shaderURL 注入 replay
+3. playAll 后对比替换前后的 texture/buffer 内容差异
 
 成功标准：
 - 在 headless replay 中替换一个 library，playAll 后确认输出（texture/buffer 内容）与替换前不同
@@ -174,9 +186,8 @@
 
 | 子文档 | 阅读建议 | 内容概述 |
 |--------|---------|---------|
-| `subdocs/20260520-R4.2-controller-path.md` | **总是建议读取** — Controller 路径是所有后续任务的基础 | 完整调用链、内部函数偏移表、ObjectMap 302 方法、playAll/playTo |
-| `executions/20260520-R5.1-pipeline-export.md` | **在执行 R5.2 时建议读取** — 包含 library key 空间和导出方法 | ForKey uint64_t 参数、libraryDataContents/bitcodeData、key 模式 |
-| `subdocs/20260520-R1.1b-transport-rawcounter-api.md` | **在执行 R5 时必须读取** | XPC Fetch/Query/Profile/ShaderDebug/Update 类族完整接口 |
+| `subdocs/20260520-R4.2-controller-path.md` | **总是建议读取** — Controller 路径是所有后续任务的基础 | 完整调用链、内部函数偏移表、ObjectMap 302 方法、playAll/playTo、Pipeline binary 导出（R5.1） |
+| `subdocs/20260520-R1.1b-transport-rawcounter-api.md` | **在执行 R5 时必须读取** — 包含 Update/ShaderDebug 类族接口 | XPC Fetch/Query/Profile/ShaderDebug/Update 类族完整接口 |
 | `subdocs/20260520-R1.1-api-inventory.md` | 在需要查阅完整符号/类清单时按需读取 | GPUToolsReplay 导出符号、Harvester blob 格式、GPUToolsServices 76 类 |
 | `subdocs/20260520-R3-headless-replay.md` | 在调试 APR/options 问题时按需读取 | APR bootstrap、options 完整布局、CLI 能力边界 |
 | `subdocs/20260520-replay-entry-scan.md` | 一般无需读取（基础信息已整合至主文档） | R0 基线：模块/进程/符号/文件访问 |

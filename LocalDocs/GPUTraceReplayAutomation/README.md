@@ -85,18 +85,17 @@
 
 ### 当前卡点
 
-无。R6.1c 已完成。
+无。R6.1d 已完成。
 
 ### 下一步（当前最高优先级）
 
-**R6.1d：shader 子命令实现**
+**R6.1e：config 子命令实现**
 
-在 `Scripts/gputrace_replay_bridge.m` 的 `cmd_shader` 中实现：
-- 从文件加载 metallib binary
-- `objectMap.setLibrary:forKey:(uint64_t)` 热替换指定 library
-- rewind → playAll 验证替换后 replay 正常
-- 输出 JSON：替换前后 library 信息 + playAll 结果
-- 参考：`update_library_probe.m` / `update_library_probe2.m` / `update_library_probe3.m`
+在 `Scripts/gputrace_replay_bridge.m` 的 `cmd_config` 中实现：
+- 调用链控制 3 项：disableOptimizeRestores / forceLoadUnusedResources / forceIOSurface
+- validation 全局变量：g_runningValidationCI
+- 输出 JSON：当前配置状态 + 修改结果
+- 参考：`config_probe.m` / `config_probe2.m` + `subdocs/20260520-R5.4-configuration.md`
 
 ## 构建与验证的方法
 
@@ -151,7 +150,7 @@
     - [DONE] R6.1a：**骨架搭建** — 统一 main.m + 子命令分发框架 + JSON 输出宏 + 公共初始化（dlopen/APR/Controller）
     - [DONE] R6.1b：**replay 子命令** — replay/rewind/playTo + 资源枚举与导出（整合 controller_probe + objectmap_probe）
     - [DONE] R6.1c：**pipeline 子命令** — library 枚举 + metallib/AIR 导出（整合 pipeline_probe）
-    - R6.1d：**shader 子命令** — setLibrary:forKey: 替换 + rewind+playAll 验证（整合 update_library_probe*）
+    - [DONE] R6.1d：**shader 子命令** — setLibrary:forKey: 替换 + rewind+playAll 验证（整合 update_library_probe*）
     - R6.1e：**config 子命令** — 调用链控制 3 项 + validation 全局变量（整合 config_probe*）
     - R6.1f：**编译验证** — Makefile + ad-hoc 签名 + 各子命令最小样本测试
   - R6.2：Python CLI wrapper（对 R6.1 单一二进制的高层封装）

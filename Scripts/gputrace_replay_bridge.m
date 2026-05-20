@@ -884,21 +884,201 @@ static int cmd_pipeline(int argc, const char *argv[]) {
 }
 
 // ============================================================
-#pragma mark - Subcommand: shader (stub — R6.1d)
+#pragma mark - Subcommand: shader
 // ============================================================
+
+/// shader <trace> <lib_key> <metallib_path> [--verify] [--source <msl_path>]
+///
+/// Replaces a library in the replay objectMap with a new metallib binary.
+/// --verify: after replacement, rewind+playAll and report success
+/// --source: instead of metallib file, compile MSL source code
 
 static int cmd_shader(int argc, const char *argv[]) {
     if (argc < 3) {
-        fprintf(stderr, "Usage: gputrace_replay_bridge shader <path-to-.gputrace> <lib_key> <metallib_path>\n");
+        fprintf(stderr, "Usage: gputrace_replay_bridge shader <.gputrace> <lib_key> <metallib_path> [--verify]\n");
+        fprintf(stderr, "       gputrace_replay_bridge shader <.gputrace> <lib_key> --source <msl_path> [--verify]\n");
+        fprintf(stderr, "\nReplaces library at lib_key with new metallib binary or compiled MSL source.\n");
+        fprintf(stderr, "  --verify   Run rewind+playAll after replacement to confirm replay succeeds.\n");
         return EXIT_USAGE;
     }
-    fprintf(stderr, "[INFO] shader subcommand: not yet implemented (R6.1d)\n");
+
+    const char *trace_path = argv[0];
+    uint64_t lib_key = strtoull(argv[1], NULL, 10);
+    const char *metallib_path = NULL;
+    const char *source_path = NULL;
+    BOOL do_verify = NO;
+
+    // Parse remaining args
+    int arg_i = 2;
+    while (arg_i < argc) {
+        if (strcmp(argv[arg_i], "--verify") == 0) {
+            do_verify = YES;
+        } else if (strcmp(argv[arg_i], "--source") == 0 && arg_i + 1 < argc) {
+            source_path = argv[++arg_i];
+        } else if (!metallib_path && argv[arg_i][0] != '-') {
+            metallib_path = argv[arg_i];
+        }
+        arg_i++;
+    }
+
+    if (!metallib_path && !source_path) {
+        fprintf(stderr, "[ERROR] Must provide either <metallib_path> or --source <msl_path>\n");
+        return EXIT_USAGE;
+    }
+
+    int rc = replay_context_init(trace_path);
+    if (rc != EXIT_OK) return rc;
+
+    // Initial playAll to populate objectMap
+    int initial_rc = -1;
+    @try { initial_rc = g_ctx.fn_playAll(g_ctx.controller); } @catch (NSException *ex) {
+        fprintf(stderr, "[ERROR] initial playAll exception: %s\n", [[ex reason] UTF8String]);
+        replay_context_cleanup();
+        return EXIT_REPLAY_FAIL;
+    }
+    if (initial_rc != 0) {
+        fprintf(stderr, "[ERROR] initial playAll failed (rc=%d)\n", initial_rc);
+        replay_context_cleanup();
+        return EXIT_REPLAY_FAIL;
+    }
+
+    // Get original library info
+    SEL libSel = @selector(libraryForKey:);
+    SEL ldcSel = NSSelectorFromString(@"libraryDataContents");
+    SEL setLibSel = NSSelectorFromString(@"setLibrary:forKey:");
+
+    id origLib = ((id (*)(id, SEL, uint64_t))objc_msgSend)(g_ctx.objectMap, libSel, lib_key);
+    NSUInteger orig_metallib_size = 0;
+    NSArray *orig_functions = nil;
+    if (origLib && [origLib conformsToProtocol:@protocol(MTLLibrary)]) {
+        orig_functions = [(id<MTLLibrary>)origLib functionNames];
+        NSData *origData = [origLib performSelector:ldcSel];
+        orig_metallib_size = origData ? [origData length] : 0;
+    }
+
+    // Load or compile new library
+    id<MTLLibrary> newLib = nil;
+    NSUInteger new_metallib_size = 0;
+    NSError *err = nil;
+
+    if (source_path) {
+        // Compile from MSL source
+        NSString *msl = [NSString stringWithContentsOfFile:[NSString stringWithUTF8String:source_path]
+                                                  encoding:NSUTF8StringEncoding error:&err];
+        if (!msl) {
+            fprintf(stderr, "[ERROR] Cannot read source file: %s\n", [[err localizedDescription] UTF8String]);
+            replay_context_cleanup();
+            return EXIT_BAD_INPUT;
+        }
+        MTLCompileOptions *opts = [[MTLCompileOptions alloc] init];
+        newLib = [g_ctx.device newLibraryWithSource:msl options:opts error:&err];
+        if (!newLib) {
+            fprintf(stderr, "[ERROR] Compile failed: %s\n", [[err localizedDescription] UTF8String]);
+            replay_context_cleanup();
+            return EXIT_SUBCMD_FAIL;
+        }
+        NSData *compiled = [newLib performSelector:ldcSel];
+        new_metallib_size = compiled ? [compiled length] : 0;
+    } else {
+        // Load metallib binary from file
+        NSData *metallibData = [NSData dataWithContentsOfFile:[NSString stringWithUTF8String:metallib_path]];
+        if (!metallibData || [metallibData length] == 0) {
+            fprintf(stderr, "[ERROR] Cannot read metallib file: %s\n", metallib_path);
+            replay_context_cleanup();
+            return EXIT_BAD_INPUT;
+        }
+        new_metallib_size = [metallibData length];
+
+        dispatch_data_t dd = dispatch_data_create(
+            [metallibData bytes], [metallibData length], NULL, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+        newLib = [g_ctx.device newLibraryWithData:dd error:&err];
+        if (!newLib) {
+            fprintf(stderr, "[ERROR] newLibraryWithData failed: %s\n", [[err localizedDescription] UTF8String]);
+            replay_context_cleanup();
+            return EXIT_SUBCMD_FAIL;
+        }
+    }
+
+    NSArray *new_functions = [newLib functionNames];
+
+    // Perform replacement
+    ((void (*)(id, SEL, id, uint64_t))objc_msgSend)(g_ctx.objectMap, setLibSel, (id)newLib, lib_key);
+
+    // Optional verify: rewind + playAll
+    int verify_rc = -1;
+    double verify_ms = 0;
+    if (do_verify) {
+        g_ctx.fn_rewind(g_ctx.controller);
+        uint64_t t0 = mach_absolute_time();
+        @try {
+            verify_rc = g_ctx.fn_playAll(g_ctx.controller);
+        } @catch (NSException *ex) {
+            fprintf(stderr, "[ERROR] verify playAll exception: %s\n", [[ex reason] UTF8String]);
+            verify_rc = -1;
+        }
+        uint64_t t1 = mach_absolute_time();
+        mach_timebase_info_data_t tb;
+        mach_timebase_info(&tb);
+        verify_ms = (double)(t1 - t0) * tb.numer / tb.denom / 1e6;
+    }
+
+    // Output JSON
     JSON_BEGIN();
     JSON_KV_STR("command", "shader");
-    JSON_KV_STR("status", "not_implemented");
-    JSON_KV_STR("planned", "R6.1d");
+    JSON_KV_STR("trace_path", trace_path);
+    JSON_KV_UINT("library_key", lib_key);
+    JSON_KV_BOOL("replacement_done", YES);
+
+    // Original library info
+    JSON_SEP();
+    printf("\"original\":{");
+    printf("\"exists\":%s", origLib ? "true" : "false");
+    if (origLib) {
+        printf(",\"metallib_size\":%lu", (unsigned long)orig_metallib_size);
+        if (orig_functions) {
+            printf(",\"functions\":[");
+            for (NSUInteger i = 0; i < [orig_functions count]; i++) {
+                if (i > 0) printf(",");
+                json_print_string([[orig_functions objectAtIndex:i] UTF8String]);
+            }
+            printf("]");
+        }
+    }
+    printf("}");
+
+    // New library info
+    JSON_SEP();
+    printf("\"replacement\":{");
+    printf("\"metallib_size\":%lu", (unsigned long)new_metallib_size);
+    if (source_path) {
+        printf(",\"source_path\":"); json_print_string(source_path);
+    } else {
+        printf(",\"metallib_path\":"); json_print_string(metallib_path);
+    }
+    if (new_functions) {
+        printf(",\"functions\":[");
+        for (NSUInteger i = 0; i < [new_functions count]; i++) {
+            if (i > 0) printf(",");
+            json_print_string([[new_functions objectAtIndex:i] UTF8String]);
+        }
+        printf("]");
+    }
+    printf("}");
+
+    // Verify results
+    if (do_verify) {
+        JSON_SEP();
+        printf("\"verify\":{");
+        printf("\"playAll_rc\":%d", verify_rc);
+        printf(",\"success\":%s", verify_rc == 0 ? "true" : "false");
+        printf(",\"elapsed_ms\":%.3f", verify_ms);
+        printf("}");
+    }
+
     JSON_END();
-    return EXIT_SUBCMD_FAIL;
+
+    replay_context_cleanup();
+    return (do_verify && verify_rc != 0) ? EXIT_REPLAY_FAIL : EXIT_OK;
 }
 
 // ============================================================

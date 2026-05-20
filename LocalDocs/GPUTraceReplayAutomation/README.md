@@ -69,10 +69,10 @@
   - **[DONE][P1] R2.1**：设计 CLI / JSON schema（3 个子命令）。
   - **[TODO][P1] R2.2**：实现最小只读 bridge，不触发 replay。
   - **[TODO][P1] R2.3**：完成 dry-run 与样本输出稳定性测试。
-- **[TODO][P2] R3**：尝试最小 replay / profiler 调用。
-  - **[TODO][P2] R3.1**：构造最小 `GTMTLReplayCLIOptions` 并执行 dry-run 调用。
-  - **[TODO][P2] R3.2**：探索 counter / shader profiler 配置注入点。
-  - **[TODO][P2] R3.3**：验证是否能产出可消费的 replay / profiler 结果。
+- **[TODO][P2] R3**：验证 headless replay 实际可行性。
+  - **[TODO][P2] R3.1**：编写最小 C/ObjC 探针（dlopen + dlsym GTMTLReplay_CLI），用已有 .gputrace 样本做实际调用验证。
+  - **[TODO][P2] R3.2**：若 R3.1 成功，探索 completionCallback 返回数据内容 + profiling 配置注入。
+  - **[TODO][P2] R3.3**：验证是否能获取 GPU counters / shader profiler 数据。
 - **[TODO][P3] R4**：客户端可用性收尾。
 
 ## 高频复用经验

@@ -26,8 +26,8 @@
 |---|---------|------|-----------------|
 | 1 | Replay 执行 | ✅ 已完成 | R3 |
 | 2 | 纹理/Buffer 离线查看（存量资源） | ✅ 已完成 | R4.1 |
-| 3 | 帧/draw call 导航 (playTo) | ❌ 待实现 | R4.3 前置 + R5.1 |
-| 4 | Replay 后实时资源获取（render target） | ❌ 待实现 | R4.3 |
+| 3 | 帧/draw call 导航 (playTo) | 🔄 基础就绪 | R4.2 controller 已创建，R4.3 验证 playTo |
+| 4 | Replay 后实时资源获取（render target） | 🔄 基础就绪 | R4.2 objectMap 可访问，R4.3 验证数据提取 |
 | 5 | Pipeline 查看 | ❌ 待实现 | R4.3 (FetchPipelineBinaries) |
 | 6 | GPU Counters（硬件计数器） | ❌ 待实现 | R4.4 🆕 |
 | 7 | Shader Profiler（per-line 耗时） | ❌ 待实现 | R4.5 🆕 |
@@ -37,7 +37,7 @@
 | 11 | Configuration 修改 | ❌ 待实现 | R5.4 |
 | 12 | 输出自动化（标准化 JSON/bin 导出） | 🔄 部分 | R6 |
 
-**完成度：~25%（3/12 能力维度）**
+**完成度：~35%（4/12 能力维度基础就绪）**
 
 最终交付物：
 - **C/ObjC bridge 层**：探针 + 结构化调用接口，提供 headless replay 全功能调用能力。
@@ -69,33 +69,32 @@
 - **APR Bootstrap 已解决**：通过 GT_ENV-0x30 偏移手动构造 global pool + allocator
 - **实际调用已验证**：探针 `Scripts/replay_probe.m` 证明 dlopen+dlsym 可行，无需 entitlement
 - **Harvester API 已完整验证**：4 个函数均为纯离线 blob 解析器，可直接提取 .gputrace 中的纹理/buffer 数据，无需 replay 运行时。纹理 blob 使用 "capture\0" magic header + 256 字节 header + raw pixel payload 结构
+- **Controller 路径已完整验证**：通过 `makeDataSource` + `makeController` 可在 headless 进程内创建完整 replay controller，无需 XPC/entitlement。完整调用链：apr_pool → makeDataSource → Support_init → ObjectMap(initWithDevice:) → initArgBuf → populateUnused → makeController → playAll(返回 0)
+- **GTMTLReplayObjectMap 是数据获取关键**：302 个方法的 NSObject 子类，管理所有 replay GPU 对象。提供 `bufferForKey:`、`textureForKey:`、`resources`（NSDictionary）等直接数据访问接口。replay 后可直接从中读取 GPU 数据，无需 XPC Fetch 类族
+- **内部函数定位方法确立**：非导出函数通过 CLI 中 BL 指令相对偏移计算（如 CLI+0x13c → makeDataSource）。所有关键偏移已记录在 controller_probe.m 中
 
 ### 当前卡点
 
-无。R4.1 Harvester API 已完全验证，离线数据提取能力已确认。
+无。R4.2 Controller 路径已完整验证，headless in-process replay controller 可成功创建并执行 playAll。
 
 ### 下一步（当前最高优先级）
 
-**R4.2：Controller 路径探索 — 建立 headless replay session + 数据获取通道**
+**R4.3：Controller + playTo + 数据获取 — 实时资源获取**
 
-背景：R3 证明 CLI 路径仅做 replay 健康检查（不产出数据），R4.1 证明 Harvester 仅解析已有 blob（离线）。要实现完整的数据获取等价（render target、pipeline binaries、counters、profiling），**必须建立 Controller 路径** — 这是后续所有能力维度（R4.3~R4.5, R5 全部）的唯一基础设施瓶颈。
+背景：R4.2 证明 Controller 路径可行（makeDataSource → makeController → playAll 全部成功），且通过 GTMTLReplayObjectMap 可直接访问所有 replay GPU 对象（resources 字典、bufferForKey:、textureForKey: 等 302 个方法）。下一步是实现定向 replay（playTo 到指定 draw call）+ 从 objectMap 提取资源数据。
 
 核心问题：
-1. `GTMTLReplayController_init` 需要什么参数？（dataSource? device? transport?）
-2. 如何建立 transport 通道？（`GTMTLReplayClient_init` + `createNewTransport`）
-3. Controller 建立后，Fetch/Query/Profile 请求如何发送？（直接调用 vs 通过 transport）
+1. `GTMTLReplayController_playTo` 的参数签名？（controller + draw call index/encoder ID?）
+2. 如何从 objectMap.resources 定位特定 render target？
+3. 如何从 objectMap.textureForKey: / bufferForKey: 获取 GPU 数据？
 
 实施策略：
-1. 反汇编 `GTMTLReplayController_init` 分析参数签名与初始化依赖
-2. 反汇编 `GTMTLReplayClient_init` + `createNewTransport` 确认 transport 建立方式
-3. 交叉验证：对照 `GTMTLReplay_CLI` 内部调用 `GTMTLReplayController_makeController` 的上下文，推断最小依赖
-4. 在 replay_probe 中尝试：init controller → playTo → 尝试 fetch
+1. 反汇编 `GTMTLReplayController_playTo` 确认参数签名
+2. 在 controller_probe 中添加 playTo 测试（定位到特定 draw call）
+3. 枚举 objectMap.resources，定位 render target texture
+4. 从 texture 读取 pixel data 导出验证
 
-成功标准：确认 Controller 路径的最小可调用序列（从 init 到发送第一个 Fetch/Query 请求），或明确其 in-process 不可用的原因。
-
-附加目标（如 Controller 路径不可行时的备选）：
-- 反汇编 `GTMTLReplayHost_generateDerivedDataPayload` 确认 derived data 是否可单独获取
-- 评估直接构造 XPC 消息绕过 GUI 的可行性
+成功标准：playTo 到指定 draw call 后，从 objectMap 提取至少一个 texture 的 pixel data 并以 JSON/binary 形式输出。
 
 ## 构建与验证的方法
 
@@ -138,7 +137,7 @@
   - R3.3：[N/A] completionCallback 为 dead code，CLI 路径不产出 profiling 数据。能力边界已明确。
 - **[IN-PROGRESS][P0] R4**：数据获取等价 — 在 headless replay 成功后提取资源数据。
   - [DONE] R4.1：Harvester API 探索与验证 — 4 个函数均为纯离线 blob 解析器，直接提取 .gputrace 资源数据，无需 replay
-  - R4.2：**Controller 路径探索**（核心瓶颈）— 反汇编 Controller_init / Client_init / createNewTransport，建立 headless replay session + 数据获取通道。解锁后续所有能力。
+  - [DONE] R4.2：**Controller 路径探索** — makeDataSource+makeController 完整验证，headless in-process controller 可创建并 playAll 成功，objectMap 可访问所有 GPU 对象
   - R4.3：Controller + Fetch 类族组合调用（playTo → fetch texture/buffer/pipeline）— 实时资源获取
   - R4.4：GPU Counters 采集 — GPURawCounter 框架 + GTReplayProfileTimeline 硬件计数器
   - R4.5：Shader Profiler — ProfileTimeline.shaderProfiling + profiler stream data 解析
@@ -161,6 +160,7 @@
 - **已确认缓存路径**：`/private/var/folders/.../C/com.apple.gputools.GPUToolsReplayService/com.apple.metal/...`
 - **关键环境变量**：`ATF_RESULTSDIRECTORY`(输出目录)、`GPUMTLOverrideDeviceFamily`(设备覆盖)、`MTLREPLAYER_OVERRIDE_DEVICE_REGISTRY_ID`(GPU 覆盖)
 - **探针编译**：`cd Scripts/ && clang -framework Foundation -framework Metal -ldl -o replay_probe replay_probe.m`
+- **Controller 探针编译**：`cd Scripts/ && clang -framework Foundation -framework Metal -ldl -lobjc -o controller_probe controller_probe.m`
 - **Harvester 探针编译**：`cd Scripts/ && clang -framework Foundation -framework Metal -ldl -o harvester_probe harvester_probe.m`
 
 ## 参考信息
@@ -171,6 +171,7 @@
 | `subdocs/20260520-R1.1b-transport-rawcounter-api.md` | **在执行 R4/R5 时必须读取** | XPC 完整接口、Fetch/Query/Profile/ShaderDebug/Update 类族、GPURawCounter |
 | `subdocs/20260520-R1.1-api-inventory.md` | **在执行 R4 时必须读取** | GPUToolsReplay 导出符号（含 Harvester 完整签名与 blob 格式）、GPUToolsServices 76 类、对象图 |
 | `subdocs/20260520-R3-headless-replay.md` | **在执行 R4 时必须读取** | R3 全阶段技术细节：APR bootstrap、options 布局、CLI 能力边界、反汇编分析 |
+| `executions/20260520-R4.2-controller-path-verified.md` | **在执行 R4.3+ 时必须读取** | Controller 路径完整调用链、函数签名、CLI 偏移表、ObjectMap 分析 |
 | `subdocs/20260520-R1.2-GTMTLReplay_CLI-signature.md` | 在调试 options 相关问题时按需读取 | CLI 签名、Options 偏移表、执行流程 |
 | `subdocs/20260520-R1.3-dictionary-fields.md` | 一般无需读取（CLI 路径不使用字典） | 三层字典字段；仅在需要 XPC 路径时参考 |
 | `subdocs/20260520-R2.1-CLI-schema.md` | 一般无需读取（bridge 已完成） | CLI schema 设计、R2.2/R2.3 实现与测试总结 |

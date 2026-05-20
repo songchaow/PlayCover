@@ -74,22 +74,24 @@
 
 ### 下一步（当前最高优先级）
 
-**R4.3：Controller + playTo + 数据获取 — 实时资源获取**
+**R4.3：ObjectMap 数据提取 + playTo 定向 replay**
 
-背景：R4.2 证明 Controller 路径可行（makeDataSource → makeController → playAll 全部成功），且通过 GTMTLReplayObjectMap 可直接访问所有 replay GPU 对象（resources 字典、bufferForKey:、textureForKey: 等 302 个方法）。下一步是实现定向 replay（playTo 到指定 draw call）+ 从 objectMap 提取资源数据。
+背景：R4.2 证明 Controller 路径可行（playAll 成功，objectMap.resources 为有效 NSDictionary）。下一步分两阶段：先验证从 objectMap 提取实际 GPU 数据，再实现 playTo 定向控制。
 
-核心问题：
-1. `GTMTLReplayController_playTo` 的参数签名？（controller + draw call index/encoder ID?）
-2. 如何从 objectMap.resources 定位特定 render target？
-3. 如何从 objectMap.textureForKey: / bufferForKey: 获取 GPU 数据？
+阶段 A — ObjectMap 数据提取（优先，无需 playTo）：
+1. playAll 后枚举 objectMap.resources（遍历 NSDictionary keys/values）
+2. 识别 MTLTexture / MTLBuffer 对象，读取其属性（width/height/pixelFormat/length）
+3. 尝试 `[texture getBytes:...]` / `[buffer contents]` 导出 raw pixel/buffer data
+4. 输出至 JSON metadata + binary file
 
-实施策略：
-1. 反汇编 `GTMTLReplayController_playTo` 确认参数签名
-2. 在 controller_probe 中添加 playTo 测试（定位到特定 draw call）
-3. 枚举 objectMap.resources，定位 render target texture
-4. 从 texture 读取 pixel data 导出验证
+阶段 B — playTo 定向 replay：
+1. 反汇编 `GTMTLReplayController_playTo` 确认参数签名（controller + ?）
+2. 在 controller_probe 中添加 playTo 调用（定位到特定 draw call）
+3. 对比 playTo 前后 objectMap 状态差异
 
-成功标准：playTo 到指定 draw call 后，从 objectMap 提取至少一个 texture 的 pixel data 并以 JSON/binary 形式输出。
+成功标准：
+- A：playAll 后从 objectMap 提取至少一个 texture 的 pixel data 并以 binary 形式写入文件
+- B：playTo 到指定 draw call 后，确认 objectMap 中 render target 内容与 playAll 不同
 
 ## 构建与验证的方法
 
@@ -133,7 +135,7 @@
 - **[IN-PROGRESS][P0] R4**：数据获取等价 — 在 headless replay 成功后提取资源数据。
   - [DONE] R4.1：Harvester API 探索与验证 — 4 个函数均为纯离线 blob 解析器，直接提取 .gputrace 资源数据，无需 replay
   - [DONE] R4.2：**Controller 路径探索** — makeDataSource+makeController 完整验证，headless in-process controller 可创建并 playAll 成功，objectMap 可访问所有 GPU 对象
-  - R4.3：Controller + Fetch 类族组合调用（playTo → fetch texture/buffer/pipeline）— 实时资源获取
+  - R4.3：ObjectMap 数据提取 + playTo 定向 replay（A: 枚举 resources 并导出纹理/buffer 数据；B: 反汇编 playTo 签名并验证定向控制）
   - R4.4：GPU Counters 采集 — GPURawCounter 框架 + GTReplayProfileTimeline 硬件计数器
   - R4.5：Shader Profiler — ProfileTimeline.shaderProfiling + profiler stream data 解析
 - **[TODO][P2] R5**：操作等价 — Replay 交互操作的 CLI 触发。

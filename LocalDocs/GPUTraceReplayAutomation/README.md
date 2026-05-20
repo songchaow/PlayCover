@@ -32,12 +32,12 @@
 | 6 | GPU Counters（硬件计数器） | ⛔ 跳过 | R4.4: 需 Apple 私有 entitlement + SIP 关闭；host timing 可替代 |
 | 7 | Shader Profiler（per-line 耗时） | ⛔ 跳过 | 同 R4.4 entitlement 限制 |
 | 8 | Derived Counters（派生指标） | ⛔ 跳过 | 同 R4.4 entitlement 限制 |
-| 9 | Shader 热替换 | ❌ 待实现 | R5.2 (GTReplayUpdateLibrary) |
+| 9 | Shader 热替换 | ✅ | R5.2: objectMap.setLibrary:forKey: + rewind+playAll；shaderIR(metallib binary)无需源码 |
 | 10 | Shader Debug | ❌ 待实现 | R5.3 |
 | 11 | Configuration 修改 | ❌ 待实现 | R5.4 |
 | 12 | 输出自动化（标准化 JSON/bin 导出） | 🔄 部分 | R6 |
 
-**完成度：~50%（6/12 能力维度已完成，3 个因系统限制跳过）**
+**完成度：~58%（7/12 能力维度已完成，3 个因系统限制跳过）**
 
 最终交付物：
 - **C/ObjC bridge 层**：探针 + 结构化调用接口，提供 headless replay 全功能调用能力。
@@ -77,6 +77,14 @@
   - `renderPipelineStateForKey:` → `AGXG16XFamilyRenderPipeline`
   - `computePipelineStateForKey:` → `AGXG16XFamilyComputePipeline`
   - Key 空间模式：library key = function key - 1（偶数/奇数交替）
+- **Shader 热替换**（R5.2）：
+  - 路径 A（推荐）：`objectMap.setLibrary:forKey:` → `rewind` → `playAll` — 直接替换，无需 XPC
+  - 路径 B：`GTMTLReplayService.update:(GTReplayUpdateLibrary)` — 需 GTMTLReplayClient context
+  - **shaderSource**：编译 MSL → MTLLibrary → 替换 ✅
+  - **shaderIR**：加载 metallib binary → MTLLibrary → 替换（**无需源码**）✅
+  - **Xcode UI 缺口**：GUI 只暴露 Edit Source；shaderIR binary 注入是 API-only 能力
+  - `setLibrary:forKey:` 签名：`v32@0:8@16Q24`（void, id+uint64_t）
+  - AIR bitcode 不能直接 `newLibraryWithData:`，需先 `xcrun metallib` 转换
 - **工具链已就绪**（均在 `Scripts/` 目录下）：
   - `gputrace_bridge.py` — 只读 bridge（scan-active-replay / scan-binaries / inspect-gputrace）
   - `replay_probe.m` — CLI 路径探针
@@ -85,35 +93,39 @@
   - `objectmap_probe.m` — ObjectMap 数据提取 + playTo 探针
   - `counter_probe.m` — 计数器能力枚举 + timing 探针
   - `pipeline_probe.m` — Pipeline/Library binary 导出探针
+  - `update_library_probe.m` — R5.2 Shader 替换 introspection 探针
+  - `update_library_probe2.m` — R5.2 替换验证探针（shaderSource + 对比）
+  - `update_library_probe3.m` — R5.2 shaderIR 无源码替换专项验证
 
 ### 当前卡点
 
-无。R4.4/R4.5 因 SIP 开启 + Apple 私有 entitlement 限制已确认跳过。
+无。R5.2 已完成验证。
 
 ### 下一步（当前最高优先级）
 
-**R5.2：Shader 热替换（GTReplayUpdateLibrary）**
+**R5.3：Shader Debug（GTReplayShaderDebugRequest）**
 
-背景：R5.1 已确认 pipeline/library 对象结构 — library key 已知（uint64_t），metallib binary 可导出/对比。
+背景：R5.2 已确认 Controller 路径下 update 操作可行 — objectMap 具备完整的 setter 方法族。
 
-已知接口（来自 `subdocs/20260520-R1.1b-transport-rawcounter-api.md` §8 Update 类族）：
+已知接口（来自 `subdocs/20260520-R1.1b-transport-rawcounter-api.md` §7 ShaderDebug 类族）：
 ```objc
-@interface GTReplayUpdateLibrary
-@property dispatchUID;    // 目标 dispatch（draw call）
-@property streamRef;      // 目标 stream
-@property shaderURL;      // 新 shader 文件 URL
-@property shaderIR;       // 新 shader 的 IR/metallib 数据
-@property shaderSource;   // 新 shader 源码（Metal Shading Language）
+@interface GTReplayShaderDebugRequest
+@property dispatchUID;
+@property programData;
+@property programDataVersion;
+@property completionHandler;
 @end
+
+// 子类：Fragment/Vertex/Kernel/Mesh/Object/PostTessellationVertex
 ```
 
 验证路径：
-1. 确认 `GTReplayUpdateLibrary` 在 Controller 路径下的调用方式（是否可直接实例化并提交给 controller？还是需通过某个 update 入口函数？）
-2. 编译新 shader（Metal Shading Language → metallib）并通过 shaderIR/shaderURL 注入 replay
-3. playAll 后对比替换前后的 texture/buffer 内容差异
+1. 确认 GTMTLReplayService 的 `shaderdebug:` 方法在 Controller 路径下的可行性
+2. 构造最小 GTReplayShaderDebugFragment 请求
+3. 验证是否能获取 shader 执行轨迹数据
 
 成功标准：
-- 在 headless replay 中替换一个 library，playAll 后确认输出（texture/buffer 内容）与替换前不同
+- 在 headless replay 中提交 shader debug 请求，获取到有效的调试数据
 
 ## 构建与验证的方法
 
@@ -160,10 +172,10 @@
   - R4.5：Shader Profiler — 同 R4.4 限制（跳过）。
 - **[IN-PROGRESS][P0] R5**：操作等价 — Replay 数据深度获取与交互操作。
   - [DONE] R5.1：Pipeline 查看（libraryForKey:uint64→libraryDataContents/bitcodeData 导出 metallib+AIR）
-  - [TODO] R5.2：Shader 热替换（GTReplayUpdateLibrary — shaderSource/shaderIR/shaderURL）
+  - [DONE] R5.2：Shader 热替换（objectMap.setLibrary:forKey: + shaderIR/shaderSource；Xcode UI 未暴露的 shaderIR 注入已验证）
   - [TODO] R5.3：Shader Debug（fragment/vertex/kernel — 需确认 Controller 路径下可行性）
   - [TODO] R5.4：Configuration 动态修改（GTReplayUpdateConfiguration — 13 个 BOOL 属性）
-  - 策略注：R5.2 是关键突破点 — 若验证 Controller 路径可处理 update/shaderdebug 类请求，R5.3/R5.4 仅需换 request 对象即可快速收尾
+  - 策略注：R5.2 已验证 Controller 路径 update 可行（setLibrary:forKey: 即可），R5.3/R5.4 需确认对应的 setter/action 方法
 - **[TODO][P2] R6**：客户端封装与可用性收尾。
   - R6.1：Python CLI wrapper（统一调用入口）
   - R6.2：JSON schema 统一输出格式定义
@@ -182,6 +194,9 @@
   - `clang -framework Foundation -framework Metal -ldl -lobjc -o objectmap_probe objectmap_probe.m`
   - `clang -framework Foundation -framework Metal -ldl -lobjc -o counter_probe counter_probe.m`
   - `clang -framework Foundation -framework Metal -ldl -lobjc -o pipeline_probe pipeline_probe.m`
+  - `clang -framework Foundation -framework Metal -ldl -lobjc -o update_library_probe update_library_probe.m`
+  - `clang -framework Foundation -framework Metal -ldl -lobjc -o update_library_probe2 update_library_probe2.m`
+  - `clang -framework Foundation -framework Metal -ldl -lobjc -o update_library_probe3 update_library_probe3.m`
 
 ## 参考信息
 
@@ -195,3 +210,4 @@
 | `subdocs/20260520-R1.2-GTMTLReplay_CLI-signature.md` | 一般无需读取（核心信息已整合） | CLI 签名、Options 偏移表、执行流程 |
 | `subdocs/20260520-R1.3-dictionary-fields.md` | 一般无需读取（CLI/Controller 路径不使用字典） | 三层字典字段；仅在需要 XPC 路径时参考 |
 | `subdocs/20260520-R2.1-CLI-schema.md` | 一般无需读取（bridge 已完成） | CLI schema 设计、R2.2/R2.3 实现与测试总结 |
+| `executions/20260520-R5.2-shader-hot-replace.md` | **在需要 shader 替换细节时读取** | R5.2 完整验证结果、调用流程、shaderIR 能力缺口分析 |

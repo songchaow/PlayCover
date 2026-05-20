@@ -34,11 +34,17 @@
   - **[R1.3 已确认]** `hardwareCountersConfiguration` 作为 `_kDYTraceProfilingHardwareCountersConfigurationKey` 的值嵌入 L3 字典；候选内部键：`CounterSampleBufferCounterSetName`, `CounterSampleBufferSampleCount`
   - **[R1.3 已确认]** headless replay（`GTMTLReplay_CLI` 路径）**不需要** `replayerLaunchDictionary`；该字典仅在 XPC/DYGuestAppSession 通路有意义
   - **[R1.3 已确认]** 环境变量级控制键补充：`MTLREPLAYER_ALLOW_PROGRAM_ADDRESS_TABLES`, `MTLREPLAYER_OVERRIDE_DEVICE_REGISTRY_ID`, `GPUTOOLS_FORCE_ROSETTA`
+  - **[R2.1 已确认]** CLI 采用统一入口 `gputrace_bridge.py` + 子命令模式（`scan-active-replay`, `scan-binaries`, `inspect-gputrace`）
+  - **[R2.1 已确认]** 输出格式：所有子命令默认 `--json`，错误输出统一为 `{error: {code, message, context}}`
+  - **[R2.1 已确认]** `scan-active-replay` 输出包含：进程列表（含 role 分类）、open_files（含 category 分类）、active_gputrace_path、metal_cache_dir
+  - **[R2.1 已确认]** `scan-binaries` 输出包含：模块路径/存在性/架构/大小/key_symbols/matched_strings
+  - **[R2.1 已确认]** `inspect-gputrace` 输出包含：valid/total_size/metadata（uuid, captured_frames_count, graphics_api 等）/files 列表（含类型分类）
+  - **[R2.1 已确认]** 实现约束：纯 Python 3.9+ 标准库，无第三方依赖
 - **当前卡点**：
-  - 还未对 `GTMTLReplay_CLI` 做过实际最小调用验证
+  - 还未对 `GTMTLReplay_CLI` 做过实际最小调用验证（属于 R3 范畴）
 - **下一步（当前最高优先级）**：
-  - **R2.1**：设计 CLI / JSON schema，至少覆盖 `scan-active-replay`、`scan-binaries`、`inspect-gputrace` 三类能力。
-  - **策略依据**：R1 全部完成，已建立足够的启动字典和 profiling 配置知识，可进入 R2 只读 bridge 原型。
+  - **R2.2**：实现最小只读 bridge（`Scripts/gputrace_bridge.py`），不触发 replay。
+  - **策略依据**：R2.1 schema 设计完成，可直接编码实现。
 
 ## 构建与验证的方法
 
@@ -72,8 +78,8 @@
   - **[DONE][P0] R1.1**：导出 GPUToolsServices / GPUToolsReplay 的完整类/selector/ivar/property 清单。
   - **[DONE][P0] R1.2**：探索 `GTMTLReplay_CLI` 参数签名，确认 headless replay 可行性；同时理清各 XPC Service 职责分工。
   - **[DONE][P1] R1.3**：标记 `replayerLaunchDictionary` / `hardwareCountersConfiguration` 的候选字段并做静态比对。
-- **[TODO][P1] R2**：产出只读 bridge 原型。
-  - **[TODO][P1] R2.1**：设计 CLI / JSON schema，至少覆盖 `scan-active-replay`、`scan-binaries`、`inspect-gputrace` 三类能力。
+- **[WIP][P1] R2**：产出只读 bridge 原型。
+  - **[DONE][P1] R2.1**：设计 CLI / JSON schema，至少覆盖 `scan-active-replay`、`scan-binaries`、`inspect-gputrace` 三类能力。
   - **[TODO][P1] R2.2**：实现最小只读 bridge，不触发 replay。
   - **[TODO][P1] R2.3**：完成 dry-run 与样本输出稳定性测试。
 - **[TODO][P2] R3**：尝试最小 replay / profiler 调用。
@@ -96,4 +102,5 @@
 - **在执行 R2/R3 时按需读取**：`subdocs/20260520-R1.1-api-inventory.md` — GPUToolsReplay 导出符号、GPUToolsServices 76 类清单、关键 ivar、selector、最小对象图。
 - **在执行 R2/R3 时建议读取**：`executions/20260520-R1.2-GTMTLReplay_CLI-signature.md` — `GTMTLReplay_CLI` 完整签名、`GTMTLReplayCLIOptions` 结构体布局、执行流程、headless 可行性结论。
 - **在执行 R2/R3 时建议读取**：`executions/20260520-R1.3-replayerLaunchDictionary-fields.md` — 三层字典结构、replayerLaunchDictionary/hardwareCountersConfiguration 完整字段清单与静态比对。
+- **在执行 R2.2 时必须读取**：`executions/20260520-R2.1-CLI-JSON-schema-design.md` — CLI 入口结构、三个子命令 JSON schema、文件/进程分类规则、实现约束。
 - **一般无需读取**：`../OfflineSourceRecovery/scripts/README_extract_shader_raw.md` — 仅在需要把 replay 自动化与 shader/raw 提取链路对齐时阅读。

@@ -91,5 +91,4 @@
 ## 参考信息
 
 - **必须读取**：`subdocs/20260520-replay-entry-scan.md`。这里记录了当前已确认的进程、模块、符号、缓存路径与判断依据。
-- **按需读取**：`executions/20260520-100129.md`。用于回看本次建立 dashboard 的全过程、决策和扫描摘要。
 - **按具体需求读取**：`../OfflineSourceRecovery/scripts/README_extract_shader_raw.md`。仅在需要把 replay 自动化与 shader/raw 提取链路对齐时阅读。

@@ -28,7 +28,7 @@
 | 2 | 纹理/Buffer 离线查看（存量资源） | ✅ | R4.1: Harvester 4 函数 blob 解析 |
 | 3 | 帧/draw call 导航 (playTo) | ✅ | R4.3: `playTo(controller, targetCallIndex)` 验证成功 |
 | 4 | Replay 后实时资源获取（render target） | ✅ | R4.3: ObjectMap → NSDictionary, getBytes/contents 导出 |
-| 5 | Pipeline 查看 | ❌ 待实现 | R5.1 (FetchPipelineBinaries) |
+| 5 | Pipeline 查看 | ✅ | R5.1: libraryDataContents/bitcodeData 导出 metallib + AIR |
 | 6 | GPU Counters（硬件计数器） | ⛔ 跳过 | R4.4: 需 Apple 私有 entitlement + SIP 关闭；host timing 可替代 |
 | 7 | Shader Profiler（per-line 耗时） | ⛔ 跳过 | 同 R4.4 entitlement 限制 |
 | 8 | Derived Counters（派生指标） | ⛔ 跳过 | 同 R4.4 entitlement 限制 |
@@ -37,7 +37,7 @@
 | 11 | Configuration 修改 | ❌ 待实现 | R5.4 |
 | 12 | 输出自动化（标准化 JSON/bin 导出） | 🔄 部分 | R6 |
 
-**完成度：~42%（5/12 能力维度已完成）**
+**完成度：~50%（6/12 能力维度已完成）**
 
 最终交付物：
 - **C/ObjC bridge 层**：探针 + 结构化调用接口，提供 headless replay 全功能调用能力。
@@ -69,6 +69,14 @@
 - **离线数据提取**：`GTHarvester*` 4 个纯 blob 解析器，可在无 replay 情况下提取 .gputrace 中已存储的纹理/buffer
 - **XPC 操作全集已清点**：`GTMTLReplayServiceXPCProxy` 定义了 Xcode GUI 所有 replay 操作范围（fetch/query/profile/shaderdebug/update），为后续能力对齐提供完整参照。详见 `subdocs/20260520-R1.1b-transport-rawcounter-api.md`
 - **GPU Counters 能力边界**（R4.4）：GPURawCounter 需 `com.apple.private.agx.performance-spi`（Apple 签名 + SIP 关闭）；host timing via `mach_absolute_time` + playTo per-segment 可替代
+- **Pipeline Binary 导出**（R5.1）：
+  - ObjectMap 的所有 `ForKey:` 方法接受 **uint64_t** 参数（type encoding `Q`），非 NSObject
+  - `libraryForKey:(uint64_t)` → `_MTLLibrary`（MTLLibrary 协议）
+  - `_MTLLibrary.libraryDataContents` → NSData（metallib binary，magic 0x424C544D "BLTM"）
+  - `_MTLLibrary.bitcodeData` → NSData（AIR/LLVM bitcode，magic 0x0B17C0DE）
+  - `renderPipelineStateForKey:` → `AGXG16XFamilyRenderPipeline`
+  - `computePipelineStateForKey:` → `AGXG16XFamilyComputePipeline`
+  - Key 空间模式：library key = function key - 1（偶数/奇数交替）
 - **工具链已就绪**（均在 `Scripts/` 目录下）：
   - `gputrace_bridge.py` — 只读 bridge（scan-active-replay / scan-binaries / inspect-gputrace）
   - `replay_probe.m` — CLI 路径探针
@@ -76,6 +84,7 @@
   - `harvester_probe.m` — 离线数据提取探针
   - `objectmap_probe.m` — ObjectMap 数据提取 + playTo 探针
   - `counter_probe.m` — 计数器能力枚举 + timing 探针
+  - `pipeline_probe.m` — Pipeline/Library binary 导出探针
 
 ### 当前卡点
 
@@ -83,23 +92,16 @@
 
 ### 下一步（当前最高优先级）
 
-**R5.1：Pipeline 查看（FetchPipelineBinaries）**
-
-背景：Controller 路径已完整验证（playAll/playTo/objectMap 数据提取均正常）。Pipeline 查看是最直接的"从 objectMap 获取更多数据类型"延伸，技术上最接近已验证路径（objectMap 中已包含 pipeline state 对象），风险最低。
-
-1. 确认 objectMap 中 pipeline state 对象的类型和方法（通过 runtime introspection）
-2. 尝试获取 pipeline binary（metallib / AIR）— 可能需要 `FetchPipelineBinaries` request 或直接 `objectMap.pipelineForKey:` 
-3. 导出 pipeline 编译产物并验证格式
-
-成功标准：
-- 在 headless replay 后从 objectMap 导出至少一个 pipeline 的编译产物（metallib 或 AIR binary），并验证格式正确
-
 **R5.2：Shader 热替换（GTReplayUpdateLibrary）**
 
-在 R5.1 确认 pipeline/library 对象结构后顺序推进：
+背景：R5.1 已确认 pipeline/library 对象结构 — library key 已知（uint64_t），metallib binary 可导出/对比。
+
 1. 确认 `GTReplayUpdateLibrary` 在 Controller 路径下的调用方式
 2. 编译新 shader（Metal Shading Language → metallib）并注入 replay
 3. 验证替换后 playAll 输出变化
+
+成功标准：
+- 在 headless replay 中替换一个 library，playAll 后确认输出（texture/buffer 内容）与替换前不同
 
 ## 构建与验证的方法
 
@@ -145,7 +147,7 @@
   - R4.4：GPU Counters — host timing 可用，HW counters 被 entitlement 阻塞（跳过）。
   - R4.5：Shader Profiler — 同 R4.4 限制（跳过）。
 - **[IN-PROGRESS][P0] R5**：操作等价 — Replay 数据深度获取与交互操作。
-  - [TODO] R5.1：Pipeline 查看（objectMap 中 pipeline state introspection + binary 导出）
+  - [DONE] R5.1：Pipeline 查看（libraryForKey:uint64→libraryDataContents/bitcodeData 导出 metallib+AIR）
   - [TODO] R5.2：Shader 热替换（GTReplayUpdateLibrary — shaderSource/shaderIR/shaderURL）
   - [TODO] R5.3：Shader Debug（fragment/vertex/kernel — 需确认 Controller 路径下可行性）
   - [TODO] R5.4：Configuration 动态修改（GTReplayUpdateConfiguration — 13 个 BOOL 属性）
@@ -166,12 +168,14 @@
   - `clang -framework Foundation -framework Metal -ldl -o harvester_probe harvester_probe.m`
   - `clang -framework Foundation -framework Metal -ldl -lobjc -o objectmap_probe objectmap_probe.m`
   - `clang -framework Foundation -framework Metal -ldl -lobjc -o counter_probe counter_probe.m`
+  - `clang -framework Foundation -framework Metal -ldl -lobjc -o pipeline_probe pipeline_probe.m`
 
 ## 参考信息
 
 | 子文档 | 阅读建议 | 内容概述 |
 |--------|---------|---------|
 | `subdocs/20260520-R4.2-controller-path.md` | **总是建议读取** — Controller 路径是所有后续任务的基础 | 完整调用链、内部函数偏移表、ObjectMap 302 方法、playAll/playTo |
+| `executions/20260520-R5.1-pipeline-export.md` | **在执行 R5.2 时建议读取** — 包含 library key 空间和导出方法 | ForKey uint64_t 参数、libraryDataContents/bitcodeData、key 模式 |
 | `subdocs/20260520-R1.1b-transport-rawcounter-api.md` | **在执行 R5 时必须读取** | XPC Fetch/Query/Profile/ShaderDebug/Update 类族完整接口 |
 | `subdocs/20260520-R1.1-api-inventory.md` | 在需要查阅完整符号/类清单时按需读取 | GPUToolsReplay 导出符号、Harvester blob 格式、GPUToolsServices 76 类 |
 | `subdocs/20260520-R3-headless-replay.md` | 在调试 APR/options 问题时按需读取 | APR bootstrap、options 完整布局、CLI 能力边界 |

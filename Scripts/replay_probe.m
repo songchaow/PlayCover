@@ -207,18 +207,54 @@ int main(int argc, const char *argv[]) {
         fprintf(stdout, "[INFO] Profiling temp dir: %s\n", [tmpDir UTF8String]);
 
         // --- 准备 options 结构体 ---
-        // ~0xC0 字节，清零 + loopCount=1
+        // ~0xC0 字节，清零 + loopCount=1 + 填入字符串字段以避免 NULL cString 崩溃
         char options[0xC0];
         memset(options, 0, sizeof(options));
         *(int32_t *)(options + 0x18) = 1;  // loopCount = 1
 
-        // --- 执行 GTMTLReplay_CLI ---
+        // R3.2: 修复 NULL 字符串字段
+        // +0x28: errorLogPath (推测) — 填入 /dev/null 防止 NSString stringWithUTF8String: NULL
+        const char *errorLogPath = "/dev/null";
+        *(const char **)(options + 0x28) = errorLogPath;
+        // +0x30: saveDestination — 日志中确认为 "options.saveDestination=%s"
+        const char *saveDestination = "/tmp/replay_output";
+        *(const char **)(options + 0x30) = saveDestination;
+
+        // 创建 saveDestination 目录
+        NSString *saveDest = @"/tmp/replay_output";
+        [fm createDirectoryAtPath:saveDest withIntermediateDirectories:YES attributes:nil error:nil];
+
+        fprintf(stdout, "[INFO] Options fields set:\n");
+        fprintf(stdout, "  +0x18 loopCount    = 1\n");
+        fprintf(stdout, "  +0x28 errorLogPath = %s\n", errorLogPath);
+        fprintf(stdout, "  +0x30 saveDest     = %s\n", saveDestination);
+
+        // --- 执行 GTMTLReplay_CLI (with @try/@catch) ---
         fprintf(stdout, "\n[INFO] Calling GTMTLReplay_CLI(\"%s\", options, callback)...\n", gputrace_path);
         fprintf(stdout, "[INFO] Options: loopCount=1, size=0x%lx\n", sizeof(options));
         fflush(stdout);
         fflush(stderr);
 
-        int result = cli_fn(gputrace_path, options, replay_completion);
+        int result = -999;
+        @try {
+            result = cli_fn(gputrace_path, options, replay_completion);
+        } @catch (NSException *exception) {
+            fprintf(stderr, "\n[EXCEPTION] %s: %s\n",
+                    [[exception name] UTF8String],
+                    [[exception reason] UTF8String]);
+            NSArray *symbols = [exception callStackSymbols];
+            if (symbols) {
+                fprintf(stderr, "[EXCEPTION] Call stack:\n");
+                for (NSString *sym in symbols) {
+                    fprintf(stderr, "  %s\n", [sym UTF8String]);
+                }
+            }
+            // 如果仍然是 NULL cString 问题，尝试逐步试探其他偏移
+            if ([[exception reason] containsString:@"NULL cString"]) {
+                fprintf(stderr, "\n[R3.2-DIAG] Still hitting NULL cString after setting +0x28 and +0x30.\n");
+                fprintf(stderr, "[R3.2-DIAG] Next step: try additional offsets (+0x38, +0x40, etc.)\n");
+            }
+        }
 
         fprintf(stdout, "\n[RESULT] GTMTLReplay_CLI returned: %d\n", result);
 

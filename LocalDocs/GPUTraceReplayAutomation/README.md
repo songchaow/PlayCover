@@ -47,22 +47,23 @@
 - **GPU 硬件计数器**：`GPURawCounter.framework` 提供低层直接访问
 - **实际调用已验证**：探针 `Scripts/replay_probe.m` 证明 dlopen+dlsym 可行，无需 entitlement（详见 R3.1 子文档）
 - **APR Bootstrap 已解决**：通过 GT_ENV-0x30 偏移手动构造 global pool + allocator（详见 R3.1 子文档）
+- **Headless replay 完整成功**：options +0x28/+0x30 填入非 NULL 字符串后，GTMTLReplay_CLI 返回 0（详见 R3.2 执行记录）
 - **只读 bridge 已交付**：`Scripts/gputrace_bridge.py` 3 个子命令全部验证通过
 
 ### 当前卡点
 
-真实 .gputrace 样本验证时，options 结构体缺少必要字符串字段（+0x28 或 +0x30），导致 `+[NSString stringWithUTF8String:]: NULL cString` 异常，崩溃在 GTMTLReplay_CLI + 3072。
+无。headless replay 基础执行已完全打通。
 
 ### 下一步（当前最高优先级）
 
-**R3.2：修复 options NULL 字符串 → 实现完整 replay 调用**
+**R3.3：验证 completionCallback 返回数据 + profilingFlags 配置**
 
-实施策略（由快到准）：
-1. **快速试探法**：在 replay_probe.m 中逐一填入可疑的 `const char*` 字段（+0x28 填 `/dev/null`、+0x30 填 `/tmp/replay_output`），配合 `@try/@catch` 观察是否通过 +3072
-2. **反汇编确认**：若试探不够，`lldb` 离线反汇编 `GTMTLReplay_CLI + 3072` 前后指令，确定 load 的具体 options 偏移
-3. **逐步解锁**：每解决一个 NULL 字段崩溃，继续运行观察下一个卡点，直到返回 0 或触发 callback
+实施策略：
+1. 设置 gpuStateLevel (+0xa4) 为正整数（≥2，bit31=0）以触发 DerivedCounters 收集和 callback
+2. 设置 profilingFlags (+0xb8) 各位，观察 saveDestination 目录产物
+3. 验证 callback NSData 内容结构
 
-成功标准：`GTMTLReplay_CLI` 返回 0，或 completionCallback 被调用且收到非空 NSData。
+成功标准：completionCallback 被调用且收到非空 NSData，或 saveDestination 目录产出文件。
 
 **可用测试样本**：`/Users/songdogwang/Library/Containers/com.papegames.lysk/Data/Documents/Captures/capture_20260518_110050.gputrace`（恋与深空，~368MB）
 
@@ -103,8 +104,8 @@
   - R2.3：9 项稳定性测试全部通过。
 - **[TODO][P0] R3**：headless replay 实际调用验证。
   - **[DONE] R3.1**：最小 ObjC 探针调用验证通过，APR bootstrap 已解决。
-  - **[TODO][P0] R3.2**：修复 options NULL 字符串字段，实现完整 replay（返回 0 / 触发 callback）。
-  - **[TODO][P1] R3.3**：验证 completionCallback 返回数据 + profilingFlags 配置。
+  - **[DONE] R3.2**：修复 options NULL 字符串字段，实现完整 replay（返回 0 / 触发 callback）。
+  - **[TODO][P0] R3.3**：验证 completionCallback 返回数据 + profilingFlags 配置。
 - **[TODO][P1] R4**：数据获取等价 — Fetch/Query 类族的 CLI 调用。
   - R4.1：Fetch 类族（Texture / Buffer / PipelineBinaries / PostVertex）
   - R4.2：Query 类族（Configuration / DerivedCounters / DeviceCapabilities）
@@ -132,6 +133,7 @@
 | `subdocs/20260520-R1.1b-transport-rawcounter-api.md` | **在执行 R3/R4/R5 时必须读取** | XPC 完整接口、Fetch/Query/Profile/ShaderDebug/Update 类族（定义了 GUI 全操作集）、GPURawCounter |
 | `subdocs/20260520-R1.2-GTMTLReplay_CLI-signature.md` | **在执行 R3 时必须读取** | CLI 签名、Options 结构体偏移、执行流程 |
 | `subdocs/20260520-R3.1-replay-probe.md` | **在执行 R3.2+ 时必须读取** | APR bootstrap 方案、偏移量、调用验证结果、当前卡点详情 |
+| `executions/20260520-R3.2-options-null-fix.md` | **在执行 R3.3+ 时建议读取** | R3.2 修复详情、options 字段确认、replay 成功验证 |
 | `subdocs/20260520-R1.1-api-inventory.md` | 在需要查阅类/符号清单时按需读取 | GPUToolsReplay 导出符号、GPUToolsServices 76 类、对象图 |
 | `subdocs/20260520-R1.3-dictionary-fields.md` | 一般无需读取（CLI 路径不使用字典） | 三层字典字段；仅在需要 XPC 路径时参考 |
 | `subdocs/20260520-R2.1-CLI-schema.md` | 一般无需读取（bridge 已完成） | CLI schema 设计、R2.2/R2.3 实现与测试总结 |

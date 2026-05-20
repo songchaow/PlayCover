@@ -26,8 +26,8 @@
 |---|---------|------|-----------------|
 | 1 | Replay 执行 | ✅ 已完成 | R3 |
 | 2 | 纹理/Buffer 离线查看（存量资源） | ✅ 已完成 | R4.1 |
-| 3 | 帧/draw call 导航 (playTo) | 🔄 基础就绪 | R4.2 controller 已创建，R4.3 验证 playTo |
-| 4 | Replay 后实时资源获取（render target） | 🔄 基础就绪 | R4.2 objectMap 可访问，R4.3 验证数据提取 |
+| 3 | 帧/draw call 导航 (playTo) | ✅ 已完成 | R4.3 playTo 定向 replay 验证成功 |
+| 4 | Replay 后实时资源获取（render target） | ✅ 已完成 | R4.3 ObjectMap 数据提取验证成功 |
 | 5 | Pipeline 查看 | ❌ 待实现 | R4.3 (FetchPipelineBinaries) |
 | 6 | GPU Counters（硬件计数器） | ❌ 待实现 | R4.4 🆕 |
 | 7 | Shader Profiler（per-line 耗时） | ❌ 待实现 | R4.5 🆕 |
@@ -37,7 +37,7 @@
 | 11 | Configuration 修改 | ❌ 待实现 | R5.4 |
 | 12 | 输出自动化（标准化 JSON/bin 导出） | 🔄 部分 | R6 |
 
-**完成度：~35%（4/12 能力维度基础就绪）**
+**完成度：~42%（5/12 能力维度已完成）**
 
 最终交付物：
 - **C/ObjC bridge 层**：探针 + 结构化调用接口，提供 headless replay 全功能调用能力。
@@ -66,7 +66,9 @@
 - **离线数据提取**：`GTHarvester*` 4 个纯 blob 解析器，可在无 replay 情况下提取 .gputrace 中已存储的纹理/buffer
 - **XPC 操作全集已清点**：`GTMTLReplayServiceXPCProxy` 定义了 Xcode GUI 所有 replay 操作范围（fetch/query/profile/shaderdebug/update），为后续能力对齐提供完整参照。详见 `subdocs/20260520-R1.1b-transport-rawcounter-api.md`
 - **内部函数定位**：非导出函数通过 CLI 中 BL 偏移计算（偏移表见 `subdocs/20260520-R4.2-controller-path.md` §2）
-- **工具链已就绪**：只读 bridge `Scripts/gputrace_bridge.py`、replay 探针 `Scripts/replay_probe.m`、controller 探针 `Scripts/controller_probe.m`、harvester 探针 `Scripts/harvester_probe.m`
+- **工具链已就绪**：只读 bridge `Scripts/gputrace_bridge.py`、replay 探针 `Scripts/replay_probe.m`、controller 探针 `Scripts/controller_probe.m`、harvester 探针 `Scripts/harvester_probe.m`、objectmap 探针 `Scripts/objectmap_probe.m`
+- **ObjectMap 数据提取已验证**（R4.3）：playAll 后 `objectMap.resources` 返回完整 NSDictionary（key=NSNumber 资源 ID，value=MTLTexture/MTLBuffer），`[tex getBytes:...]` / `[buf contents]` 可直接导出 raw data
+- **playTo 定向 replay 已验证**（R4.3）：`GTMTLReplayController_playTo(controller, uint32_t targetCallIndex)` — 导出函数，2 参数，返回 0=成功；resources count 随 target 变化证明定向控制有效
 
 ### 当前卡点
 
@@ -74,24 +76,16 @@
 
 ### 下一步（当前最高优先级）
 
-**R4.3：ObjectMap 数据提取 + playTo 定向 replay**
+**R4.4：GPU Counters 采集（GPURawCounter + GTReplayProfileTimeline）**
 
-背景：R4.2 证明 Controller 路径可行（playAll 成功，objectMap.resources 为有效 NSDictionary）。下一步分两阶段：先验证从 objectMap 提取实际 GPU 数据，再实现 playTo 定向控制。
+背景：R4.3 完成后，Controller 路径具备完整的 replay + 数据提取 + 定向控制能力。下一步引入硬件计数器采集。
 
-阶段 A — ObjectMap 数据提取（优先，无需 playTo）：
-1. playAll 后枚举 objectMap.resources（遍历 NSDictionary keys/values）
-2. 识别 MTLTexture / MTLBuffer 对象，读取其属性（width/height/pixelFormat/length）
-3. 尝试 `[texture getBytes:...]` / `[buffer contents]` 导出 raw pixel/buffer data
-4. 输出至 JSON metadata + binary file
-
-阶段 B — playTo 定向 replay：
-1. 反汇编 `GTMTLReplayController_playTo` 确认参数签名（controller + ?）
-2. 在 controller_probe 中添加 playTo 调用（定位到特定 draw call）
-3. 对比 playTo 前后 objectMap 状态差异
+1. 确认 GPURawCounter framework 的 API（参考 `subdocs/20260520-R1.1b-transport-rawcounter-api.md`）
+2. 在 Controller 路径中集成 counter 采集（playAll/playTo 前后）
+3. 验证 counter 数据输出
 
 成功标准：
-- A：playAll 后从 objectMap 提取至少一个 texture 的 pixel data 并以 binary 形式写入文件
-- B：playTo 到指定 draw call 后，确认 objectMap 中 render target 内容与 playAll 不同
+- 在 playAll 期间采集到至少一组 GPU 硬件计数器数据并输出 JSON
 
 ## 构建与验证的方法
 
@@ -135,7 +129,7 @@
 - **[IN-PROGRESS][P0] R4**：数据获取等价 — 在 headless replay 成功后提取资源数据。
   - [DONE] R4.1：Harvester API 探索与验证 — 4 个函数均为纯离线 blob 解析器，直接提取 .gputrace 资源数据，无需 replay
   - [DONE] R4.2：**Controller 路径探索** — makeDataSource+makeController 完整验证，headless in-process controller 可创建并 playAll 成功，objectMap 可访问所有 GPU 对象
-  - R4.3：ObjectMap 数据提取 + playTo 定向 replay（A: 枚举 resources 并导出纹理/buffer 数据；B: 反汇编 playTo 签名并验证定向控制）
+  - [DONE] R4.3：ObjectMap 数据提取 + playTo 定向 replay（A: resources 枚举+导出验证；B: playTo 签名确认+定向控制验证）
   - R4.4：GPU Counters 采集 — GPURawCounter 框架 + GTReplayProfileTimeline 硬件计数器
   - R4.5：Shader Profiler — ProfileTimeline.shaderProfiling + profiler stream data 解析
 - **[TODO][P2] R5**：操作等价 — Replay 交互操作的 CLI 触发。
@@ -158,12 +152,14 @@
   - `clang -framework Foundation -framework Metal -ldl -o replay_probe replay_probe.m`
   - `clang -framework Foundation -framework Metal -ldl -lobjc -o controller_probe controller_probe.m`
   - `clang -framework Foundation -framework Metal -ldl -o harvester_probe harvester_probe.m`
+  - `clang -framework Foundation -framework Metal -ldl -lobjc -o objectmap_probe objectmap_probe.m`
 
 ## 参考信息
 
 | 子文档 | 阅读建议 | 内容概述 |
 |--------|---------|---------|
-| `subdocs/20260520-R4.2-controller-path.md` | **在执行 R4.3+ 时必须读取** | Controller 路径完整调用链、内部函数偏移表、ObjectMap 302 方法、playTo 策略 |
+| `executions/20260520-R4.3-objectmap-playTo.md` | 在调试 objectMap/playTo 问题时读取 | R4.3 完整执行记录：ObjectMap 枚举、texture/buffer 导出、playTo 签名与验证 |
+| `subdocs/20260520-R4.2-controller-path.md` | **在执行 R4.4+ 时必须读取** | Controller 路径完整调用链、内部函数偏移表、ObjectMap 302 方法、playTo 策略 |
 | `subdocs/20260520-R1.1b-transport-rawcounter-api.md` | **在执行 R4.4+/R5 时必须读取** | XPC Fetch/Query/Profile/ShaderDebug/Update 类族完整接口、GPURawCounter API |
 | `subdocs/20260520-R1.1-api-inventory.md` | 在需要查阅完整符号/类清单时按需读取 | GPUToolsReplay 导出符号、Harvester blob 格式、GPUToolsServices 76 类 |
 | `subdocs/20260520-R3-headless-replay.md` | 在调试 APR/options 问题时按需读取 | APR bootstrap 方案、options 完整布局、CLI 能力边界反汇编 |

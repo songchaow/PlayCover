@@ -29,13 +29,16 @@
   - **[R1.2 已确认]** XPC 职责：CompatService=bundle 预处理, ReplayService=thin stub 仅做进程隔离, AgentService=设备代理
   - **[R1.2 已确认]** 环境变量：`ATF_RESULTSDIRECTORY`(输出目录), `MTLOverrideDeviceCreationFlags`, `GPUMTLOverrideDeviceFamily`
   - **[R1.2 已确认]** `GTMTLReplayCLIOptions` 部分字段：+0x18=loopCount, +0x25=waitForCompletion(bool), +0x30=saveDestination(char*), +0xa4=gpuStateLevel, +0xb8=profilingFlags(bitfield)
+  - **[R1.3 已确认]** 三层字典结构：L1=`finalLaunchDictionary`(10键,启动参数), L2=`replayerLaunchDictionary`(7键,L1缩减+bool开关), L3=`traceConfigurationDictionary`(7键,profiling运行时配置)
+  - **[R1.3 已确认]** `replayerLaunchDictionary` 核心键：`kDYGuestAppLaunchReplayer`(bool), `kDYGuestAppLaunchCapture`(bool), `kDYGuestAppLaunchDiagnostics`(bool), `kDYGuestAppLaunchUUIDKey`, `kDYGuestAppPlatformPrefixKey`, `kDYGuestAppLaunchEnvironmentKey`, `kDYGuestAppLaunchArgumentsKey`
+  - **[R1.3 已确认]** `hardwareCountersConfiguration` 作为 `_kDYTraceProfilingHardwareCountersConfigurationKey` 的值嵌入 L3 字典；候选内部键：`CounterSampleBufferCounterSetName`, `CounterSampleBufferSampleCount`
+  - **[R1.3 已确认]** headless replay（`GTMTLReplay_CLI` 路径）**不需要** `replayerLaunchDictionary`；该字典仅在 XPC/DYGuestAppSession 通路有意义
+  - **[R1.3 已确认]** 环境变量级控制键补充：`MTLREPLAYER_ALLOW_PROGRAM_ADDRESS_TABLES`, `MTLREPLAYER_OVERRIDE_DEVICE_REGISTRY_ID`, `GPUTOOLS_FORCE_ROSETTA`
 - **当前卡点**：
-  - 还未拿到 `replayerLaunchDictionary` 的最小字段集合
   - 还未对 `GTMTLReplay_CLI` 做过实际最小调用验证
 - **下一步（当前最高优先级）**：
-  - **R1.3**：标记 `replayerLaunchDictionary` / `hardwareCountersConfiguration` 的候选字段并做静态比对。
-  - **策略依据**：R1.2 已确认 headless replay 可行；R1.3 补充启动字典知识后即可进入 R2 bridge 原型。
-  - R1.3 完成前，严禁跳去做实际 replay 触发或 bridge 实现
+  - **R2.1**：设计 CLI / JSON schema，至少覆盖 `scan-active-replay`、`scan-binaries`、`inspect-gputrace` 三类能力。
+  - **策略依据**：R1 全部完成，已建立足够的启动字典和 profiling 配置知识，可进入 R2 只读 bridge 原型。
 
 ## 构建与验证的方法
 
@@ -65,10 +68,10 @@
 ## 所有任务TODO状态
 
 - **[DONE][P0] R0**：建立 dashboard、基线扫描。
-- **[TODO][P0] R1**：提取 replay 通路最小对象图与参数面。
+- **[DONE][P0] R1**：提取 replay 通路最小对象图与参数面。
   - **[DONE][P0] R1.1**：导出 GPUToolsServices / GPUToolsReplay 的完整类/selector/ivar/property 清单。
   - **[DONE][P0] R1.2**：探索 `GTMTLReplay_CLI` 参数签名，确认 headless replay 可行性；同时理清各 XPC Service 职责分工。
-  - **[TODO][P1] R1.3**：标记 `replayerLaunchDictionary` / `hardwareCountersConfiguration` 的候选字段并做静态比对。
+  - **[DONE][P1] R1.3**：标记 `replayerLaunchDictionary` / `hardwareCountersConfiguration` 的候选字段并做静态比对。
 - **[TODO][P1] R2**：产出只读 bridge 原型。
   - **[TODO][P1] R2.1**：设计 CLI / JSON schema，至少覆盖 `scan-active-replay`、`scan-binaries`、`inspect-gputrace` 三类能力。
   - **[TODO][P1] R2.2**：实现最小只读 bridge，不触发 replay。
@@ -90,6 +93,7 @@
 ## 参考信息
 
 - **总是建议读取**：`subdocs/20260520-replay-entry-scan.md` — 已确认的进程、模块、符号、缓存路径与文件访问关系。
-- **在执行 R1.3/R2/R3 时按需读取**：`subdocs/20260520-R1.1-api-inventory.md` — GPUToolsReplay 导出符号、GPUToolsServices 76 类清单、关键 ivar、selector、最小对象图。
+- **在执行 R2/R3 时按需读取**：`subdocs/20260520-R1.1-api-inventory.md` — GPUToolsReplay 导出符号、GPUToolsServices 76 类清单、关键 ivar、selector、最小对象图。
 - **在执行 R2/R3 时建议读取**：`executions/20260520-R1.2-GTMTLReplay_CLI-signature.md` — `GTMTLReplay_CLI` 完整签名、`GTMTLReplayCLIOptions` 结构体布局、执行流程、headless 可行性结论。
+- **在执行 R2/R3 时建议读取**：`executions/20260520-R1.3-replayerLaunchDictionary-fields.md` — 三层字典结构、replayerLaunchDictionary/hardwareCountersConfiguration 完整字段清单与静态比对。
 - **一般无需读取**：`../OfflineSourceRecovery/scripts/README_extract_shader_raw.md` — 仅在需要把 replay 自动化与 shader/raw 提取链路对齐时阅读。

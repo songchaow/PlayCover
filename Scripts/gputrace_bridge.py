@@ -412,17 +412,23 @@ def cmd_inspect_gputrace(args: argparse.Namespace) -> dict:
             try:
                 with open(metadata_file, "rb") as f:
                     meta_data = plistlib.load(f)
+                # Collect unused resource counts
+                unused_counts = {}
+                for k, v in meta_data.items():
+                    if k.startswith("DYCaptureSession.unused") and k.endswith("Count"):
+                        short_key = k.replace("DYCaptureSession.unused", "").replace("Count", "")
+                        unused_counts[short_key] = v
                 metadata = {
-                    "uuid": str(meta_data.get("uuid", "")),
-                    "captured_frames_count": meta_data.get("capturedFramesCount"),
-                    "graphics_api": meta_data.get("graphicsAPI"),
-                    "capture_version": meta_data.get("captureVersion"),
-                    "device_id": meta_data.get("deviceIdentifier"),
-                    "native_pointer_size": meta_data.get("nativePointerSize"),
-                    "boundary_less": meta_data.get("boundaryLess"),
-                    "interpose_feature_version": meta_data.get("interposeFeatureVersion"),
-                    "library_link_time_versions": meta_data.get("libraryLinkTimeVersions"),
-                    "unused_resource_counts": meta_data.get("unusedResourceCounts"),
+                    "uuid": str(meta_data.get("(uuid)", meta_data.get("uuid", ""))),
+                    "captured_frames_count": meta_data.get("DYCaptureEngine.captured_frames_count"),
+                    "graphics_api": meta_data.get("DYCaptureSession.graphics_api"),
+                    "capture_version": meta_data.get("DYCaptureSession.capture_version"),
+                    "device_id": meta_data.get("DYCaptureSession.deviceId"),
+                    "native_pointer_size": meta_data.get("DYCaptureSession.nativePointerSize"),
+                    "boundary_less": meta_data.get("DYCaptureSession.boundaryLess"),
+                    "interpose_feature_version": meta_data.get("DYCaptureSession.interpose_feature_version"),
+                    "library_link_time_versions": meta_data.get("DYCaptureSession.library_link_time_versions"),
+                    "unused_resource_counts": unused_counts or None,
                 }
             except Exception as e:
                 metadata = {"parse_error": str(e)}

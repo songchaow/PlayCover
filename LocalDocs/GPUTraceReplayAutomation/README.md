@@ -1,11 +1,19 @@
 ## 最终目标
 
-- 在**不依赖 Xcode GUI 手工点按**的前提下，尽量分析并暴露截帧 replay 分析所需的各种 API 接口。
-- 优先拿到**只读、低风险、可自动化**的接口；再逐步推进到 replay 触发、counter 配置、shader profiler 数据获取。
-- 最终交付物固定为三类：
-  - **bridge 调用层**：提供给客户端稳定调用，优先 CLI/脚本/JSON 输出。
-  - **自动验证链路**：能由 agent 自主完成的静态验证、动态扫描、最小样本测试。
-  - **持续维护文档**：本 dashboard、必要子文档。
+**使 CLI 模式下的 GPU 截帧 replay 尽可能与 Xcode GUI 窗口内 replay 等价可用。**
+
+具体而言：
+1. **Headless Replay 执行**：通过 `GTMTLReplay_CLI` 实现无 GUI 截帧重放，能对任意 `.gputrace` 样本做完整 replay。
+2. **数据获取等价**：Xcode 窗口内能查看的数据（纹理、Buffer、Pipeline、GPU Counters、Shader Profiler、Derived Counters）在 CLI 下均能导出。
+3. **操作等价**：Xcode 窗口内能做的 replay 交互操作（playTo 指定帧/draw call、shader 热替换、configuration 修改、shader debug）在 CLI 下均能触发。
+4. **输出自动化**：所有结果以 JSON/二进制文件形式输出，便于自动化流水线消费。
+
+优先级排序：headless replay 基础执行 > 只读数据获取 > profiling/counters > shader debug/替换 > 高级交互。
+
+最终交付物：
+- **bridge 调用层**：C/ObjC 探针 + Python CLI wrapper，提供 headless replay 全功能调用。
+- **自动验证链路**：能由 agent 自主完成的静态验证、动态扫描、最小样本测试。
+- **持续维护文档**：本 dashboard + 子文档体系。
 
 ## 全局约束
 
@@ -22,21 +30,24 @@
 
 - **主线模块链**：`GPUDebugger.ideplugin` → `GPUToolsServices`(76 类) → XPC Services → `GPUToolsReplay.framework`(C API)
 - **突破口已确认**：`GTMTLReplay_CLI` 是独立 C 函数，可 headless replay，不依赖 Xcode/GUI/XPC（详见 R1.2 子文档）
+- **CLI 签名已完整逆向**：`int GTMTLReplay_CLI(const char *path, GTMTLReplayCLIOptions *options, void (*callback)(NSData*, NSURL*))` — options 结构体 ~0xC0 字节，关键偏移已标注（详见 R1.2 子文档）
 - **三层字典结构已标记**：L1(启动)、L2(replayer)、L3(profiling)，但 CLI 路径不需要这些字典（详见 R1.3 子文档）
-- **CLI schema 已设计**：`gputrace_bridge.py` 含 3 个子命令（scan-active-replay, scan-binaries, inspect-gputrace），纯 Python 标准库（详见 R2.1 子文档）
+- **只读 bridge 已交付验证**：`Scripts/gputrace_bridge.py` 含 3 个子命令（scan-active-replay, scan-binaries, inspect-gputrace），纯 Python 标准库，全部通过 dry-run 与实际运行测试（详见 R2.1 子文档）
 - **关键环境变量**：`ATF_RESULTSDIRECTORY`(输出目录)、`GPUMTLOverrideDeviceFamily`(设备覆盖)、`MTLREPLAYER_OVERRIDE_DEVICE_REGISTRY_ID`(GPU 覆盖)
-- **XPC 传输层完整 API**：`GTMTLReplayServiceXPCProxy` 暴露 fetch/query/profile/shaderdebug/update 完整操作集（详见 R1.1b 子文档）
+- **XPC 传输层完整 API**：`GTMTLReplayServiceXPCProxy` 暴露 fetch/query/profile/shaderdebug/update 完整操作集 — 这定义了 Xcode GUI 所有 replay 操作的完整范围（详见 R1.1b 子文档）
 - **Shader 热替换路径**：`GTReplayUpdateLibrary`(shaderSource/shaderIR/shaderURL) 直接支持运行时 shader 替换
 - **GPU 硬件计数器**：`GPURawCounter.framework` 提供 `GRCCopyAllCounterSourceGroup` 低层直接访问
+- **实际动态观察已验证**：完整 replay 进程链（Xcode → CompatService → AgentService → ReplayService → LLVMHelper）已通过 bridge 确认
 
 ### 当前卡点
 
-- 还未对 `GTMTLReplay_CLI` 做过实际最小调用验证（属于 R3 范畴）
+- 还未对 `GTMTLReplay_CLI` 做过实际最小调用验证 — 这是从"知道可以做"到"证明能做"的关键跨越
 
 ### 下一步（当前最高优先级）
 
 - **R3.1**：编写最小 C/ObjC 探针（dlopen + dlsym GTMTLReplay_CLI），用已有 .gputrace 样本做实际调用验证。
-- **策略依据**：R2 bridge 原型已完成全部验证，进入 R3 headless replay 实际验证阶段。
+- **目标**：证明 headless replay 基础执行可行，获得 completionCallback 返回的实际数据。
+- **策略依据**：R0-R2 已完成全部 API 发现与只读 bridge 验证。下一步必须跨入实际调用层面，否则无法推进数据获取与操作等价目标。
 
 ## 构建与验证的方法
 
@@ -65,19 +76,28 @@
 
 - **[DONE][P0] R0**：建立 dashboard、基线扫描。
 - **[DONE][P0] R1**：提取 replay 通路最小对象图与参数面。
-  - **[DONE][P0] R1.1**：导出 GPUToolsServices / GPUToolsReplay 的完整类/selector/ivar/property 清单。
-  - **[DONE][P0] R1.1b**：补充 GPUToolsTransport（120+ 类）+ GPURawCounter API 清单。
-  - **[DONE][P0] R1.2**：探索 `GTMTLReplay_CLI` 参数签名，确认 headless replay 可行性。
-  - **[DONE][P1] R1.3**：标记三层字典结构（finalLaunch/replayerLaunch/traceConfiguration）字段。
+  - **[DONE] R1.1**：导出 GPUToolsServices / GPUToolsReplay 的完整类/selector/ivar/property 清单。
+  - **[DONE] R1.1b**：补充 GPUToolsTransport（120+ 类）+ GPURawCounter API 清单。
+  - **[DONE] R1.2**：探索 `GTMTLReplay_CLI` 参数签名，确认 headless replay 可行性。
+  - **[DONE] R1.3**：标记三层字典结构（finalLaunch/replayerLaunch/traceConfiguration）字段。
 - **[DONE][P1] R2**：产出只读 bridge 原型。
-  - **[DONE][P1] R2.1**：设计 CLI / JSON schema（3 个子命令）。
-  - **[DONE][P1] R2.2**：实现最小只读 bridge，不触发 replay。
-  - **[DONE][P1] R2.3**：完成 dry-run 与样本输出稳定性测试。
-- **[TODO][P2] R3**：验证 headless replay 实际可行性。
-  - **[TODO][P2] R3.1**：编写最小 C/ObjC 探针（dlopen + dlsym GTMTLReplay_CLI），用已有 .gputrace 样本做实际调用验证。
-  - **[TODO][P2] R3.2**：若 R3.1 成功，探索 completionCallback 返回数据内容 + profiling 配置注入。
-  - **[TODO][P2] R3.3**：验证是否能获取 GPU counters / shader profiler 数据。
-- **[TODO][P3] R4**：客户端可用性收尾。
+  - **[DONE] R2.1**：设计 CLI / JSON schema（3 个子命令）。
+  - **[DONE] R2.2**：实现最小只读 bridge（`Scripts/gputrace_bridge.py`），V4 实际运行验证通过。
+  - **[DONE] R2.3**：9 项稳定性测试全部通过，metadata 解析已修复。
+- **[TODO][P0] R3**：headless replay 实际调用验证 — 证明 CLI 路径可行。
+  - **[TODO][P0] R3.1**：编写最小 C/ObjC 探针（dlopen + dlsym GTMTLReplay_CLI），实际调用验证。
+  - **[TODO][P1] R3.2**：探索 completionCallback 返回数据内容 + profilingFlags 配置注入。
+  - **[TODO][P1] R3.3**：验证 GPU counters / shader profiler 数据获取。
+- **[TODO][P2] R4**：数据获取等价 — 实现 Xcode GUI 中各类数据的 CLI 导出。
+  - R4.1：Fetch 类族调用（Texture / Buffer / PipelineBinaries / PostVertex）
+  - R4.2：Query 类族调用（Configuration / DerivedCounters / DeviceCapabilities）
+  - R4.3：Profile 类族调用（Timeline / DerivedCounters / BatchFilteredCounters）
+- **[TODO][P3] R5**：操作等价 — 实现 Xcode GUI 中各类交互操作的 CLI 触发。
+  - R5.1：Replay 控制（playTo 指定帧/draw call、pause/resume/rewind）
+  - R5.2：Shader 热替换（GTReplayUpdateLibrary）
+  - R5.3：Shader Debug（fragment/vertex/kernel/mesh/object shader 调试）
+  - R5.4：Configuration 动态修改（GTReplayUpdateConfiguration）
+- **[TODO][P4] R6**：客户端封装与可用性收尾。
 
 ## 高频复用经验
 
@@ -91,11 +111,9 @@
 
 | 子文档 | 阅读建议 | 内容概述 |
 |--------|---------|---------|
-| `subdocs/20260520-replay-entry-scan.md` | **总是建议读取** | 已确认模块/进程/符号/文件访问关系 |
-| `subdocs/20260520-R1.1-api-inventory.md` | 在执行 R2/R3 时按需读取 | GPUToolsReplay 导出符号、GPUToolsServices 76 类、关键 ivar/selector、对象图 |
-| `subdocs/20260520-R1.1b-transport-rawcounter-api.md` | **在执行 R3 时必须读取** | GPUToolsTransport 完整类/方法、XPC 代理接口、Fetch/Query/Profile/ShaderDebug/Update 类族、GPURawCounter API |
-| `subdocs/20260520-R1.2-GTMTLReplay_CLI-signature.md` | 在执行 R3 时按需读取 | GTMTLReplay_CLI 签名、Options 结构体、执行流程、headless 可行性 |
-| `subdocs/20260520-R1.3-dictionary-fields.md` | 在执行 R3 时按需读取 | 三层字典完整字段、hardwareCountersConfiguration、环境变量控制键 |
-| `subdocs/20260520-R2.1-CLI-schema.md` | **在执行 R2.2 时必须读取** | CLI 入口结构、子命令 JSON schema、分类规则、实现约束 |
-| `executions/20260520-R2.2-bridge-implementation.md` | 在执行 R2.3 时按需读取 | bridge 实现细节、验证结果、修复记录 |
-| `executions/20260520-R2.3-stability-tests.md` | 在执行 R3 时按需读取 | 三子命令完整测试矩阵、metadata 修复、动态观察摘要 |
+| `subdocs/20260520-replay-entry-scan.md` | **总是建议读取** | 已确认模块/进程/符号/文件访问关系（基线参考） |
+| `subdocs/20260520-R1.1-api-inventory.md` | 在执行 R3+ 时按需读取 | GPUToolsReplay 导出符号、GPUToolsServices 76 类、关键 ivar/selector、对象图 |
+| `subdocs/20260520-R1.1b-transport-rawcounter-api.md` | **在执行 R3/R4/R5 时必须读取** | XPC 代理完整接口、Fetch/Query/Profile/ShaderDebug/Update 类族（定义了 Xcode GUI 全操作集）、GPURawCounter API |
+| `subdocs/20260520-R1.2-GTMTLReplay_CLI-signature.md` | **在执行 R3 时必须读取** | GTMTLReplay_CLI 签名、Options 结构体偏移、执行流程、headless 最小调用条件 |
+| `subdocs/20260520-R1.3-dictionary-fields.md` | 一般无需读取（仅在需要 XPC 路径时参考） | 三层字典完整字段；CLI 路径不使用这些字典 |
+| `subdocs/20260520-R2.1-CLI-schema.md` | 一般无需读取（bridge 已完成） | CLI 入口结构、子命令 JSON schema、分类规则 |

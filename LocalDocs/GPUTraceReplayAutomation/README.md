@@ -49,28 +49,24 @@
 - **只读 bridge 已交付**：`Scripts/gputrace_bridge.py` 3 个子命令全部验证通过
 - **APR Bootstrap 已解决**：通过 GT_ENV-0x30 偏移手动构造 global pool + allocator
 - **实际调用已验证**：探针 `Scripts/replay_probe.m` 证明 dlopen+dlsym 可行，无需 entitlement
+- **Harvester API 已完整验证**：4 个函数均为纯离线 blob 解析器，可直接提取 .gputrace 中的纹理/buffer 数据，无需 replay 运行时。纹理 blob 使用 "capture\0" magic header + 256 字节 header + raw pixel payload 结构
 
 ### 当前卡点
 
-无。R3 headless replay 路径已完全探明边界。
+无。R4.1 Harvester API 已完全验证，离线数据提取能力已确认。
 
 ### 下一步（当前最高优先级）
 
-**R4.1：在 replay 成功后通过 Harvester / Host API 获取资源数据**
+**R4.2：Host API 探索 — GTMTLReplayHost_generateDerivedDataPayload**
 
-背景：R3.3 证明 CLI 路径不产出数据。需探索框架内导出的数据获取 API。
+背景：R4.1 证明 Harvester 是纯离线解析器（操作已有 blob），解决了存量资源提取。R4.2 需验证 Host API 是否能在 replay 运行后生成新的派生数据（如 profiling 结果、derived counters）。
 
-实施策略（按优先级尝试）：
-1. **Harvester 路径**（最优先）：`GTHarvesterGetData`/`GTHarvesterGetMetadata`/`GTHarvesterGetTexturePlane`/`GTHarvesterGetTexturePlaneCount` — 这些是 GPUToolsReplay.framework 的直接导出符号，与 `GTMTLReplay_CLI` 同一框架，极可能可在 replay 完成后同进程调用
-2. **Host 路径**：`GTMTLReplayHost_generateDerivedDataPayload` — 已知导出符号
-3. **Controller 路径**：`GTMTLReplayController_playTo` — 支持帧导航后再提取
+实施策略：
+1. 反汇编 `GTMTLReplayHost_generateDerivedDataPayload` 分析参数需求
+2. 确认其依赖的上下文（是否需要 Controller_init 先建立 replay session）
+3. 在 replay_probe 中尝试调用
 
-验证方法：
-1. `nm -m` 确认 Harvester 函数签名（参数个数/类型推断）
-2. 在 `replay_probe.m` 中 replay 成功后立即调用 Harvester API
-3. 观察返回值/输出
-
-成功标准：通过 C API 成功获取至少一种资源数据（纹理/buffer/metadata）并输出到文件。
+成功标准：确认 Host API 参数签名、依赖关系和调用时机，或明确其无法在 CLI 路径中使用。
 
 ## 构建与验证的方法
 
@@ -111,8 +107,8 @@
   - R3.1：最小 ObjC 探针调用验证通过，APR bootstrap 已解决。
   - R3.2：修复 options NULL 字符串字段，headless replay 返回 0。
   - R3.3：[N/A] completionCallback 为 dead code，CLI 路径不产出 profiling 数据。能力边界已明确。
-- **[TODO][P0] R4**：数据获取等价 — 在 headless replay 成功后提取资源数据。
-  - R4.1：Harvester API 探索与验证（GTHarvesterGetData/GetMetadata/GetTexturePlane）
+- **[IN-PROGRESS][P0] R4**：数据获取等价 — 在 headless replay 成功后提取资源数据。
+  - [DONE] R4.1：Harvester API 探索与验证 — 4 个函数均为纯离线 blob 解析器，直接提取 .gputrace 资源数据，无需 replay
   - R4.2：Host API 探索（GTMTLReplayHost_generateDerivedDataPayload）
   - R4.3：Controller + Fetch 类族组合调用（playTo → fetch texture/buffer）
 - **[TODO][P2] R5**：操作等价 — Replay 交互操作的 CLI 触发。
@@ -130,6 +126,7 @@
 - **已确认缓存路径**：`/private/var/folders/.../C/com.apple.gputools.GPUToolsReplayService/com.apple.metal/...`
 - **关键环境变量**：`ATF_RESULTSDIRECTORY`(输出目录)、`GPUMTLOverrideDeviceFamily`(设备覆盖)、`MTLREPLAYER_OVERRIDE_DEVICE_REGISTRY_ID`(GPU 覆盖)
 - **探针编译**：`cd Scripts/ && clang -framework Foundation -framework Metal -ldl -o replay_probe replay_probe.m`
+- **Harvester 探针编译**：`cd Scripts/ && clang -framework Foundation -framework Metal -ldl -o harvester_probe harvester_probe.m`
 
 ## 参考信息
 
@@ -142,3 +139,4 @@
 | `subdocs/20260520-R1.2-GTMTLReplay_CLI-signature.md` | 在调试 options 相关问题时按需读取 | CLI 签名、Options 偏移表、执行流程 |
 | `subdocs/20260520-R1.3-dictionary-fields.md` | 一般无需读取（CLI 路径不使用字典） | 三层字典字段；仅在需要 XPC 路径时参考 |
 | `subdocs/20260520-R2.1-CLI-schema.md` | 一般无需读取（bridge 已完成） | CLI schema 设计、R2.2/R2.3 实现与测试总结 |
+| `executions/20260520-R4.1-harvester-api-verification.md` | **在执行 R4.2+ 时建议读取** | Harvester API 完整签名、magic 格式、blob 结构、测试结果 |

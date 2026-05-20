@@ -52,8 +52,15 @@
 
 **R6.2：端到端动态验证 + Python CLI wrapper**
 
-1. **端到端动态验证**（优先）：用真实 .gputrace 样本跑通 bridge 的 replay/pipeline/shader/config 全部子命令，确认实际功能正常
-2. **Python CLI wrapper**：在验证通过的基础上，封装为 Python 结构化接口，面向自动化流水线
+优先级理由：bridge 的集成测试仅覆盖参数解析和退出码（无真实 trace 功能验证）。在此基础上直接封装 wrapper 存在风险。
+
+1. **R6.2a 端到端动态验证**（最高优先）：
+   - 用真实 .gputrace 跑通 `replay` 子命令 — 确认 playAll 返回 0、资源枚举输出正确 JSON
+   - 跑通 `pipeline` 子命令 — 确认 metallib/AIR 文件导出且格式正确
+   - 跑通 `shader` 子命令 — 确认 metallib 替换 + rewind+playAll 成功
+   - 跑通 `config` 子命令 — 确认配置修改影响 replay 行为
+   - 验收标准：全部子命令无 crash、JSON 输出可解析、导出文件格式正确
+2. **R6.2b Python CLI wrapper**：在验证通过后，封装为 Python 结构化接口
 
 ## 构建与验证的方法
 
@@ -76,7 +83,8 @@
 - **[DONE] R0~R5**：基线扫描 → API 提取 → bridge 原型 → headless replay → 数据获取 → 操作等价
 - **[IN-PROGRESS][P0] R6**：客户端封装与可用性收尾
   - **[DONE] R6.1**：统一 ObjC bridge binary — 5 子命令 + Makefile + 集成测试 17/17
-  - **R6.2**：端到端动态验证 + Python CLI wrapper
+  - **R6.2a**：端到端动态验证（真实 .gputrace 全子命令跑通）
+  - **R6.2b**：Python CLI wrapper（基于验证结果封装）
   - **R6.3**：自动化流水线集成（CI/CD 集成、样本库管理）
 
 ## 高频复用经验

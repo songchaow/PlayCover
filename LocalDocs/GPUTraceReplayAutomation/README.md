@@ -48,6 +48,13 @@
 - **R3.1**：编写最小 C/ObjC 探针（dlopen + dlsym GTMTLReplay_CLI），用已有 .gputrace 样本做实际调用验证。
 - **目标**：证明 headless replay 基础执行可行，获得 completionCallback 返回的实际数据。
 - **策略依据**：R0-R2 已完成全部 API 发现与只读 bridge 验证。下一步必须跨入实际调用层面，否则无法推进数据获取与操作等价目标。
+- **R3.1 实施要点**：
+  1. 创建 `Scripts/replay_probe.m`（单文件 ObjC，`clang -framework Foundation -framework Metal -ldl`）
+  2. `dlopen("/System/Library/PrivateFrameworks/GPUToolsReplay.framework/GPUToolsReplay", RTLD_LAZY)` → `dlsym("GTMTLReplay_CLI")`
+  3. 准备 0xC0 字节 options 结构体（清零 + loopCount=1），传入已有 .gputrace 路径
+  4. 设置 completionCallback 打印 NSData 长度和 NSURL
+  5. 观察返回值和 stderr 输出，记录成功/失败及错误信息
+  6. 若失败，逐步排查：framework 路径、Metal device 可用性、.gputrace 合法性、SIP 限制
 
 ## 构建与验证的方法
 

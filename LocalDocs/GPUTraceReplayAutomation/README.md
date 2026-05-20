@@ -43,19 +43,25 @@
 
 ### 当前卡点
 
-- 已证明 `GTMTLReplay_CLI` 可被直接调用（APR 初始化已解决），但测试样本为 Git LFS 指针（未拉取），无法验证完整 replay 流程
-- **下一步需要**：`git lfs pull` 获取真实 .gputrace 样本，或手动用 Xcode capture 一个最小样本
+- 真实 .gputrace 样本验证发现 options 结构体缺少必要字符串字段，导致 `+[NSString stringWithUTF8String:]: NULL cString` 异常
+- **下一步需要**：反汇编 GTMTLReplay_CLI +3072 定位需要的 options 字段，填入合理值（如 device name）
+
+### 可用测试样本
+
+| 路径 | 来源 | 说明 |
+|------|------|------|
+| `/Users/songdogwang/Library/Containers/com.papegames.lysk/Data/Documents/Captures/capture_20260518_110050.gputrace` | 恋与深空 GPU Capture | ~368MB, 861 files, 2026-05-18 |
 
 ### 下一步（当前最高优先级）
 
-- **R3.2**：用真实 .gputrace 样本验证完整 replay 流程，探索 completionCallback 返回数据。
-- **目标**：获得 completionCallback 实际数据（NSData 内容 + NSURL），证明 headless replay 可产出有意义的输出。
-- **前置**：需要 `git lfs pull` 获取真实 .gputrace 样本，或从 Xcode 手动 capture。
+- **R3.2**：修复 options 结构体中的 NULL 字符串字段，实现完整 replay 调用。
+- **目标**：让 GTMTLReplay_CLI 返回 0 或触发 completionCallback。
+- **已有样本**：`/Users/songdogwang/Library/Containers/com.papegames.lysk/Data/Documents/Captures/capture_20260518_110050.gputrace`
 - **R3.2 实施要点**：
-  1. 获取真实 .gputrace（`git lfs pull` 或 Xcode capture）
-  2. 用 `replay_probe` 传入真实样本，观察 completionCallback 返回
-  3. 尝试设置 options.profilingFlags 和 gpuStateLevel
-  4. 解析 callback 中的 NSData（可能是 profiling 结果/JSON/plist）
+  1. 反汇编 `GTMTLReplay_CLI + 3072` 确定哪个 options 字段为 NULL 引发异常
+  2. 参考 R1.2 文档的 options 结构体布局，逐步填入：device name、output path 等
+  3. 添加 `@try/@catch` 包装防止 ObjC 异常直接 terminate
+  4. 观察 completionCallback 返回数据
 
 ## 构建与验证的方法
 

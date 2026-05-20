@@ -334,11 +334,11 @@ static void replay_context_cleanup(void) {
 static int cmd_help(int argc, const char *argv[]) {
     JSON_BEGIN();
     JSON_KV_STR("tool", "gputrace_replay_bridge");
-    JSON_KV_STR("version", "0.1.0");
+    JSON_KV_STR("version", "0.2.0");
     JSON_SEP();
     printf("\"commands\":[");
     printf("{\"name\":\"help\",\"description\":\"Show available commands\"}");
-    printf(",{\"name\":\"replay\",\"description\":\"Headless replay (playAll), output JSON summary\",\"usage\":\"replay <.gputrace>\"}");
+    printf(",{\"name\":\"replay\",\"description\":\"Headless replay with playAll/playTo + resource enumeration/export\",\"usage\":\"replay <.gputrace> [--playto N] [--list-resources] [--export ID output_path]\"}");
     printf(",{\"name\":\"pipeline\",\"description\":\"Library enumeration + metallib/AIR export\",\"usage\":\"pipeline <.gputrace> [output_dir]\"}");
     printf(",{\"name\":\"shader\",\"description\":\"Hot-replace library via setLibrary:forKey:\",\"usage\":\"shader <.gputrace> <lib_key> <metallib_path>\"}");
     printf(",{\"name\":\"config\",\"description\":\"Configuration control (call chain + validation)\",\"usage\":\"config <.gputrace> [key=value ...]\"}");
@@ -348,26 +348,146 @@ static int cmd_help(int argc, const char *argv[]) {
 }
 
 // ============================================================
+#pragma mark - Pixel Format Helpers
+// ============================================================
+
+static NSUInteger bytes_per_pixel_for_format(MTLPixelFormat fmt) {
+    switch (fmt) {
+        case MTLPixelFormatR8Unorm: case MTLPixelFormatR8Snorm:
+        case MTLPixelFormatR8Uint: case MTLPixelFormatR8Sint:
+        case MTLPixelFormatA8Unorm:
+            return 1;
+        case MTLPixelFormatR16Float: case MTLPixelFormatR16Unorm: case MTLPixelFormatR16Snorm:
+        case MTLPixelFormatR16Uint: case MTLPixelFormatR16Sint:
+        case MTLPixelFormatRG8Unorm: case MTLPixelFormatRG8Snorm:
+        case MTLPixelFormatRG8Uint: case MTLPixelFormatRG8Sint:
+            return 2;
+        case MTLPixelFormatR32Float: case MTLPixelFormatR32Uint: case MTLPixelFormatR32Sint:
+        case MTLPixelFormatRG16Float: case MTLPixelFormatRG16Unorm: case MTLPixelFormatRG16Snorm:
+        case MTLPixelFormatRG16Uint: case MTLPixelFormatRG16Sint:
+        case MTLPixelFormatRGBA8Unorm: case MTLPixelFormatRGBA8Unorm_sRGB:
+        case MTLPixelFormatRGBA8Snorm: case MTLPixelFormatRGBA8Uint: case MTLPixelFormatRGBA8Sint:
+        case MTLPixelFormatBGRA8Unorm: case MTLPixelFormatBGRA8Unorm_sRGB:
+        case MTLPixelFormatRGB10A2Unorm: case MTLPixelFormatBGR10A2Unorm:
+        case MTLPixelFormatRG11B10Float: case MTLPixelFormatRGB9E5Float:
+        case MTLPixelFormatDepth32Float:
+            return 4;
+        case MTLPixelFormatRG32Float: case MTLPixelFormatRG32Uint: case MTLPixelFormatRG32Sint:
+        case MTLPixelFormatRGBA16Float: case MTLPixelFormatRGBA16Unorm: case MTLPixelFormatRGBA16Snorm:
+        case MTLPixelFormatRGBA16Uint: case MTLPixelFormatRGBA16Sint:
+            return 8;
+        case MTLPixelFormatRGBA32Float: case MTLPixelFormatRGBA32Uint: case MTLPixelFormatRGBA32Sint:
+            return 16;
+        default:
+            return 4; // conservative default
+    }
+}
+
+static const char* pixel_format_name(MTLPixelFormat fmt) {
+    switch (fmt) {
+        case MTLPixelFormatRGBA8Unorm: return "RGBA8Unorm";
+        case MTLPixelFormatRGBA8Unorm_sRGB: return "RGBA8Unorm_sRGB";
+        case MTLPixelFormatBGRA8Unorm: return "BGRA8Unorm";
+        case MTLPixelFormatBGRA8Unorm_sRGB: return "BGRA8Unorm_sRGB";
+        case MTLPixelFormatRGBA16Float: return "RGBA16Float";
+        case MTLPixelFormatRGBA32Float: return "RGBA32Float";
+        case MTLPixelFormatR8Unorm: return "R8Unorm";
+        case MTLPixelFormatR16Float: return "R16Float";
+        case MTLPixelFormatR32Float: return "R32Float";
+        case MTLPixelFormatRG8Unorm: return "RG8Unorm";
+        case MTLPixelFormatRG16Float: return "RG16Float";
+        case MTLPixelFormatRG32Float: return "RG32Float";
+        case MTLPixelFormatRGB10A2Unorm: return "RGB10A2Unorm";
+        case MTLPixelFormatRG11B10Float: return "RG11B10Float";
+        case MTLPixelFormatRGB9E5Float: return "RGB9E5Float";
+        case MTLPixelFormatDepth32Float: return "Depth32Float";
+        case MTLPixelFormatDepth32Float_Stencil8: return "Depth32Float_Stencil8";
+        default: return "Other";
+    }
+}
+
+static const char* texture_type_name(MTLTextureType t) {
+    switch (t) {
+        case MTLTextureType1D: return "1D";
+        case MTLTextureType2D: return "2D";
+        case MTLTextureType2DMultisample: return "2DMultisample";
+        case MTLTextureType3D: return "3D";
+        case MTLTextureTypeCube: return "Cube";
+        case MTLTextureType2DArray: return "2DArray";
+        default: return "Other";
+    }
+}
+
+static BOOL is_depth_stencil_format(MTLPixelFormat fmt) {
+    return (fmt == MTLPixelFormatDepth16Unorm ||
+            fmt == MTLPixelFormatDepth32Float ||
+            fmt == MTLPixelFormatStencil8 ||
+            fmt == MTLPixelFormatDepth32Float_Stencil8 ||
+            fmt == MTLPixelFormatDepth24Unorm_Stencil8 ||
+            (NSUInteger)fmt == 255 || (NSUInteger)fmt == 260);
+}
+
+// ============================================================
 #pragma mark - Subcommand: replay
 // ============================================================
 
+/// Parse replay options from argv:
+///   replay <trace> [--playto N] [--list-resources] [--export ID output_path]
+typedef struct {
+    const char *trace_path;
+    int32_t playto_index;      // -1 = playAll (default)
+    BOOL list_resources;
+    int64_t export_id;         // -1 = no export
+    const char *export_path;
+} ReplayOptions;
+
+static ReplayOptions parse_replay_options(int argc, const char *argv[]) {
+    ReplayOptions opts = {0};
+    opts.playto_index = -1;
+    opts.export_id = -1;
+
+    if (argc >= 1) opts.trace_path = argv[0];
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--playto") == 0 && i + 1 < argc) {
+            opts.playto_index = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--list-resources") == 0) {
+            opts.list_resources = YES;
+        } else if (strcmp(argv[i], "--export") == 0 && i + 2 < argc) {
+            opts.export_id = strtoll(argv[++i], NULL, 10);
+            opts.export_path = argv[++i];
+        }
+    }
+    return opts;
+}
+
 static int cmd_replay(int argc, const char *argv[]) {
     if (argc < 1) {
-        fprintf(stderr, "Usage: gputrace_replay_bridge replay <path-to-.gputrace>\n");
+        fprintf(stderr, "Usage: gputrace_replay_bridge replay <path-to-.gputrace> [options]\n");
+        fprintf(stderr, "Options:\n");
+        fprintf(stderr, "  --playto N           Replay to specific call index (default: playAll)\n");
+        fprintf(stderr, "  --list-resources     Enumerate all resources after replay\n");
+        fprintf(stderr, "  --export ID PATH     Export resource ID to binary file\n");
         return EXIT_USAGE;
     }
 
-    const char *trace_path = argv[0];
-    int rc = replay_context_init(trace_path);
+    ReplayOptions opts = parse_replay_options(argc, argv);
+    if (!opts.trace_path) return EXIT_USAGE;
+
+    int rc = replay_context_init(opts.trace_path);
     if (rc != EXIT_OK) return rc;
 
-    // Execute playAll with timing
+    // Execute replay with timing
     uint64_t t0 = mach_absolute_time();
     int play_rc = -1;
     @try {
-        play_rc = g_ctx.fn_playAll(g_ctx.controller);
+        if (opts.playto_index >= 0) {
+            play_rc = g_ctx.fn_playTo(g_ctx.controller, (uint32_t)opts.playto_index);
+        } else {
+            play_rc = g_ctx.fn_playAll(g_ctx.controller);
+        }
     } @catch (NSException *ex) {
-        fprintf(stderr, "[ERROR] playAll exception: %s\n", [[ex reason] UTF8String]);
+        fprintf(stderr, "[ERROR] replay exception: %s\n", [[ex reason] UTF8String]);
         replay_context_cleanup();
         return EXIT_REPLAY_FAIL;
     }
@@ -378,22 +498,138 @@ static int cmd_replay(int argc, const char *argv[]) {
     mach_timebase_info(&tb);
     double elapsed_ms = (double)(t1 - t0) * tb.numer / tb.denom / 1e6;
 
-    // Gather resource info
-    NSUInteger resource_count = 0;
+    // Gather resources
+    NSDictionary *resources = nil;
     @try {
-        NSDictionary *resources = [g_ctx.objectMap performSelector:@selector(resources)];
-        resource_count = [resources count];
+        resources = [g_ctx.objectMap performSelector:@selector(resources)];
     } @catch (NSException *ex) {}
+    NSUInteger resource_count = resources ? [resources count] : 0;
 
     // Output JSON
     JSON_BEGIN();
     JSON_KV_STR("command", "replay");
-    JSON_KV_STR("trace_path", trace_path);
+    JSON_KV_STR("trace_path", opts.trace_path);
     JSON_KV_STR("device", [[g_ctx.device name] UTF8String]);
-    JSON_KV_INT("playAll_rc", play_rc);
+    if (opts.playto_index >= 0) {
+        JSON_KV_INT("playto_index", opts.playto_index);
+    }
+    JSON_KV_INT("replay_rc", play_rc);
     JSON_KV_BOOL("success", play_rc == 0);
     JSON_KV_DOUBLE("elapsed_ms", elapsed_ms);
     JSON_KV_UINT("resource_count", resource_count);
+
+    // --- Resource enumeration ---
+    if (opts.list_resources && resources) {
+        JSON_SEP();
+        printf("\"resources\":[");
+        BOOL first_res = YES;
+
+        for (id key in resources) {
+            id value = resources[key];
+            if (!first_res) printf(",");
+            first_res = NO;
+
+            uint64_t resID = [key unsignedLongLongValue];
+            printf("{\"id\":%llu", resID);
+
+            if ([value conformsToProtocol:@protocol(MTLTexture)]) {
+                id<MTLTexture> tex = (id<MTLTexture>)value;
+                printf(",\"type\":\"texture\"");
+                printf(",\"width\":%lu", (unsigned long)tex.width);
+                printf(",\"height\":%lu", (unsigned long)tex.height);
+                printf(",\"depth\":%lu", (unsigned long)tex.depth);
+                printf(",\"pixelFormat\":%lu", (unsigned long)tex.pixelFormat);
+                printf(",\"pixelFormatName\":");
+                json_print_string(pixel_format_name(tex.pixelFormat));
+                printf(",\"textureType\":");
+                json_print_string(texture_type_name(tex.textureType));
+                printf(",\"mipmapLevelCount\":%lu", (unsigned long)tex.mipmapLevelCount);
+                if (tex.label) { printf(",\"label\":"); json_print_string([tex.label UTF8String]); }
+            } else if ([value conformsToProtocol:@protocol(MTLBuffer)]) {
+                id<MTLBuffer> buf = (id<MTLBuffer>)value;
+                printf(",\"type\":\"buffer\"");
+                printf(",\"length\":%lu", (unsigned long)buf.length);
+                if (buf.label) { printf(",\"label\":"); json_print_string([buf.label UTF8String]); }
+            } else {
+                printf(",\"type\":\"other\"");
+                printf(",\"class\":");
+                json_print_string(class_getName([value class]));
+            }
+            printf("}");
+        }
+        printf("]");
+    }
+
+    // --- Resource export ---
+    if (opts.export_id >= 0 && opts.export_path && resources) {
+        NSNumber *exportKey = @((uint64_t)opts.export_id);
+        id exportObj = resources[exportKey];
+        BOOL exported = NO;
+        NSUInteger export_bytes = 0;
+
+        if (!exportObj) {
+            JSON_KV_STR("export_error", "resource ID not found");
+        } else if ([exportObj conformsToProtocol:@protocol(MTLTexture)]) {
+            id<MTLTexture> tex = (id<MTLTexture>)exportObj;
+            if (is_depth_stencil_format(tex.pixelFormat)) {
+                JSON_KV_STR("export_error", "depth/stencil format cannot be exported via getBytes");
+            } else if (tex.textureType != MTLTextureType2D) {
+                JSON_KV_STR("export_error", "only 2D textures supported for export");
+            } else {
+                NSUInteger bpp = bytes_per_pixel_for_format(tex.pixelFormat);
+                NSUInteger bpr = tex.width * bpp;
+                NSUInteger totalBytes = bpr * tex.height;
+                void *pixelData = malloc(totalBytes);
+                if (pixelData) {
+                    @try {
+                        [tex getBytes:pixelData
+                          bytesPerRow:bpr
+                           fromRegion:MTLRegionMake2D(0, 0, tex.width, tex.height)
+                          mipmapLevel:0];
+                        FILE *f = fopen(opts.export_path, "wb");
+                        if (f) {
+                            fwrite(pixelData, 1, totalBytes, f);
+                            fclose(f);
+                            exported = YES;
+                            export_bytes = totalBytes;
+                        } else {
+                            JSON_KV_STR("export_error", "cannot open output file");
+                        }
+                    } @catch (NSException *ex) {
+                        char err_buf[256];
+                        snprintf(err_buf, sizeof(err_buf), "getBytes exception: %s", [[ex reason] UTF8String]);
+                        JSON_KV_STR("export_error", err_buf);
+                    }
+                    free(pixelData);
+                }
+            }
+        } else if ([exportObj conformsToProtocol:@protocol(MTLBuffer)]) {
+            id<MTLBuffer> buf = (id<MTLBuffer>)exportObj;
+            void *contents = [buf contents];
+            if (contents && buf.length > 0) {
+                FILE *f = fopen(opts.export_path, "wb");
+                if (f) {
+                    fwrite(contents, 1, buf.length, f);
+                    fclose(f);
+                    exported = YES;
+                    export_bytes = buf.length;
+                } else {
+                    JSON_KV_STR("export_error", "cannot open output file");
+                }
+            } else {
+                JSON_KV_STR("export_error", "buffer has no contents");
+            }
+        } else {
+            JSON_KV_STR("export_error", "resource is neither texture nor buffer");
+        }
+
+        if (exported) {
+            JSON_KV_UINT("export_id", (uint64_t)opts.export_id);
+            JSON_KV_STR("export_path", opts.export_path);
+            JSON_KV_UINT("export_bytes", export_bytes);
+        }
+    }
+
     JSON_END();
 
     replay_context_cleanup();

@@ -1,6 +1,6 @@
 ## 最终目标
 
-**使 CLI 模式下的 GPU 截帧 replay 在功能上尽可能等价于 Xcode GUI 窗口内的 replay 操作。**
+**使 CLI 模式下的 GPU 截帧 replay 在功能上尽可能等价于 Xcode GUI 窗口内的 replay 以及分析调试等操作。**
 
 等价性定义 — 以下 Xcode GUI replay 窗口内能做的事，CLI 下均应能以编程方式完成：
 
@@ -40,16 +40,15 @@
 ### 已建立的核心知识
 
 - **主线模块链**：`GPUDebugger.ideplugin` → `GPUToolsServices`(76 类) → XPC Services → `GPUToolsReplay.framework`(C API)
-- **突破口**：`GTMTLReplay_CLI` 是独立 C 函数，可 headless replay，不依赖 Xcode/GUI/XPC — 这是 Apple CI 路径（详见 R1.2 子文档）
-- **CLI 签名已完整逆向**：`int GTMTLReplay_CLI(const char *path, GTMTLReplayCLIOptions *options, void (*callback)(NSData*, NSURL*))` — options ≥0x320 字节（详见 R1.2 子文档 + R3.3 修正）
-- **XPC 完整操作集已清点**：`GTMTLReplayServiceXPCProxy` 暴露 fetch/query/profile/shaderdebug/update — 这定义了 Xcode GUI 所有 replay 操作的完整范围（详见 R1.1b 子文档）
-- **Shader 热替换**：`GTReplayUpdateLibrary`(shaderSource/shaderIR/shaderURL) 直接支持
-- **GPU 硬件计数器**：`GPURawCounter.framework` 提供低层直接访问
-- **实际调用已验证**：探针 `Scripts/replay_probe.m` 证明 dlopen+dlsym 可行，无需 entitlement（详见 R3.1 子文档）
-- **APR Bootstrap 已解决**：通过 GT_ENV-0x30 偏移手动构造 global pool + allocator（详见 R3.1 子文档）
-- **Headless replay 完整成功**：options +0x28/+0x30 填入非 NULL 字符串后，GTMTLReplay_CLI 返回 0（详见 R3.2 执行记录）
-- **CLI 路径能力边界已明确**：CLI 仅做 replay 验证（返回 0/非 0）；profiling/callback/数据获取需通过 GTMTLReplayHost_* C API 或 XPC proxy（详见 R3.3 执行记录）
+- **突破口**：`GTMTLReplay_CLI` 是独立 C 函数，可 headless replay，不依赖 Xcode/GUI/XPC — 这是 Apple CI 路径
+- **CLI 签名已完整逆向**：`int GTMTLReplay_CLI(const char *path, GTMTLReplayCLIOptions *options, void (*callback)(NSData*, NSURL*))` — options ≥0x320 字节
+- **XPC 完整操作集已清点**：`GTMTLReplayServiceXPCProxy` 暴露 fetch/query/profile/shaderdebug/update — 定义了 Xcode GUI 所有 replay 操作的完整范围
+- **Headless replay 完整成功**：options +0x28(errorLogPath) +0x30(saveDestination) 必须非 NULL，填入后 GTMTLReplay_CLI 返回 0（样本：恋与深空 ~368MB）
+- **CLI 路径能力边界已明确**：CLI 仅做 replay 验证（返回 0/非 0）；completionCallback 为 dead code（从未被 BLR 调用）；profilingFlags/gpuStateLevel 在函数中不被访问。数据获取需通过其他 API
+- **数据获取候选路径**：① `GTHarvester*` 系列导出函数（同进程空间，最直接）② `GTMTLReplayHost_*` C API ③ XPC proxy
 - **只读 bridge 已交付**：`Scripts/gputrace_bridge.py` 3 个子命令全部验证通过
+- **APR Bootstrap 已解决**：通过 GT_ENV-0x30 偏移手动构造 global pool + allocator
+- **实际调用已验证**：探针 `Scripts/replay_probe.m` 证明 dlopen+dlsym 可行，无需 entitlement
 
 ### 当前卡点
 
@@ -57,16 +56,21 @@
 
 ### 下一步（当前最高优先级）
 
-**R4.1：通过 GTMTLReplayHost C API 实现 Fetch 类族 CLI 调用**
+**R4.1：在 replay 成功后通过 Harvester / Host API 获取资源数据**
 
-背景：R3.3 证明 CLI 路径不产出数据，需通过框架内部 C API（GTMTLReplayHost_* 系列函数）直接调用。
+背景：R3.3 证明 CLI 路径不产出数据。需探索框架内导出的数据获取 API。
 
-实施策略：
-1. 静态扫描 `GTMTLReplayHost_*` 导出符号，确认 Fetch/Query 相关函数签名
-2. 在 replay_probe 中验证：replay 成功后，调用 Host API 获取纹理/buffer 数据
-3. 逐步解锁各 Fetch 子命令
+实施策略（按优先级尝试）：
+1. **Harvester 路径**（最优先）：`GTHarvesterGetData`/`GTHarvesterGetMetadata`/`GTHarvesterGetTexturePlane`/`GTHarvesterGetTexturePlaneCount` — 这些是 GPUToolsReplay.framework 的直接导出符号，与 `GTMTLReplay_CLI` 同一框架，极可能可在 replay 完成后同进程调用
+2. **Host 路径**：`GTMTLReplayHost_generateDerivedDataPayload` — 已知导出符号
+3. **Controller 路径**：`GTMTLReplayController_playTo` — 支持帧导航后再提取
 
-成功标准：通过 C API 成功获取至少一种资源数据（纹理/buffer/pipeline）并输出到文件。
+验证方法：
+1. `nm -m` 确认 Harvester 函数签名（参数个数/类型推断）
+2. 在 `replay_probe.m` 中 replay 成功后立即调用 Harvester API
+3. 观察返回值/输出
+
+成功标准：通过 C API 成功获取至少一种资源数据（纹理/buffer/metadata）并输出到文件。
 
 ## 构建与验证的方法
 
@@ -103,14 +107,14 @@
   - R2.1：CLI / JSON schema 设计。
   - R2.2：实现 `Scripts/gputrace_bridge.py`，V4 验证通过。
   - R2.3：9 项稳定性测试全部通过。
-- **[TODO][P0] R3**：headless replay 实际调用验证。
-  - **[DONE] R3.1**：最小 ObjC 探针调用验证通过，APR bootstrap 已解决。
-  - **[DONE] R3.2**：修复 options NULL 字符串字段，实现完整 replay（返回 0 / 触发 callback）。
-  - **[N/A] R3.3**：completionCallback 在当前框架版本为 dead code，CLI 路径不产出 profiling 数据（详见 R3.3 执行记录）。
-- **[TODO][P0] R4**：数据获取等价 — 通过 GTMTLReplayHost C API 实现 Fetch/Query 类族调用。
-  - R4.1：Fetch 类族（Texture / Buffer / PipelineBinaries / PostVertex）
-  - R4.2：Query 类族（Configuration / DerivedCounters / DeviceCapabilities）
-  - R4.3：Profile 类族（Timeline / DerivedCounters / BatchFilteredCounters）
+- **[DONE] R3**：headless replay 实际调用验证。
+  - R3.1：最小 ObjC 探针调用验证通过，APR bootstrap 已解决。
+  - R3.2：修复 options NULL 字符串字段，headless replay 返回 0。
+  - R3.3：[N/A] completionCallback 为 dead code，CLI 路径不产出 profiling 数据。能力边界已明确。
+- **[TODO][P0] R4**：数据获取等价 — 在 headless replay 成功后提取资源数据。
+  - R4.1：Harvester API 探索与验证（GTHarvesterGetData/GetMetadata/GetTexturePlane）
+  - R4.2：Host API 探索（GTMTLReplayHost_generateDerivedDataPayload）
+  - R4.3：Controller + Fetch 类族组合调用（playTo → fetch texture/buffer）
 - **[TODO][P2] R5**：操作等价 — Replay 交互操作的 CLI 触发。
   - R5.1：Replay 控制（playTo 指定帧/draw call、pause/resume/rewind）
   - R5.2：Shader 热替换（GTReplayUpdateLibrary）
@@ -125,17 +129,16 @@
 - **最高信号静态锚点**：`GPUToolsReplay`、`GPUToolsServices` 上的 `strings` / `nm -m`。
 - **已确认缓存路径**：`/private/var/folders/.../C/com.apple.gputools.GPUToolsReplayService/com.apple.metal/...`
 - **关键环境变量**：`ATF_RESULTSDIRECTORY`(输出目录)、`GPUMTLOverrideDeviceFamily`(设备覆盖)、`MTLREPLAYER_OVERRIDE_DEVICE_REGISTRY_ID`(GPU 覆盖)
+- **探针编译**：`cd Scripts/ && clang -framework Foundation -framework Metal -ldl -o replay_probe replay_probe.m`
 
 ## 参考信息
 
 | 子文档 | 阅读建议 | 内容概述 |
 |--------|---------|---------|
-| `subdocs/20260520-replay-entry-scan.md` | 总是建议读取 | 已确认模块/进程/符号/文件访问关系（基线参考） |
-| `subdocs/20260520-R1.1b-transport-rawcounter-api.md` | **在执行 R3/R4/R5 时必须读取** | XPC 完整接口、Fetch/Query/Profile/ShaderDebug/Update 类族（定义了 GUI 全操作集）、GPURawCounter |
-| `subdocs/20260520-R1.2-GTMTLReplay_CLI-signature.md` | **在执行 R3 时必须读取** | CLI 签名、Options 结构体偏移、执行流程 |
-| `subdocs/20260520-R3.1-replay-probe.md` | **在执行 R3.2+ 时必须读取** | APR bootstrap 方案、偏移量、调用验证结果、当前卡点详情 |
-| `executions/20260520-R3.2-options-null-fix.md` | **在执行 R3.3+ 时建议读取** | R3.2 修复详情、options 字段确认、replay 成功验证 |
-| `executions/20260520-R3.3-callback-analysis.md` | **在执行 R4+ 时必须读取** | CLI 路径能力边界、options 真实布局、callback dead code 分析 |
-| `subdocs/20260520-R1.1-api-inventory.md` | 在需要查阅类/符号清单时按需读取 | GPUToolsReplay 导出符号、GPUToolsServices 76 类、对象图 |
+| `subdocs/20260520-replay-entry-scan.md` | 总是建议读取 | R0 基线：模块/进程/符号/文件访问关系 |
+| `subdocs/20260520-R1.1b-transport-rawcounter-api.md` | **在执行 R4/R5 时必须读取** | XPC 完整接口、Fetch/Query/Profile/ShaderDebug/Update 类族、GPURawCounter |
+| `subdocs/20260520-R1.1-api-inventory.md` | **在执行 R4 时必须读取** | GPUToolsReplay 导出符号（含 Harvester 系列）、GPUToolsServices 76 类、对象图 |
+| `subdocs/20260520-R3-headless-replay.md` | **在执行 R4 时必须读取** | R3 全阶段技术细节：APR bootstrap、options 布局、CLI 能力边界、反汇编分析 |
+| `subdocs/20260520-R1.2-GTMTLReplay_CLI-signature.md` | 在调试 options 相关问题时按需读取 | CLI 签名、Options 偏移表、执行流程 |
 | `subdocs/20260520-R1.3-dictionary-fields.md` | 一般无需读取（CLI 路径不使用字典） | 三层字典字段；仅在需要 XPC 路径时参考 |
 | `subdocs/20260520-R2.1-CLI-schema.md` | 一般无需读取（bridge 已完成） | CLI schema 设计、R2.2/R2.3 实现与测试总结 |

@@ -18,22 +18,18 @@
 
 ## 主线任务
 
-- **当前最新进展**：
-  - 已确认主线模块：`GPUDebugger.ideplugin`、`GPUToolsServices`、`GPUToolsShaderProfiler`、`GPU.instrdst`、`GPUCounters.instrdst`。
-  - 已动态确认当前 replay 相关进程：`GPUToolsCompatService`、`GPUToolsAgentService`、`GPUToolsReplayService.xpc`。
-  - 已确认关键锚点：`com.apple.gputools.MTLReplayer`、`com.apple.gputools.replay`、`-[DYCaptureSession _activateWithSession:serial:invalidationCompletion:initiatedByInferior:replayerLaunchDictionary:]`、`-[DYGuestAppSession hardwareCountersConfiguration]`、`-[DYDevice needsGPUToolsServiceBeforePlayback]`。
-  - 已确认 `GPUToolsReplayService` 会直接读取 `.gputrace/store0`，并使用 `com.apple.gputools.GPUToolsReplayService/com.apple.metal/...` 下的 `functions.list`、`functions.data`、`libraries.list`、`libraries.data` 缓存文件。
-  - **[R1.1 完成]** 已导出 `GPUToolsServices`（76 类、完整 ivar/selector）与 `GPUToolsReplay`（C API + ObjC 类）的完整清单。关键发现：`GPUToolsReplayService.xpc` 只是 thin stub，所有逻辑在 `GPUToolsReplay.framework`；后者暴露了 `GTMTLReplayController_{init,playAll,playTo,rewind}` 控制面 + `GTMTLReplay_CLI` CLI 入口 + `GTHarvesterGet*` 数据提取函数。
-- **当前判断**：
-  - replay 通路更像是**ObjC 私有对象模型 + XPC service + GPU/Instruments package**，而不是单一公开 C ABI。
-- **当前卡点/阻塞**：
-  - 还未拿到稳定、可复用的最小调用序列。
-  - 还未明确 `replayerLaunchDictionary` 的最小字段集合。
-  - 还未确认客户端 bridge 应优先复用 ObjC API、XPC service，还是先做只读扫描代理。
-- **下一步该做什么**：
-  - `R1.1` 已完成。下一步最高优先级为 `R1.2`：复原 Xcode → `GPUDebugger` → `GPUToolsCompatService` / `GPUToolsAgentService` / `GPUToolsReplayService` 的职责链。
-  - 特别关注 `GTMTLReplay_CLI` 符号（可能是 headless replay 入口）和 `GTHarvesterGet*` 系列（只读数据提取）。
-  - `R1.2` 完成前，严禁跳去做 bridge 实现或触发式 replay 实验。
+- **已建立的知识**：
+  - 主线模块：`GPUDebugger.ideplugin` → `GPUToolsServices`(76 类) → XPC Services → `GPUToolsReplay.framework`(C API)
+  - replay 通路是 **ObjC 私有对象模型 + XPC + Mach memory** 的多层协作，非单一公开 ABI
+  - `GPUToolsReplayService.xpc` 只是 thin stub；所有 replay 逻辑在 `GPUToolsReplay.framework`
+  - 最有价值的自动化入口：`GTMTLReplay_CLI`(CLI 入口)、`GTHarvesterGet*`(只读数据提取)、`g_runningInCI`(CI 模式)
+- **当前卡点**：
+  - 还未确定 `GTMTLReplay_CLI` 的参数签名和调用方式
+  - 还未拿到 `replayerLaunchDictionary` 的最小字段集合
+  - 还未确认各 XPC Service 的具体分工职责
+- **下一步（当前最高优先级）**：
+  - **R1.2**：探索 `GTMTLReplay_CLI` 的参数签名（反汇编或运行时观察），确认其是否能实现 headless replay
+  - R1.2 完成前，严禁跳去做 bridge 实现或触发式 replay 实验
 
 ## 构建与验证的方法
 
@@ -62,12 +58,10 @@
 
 ## 所有任务TODO状态
 
-- **[DONE][P0] R0**：建立 dashboard、execution 记录与基线扫描子文档。
-  - **[DONE][P0] R0.1**：确认文档目录结构与维护规则。
-  - **[DONE][P0] R0.2**：完成首轮静态/动态入口扫描并整理基线结论。
+- **[DONE][P0] R0**：建立 dashboard、基线扫描。
 - **[TODO][P0] R1**：提取 replay 通路最小对象图与参数面。
-  - **[DONE][P0] R1.1**：导出 `GPUToolsServices` / `GPUToolsReplayService` 的类、selector、ivar、property 清单。详见 `executions/20260520-R1.1-class-selector-export.md`。
-  - **[TODO][P1] R1.2**：复原 Xcode → `GPUDebugger` → `GPUToolsCompatService` / `GPUToolsAgentService` / `GPUToolsReplayService` 的职责链。
+  - **[DONE][P0] R1.1**：导出 GPUToolsServices / GPUToolsReplay 的完整类/selector/ivar/property 清单。
+  - **[TODO][P0] R1.2**：探索 `GTMTLReplay_CLI` 参数签名，确认 headless replay 可行性；同时理清各 XPC Service 职责分工。
   - **[TODO][P1] R1.3**：标记 `replayerLaunchDictionary` / `hardwareCountersConfiguration` 的候选字段并做静态比对。
 - **[TODO][P1] R2**：产出只读 bridge 原型。
   - **[TODO][P1] R2.1**：设计 CLI / JSON schema，至少覆盖 `scan-active-replay`、`scan-binaries`、`inspect-gputrace` 三类能力。
@@ -78,9 +72,6 @@
   - **[TODO][P2] R3.2**：探索 counter / shader profiler 配置注入点。
   - **[TODO][P2] R3.3**：验证是否能产出可消费的 replay / profiler 结果。
 - **[TODO][P3] R4**：客户端可用性收尾。
-  - **[TODO][P3] R4.1**：稳定 bridge 接口、错误码与 JSON schema。
-  - **[TODO][P3] R4.2**：补充客户端调用样例与回归样本。
-  - **[TODO][P3] R4.3**：清理 dashboard 与子文档引用，形成长期维护结构。
 
 ## 高频复用经验
 
@@ -92,5 +83,6 @@
 
 ## 参考信息
 
-- **必须读取**：`subdocs/20260520-replay-entry-scan.md`。这里记录了当前已确认的进程、模块、符号、缓存路径与判断依据。
-- **按具体需求读取**：`../OfflineSourceRecovery/scripts/README_extract_shader_raw.md`。仅在需要把 replay 自动化与 shader/raw 提取链路对齐时阅读。
+- **总是建议读取**：`subdocs/20260520-replay-entry-scan.md` — 已确认的进程、模块、符号、缓存路径与文件访问关系。
+- **在执行 R1.2/R1.3/R2 时按需读取**：`subdocs/20260520-R1.1-api-inventory.md` — GPUToolsReplay 导出符号、GPUToolsServices 76 类清单、关键 ivar、selector、最小对象图。
+- **一般无需读取**：`../OfflineSourceRecovery/scripts/README_extract_shader_raw.md` — 仅在需要把 replay 自动化与 shader/raw 提取链路对齐时阅读。

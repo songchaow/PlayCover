@@ -88,7 +88,7 @@
 - `/private/var/folders/.../C/com.apple.gputools.GPUToolsReplayService/com.apple.metal/.../libraries.list`
 - `/private/var/folders/.../C/com.apple.gputools.GPUToolsReplayService/com.apple.metal/.../libraries.data`
 
-结论：它不只是“挂名存在”，而是在**直接消费 replay 所需的 capture 数据和 shader/library 缓存**。
+结论：它不只是"挂名存在"，而是在**直接消费 replay 所需的 capture 数据和 shader/library 缓存**。
 
 ## Instruments package 侧信息
 
@@ -112,19 +112,8 @@
 
 ## 当前判断
 
-- 当前 replay 自动化通路更接近：
-  - **Xcode / GPUDebugger 前端**
-  - **`GPUToolsServices` 中的 `DY*` 对象模型**
-  - **`GPUToolsCompatService` / `GPUToolsAgentService` / `GPUToolsReplayService` 的分工协作**
-  - **`GPU.instrdst` / `GPUCounters.instrdst` 提供的 modeler 与 schema**
-- 目前还不能把它简化成“单个私有 ABI”。
-- 当前最值得继续深挖的是：
-  - `replayerLaunchDictionary`
-  - `hardwareCountersConfiguration`
-  - `GPUToolsReplayService` 的运行时类与入参面
-
-## 建议的下一步
-
-- 最高优先级继续执行 `R1.1`：
-  - 导出 `GPUToolsServices` / `GPUToolsReplayService` 的类、selector、property、ivar。
-  - 目标是画出最小对象图，而不是立即尝试注入或手工构造 replay。
+- replay 自动化通路是**多层协作**结构，不是单一公开 C ABI：
+  - Xcode / GPUDebugger 前端 → `GPUToolsServices` DY* 对象模型 → XPC Services → `GPUToolsReplay.framework` C API
+  - `GPU.instrdst` / `GPUCounters.instrdst` 提供 modeler 与 schema
+- R1.1 已确认：`GPUToolsReplayService.xpc` 只是 thin stub，真正逻辑在 `GPUToolsReplay.framework`，且后者暴露了 `GTMTLReplay_CLI` CLI 入口和 `GTHarvesterGet*` 只读数据提取 API。
+- 详细 API 清单见 `subdocs/20260520-R1.1-api-inventory.md`。

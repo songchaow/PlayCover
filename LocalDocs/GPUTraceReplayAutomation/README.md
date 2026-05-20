@@ -159,9 +159,8 @@
 |--------|---------|---------|
 | `subdocs/20260520-replay-entry-scan.md` | 总是建议读取 | R0 基线：模块/进程/符号/文件访问关系 |
 | `subdocs/20260520-R1.1b-transport-rawcounter-api.md` | **在执行 R4/R5 时必须读取** | XPC 完整接口、Fetch/Query/Profile/ShaderDebug/Update 类族、GPURawCounter |
-| `subdocs/20260520-R1.1-api-inventory.md` | **在执行 R4 时必须读取** | GPUToolsReplay 导出符号（含 Harvester 系列）、GPUToolsServices 76 类、对象图 |
+| `subdocs/20260520-R1.1-api-inventory.md` | **在执行 R4 时必须读取** | GPUToolsReplay 导出符号（含 Harvester 完整签名与 blob 格式）、GPUToolsServices 76 类、对象图 |
 | `subdocs/20260520-R3-headless-replay.md` | **在执行 R4 时必须读取** | R3 全阶段技术细节：APR bootstrap、options 布局、CLI 能力边界、反汇编分析 |
 | `subdocs/20260520-R1.2-GTMTLReplay_CLI-signature.md` | 在调试 options 相关问题时按需读取 | CLI 签名、Options 偏移表、执行流程 |
 | `subdocs/20260520-R1.3-dictionary-fields.md` | 一般无需读取（CLI 路径不使用字典） | 三层字典字段；仅在需要 XPC 路径时参考 |
 | `subdocs/20260520-R2.1-CLI-schema.md` | 一般无需读取（bridge 已完成） | CLI schema 设计、R2.2/R2.3 实现与测试总结 |
-| `executions/20260520-R4.1-harvester-api-verification.md` | **在执行 R4.2+ 时建议读取** | Harvester API 完整签名、magic 格式、blob 结构、测试结果 |

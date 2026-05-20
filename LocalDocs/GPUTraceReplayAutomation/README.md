@@ -57,10 +57,12 @@
 
 **R3.2：修复 options NULL 字符串 → 实现完整 replay 调用**
 
-1. 反汇编 `GTMTLReplay_CLI + 3072` 确定哪个 options 字段需要非 NULL 字符串
-2. 参考 R1.2 options 布局，逐字段填入合理值（device name / output path / errorLogPath）
-3. 添加 `@try/@catch` 包装防止 ObjC 异常直接 terminate
-4. 目标：GTMTLReplay_CLI 返回 0 或触发 completionCallback
+实施策略（由快到准）：
+1. **快速试探法**：在 replay_probe.m 中逐一填入可疑的 `const char*` 字段（+0x28 填 `/dev/null`、+0x30 填 `/tmp/replay_output`），配合 `@try/@catch` 观察是否通过 +3072
+2. **反汇编确认**：若试探不够，`lldb` 离线反汇编 `GTMTLReplay_CLI + 3072` 前后指令，确定 load 的具体 options 偏移
+3. **逐步解锁**：每解决一个 NULL 字段崩溃，继续运行观察下一个卡点，直到返回 0 或触发 callback
+
+成功标准：`GTMTLReplay_CLI` 返回 0，或 completionCallback 被调用且收到非空 NSData。
 
 **可用测试样本**：`/Users/songdogwang/Library/Containers/com.papegames.lysk/Data/Documents/Captures/capture_20260518_110050.gputrace`（恋与深空，~368MB）
 

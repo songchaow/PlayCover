@@ -637,21 +637,250 @@ static int cmd_replay(int argc, const char *argv[]) {
 }
 
 // ============================================================
-#pragma mark - Subcommand: pipeline (stub — R6.1c)
+#pragma mark - Subcommand: pipeline
 // ============================================================
 
 static int cmd_pipeline(int argc, const char *argv[]) {
     if (argc < 1) {
         fprintf(stderr, "Usage: gputrace_replay_bridge pipeline <path-to-.gputrace> [output_dir]\n");
+        fprintf(stderr, "\nEnumerates libraries, pipeline states, functions.\n");
+        fprintf(stderr, "Exports metallib + AIR bitcode to output_dir.\n");
         return EXIT_USAGE;
     }
-    fprintf(stderr, "[INFO] pipeline subcommand: not yet implemented (R6.1c)\n");
+
+    const char *trace_path = argv[0];
+    const char *output_dir_c = (argc >= 2) ? argv[1] : NULL;
+
+    int rc = replay_context_init(trace_path);
+    if (rc != EXIT_OK) return rc;
+
+    // playAll to populate objectMap
+    int play_rc = -1;
+    @try {
+        play_rc = g_ctx.fn_playAll(g_ctx.controller);
+    } @catch (NSException *ex) {
+        fprintf(stderr, "[ERROR] playAll exception: %s\n", [[ex reason] UTF8String]);
+        replay_context_cleanup();
+        return EXIT_REPLAY_FAIL;
+    }
+    if (play_rc != 0) {
+        fprintf(stderr, "[ERROR] playAll failed (rc=%d)\n", play_rc);
+        replay_context_cleanup();
+        return EXIT_REPLAY_FAIL;
+    }
+
+    // Setup output directory
+    NSString *outputDir = nil;
+    if (output_dir_c) {
+        outputDir = [NSString stringWithUTF8String:output_dir_c];
+    } else {
+        outputDir = @".";
+    }
+    NSFileManager *fm = [NSFileManager defaultManager];
+    [fm createDirectoryAtPath:outputDir withIntermediateDirectories:YES attributes:nil error:nil];
+
+    // Determine max key from functionMap
+    id funcMapRaw = [g_ctx.objectMap performSelector:@selector(functionMap)];
+    uint64_t maxKey = 200;
+    if (funcMapRaw && [funcMapRaw isKindOfClass:[NSDictionary class]]) {
+        for (id key in (NSDictionary *)funcMapRaw) {
+            uint64_t kv = [key unsignedLongLongValue];
+            if (kv > maxKey) maxKey = kv;
+        }
+        maxKey += 50;
+    }
+
+    // === Scan libraries ===
+    SEL libSel = @selector(libraryForKey:);
+    SEL ldcSel = NSSelectorFromString(@"libraryDataContents");
+    SEL bcSel = NSSelectorFromString(@"bitcodeData");
+
+    int libs_found = 0, metallibs_exported = 0, bitcodes_exported = 0;
+
+    // Start JSON output
     JSON_BEGIN();
     JSON_KV_STR("command", "pipeline");
-    JSON_KV_STR("status", "not_implemented");
-    JSON_KV_STR("planned", "R6.1c");
+    JSON_KV_STR("trace_path", trace_path);
+    JSON_KV_STR("device", [[g_ctx.device name] UTF8String]);
+    JSON_KV_STR("output_dir", [outputDir UTF8String]);
+
+    // Libraries array
+    JSON_SEP();
+    printf("\"libraries\":[");
+    BOOL first_lib = YES;
+
+    for (uint64_t k = 0; k <= maxKey; k++) {
+        id lib = ((id (*)(id, SEL, uint64_t))objc_msgSend)(g_ctx.objectMap, libSel, k);
+        if (!lib) continue;
+        if (![lib conformsToProtocol:@protocol(MTLLibrary)]) continue;
+
+        id<MTLLibrary> mtlLib = (id<MTLLibrary>)lib;
+        libs_found++;
+
+        if (!first_lib) printf(",");
+        first_lib = NO;
+
+        printf("{\"key\":%llu", k);
+        printf(",\"class\":");
+        json_print_string(class_getName([lib class]));
+
+        NSArray *funcNames = [mtlLib functionNames];
+        printf(",\"function_count\":%lu", (unsigned long)[funcNames count]);
+        if (funcNames && [funcNames count] > 0) {
+            printf(",\"functions\":[");
+            for (NSUInteger fi = 0; fi < [funcNames count]; fi++) {
+                if (fi > 0) printf(",");
+                json_print_string([[funcNames objectAtIndex:fi] UTF8String]);
+            }
+            printf("]");
+        }
+
+        if (mtlLib.installName) {
+            printf(",\"installName\":");
+            json_print_string([mtlLib.installName UTF8String]);
+        }
+        if (mtlLib.label) {
+            printf(",\"label\":");
+            json_print_string([mtlLib.label UTF8String]);
+        }
+
+        // Export metallib
+        if ([lib respondsToSelector:ldcSel]) {
+            id data = [lib performSelector:ldcSel];
+            if (data && [data isKindOfClass:[NSData class]]) {
+                NSData *d = (NSData *)data;
+                printf(",\"metallib_size\":%lu", (unsigned long)[d length]);
+
+                if ([d length] >= 4) {
+                    uint32_t magic = *(uint32_t *)[d bytes];
+                    printf(",\"metallib_magic\":\"0x%08X\"", magic);
+
+                    NSString *filename = [NSString stringWithFormat:@"library_%llu.metallib", k];
+                    NSString *outPath = [outputDir stringByAppendingPathComponent:filename];
+                    [d writeToFile:outPath atomically:YES];
+                    printf(",\"metallib_file\":");
+                    json_print_string([filename UTF8String]);
+                    metallibs_exported++;
+                }
+            }
+        }
+
+        // Export AIR bitcode
+        if ([lib respondsToSelector:bcSel]) {
+            @try {
+                id bcData = [lib performSelector:bcSel];
+                if (bcData && [bcData isKindOfClass:[NSData class]]) {
+                    NSData *d = (NSData *)bcData;
+                    printf(",\"bitcode_size\":%lu", (unsigned long)[d length]);
+
+                    if ([d length] >= 4) {
+                        uint32_t magic = *(uint32_t *)[d bytes];
+                        printf(",\"bitcode_magic\":\"0x%08X\"", magic);
+
+                        NSString *filename = [NSString stringWithFormat:@"library_%llu.air", k];
+                        NSString *outPath = [outputDir stringByAppendingPathComponent:filename];
+                        [d writeToFile:outPath atomically:YES];
+                        printf(",\"bitcode_file\":");
+                        json_print_string([filename UTF8String]);
+                        bitcodes_exported++;
+                    }
+                }
+            } @catch (NSException *ex) {
+                printf(",\"bitcode_error\":");
+                json_print_string([[ex reason] UTF8String]);
+            }
+        }
+
+        printf("}");
+    }
+    printf("]");
+
+    // === Scan pipeline states ===
+    SEL rpsSel = @selector(renderPipelineStateForKey:);
+    SEL cpsSel = @selector(computePipelineStateForKey:);
+    int render_ps_count = 0, compute_ps_count = 0;
+
+    JSON_SEP();
+    printf("\"render_pipeline_states\":[");
+    BOOL first_rps = YES;
+    for (uint64_t k = 0; k <= maxKey; k++) {
+        id rps = ((id (*)(id, SEL, uint64_t))objc_msgSend)(g_ctx.objectMap, rpsSel, k);
+        if (!rps) continue;
+        render_ps_count++;
+        if (!first_rps) printf(",");
+        first_rps = NO;
+        printf("{\"key\":%llu,\"class\":", k);
+        json_print_string(class_getName([rps class]));
+        if ([rps respondsToSelector:@selector(label)]) {
+            id lbl = [rps performSelector:@selector(label)];
+            if (lbl) { printf(",\"label\":"); json_print_string([lbl UTF8String]); }
+        }
+        printf("}");
+    }
+    printf("]");
+
+    JSON_SEP();
+    printf("\"compute_pipeline_states\":[");
+    BOOL first_cps = YES;
+    for (uint64_t k = 0; k <= maxKey; k++) {
+        id cps = ((id (*)(id, SEL, uint64_t))objc_msgSend)(g_ctx.objectMap, cpsSel, k);
+        if (!cps) continue;
+        compute_ps_count++;
+        if (!first_cps) printf(",");
+        first_cps = NO;
+        printf("{\"key\":%llu,\"class\":", k);
+        json_print_string(class_getName([cps class]));
+        if ([cps respondsToSelector:@selector(label)]) {
+            id lbl = [cps performSelector:@selector(label)];
+            if (lbl) { printf(",\"label\":"); json_print_string([lbl UTF8String]); }
+        }
+        printf("}");
+    }
+    printf("]");
+
+    // === Scan functions ===
+    int func_count = 0;
+    JSON_SEP();
+    printf("\"functions\":[");
+    if (funcMapRaw && [funcMapRaw isKindOfClass:[NSDictionary class]]) {
+        BOOL first_fn = YES;
+        for (id key in (NSDictionary *)funcMapRaw) {
+            id func = [(NSDictionary *)funcMapRaw objectForKey:key];
+            func_count++;
+            if (!first_fn) printf(",");
+            first_fn = NO;
+
+            printf("{\"key\":%llu", [key unsignedLongLongValue]);
+            printf(",\"class\":");
+            json_print_string(class_getName([func class]));
+
+            if ([func respondsToSelector:@selector(name)]) {
+                id name = [func performSelector:@selector(name)];
+                if (name) { printf(",\"name\":"); json_print_string([name UTF8String]); }
+            }
+            if ([func respondsToSelector:@selector(functionType)]) {
+                NSUInteger ft = ((NSUInteger (*)(id, SEL))objc_msgSend)(func, @selector(functionType));
+                const char *ftStr = ft == 1 ? "vertex" : ft == 2 ? "fragment" : ft == 3 ? "kernel" : "unknown";
+                printf(",\"functionType\":%lu,\"functionTypeStr\":", (unsigned long)ft);
+                json_print_string(ftStr);
+            }
+            printf("}");
+        }
+    }
+    printf("]");
+
+    // Summary counts
+    JSON_KV_INT("libraries_count", libs_found);
+    JSON_KV_INT("metallibs_exported", metallibs_exported);
+    JSON_KV_INT("bitcodes_exported", bitcodes_exported);
+    JSON_KV_INT("render_pipeline_states_count", render_ps_count);
+    JSON_KV_INT("compute_pipeline_states_count", compute_ps_count);
+    JSON_KV_INT("functions_count", func_count);
+
     JSON_END();
-    return EXIT_SUBCMD_FAIL;
+
+    replay_context_cleanup();
+    return EXIT_OK;
 }
 
 // ============================================================

@@ -23,6 +23,7 @@
   - 已动态确认当前 replay 相关进程：`GPUToolsCompatService`、`GPUToolsAgentService`、`GPUToolsReplayService.xpc`。
   - 已确认关键锚点：`com.apple.gputools.MTLReplayer`、`com.apple.gputools.replay`、`-[DYCaptureSession _activateWithSession:serial:invalidationCompletion:initiatedByInferior:replayerLaunchDictionary:]`、`-[DYGuestAppSession hardwareCountersConfiguration]`、`-[DYDevice needsGPUToolsServiceBeforePlayback]`。
   - 已确认 `GPUToolsReplayService` 会直接读取 `.gputrace/store0`，并使用 `com.apple.gputools.GPUToolsReplayService/com.apple.metal/...` 下的 `functions.list`、`functions.data`、`libraries.list`、`libraries.data` 缓存文件。
+  - **[R1.1 完成]** 已导出 `GPUToolsServices`（76 类、完整 ivar/selector）与 `GPUToolsReplay`（C API + ObjC 类）的完整清单。关键发现：`GPUToolsReplayService.xpc` 只是 thin stub，所有逻辑在 `GPUToolsReplay.framework`；后者暴露了 `GTMTLReplayController_{init,playAll,playTo,rewind}` 控制面 + `GTMTLReplay_CLI` CLI 入口 + `GTHarvesterGet*` 数据提取函数。
 - **当前判断**：
   - replay 通路更像是**ObjC 私有对象模型 + XPC service + GPU/Instruments package**，而不是单一公开 C ABI。
 - **当前卡点/阻塞**：
@@ -30,8 +31,9 @@
   - 还未明确 `replayerLaunchDictionary` 的最小字段集合。
   - 还未确认客户端 bridge 应优先复用 ObjC API、XPC service，还是先做只读扫描代理。
 - **下一步该做什么**：
-  - 最高优先级只做 `R1.1`：导出并整理 `GPUToolsServices` / `GPUToolsReplayService` 的类、selector、属性、关键字符串清单，锁定最小可调用对象图。
-  - `R1.1` 完成前，严禁跳去做 bridge 实现或触发式 replay 实验。
+  - `R1.1` 已完成。下一步最高优先级为 `R1.2`：复原 Xcode → `GPUDebugger` → `GPUToolsCompatService` / `GPUToolsAgentService` / `GPUToolsReplayService` 的职责链。
+  - 特别关注 `GTMTLReplay_CLI` 符号（可能是 headless replay 入口）和 `GTHarvesterGet*` 系列（只读数据提取）。
+  - `R1.2` 完成前，严禁跳去做 bridge 实现或触发式 replay 实验。
 
 ## 构建与验证的方法
 
@@ -64,7 +66,7 @@
   - **[DONE][P0] R0.1**：确认文档目录结构与维护规则。
   - **[DONE][P0] R0.2**：完成首轮静态/动态入口扫描并整理基线结论。
 - **[TODO][P0] R1**：提取 replay 通路最小对象图与参数面。
-  - **[TODO][P0] R1.1**：导出 `GPUToolsServices` / `GPUToolsReplayService` 的类、selector、ivar、property 清单。
+  - **[DONE][P0] R1.1**：导出 `GPUToolsServices` / `GPUToolsReplayService` 的类、selector、ivar、property 清单。详见 `executions/20260520-R1.1-class-selector-export.md`。
   - **[TODO][P1] R1.2**：复原 Xcode → `GPUDebugger` → `GPUToolsCompatService` / `GPUToolsAgentService` / `GPUToolsReplayService` 的职责链。
   - **[TODO][P1] R1.3**：标记 `replayerLaunchDictionary` / `hardwareCountersConfiguration` 的候选字段并做静态比对。
 - **[TODO][P1] R2**：产出只读 bridge 原型。

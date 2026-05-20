@@ -1082,21 +1082,188 @@ static int cmd_shader(int argc, const char *argv[]) {
 }
 
 // ============================================================
-#pragma mark - Subcommand: config (stub — R6.1e)
+#pragma mark - Subcommand: config
 // ============================================================
+
+/// config <trace> [key=value ...]
+///
+/// Supported keys:
+///   disableOptimizeRestores=0|1   (default 1 in bridge; set to 0 to enable optimizeRestores)
+///   forceLoadUnusedResources=0|1  (default 1; set to 0 to skip populateUnusedResources)
+///   enableValidation=0|1          (default 0; set to 1 to enable g_runningValidationCI)
+///
+/// Runs replay with specified config and outputs timing/resource JSON.
+/// Without any key=value, shows available config keys and their defaults.
+
+typedef struct {
+    int disable_optimize_restores;   // 1=skip optimizeRestores (default), 0=call it
+    int force_load_unused;           // 1=call populateUnused (default), 0=skip
+    int enable_validation;           // 0=off (default), 1=on
+} ConfigOptions;
+
+static ConfigOptions parse_config_options(int argc, const char *argv[]) {
+    ConfigOptions cfg = { .disable_optimize_restores = 1, .force_load_unused = 1, .enable_validation = 0 };
+    for (int i = 0; i < argc; i++) {
+        if (strncmp(argv[i], "disableOptimizeRestores=", 24) == 0) {
+            cfg.disable_optimize_restores = atoi(argv[i] + 24);
+        } else if (strncmp(argv[i], "forceLoadUnusedResources=", 25) == 0) {
+            cfg.force_load_unused = atoi(argv[i] + 25);
+        } else if (strncmp(argv[i], "enableValidation=", 17) == 0) {
+            cfg.enable_validation = atoi(argv[i] + 17);
+        }
+    }
+    return cfg;
+}
+
+/// Perform a complete replay with given config, measuring timing.
+/// Returns playAll result code; sets *elapsed_ms and *resource_count.
+static int config_replay_with_options(const char *trace_path, ConfigOptions cfg,
+                                      double *elapsed_ms, NSUInteger *resource_count) {
+    // We need a fresh context for each config test.
+    // Re-do full init sequence with config-specific steps.
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *pathStr = [NSString stringWithUTF8String:trace_path];
+    BOOL isDir = NO;
+    if (![fm fileExistsAtPath:pathStr isDirectory:&isDir] || !isDir) return -1;
+
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    if (!device) return -2;
+
+    const char *fw_path = "/System/Library/PrivateFrameworks/GPUToolsReplay.framework/GPUToolsReplay";
+    void *handle = dlopen(fw_path, RTLD_NOW);
+    if (!handle) return -3;
+
+    void *gt_env = dlsym(handle, "GT_ENV");
+    void *cli_fn = dlsym(handle, "GTMTLReplay_CLI");
+    if (!gt_env || !cli_fn) { dlclose(handle); return -4; }
+
+    apr_pool_create_fn fn_apr = (apr_pool_create_fn)resolve_bl(cli_fn, 0x50);
+    makeDataSource_fn fn_ds = (makeDataSource_fn)resolve_bl(cli_fn, 0x13c);
+    supportInit_fn fn_si = (supportInit_fn)resolve_bl(cli_fn, 0x888);
+    initArgBuf_fn fn_iab = (initArgBuf_fn)resolve_bl(cli_fn, 0x898);
+    populateUnused_fn fn_pu = (populateUnused_fn)resolve_bl(cli_fn, 0x8a4);
+    makeController_fn fn_mc = (makeController_fn)resolve_bl(cli_fn, 0x954);
+    optimizeRestores_fn fn_or = (optimizeRestores_fn)resolve_bl(cli_fn, 0x96c);
+    playAll_fn fn_pa = (playAll_fn)dlsym(handle, "GTMTLReplayController_playAll");
+
+    if (!fn_apr || !fn_ds || !fn_mc || !fn_pa) { dlclose(handle); return -5; }
+
+    // APR bootstrap
+    void **gpp = (void **)((uint8_t *)gt_env - 0x30);
+    if (*gpp == NULL) {
+        void *blk = calloc(1, 0x4000);
+        void *gp = (uint8_t *)blk + 0x100;
+        *(uint64_t *)blk = 20; *(uint64_t *)((uint8_t *)blk + 8) = 20;
+        *(void **)gp = blk; *(void **)((uint8_t *)gp + 0x30) = blk;
+        *gpp = gp;
+    }
+
+    // enableValidation via global
+    void *g_val_ptr = dlsym(handle, "g_runningValidationCI");
+    if (g_val_ptr) {
+        *(BOOL *)g_val_ptr = cfg.enable_validation ? YES : NO;
+    }
+
+    void *pool = NULL;
+    fn_apr(&pool, NULL, NULL, NULL);
+    if (!pool) { dlclose(handle); return -6; }
+
+    void *dataSource = fn_ds(trace_path, pool);
+    if (!dataSource) { dlclose(handle); return -7; }
+
+    if (fn_si) fn_si((__bridge void *)device);
+
+    Class mapCls = NSClassFromString(@"GTMTLReplayObjectMap");
+    if (!mapCls) { dlclose(handle); return -8; }
+    id objectMap = [[mapCls alloc] performSelector:@selector(initWithDevice:) withObject:device];
+    if (!objectMap) { dlclose(handle); return -9; }
+
+    if (fn_iab) fn_iab(dataSource, (__bridge void *)device, (__bridge void *)objectMap);
+
+    // forceLoadUnusedResources
+    if (cfg.force_load_unused && fn_pu) {
+        fn_pu(dataSource, (__bridge void *)objectMap);
+    }
+
+    void *ctrl = fn_mc(dataSource, pool, (__bridge void *)device, (__bridge void *)objectMap, NULL, NULL);
+    if (!ctrl) { dlclose(handle); return -10; }
+
+    // disableOptimizeRestores: if NOT disabled (=0), call optimizeRestores
+    if (!cfg.disable_optimize_restores && fn_or) {
+        fn_or(ctrl);
+    }
+
+    // playAll with timing
+    mach_timebase_info_data_t tb;
+    mach_timebase_info(&tb);
+    uint64_t t0 = mach_absolute_time();
+    int play_rc = fn_pa(ctrl);
+    uint64_t t1 = mach_absolute_time();
+    *elapsed_ms = (double)(t1 - t0) * tb.numer / tb.denom / 1e6;
+
+    // Resource count
+    @try {
+        NSDictionary *res = [objectMap performSelector:@selector(resources)];
+        *resource_count = [res count];
+    } @catch (NSException *ex) { *resource_count = 0; }
+
+    // Restore validation state
+    if (g_val_ptr) *(BOOL *)g_val_ptr = NO;
+
+    dlclose(handle);
+    return play_rc;
+}
 
 static int cmd_config(int argc, const char *argv[]) {
     if (argc < 1) {
         fprintf(stderr, "Usage: gputrace_replay_bridge config <path-to-.gputrace> [key=value ...]\n");
+        fprintf(stderr, "\nSupported config keys:\n");
+        fprintf(stderr, "  disableOptimizeRestores=0|1   (default=1, skip restore optimization)\n");
+        fprintf(stderr, "  forceLoadUnusedResources=0|1  (default=1, load unused resources)\n");
+        fprintf(stderr, "  enableValidation=0|1          (default=0, Metal validation layer)\n");
+        fprintf(stderr, "\nRuns replay with specified config and reports timing/resource JSON.\n");
         return EXIT_USAGE;
     }
-    fprintf(stderr, "[INFO] config subcommand: not yet implemented (R6.1e)\n");
+
+    const char *trace_path = argv[0];
+
+    // Parse config options from argv[1..]
+    ConfigOptions cfg = parse_config_options(argc - 1, argv + 1);
+
+    // Validate trace exists
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *pathStr = [NSString stringWithUTF8String:trace_path];
+    BOOL isDir = NO;
+    if (![fm fileExistsAtPath:pathStr isDirectory:&isDir] || !isDir) {
+        fprintf(stderr, "[ERROR] Not a valid .gputrace bundle: %s\n", trace_path);
+        return EXIT_BAD_INPUT;
+    }
+
+    // Run replay with config
+    double elapsed_ms = 0;
+    NSUInteger resource_count = 0;
+    int play_rc = config_replay_with_options(trace_path, cfg, &elapsed_ms, &resource_count);
+
+    // Output JSON
     JSON_BEGIN();
     JSON_KV_STR("command", "config");
-    JSON_KV_STR("status", "not_implemented");
-    JSON_KV_STR("planned", "R6.1e");
+    JSON_KV_STR("trace_path", trace_path);
+
+    JSON_SEP();
+    printf("\"config\":{");
+    printf("\"disableOptimizeRestores\":%s", cfg.disable_optimize_restores ? "true" : "false");
+    printf(",\"forceLoadUnusedResources\":%s", cfg.force_load_unused ? "true" : "false");
+    printf(",\"enableValidation\":%s", cfg.enable_validation ? "true" : "false");
+    printf("}");
+
+    JSON_KV_INT("playAll_rc", play_rc);
+    JSON_KV_BOOL("success", play_rc == 0);
+    JSON_KV_DOUBLE("elapsed_ms", elapsed_ms);
+    JSON_KV_UINT("resource_count", resource_count);
     JSON_END();
-    return EXIT_SUBCMD_FAIL;
+
+    return (play_rc == 0) ? EXIT_OK : EXIT_REPLAY_FAIL;
 }
 
 // ============================================================

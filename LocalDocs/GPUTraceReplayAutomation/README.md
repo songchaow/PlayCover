@@ -76,16 +76,26 @@
 
 ### 下一步（当前最高优先级）
 
-**R4.2：Host API 探索 — GTMTLReplayHost_generateDerivedDataPayload**
+**R4.2：Controller 路径探索 — 建立 headless replay session + 数据获取通道**
 
-背景：R4.1 证明 Harvester 是纯离线解析器（操作已有 blob），解决了存量资源提取。R4.2 需验证 Host API 是否能在 replay 运行后生成新的派生数据（如 profiling 结果、derived counters）。
+背景：R3 证明 CLI 路径仅做 replay 健康检查（不产出数据），R4.1 证明 Harvester 仅解析已有 blob（离线）。要实现完整的数据获取等价（render target、pipeline binaries、counters、profiling），**必须建立 Controller 路径** — 这是后续所有能力维度（R4.3~R4.5, R5 全部）的唯一基础设施瓶颈。
+
+核心问题：
+1. `GTMTLReplayController_init` 需要什么参数？（dataSource? device? transport?）
+2. 如何建立 transport 通道？（`GTMTLReplayClient_init` + `createNewTransport`）
+3. Controller 建立后，Fetch/Query/Profile 请求如何发送？（直接调用 vs 通过 transport）
 
 实施策略：
-1. 反汇编 `GTMTLReplayHost_generateDerivedDataPayload` 分析参数需求
-2. 确认其依赖的上下文（是否需要 Controller_init 先建立 replay session）
-3. 在 replay_probe 中尝试调用
+1. 反汇编 `GTMTLReplayController_init` 分析参数签名与初始化依赖
+2. 反汇编 `GTMTLReplayClient_init` + `createNewTransport` 确认 transport 建立方式
+3. 交叉验证：对照 `GTMTLReplay_CLI` 内部调用 `GTMTLReplayController_makeController` 的上下文，推断最小依赖
+4. 在 replay_probe 中尝试：init controller → playTo → 尝试 fetch
 
-成功标准：确认 Host API 参数签名、依赖关系和调用时机，或明确其无法在 CLI 路径中使用。
+成功标准：确认 Controller 路径的最小可调用序列（从 init 到发送第一个 Fetch/Query 请求），或明确其 in-process 不可用的原因。
+
+附加目标（如 Controller 路径不可行时的备选）：
+- 反汇编 `GTMTLReplayHost_generateDerivedDataPayload` 确认 derived data 是否可单独获取
+- 评估直接构造 XPC 消息绕过 GUI 的可行性
 
 ## 构建与验证的方法
 
@@ -128,7 +138,7 @@
   - R3.3：[N/A] completionCallback 为 dead code，CLI 路径不产出 profiling 数据。能力边界已明确。
 - **[IN-PROGRESS][P0] R4**：数据获取等价 — 在 headless replay 成功后提取资源数据。
   - [DONE] R4.1：Harvester API 探索与验证 — 4 个函数均为纯离线 blob 解析器，直接提取 .gputrace 资源数据，无需 replay
-  - R4.2：Host API 探索（GTMTLReplayHost_generateDerivedDataPayload）— derived data 生成
+  - R4.2：**Controller 路径探索**（核心瓶颈）— 反汇编 Controller_init / Client_init / createNewTransport，建立 headless replay session + 数据获取通道。解锁后续所有能力。
   - R4.3：Controller + Fetch 类族组合调用（playTo → fetch texture/buffer/pipeline）— 实时资源获取
   - R4.4：GPU Counters 采集 — GPURawCounter 框架 + GTReplayProfileTimeline 硬件计数器
   - R4.5：Shader Profiler — ProfileTimeline.shaderProfiling + profiler stream data 解析

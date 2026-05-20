@@ -46,21 +46,19 @@
 
 ### 当前卡点
 
-无。R6.1 全部完成（2026-05-20）。
+无。R6.2a 全部完成（2026-05-21）。
 
 ### 下一步（当前最高优先级）
 
-**R6.2：端到端动态验证 + Python CLI wrapper**
+**R6.2b：Python CLI wrapper**
 
-优先级理由：bridge 的集成测试仅覆盖参数解析和退出码（无真实 trace 功能验证）。在此基础上直接封装 wrapper 存在风险。
+优先级理由：R6.2a 已确认 bridge 全部子命令在真实 trace 上功能正确，可安全封装。
 
-1. **R6.2a 端到端动态验证**（最高优先）：
-   - 用真实 .gputrace 跑通 `replay` 子命令 — 确认 playAll 返回 0、资源枚举输出正确 JSON
-   - 跑通 `pipeline` 子命令 — 确认 metallib/AIR 文件导出且格式正确
-   - 跑通 `shader` 子命令 — 确认 metallib 替换 + rewind+playAll 成功
-   - 跑通 `config` 子命令 — 确认配置修改影响 replay 行为
-   - 验收标准：全部子命令无 crash、JSON 输出可解析、导出文件格式正确
-2. **R6.2b Python CLI wrapper**：在验证通过后，封装为 Python 结构化接口
+1. **R6.2b Python CLI wrapper**（最高优先）：
+   - 封装 bridge 5 子命令为 Python 结构化接口
+   - 输入参数校验 + JSON 输出解析
+   - 错误处理：退出码映射 + stderr 捕获
+   - 验收标准：Python 接口能驱动全部子命令、返回 dict/dataclass
 
 ## 构建与验证的方法
 
@@ -83,7 +81,7 @@
 - **[DONE] R0~R5**：基线扫描 → API 提取 → bridge 原型 → headless replay → 数据获取 → 操作等价
 - **[IN-PROGRESS][P0] R6**：客户端封装与可用性收尾
   - **[DONE] R6.1**：统一 ObjC bridge binary — 5 子命令 + Makefile + 集成测试 17/17
-  - **R6.2a**：端到端动态验证（真实 .gputrace 全子命令跑通）
+  - **[DONE] R6.2a**：端到端动态验证（2 样本 × 5 子命令，29/29 集成测试通过）
   - **R6.2b**：Python CLI wrapper（基于验证结果封装）
   - **R6.3**：自动化流水线集成（CI/CD 集成、样本库管理）
 
@@ -101,6 +99,7 @@
 |--------|---------|---------|
 | `subdocs/20260520-R4.2-controller-path.md` | **总是建议读取** — Controller 路径是所有后续任务的基础 | 完整调用链、偏移表、ObjectMap、playTo、Pipeline 导出 |
 | `subdocs/20260520-R6.1-bridge-implementation.md` | **总是建议读取** — 已实现 bridge 的完整架构与子命令用法 | 5 子命令实现、JSON schema、构建方法、测试覆盖 |
+| `executions/20260521-R6.2a-e2e-dynamic-validation.md` | 在检查验证结果时按需读取 | 2 样本 × 5 子命令端到端验证详情、文件格式确认 |
 | `subdocs/20260520-R5.2-shader-hot-replace.md` | 在扩展 shader 功能时按需读取 | 替换路径对比、Xcode UI 能力缺口 |
 | `subdocs/20260520-R5.3-shader-debug.md` | 在探索 IPC/debug 后续方向时按需读取 | ShaderDebug 类族、instrumented debug、IPC 探索结论 |
 | `subdocs/20260520-R5.4-configuration.md` | 在扩展 config 功能时按需读取 | 13 属性映射、Service 路径 |

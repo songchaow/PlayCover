@@ -88,9 +88,15 @@
 
 ### 下一步（当前最高优先级）
 
-**R6.1：统一 ObjC bridge binary**
+**R6.1a：统一 ObjC bridge 骨架搭建**
 
-将所有已验证能力（controller/objectMap/pipeline/shader-replace/config）合并为一个多子命令 CLI 工具，JSON 输出。
+产出：`Scripts/gputrace_replay_bridge.m`（统一 main.m）
+- 子命令分发框架（replay / pipeline / shader / config / help）
+- 公共初始化：dlopen GPUToolsReplay → APR bootstrap → makeDataSource → makeController（参考 controller_probe.m）
+- JSON 输出辅助宏（`JSON_BEGIN`/`JSON_KV`/`JSON_END`）
+- 统一错误处理 + 退出码
+- 编译：`clang -framework Foundation -framework Metal -ldl -lobjc -o gputrace_replay_bridge gputrace_replay_bridge.m`
+- 验证：`./gputrace_replay_bridge help` 输出子命令列表；`./gputrace_replay_bridge replay <trace>` 完成 headless replay 返回 JSON
 
 ## 构建与验证的方法
 
@@ -141,7 +147,13 @@
   - [DONE] R5.3：Shader Debug（原生路径受 GTLLVMHelper IPC 限制；instrumented debug 替代方案完全可行，含无源码支持）
   - [DONE] R5.4：Configuration 动态修改（调用链控制 + g_runningValidationCI 全局变量 + Service.update 路径确认）
 - **[IN-PROGRESS][P0] R6**：客户端封装与可用性收尾。
-  - R6.1：**统一 ObjC bridge binary**（将 controller/objectMap/pipeline/shader-replace/config 所有已验证能力合并为一个多子命令 CLI 工具，JSON 输出）
+  - **R6.1：统一 ObjC bridge binary** — 将所有已验证能力合并为单一多子命令 CLI，JSON 输出
+    - R6.1a：**骨架搭建** — 统一 main.m + 子命令分发框架 + JSON 输出宏 + 公共初始化（dlopen/APR/Controller）
+    - R6.1b：**replay 子命令** — replay/rewind/playTo + 资源枚举与导出（整合 controller_probe + objectmap_probe）
+    - R6.1c：**pipeline 子命令** — library 枚举 + metallib/AIR 导出（整合 pipeline_probe）
+    - R6.1d：**shader 子命令** — setLibrary:forKey: 替换 + rewind+playAll 验证（整合 update_library_probe*）
+    - R6.1e：**config 子命令** — 调用链控制 3 项 + validation 全局变量（整合 config_probe*）
+    - R6.1f：**编译验证** — Makefile + ad-hoc 签名 + 各子命令最小样本测试
   - R6.2：Python CLI wrapper（对 R6.1 单一二进制的高层封装）
   - R6.3：端到端自动化验证链路
   - 策略注：当前 16 个独立探针仅用于验证阶段；R6.1 将其整合为可复用的生产级工具，是最终交付物的核心

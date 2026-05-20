@@ -20,6 +20,25 @@
 
 优先级排序：headless replay 基础执行 > 只读数据获取 > profiling/counters > shader debug/替换 > 高级交互。
 
+### 能力对齐进度总览
+
+| # | 能力维度 | 状态 | 完成阶段/计划任务 |
+|---|---------|------|-----------------|
+| 1 | Replay 执行 | ✅ 已完成 | R3 |
+| 2 | 纹理/Buffer 离线查看（存量资源） | ✅ 已完成 | R4.1 |
+| 3 | 帧/draw call 导航 (playTo) | ❌ 待实现 | R4.3 前置 + R5.1 |
+| 4 | Replay 后实时资源获取（render target） | ❌ 待实现 | R4.3 |
+| 5 | Pipeline 查看 | ❌ 待实现 | R4.3 (FetchPipelineBinaries) |
+| 6 | GPU Counters（硬件计数器） | ❌ 待实现 | R4.4 🆕 |
+| 7 | Shader Profiler（per-line 耗时） | ❌ 待实现 | R4.5 🆕 |
+| 8 | Derived Counters（派生指标） | ❌ 待实现 | R4.2 |
+| 9 | Shader 热替换 | ❌ 待实现 | R5.2 |
+| 10 | Shader Debug | ❌ 待实现 | R5.3 |
+| 11 | Configuration 修改 | ❌ 待实现 | R5.4 |
+| 12 | 输出自动化（标准化 JSON/bin 导出） | 🔄 部分 | R6 |
+
+**完成度：~25%（3/12 能力维度）**
+
 最终交付物：
 - **C/ObjC bridge 层**：探针 + 结构化调用接口，提供 headless replay 全功能调用能力。
 - **Python CLI wrapper**：对 bridge 层的高层封装，面向自动化流水线。
@@ -109,14 +128,20 @@
   - R3.3：[N/A] completionCallback 为 dead code，CLI 路径不产出 profiling 数据。能力边界已明确。
 - **[IN-PROGRESS][P0] R4**：数据获取等价 — 在 headless replay 成功后提取资源数据。
   - [DONE] R4.1：Harvester API 探索与验证 — 4 个函数均为纯离线 blob 解析器，直接提取 .gputrace 资源数据，无需 replay
-  - R4.2：Host API 探索（GTMTLReplayHost_generateDerivedDataPayload）
-  - R4.3：Controller + Fetch 类族组合调用（playTo → fetch texture/buffer）
+  - R4.2：Host API 探索（GTMTLReplayHost_generateDerivedDataPayload）— derived data 生成
+  - R4.3：Controller + Fetch 类族组合调用（playTo → fetch texture/buffer/pipeline）— 实时资源获取
+  - R4.4：GPU Counters 采集 — GPURawCounter 框架 + GTReplayProfileTimeline 硬件计数器
+  - R4.5：Shader Profiler — ProfileTimeline.shaderProfiling + profiler stream data 解析
 - **[TODO][P2] R5**：操作等价 — Replay 交互操作的 CLI 触发。
   - R5.1：Replay 控制（playTo 指定帧/draw call、pause/resume/rewind）
   - R5.2：Shader 热替换（GTReplayUpdateLibrary）
   - R5.3：Shader Debug（fragment/vertex/kernel/mesh/object）
   - R5.4：Configuration 动态修改（GTReplayUpdateConfiguration）
+  - R5.5：ICB/AS Decode（Indirect Command Buffer / Acceleration Structure 解码）
 - **[TODO][P3] R6**：客户端封装与可用性收尾 — Python CLI wrapper + 自动化集成。
+  - R6.1：Python CLI wrapper（统一调用入口）
+  - R6.2：JSON schema 统一输出格式定义
+  - R6.3：端到端自动化验证链路
 
 ## 高频复用经验
 

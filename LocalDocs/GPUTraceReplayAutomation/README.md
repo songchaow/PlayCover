@@ -32,8 +32,8 @@
 
 ### 下一步（当前最高优先级）
 
-- **R2.2**：实现最小只读 bridge（`Scripts/gputrace_bridge.py`），不触发 replay。
-- **策略依据**：R2.1 schema 设计完成，可直接编码实现。
+- **R2.3**：完成 dry-run 与样本输出稳定性测试。
+- **策略依据**：R2.2 bridge 已实现并通过基础验证，需做完整测试覆盖。
 
 ## 构建与验证的方法
 
@@ -67,7 +67,7 @@
   - **[DONE][P1] R1.3**：标记三层字典结构（finalLaunch/replayerLaunch/traceConfiguration）字段。
 - **[WIP][P1] R2**：产出只读 bridge 原型。
   - **[DONE][P1] R2.1**：设计 CLI / JSON schema（3 个子命令）。
-  - **[TODO][P1] R2.2**：实现最小只读 bridge，不触发 replay。
+  - **[DONE][P1] R2.2**：实现最小只读 bridge，不触发 replay。
   - **[TODO][P1] R2.3**：完成 dry-run 与样本输出稳定性测试。
 - **[TODO][P2] R3**：验证 headless replay 实际可行性。
   - **[TODO][P2] R3.1**：编写最小 C/ObjC 探针（dlopen + dlsym GTMTLReplay_CLI），用已有 .gputrace 样本做实际调用验证。
@@ -92,3 +92,4 @@
 | `subdocs/20260520-R1.2-GTMTLReplay_CLI-signature.md` | 在执行 R3 时按需读取 | GTMTLReplay_CLI 签名、Options 结构体、执行流程、headless 可行性 |
 | `subdocs/20260520-R1.3-dictionary-fields.md` | 在执行 R3 时按需读取 | 三层字典完整字段、hardwareCountersConfiguration、环境变量控制键 |
 | `subdocs/20260520-R2.1-CLI-schema.md` | **在执行 R2.2 时必须读取** | CLI 入口结构、子命令 JSON schema、分类规则、实现约束 |
+| `executions/20260520-R2.2-bridge-implementation.md` | 在执行 R2.3 时按需读取 | bridge 实现细节、验证结果、修复记录 |

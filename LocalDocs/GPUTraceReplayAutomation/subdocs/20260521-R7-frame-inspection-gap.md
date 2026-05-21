@@ -224,16 +224,52 @@ R7 拆成 7 个独立 chunk。已完成 7 个（R7.1/R7.2/R7.3/R7.4/R7.6-A/R7.6-
 
 **详见** `subdocs/20260521-R7.6-A-frame-list-bindings.md`（设计决策 / 数据结构 / JSON schema / 测试断言矩阵）。
 
-### R7.6 子项 B — `dump-uniforms <encoder_index> <draw_index> <bind_slot>`（P1，1 天，依赖子项 A）
+### R7.6 子项 B — `dump-uniforms <draw_index> <bind_slot>`（**当前最高优先级 P0**，1 天，依赖子项 A）
 
-- `MTLArgumentEncoder` 反射或按 cbuffer 元数据 layout 输出 JSON
-- 无 layout 时退化为 hex dump + 基本类型猜测
+**任务**：把 R7.6-A 已交付的 `bindings.{vertex|fragment}.buffers[bind_slot].{resource_id, offset}` 延伸到"buffer 字节按 cbuffer 布局解码成 JSON"——绝大多数渲染问题（UV 错、矩阵错、光源错、材质参数错）的最终调查终点。
 
+**关键洞察（2026-05-21 新发现）**：bridge 已经在 R7.2 swizzle 中拦截 `newRenderPipelineStateWithDescriptor:options:reflection:error:`（见 `gputrace_replay_bridge.m` §"RPS Swizzle Capture"），但当前用 `NULL` 丢弃 reflection out 参数。**只需把 reflection 接住并按 RPS_key 缓存**，即可拿到每个 PSO 的 `vertexBindings` / `fragmentBindings`（`id<MTLBinding>` 数组），其中 `MTLBufferBinding.bufferDataType` / `MTLBufferBinding.bufferStructType` 提供完整 `MTLStructType` 反射树（field name + offset + dataType）。这把 R7.6-B 的实现风险从"reflection 数据可能不全"降为"低风险 1 天"。
+
+**实现思路（细化）**：
+
+1. **R7.2 swizzle 增强**（半天）：在 `cmd_pipeline` / `cmd_frame_list` 已有 `RpsCaptureEntry` 结构上增加 `id<MTLAutoreleasedRenderPipelineReflection> reflection;` 字段；swizzle thunks `new_rps_with_desc_options_imp` / `new_rps_with_desc_imp_no_reflection` 中传 `&out_reflection` 而非 `NULL`，并 strong-retain 到 entry 上（生命周期 = bridge 进程）。
+2. **bridge `dump-uniforms` 子命令**（半天）：
+   ```bash
+   gputrace_replay_bridge dump-uniforms <trace> <draw_index> <bind_slot> [--stage vertex|fragment] [--with-hex] [--output-dir DIR]
+   ```
+   - 内部 = `frame-list → draw_to_rps_map[draw_index] → rps_key → reflection.{vertex|fragment}Bindings[bind_slot]`
+   - 拿 `bufferStructType` 递归解码，按 `MTLStructMember.{name, offset, dataType}` 输出 JSON
+   - 字节源：`objectMap.bufferForKey:(resource_id)` + `[buf contents]` + `offset`
+   - 无 layout 时退化为 `--with-hex` 输出 `inline_bytes_hex` + 基本类型猜测（4-aligned float groups）
+3. **wrapper `dump_uniforms()` + dataclass `DumpUniformsResult`**（小时级）
+4. **集成测试 T7r 系列**：LYSK draw 0 的常见 cbuffer（`PerView` / `PerObject` / 光源参数）能解出明文字段 + 与已知 layout 一致
+
+**输出 JSON 示例**（LYSK `shader-of-drawcall 0`）：
 ```json
-{"AsukaPerShader_PerCamera": {
-  "_MainLightDirection": [0.42, -0.85, 0.31, 0.0],
-  "_ProjectionMatrix": [[...],[...]] }}
+{
+  "draw_index": 0,
+  "rps_key": 472,
+  "stage": "fragment",
+  "bind_slot": 0,
+  "buffer": {"resource_id": 8, "offset": 0, "length": 4096},
+  "layout_source": "metallib_reflection",
+  "decoded": {
+    "AsukaPerShader_PerCamera": {
+      "_MainLightDirection": [0.42, -0.85, 0.31, 0.0],
+      "_ProjectionMatrix": [[1.5, 0, 0, 0], [0, 2.4, 0, 0], ...]
+    }
+  }
+}
 ```
+
+**与 `shader-of-drawcall` 联动（顺手 0.2 天）**：`ShaderOfDrawcallResult` 加 `bindings` + `uniforms` 字段（每个 binding 旁带可选 `decoded` 子树），让 `shader-of-drawcall N --with-uniforms` 一行输出"shader IR + bindings + uniforms"三件套。
+
+**已知风险与降级路径**：
+- argument buffer 二级 indirect resources：layout 已有但 inner resource 还需通过 `MTLArgumentEncoder.argumentBuffer` 二级查找；v1 直接打印 argument buffer 内的 64-bit handles，v2 再展开
+- inline `setVertexBytes` 字节路径：R7.6-A 仅记 size，R7.6-B 顺带补 `--with-inline-bytes` flag 把字节复制到 FrameDrawEntry
+- 无 reflection 的 PSO（罕见）：fallback 到 hex dump + 基本类型猜测
+
+**验收**：LYSK 主基线上"用户能看到 PerCamera/PerObject/光源参数的实际数值"+ compute-only trace 上 `dump-uniforms` 直接报 `draw_count=0`（与 R7.6-C 一致的友好错误）+ 集成测试 116 → ~125/125
 
 ### R7.7：`disasm` 子命令 + SDI module.bc fallback — ✅ 已完成（2026-05-21）
 

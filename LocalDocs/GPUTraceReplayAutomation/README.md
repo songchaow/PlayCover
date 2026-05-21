@@ -88,24 +88,27 @@ GPUTRACE_PATH="$HOME/Desktop/reference_test_inject.gputrace" \
 
 ### 下一步（当前最高优先级）
 
-**R7.6 子项 B：`dump-uniforms <trace> <draw_index> <bind_slot>`（uniform/cbuffer 内容查看）— 1 天**
+**R7.6 子项 B：`dump-uniforms <draw_index> <bind_slot>`（uniform/cbuffer 内容查看）— 1 天**
 
-R7.6-A 已交付每 draw 完整的 binding 表（buffer_id + offset），R7.6-B 是其天然补足：把"绑了哪个 buffer + offset"延伸到"buffer 里的字节按 cbuffer 布局解码成 JSON"。
+R7.6-A 已交付每 draw 完整的 binding 表（buffer_id + offset），R7.6-B 是其天然补足：把"绑了哪个 buffer + offset"延伸到"buffer 字节按 cbuffer 布局解码成 JSON"。
 
 | 当前 | 缺失 |
 |------|------|
 | `frame-list --with-bindings` → "绑了哪些 buffer/texture" ✅ | `dump-uniforms N S` → "buffer S 在 draw N 时的实际 cbuffer 内容（光源/矩阵/材质参数）" ⏳ R7.6-B |
 
-**实现思路**：
-1. wrapper 复用 `frame_list(trace, with_bindings=True)` 拿 `bindings.fragment.buffers[bind_slot]` 的 `resource_id` + `offset`
-2. wrapper 调 `replay --export <resource_id>` 落字节
-3. 按 cbuffer 元数据（如有 metallib reflection 信息）或 hex dump + 基本类型猜测输出 JSON
+**关键洞察（2026-05-21 新发现）**：bridge R7.2 swizzle 已经拦截 `newRenderPipelineStateWithDescriptor:options:reflection:error:`，但当前用 `NULL` 丢弃 reflection out 参数。**只需把 reflection 接住并按 RPS_key 缓存**，即可获得每个 PSO 的 `MTLStructType` 反射树（field name + offset + dataType）— R7.6-B 实现风险因此从"reflection 数据可能不全"降为"低风险 1 天"。
 
-工时 1 天（基础设施 R7.6-A 已就绪）。R7.6-B 完成后，**`shader-of-drawcall N` 的输出可附 "shader IR + bindings + uniforms" 三件套**，是绝大多数渲染问题（UV 错、矩阵错、光源错、材质参数错）的最终调查终点。
+**实现思路（细化）**：
+1. R7.2 swizzle 增强：在 `RpsCaptureEntry` 上加 `reflection` 字段，thunk 中传 `&out_reflection` 而非 `NULL` + strong-retain（半天）
+2. bridge `dump-uniforms` 子命令：内部 = `frame-list → draw_to_rps_map[N] → rps_key → reflection.{vertex|fragment}Bindings[bind_slot] → bufferStructType` 递归解码 + `objectMap.bufferForKey:(resource_id)` 拿字节（半天）
+3. wrapper `dump_uniforms()` + `DumpUniformsResult` dataclass + CLI（小时级）
+4. `ShaderOfDrawcallResult` 顺手加 `uniforms` 字段（联动 0.2 天）
+
+R7.6-B 完成后，**`shader-of-drawcall N` 输出"shader IR + bindings + uniforms"三件套**，是绝大多数渲染问题（UV 错、矩阵错、光源错、材质参数错）的最终调查终点 — 与 Xcode GUI 等价的最关键体验闭环。
 
 R7.5（depth/stencil + compute dispatch 计数）排在 R7.6-B 之后（独立专项，1.5 天）。
 
-详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5（R7.6 子项 B 与 R7.5 章节描述了实现细节）。
+详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5（R7.6 子项 B 章节描述了实现细节、已知风险与降级路径）。
 
 ## 构建与验证的方法
 
@@ -140,7 +143,7 @@ R7.5（depth/stencil + compute dispatch 计数）排在 R7.6-B 之后（独立�
   - **[DONE] R7.6 子项 C**（2026-05-21）：`shader-of-drawcall` 薄封装（wrapper-only：`frame-list → draw_to_rps_map → shader-of-rps`）+ LYSK draw_index=0/103 字节级一致回归 + reference_test_inject compute-only OOR/`draw_count=0` 回归。集成测试 88/88 通过。详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.6
   - **[DONE] R7.7**（2026-05-21）：`disasm` 子命令 + SDI module.bc fallback。`shader-of-rps` / `shader-of-drawcall` / `disasm` 三入口在 LYSK 96 lib 上 IR 总命中率 100%（AIR 3 + SDI 93 完全互补，vs R7.4 仅 3.1%）。bridge 0.4.0 → 0.5.0；集成测试 88 → 102/102。新增字段：`ir_source` / `sdi_module_bc_*` / `sdi_bundle_id` / `sdi_module_hash` / `sdi_source_path`；废弃 `ir_error="no_air_bitcode"`，替换为 `no_air_bitcode_and_no_sdi`（仅两条路径都失败时返回）。详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.7
   - **[DONE] R7.6 子项 A**（2026-05-21）：`frame-list --with-bindings`（默认 ON）— 12 个 binding swizzle（vertex/fragment × buffer/buffers/bytes/texture/textures/sampler）+ 每 draw vertex/fragment binding 快照。LYSK 244/244 draw 全捕获（avg 8 vbuf + 16 ftex / draw）；JSON 体积 +275%（可控），`--no-bindings` -73% 抑制。bridge 0.5.0 → 0.6.0；集成测试 102 → 116/116。新增 dataclass `FrameDrawBindings` / `FrameStageBindings` / `FrameBufferBinding` / `FrameTextureBinding` / `FrameSamplerBinding`。详见 `subdocs/20260521-R7.6-A-frame-list-bindings.md`
-  - **[P0] R7.6 子项 B（当前最高优先级，2026-05-21 R7.6-A 落地后接棒）**：`dump-uniforms <encoder_index> <draw_index> <bind_slot>` — 复用 R7.6-A 的 binding 表定位 buffer + offset，调 `bufferForKey:` / `replay --export` 拿字节，按 cbuffer layout 反射输出 JSON；无 layout 时 hex dump + 基本类型猜测。1 天
+  - **[P0] R7.6 子项 B（当前最高优先级，2026-05-21 R7.6-A 落地后接棒）**：`dump-uniforms <draw_index> <bind_slot>` — 复用 R7.6-A 的 binding 表定位 buffer + offset；**关键洞察**：R7.2 swizzle 已拦截 `newRenderPipelineStateWithDescriptor:options:reflection:error:` 但当前 reflection out 参数置 NULL，只需接住并按 RPS_key 缓存即可获得 `MTLStructType` 反射树作 cbuffer layout（实现风险因此降为低）。bridge 解 `bufferStructType` 树 + `bufferForKey:` 取字节，输出 JSON；无 layout 时 `--with-hex` hex dump + 基本类型猜测。`ShaderOfDrawcallResult` 顺手加 `uniforms` 字段。1 天
   - **[P2] R7.5（横向新能力）**：depth/stencil export（bridge 内置 blit）+ compute encoder dispatch 计数补齐 — 1–1.5 天合计。独立专项，无依赖；主要服务 ShadowMap / SSS / stencil bit 类问题
 - **每个 R7 chunk 落地后必须同步**：SKILL.md（"Exploring an unknown trace's pipeline" 工作流 / 已知盲点） + `references/investigation-playbook.md`（frame-overview worked example） + `references/cli-reference.md`（新子命令 schema）。R7.1/R7.2/R7.3/R7.4/R7.6-A/R7.6-C/R7.7 落地时已同步。
 

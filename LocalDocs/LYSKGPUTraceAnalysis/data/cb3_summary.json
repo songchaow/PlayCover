@@ -1,0 +1,702 @@
+[
+  {
+    "idx": 32,
+    "type": "compute",
+    "calls": [
+      1823,
+      1823
+    ],
+    "draws": 0,
+    "color": [],
+    "depth": null,
+    "stencil": null,
+    "rps": []
+  },
+  {
+    "idx": 33,
+    "type": "render",
+    "calls": [
+      1831,
+      2157
+    ],
+    "draws": 30,
+    "color": [],
+    "depth": {
+      "texture_id": 225,
+      "pixelFormat": 252,
+      "format": "Depth32Float"
+    },
+    "stencil": null,
+    "rps": [
+      472,
+      473,
+      474,
+      475,
+      476,
+      477,
+      478,
+      479,
+      480
+    ]
+  },
+  {
+    "idx": 34,
+    "type": "render",
+    "calls": [
+      2165,
+      2272
+    ],
+    "draws": 10,
+    "color": [],
+    "depth": {
+      "texture_id": 226,
+      "pixelFormat": 252,
+      "format": "Depth32Float"
+    },
+    "stencil": null,
+    "rps": [
+      472,
+      473,
+      474,
+      475,
+      476,
+      477,
+      478,
+      479,
+      480
+    ]
+  },
+  {
+    "idx": 35,
+    "type": "render",
+    "calls": [
+      2276,
+      2377
+    ],
+    "draws": 12,
+    "color": [
+      {
+        "tex": 229,
+        "fmt": "RGBA8Unorm"
+      },
+      {
+        "tex": 228,
+        "fmt": "RGBA8Unorm"
+      }
+    ],
+    "depth": {
+      "texture_id": 227,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "stencil": {
+      "texture_id": 227,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "rps": [
+      440,
+      468,
+      481,
+      482,
+      483,
+      484,
+      485,
+      486,
+      487,
+      488,
+      489
+    ]
+  },
+  {
+    "idx": 36,
+    "type": "render",
+    "calls": [
+      2380,
+      2397
+    ],
+    "draws": 1,
+    "color": [
+      {
+        "tex": 230,
+        "fmt": "R8Unorm"
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      462
+    ]
+  },
+  {
+    "idx": 37,
+    "type": "render",
+    "calls": [
+      2399,
+      2419
+    ],
+    "draws": 1,
+    "color": [
+      {
+        "tex": 233,
+        "fmt": "R32Float"
+      }
+    ],
+    "depth": {
+      "texture_id": 231,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "stencil": {
+      "texture_id": 231,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "rps": [
+      446
+    ]
+  },
+  {
+    "idx": 38,
+    "type": "render",
+    "calls": [
+      2421,
+      2438
+    ],
+    "draws": 1,
+    "color": [
+      {
+        "tex": 235,
+        "fmt": "R8Unorm"
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      447
+    ]
+  },
+  {
+    "idx": 39,
+    "type": "render",
+    "calls": [
+      2440,
+      2457
+    ],
+    "draws": 1,
+    "color": [
+      {
+        "tex": 234,
+        "fmt": "R8Unorm"
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      448
+    ]
+  },
+  {
+    "idx": 40,
+    "type": "render",
+    "calls": [
+      2459,
+      2506
+    ],
+    "draws": 3,
+    "color": [
+      {
+        "tex": 236,
+        "fmt": "RGBA8Unorm"
+      }
+    ],
+    "depth": {
+      "texture_id": 231,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "stencil": {
+      "texture_id": 231,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "rps": [
+      449,
+      450,
+      463
+    ]
+  },
+  {
+    "idx": 41,
+    "type": "render",
+    "calls": [
+      2509,
+      2560
+    ],
+    "draws": 3,
+    "color": [
+      {
+        "tex": 232,
+        "fmt": "RG11B10Float"
+      },
+      {
+        "tex": 234,
+        "fmt": "R8Unorm"
+      }
+    ],
+    "depth": {
+      "texture_id": 231,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "stencil": {
+      "texture_id": 231,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "rps": [
+      490,
+      491,
+      492
+    ]
+  },
+  {
+    "idx": 42,
+    "type": "render",
+    "calls": [
+      2563,
+      2580
+    ],
+    "draws": 1,
+    "color": [
+      {
+        "tex": 237,
+        "fmt": "RG11B10Float"
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      464
+    ]
+  },
+  {
+    "idx": 43,
+    "type": "render",
+    "calls": [
+      2582,
+      2599
+    ],
+    "draws": 1,
+    "color": [
+      {
+        "tex": 232,
+        "fmt": "RG11B10Float"
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      465
+    ]
+  },
+  {
+    "idx": 44,
+    "type": "render",
+    "calls": [
+      2602,
+      2886
+    ],
+    "draws": 18,
+    "color": [
+      {
+        "tex": 224,
+        "fmt": "RGBA16Float"
+      }
+    ],
+    "depth": {
+      "texture_id": 227,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "stencil": {
+      "texture_id": 227,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "rps": [
+      451,
+      452,
+      453,
+      454,
+      455,
+      469,
+      470,
+      493,
+      494,
+      495,
+      496,
+      497,
+      498,
+      499,
+      500
+    ]
+  },
+  {
+    "idx": 45,
+    "type": "render",
+    "calls": [
+      2891,
+      2908
+    ],
+    "draws": 1,
+    "color": [
+      {
+        "tex": 238,
+        "fmt": "RGBA16Float"
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      456
+    ]
+  },
+  {
+    "idx": 46,
+    "type": "blit",
+    "calls": [
+      2910,
+      2910
+    ],
+    "draws": 0,
+    "color": [],
+    "depth": null,
+    "stencil": null,
+    "rps": []
+  },
+  {
+    "idx": 47,
+    "type": "render",
+    "calls": [
+      2914,
+      2931
+    ],
+    "draws": 1,
+    "color": [
+      {
+        "tex": 224,
+        "fmt": "RGBA16Float"
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      457
+    ]
+  },
+  {
+    "idx": 48,
+    "type": "render",
+    "calls": [
+      2934,
+      3021
+    ],
+    "draws": 6,
+    "color": [
+      {
+        "tex": 224,
+        "fmt": "RGBA16Float"
+      }
+    ],
+    "depth": {
+      "texture_id": 227,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "stencil": {
+      "texture_id": 227,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "rps": [
+      471,
+      501,
+      502,
+      503,
+      504
+    ]
+  },
+  {
+    "idx": 49,
+    "type": "render",
+    "calls": [
+      3024,
+      3041
+    ],
+    "draws": 1,
+    "color": [
+      {
+        "tex": 247,
+        "fmt": "RGBA16Float"
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      441
+    ]
+  },
+  {
+    "idx": 50,
+    "type": "render",
+    "calls": [
+      3043,
+      3060
+    ],
+    "draws": 1,
+    "color": [
+      {
+        "tex": 244,
+        "fmt": "RGBA16Float"
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      458
+    ]
+  },
+  {
+    "idx": 51,
+    "type": "render",
+    "calls": [
+      3062,
+      3078
+    ],
+    "draws": 1,
+    "color": [
+      {
+        "tex": 240,
+        "fmt": "RGBA16Float"
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      459
+    ]
+  },
+  {
+    "idx": 52,
+    "type": "render",
+    "calls": [
+      3080,
+      3096
+    ],
+    "draws": 1,
+    "color": [
+      {
+        "tex": 241,
+        "fmt": "RGBA16Float"
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      459
+    ]
+  },
+  {
+    "idx": 53,
+    "type": "render",
+    "calls": [
+      3098,
+      3114
+    ],
+    "draws": 1,
+    "color": [
+      {
+        "tex": 242,
+        "fmt": "RGBA16Float"
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      459
+    ]
+  },
+  {
+    "idx": 54,
+    "type": "render",
+    "calls": [
+      3116,
+      3132
+    ],
+    "draws": 1,
+    "color": [
+      {
+        "tex": 243,
+        "fmt": "RGBA16Float"
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      459
+    ]
+  },
+  {
+    "idx": 55,
+    "type": "render",
+    "calls": [
+      3134,
+      3151
+    ],
+    "draws": 1,
+    "color": [
+      {
+        "tex": 242,
+        "fmt": "RGBA16Float"
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      460
+    ]
+  },
+  {
+    "idx": 56,
+    "type": "render",
+    "calls": [
+      3153,
+      3170
+    ],
+    "draws": 1,
+    "color": [
+      {
+        "tex": 241,
+        "fmt": "RGBA16Float"
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      460
+    ]
+  },
+  {
+    "idx": 57,
+    "type": "render",
+    "calls": [
+      3172,
+      3189
+    ],
+    "draws": 1,
+    "color": [
+      {
+        "tex": 240,
+        "fmt": "RGBA16Float"
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      460
+    ]
+  },
+  {
+    "idx": 58,
+    "type": "render",
+    "calls": [
+      3191,
+      3208
+    ],
+    "draws": 1,
+    "color": [
+      {
+        "tex": 244,
+        "fmt": "RGBA16Float"
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      460
+    ]
+  },
+  {
+    "idx": 59,
+    "type": "render",
+    "calls": [
+      3210,
+      3227
+    ],
+    "draws": 1,
+    "color": [
+      {
+        "tex": 245,
+        "fmt": "RGBA8Unorm"
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      461
+    ]
+  },
+  {
+    "idx": 60,
+    "type": "render",
+    "calls": [
+      3229,
+      3246
+    ],
+    "draws": 1,
+    "color": [
+      {
+        "tex": 246,
+        "fmt": "RGBA8Unorm"
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      442
+    ]
+  },
+  {
+    "idx": 61,
+    "type": "render",
+    "calls": [
+      3248,
+      3369
+    ],
+    "draws": 20,
+    "color": [
+      {
+        "tex": 160,
+        "fmt": "BGRA8Unorm"
+      }
+    ],
+    "depth": {
+      "texture_id": 139,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "stencil": {
+      "texture_id": 139,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "rps": [
+      443,
+      444,
+      445,
+      466,
+      467
+    ]
+  }
+]

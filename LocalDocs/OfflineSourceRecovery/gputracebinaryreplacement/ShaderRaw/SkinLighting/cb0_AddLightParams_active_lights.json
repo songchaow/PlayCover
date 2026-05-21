@@ -1,0 +1,90 @@
+{
+  "_AdditionalLightCount": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "active_lights_total": 2,
+  "note": "Inactive entries (28/30) have a sentinel position=(0,0,1,0) and are skipped here. The shader actually picks lights via _LightIndexMap texture (resource 217) at the world-space XZ position.",
+  "active_lights": [
+    {
+      "index": 0,
+      "_AdditionalLightPosition": [
+        2.146700382232666,
+        2.3071248531341553,
+        1.5163218975067139,
+        1.0
+      ],
+      "_AdditionalLightColor": [
+        2.04297,
+        1.77441,
+        1.9541,
+        9.0
+      ],
+      "_AdditionalLightSpotAttenuation": [
+        28.945947647094727,
+        -26.74256706237793,
+        1.0,
+        1.0
+      ],
+      "_AdditionalLightDistanceAttenuation": [
+        0.05551,
+        -0.00617,
+        2.77734,
+        1.0
+      ],
+      "_AdditionalLightSpotDir": [
+        1.0,
+        0.0,
+        0.7983364462852478,
+        0.2817552387714386
+      ],
+      "_AdditionalLightShadowWeight": [
+        0.0,
+        1.875,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "index": 1,
+      "_AdditionalLightPosition": [
+        0.722000002861023,
+        1.7419999837875366,
+        0.5379999876022339,
+        1.0
+      ],
+      "_AdditionalLightColor": [
+        0.69189,
+        0.71777,
+        0.94238,
+        9.0
+      ],
+      "_AdditionalLightSpotAttenuation": [
+        0.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "_AdditionalLightDistanceAttenuation": [
+        0.25,
+        -0.02777,
+        2.77734,
+        1.0
+      ],
+      "_AdditionalLightSpotDir": [
+        0.5322339534759521,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "_AdditionalLightShadowWeight": [
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1140 @@
+[
+  {
+    "id": 231,
+    "w": 583,
+    "h": 835,
+    "format": "Depth32Float_Stencil8",
+    "label": "TempBuffer 123 583x835",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 191,
+    "w": 64,
+    "h": 64,
+    "format": "RGBA8Unorm",
+    "label": "RY003C_HD_C_02_2U_N",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 151,
+    "w": 2048,
+    "h": 2048,
+    "format": "Other",
+    "label": "sactx-2048x2048-ASTC 6x6-X3BattleAtlasMaker-86e42ef3",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 222,
+    "w": 512,
+    "h": 512,
+    "format": "RGBA8Unorm_sRGB",
+    "label": "MainTexRT",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 182,
+    "w": 128,
+    "h": 128,
+    "format": "RGBA8Unorm",
+    "label": "F_0009_256_N",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 142,
+    "w": 1,
+    "h": 1,
+    "format": "RGBA8Unorm_sRGB",
+    "label": "UnityBlackCube",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 213,
+    "w": 512,
+    "h": 512,
+    "format": "Other",
+    "label": "PL_Makeup_Eyeshadow_06_01_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 173,
+    "w": 128,
+    "h": 128,
+    "format": "RGBA8Unorm",
+    "label": "tile_0032_N",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 244,
+    "w": 223,
+    "h": 320,
+    "format": "RGBA16Float",
+    "label": "TempBuffer 135 223x320",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 204,
+    "w": 256,
+    "h": 256,
+    "format": "Other",
+    "label": "Eye_Base_NH",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 164,
+    "w": 512,
+    "h": 128,
+    "format": "Other",
+    "label": "fx_ultra_line_057",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 235,
+    "w": 583,
+    "h": 835,
+    "format": "R8Unorm",
+    "label": "TempBuffer 127 583x835",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 195,
+    "w": 1024,
+    "h": 1024,
+    "format": "Other",
+    "label": "PL_Makeup_Eyebrow_12_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 155,
+    "w": 512,
+    "h": 512,
+    "format": "Other",
+    "label": "fx_noise_v01_yy",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 226,
+    "w": 1024,
+    "h": 1024,
+    "format": "Depth32Float",
+    "label": "LocalShadowmapAtlas",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 186,
+    "w": 512,
+    "h": 512,
+    "format": "Other",
+    "label": "PL001S_HD_C_01_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 217,
+    "w": 512,
+    "h": 512,
+    "format": "Other",
+    "label": "PL_Makeup_Blush_02_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 177,
+    "w": 512,
+    "h": 512,
+    "format": "Other",
+    "label": "PL001S_HD_P_01_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 208,
+    "w": 256,
+    "h": 256,
+    "format": "Other",
+    "label": "PL_eye_Matcap_01",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 168,
+    "w": 256,
+    "h": 256,
+    "format": "Other",
+    "label": "fx_noise_92",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 239,
+    "w": 1167,
+    "h": 1671,
+    "format": "RGBA16Float",
+    "label": "CameraColor2_0",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 199,
+    "w": 1024,
+    "h": 512,
+    "format": "Other",
+    "label": "PL001_Hair_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 159,
+    "w": 2048,
+    "h": 2048,
+    "format": "Other",
+    "label": "sactx-2048x2048-ASTC 6x6-AtlasMaker3_0-4fd66a9e",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 230,
+    "w": 291,
+    "h": 417,
+    "format": "R8Unorm",
+    "label": "TempBuffer 122 291x417",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 190,
+    "w": 1024,
+    "h": 1024,
+    "format": "Other",
+    "label": "PL_Makeup_Skin_01_Body_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 150,
+    "w": 128,
+    "h": 128,
+    "format": "Other",
+    "label": "mask_down_10_90",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 221,
+    "w": 512,
+    "h": 1024,
+    "format": "Other",
+    "label": "sactx-512x1024-ASTC 6x6-Common-a5bd8edc",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 181,
+    "w": 256,
+    "h": 256,
+    "format": "Other",
+    "label": "PL001S_HD_A_01_3U_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 141,
+    "w": 4,
+    "h": 4,
+    "format": "RGBA8Unorm_sRGB",
+    "label": "UnityBlack",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 212,
+    "w": 512,
+    "h": 512,
+    "format": "Other",
+    "label": "PL001S_HD_C_02_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 172,
+    "w": 128,
+    "h": 128,
+    "format": "Other",
+    "label": "fx_mask05_mo",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 243,
+    "w": 13,
+    "h": 20,
+    "format": "RGBA16Float",
+    "label": "TempBuffer 134 13x20",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 203,
+    "w": 512,
+    "h": 512,
+    "format": "Other",
+    "label": "PL001_Hair_AO",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 163,
+    "w": 192,
+    "h": 104,
+    "format": "RGBA16Float",
+    "label": null,
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 234,
+    "w": 583,
+    "h": 835,
+    "format": "R8Unorm",
+    "label": "TempBuffer 126 583x835",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 194,
+    "w": 512,
+    "h": 512,
+    "format": "RGBA8Unorm",
+    "label": "PL_Head_MU_N",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 154,
+    "w": 256,
+    "h": 256,
+    "format": "Other",
+    "label": "fx_noise0022",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 225,
+    "w": 3072,
+    "h": 1024,
+    "format": "Depth32Float",
+    "label": "DirectionalShadowDepth",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 185,
+    "w": 512,
+    "h": 512,
+    "format": "Other",
+    "label": "PL001S_HD_P_01_2U_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 145,
+    "w": 128,
+    "h": 128,
+    "format": "RGBA8Unorm",
+    "label": null,
+    "usage": [
+      "shaderRead",
+      "shaderWrite",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 216,
+    "w": 512,
+    "h": 512,
+    "format": "Other",
+    "label": "PL_Body_R",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 176,
+    "w": 512,
+    "h": 512,
+    "format": "RGBA8Unorm",
+    "label": "PL001S_HD_P_01_N",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 247,
+    "w": 1167,
+    "h": 1671,
+    "format": "RGBA16Float",
+    "label": "LastFrameTexture0",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 207,
+    "w": 256,
+    "h": 256,
+    "format": "Other",
+    "label": "PL_Eyeshell_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 167,
+    "w": 256,
+    "h": 256,
+    "format": "Other",
+    "label": "fx_glow_034",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 2411,
+    "w": 128,
+    "h": 128,
+    "format": "RGBA8Unorm",
+    "label": null,
+    "usage": [
+      "shaderRead",
+      "shaderWrite",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 238,
+    "w": 583,
+    "h": 835,
+    "format": "RGBA16Float",
+    "label": "TempBuffer 130 583x835",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 198,
+    "w": 256,
+    "h": 256,
+    "format": "Other",
+    "label": "PL_Eye_base_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 158,
+    "w": 2048,
+    "h": 1024,
+    "format": "Other",
+    "label": "sactx-2048x1024-ASTC 6x6-AtlasMaker1_1-417ac597",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 229,
+    "w": 1167,
+    "h": 1671,
+    "format": "RGBA8Unorm",
+    "label": "TempBuffer 121 1167x1671",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 189,
+    "w": 256,
+    "h": 256,
+    "format": "RGBA8Unorm",
+    "label": "PL001S_HD_A_01_3U_N",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 149,
+    "w": 1024,
+    "h": 2048,
+    "format": "Other",
+    "label": "sactx-1024x2048-ASTC 6x6-HomeAtlasMaker_0-cf52cd44",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 220,
+    "w": 1024,
+    "h": 1024,
+    "format": "Other",
+    "label": "sactx-1024x1024-ASTC 6x6-Face-0fe645bb",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 180,
+    "w": 256,
+    "h": 256,
+    "format": "RGBA8Unorm",
+    "label": "PL001S_HD_C_03_2U_N",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 140,
+    "w": 4,
+    "h": 4,
+    "format": "RGBA8Unorm_sRGB",
+    "label": "UnityWhite",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 211,
+    "w": 512,
+    "h": 512,
+    "format": "RGBA8Unorm",
+    "label": "PL001S_HD_C_02_N",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 171,
+    "w": 256,
+    "h": 256,
+    "format": "Other",
+    "label": "fx_normal_wenli04",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 242,
+    "w": 27,
+    "h": 40,
+    "format": "RGBA16Float",
+    "label": "TempBuffer 133 27x40",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 202,
+    "w": 256,
+    "h": 256,
+    "format": "Other",
+    "label": "PL_Makeup_Eyelash_13_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 162,
+    "w": 128,
+    "h": 1024,
+    "format": "Other",
+    "label": "customface_gradient_clamp_001_UNCOMPRESSED",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 233,
+    "w": 583,
+    "h": 835,
+    "format": "R32Float",
+    "label": "TempBuffer 125 583x835",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 193,
+    "w": 512,
+    "h": 512,
+    "format": "Other",
+    "label": "PL_Makeup_Eyelid_07_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 153,
+    "w": 128,
+    "h": 128,
+    "format": "Other",
+    "label": "fx_noise_66",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 224,
+    "w": 1167,
+    "h": 1671,
+    "format": "RGBA16Float",
+    "label": "TempBuffer 118 1167x1671",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 184,
+    "w": 128,
+    "h": 128,
+    "format": "RGBA8Unorm",
+    "label": "tile_0003_n",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 144,
+    "w": 128,
+    "h": 128,
+    "format": "Other",
+    "label": "fx_noise_26",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 215,
+    "w": 128,
+    "h": 128,
+    "format": "Other",
+    "label": "PL001S_HD_C_02_3U_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 175,
+    "w": 512,
+    "h": 512,
+    "format": "RGBA8Unorm",
+    "label": "PL001S_HD_A_01_N",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 246,
+    "w": 1668,
+    "h": 2388,
+    "format": "RGBA8Unorm",
+    "label": "TempBuffer 137 1668x2388",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 206,
+    "w": 256,
+    "h": 256,
+    "format": "Other",
+    "label": "Eyen_Nl",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 166,
+    "w": 512,
+    "h": 512,
+    "format": "Other",
+    "label": "fx_noise_70_1",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 237,
+    "w": 583,
+    "h": 835,
+    "format": "RG11B10Float",
+    "label": "TempBuffer 129 583x835",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 197,
+    "w": 512,
+    "h": 512,
+    "format": "Other",
+    "label": "PL_Head_R",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 157,
+    "w": 512,
+    "h": 512,
+    "format": "Other",
+    "label": "atmosphere_skybox_starfield_001",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 228,
+    "w": 1167,
+    "h": 1671,
+    "format": "RGBA8Unorm",
+    "label": "TempBuffer 120 1167x1671",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 188,
+    "w": 512,
+    "h": 512,
+    "format": "RGBA8Unorm",
+    "label": "PL001S_HD_P_01_3U_N",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 148,
+    "w": 256,
+    "h": 256,
+    "format": "Other",
+    "label": "fx_b_atypical_004_cube_2",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 219,
+    "w": 1442,
+    "h": 986,
+    "format": "Other",
+    "label": "x3_face_bg_hd6",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 179,
+    "w": 512,
+    "h": 512,
+    "format": "Other",
+    "label": "PL001S_HD_C_03_2U_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 139,
+    "w": 1668,
+    "h": 2388,
+    "format": "Depth32Float_Stencil8",
+    "label": null,
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 210,
+    "w": 1024,
+    "h": 8,
+    "format": "Other",
+    "label": "hairNoise1",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 170,
+    "w": 256,
+    "h": 256,
+    "format": "Other",
+    "label": "fx_frostmask001",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 241,
+    "w": 55,
+    "h": 80,
+    "format": "RGBA16Float",
+    "label": "TempBuffer 132 55x80",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 201,
+    "w": 256,
+    "h": 256,
+    "format": "RGBA8Unorm",
+    "label": "PL_Teeth_N",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 161,
+    "w": 256,
+    "h": 256,
+    "format": "Other",
+    "label": "Font Texture",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 2445,
+    "w": 128,
+    "h": 128,
+    "format": "RGBA8Unorm",
+    "label": null,
+    "usage": [
+      "shaderRead",
+      "shaderWrite",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 232,
+    "w": 583,
+    "h": 835,
+    "format": "RG11B10Float",
+    "label": "TempBuffer 124 583x835",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 192,
+    "w": 1024,
+    "h": 1024,
+    "format": "Other",
+    "label": "PL_Body_N1024",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 152,
+    "w": 256,
+    "h": 16,
+    "format": "RGBA8Unorm",
+    "label": "LUT_CustomFace_001",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 223,
+    "w": 2048,
+    "h": 2048,
+    "format": "Other",
+    "label": "sactx-2048x2048-ASTC 6x6-A2Face_1-bbd620ad",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 183,
+    "w": 512,
+    "h": 512,
+    "format": "RGBA8Unorm",
+    "label": "PL001S_HD_C_01_N",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 143,
+    "w": 4096,
+    "h": 4096,
+    "format": "Other",
+    "label": "SourceHanSansCN Atlas",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 214,
+    "w": 512,
+    "h": 512,
+    "format": "Other",
+    "label": "PL_Makeup_Eyeliner_06_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 174,
+    "w": 512,
+    "h": 512,
+    "format": "Other",
+    "label": "PL001S_HD_A_01_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 245,
+    "w": 1167,
+    "h": 1671,
+    "format": "RGBA8Unorm",
+    "label": "TempBuffer 136 1167x1671",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 205,
+    "w": 512,
+    "h": 512,
+    "format": "Other",
+    "label": "PL_Makeup_Eye_25_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 165,
+    "w": 256,
+    "h": 256,
+    "format": "Other",
+    "label": "fx_line_wenli004f03",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 236,
+    "w": 583,
+    "h": 835,
+    "format": "RGBA8Unorm",
+    "label": "TempBuffer 128 583x835",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 196,
+    "w": 1024,
+    "h": 1024,
+    "format": "RGBA8Unorm",
+    "label": "PL_Makeup_Head_ID_UNCOMPRESSED",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 156,
+    "w": 512,
+    "h": 512,
+    "format": "Other",
+    "label": "atmosphere_skybox_sparkle_001",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 227,
+    "w": 1167,
+    "h": 1671,
+    "format": "Depth32Float_Stencil8",
+    "label": "TempBuffer 119 1167x1671",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 187,
+    "w": 512,
+    "h": 512,
+    "format": "Other",
+    "label": "PL001S_HD_P_01_3U_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 147,
+    "w": 1668,
+    "h": 2388,
+    "format": "BGRA8Unorm",
+    "label": "CAMetalLayer Display Drawable",
+    "usage": [
+      "shaderRead",
+      "shaderWrite",
+      "renderTarget",
+      "pixelFormatView"
+    ]
+  },
+  {
+    "id": 218,
+    "w": 400,
+    "h": 400,
+    "format": "Other",
+    "label": "fx_ui_FaceEdit_bg01",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 178,
+    "w": 512,
+    "h": 512,
+    "format": "RGBA8Unorm",
+    "label": "PL001S_HD_P_01_2U_N",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 209,
+    "w": 256,
+    "h": 256,
+    "format": "Other",
+    "label": "PL_Teeth_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 169,
+    "w": 256,
+    "h": 256,
+    "format": "Other",
+    "label": "fx_base_qiliu00a1",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 240,
+    "w": 111,
+    "h": 160,
+    "format": "RGBA16Float",
+    "label": "TempBuffer 131 111x160",
+    "usage": [
+      "shaderRead",
+      "renderTarget"
+    ]
+  },
+  {
+    "id": 200,
+    "w": 512,
+    "h": 512,
+    "format": "Other",
+    "label": "PL_Makeup_Lip_02_D",
+    "usage": [
+      "shaderRead"
+    ]
+  },
+  {
+    "id": 160,
+    "w": 1668,
+    "h": 2388,
+    "format": "BGRA8Unorm",
+    "label": "CAMetalLayer Display Drawable",
+    "usage": [
+      "shaderRead",
+      "shaderWrite",
+      "renderTarget",
+      "pixelFormatView"
+    ]
+  }
+]

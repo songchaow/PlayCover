@@ -1,0 +1,788 @@
+[
+  {
+    "idx": 1,
+    "type": "compute",
+    "calls": [
+      117,
+      117
+    ],
+    "draws": 0,
+    "dispatch": 0,
+    "color": [],
+    "depth": null,
+    "stencil": null,
+    "rps": []
+  },
+  {
+    "idx": 2,
+    "type": "render",
+    "calls": [
+      125,
+      451
+    ],
+    "draws": 30,
+    "dispatch": 0,
+    "color": [],
+    "depth": {
+      "texture_id": 225,
+      "pixelFormat": 252,
+      "format": "Depth32Float"
+    },
+    "stencil": null,
+    "rps": [
+      472,
+      473,
+      474,
+      475,
+      476,
+      477,
+      478,
+      479,
+      480
+    ]
+  },
+  {
+    "idx": 3,
+    "type": "render",
+    "calls": [
+      459,
+      566
+    ],
+    "draws": 10,
+    "dispatch": 0,
+    "color": [],
+    "depth": {
+      "texture_id": 226,
+      "pixelFormat": 252,
+      "format": "Depth32Float"
+    },
+    "stencil": null,
+    "rps": [
+      472,
+      473,
+      474,
+      475,
+      476,
+      477,
+      478,
+      479,
+      480
+    ]
+  },
+  {
+    "idx": 4,
+    "type": "render",
+    "calls": [
+      570,
+      671
+    ],
+    "draws": 12,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 228,
+        "fmt": "RGBA8Unorm",
+        "store": null,
+        "load": null
+      },
+      {
+        "tex": 229,
+        "fmt": "RGBA8Unorm",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": {
+      "texture_id": 227,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "stencil": {
+      "texture_id": 227,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "rps": [
+      440,
+      468,
+      481,
+      482,
+      483,
+      484,
+      485,
+      486,
+      487,
+      488,
+      489
+    ]
+  },
+  {
+    "idx": 5,
+    "type": "render",
+    "calls": [
+      674,
+      691
+    ],
+    "draws": 1,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 230,
+        "fmt": "R8Unorm",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      462
+    ]
+  },
+  {
+    "idx": 6,
+    "type": "render",
+    "calls": [
+      693,
+      713
+    ],
+    "draws": 1,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 233,
+        "fmt": "R32Float",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": {
+      "texture_id": 231,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "stencil": {
+      "texture_id": 231,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "rps": [
+      446
+    ]
+  },
+  {
+    "idx": 7,
+    "type": "render",
+    "calls": [
+      715,
+      732
+    ],
+    "draws": 1,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 235,
+        "fmt": "R8Unorm",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      447
+    ]
+  },
+  {
+    "idx": 8,
+    "type": "render",
+    "calls": [
+      734,
+      751
+    ],
+    "draws": 1,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 234,
+        "fmt": "R8Unorm",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      448
+    ]
+  },
+  {
+    "idx": 9,
+    "type": "render",
+    "calls": [
+      753,
+      800
+    ],
+    "draws": 3,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 236,
+        "fmt": "RGBA8Unorm",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": {
+      "texture_id": 231,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "stencil": {
+      "texture_id": 231,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "rps": [
+      449,
+      450,
+      463
+    ]
+  },
+  {
+    "idx": 10,
+    "type": "render",
+    "calls": [
+      803,
+      854
+    ],
+    "draws": 3,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 232,
+        "fmt": "RG11B10Float",
+        "store": null,
+        "load": null
+      },
+      {
+        "tex": 234,
+        "fmt": "R8Unorm",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": {
+      "texture_id": 231,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "stencil": {
+      "texture_id": 231,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "rps": [
+      490,
+      491,
+      492
+    ]
+  },
+  {
+    "idx": 11,
+    "type": "render",
+    "calls": [
+      857,
+      874
+    ],
+    "draws": 1,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 237,
+        "fmt": "RG11B10Float",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      464
+    ]
+  },
+  {
+    "idx": 12,
+    "type": "render",
+    "calls": [
+      876,
+      893
+    ],
+    "draws": 1,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 232,
+        "fmt": "RG11B10Float",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      465
+    ]
+  },
+  {
+    "idx": 13,
+    "type": "render",
+    "calls": [
+      896,
+      1180
+    ],
+    "draws": 18,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 224,
+        "fmt": "RGBA16Float",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": {
+      "texture_id": 227,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "stencil": {
+      "texture_id": 227,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "rps": [
+      451,
+      452,
+      453,
+      454,
+      455,
+      469,
+      470,
+      493,
+      494,
+      495,
+      496,
+      497,
+      498,
+      499,
+      500
+    ]
+  },
+  {
+    "idx": 14,
+    "type": "render",
+    "calls": [
+      1185,
+      1202
+    ],
+    "draws": 1,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 238,
+        "fmt": "RGBA16Float",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      456
+    ]
+  },
+  {
+    "idx": 15,
+    "type": "blit",
+    "calls": [
+      1204,
+      1204
+    ],
+    "draws": 0,
+    "dispatch": 0,
+    "color": [],
+    "depth": null,
+    "stencil": null,
+    "rps": []
+  },
+  {
+    "idx": 16,
+    "type": "render",
+    "calls": [
+      1208,
+      1225
+    ],
+    "draws": 1,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 224,
+        "fmt": "RGBA16Float",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      457
+    ]
+  },
+  {
+    "idx": 17,
+    "type": "render",
+    "calls": [
+      1228,
+      1315
+    ],
+    "draws": 6,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 224,
+        "fmt": "RGBA16Float",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": {
+      "texture_id": 227,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "stencil": {
+      "texture_id": 227,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "rps": [
+      471,
+      501,
+      502,
+      503,
+      504
+    ]
+  },
+  {
+    "idx": 18,
+    "type": "render",
+    "calls": [
+      1318,
+      1335
+    ],
+    "draws": 1,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 239,
+        "fmt": "RGBA16Float",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      441
+    ]
+  },
+  {
+    "idx": 19,
+    "type": "render",
+    "calls": [
+      1337,
+      1354
+    ],
+    "draws": 1,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 244,
+        "fmt": "RGBA16Float",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      458
+    ]
+  },
+  {
+    "idx": 20,
+    "type": "render",
+    "calls": [
+      1356,
+      1372
+    ],
+    "draws": 1,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 240,
+        "fmt": "RGBA16Float",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      459
+    ]
+  },
+  {
+    "idx": 21,
+    "type": "render",
+    "calls": [
+      1374,
+      1390
+    ],
+    "draws": 1,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 241,
+        "fmt": "RGBA16Float",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      459
+    ]
+  },
+  {
+    "idx": 22,
+    "type": "render",
+    "calls": [
+      1392,
+      1408
+    ],
+    "draws": 1,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 242,
+        "fmt": "RGBA16Float",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      459
+    ]
+  },
+  {
+    "idx": 23,
+    "type": "render",
+    "calls": [
+      1410,
+      1426
+    ],
+    "draws": 1,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 243,
+        "fmt": "RGBA16Float",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      459
+    ]
+  },
+  {
+    "idx": 24,
+    "type": "render",
+    "calls": [
+      1428,
+      1445
+    ],
+    "draws": 1,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 242,
+        "fmt": "RGBA16Float",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      460
+    ]
+  },
+  {
+    "idx": 25,
+    "type": "render",
+    "calls": [
+      1447,
+      1464
+    ],
+    "draws": 1,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 241,
+        "fmt": "RGBA16Float",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      460
+    ]
+  },
+  {
+    "idx": 26,
+    "type": "render",
+    "calls": [
+      1466,
+      1483
+    ],
+    "draws": 1,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 240,
+        "fmt": "RGBA16Float",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      460
+    ]
+  },
+  {
+    "idx": 27,
+    "type": "render",
+    "calls": [
+      1485,
+      1502
+    ],
+    "draws": 1,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 244,
+        "fmt": "RGBA16Float",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      460
+    ]
+  },
+  {
+    "idx": 28,
+    "type": "render",
+    "calls": [
+      1504,
+      1521
+    ],
+    "draws": 1,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 245,
+        "fmt": "RGBA8Unorm",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      461
+    ]
+  },
+  {
+    "idx": 29,
+    "type": "render",
+    "calls": [
+      1523,
+      1540
+    ],
+    "draws": 1,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 246,
+        "fmt": "RGBA8Unorm",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": null,
+    "stencil": null,
+    "rps": [
+      442
+    ]
+  },
+  {
+    "idx": 30,
+    "type": "render",
+    "calls": [
+      1542,
+      1663
+    ],
+    "draws": 20,
+    "dispatch": 0,
+    "color": [
+      {
+        "tex": 147,
+        "fmt": "BGRA8Unorm",
+        "store": null,
+        "load": null
+      }
+    ],
+    "depth": {
+      "texture_id": 139,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "stencil": {
+      "texture_id": 139,
+      "pixelFormat": 260,
+      "format": "Depth32Float_Stencil8"
+    },
+    "rps": [
+      443,
+      444,
+      445,
+      466,
+      467
+    ]
+  }
+]

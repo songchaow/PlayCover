@@ -144,6 +144,46 @@ if [ -n "${GPUTRACE_PATH:-}" ] && [ -d "$GPUTRACE_PATH" ]; then
     if [ "$rc" -eq 0 ]; then pass "config exit code = 0"; else fail "config exit code = $rc"; fi
     if echo "$OUTPUT" | grep -q '"config"'; then pass "has config object"; else fail "missing config object"; fi
     if echo "$OUTPUT" | grep -q '"success":true'; then pass "config success=true"; else fail "config success!=true"; fi
+
+    # T7e: R7.1 — replay --bounds emits total_call_count
+    echo "  [T7e] replay --bounds (R7.1)"
+    set +e
+    OUTPUT=$("$BRIDGE" replay "$GPUTRACE_PATH" --bounds 2>/dev/null)
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ]; then pass "bounds exit code = 0"; else fail "bounds exit code = $rc"; fi
+    if echo "$OUTPUT" | grep -q '"bounds_only":true'; then pass "bounds_only flag emitted"; else fail "missing bounds_only"; fi
+    if echo "$OUTPUT" | grep -q '"total_call_count"'; then pass "bounds has total_call_count"; else fail "missing total_call_count"; fi
+
+    # T7f: R7.1 — replay always reports total_call_count + last_call_index
+    echo "  [T7f] replay total_call_count/last_call_index always present"
+    set +e
+    OUTPUT=$("$BRIDGE" replay "$GPUTRACE_PATH" 2>/dev/null)
+    set -e
+    if echo "$OUTPUT" | grep -q '"total_call_count"'; then pass "default replay has total_call_count"; else fail "missing total_call_count"; fi
+    if echo "$OUTPUT" | grep -q '"last_call_index"'; then pass "default replay has last_call_index"; else fail "missing last_call_index"; fi
+
+    # T7g: R7.1 — playTo out-of-range returns structured error, exit 12
+    echo "  [T7g] replay --playto out-of-range (R7.1 graceful)"
+    set +e
+    OUTPUT=$("$BRIDGE" replay "$GPUTRACE_PATH" --playto 99999999 2>/dev/null)
+    rc=$?
+    set -e
+    if [ "$rc" -eq 12 ]; then pass "OOR exit code = 12 (EXIT_PLAYTO_OOR)"; else fail "OOR exit = $rc (expected 12)"; fi
+    if echo "$OUTPUT" | grep -q '"error":"playto_out_of_range"'; then pass "OOR has error string"; else fail "missing playto_out_of_range error"; fi
+    if echo "$OUTPUT" | grep -q '"max":'; then pass "OOR reports max"; else fail "missing max field"; fi
+
+    # T7h: R7.1 — list-resources includes new metadata fields on textures and buffers
+    echo "  [T7h] resource enumeration includes R7.1 metadata fields"
+    set +e
+    OUTPUT=$("$BRIDGE" replay "$GPUTRACE_PATH" --list-resources 2>/dev/null)
+    set -e
+    if echo "$OUTPUT" | grep -q '"storageMode"'; then pass "resources have storageMode"; else fail "missing storageMode"; fi
+    if echo "$OUTPUT" | grep -q '"hazardTrackingMode"'; then pass "resources have hazardTrackingMode"; else fail "missing hazardTrackingMode"; fi
+    if echo "$OUTPUT" | grep -q '"usage":\['; then pass "textures have usage array"; else fail "missing texture usage array"; fi
+    if echo "$OUTPUT" | grep -q '"framebufferOnly"'; then pass "textures have framebufferOnly"; else fail "missing framebufferOnly"; fi
+    if echo "$OUTPUT" | grep -q '"sampleCount"'; then pass "textures have sampleCount"; else fail "missing sampleCount"; fi
+    if echo "$OUTPUT" | grep -q '"arrayLength"'; then pass "textures have arrayLength"; else fail "missing arrayLength"; fi
 else
     echo ""
     echo "[INFO] Skipping live trace tests (set GPUTRACE_PATH to enable)"

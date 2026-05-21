@@ -56,20 +56,20 @@
 
 ### 当前卡点
 
-无。R6 全部完成（2026-05-21）。
+无。R7.1 完成（2026-05-21）。
 
 ### 下一步（当前最高优先级）
 
-**R7.1：bridge 越界保护 + 资源元数据补齐**
+**R7.2：`pipeline` 输出加 RPS↔shader 关联**
 
-优先级理由：所有后续 R7 chunk 都受益于"不再 SIGSEGV"与完整资源元数据；半天工作量、低风险；解锁脚本稳定遍历 trace 的能力。
+优先级理由：library_key 抽象层级错误已在 LYSK 65 RPS 调查中明确，必须在 `pipeline` 子命令直接给出 vertex/fragment function/library key + attachment 摘要，否则后续 R7.4 / R7.6 都无法做"语义级反查"。R7.1 已暴露 `total_call_count`，刚好为 R7.2 的 swizzle 探针调试提供边界数据。
 
 具体内容：
-- `replay` 输出加 `total_call_count`；`--playto` 越界返回 `{"error":"playto_out_of_range","max":N}` 而非 `SIGSEGV`
-- texture 资源元数据补 `storageMode` / `usage` / `framebufferOnly` / `memoryless` / `sampleCount` / `arrayLength`
-- buffer 资源元数据补 `storageMode` / `cpuCacheMode` / `hazardTrackingMode`
+- bridge 内部在 `replay_context_init` 之前装 method swizzling（参考 `LocalDocs/OfflineSourceRecovery/scripts/rps_swizzle_probe.m`）
+- 每个 RPS 输出从 `{key, class, label}` 扩展为 `{vertex_function_key, fragment_function_key, vertex_library_key, fragment_library_key, color_attachment_count, color_attachments[], depth_format, stencil_format}`
+- 回归基线：`subdocs/20260521-R7-frame-inspection-gap.md` §6 LYSK 65 RPS 表
 
-详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.1。
+详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.2。
 
 ## 构建与验证的方法
 
@@ -97,7 +97,7 @@
   - **[DONE] R6.2c**：skill 打包（`.codebuddy/skills/gpu-trace-analysis/`，自包含 + 17/17 通过）
 - **[CANCELLED] R6.3**：自动化流水线集成（CI/CD + 样本库管理）— 不做
 - **[IN-PROGRESS][P0] R7**：Frame-Inspection 能力补全（来自 LYSK trace 全景调查反馈，详见 `subdocs/20260521-R7-frame-inspection-gap.md`）
-  - **[P0] R7.1**：bridge 越界保护 + 资源元数据补齐（`total_call_count` / `playto_out_of_range` / texture+buffer storageMode/usage/...）— 0.5 天，低风险
+  - **[DONE] R7.1**：bridge 越界保护 + 资源元数据补齐 — `total_call_count` / `last_call_index` / `--bounds` / `playto_out_of_range`(exit 12) / SIGSEGV 兜底 / texture+buffer storageMode/usage/hazardTracking 等。详见 `executions/20260521-R7.1-bounds-and-resource-metadata.md`
   - **[P0] R7.2**：`pipeline` 输出加 RPS↔shader 关联（vertex/fragment function/library key + attachment 摘要，内部 swizzle，参考 `LocalDocs/OfflineSourceRecovery/scripts/rps_swizzle_probe.m`）— 1 天，低风险
   - **[P1] R7.3**：`frame-list` 子命令（CommandBuffer/Encoder 枚举 + attachments + per-encoder timing）— 1 天，中风险
   - **[P1] R7.4**：`shader-of-rps` 子命令（语义级反查 + `--with-ir`）— 1 天，中风险

@@ -46,8 +46,9 @@ Options:
 
 | Flag | Semantics |
 |---|---|
-| `--playto N` | Replay up to draw-call index N instead of the full frame. Useful for bisecting which call introduces a defect. Default: `playAll`. |
-| `--list-resources` | Append a `resources` array to the JSON output describing every texture and buffer in the post-replay ObjectMap. |
+| `--bounds` | Probe the trace's `total_call_count` and exit. Internally runs a single `playAll` then reads the controller's last-played call index. Useful before issuing `--playto N` to know the valid range. (R7.1) |
+| `--playto N` | Replay up to call index N instead of the full frame. Useful for bisecting which call introduces a defect. Default: `playAll`. **Bounds-checked since R7.1**: if N exceeds `total_call_count`, the bridge returns a structured `playto_out_of_range` error (exit 12) rather than crashing. |
+| `--list-resources` | Append a `resources` array to the JSON output describing every texture and buffer in the post-replay ObjectMap. Each entry now includes full Metal property metadata (storage mode, hazard tracking, usage flags, etc.) — see resource entry schema below. (R7.1) |
 | `--export ID PATH` | Dump resource with the given numeric ID to `PATH`. For 2D textures: pixel-perfect raw bytes via `getBytes:`. For buffers: `[buf contents]` memcpy'd to disk. Depth/stencil and non-2D texture types refuse to export and emit `export_error`. |
 
 Output JSON (top-level fields):
@@ -57,16 +58,22 @@ Output JSON (top-level fields):
 | `command` | string | Always `"replay"` |
 | `trace_path` | string | Echo of the input path |
 | `device` | string | `MTLDevice.name`, e.g. `"Apple M4 Pro"` |
+| `bounds_only` | bool? | Present (and `true`) iff `--bounds` was used (R7.1) |
 | `playto_index` | int? | Present iff `--playto` was used |
 | `replay_rc` | int | Underlying `playAll`/`playTo` return code; 0 = success |
+| `replay_signal` | int? | Present if a SIGSEGV/SIGBUS was caught and recovered (R7.1) |
 | `success` | bool | `replay_rc == 0` |
 | `elapsed_ms` | float | Wall-clock host timing of the replay call |
 | `resource_count` | int | Size of `objectMap.resources` after replay |
+| `total_call_count` | int | The trace's total call count (last play index after `playAll`). **Always emitted** since R7.1. |
+| `last_call_index` | int | The controller's last-played call index after the requested replay action — equals `total_call_count` after default `playAll`, equals N after a successful `--playto N`. (R7.1) |
 | `resources` | array? | Present iff `--list-resources` |
 | `export_id`, `export_path`, `export_bytes` | mixed? | Present on successful export |
 | `export_error` | string? | Present on export failure with a human-readable cause |
+| `error` | string? | Present iff a non-fatal structured error occurred (e.g. `"playto_out_of_range"`, `"bounds_probe_failed"`) (R7.1) |
+| `max` | int? | Present alongside `error: "playto_out_of_range"`; equals `total_call_count` (R7.1) |
 
-Resource entry shape (textures):
+Resource entry shape (textures, R7.1 — full metadata):
 
 ```json
 {
@@ -76,15 +83,58 @@ Resource entry shape (textures):
   "pixelFormat": 70, "pixelFormatName": "BGRA8Unorm",
   "textureType": "2D",
   "mipmapLevelCount": 1,
+  "sampleCount": 1,
+  "arrayLength": 1,
+  "storageMode": "shared",
+  "cpuCacheMode": "default",
+  "hazardTrackingMode": "tracked",
+  "usage": ["shaderRead", "renderTarget"],
+  "framebufferOnly": false,
+  "memoryless": false,
+  "isDepthStencil": false,
   "label": "GBuffer.Albedo"
 }
 ```
 
-Resource entry shape (buffers):
+`storageMode` is one of `shared`/`managed`/`private`/`memoryless`/`other`. `cpuCacheMode` is `default`/`writeCombined`/`other`. `hazardTrackingMode` is `default`/`untracked`/`tracked`/`other`. `usage` is the decomposed `MTLTextureUsage` bitmask as a JSON string array; an empty array means `MTLTextureUsageUnknown`. `memoryless` is a convenience boolean (`storageMode == memoryless`). `isDepthStencil` mirrors the bridge's internal classification used by `--export` to refuse depth/stencil dumps.
+
+Resource entry shape (buffers, R7.1 — full metadata):
 
 ```json
-{ "id": 3, "type": "buffer", "length": 1024, "label": "ConstantBuffer" }
+{
+  "id": 3,
+  "type": "buffer",
+  "length": 1024,
+  "storageMode": "shared",
+  "cpuCacheMode": "default",
+  "hazardTrackingMode": "tracked",
+  "label": "ConstantBuffer"
+}
 ```
+
+### Bounds and out-of-range behavior (R7.1)
+
+The bridge always knows `total_call_count` because every `replay` invocation begins with an internal `playAll` (which doubles as a sanity check that the trace replays cleanly).
+
+- `replay <trace>` — defaults to that internal `playAll` and reports `total_call_count` and `last_call_index` (equal after `playAll`).
+- `replay <trace> --bounds` — same probe but returns immediately afterward, no resource enumeration; cheap way to learn the range before scripting `--playto`.
+- `replay <trace> --playto N` with `N <= total_call_count` — `rewind`s the controller and runs `playTo(N)`; `last_call_index == N` on success.
+- `replay <trace> --playto N` with `N > total_call_count` — returns
+
+```json
+{
+  "command": "replay",
+  "trace_path": "...",
+  "error": "playto_out_of_range",
+  "playto_index": 99999999,
+  "total_call_count": 3425,
+  "max": 3425
+}
+```
+
+with exit code 12 (`EXIT_PLAYTO_OOR`). Older bridge revisions would SIGSEGV in this scenario.
+
+For defense in depth, both `playAll` and `playTo` invocations are wrapped in a `setjmp`/SIGSEGV/SIGBUS handler. If the framework ever does crash anyway, the bridge surfaces `replay_signal` in the JSON instead of letting the process die.
 
 ---
 

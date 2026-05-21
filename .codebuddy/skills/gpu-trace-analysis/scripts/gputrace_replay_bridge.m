@@ -31,6 +31,8 @@
 #import <string.h>
 #import <stdlib.h>
 #import <mach/mach_time.h>
+#import <signal.h>
+#import <setjmp.h>
 
 // ============================================================
 #pragma mark - JSON Output Helpers
@@ -116,7 +118,48 @@ enum {
     EXIT_CONTROLLER     = 9,
     EXIT_REPLAY_FAIL    = 10,
     EXIT_SUBCMD_FAIL    = 11,
+    EXIT_PLAYTO_OOR     = 12,  // R7.1 — playto target out of range (graceful)
 };
+
+// ============================================================
+#pragma mark - SIGSEGV Safety Net (R7.1)
+// ============================================================
+//
+// Replay APIs occasionally segfault on out-of-range / inconsistent state.
+// We install handlers for SIGSEGV/SIGBUS *only around* the replay invocations,
+// so the bridge can return a structured JSON error instead of crashing the
+// caller (which previously made `--playto N` with a too-large N kill the
+// process with no diagnostic).
+
+static jmp_buf g_replay_jmp;
+static volatile sig_atomic_t g_replay_signal = 0;
+
+static struct sigaction g_prev_segv;
+static struct sigaction g_prev_bus;
+static int g_handlers_installed = 0;
+
+static void replay_signal_handler(int sig) {
+    g_replay_signal = sig;
+    longjmp(g_replay_jmp, 1);
+}
+
+static void install_replay_signal_handlers(void) {
+    if (g_handlers_installed) return;
+    struct sigaction sa = {0};
+    sa.sa_handler = replay_signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_NODEFER;  // allow re-entry on same signal in same handler
+    sigaction(SIGSEGV, &sa, &g_prev_segv);
+    sigaction(SIGBUS,  &sa, &g_prev_bus);
+    g_handlers_installed = 1;
+}
+
+static void restore_replay_signal_handlers(void) {
+    if (!g_handlers_installed) return;
+    sigaction(SIGSEGV, &g_prev_segv, NULL);
+    sigaction(SIGBUS,  &g_prev_bus,  NULL);
+    g_handlers_installed = 0;
+}
 
 // ============================================================
 #pragma mark - Helper: resolve internal function via CLI BL offset
@@ -132,6 +175,27 @@ static void* resolve_bl(void *cli_fn, int byte_offset) {
     }
     int32_t imm26 = (int32_t)(inst << 6) >> 6;
     return (void*)((uint64_t)cli_fn + idx * 4 + (int64_t)imm26 * 4);
+}
+
+// ============================================================
+#pragma mark - Helper: controller current/total call index (R7.1)
+// ============================================================
+//
+// Reverse engineering (LYSK trace, GTMTLReplayController_playTo prologue):
+//   +0x038: add  x23, x0, #0x5000          ; x23 = controller + 0x5000
+//   +0x110: ldr  w8, [x23, #0x810]         ; w8 = *(controller + 0x5810)
+//   +0x114: cmp  w8, w19                   ; w19 = target call index
+// Empirically *(controller + 0x5810) holds the LAST PLAYED call index:
+//   - Before any play call: 0
+//   - After playTo(N)     : N
+//   - After playAll       : the trace's total call count
+// See Scripts/call_count_probe.m for the verification probe.
+
+#define CONTROLLER_LAST_CALL_INDEX_OFFSET 0x5810
+
+static uint32_t controller_last_call_index(void *controller) {
+    if (!controller) return 0;
+    return *(uint32_t *)((uint8_t *)controller + CONTROLLER_LAST_CALL_INDEX_OFFSET);
 }
 
 // ============================================================
@@ -338,7 +402,7 @@ static int cmd_help(int argc, const char *argv[]) {
     JSON_SEP();
     printf("\"commands\":[");
     printf("{\"name\":\"help\",\"description\":\"Show available commands\"}");
-    printf(",{\"name\":\"replay\",\"description\":\"Headless replay with playAll/playTo + resource enumeration/export\",\"usage\":\"replay <.gputrace> [--playto N] [--list-resources] [--export ID output_path]\"}");
+    printf(",{\"name\":\"replay\",\"description\":\"Headless replay with playAll/playTo + resource enumeration/export. Always reports total_call_count; --playto N is bounds-checked and returns error \\\"playto_out_of_range\\\" instead of crashing when N > total_call_count.\",\"usage\":\"replay <.gputrace> [--bounds] [--playto N] [--list-resources] [--export ID output_path]\"}");
     printf(",{\"name\":\"pipeline\",\"description\":\"Library enumeration + metallib/AIR export\",\"usage\":\"pipeline <.gputrace> [output_dir]\"}");
     printf(",{\"name\":\"shader\",\"description\":\"Hot-replace library via setLibrary:forKey:\",\"usage\":\"shader <.gputrace> <lib_key> <metallib_path>\"}");
     printf(",{\"name\":\"config\",\"description\":\"Configuration control (call chain + validation)\",\"usage\":\"config <.gputrace> [key=value ...]\"}");
@@ -428,17 +492,76 @@ static BOOL is_depth_stencil_format(MTLPixelFormat fmt) {
 }
 
 // ============================================================
+#pragma mark - Resource Metadata Helpers (R7.1 §B)
+// ============================================================
+
+static const char* storage_mode_name(MTLStorageMode m) {
+    switch (m) {
+        case MTLStorageModeShared:     return "shared";
+        case MTLStorageModeManaged:    return "managed";
+        case MTLStorageModePrivate:    return "private";
+        case MTLStorageModeMemoryless: return "memoryless";
+        default:                       return "other";
+    }
+}
+
+static const char* cpu_cache_mode_name(MTLCPUCacheMode m) {
+    switch (m) {
+        case MTLCPUCacheModeDefaultCache:    return "default";
+        case MTLCPUCacheModeWriteCombined:   return "writeCombined";
+        default:                              return "other";
+    }
+}
+
+static const char* hazard_tracking_mode_name(MTLHazardTrackingMode m) {
+    switch (m) {
+        case MTLHazardTrackingModeDefault:    return "default";
+        case MTLHazardTrackingModeUntracked:  return "untracked";
+        case MTLHazardTrackingModeTracked:    return "tracked";
+        default:                              return "other";
+    }
+}
+
+// Print MTLTextureUsage as JSON array of strings, e.g. ["shaderRead","renderTarget"].
+// `usage` is a bitmask; "unknown" maps to []. Output lacks comma prefix; caller must
+// emit the leading "key": before invocation.
+static void print_texture_usage_array(MTLTextureUsage usage) {
+    printf("[");
+    BOOL first = YES;
+    if (usage == MTLTextureUsageUnknown || usage == 0) {
+        printf("]");
+        return;
+    }
+    #define EMIT(flag, name) do { \
+        if (usage & (flag)) { \
+            if (!first) printf(","); first = NO; \
+            printf("\"%s\"", name); \
+        } \
+    } while(0)
+    EMIT(MTLTextureUsageShaderRead,   "shaderRead");
+    EMIT(MTLTextureUsageShaderWrite,  "shaderWrite");
+    EMIT(MTLTextureUsageRenderTarget, "renderTarget");
+    EMIT(MTLTextureUsagePixelFormatView, "pixelFormatView");
+    if (@available(macOS 14.0, *)) {
+        EMIT(MTLTextureUsageShaderAtomic, "shaderAtomic");
+    }
+    #undef EMIT
+    printf("]");
+}
+
+// ============================================================
 #pragma mark - Subcommand: replay
 // ============================================================
 
 /// Parse replay options from argv:
-///   replay <trace> [--playto N] [--list-resources] [--export ID output_path]
+///   replay <trace> [--playto N] [--list-resources] [--export ID output_path] [--bounds]
 typedef struct {
     const char *trace_path;
-    int32_t playto_index;      // -1 = playAll (default)
+    int64_t playto_index;      // -1 = playAll (default), >=0 = playTo target
     BOOL list_resources;
     int64_t export_id;         // -1 = no export
     const char *export_path;
+    BOOL bounds_only;          // R7.1 — print only total_call_count and exit
 } ReplayOptions;
 
 static ReplayOptions parse_replay_options(int argc, const char *argv[]) {
@@ -450,15 +573,68 @@ static ReplayOptions parse_replay_options(int argc, const char *argv[]) {
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--playto") == 0 && i + 1 < argc) {
-            opts.playto_index = atoi(argv[++i]);
+            opts.playto_index = strtoll(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "--list-resources") == 0) {
             opts.list_resources = YES;
         } else if (strcmp(argv[i], "--export") == 0 && i + 2 < argc) {
             opts.export_id = strtoll(argv[++i], NULL, 10);
             opts.export_path = argv[++i];
+        } else if (strcmp(argv[i], "--bounds") == 0) {
+            opts.bounds_only = YES;
         }
     }
     return opts;
+}
+
+// Run playAll, capturing SIGSEGV/SIGBUS via the local signal handler.
+// Returns playAll's rc on success, or a negative value with *out_signal set.
+static int safe_playAll(double *out_elapsed_ms, int *out_signal) {
+    *out_signal = 0;
+    install_replay_signal_handlers();
+    g_replay_signal = 0;
+    int rc = -1;
+    uint64_t t0 = mach_absolute_time();
+    if (setjmp(g_replay_jmp) == 0) {
+        @try {
+            rc = g_ctx.fn_playAll(g_ctx.controller);
+        } @catch (NSException *ex) {
+            rc = -2;
+        }
+    } else {
+        rc = -3;
+        *out_signal = (int)g_replay_signal;
+    }
+    uint64_t t1 = mach_absolute_time();
+    restore_replay_signal_handlers();
+    mach_timebase_info_data_t tb;
+    mach_timebase_info(&tb);
+    *out_elapsed_ms = (double)(t1 - t0) * tb.numer / tb.denom / 1e6;
+    return rc;
+}
+
+// Run playTo(target), capturing SIGSEGV/SIGBUS via the local signal handler.
+static int safe_playTo(uint32_t target, double *out_elapsed_ms, int *out_signal) {
+    *out_signal = 0;
+    install_replay_signal_handlers();
+    g_replay_signal = 0;
+    int rc = -1;
+    uint64_t t0 = mach_absolute_time();
+    if (setjmp(g_replay_jmp) == 0) {
+        @try {
+            rc = g_ctx.fn_playTo(g_ctx.controller, target);
+        } @catch (NSException *ex) {
+            rc = -2;
+        }
+    } else {
+        rc = -3;
+        *out_signal = (int)g_replay_signal;
+    }
+    uint64_t t1 = mach_absolute_time();
+    restore_replay_signal_handlers();
+    mach_timebase_info_data_t tb;
+    mach_timebase_info(&tb);
+    *out_elapsed_ms = (double)(t1 - t0) * tb.numer / tb.denom / 1e6;
+    return rc;
 }
 
 static int cmd_replay(int argc, const char *argv[]) {
@@ -466,6 +642,7 @@ static int cmd_replay(int argc, const char *argv[]) {
         fprintf(stderr, "Usage: gputrace_replay_bridge replay <path-to-.gputrace> [options]\n");
         fprintf(stderr, "Options:\n");
         fprintf(stderr, "  --playto N           Replay to specific call index (default: playAll)\n");
+        fprintf(stderr, "  --bounds             Probe total_call_count and exit (no resource ops)\n");
         fprintf(stderr, "  --list-resources     Enumerate all resources after replay\n");
         fprintf(stderr, "  --export ID PATH     Export resource ID to binary file\n");
         return EXIT_USAGE;
@@ -477,28 +654,75 @@ static int cmd_replay(int argc, const char *argv[]) {
     int rc = replay_context_init(opts.trace_path);
     if (rc != EXIT_OK) return rc;
 
-    // Execute replay with timing
-    uint64_t t0 = mach_absolute_time();
-    int play_rc = -1;
-    @try {
-        if (opts.playto_index >= 0) {
-            play_rc = g_ctx.fn_playTo(g_ctx.controller, (uint32_t)opts.playto_index);
-        } else {
-            play_rc = g_ctx.fn_playAll(g_ctx.controller);
-        }
-    } @catch (NSException *ex) {
-        fprintf(stderr, "[ERROR] replay exception: %s\n", [[ex reason] UTF8String]);
+    // R7.1 — Probe total_call_count by running playAll first. This serves
+    // double duty: validates the trace replays cleanly, and gives us the
+    // upper bound for any --playto request so we can fail gracefully on OOR.
+    double probe_ms = 0;
+    int probe_signal = 0;
+    int probe_rc = safe_playAll(&probe_ms, &probe_signal);
+    uint32_t total_call_count = controller_last_call_index(g_ctx.controller);
+
+    // --- --bounds mode: just emit metadata and exit ---
+    if (opts.bounds_only) {
+        JSON_BEGIN();
+        JSON_KV_STR("command", "replay");
+        JSON_KV_STR("trace_path", opts.trace_path);
+        JSON_KV_STR("device", [[g_ctx.device name] UTF8String]);
+        JSON_KV_BOOL("bounds_only", YES);
+        JSON_KV_INT("probe_rc", probe_rc);
+        if (probe_signal != 0) JSON_KV_INT("probe_signal", probe_signal);
+        JSON_KV_DOUBLE("probe_elapsed_ms", probe_ms);
+        JSON_KV_UINT("total_call_count", total_call_count);
+        JSON_END();
         replay_context_cleanup();
-        return EXIT_REPLAY_FAIL;
+        return EXIT_OK;
     }
-    uint64_t t1 = mach_absolute_time();
 
-    // Convert to milliseconds
-    mach_timebase_info_data_t tb;
-    mach_timebase_info(&tb);
-    double elapsed_ms = (double)(t1 - t0) * tb.numer / tb.denom / 1e6;
+    // --- --playto N mode: validate target against total_call_count ---
+    if (opts.playto_index >= 0) {
+        if (probe_rc != 0 || total_call_count == 0) {
+            // Probe failed — we cannot trust the bound; refuse rather than
+            // attempt a possibly-OOR playTo.
+            JSON_BEGIN();
+            JSON_KV_STR("command", "replay");
+            JSON_KV_STR("trace_path", opts.trace_path);
+            JSON_KV_STR("error", "bounds_probe_failed");
+            JSON_KV_INT("probe_rc", probe_rc);
+            if (probe_signal != 0) JSON_KV_INT("probe_signal", probe_signal);
+            JSON_KV_DOUBLE("probe_elapsed_ms", probe_ms);
+            JSON_KV_UINT("total_call_count", total_call_count);
+            JSON_END();
+            replay_context_cleanup();
+            return EXIT_REPLAY_FAIL;
+        }
+        if ((uint64_t)opts.playto_index > (uint64_t)total_call_count) {
+            // Out of range — return structured error, do NOT call playTo (which
+            // would SIGSEGV with no diagnostic in older bridge versions).
+            JSON_BEGIN();
+            JSON_KV_STR("command", "replay");
+            JSON_KV_STR("trace_path", opts.trace_path);
+            JSON_KV_STR("error", "playto_out_of_range");
+            JSON_KV_INT("playto_index", opts.playto_index);
+            JSON_KV_UINT("total_call_count", total_call_count);
+            JSON_KV_UINT("max", total_call_count);
+            JSON_END();
+            replay_context_cleanup();
+            return EXIT_PLAYTO_OOR;
+        }
+    }
 
-    // Gather resources
+    // At this point: playAll has already populated objectMap. For the default
+    // (no --playto) path we keep its result. For --playto, rewind + playTo.
+    int play_rc = probe_rc;
+    double elapsed_ms = probe_ms;
+    int play_signal = probe_signal;
+
+    if (opts.playto_index >= 0) {
+        @try { g_ctx.fn_rewind(g_ctx.controller); } @catch (NSException *ex) {}
+        play_rc = safe_playTo((uint32_t)opts.playto_index, &elapsed_ms, &play_signal);
+    }
+
+    // Gather resources (post-replay)
     NSDictionary *resources = nil;
     @try {
         resources = [g_ctx.objectMap performSelector:@selector(resources)];
@@ -514,9 +738,12 @@ static int cmd_replay(int argc, const char *argv[]) {
         JSON_KV_INT("playto_index", opts.playto_index);
     }
     JSON_KV_INT("replay_rc", play_rc);
+    if (play_signal != 0) JSON_KV_INT("replay_signal", play_signal);
     JSON_KV_BOOL("success", play_rc == 0);
     JSON_KV_DOUBLE("elapsed_ms", elapsed_ms);
     JSON_KV_UINT("resource_count", resource_count);
+    JSON_KV_UINT("total_call_count", total_call_count);
+    JSON_KV_UINT("last_call_index", controller_last_call_index(g_ctx.controller));
 
     // --- Resource enumeration ---
     if (opts.list_resources && resources) {
@@ -544,11 +771,33 @@ static int cmd_replay(int argc, const char *argv[]) {
                 printf(",\"textureType\":");
                 json_print_string(texture_type_name(tex.textureType));
                 printf(",\"mipmapLevelCount\":%lu", (unsigned long)tex.mipmapLevelCount);
+                // R7.1 §B — extended texture metadata
+                printf(",\"sampleCount\":%lu", (unsigned long)tex.sampleCount);
+                printf(",\"arrayLength\":%lu", (unsigned long)tex.arrayLength);
+                printf(",\"storageMode\":");
+                json_print_string(storage_mode_name(tex.storageMode));
+                printf(",\"cpuCacheMode\":");
+                json_print_string(cpu_cache_mode_name(tex.cpuCacheMode));
+                printf(",\"hazardTrackingMode\":");
+                json_print_string(hazard_tracking_mode_name(tex.hazardTrackingMode));
+                printf(",\"usage\":");
+                print_texture_usage_array(tex.usage);
+                printf(",\"framebufferOnly\":%s", tex.framebufferOnly ? "true" : "false");
+                BOOL memoryless = (tex.storageMode == MTLStorageModeMemoryless);
+                printf(",\"memoryless\":%s", memoryless ? "true" : "false");
+                printf(",\"isDepthStencil\":%s", is_depth_stencil_format(tex.pixelFormat) ? "true" : "false");
                 if (tex.label) { printf(",\"label\":"); json_print_string([tex.label UTF8String]); }
             } else if ([value conformsToProtocol:@protocol(MTLBuffer)]) {
                 id<MTLBuffer> buf = (id<MTLBuffer>)value;
                 printf(",\"type\":\"buffer\"");
                 printf(",\"length\":%lu", (unsigned long)buf.length);
+                // R7.1 §B — extended buffer metadata
+                printf(",\"storageMode\":");
+                json_print_string(storage_mode_name(buf.storageMode));
+                printf(",\"cpuCacheMode\":");
+                json_print_string(cpu_cache_mode_name(buf.cpuCacheMode));
+                printf(",\"hazardTrackingMode\":");
+                json_print_string(hazard_tracking_mode_name(buf.hazardTrackingMode));
                 if (buf.label) { printf(",\"label\":"); json_print_string([buf.label UTF8String]); }
             } else {
                 printf(",\"type\":\"other\"");

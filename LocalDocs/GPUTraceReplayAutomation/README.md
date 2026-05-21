@@ -14,15 +14,22 @@
 | Shader Debug | instrumented debug 替代方案 | ⚠️ 部分 |
 | Configuration 修改 | 调用链控制 + 全局变量 | ✅ |
 | 输出自动化 | bridge JSON/bin 导出 | ✅ |
+| **Encoder/Pass/Draw 时间序枚举** | `frame-list` 子命令 | ⏳ R7.3 |
+| **RPS↔shader 关联** | `pipeline` 输出 vertex/fragment function/lib key + attachment | ⏳ R7.2 |
+| **Draw call → shader IR 反查** | `shader-of-drawcall` 子命令 | ⏳ R7.6 |
+| **Depth/Stencil 可视化** | bridge 内置 blit + export | ⏳ R7.5 |
+| **Uniform / cbuffer 内容查看** | `dump-uniforms` 子命令 | ⏳ R7.6 |
+| **Shader 反编译（IR 直接产出）** | `disasm` 子命令集成 cacheKey + llvm-dis | ⏳ R7.7 |
 | GPU Counters / Profiler / Derived | 需 Apple 私有 entitlement + SIP 关闭 | ⛔ 跳过 |
 
-**完成度：~83%（9/12 维度完成或跳过）**
+**完成度**：R0~R6 已完成（基础能力 + bridge + Python wrapper + skill 打包）；R7 frame-inspection 能力补全为剩余主线。
 
 最终交付物：
 1. **统一 ObjC bridge CLI**（`Scripts/gputrace_replay_bridge.m`）— ✅ 已完成，5 子命令，Makefile 构建，集成测试 17/17 通过
 2. **Python CLI wrapper**（`Scripts/gputrace_replay_wrapper.py`）— ✅ 已完成，CLI + 模块双接口，dataclass 返回值
 3. **端到端验证链路** — ✅ 已完成，2 样本 × 5 子命令全部通过
 4. **GPU Trace 分析 skill**（`.codebuddy/skills/gpu-trace-analysis/`）— ✅ 已完成，自包含，含 SKILL.md + scripts/ + references/，从任意目录可独立运行
+5. **R7：Frame-Inspection 能力补全** — ⏳ 进行中，7 个独立 chunk（详见 TODO + `subdocs/20260521-R7-frame-inspection-gap.md`）
 
 ## 全局约束
 
@@ -40,20 +47,29 @@
 - **主线模块链**：`GPUDebugger.ideplugin` → `GPUToolsServices`(76 类) → XPC Services → `GPUToolsReplay.framework`(C API)
 - **主力路径 — Controller 路径**（R4.2）：`makeDataSource → makeController → playAll/playTo` — 完整 replay + 对象访问 + 定向 replay，无 XPC/entitlement 依赖。详见 `subdocs/20260520-R4.2-controller-path.md`
 - **数据获取核心**：`GTMTLReplayObjectMap`（302 方法），replay 后通过 `resources`/`bufferForKey:`/`textureForKey:` 直接读取 GPU 数据
-- **Pipeline Binary 导出**：`libraryForKey:(uint64_t)` → `libraryDataContents`(metallib) / `bitcodeData`(AIR)。Key 偶数=Library，奇数=Function
+- **Pipeline Binary 导出**：`libraryForKey:(uint64_t)` → `libraryDataContents`(metallib) / `bitcodeData`(AIR)。Key 偶数=Library，奇数=Function，规则：`library_key = function_key - 1`
 - **Shader 热替换**：`objectMap.setLibrary:forKey:` → rewind → playAll。shaderIR(metallib binary) 可无源码替换
 - **Configuration**：调用链控制（disableOptimizeRestores/forceLoadUnusedResources）+ 全局变量（g_runningValidationCI）
 - **统一 Bridge**（R6.1）：`Scripts/gputrace_replay_bridge.m` — 5 子命令（help/replay/pipeline/shader/config），Makefile 构建 + ad-hoc 签名 + 集成测试 17/17 通过。详见 `subdocs/20260520-R6.1-bridge-implementation.md`
+- **Python wrapper + skill 打包**（R6.2）：`Scripts/gputrace_replay_wrapper.py` + `.codebuddy/skills/gpu-trace-analysis/`。详见 `subdocs/20260521-R6.2-wrapper-and-skill.md`
+- **R7 缺口诊断**（来自 LYSK trace 全景调查反馈）：`pipeline` 缺 RPS↔shader 关联；无 encoder/draw 时间序；`--playto` 越界 SIGSEGV；depth/stencil 不能 export；7 段 draw→IR 反查链已验证可行。详见 `subdocs/20260521-R7-frame-inspection-gap.md`
 
 ### 当前卡点
 
-无。R6.2b 全部完成（2026-05-21）。
+无。R6 全部完成（2026-05-21）。
 
 ### 下一步（当前最高优先级）
 
-**R6.3：自动化流水线集成**
+**R7.1：bridge 越界保护 + 资源元数据补齐**
 
-优先级理由：bridge + Python wrapper 已完成并验证，下一步是 CI/CD 集成与样本库管理。
+优先级理由：所有后续 R7 chunk 都受益于"不再 SIGSEGV"与完整资源元数据；半天工作量、低风险；解锁脚本稳定遍历 trace 的能力。
+
+具体内容：
+- `replay` 输出加 `total_call_count`；`--playto` 越界返回 `{"error":"playto_out_of_range","max":N}` 而非 `SIGSEGV`
+- texture 资源元数据补 `storageMode` / `usage` / `framebufferOnly` / `memoryless` / `sampleCount` / `arrayLength`
+- buffer 资源元数据补 `storageMode` / `cpuCacheMode` / `hazardTrackingMode`
+
+详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.1。
 
 ## 构建与验证的方法
 
@@ -74,11 +90,21 @@
 ## 所有任务TODO状态
 
 - **[DONE] R0~R5**：基线扫描 → API 提取 → bridge 原型 → headless replay → 数据获取 → 操作等价
-- **[IN-PROGRESS][P0] R6**：客户端封装与可用性收尾
+- **[DONE] R6**：客户端封装与可用性收尾
   - **[DONE] R6.1**：统一 ObjC bridge binary — 5 子命令 + Makefile + 集成测试 17/17
   - **[DONE] R6.2a**：端到端动态验证（2 样本 × 5 子命令，29/29 集成测试通过）
   - **[DONE] R6.2b**：Python CLI wrapper（CLI + 模块双接口，dataclass 返回值）
-  - **R6.3**：自动化流水线集成（CI/CD 集成、样本库管理）
+  - **[DONE] R6.2c**：skill 打包（`.codebuddy/skills/gpu-trace-analysis/`，自包含 + 17/17 通过）
+- **[CANCELLED] R6.3**：自动化流水线集成（CI/CD + 样本库管理）— 不做
+- **[IN-PROGRESS][P0] R7**：Frame-Inspection 能力补全（来自 LYSK trace 全景调查反馈，详见 `subdocs/20260521-R7-frame-inspection-gap.md`）
+  - **[P0] R7.1**：bridge 越界保护 + 资源元数据补齐（`total_call_count` / `playto_out_of_range` / texture+buffer storageMode/usage/...）— 0.5 天，低风险
+  - **[P0] R7.2**：`pipeline` 输出加 RPS↔shader 关联（vertex/fragment function/library key + attachment 摘要，内部 swizzle，参考 `LocalDocs/OfflineSourceRecovery/scripts/rps_swizzle_probe.m`）— 1 天，低风险
+  - **[P1] R7.3**：`frame-list` 子命令（CommandBuffer/Encoder 枚举 + attachments + per-encoder timing）— 1 天，中风险
+  - **[P1] R7.4**：`shader-of-rps` 子命令（语义级反查 + `--with-ir`）— 1 天，中风险
+  - **[P1] R7.5**：depth/stencil export（bridge 内置 blit）+ compute encoder 在 frame-list 中明确化 — 0.5 天，低风险
+  - **[P1] R7.6**：`frame-list --with-draws --with-bindings` + `dump-uniforms` + `shader-of-drawcall`（用户最终目标：draw_index → IR 一行命令）— 3 天，中风险
+  - **[P2] R7.7**：`disasm` 子命令（cacheKey 算法 ObjC 复刻 + llvm-dis 集成）— 1.5 天，低风险，**skill 自包含最后一公里**
+- **每个 R7 chunk 落地后必须同步**：SKILL.md（"Exploring an unknown trace's pipeline" 工作流） + `references/investigation-playbook.md`（frame-overview worked example） + `references/cli-reference.md`（新子命令 schema）
 
 ## 高频复用经验
 
@@ -87,16 +113,16 @@
 - **最高信号静态锚点**：`GPUToolsReplay`、`GPUToolsServices` 上的 `strings` / `nm -m`
 - **关键环境变量**：`ATF_RESULTSDIRECTORY`(输出目录)、`GPUMTLOverrideDeviceFamily`(设备覆盖)
 - **探针编译模板**：`clang -framework Foundation -framework Metal -ldl -lobjc -o <probe> <probe>.m`
+- **PSO→Function 关联拦截**：method swizzling `MTLDevice -newRenderPipelineStateWithDescriptor:[options:reflection:]error:`，必须在 `init_replay()` 之前装；类要找具体实现类（如 `AGXG16SDevice`）
 
 ## 参考信息
 
 | 子文档 | 阅读建议 | 内容概述 |
 |--------|---------|---------|
-| `subdocs/20260520-R4.2-controller-path.md` | **总是建议读取** — Controller 路径是所有后续任务的基础 | 完整调用链、偏移表、ObjectMap、playTo、Pipeline 导出 |
-| `subdocs/20260520-R6.1-bridge-implementation.md` | **总是建议读取** — 已实现 bridge 的完整架构与子命令用法 | 5 子命令实现、JSON schema、构建方法、测试覆盖 |
-| `executions/20260521-R6.2a-e2e-dynamic-validation.md` | 在检查验证结果时按需读取 | 2 样本 × 5 子命令端到端验证详情、文件格式确认 |
-| `executions/20260521-R6.2b-python-cli-wrapper.md` | 在使用 Python wrapper 时按需读取 | wrapper 架构、API 签名、测试覆盖 |
-| `executions/20260521-skill-packaging.md` | 在改造 / 调用 gpu-trace-analysis skill 时按需读取 | skill 目录结构、自包含验证、设计决策 |
+| `subdocs/20260521-R7-frame-inspection-gap.md` | **总是建议读取** — R7 是当前主线，本文档是入口 | 14 处卡点 / 7 段 draw→IR 反查 / 改进矩阵 7 chunk / LYSK 65 RPS 回归基线 |
+| `subdocs/20260520-R4.2-controller-path.md` | **总是建议读取** — Controller 路径是所有任务的基础 | 完整调用链、偏移表、ObjectMap、playTo、Pipeline 导出 |
+| `subdocs/20260520-R6.1-bridge-implementation.md` | **总是建议读取** — bridge 5 子命令的完整架构与用法 | 子命令实现、JSON schema、构建方法、测试覆盖 |
+| `subdocs/20260521-R6.2-wrapper-and-skill.md` | 在使用 Python wrapper / 改造 skill 时按需读取 | wrapper API、skill 目录结构、自包含验证、设计决策 |
 | `subdocs/20260520-R5.2-shader-hot-replace.md` | 在扩展 shader 功能时按需读取 | 替换路径对比、Xcode UI 能力缺口 |
 | `subdocs/20260520-R5.3-shader-debug.md` | 在探索 IPC/debug 后续方向时按需读取 | ShaderDebug 类族、instrumented debug、IPC 探索结论 |
 | `subdocs/20260520-R5.4-configuration.md` | 在扩展 config 功能时按需读取 | 13 属性映射、Service 路径 |
@@ -107,3 +133,4 @@
 | `subdocs/20260520-replay-entry-scan.md` | 一般无需读取 | R0 基线：模块/进程/符号 |
 | `subdocs/20260520-R1.2-GTMTLReplay_CLI-signature.md` | 一般无需读取（完整信息已在 R3 子文档中） | CLI 签名、Options 偏移表 |
 | `subdocs/20260520-R1.3-dictionary-fields.md` | 一般无需读取 | 三层字典字段（CLI/Controller 不使用） |
+| `LocalDocs/OfflineSourceRecovery/scripts/rps_swizzle_probe.m` | 在实现 R7.2 swizzle 部分时按需读取 | ~200 行 ObjC 探针，已在 LYSK trace 验证 65 RPS 反查 |

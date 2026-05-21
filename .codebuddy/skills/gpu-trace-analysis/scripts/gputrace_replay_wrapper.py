@@ -246,6 +246,95 @@ class ConfigResult:
 
 
 # ---------------------------------------------------------------------------
+# R7.3 — frame-list dataclasses
+# ---------------------------------------------------------------------------
+
+@dataclass
+class FrameAttachment:
+    """R7.3: encoder.color_attachments[i] / depth_attachment / stencil_attachment"""
+    texture_id: int
+    pixel_format: int
+    format: str
+    index: Optional[int] = None  # only set on color attachments
+
+
+@dataclass
+class FrameDraw:
+    """R7.3: 单个 draw call 记录"""
+    draw_index_global: int
+    draw_in_encoder: int
+    call_index: int
+    primitive_type: int
+    primitive_type_name: str
+    vertex_count: int
+    instance_count: int
+    indexed: bool
+    index_count: Optional[int] = None
+    rps_key: Optional[int] = None
+    rps_label: Optional[str] = None
+    fragment_function_key: Optional[int] = None
+
+
+@dataclass
+class FrameEncoder:
+    """R7.3: 单个 encoder（render / compute / blit）"""
+    index: int
+    type: str  # 'render' / 'compute' / 'blit'
+    label: Optional[str] = None
+    first_call_index: int = 0
+    last_call_index: int = 0
+    draw_count: int = 0
+    color_attachment_count: Optional[int] = None
+    color_attachments: list[FrameAttachment] = field(default_factory=list)
+    depth_attachment: Optional[FrameAttachment] = None
+    stencil_attachment: Optional[FrameAttachment] = None
+    compute_dispatch_count: Optional[int] = None
+    draws: list[FrameDraw] = field(default_factory=list)
+
+
+@dataclass
+class FrameCommandBuffer:
+    """R7.3: 单个 command buffer + 其 encoder 列表"""
+    index: int
+    label: Optional[str] = None
+    encoder_count: int = 0
+    gpu_start_ms: Optional[float] = None
+    gpu_end_ms: Optional[float] = None
+    gpu_duration_ms: Optional[float] = None
+    encoders: list[FrameEncoder] = field(default_factory=list)
+
+
+@dataclass
+class FrameDrawToRps:
+    """R7.3: 扁平化 draw→RPS 映射条目"""
+    draw_index_global: int
+    encoder_index: int
+    draw_in_encoder: int
+    call_index: int
+    rps_key: Optional[int] = None
+
+
+@dataclass
+class FrameListResult:
+    """R7.3: frame-list 子命令结果"""
+    trace_path: str
+    device: str
+    replay_rc: int
+    success: bool
+    elapsed_ms: float
+    total_call_count: int
+    with_draws: bool
+    with_timing: bool
+    command_buffer_count: int
+    encoder_count: int
+    draw_count: int
+    rps_correlated_count: int
+    command_buffers: list[FrameCommandBuffer] = field(default_factory=list)
+    draw_to_rps_map: list[FrameDrawToRps] = field(default_factory=list)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
 # Bridge Class
 # ---------------------------------------------------------------------------
 
@@ -702,6 +791,127 @@ class ReplayBridge:
             raw=data,
         )
 
+    def frame_list(
+        self,
+        trace_path: str | Path,
+        *,
+        with_draws: bool = True,
+        with_timing: bool = False,
+        timeout: float = 300.0,
+    ) -> FrameListResult:
+        """
+        R7.3: 枚举 trace 内 command buffer / encoder / draw 时间序列，
+        并产出 ``draw_to_rps_map`` 用于直接喂给 ``shader_of_rps`` 拿 IR。
+
+        Args:
+            trace_path: .gputrace bundle 路径
+            with_draws: 是否输出 draws 数组与扁平化 draw_to_rps_map（默认 True）
+            with_timing: 是否输出 per-cb GPU 时间（默认 False；许多 replay
+                内部 cb 不 commit，timing 字段可能为 null）
+            timeout: 超时秒数
+
+        Returns:
+            FrameListResult — 包含 command_buffers 树 + 可选 draw_to_rps_map
+        """
+        trace_path = self._validate_trace(trace_path)
+        args = ["frame-list", str(trace_path)]
+        # `--with-draws` is the default in the bridge; we only need to pass
+        # `--no-draws` when the caller opted out, otherwise `--with-timing`.
+        if not with_draws:
+            args.append("--no-draws")
+        if with_timing:
+            args.append("--with-timing")
+
+        data, _ = self._run(args, timeout=timeout)
+
+        # ------- nested encoders/draws/attachments -------
+        def _parse_attachment(att: dict[str, Any], idx: Optional[int] = None) -> FrameAttachment:
+            return FrameAttachment(
+                texture_id=att.get("texture_id", 0),
+                pixel_format=att.get("pixelFormat", 0),
+                format=att.get("format", ""),
+                index=idx,
+            )
+
+        def _parse_draw(d: dict[str, Any]) -> FrameDraw:
+            return FrameDraw(
+                draw_index_global=d.get("draw_index_global", 0),
+                draw_in_encoder=d.get("draw_in_encoder", 0),
+                call_index=d.get("call_index", 0),
+                primitive_type=d.get("primitive_type", 0),
+                primitive_type_name=d.get("primitive_type_name", ""),
+                vertex_count=d.get("vertex_count", 0),
+                instance_count=d.get("instance_count", 0),
+                indexed=d.get("indexed", False),
+                index_count=d.get("index_count"),
+                rps_key=d.get("rps_key"),
+                rps_label=d.get("rps_label"),
+                fragment_function_key=d.get("fragment_function_key"),
+            )
+
+        def _parse_encoder(e: dict[str, Any]) -> FrameEncoder:
+            color_atts = [
+                _parse_attachment(a, a.get("index"))
+                for a in e.get("color_attachments", [])
+            ]
+            depth = e.get("depth_attachment")
+            stencil = e.get("stencil_attachment")
+            return FrameEncoder(
+                index=e["index"],
+                type=e.get("type", "other"),
+                label=e.get("label"),
+                first_call_index=e.get("first_call_index", 0),
+                last_call_index=e.get("last_call_index", 0),
+                draw_count=e.get("draw_count", 0),
+                color_attachment_count=e.get("color_attachment_count"),
+                color_attachments=color_atts,
+                depth_attachment=_parse_attachment(depth) if depth else None,
+                stencil_attachment=_parse_attachment(stencil) if stencil else None,
+                compute_dispatch_count=e.get("compute_dispatch_count"),
+                draws=[_parse_draw(d) for d in e.get("draws", [])],
+            )
+
+        cbs = []
+        for cb in data.get("command_buffers", []):
+            cbs.append(FrameCommandBuffer(
+                index=cb["index"],
+                label=cb.get("label"),
+                encoder_count=cb.get("encoder_count", 0),
+                gpu_start_ms=cb.get("gpu_start_ms"),
+                gpu_end_ms=cb.get("gpu_end_ms"),
+                gpu_duration_ms=cb.get("gpu_duration_ms"),
+                encoders=[_parse_encoder(e) for e in cb.get("encoders", [])],
+            ))
+
+        d2r = [
+            FrameDrawToRps(
+                draw_index_global=r.get("draw_index_global", 0),
+                encoder_index=r.get("encoder_index", 0),
+                draw_in_encoder=r.get("draw_in_encoder", 0),
+                call_index=r.get("call_index", 0),
+                rps_key=r.get("rps_key"),
+            )
+            for r in data.get("draw_to_rps_map", [])
+        ]
+
+        return FrameListResult(
+            trace_path=data.get("trace_path", str(trace_path)),
+            device=data.get("device", ""),
+            replay_rc=data.get("replay_rc", -1),
+            success=data.get("success", False),
+            elapsed_ms=data.get("elapsed_ms", 0.0),
+            total_call_count=data.get("total_call_count", 0),
+            with_draws=data.get("with_draws", with_draws),
+            with_timing=data.get("with_timing", with_timing),
+            command_buffer_count=data.get("command_buffer_count", 0),
+            encoder_count=data.get("encoder_count", 0),
+            draw_count=data.get("draw_count", 0),
+            rps_correlated_count=data.get("rps_correlated_count", 0),
+            command_buffers=cbs,
+            draw_to_rps_map=d2r,
+            raw=data,
+        )
+
     # ------------------------------------------------------------------
     # Validation Helpers
     # ------------------------------------------------------------------
@@ -774,6 +984,15 @@ def _cli_main():
     p_sor.add_argument("--output-dir", default=None,
                        help="Output directory (default: system tmp)")
 
+    # frame-list (R7.3)
+    p_fl = subparsers.add_parser("frame-list", parents=[parent],
+                                  help="Enumerate cb/encoder/draw timeline + draw_to_rps_map (R7.3)")
+    p_fl.add_argument("trace", help="Path to .gputrace bundle")
+    p_fl.add_argument("--no-draws", action="store_true",
+                      help="Suppress per-draw records and draw_to_rps_map")
+    p_fl.add_argument("--with-timing", action="store_true",
+                      help="Include per-cb GPU start/end/duration (often null for replay-internal CBs)")
+
     # config
     p_config = subparsers.add_parser("config", parents=[parent], help="Configuration control")
     p_config.add_argument("trace", help="Path to .gputrace bundle")
@@ -840,6 +1059,15 @@ def _cli_main():
             # exit code so shell pipelines can detect it without parsing JSON.
             if result.error:
                 sys.exit(11)
+
+        elif args.command == "frame-list":
+            result = bridge.frame_list(
+                args.trace,
+                with_draws=not args.no_draws,
+                with_timing=args.with_timing,
+                timeout=args.timeout,
+            )
+            print(json.dumps(result.raw, indent=indent))
 
         elif args.command == "config":
             # Parse key=value pairs into kwargs

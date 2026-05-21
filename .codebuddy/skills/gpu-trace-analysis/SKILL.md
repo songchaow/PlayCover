@@ -9,7 +9,7 @@ This skill turns headless `.gputrace` replay into a programmable workflow for in
 
 ## What this skill gives you
 
-A self-contained CLI (`gputrace_replay_bridge`) plus a Python wrapper (`gputrace_replay_wrapper.py`) that together expose six capabilities matching what an engineer would otherwise do manually inside Xcode's GPU Frame Debugger:
+A self-contained CLI (`gputrace_replay_bridge`) plus a Python wrapper (`gputrace_replay_wrapper.py`) that together expose seven capabilities matching what an engineer would otherwise do manually inside Xcode's GPU Frame Debugger:
 
 | Capability | Tool | What you can find out |
 |---|---|---|
@@ -17,6 +17,7 @@ A self-contained CLI (`gputrace_replay_bridge`) plus a Python wrapper (`gputrace
 | Texture / buffer inspection | `replay --list-resources --export` | Are render targets blank? Is uniform data sane? Do values contain NaN? |
 | Pipeline / shader dump + RPS↔shader correlation | `pipeline` | Which library compiled which function; metallib + AIR for offline inspection; **R7.2: each RPS now reports its vertex/fragment function keys, library keys, color/depth/stencil attachment formats, write masks, and raster sample count — without requiring an external swizzle probe** |
 | RPS → shader IR reverse-lookup | `shader-of-rps` | **R7.4: one command from a render-pipeline-state key to its fragment/vertex `MTLFunction`, the owning metallib, the PlayTools cacheKey, and (with `--with-ir`) the disassembled LLVM IR `.ll` file** |
+| Frame timeline (encoder/draw) + draw→RPS map | `frame-list` | **R7.3: command buffers, render/compute/blit encoders with attachment summaries, every draw with primitive type / vertex / instance counts and its bound RPS_key. Pipe `draw_to_rps_map[].rps_key` directly into `shader-of-rps --with-ir` for "draw N → shader IR" in two commands.** |
 | Shader hot-replace | `shader --verify` | Bisect: replace a suspect shader with a corrected/instrumented one and re-replay |
 | Replay configuration | `config` | Toggle Metal validation, optimization, unused-resource loading to isolate causes |
 
@@ -106,8 +107,9 @@ Sometimes the user hands over a `.gputrace` and asks "what does this frame even 
 
 1. **Bounds first** — `replay --bounds` for the maximum legal `--playto N`. Cheap (one playAll). Always do this before any `--playto`-based bisecting so the bridge can fail gracefully on out-of-range targets (exit 12 = `EXIT_PLAYTO_OOR`).
 2. **Pipeline overview** — `pipeline <trace> <output_dir>`. Since R7.2 this also produces every render pipeline's vertex/fragment function/library key plus attachment summary. Read `rps_correlated_count` vs `render_pipeline_states_count`: they should match.
-3. **Pick a RPS to investigate** — e.g. by `label` (often `Project/Pass`-style strings from Unity/UE), or by attachment count (depth-only Z-prepasses are typically `color_attachment_count: 0`).
-4. **One-shot shader reverse lookup** — `shader-of-rps <trace> <rps_key> --with-ir --output-dir <dir>`. This returns the `metallib`, `AIR`, optionally the `.ll` IR, and the PlayTools `cache_key_metallib` for offline cross-reference.
+3. **Frame timeline (R7.3)** — `frame-list <trace>`. Lists every `command_buffer.encoders[]` (render / compute / blit) with the encoder's `[first_call_index, last_call_index]` window, plus per-encoder `draws[]` (primitive type, vertex/instance counts) and a flat `draw_to_rps_map[]`. Use this to answer "which RPS does draw N use?" without writing a swizzle probe yourself.
+4. **Pick a RPS to investigate** — e.g. by `label` (often `Project/Pass`-style strings from Unity/UE), by attachment count (depth-only Z-prepasses are typically `color_attachment_count: 0`), or directly from `frame-list`'s `draw_to_rps_map[k].rps_key`.
+5. **One-shot shader reverse lookup** — `shader-of-rps <trace> <rps_key> --with-ir --output-dir <dir>`. This returns the `metallib`, `AIR`, optionally the `.ll` IR, and the PlayTools `cache_key_metallib` for offline cross-reference.
 
 ### Worked example (LYSK trace)
 
@@ -126,9 +128,21 @@ jq '.render_pipeline_states[] | select(.label | contains("SkinMakeupNew"))' /tmp
 #   (RPS 476 = Z-prepass: 0 colors, fragment_library_key=252)
 #   (RPS 484 = main pass: 2 colors RGBA8Unorm, fragment_library_key=356)
 
-# Step 3 — pick RPS 484 (main pass), get IR
+# Step 3 — frame timeline + draw→RPS map (R7.3)
+"$BRIDGE" frame-list /tmp/foo.gputrace > /tmp/foo-frame.json
+jq '{cb: .command_buffer_count, enc: .encoder_count, draws: .draw_count}' /tmp/foo-frame.json
+# → e.g. {cb:4, enc:62, draws:244}
+# Pick the first draw's RPS:
+jq '.draw_to_rps_map[0]' /tmp/foo-frame.json
+# → {"draw_index_global":0,"encoder_index":2,"draw_in_encoder":0,"call_index":131,"rps_key":472}
+
+# Step 4 — pick RPS 484 (main pass), get IR
 "$BRIDGE" shader-of-rps /tmp/foo.gputrace 484 --with-ir --output-dir /tmp/foo-shaders
 # Output JSON includes ir_ll_path; open it in any editor.
+
+# Or: directly chain frame-list → shader-of-rps (the R7 final-mile).
+RPS=$(jq -r '.draw_to_rps_map[0].rps_key' /tmp/foo-frame.json)
+"$BRIDGE" shader-of-rps /tmp/foo.gputrace "$RPS" --with-ir --output-dir /tmp/foo-shaders
 ```
 
 If `--with-ir` returns `ir_error: "no_air_bitcode"`, the library is metallib-only — that's expected for many `_MTLLibrary` instances. The metallib itself is still exported and you can use the `cache_key_metallib` to find the PlayCover ShaderDebugInfo entry: `~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/<bundle>/<cache_key>/`. See `references/investigation-playbook.md` §3 for the cacheKey algorithm and full SDI cross-reference path.
@@ -137,12 +151,11 @@ If `--with-ir` returns `ir_error: "no_air_bitcode"`, the library is metallib-onl
 
 These are limitations of the current skill — agents should not waste cycles trying to work around them with grep / zlib / unsorted-capture parsing.
 
-- **Encoder / Pass / Draw-call timeline** — no `frame-list` subcommand yet; cannot enumerate "what encoders run, in what order, with what attachments" without bisecting via `--playto`. R7.3 (planned).
-- **Per-encoder attachment binding tables** — same as above. R7.3.
-- **Draw call → RPS reverse lookup** — to answer "which RPS does draw N use" you currently need a custom swizzle on `MTLRenderCommandEncoder.setRenderPipelineState:` plus a `drawIndexedPrimitives:*` counter. R7.6 (planned).
+- **Per-encoder attachment binding tables (vertex/fragment buffers + textures bound on each draw)** — `frame-list` exposes encoder-level color/depth/stencil attachments and per-draw RPS / vertex / instance counts, but does NOT yet record `setVertexBuffer:` / `setFragmentTexture:` / inline `setVertexBytes:` calls. R7.6 子项 A (planned).
 - **Depth/stencil texture export** — `replay --export` refuses depth/stencil; sample inside a shader and write to a color target as a workaround. R7.5 (planned).
-- **Uniform / cbuffer inspector** — no API to read what was bound at draw time. R7.6 (planned).
+- **Uniform / cbuffer inspector** — no API to read what was bound at draw time (depends on the binding tables above). R7.6 子项 B (planned).
 - **Bare cacheKey → SDI module.bc → IR via `disasm`** — the algorithm is known (see investigation playbook §3.1) but not yet exposed as a single bridge subcommand. R7.7 (planned).
+- **Per-encoder GPU timing** — `frame-list --with-timing` reads `MTLCommandBuffer.GPUStartTime/GPUEndTime`, but on traces whose internal CBs never `commit` these properties remain 0 / null. The flag is provided for forward compatibility; for accurate host-side per-segment timing use `replay --playto N` bisection (see playbook Pattern 4).
 
 If a user asks for any of the above, explain the gap and offer the closest available substitute (typically: `pipeline` to find the suspect library, then `shader-of-rps --with-ir` for IR; or `replay --playto` for bisection).
 
@@ -163,7 +176,7 @@ bash "$SKILL_DIR/scripts/test_bridge.sh"
 GPUTRACE_PATH=/path/to/sample.gputrace bash "$SKILL_DIR/scripts/test_bridge.sh"
 ```
 
-29 + 20 R7-specific assertions cover argument parsing, exit codes, JSON shape, codesign validity, R7.1 bounds checking + texture/buffer metadata, R7.2 RPS↔shader correlation, R7.4 `shader-of-rps` reverse lookup, and (when GPUTRACE_PATH is set) a live replay/pipeline/config/shader-of-rps quartet — 63 total assertions on a real trace.
+29 + 38 R7-specific assertions cover argument parsing, exit codes, JSON shape, codesign validity, R7.1 bounds checking + texture/buffer metadata, R7.2 RPS↔shader correlation, R7.3 frame-list timeline + draw_to_rps_map invariants + frame-list→shader-of-rps end-to-end chain, R7.4 `shader-of-rps` reverse lookup, and (when GPUTRACE_PATH is set) a live replay/pipeline/config/shader-of-rps/frame-list quintet — 81 total assertions on a real trace.
 
 ## Reference files
 

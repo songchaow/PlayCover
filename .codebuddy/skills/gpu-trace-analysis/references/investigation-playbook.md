@@ -272,7 +272,7 @@ PY
 
 ---
 
-## Pattern 7: Frame overview — exploring an unknown trace (R7.2 + R7.4)
+## Pattern 7: Frame overview — exploring an unknown trace (R7.2 + R7.3 + R7.4)
 
 **When to use**: the user hands over a `.gputrace` and asks "what does this frame even render?", "give me a high-level summary", or wants to map RPS labels to shader code without specifying a bug. Pre-R7 this required either Xcode's GUI or hand-rolled swizzle probes; with the bridge it's now four commands.
 
@@ -294,9 +294,31 @@ jq '{rps_count: .render_pipeline_states_count,
 `rps_correlated_count` should equal `render_pipeline_states_count`; if it's `0`, the swizzle is broken (see SKILL.md).
 
 ```bash
-# 3. Pass-by-pass summary — group RPS by label and attachment shape.
-jq -r '.render_pipeline_states[]
-       | "\(.key)\t\(.label)\tcolors=\(.color_attachment_count // "?")\tdepth=\(.depth_format)\tf_lib=\(.fragment_library_key // "?")"' \
+# 3. R7.3 — Frame timeline. command_buffers / encoders / draws + draw_to_rps_map[].
+"$BRIDGE" frame-list "$TRACE" > "$WORKDIR/frame.json"
+jq '{cb: .command_buffer_count, enc: .encoder_count, draws: .draw_count, rps: .rps_correlated_count}' "$WORKDIR/frame.json"
+# → e.g. {"cb":4, "enc":62, "draws":244, "rps":65} on the LYSK trace
+```
+
+Group draws by encoder for a "render pass timeline":
+
+```bash
+jq -r '.command_buffers[] | "CB \(.index): \(.encoder_count) encoders",
+       (.encoders[] | "  enc#\(.index) [\(.type)] calls=\(.first_call_index)..\(.last_call_index) draws=\(.draw_count) label=\(.label // "")")' \
+   "$WORKDIR/frame.json"
+```
+
+…or, for a flat "draw N → RPS" view (ready to pipe into `shader-of-rps`):
+
+```bash
+jq -r '.draw_to_rps_map[] | "draw#\(.draw_index_global)\trps=\(.rps_key)\tcall=\(.call_index)"' \
+   "$WORKDIR/frame.json" | head -10
+```
+
+Cross-reference with `pipeline.json`:
+
+```bash
+jq -r '.render_pipeline_states[] | "\(.key)\t\(.label)\tcolors=\(.color_attachment_count // "?")\tdepth=\(.depth_format)\tf_lib=\(.fragment_library_key // "?")"' \
    "$WORKDIR/pipeline.json" | sort
 ```
 
@@ -318,11 +340,15 @@ This is the kind of "frame overview" Xcode's GPU debugger UI gives you, but as a
 "$BRIDGE" shader-of-rps "$TRACE" 484 --with-ir --output-dir "$WORKDIR/shaders"
 # Inspect the IR:
 head -40 "$WORKDIR/shaders/library_356.ll"
+
+# Or chain straight from frame-list output (the R7 final-mile):
+RPS=$(jq -r '.draw_to_rps_map[0].rps_key' "$WORKDIR/frame.json")
+"$BRIDGE" shader-of-rps "$TRACE" "$RPS" --with-ir --output-dir "$WORKDIR/shaders"
 ```
 
 If `--with-ir` returns `ir_error: "no_air_bitcode"`, fall back to the metallib (use the `cache_key_metallib` field to find the corresponding PlayCover ShaderDebugInfo entry — see Reference §3.1 below).
 
-**When to stop here**: once the user can match user-visible symptoms (e.g. "the SkinMakeupNew layer is wrong") to a concrete shader IR file, you've handed them everything the bridge can give. Further drilling — per-draw bindings, uniform values, exact draw-call → IR — is on the R7 backlog and not yet available.
+**When to stop here**: once the user can match user-visible symptoms (e.g. "the SkinMakeupNew layer is wrong") to a concrete shader IR file, you've handed them everything the bridge can give. Further drilling — per-draw bindings, uniform values — is on the R7 backlog and not yet available.
 
 ---
 

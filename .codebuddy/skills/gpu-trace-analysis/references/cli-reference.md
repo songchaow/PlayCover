@@ -8,29 +8,30 @@ Complete surface for the bundled tools. Skim the table of contents and jump to w
 3. [Subcommand: pipeline](#subcommand-pipeline)
 4. [Subcommand: shader](#subcommand-shader)
 5. [Subcommand: shader-of-rps](#subcommand-shader-of-rps)
-6. [Subcommand: config](#subcommand-config)
-7. [Exit codes](#exit-codes)
-8. [Python wrapper — CLI mode](#python-wrapper--cli-mode)
-9. [Python wrapper — module mode](#python-wrapper--module-mode)
-10. [Pixel format helpers](#pixel-format-helpers)
+6. [Subcommand: frame-list](#subcommand-frame-list)
+7. [Subcommand: config](#subcommand-config)
+8. [Exit codes](#exit-codes)
+9. [Python wrapper — CLI mode](#python-wrapper--cli-mode)
+10. [Python wrapper — module mode](#python-wrapper--module-mode)
+11. [Pixel format helpers](#pixel-format-helpers)
 
 ---
 
 ## The bridge binary
 
-`scripts/gputrace_replay_bridge` is a single ObjC binary built from `gputrace_replay_bridge.m`. After running `setup.sh`, invoke it with one of six subcommands. Output is always one JSON object on stdout per invocation; diagnostic messages go to stderr.
+`scripts/gputrace_replay_bridge` is a single ObjC binary built from `gputrace_replay_bridge.m`. After running `setup.sh`, invoke it with one of seven subcommands. Output is always one JSON object on stdout per invocation; diagnostic messages go to stderr.
 
 ```bash
 gputrace_replay_bridge <command> [args...]
 ```
 
-Available commands: `help`, `replay`, `pipeline`, `shader`, `shader-of-rps`, `config`.
+Available commands: `help`, `replay`, `pipeline`, `shader`, `shader-of-rps`, `frame-list`, `config`.
 
 `help` prints the JSON schema of all commands:
 
 ```bash
 gputrace_replay_bridge help
-# → {"tool":"gputrace_replay_bridge","version":"0.3.0","commands":[...]}
+# → {"tool":"gputrace_replay_bridge","version":"0.4.0","commands":[...]}
 ```
 
 ---
@@ -342,6 +343,117 @@ The cacheKey can be used to find the corresponding ShaderDebugInfo directory und
 
 ---
 
+## Subcommand: frame-list
+
+Replays the trace once with public-API method swizzling armed and emits the full `command_buffer → encoder → draw` timeline plus a flat `draw_to_rps_map[]`. This is the **R7.3** "frame inspector" entry point — the equivalent of expanding the encoder/draw tree in Xcode's Frame Debugger UI, but as a shell-pipe-able JSON document.
+
+```bash
+gputrace_replay_bridge frame-list <.gputrace> [--with-draws] [--no-draws] [--with-timing]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--with-draws` | on | Include per-encoder `draws[]` records and the top-level `draw_to_rps_map[]` view. The default; pass explicitly only for symmetry with `--no-draws`. |
+| `--no-draws` | off | Suppress per-draw records (encoder list only). Useful for very high-draw-count traces or when you only need the encoder timeline. |
+| `--with-timing` | off | Populate per-cb `gpu_start_ms` / `gpu_end_ms` / `gpu_duration_ms` from `MTLCommandBuffer.GPUStartTime/GPUEndTime`. Replay-internal CBs that never `commit` will surface `null` here. |
+
+Output JSON top-level fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `command` | string | Always `"frame-list"` |
+| `trace_path`, `device` | string | Echo + `MTLDevice.name` |
+| `replay_rc`, `success`, `elapsed_ms`, `total_call_count` | mixed | Same semantics as `replay` |
+| `with_draws`, `with_timing` | bool | Echoes the requested mode |
+| `command_buffer_count`, `encoder_count`, `draw_count` | int | Aggregate counts captured during this `playAll` |
+| `rps_correlated_count` | int | How many RPS keys were resolvable from the captured RPS pointer table — used to validate R7.2 swizzle health |
+| `command_buffers` | array | Tree, see below |
+| `draw_to_rps_map` | array | Present iff `--with-draws`; flat `(draw_index_global → rps_key)` records for direct chaining into `shader-of-rps` |
+
+`command_buffers[i]`:
+
+```json
+{
+  "index": 1,
+  "label": "Frame Render",
+  "encoder_count": 30,
+  "gpu_start_ms": 0.0,             // present iff --with-timing; may be 0/null
+  "gpu_end_ms": 0.32,
+  "gpu_duration_ms": 0.32,
+  "encoders": [ ... ]
+}
+```
+
+`encoders[j]` for `type == "render"`:
+
+```json
+{
+  "index": 2,
+  "type": "render",
+  "label": "Shadows.Draw",
+  "first_call_index": 125,
+  "last_call_index": 451,
+  "draw_count": 30,
+  "color_attachment_count": 0,
+  "color_attachments": [],
+  "depth_attachment": {"texture_id": 225, "pixelFormat": 252, "format": "Depth32Float"},
+  "stencil_attachment": null,
+  "draws": [
+    {
+      "draw_index_global": 0,
+      "draw_in_encoder": 0,
+      "call_index": 131,
+      "primitive_type": 3,
+      "primitive_type_name": "triangle",
+      "vertex_count": 0,
+      "instance_count": 1,
+      "indexed": true,
+      "index_count": 6726,
+      "rps_key": 472,
+      "rps_label": "Papegame/Cloth/ClothStandard",
+      "fragment_function_key": 375
+    },
+    ...
+  ]
+}
+```
+
+`encoders[j]` for `type == "compute"` adds `compute_dispatch_count` (current implementation records dispatches as future work; the encoder is still listed so downstream tools can branch on type without parsing the call index).
+
+`encoders[j]` for `type == "blit"` carries no attachments and no draws — the call window (`first/last_call_index`) is enough to identify the blit's place in the timeline.
+
+`draw_to_rps_map[k]`:
+
+```json
+{"draw_index_global": 0, "encoder_index": 2, "draw_in_encoder": 0, "call_index": 131, "rps_key": 472}
+```
+
+This array is the simplest entry point for the user-level question "which shader does draw N use?" — feed `rps_key` straight into `shader-of-rps`.
+
+### Implementation notes
+
+- Swizzles are installed on `MTLCommandQueue.commandBuffer*`, `MTLCommandBuffer.{render,compute,blit}CommandEncoder*`, and `MTLRenderCommandEncoder.{setRenderPipelineState:, drawPrimitives:*, drawIndexedPrimitives:*, endEncoding}`. The render-encoder swizzles are installed lazily on first encoder creation, since the concrete encoder class is not known up front.
+- Capture is gated to the actual `playAll` traversal — a process-global flag is opened immediately before `playAll` and closed after. Throwaway CBs/encoders the framework creates during `makeController` are filtered out.
+- `first_call_index` / `last_call_index` come from `*(uint32_t *)(controller + 0x5810)` (R7.1's controller offset), read synchronously inside each swizzle thunk.
+- The render encoder's `color_attachments[]` / `depth_attachment` / `stencil_attachment` are snapshotted at encoder begin from the `MTLRenderPassDescriptor`. Attachment `texture_id` references match the IDs surfaced by `replay --list-resources`.
+- `rps_key` for each draw is resolved by combining: (a) R7.3's `current_rps_ptr` tracked across `setRenderPipelineState:` and `drawXXX:` calls inside the encoder, with (b) a `(rps_ptr → rps_key)` map built post-replay by probing `objectMap.renderPipelineStateForKey:` over the same key range `pipeline` uses.
+
+### Health checks / invariants
+
+After `frame-list` completes, the following invariants hold on any healthy run:
+
+- `sum(encoder.draw_count) == draw_count == len(draw_to_rps_map)`
+- For every entry in `draw_to_rps_map[]`, `rps_key` is non-null when the trace's draws all hit pipeline states captured by the R7.2 swizzle (LYSK trace baseline: 244/244 = 100%).
+- `rps_correlated_count` should equal the number of `render_pipeline_states` returned by `pipeline` — they share the same swizzle health gate.
+
+If any of these fails, the swizzle install path is broken (likely a macOS update changed the implementation class hierarchy); inspect stderr and re-run `setup.sh`.
+
+### Per-encoder GPU timing caveat
+
+`--with-timing` reads `MTLCommandBuffer.GPUStartTime` and `GPUEndTime`. Replay-internal command buffers may never `commit`, in which case both properties remain 0 and the JSON reports `gpu_duration_ms: null`. For accurate host-side per-segment timing, prefer `replay --playto N` bisection (see investigation playbook Pattern 4). This flag is provided primarily so callers can check whether the replay framework happens to surface valid timing for a given trace — when it does, it's "free".
+
+---
+
 ## Subcommand: config
 
 Runs a complete replay with one of three knobs flipped, isolating their individual effect. Each invocation creates a fresh replay context.
@@ -430,6 +542,9 @@ python3 gputrace_replay_wrapper.py pipeline <trace> /tmp/out
 python3 gputrace_replay_wrapper.py shader <trace> 248 /tmp/out/library_248.metallib --verify
 python3 gputrace_replay_wrapper.py shader <trace> 248 --source /tmp/new.metal --verify
 python3 gputrace_replay_wrapper.py shader-of-rps <trace> 484 --with-ir --output-dir /tmp/out
+python3 gputrace_replay_wrapper.py frame-list <trace>
+python3 gputrace_replay_wrapper.py frame-list <trace> --no-draws
+python3 gputrace_replay_wrapper.py frame-list <trace> --with-timing --pretty
 python3 gputrace_replay_wrapper.py config <trace> disableOptimizeRestores=0 enableValidation=1
 ```
 
@@ -476,6 +591,18 @@ else:
     if sor.ir_ll_path:
         print("LLVM IR:", sor.ir_ll_path, sor.ir_ll_size, "bytes")
 
+# R7.3 — frame timeline + draw→RPS map
+fl = bridge.frame_list("/path/to/foo.gputrace")
+print("CBs:", fl.command_buffer_count, "encoders:", fl.encoder_count, "draws:", fl.draw_count)
+for cb in fl.command_buffers:
+    for enc in cb.encoders:
+        if enc.type == "render" and enc.draw_count:
+            first_draw = enc.draws[0]
+            print(f"enc#{enc.index} {enc.label or ''} -> first draw rps_key={first_draw.rps_key}")
+# Chain: pick the first draw's RPS, get its IR.
+first = fl.draw_to_rps_map[0]
+sor = bridge.shader_of_rps("/path/to/foo.gputrace", first.rps_key, with_ir=True, output_dir="/tmp/out")
+
 # shader hot-replace + verify
 target = p.libraries[0]
 s = bridge.shader("/path/to/foo.gputrace", target.key,
@@ -509,6 +636,12 @@ Returned dataclasses (see `gputrace_replay_wrapper.py` for full field lists):
 | `Function` | `key`, `name`, `function_type`, `function_type_str` |
 | `ShaderResult` | `replacement_done`, `original`, `replacement`, `verify` |
 | `ShaderOfRpsResult` (R7.4) | `rps_key`, `stage`, `function_key`, `function_name`, `library_key`, `library_metallib_path`, `library_air_path`, `cache_key_metallib`, `ir_ll_path`, `error?` (`rps_not_found` / `descriptor_not_captured` / `stage_function_absent` / ...) |
+| `FrameListResult` (R7.3) | `command_buffer_count`, `encoder_count`, `draw_count`, `rps_correlated_count`, `total_call_count`, `with_draws`, `with_timing`, `command_buffers: list[FrameCommandBuffer]`, `draw_to_rps_map: list[FrameDrawToRps]` |
+| `FrameCommandBuffer` | `index`, `label`, `encoder_count`, `gpu_start_ms?` / `gpu_end_ms?` / `gpu_duration_ms?`, `encoders: list[FrameEncoder]` |
+| `FrameEncoder` | `index`, `type` (`render`/`compute`/`blit`), `label`, `first_call_index`, `last_call_index`, `draw_count`, `color_attachments: list[FrameAttachment]`, `depth_attachment?`, `stencil_attachment?`, `compute_dispatch_count?`, `draws: list[FrameDraw]` |
+| `FrameDraw` | `draw_index_global`, `draw_in_encoder`, `call_index`, `primitive_type`, `primitive_type_name`, `vertex_count`, `instance_count`, `indexed`, `index_count?`, `rps_key?`, `rps_label?`, `fragment_function_key?` |
+| `FrameAttachment` | `texture_id`, `pixel_format`, `format`, `index?` |
+| `FrameDrawToRps` | `draw_index_global`, `encoder_index`, `draw_in_encoder`, `call_index`, `rps_key?` |
 | `ConfigResult` | `config: dict[str,bool]`, `success`, `elapsed_ms`, `resource_count` |
 | `BridgeError(Exception)` | `exit_code`, `exit_name`, `stderr`, `command`, `args` |
 

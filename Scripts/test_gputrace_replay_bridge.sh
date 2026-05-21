@@ -55,7 +55,7 @@ if echo "$OUTPUT" | grep -q '"commands"'; then pass "JSON has 'commands' array";
 if echo "$OUTPUT" | grep -q '"version"'; then pass "JSON has 'version' field"; else fail "missing 'version'"; fi
 
 # Check all 6 commands listed
-for cmd in help replay pipeline shader shader-of-rps config; do
+for cmd in help replay pipeline shader shader-of-rps frame-list config; do
     if echo "$OUTPUT" | grep -q "\"$cmd\""; then
         pass "commands contains '$cmd'"
     else
@@ -73,7 +73,7 @@ if [ "$rc" -eq 1 ]; then pass "exit code = 1"; else fail "exit code = $rc (expec
 
 # --- Test 4: Subcommands without required args → exit code 1 ---
 echo "[T4] Subcommands without required args → exit code 1"
-for cmd in replay pipeline shader shader-of-rps config; do
+for cmd in replay pipeline shader shader-of-rps frame-list config; do
     set +e
     "$BRIDGE" "$cmd" >/dev/null 2>&1
     rc=$?
@@ -236,6 +236,74 @@ if [ -n "${GPUTRACE_PATH:-}" ] && [ -d "$GPUTRACE_PATH" ]; then
     set -e
     if [ "$rc" -eq 11 ]; then pass "missing-rps exit = 11 (EXIT_SUBCMD_FAIL)"; else fail "missing-rps exit = $rc (expected 11)"; fi
     if echo "$OUTPUT" | grep -q '"error":"rps_not_found"'; then pass "structured rps_not_found error"; else fail "missing rps_not_found error"; fi
+
+    # T7l: R7.3 — frame-list emits cb / encoder / draw timeline + draw_to_rps_map
+    echo "  [T7l] frame-list timeline (R7.3)"
+    set +e
+    FRAME_JSON=$("$BRIDGE" frame-list "$GPUTRACE_PATH" 2>/dev/null)
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ]; then pass "frame-list exit = 0"; else fail "frame-list exit = $rc"; fi
+    if echo "$FRAME_JSON" | grep -q '"command_buffer_count"'; then pass "has command_buffer_count"; else fail "missing command_buffer_count"; fi
+    if echo "$FRAME_JSON" | grep -q '"encoder_count"'; then pass "has encoder_count"; else fail "missing encoder_count"; fi
+    if echo "$FRAME_JSON" | grep -q '"draw_count"'; then pass "has draw_count"; else fail "missing draw_count"; fi
+    if echo "$FRAME_JSON" | grep -q '"command_buffers":\['; then pass "has command_buffers tree"; else fail "missing command_buffers tree"; fi
+    if echo "$FRAME_JSON" | grep -q '"draw_to_rps_map":\['; then pass "has draw_to_rps_map"; else fail "missing draw_to_rps_map"; fi
+    if echo "$FRAME_JSON" | grep -q '"first_call_index"'; then pass "encoders have first_call_index"; else fail "missing first_call_index"; fi
+    if echo "$FRAME_JSON" | grep -q '"last_call_index"'; then pass "encoders have last_call_index"; else fail "missing last_call_index"; fi
+    if echo "$FRAME_JSON" | grep -q '"primitive_type_name"'; then pass "draws have primitive_type_name"; else fail "missing primitive_type_name"; fi
+
+    # Validate semantic invariants via Python: encoder.draw_count sum == flat map length, no null rps_key
+    INVARIANTS=$(echo "$FRAME_JSON" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+enc_sum = sum(e['draw_count'] for cb in d['command_buffers'] for e in cb['encoders'])
+flat = len(d['draw_to_rps_map'])
+none_rps = sum(1 for r in d['draw_to_rps_map'] if r['rps_key'] is None)
+print(f'enc_sum={enc_sum} flat={flat} none_rps={none_rps} total_call_count={d[\"total_call_count\"]}')
+" 2>/dev/null)
+    echo "    invariants: $INVARIANTS"
+    if echo "$INVARIANTS" | grep -q "enc_sum=$(echo "$INVARIANTS" | sed -n 's/.*flat=\([0-9]*\).*/\1/p')"; then
+        pass "encoder draw_count sum equals draw_to_rps_map length"
+    else
+        fail "draw count mismatch between encoder tree and flat map"
+    fi
+    if echo "$INVARIANTS" | grep -q "none_rps=0"; then
+        pass "every draw maps to a non-null rps_key (R7.3 + R7.2 cross-validation)"
+    else
+        fail "some draws have null rps_key — swizzle gap"
+    fi
+
+    # T7m: R7.3 — frame-list --no-draws suppresses draws[] and draw_to_rps_map
+    echo "  [T7m] frame-list --no-draws suppression (R7.3)"
+    set +e
+    OUTPUT=$("$BRIDGE" frame-list "$GPUTRACE_PATH" --no-draws 2>/dev/null)
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ]; then pass "--no-draws exit = 0"; else fail "--no-draws exit = $rc"; fi
+    if echo "$OUTPUT" | grep -q '"with_draws":false'; then pass "with_draws=false"; else fail "with_draws still true"; fi
+    if ! echo "$OUTPUT" | grep -q '"draw_to_rps_map"'; then pass "draw_to_rps_map omitted"; else fail "draw_to_rps_map should be omitted"; fi
+
+    # T7n: R7.3 — frame-list → shader-of-rps end-to-end (the R7 final-mile chain)
+    echo "  [T7n] frame-list → shader-of-rps end-to-end chain (R7.3)"
+    FIRST_DRAW_RPS=$(echo "$FRAME_JSON" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+m = [r for r in d['draw_to_rps_map'] if r['rps_key'] is not None]
+print(m[0]['rps_key']) if m else exit(1)
+" 2>/dev/null || echo "")
+    if [ -n "$FIRST_DRAW_RPS" ]; then
+        TMPDIR_R73C=$(mktemp -d)
+        set +e
+        OUTPUT=$("$BRIDGE" shader-of-rps "$GPUTRACE_PATH" "$FIRST_DRAW_RPS" --output-dir "$TMPDIR_R73C" 2>/dev/null)
+        rc=$?
+        set -e
+        if [ "$rc" -eq 0 ]; then pass "chained shader-of-rps exit = 0"; else fail "chained shader-of-rps exit = $rc"; fi
+        if echo "$OUTPUT" | grep -q '"library_metallib_path"'; then pass "produced metallib for draw[0]'s RPS"; else fail "no metallib produced"; fi
+        rm -rf "$TMPDIR_R73C"
+    else
+        fail "could not derive a draw[0].rps_key for frame-list→shader-of-rps chain"
+    fi
 else
     echo ""
     echo "[INFO] Skipping live trace tests (set GPUTRACE_PATH to enable)"

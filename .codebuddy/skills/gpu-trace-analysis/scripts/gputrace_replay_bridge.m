@@ -9,6 +9,7 @@
  *   pipeline       — library 枚举 + metallib/AIR 导出 + RPS↔shader 关联（R7.2）
  *   shader         — setLibrary:forKey: 热替换 + 验证（R6.1d）
  *   shader-of-rps  — 通过 RPS_key 反查 fragment/vertex shader 并可选导出 IR（R7.4）
+ *   frame-list     — encoder 时间序列 + draw→RPS 映射 + per-cb timing（R7.3）
  *   config         — 调用链控制 + validation 全局变量（R6.1e）
  *
  * 编译：
@@ -21,6 +22,7 @@
  *   ./gputrace_replay_bridge pipeline <path-to-.gputrace> [output_dir]
  *   ./gputrace_replay_bridge shader <path-to-.gputrace> <library_key> <metallib_path>
  *   ./gputrace_replay_bridge shader-of-rps <path-to-.gputrace> <rps_key> [--stage fragment|vertex] [--with-ir] [--output-dir DIR]
+ *   ./gputrace_replay_bridge frame-list <path-to-.gputrace> [--with-draws] [--no-draws] [--with-timing]
  *   ./gputrace_replay_bridge config <path-to-.gputrace> [key=value ...]
  */
 
@@ -400,7 +402,7 @@ static void replay_context_cleanup(void) {
 static int cmd_help(int argc, const char *argv[]) {
     JSON_BEGIN();
     JSON_KV_STR("tool", "gputrace_replay_bridge");
-    JSON_KV_STR("version", "0.3.0");
+    JSON_KV_STR("version", "0.4.0");
     JSON_SEP();
     printf("\"commands\":[");
     printf("{\"name\":\"help\",\"description\":\"Show available commands\"}");
@@ -408,6 +410,7 @@ static int cmd_help(int argc, const char *argv[]) {
     printf(",{\"name\":\"pipeline\",\"description\":\"Library enumeration + metallib/AIR export + RPS↔shader correlation (vertex/fragment function/library key + attachment summary captured via method swizzling).\",\"usage\":\"pipeline <.gputrace> [output_dir]\"}");
     printf(",{\"name\":\"shader\",\"description\":\"Hot-replace library via setLibrary:forKey:\",\"usage\":\"shader <.gputrace> <lib_key> <metallib_path>\"}");
     printf(",{\"name\":\"shader-of-rps\",\"description\":\"Reverse-lookup the fragment/vertex shader of a render pipeline state. Reuses the pipeline-subcommand swizzle to map RPS_key -> function_key -> library_key -> metallib + (optionally) llvm-dis to .ll IR.\",\"usage\":\"shader-of-rps <.gputrace> <rps_key> [--stage fragment|vertex] [--with-ir] [--output-dir DIR]\"}");
+    printf(",{\"name\":\"frame-list\",\"description\":\"Enumerate command buffers / encoders / draw calls captured during replay and map each draw to its render pipeline state. Outputs a tree (command_buffers[].encoders[].draws[]) plus a flat draw_to_rps_map[] view. Optional per-cb GPU timing.\",\"usage\":\"frame-list <.gputrace> [--with-draws] [--no-draws] [--with-timing]\"}");
     printf(",{\"name\":\"config\",\"description\":\"Configuration control (call chain + validation)\",\"usage\":\"config <.gputrace> [key=value ...]\"}");
     printf("]");
     JSON_END();
@@ -795,6 +798,552 @@ static const RPSCaptureEntry *rps_find_entry(void *rps_ptr) {
         if (g_rps_captured[i].rps_ptr == rps_ptr) return &g_rps_captured[i];
     }
     return NULL;
+}
+
+// ============================================================
+#pragma mark - Frame Swizzle Capture (R7.3)
+// ============================================================
+//
+// "Swizzle-first" approach to building an encoder/draw timeline equivalent to
+// what Xcode's Frame Debugger shows. We hook the public Metal API surface so
+// that during `playAll` every (commandBuffer, encoder, draw) triple is
+// recorded into process-global tables.
+//
+// Hooks (installed in `frame_install_swizzles`, lazily for encoders):
+//   - MTLCommandQueue (concrete impl class)
+//       commandBuffer / commandBufferWithUnretainedReferences
+//   - MTLCommandBuffer (concrete impl class)
+//       renderCommandEncoderWithDescriptor:
+//       computeCommandEncoder / computeCommandEncoderWithDispatchType:
+//       blitCommandEncoder / blitCommandEncoderWithDescriptor:
+//   - MTLRenderCommandEncoder (concrete impl class — discovered at first
+//                             renderCommandEncoderWithDescriptor: invocation)
+//       setRenderPipelineState:
+//       drawPrimitives: variants (3)
+//       drawIndexedPrimitives: variants (2)
+//       endEncoding
+//
+// Why swizzle-first instead of reflecting the controller? Reflection of
+// `controller.commandBuffers` requires undocumented offsets that may shift on
+// every macOS update; the public Metal API is much more stable. The same
+// mechanism (install BEFORE replay_context_init / makeController) used by
+// R7.2's RPS swizzle also applies here — the framework's PSO compilation
+// pass during makeController doesn't issue draw calls, so installing the
+// frame swizzles at the same moment is safe.
+//
+// `controller + 0x5810` (R7.1) provides `last_played_call_index` synchronously,
+// so each encoder/draw can record which call index it corresponds to without
+// any additional plumbing.
+
+#define MAX_CAPTURED_CB        256
+#define MAX_CAPTURED_ENCODERS  1024
+#define MAX_CAPTURED_DRAWS     16384
+#define ENC_LABEL_LEN          128
+#define ENC_TYPE_LEN           16
+
+typedef enum {
+    FRAME_ENC_TYPE_RENDER  = 0,
+    FRAME_ENC_TYPE_COMPUTE = 1,
+    FRAME_ENC_TYPE_BLIT    = 2,
+} FrameEncoderType;
+
+typedef struct {
+    void   *cb_ptr;
+    int     index;
+    char    label[ENC_LABEL_LEN];
+    int     encoder_first;       // index into g_encoder_captured[]
+    int     encoder_count;
+    double  gpu_start_ms;        // R7.3 --with-timing; -1 if unavailable
+    double  gpu_end_ms;
+    double  gpu_duration_ms;
+} FrameCBEntry;
+
+typedef struct {
+    int     index;
+    void   *cb_ptr;              // owning command buffer
+    int     cb_index;
+    void   *encoder_ptr;
+    FrameEncoderType type;
+    char    label[ENC_LABEL_LEN];
+
+    // Render encoder snapshot (set when type == RENDER).
+    int     color_attachment_count;
+    uint64_t color_attachment_ids[RPS_MAX_COLOR_ATT];
+    NSUInteger color_attachment_pf[RPS_MAX_COLOR_ATT];
+    char    color_attachment_pf_name[RPS_MAX_COLOR_ATT][RPS_FMT_NAME_LEN];
+    uint64_t depth_attachment_id;     // 0 if absent
+    NSUInteger depth_attachment_pf;
+    char    depth_attachment_pf_name[RPS_FMT_NAME_LEN];
+    uint64_t stencil_attachment_id;   // 0 if absent
+    NSUInteger stencil_attachment_pf;
+    char    stencil_attachment_pf_name[RPS_FMT_NAME_LEN];
+
+    uint32_t first_call_index;        // controller.last_call_index at begin
+    uint32_t last_call_index;         // updated on endEncoding
+    int      draw_first;              // index into g_draws_captured[]
+    int      draw_count;
+
+    // Compute encoder fast-path: just count dispatches.
+    int      compute_dispatch_count;
+
+    // Currently-bound RPS (for render encoders), used to attribute draws.
+    void    *current_rps_ptr;
+    BOOL     ended;
+} FrameEncoderEntry;
+
+typedef struct {
+    int      draw_index_global;
+    int      encoder_index;
+    int      draw_in_encoder;
+    void    *rps_ptr;             // captured at draw time (current encoder.RPS)
+    uint32_t call_index;
+    int      primitive_type;      // MTLPrimitiveType
+    NSUInteger vertex_count;
+    NSUInteger instance_count;
+    NSUInteger index_count;       // 0 for non-indexed
+    BOOL     indexed;
+} FrameDrawEntry;
+
+static FrameCBEntry      g_cb_captured[MAX_CAPTURED_CB];
+static int               g_cb_n_captured = 0;
+static FrameEncoderEntry g_encoder_captured[MAX_CAPTURED_ENCODERS];
+static int               g_encoder_n_captured = 0;
+static FrameDrawEntry    g_draws_captured[MAX_CAPTURED_DRAWS];
+static int               g_draws_n_captured = 0;
+
+static int               g_frame_swizzles_installed = 0;
+static int               g_render_enc_swizzled = 0;
+
+// "Capture armed" gate: even though the swizzles are installed early (before
+// makeController), the framework's PSO compilation pass may construct
+// throw-away command buffers / encoders. We only want draw timeline data from
+// the actual `playAll` traversal. The gate is closed by default and toggled
+// by `cmd_frame_list` around its `playAll` call.
+static volatile int      g_frame_capture_armed = 0;
+
+// Forward declarations.
+static void frame_install_render_encoder_swizzles(Class encoderClass);
+
+// --- Original IMP storage ---------------------------------------------------
+
+typedef id   (*queue_cb_imp)(id self, SEL _cmd);
+static queue_cb_imp g_orig_queue_cb        = NULL;
+static queue_cb_imp g_orig_queue_cb_unret  = NULL;
+
+typedef id   (*cb_render_imp)(id self, SEL _cmd, id desc);
+typedef id   (*cb_compute_imp)(id self, SEL _cmd);
+typedef id   (*cb_compute_dispatch_imp)(id self, SEL _cmd, NSUInteger dt);
+typedef id   (*cb_blit_imp)(id self, SEL _cmd);
+typedef id   (*cb_blit_desc_imp)(id self, SEL _cmd, id desc);
+static cb_render_imp           g_orig_cb_render          = NULL;
+static cb_compute_imp          g_orig_cb_compute         = NULL;
+static cb_compute_dispatch_imp g_orig_cb_compute_dispatch = NULL;
+static cb_blit_imp             g_orig_cb_blit            = NULL;
+static cb_blit_desc_imp        g_orig_cb_blit_desc       = NULL;
+
+typedef void (*enc_set_rps_imp)(id self, SEL _cmd, id rps);
+typedef void (*enc_end_imp)(id self, SEL _cmd);
+typedef void (*enc_draw_v_imp)(id self, SEL _cmd, NSUInteger pt, NSUInteger vs, NSUInteger vc);
+typedef void (*enc_draw_vi_imp)(id self, SEL _cmd, NSUInteger pt, NSUInteger vs, NSUInteger vc, NSUInteger ic);
+typedef void (*enc_draw_vib_imp)(id self, SEL _cmd, NSUInteger pt, NSUInteger vs, NSUInteger vc, NSUInteger ic, NSUInteger bi);
+typedef void (*enc_draw_idx_imp)(id self, SEL _cmd, NSUInteger pt, NSUInteger ic, NSUInteger it, id ib, NSUInteger ibo);
+typedef void (*enc_draw_idxi_imp)(id self, SEL _cmd, NSUInteger pt, NSUInteger ic, NSUInteger it, id ib, NSUInteger ibo, NSUInteger inst);
+typedef void (*enc_draw_idxib_imp)(id self, SEL _cmd, NSUInteger pt, NSUInteger ic, NSUInteger it, id ib, NSUInteger ibo, NSUInteger inst, NSInteger bv, NSUInteger bi);
+static enc_set_rps_imp    g_orig_enc_set_rps    = NULL;
+static enc_end_imp        g_orig_enc_end        = NULL;
+static enc_draw_v_imp     g_orig_enc_draw_v     = NULL;
+static enc_draw_vi_imp    g_orig_enc_draw_vi    = NULL;
+static enc_draw_vib_imp   g_orig_enc_draw_vib   = NULL;
+static enc_draw_idx_imp   g_orig_enc_draw_idx   = NULL;
+static enc_draw_idxi_imp  g_orig_enc_draw_idxi  = NULL;
+static enc_draw_idxib_imp g_orig_enc_draw_idxib = NULL;
+
+// --- Lookup helpers ---------------------------------------------------------
+
+static FrameCBEntry *frame_find_cb_entry(void *cb_ptr) {
+    for (int i = g_cb_n_captured - 1; i >= 0; i--) {
+        if (g_cb_captured[i].cb_ptr == cb_ptr) return &g_cb_captured[i];
+    }
+    return NULL;
+}
+
+static FrameEncoderEntry *frame_find_active_encoder(void *encoder_ptr) {
+    // Reverse scan: most-recent encoder is most likely match.
+    for (int i = g_encoder_n_captured - 1; i >= 0; i--) {
+        if (g_encoder_captured[i].encoder_ptr == encoder_ptr &&
+            !g_encoder_captured[i].ended) {
+            return &g_encoder_captured[i];
+        }
+    }
+    return NULL;
+}
+
+// Given a native MTLTexture instance, return its trace-internal resource id
+// by linear-scanning the objectMap.resources dictionary. Used when snapshoting
+// RenderPassDescriptor.attachments to express them as resource ids the caller
+// already knows from `replay --list-resources`.
+//
+// Linear scan is acceptable here: this runs only at encoder begin (a few
+// times per frame) and the resources dict is typically a few hundred entries.
+static uint64_t frame_lookup_resource_id(id texture) {
+    if (!texture || !g_ctx.objectMap) return 0;
+    NSDictionary *res = nil;
+    @try { res = [g_ctx.objectMap performSelector:@selector(resources)]; } @catch (NSException *ex) {}
+    if (!res) return 0;
+    for (id key in res) {
+        if (res[key] == texture) {
+            return [key unsignedLongLongValue];
+        }
+    }
+    return 0;
+}
+
+// --- Capture entry creation -------------------------------------------------
+
+static FrameCBEntry *frame_capture_cb(id cb) {
+    if (!g_frame_capture_armed) return NULL;
+    if (g_cb_n_captured >= MAX_CAPTURED_CB) return NULL;
+    FrameCBEntry *e = &g_cb_captured[g_cb_n_captured];
+    memset(e, 0, sizeof(*e));
+    e->cb_ptr = (__bridge void *)cb;
+    e->index = g_cb_n_captured;
+    e->encoder_first = -1;
+    e->gpu_start_ms = -1;
+    e->gpu_end_ms = -1;
+    e->gpu_duration_ms = -1;
+    NSString *lbl = nil;
+    @try { lbl = [cb performSelector:@selector(label)]; } @catch (NSException *ex) {}
+    if (lbl) snprintf(e->label, sizeof(e->label), "%s", [lbl UTF8String]);
+    g_cb_n_captured++;
+    return e;
+}
+
+static void frame_snapshot_render_pass(FrameEncoderEntry *e, id desc) {
+    if (!desc) return;
+    // colorAttachments is a MTLRenderPassColorAttachmentDescriptorArray;
+    // index it [0..7].
+    id colorAttsArr = nil;
+    @try { colorAttsArr = [desc valueForKey:@"colorAttachments"]; } @catch (NSException *ex) {}
+    if (colorAttsArr) {
+        SEL idxSel = @selector(objectAtIndexedSubscript:);
+        for (int i = 0; i < RPS_MAX_COLOR_ATT; i++) {
+            id att = nil;
+            if ([colorAttsArr respondsToSelector:idxSel]) {
+                @try {
+                    att = ((id (*)(id, SEL, NSUInteger))objc_msgSend)(colorAttsArr, idxSel, (NSUInteger)i);
+                } @catch (NSException *ex) {}
+            }
+            if (!att) continue;
+            id tex = nil;
+            @try { tex = [att valueForKey:@"texture"]; } @catch (NSException *ex) {}
+            if (!tex) continue;
+            int slot = e->color_attachment_count++;
+            if (slot >= RPS_MAX_COLOR_ATT) { e->color_attachment_count = RPS_MAX_COLOR_ATT; break; }
+            e->color_attachment_ids[slot] = frame_lookup_resource_id(tex);
+            NSUInteger pf = 0;
+            @try { pf = [(id<MTLTexture>)tex pixelFormat]; } @catch (NSException *ex) {}
+            e->color_attachment_pf[slot] = pf;
+            snprintf(e->color_attachment_pf_name[slot],
+                     sizeof(e->color_attachment_pf_name[slot]),
+                     "%s", pixel_format_name((MTLPixelFormat)pf));
+        }
+    }
+    id depthAtt = nil;
+    @try { depthAtt = [desc valueForKey:@"depthAttachment"]; } @catch (NSException *ex) {}
+    if (depthAtt) {
+        id tex = nil;
+        @try { tex = [depthAtt valueForKey:@"texture"]; } @catch (NSException *ex) {}
+        if (tex) {
+            e->depth_attachment_id = frame_lookup_resource_id(tex);
+            NSUInteger pf = 0;
+            @try { pf = [(id<MTLTexture>)tex pixelFormat]; } @catch (NSException *ex) {}
+            e->depth_attachment_pf = pf;
+            snprintf(e->depth_attachment_pf_name, sizeof(e->depth_attachment_pf_name),
+                     "%s", pixel_format_name((MTLPixelFormat)pf));
+        }
+    }
+    id stencilAtt = nil;
+    @try { stencilAtt = [desc valueForKey:@"stencilAttachment"]; } @catch (NSException *ex) {}
+    if (stencilAtt) {
+        id tex = nil;
+        @try { tex = [stencilAtt valueForKey:@"texture"]; } @catch (NSException *ex) {}
+        if (tex) {
+            e->stencil_attachment_id = frame_lookup_resource_id(tex);
+            NSUInteger pf = 0;
+            @try { pf = [(id<MTLTexture>)tex pixelFormat]; } @catch (NSException *ex) {}
+            e->stencil_attachment_pf = pf;
+            snprintf(e->stencil_attachment_pf_name, sizeof(e->stencil_attachment_pf_name),
+                     "%s", pixel_format_name((MTLPixelFormat)pf));
+        }
+    }
+}
+
+static FrameEncoderEntry *frame_capture_encoder(id cb, id encoder, FrameEncoderType type, id passDesc) {
+    if (!g_frame_capture_armed) return NULL;
+    if (g_encoder_n_captured >= MAX_CAPTURED_ENCODERS) return NULL;
+    FrameCBEntry *cbE = frame_find_cb_entry((__bridge void *)cb);
+    // If the cb wasn't captured (cb_n_captured saturated), still record encoder
+    // with a synthetic cb_index of -1 to keep ordering consistent.
+    int cb_index = cbE ? cbE->index : -1;
+    FrameEncoderEntry *e = &g_encoder_captured[g_encoder_n_captured];
+    memset(e, 0, sizeof(*e));
+    e->index = g_encoder_n_captured;
+    e->cb_ptr = (__bridge void *)cb;
+    e->cb_index = cb_index;
+    e->encoder_ptr = (__bridge void *)encoder;
+    e->type = type;
+    e->draw_first = -1;
+    e->depth_attachment_pf = 0;
+    e->stencil_attachment_pf = 0;
+    NSString *lbl = nil;
+    @try { lbl = [encoder performSelector:@selector(label)]; } @catch (NSException *ex) {}
+    if (lbl) snprintf(e->label, sizeof(e->label), "%s", [lbl UTF8String]);
+    e->first_call_index = controller_last_call_index(g_ctx.controller);
+    e->last_call_index = e->first_call_index;
+    if (type == FRAME_ENC_TYPE_RENDER) {
+        frame_snapshot_render_pass(e, passDesc);
+    }
+    if (cbE) {
+        if (cbE->encoder_first < 0) cbE->encoder_first = e->index;
+        cbE->encoder_count++;
+    }
+    g_encoder_n_captured++;
+    return e;
+}
+
+// --- Swizzle thunks: MTLCommandQueue ---------------------------------------
+
+static id swz_queue_cb(id self, SEL _cmd) {
+    id cb = g_orig_queue_cb(self, _cmd);
+    if (cb) frame_capture_cb(cb);
+    return cb;
+}
+
+static id swz_queue_cb_unret(id self, SEL _cmd) {
+    id cb = g_orig_queue_cb_unret(self, _cmd);
+    if (cb) frame_capture_cb(cb);
+    return cb;
+}
+
+// --- Swizzle thunks: MTLCommandBuffer --------------------------------------
+
+static id swz_cb_render(id self, SEL _cmd, id desc) {
+    id enc = g_orig_cb_render(self, _cmd, desc);
+    if (enc) {
+        // Lazily install render-encoder swizzles on the very first observed
+        // encoder: only at this point do we know the concrete impl class.
+        if (!g_render_enc_swizzled) {
+            frame_install_render_encoder_swizzles(object_getClass(enc));
+            g_render_enc_swizzled = 1;
+        }
+        frame_capture_encoder(self, enc, FRAME_ENC_TYPE_RENDER, desc);
+    }
+    return enc;
+}
+
+static id swz_cb_compute(id self, SEL _cmd) {
+    id enc = g_orig_cb_compute(self, _cmd);
+    if (enc) frame_capture_encoder(self, enc, FRAME_ENC_TYPE_COMPUTE, nil);
+    return enc;
+}
+
+static id swz_cb_compute_dispatch(id self, SEL _cmd, NSUInteger dt) {
+    id enc = g_orig_cb_compute_dispatch(self, _cmd, dt);
+    if (enc) frame_capture_encoder(self, enc, FRAME_ENC_TYPE_COMPUTE, nil);
+    return enc;
+}
+
+static id swz_cb_blit(id self, SEL _cmd) {
+    id enc = g_orig_cb_blit(self, _cmd);
+    if (enc) frame_capture_encoder(self, enc, FRAME_ENC_TYPE_BLIT, nil);
+    return enc;
+}
+
+static id swz_cb_blit_desc(id self, SEL _cmd, id desc) {
+    id enc = g_orig_cb_blit_desc(self, _cmd, desc);
+    if (enc) frame_capture_encoder(self, enc, FRAME_ENC_TYPE_BLIT, nil);
+    return enc;
+}
+
+// --- Swizzle thunks: MTLRenderCommandEncoder -------------------------------
+
+static void swz_enc_set_rps(id self, SEL _cmd, id rps) {
+    g_orig_enc_set_rps(self, _cmd, rps);
+    if (!g_frame_capture_armed) return;
+    FrameEncoderEntry *e = frame_find_active_encoder((__bridge void *)self);
+    if (e) e->current_rps_ptr = (__bridge void *)rps;
+}
+
+// Common draw recording (called from each variant's thunk). All counts are
+// recorded as captured; primitive_type is the raw MTLPrimitiveType numeric.
+static void frame_record_draw(id self, BOOL indexed,
+                              NSUInteger primitive_type,
+                              NSUInteger vertex_count,
+                              NSUInteger instance_count,
+                              NSUInteger index_count) {
+    if (!g_frame_capture_armed) return;
+    FrameEncoderEntry *e = frame_find_active_encoder((__bridge void *)self);
+    if (!e) return;
+    if (g_draws_n_captured >= MAX_CAPTURED_DRAWS) return;
+    FrameDrawEntry *d = &g_draws_captured[g_draws_n_captured];
+    d->draw_index_global = g_draws_n_captured;
+    d->encoder_index = e->index;
+    d->draw_in_encoder = e->draw_count;
+    d->rps_ptr = e->current_rps_ptr;
+    d->call_index = controller_last_call_index(g_ctx.controller);
+    d->primitive_type = (int)primitive_type;
+    d->vertex_count = vertex_count;
+    d->instance_count = instance_count;
+    d->index_count = index_count;
+    d->indexed = indexed;
+    if (e->draw_first < 0) e->draw_first = d->draw_index_global;
+    e->draw_count++;
+    g_draws_n_captured++;
+}
+
+static void swz_enc_draw_v(id self, SEL _cmd, NSUInteger pt, NSUInteger vs, NSUInteger vc) {
+    g_orig_enc_draw_v(self, _cmd, pt, vs, vc);
+    frame_record_draw(self, NO, pt, vc, 1, 0);
+}
+static void swz_enc_draw_vi(id self, SEL _cmd, NSUInteger pt, NSUInteger vs, NSUInteger vc, NSUInteger ic) {
+    g_orig_enc_draw_vi(self, _cmd, pt, vs, vc, ic);
+    frame_record_draw(self, NO, pt, vc, ic, 0);
+}
+static void swz_enc_draw_vib(id self, SEL _cmd, NSUInteger pt, NSUInteger vs, NSUInteger vc, NSUInteger ic, NSUInteger bi) {
+    g_orig_enc_draw_vib(self, _cmd, pt, vs, vc, ic, bi);
+    frame_record_draw(self, NO, pt, vc, ic, 0);
+}
+static void swz_enc_draw_idx(id self, SEL _cmd, NSUInteger pt, NSUInteger ic, NSUInteger it, id ib, NSUInteger ibo) {
+    g_orig_enc_draw_idx(self, _cmd, pt, ic, it, ib, ibo);
+    frame_record_draw(self, YES, pt, 0, 1, ic);
+}
+static void swz_enc_draw_idxi(id self, SEL _cmd, NSUInteger pt, NSUInteger ic, NSUInteger it, id ib, NSUInteger ibo, NSUInteger inst) {
+    g_orig_enc_draw_idxi(self, _cmd, pt, ic, it, ib, ibo, inst);
+    frame_record_draw(self, YES, pt, 0, inst, ic);
+}
+static void swz_enc_draw_idxib(id self, SEL _cmd, NSUInteger pt, NSUInteger ic, NSUInteger it, id ib, NSUInteger ibo, NSUInteger inst, NSInteger bv, NSUInteger bi) {
+    g_orig_enc_draw_idxib(self, _cmd, pt, ic, it, ib, ibo, inst, bv, bi);
+    frame_record_draw(self, YES, pt, 0, inst, ic);
+}
+
+static void swz_enc_end(id self, SEL _cmd) {
+    if (g_frame_capture_armed) {
+        FrameEncoderEntry *e = frame_find_active_encoder((__bridge void *)self);
+        if (e) {
+            e->last_call_index = controller_last_call_index(g_ctx.controller);
+            e->ended = YES;
+            e->current_rps_ptr = NULL;
+        }
+    }
+    g_orig_enc_end(self, _cmd);
+}
+
+// --- Swizzle install helpers -----------------------------------------------
+
+// Walk the class hierarchy starting at `cls` until a class that owns the
+// instance method `sel` is found, swizzle it, and store the original IMP via
+// `orig_slot`. Returns the class that was modified, or Nil on miss.
+static Class swizzle_in_hierarchy(Class cls, SEL sel, IMP newImp, void **orig_slot) {
+    Class c = cls;
+    while (c && c != [NSObject class]) {
+        Method m = class_getInstanceMethod(c, sel);
+        if (m) {
+            // class_getInstanceMethod walks up the hierarchy; check that this
+            // class actually owns the method to avoid corrupting NSObject.
+            unsigned int n = 0;
+            Method *methods = class_copyMethodList(c, &n);
+            BOOL owns = NO;
+            for (unsigned int i = 0; i < n; i++) {
+                if (method_getName(methods[i]) == sel) { owns = YES; break; }
+            }
+            if (methods) free(methods);
+            if (owns) {
+                *orig_slot = (void *)method_getImplementation(m);
+                method_setImplementation(m, newImp);
+                return c;
+            }
+        }
+        c = class_getSuperclass(c);
+    }
+    return Nil;
+}
+
+static void frame_install_render_encoder_swizzles(Class encoderClass) {
+    if (!encoderClass) return;
+    swizzle_in_hierarchy(encoderClass, @selector(setRenderPipelineState:),
+                         (IMP)swz_enc_set_rps, (void **)&g_orig_enc_set_rps);
+    swizzle_in_hierarchy(encoderClass, @selector(endEncoding),
+                         (IMP)swz_enc_end, (void **)&g_orig_enc_end);
+    swizzle_in_hierarchy(encoderClass,
+                         @selector(drawPrimitives:vertexStart:vertexCount:),
+                         (IMP)swz_enc_draw_v, (void **)&g_orig_enc_draw_v);
+    swizzle_in_hierarchy(encoderClass,
+                         @selector(drawPrimitives:vertexStart:vertexCount:instanceCount:),
+                         (IMP)swz_enc_draw_vi, (void **)&g_orig_enc_draw_vi);
+    swizzle_in_hierarchy(encoderClass,
+                         @selector(drawPrimitives:vertexStart:vertexCount:instanceCount:baseInstance:),
+                         (IMP)swz_enc_draw_vib, (void **)&g_orig_enc_draw_vib);
+    swizzle_in_hierarchy(encoderClass,
+                         @selector(drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:),
+                         (IMP)swz_enc_draw_idx, (void **)&g_orig_enc_draw_idx);
+    swizzle_in_hierarchy(encoderClass,
+                         @selector(drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:),
+                         (IMP)swz_enc_draw_idxi, (void **)&g_orig_enc_draw_idxi);
+    swizzle_in_hierarchy(encoderClass,
+                         @selector(drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:baseVertex:baseInstance:),
+                         (IMP)swz_enc_draw_idxib, (void **)&g_orig_enc_draw_idxib);
+}
+
+// Install MTLCommandQueue/MTLCommandBuffer swizzles up-front. Render encoder
+// swizzles are installed lazily on first encoder creation (see swz_cb_render).
+//
+// Strategy: we need concrete impl classes for queue/buffer. The cheap way is
+// to create a throwaway queue+cb from MTLCreateSystemDefaultDevice() once,
+// take object_getClass on the instances, then walk the class hierarchy. The
+// throwaway pair is released immediately (frame_capture_armed is still 0 at
+// this point so capture is silent — the captured array stays empty).
+static void frame_install_swizzles(void) {
+    if (g_frame_swizzles_installed) return;
+    @autoreleasepool {
+        id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+        if (!dev) return;
+        id<MTLCommandQueue> queue = [dev newCommandQueue];
+        if (!queue) return;
+        Class queueClass = object_getClass(queue);
+
+        // commandBuffer / commandBufferWithUnretainedReferences
+        swizzle_in_hierarchy(queueClass, @selector(commandBuffer),
+                             (IMP)swz_queue_cb, (void **)&g_orig_queue_cb);
+        swizzle_in_hierarchy(queueClass, @selector(commandBufferWithUnretainedReferences),
+                             (IMP)swz_queue_cb_unret, (void **)&g_orig_queue_cb_unret);
+
+        // Now create a CB to discover its concrete class. The capture gate is
+        // still closed so this throwaway CB doesn't pollute g_cb_captured.
+        id<MTLCommandBuffer> probeCB = nil;
+        @try { probeCB = [queue commandBuffer]; } @catch (NSException *ex) {}
+        if (probeCB) {
+            Class cbClass = object_getClass(probeCB);
+            swizzle_in_hierarchy(cbClass, @selector(renderCommandEncoderWithDescriptor:),
+                                 (IMP)swz_cb_render, (void **)&g_orig_cb_render);
+            swizzle_in_hierarchy(cbClass, @selector(computeCommandEncoder),
+                                 (IMP)swz_cb_compute, (void **)&g_orig_cb_compute);
+            swizzle_in_hierarchy(cbClass, @selector(computeCommandEncoderWithDispatchType:),
+                                 (IMP)swz_cb_compute_dispatch, (void **)&g_orig_cb_compute_dispatch);
+            swizzle_in_hierarchy(cbClass, @selector(blitCommandEncoder),
+                                 (IMP)swz_cb_blit, (void **)&g_orig_cb_blit);
+            swizzle_in_hierarchy(cbClass, @selector(blitCommandEncoderWithDescriptor:),
+                                 (IMP)swz_cb_blit_desc, (void **)&g_orig_cb_blit_desc);
+        }
+    }
+    g_frame_swizzles_installed = 1;
+}
+
+// Reset capture buffers between subcommand invocations (rare — only matters
+// if the same process is used multiple times, e.g. in tests).
+static void frame_capture_reset(void) {
+    g_cb_n_captured = 0;
+    g_encoder_n_captured = 0;
+    g_draws_n_captured = 0;
 }
 
 // ============================================================
@@ -1982,6 +2531,298 @@ static int cmd_shader_of_rps(int argc, const char *argv[]) {
 }
 
 // ============================================================
+#pragma mark - Subcommand: frame-list (R7.3)
+// ============================================================
+//
+// frame-list <trace> [--with-draws] [--no-draws] [--with-timing]
+//
+// Replays the trace once with the R7.3 frame swizzles armed and emits a
+// command_buffers / encoders / draws tree plus a flat draw_to_rps_map[]
+// suitable for chaining into shader-of-rps.
+//
+// Defaults:
+//   --with-draws  ON  (cheap; encoder.draws[] populated)
+//   --no-draws    OFF (omit per-draw records, keep encoder list only)
+//   --with-timing OFF (sets per-cb gpu_start/end_ms from MTLCommandBuffer
+//                      properties; many replay-created CBs never commit so
+//                      these properties remain 0 — flag is provided for
+//                      forward compatibility)
+//
+// Reuses R7.2's `rps_install_swizzles` so the per-draw rps_ptr is also
+// resolvable to a stable rps_key in the same invocation.
+
+typedef struct {
+    const char *trace_path;
+    BOOL with_draws;       // default YES
+    BOOL no_draws;          // explicit suppression overrides with_draws
+    BOOL with_timing;       // default NO
+} FrameListOptions;
+
+static FrameListOptions parse_frame_list_options(int argc, const char *argv[]) {
+    FrameListOptions o = {0};
+    o.with_draws = YES;
+    if (argc >= 1) o.trace_path = argv[0];
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--with-draws") == 0) o.with_draws = YES;
+        else if (strcmp(argv[i], "--no-draws") == 0) o.no_draws = YES;
+        else if (strcmp(argv[i], "--with-timing") == 0) o.with_timing = YES;
+    }
+    return o;
+}
+
+static const char *frame_encoder_type_name(FrameEncoderType t) {
+    switch (t) {
+        case FRAME_ENC_TYPE_RENDER:  return "render";
+        case FRAME_ENC_TYPE_COMPUTE: return "compute";
+        case FRAME_ENC_TYPE_BLIT:    return "blit";
+    }
+    return "other";
+}
+
+static const char *primitive_type_name(int pt) {
+    switch (pt) {
+        case 0: return "point";
+        case 1: return "line";
+        case 2: return "lineStrip";
+        case 3: return "triangle";
+        case 4: return "triangleStrip";
+        default: return "other";
+    }
+}
+
+static int cmd_frame_list(int argc, const char *argv[]) {
+    if (argc < 1) {
+        fprintf(stderr, "Usage: gputrace_replay_bridge frame-list <path-to-.gputrace> [--with-draws] [--no-draws] [--with-timing]\n");
+        fprintf(stderr, "\nEnumerates command buffers / encoders / draws captured during replay.\n");
+        fprintf(stderr, "Outputs JSON tree (command_buffers[].encoders[].draws[]) plus flat draw_to_rps_map[].\n");
+        return EXIT_USAGE;
+    }
+    FrameListOptions opts = parse_frame_list_options(argc, argv);
+    if (!opts.trace_path) return EXIT_USAGE;
+    BOOL emit_draws = opts.with_draws && !opts.no_draws;
+
+    // Reset and install swizzles BEFORE replay_context_init — the framework's
+    // PSO compilation in makeController would otherwise create CBs we don't
+    // see. The capture gate stays closed until after init returns.
+    frame_capture_reset();
+    rps_install_swizzles();
+    frame_install_swizzles();
+
+    int rc = replay_context_init(opts.trace_path);
+    if (rc != EXIT_OK) return rc;
+
+    // Arm capture only for the actual playAll traversal.
+    g_frame_capture_armed = 1;
+    int play_signal = 0;
+    double elapsed_ms = 0;
+    int play_rc = safe_playAll(&elapsed_ms, &play_signal);
+    g_frame_capture_armed = 0;
+
+    uint32_t total_call_count = controller_last_call_index(g_ctx.controller);
+
+    // R7.3 timing — derived from MTLCommandBuffer.GPU{Start,End}Time which
+    // are populated by Metal once the cb completes. For replay-internal CBs
+    // these properties may remain 0 if the framework batches differently.
+    if (opts.with_timing) {
+        for (int i = 0; i < g_cb_n_captured; i++) {
+            FrameCBEntry *cb = &g_cb_captured[i];
+            id obj = (__bridge id)cb->cb_ptr;
+            CFTimeInterval s = 0, e = 0;
+            @try { s = [obj GPUStartTime]; } @catch (NSException *ex) {}
+            @try { e = [obj GPUEndTime];   } @catch (NSException *ex) {}
+            cb->gpu_start_ms = s * 1000.0;
+            cb->gpu_end_ms = e * 1000.0;
+            cb->gpu_duration_ms = (e > s) ? (e - s) * 1000.0 : -1.0;
+        }
+    }
+
+    // Build (rps_ptr -> rps_key) for the draw_to_rps_map. Reuse R7.2's
+    // ptr-to-key map via an objectMap probe.
+    //
+    // NB: g_rps_captured[].rps_ptr is the ptr Metal returned to the
+    // application; objectMap.renderPipelineStateForKey: returns the same
+    // pointer, so a probe round-trip is O(N) over keys but the constant is
+    // small (we already do this in `pipeline`).
+    NSMutableDictionary *rpsPtr2Key = [NSMutableDictionary dictionary];
+    if (g_ctx.objectMap) {
+        SEL rpsSel = @selector(renderPipelineStateForKey:);
+        // Establish the same scan ceiling the `pipeline` subcommand uses.
+        id funcMapRaw = nil;
+        @try { funcMapRaw = [g_ctx.objectMap performSelector:@selector(functionMap)]; } @catch (NSException *ex) {}
+        uint64_t maxKey = 200;
+        if (funcMapRaw && [funcMapRaw isKindOfClass:[NSDictionary class]]) {
+            for (id key in (NSDictionary *)funcMapRaw) {
+                uint64_t kv = [key unsignedLongLongValue];
+                if (kv > maxKey) maxKey = kv;
+            }
+            maxKey += 50;
+        }
+        uint64_t rpsScan = maxKey + 200;
+        for (uint64_t k = 0; k <= rpsScan; k++) {
+            id rps = ((id (*)(id, SEL, uint64_t))objc_msgSend)(g_ctx.objectMap, rpsSel, k);
+            if (rps) {
+                [rpsPtr2Key setObject:@(k) forKey:[NSValue valueWithNonretainedObject:rps]];
+            }
+        }
+    }
+
+    // ===== Emit JSON =====
+    JSON_BEGIN();
+    JSON_KV_STR("command", "frame-list");
+    JSON_KV_STR("trace_path", opts.trace_path);
+    JSON_KV_STR("device", [[g_ctx.device name] UTF8String]);
+    JSON_KV_INT("replay_rc", play_rc);
+    if (play_signal != 0) JSON_KV_INT("replay_signal", play_signal);
+    JSON_KV_BOOL("success", play_rc == 0);
+    JSON_KV_DOUBLE("elapsed_ms", elapsed_ms);
+    JSON_KV_UINT("total_call_count", total_call_count);
+    JSON_KV_BOOL("with_draws", emit_draws);
+    JSON_KV_BOOL("with_timing", opts.with_timing);
+    JSON_KV_INT("command_buffer_count", g_cb_n_captured);
+    JSON_KV_INT("encoder_count", g_encoder_n_captured);
+    JSON_KV_INT("draw_count", g_draws_n_captured);
+    JSON_KV_INT("rps_correlated_count", (int)[rpsPtr2Key count]);
+
+    // command_buffers tree
+    JSON_SEP();
+    printf("\"command_buffers\":[");
+    for (int ci = 0; ci < g_cb_n_captured; ci++) {
+        if (ci > 0) printf(",");
+        FrameCBEntry *cb = &g_cb_captured[ci];
+        printf("{\"index\":%d", cb->index);
+        if (cb->label[0]) { printf(",\"label\":"); json_print_string(cb->label); }
+        printf(",\"encoder_count\":%d", cb->encoder_count);
+        if (opts.with_timing) {
+            if (cb->gpu_duration_ms >= 0) {
+                printf(",\"gpu_start_ms\":%.6f", cb->gpu_start_ms);
+                printf(",\"gpu_end_ms\":%.6f",   cb->gpu_end_ms);
+                printf(",\"gpu_duration_ms\":%.6f", cb->gpu_duration_ms);
+            } else {
+                printf(",\"gpu_start_ms\":null,\"gpu_end_ms\":null,\"gpu_duration_ms\":null");
+            }
+        }
+        // encoders[] inline
+        printf(",\"encoders\":[");
+        BOOL first_e = YES;
+        for (int ei = 0; ei < g_encoder_n_captured; ei++) {
+            FrameEncoderEntry *e = &g_encoder_captured[ei];
+            if (e->cb_index != cb->index) continue;
+            if (!first_e) printf(",");
+            first_e = NO;
+            printf("{\"index\":%d", e->index);
+            printf(",\"type\":");
+            json_print_string(frame_encoder_type_name(e->type));
+            if (e->label[0]) { printf(",\"label\":"); json_print_string(e->label); }
+            printf(",\"first_call_index\":%u", e->first_call_index);
+            printf(",\"last_call_index\":%u",  e->last_call_index);
+            printf(",\"draw_count\":%d", e->draw_count);
+            if (e->type == FRAME_ENC_TYPE_RENDER) {
+                printf(",\"color_attachment_count\":%d", e->color_attachment_count);
+                printf(",\"color_attachments\":[");
+                for (int ai = 0; ai < e->color_attachment_count; ai++) {
+                    if (ai > 0) printf(",");
+                    printf("{\"index\":%d,\"texture_id\":%llu,\"pixelFormat\":%lu,\"format\":",
+                           ai,
+                           (unsigned long long)e->color_attachment_ids[ai],
+                           (unsigned long)e->color_attachment_pf[ai]);
+                    json_print_string(e->color_attachment_pf_name[ai]);
+                    printf("}");
+                }
+                printf("]");
+                if (e->depth_attachment_id) {
+                    printf(",\"depth_attachment\":{\"texture_id\":%llu,\"pixelFormat\":%lu,\"format\":",
+                           (unsigned long long)e->depth_attachment_id,
+                           (unsigned long)e->depth_attachment_pf);
+                    json_print_string(e->depth_attachment_pf_name);
+                    printf("}");
+                } else {
+                    printf(",\"depth_attachment\":null");
+                }
+                if (e->stencil_attachment_id) {
+                    printf(",\"stencil_attachment\":{\"texture_id\":%llu,\"pixelFormat\":%lu,\"format\":",
+                           (unsigned long long)e->stencil_attachment_id,
+                           (unsigned long)e->stencil_attachment_pf);
+                    json_print_string(e->stencil_attachment_pf_name);
+                    printf("}");
+                } else {
+                    printf(",\"stencil_attachment\":null");
+                }
+            } else if (e->type == FRAME_ENC_TYPE_COMPUTE) {
+                printf(",\"compute_dispatch_count\":%d", e->compute_dispatch_count);
+            }
+            if (emit_draws) {
+                printf(",\"draws\":[");
+                BOOL first_d = YES;
+                for (int di = 0; di < g_draws_n_captured; di++) {
+                    FrameDrawEntry *d = &g_draws_captured[di];
+                    if (d->encoder_index != e->index) continue;
+                    if (!first_d) printf(",");
+                    first_d = NO;
+                    printf("{\"draw_index_global\":%d", d->draw_index_global);
+                    printf(",\"draw_in_encoder\":%d", d->draw_in_encoder);
+                    printf(",\"call_index\":%u", d->call_index);
+                    printf(",\"primitive_type\":%d,\"primitive_type_name\":", d->primitive_type);
+                    json_print_string(primitive_type_name(d->primitive_type));
+                    printf(",\"vertex_count\":%lu", (unsigned long)d->vertex_count);
+                    printf(",\"instance_count\":%lu", (unsigned long)d->instance_count);
+                    printf(",\"indexed\":%s", d->indexed ? "true" : "false");
+                    if (d->indexed) printf(",\"index_count\":%lu", (unsigned long)d->index_count);
+                    // RPS lookup
+                    id rpsKey = d->rps_ptr
+                        ? [rpsPtr2Key objectForKey:[NSValue valueWithNonretainedObject:(__bridge id)d->rps_ptr]]
+                        : nil;
+                    if (rpsKey) printf(",\"rps_key\":%llu", [rpsKey unsignedLongLongValue]);
+                    else        printf(",\"rps_key\":null");
+                    // Optional label/function from R7.2 capture
+                    if (d->rps_ptr) {
+                        const RPSCaptureEntry *rc = rps_find_entry(d->rps_ptr);
+                        if (rc) {
+                            if (rc->label[0]) { printf(",\"rps_label\":"); json_print_string(rc->label); }
+                            id fnK = rc->ffunc_ptr
+                                ? [rps_build_fn_ptr_to_key_map(g_ctx.objectMap)
+                                       objectForKey:[NSValue valueWithNonretainedObject:(__bridge id)rc->ffunc_ptr]]
+                                : nil;
+                            if (fnK) printf(",\"fragment_function_key\":%llu", [fnK unsignedLongLongValue]);
+                        }
+                    }
+                    printf("}");
+                }
+                printf("]");
+            }
+            printf("}");
+        }
+        printf("]");
+        printf("}");
+    }
+    printf("]");
+
+    // Flat draw_to_rps_map
+    if (emit_draws) {
+        JSON_SEP();
+        printf("\"draw_to_rps_map\":[");
+        for (int di = 0; di < g_draws_n_captured; di++) {
+            if (di > 0) printf(",");
+            FrameDrawEntry *d = &g_draws_captured[di];
+            id rpsKey = d->rps_ptr
+                ? [rpsPtr2Key objectForKey:[NSValue valueWithNonretainedObject:(__bridge id)d->rps_ptr]]
+                : nil;
+            printf("{\"draw_index_global\":%d", d->draw_index_global);
+            printf(",\"encoder_index\":%d", d->encoder_index);
+            printf(",\"draw_in_encoder\":%d", d->draw_in_encoder);
+            printf(",\"call_index\":%u", d->call_index);
+            if (rpsKey) printf(",\"rps_key\":%llu", [rpsKey unsignedLongLongValue]);
+            else        printf(",\"rps_key\":null");
+            printf("}");
+        }
+        printf("]");
+    }
+
+    JSON_END();
+    replay_context_cleanup();
+    return (play_rc == 0) ? EXIT_OK : EXIT_REPLAY_FAIL;
+}
+
+// ============================================================
 #pragma mark - Subcommand: config
 // ============================================================
 
@@ -2181,6 +3022,7 @@ static Subcommand g_commands[] = {
     { "pipeline",      cmd_pipeline },
     { "shader",        cmd_shader },
     { "shader-of-rps", cmd_shader_of_rps },
+    { "frame-list",    cmd_frame_list },
     { "config",        cmd_config },
     { NULL, NULL }
 };

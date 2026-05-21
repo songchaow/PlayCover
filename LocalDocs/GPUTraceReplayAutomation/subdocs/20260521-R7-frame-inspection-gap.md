@@ -2,7 +2,7 @@
 
 **来源**：2026-05-21 别的 agent 在使用 `gpu-trace-analysis` skill 调查 `com.papegames.lysk capture_20260518_110050.gputrace`（247 资源 / 50 RPS / 96 lib / ~81 400 GPU API 调用）时反馈的能力缺口；以及"从 draw call 反查 shader IR"的 7 段链路验证。
 **结论**：当前 bridge/skill 在"渲染 bug 调查"任务上称职，但在"未知 trace 整体管线分析"与"draw call → shader 反查"两类任务上**严重欠拟合**。R7 的目标是补齐这些能力。
-**进度**：R7.1 / R7.2 / R7.4 ✅（2026-05-21）；剩余 R7.3 / R7.5 / R7.6 / R7.7。
+**进度**：R7.1 / R7.2 / R7.3 / R7.4 ✅（2026-05-21）；剩余 R7.5 / R7.6 / R7.7。
 
 > 本文档是 R7 的总入口。R6.3（CI/样本库自动化流水线）已确认不做，R7 是 R6 之后唯一的主线。
 
@@ -191,7 +191,47 @@ R7 拆成 7 个独立可 PR 的 chunk。每个 chunk 列出工时、风险、解
 
 **LYSK 65 RPS 回归基线**：`rps_count: 65 / rps_correlated_count: 65 / rps_captured_count: 65`，与 §6 表完全一致。
 
-### R7.3（原 C2 + 段 1）：`frame-list` 子命令 — Swizzle-First 同时打通 encoder 列表 + draw→RPS 映射 — ⏳ 当前最高优先级
+### R7.3（原 C2 + 段 1）：`frame-list` 子命令 — Swizzle-First 同时打通 encoder 列表 + draw→RPS 映射 — ✅ 已完成（2026-05-21）
+
+**交付摘要（实测数据来自 LYSK trace `capture_20260518_110050.gputrace`）**
+
+- `frame-list <trace> [--with-draws] [--no-draws] [--with-timing]` 已上线，default `--with-draws`。
+- bridge 内新增 ~600 行 §"Frame Swizzle Capture"。复用 `swizzle_in_hierarchy()` 通用 helper（同时被 R7.2 的 RPS swizzle 用了），减少重复代码。
+- 进程级单例：`g_cb_captured[256]` / `g_encoder_captured[1024]` / `g_draws_captured[16384]`，capture gate `g_frame_capture_armed` 仅在 `playAll` 期间打开，过滤掉 `makeController` 阶段框架创建的 throwaway CB / encoder。
+- LYSK 端到端：`{cb=4, encoders=62 (56 render + 2 compute + 4 blit), draws=244, total_call_count=3425}`，`enc_sum == draw_to_rps_map.length == 244`，**0 个 null `rps_key`**，`rps_correlated_count=65`（与 R7.2 的 65/65 RPS 完全一致）。
+- 端到端联动：`draw_to_rps_map[0].rps_key=472` → `shader-of-rps 472` 出 `library_374.metallib (11041B)` + `cache_key_metallib=5368B920C0D59DE1_11041` — 用户最终目标"draw N → shader IR" 在两个命令内闭环。
+- Python wrapper 同步：新增 `FrameListResult` / `FrameCommandBuffer` / `FrameEncoder` / `FrameDraw` / `FrameAttachment` / `FrameDrawToRps` dataclass + `ReplayBridge.frame_list()` 方法 + CLI 子命令 `python3 gputrace_replay_wrapper.py frame-list <trace>`。
+- 集成测试：原 63 项 + 新增 18 项 R7.3 断言（含 invariant 检查与 frame-list→shader-of-rps 链） = **81/81 通过**。
+
+**关键技术点**
+
+- swizzle 安装顺序：`rps_install_swizzles()` → `frame_install_swizzles()` 都必须在 `replay_context_init()` 之前。`frame_install_swizzles` 通过 `MTLCreateSystemDefaultDevice → newCommandQueue → commandBuffer` 拿到 concrete impl 类，立即 swizzle queue 与 command buffer 上的方法。
+- render encoder 类**延迟安装**：`MTLRenderCommandEncoder` 的 concrete class（如 `AGXG16XFamilyRenderCommandEncoder`）在 `MTLCommandBuffer.renderCommandEncoderWithDescriptor:` 第一次调用之前不易拿到 — 我们在该方法的 swizzle thunk 内首次拿到 encoder 实例时立即 `frame_install_render_encoder_swizzles(object_getClass(encoder))`，幂等保护。
+- `swizzle_in_hierarchy(cls, sel, newImp, &origSlot)` 需要校验"该类自己声明了这个方法"（用 `class_copyMethodList` 而不是 `class_getInstanceMethod`，后者会沿继承链返回 NSObject 上的实现），避免污染基类。
+- `current_rps_ptr` 在每个 render encoder 上独立维护（存在 `FrameEncoderEntry.current_rps_ptr`），通过 `setRenderPipelineState:` 更新，每个 `drawXXX:` 落表时取当前值；`endEncoding` 清零。
+- 7 个 `drawPrimitives:* / drawIndexedPrimitives:*` 变体全部 swizzle，包含 `baseVertex/baseInstance` 版本。Indirect draw（`drawPrimitives:indirectBuffer:` 等）暂未覆盖（trace 中很少出现）。
+- `MTLCommandBuffer.GPUStartTime/EndTime` 在很多 replay-internal CB 上保持 0 — bridge 把这种情况翻译成 `gpu_duration_ms: null`，避免 callers 误用 `duration_ms == 0` 当作"零开销"。`--with-timing` 文档已说明。
+
+**回归基线**
+
+| 指标 | LYSK 期望值 | 实测 |
+|------|-------------|------|
+| `command_buffer_count` | 4 | 4 |
+| `encoder_count` (render/compute/blit) | 56/2/4 | 56/2/4 |
+| `draw_count` | 244 | 244 |
+| `enc.draw_count.sum() == len(draw_to_rps_map)` | True | True |
+| `none(rps_key) in draw_to_rps_map` | 0 | 0 |
+| `rps_correlated_count == R7.2 rps_count` | 65 | 65 |
+| `total_call_count` | 3425 | 3425 |
+| `frame-list elapsed_ms` | <50ms | ~12ms |
+
+**已知局限**
+
+- per-encoder timing 字段在 LYSK trace 上始终为 null（如上所述）。这是 replay 内部 cb 不 commit 导致；用户希望精准 per-segment 时间应回退到 `replay --playto N` 二分（playbook Pattern 4）。
+- compute encoder 的 `setComputePipelineState:` / `dispatchThreadgroups:*` 还未接入 swizzle — 这是 R7.5 子项 B 的范围。当前 `compute_dispatch_count` 字段恒为 0；compute encoder 本身仍在 timeline 中可见。
+- binding 表（`setVertexBuffer:` / `setFragmentTexture:` 等）按设计推迟到 R7.6 子项 A，原因是数据量比 draws 大一个数量级，且依赖独立的 binding 模型。
+
+**实现要点（建议沿用 R7.2 的代码组织）— 历史方案描述（保留作回顾，已对应实现）**
 
 ```bash
 gputrace_replay_bridge frame-list <trace> [--with-draws] [--with-timing] [--with-bindings]

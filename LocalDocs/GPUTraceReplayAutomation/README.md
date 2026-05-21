@@ -21,19 +21,20 @@
 | **Draw call → shader IR 反查** | `shader-of-drawcall` 子命令（薄封装：frame-list → shader-of-rps） | ✅ R7.6-C |
 | **Per-draw vertex/fragment binding 表** | `frame-list --with-bindings`（默认 ON） | ✅ R7.6-A |
 | **Draw call → "IR + bindings + uniforms" 三件套一行命令** | `shader-of-drawcall --with-uniforms`（wrapper 联动） | ✅ R7.6-D |
+| **GUI shader 名 / RPS label → draw_index 反查** | `find-draws --by-label / --by-shader-name` | ⏳ R7.6-E |
 | **Depth/Stencil 可视化** | bridge 内置 blit + export | ⏳ R7.5 |
 | **Uniform / cbuffer 内容查看** | `dump-uniforms` 子命令 | ✅ R7.6-B |
 | **Shader 反编译（IR 直接产出）** | `disasm` 子命令集成 cacheKey + llvm-dis | ✅ R7.7 |
 | GPU Counters / Profiler / Derived | 需 Apple 私有 entitlement + SIP 关闭 | ⛔ 跳过 |
 
-**完成度**：R0~R6 已完成（基础能力 + bridge + Python wrapper + skill 打包）；R7.1 / R7.2 / R7.3 / R7.4 / R7.6-A / R7.6-B / R7.6-C / R7.6-D / R7.7 已完成（bridge 9 子命令 + wrapper 10 子命令 / 集成测试 LYSK 主基线 **148/148**）；**R7.5 重新成为当前 P0**（depth/stencil blit export + compute dispatch 计数，1–1.5 天，独立横向能力，无前置依赖）。
+**完成度**：R0~R6 已完成（基础能力 + bridge + Python wrapper + skill 打包）；R7.1 / R7.2 / R7.3 / R7.4 / R7.6-A / R7.6-B / R7.6-C / R7.6-D / R7.7 已完成（bridge 9 子命令 + wrapper 10 子命令 / 集成测试 LYSK 主基线 **148/148**）；**R7.6-E 是当前 P0**（label/shader-name → draw 反查，0.3 天 wrapper-only，消除 GUI↔CLI 入口阻抗）；R7.6-E 落地后 R7.5（depth/stencil blit export + compute dispatch 计数，1–1.5 天，独立横向能力）接棒 P0。
 
 最终交付物：
 1. **统一 ObjC bridge CLI**（`Scripts/gputrace_replay_bridge.m`）— ✅ 9 子命令（help / replay / pipeline / shader / config / frame-list / shader-of-rps / disasm / dump-uniforms），Makefile 构建，LYSK 集成测试 148/148
 2. **Python CLI wrapper**（`Scripts/gputrace_replay_wrapper.py`）— ✅ CLI + 模块双接口，dataclass 返回值（含 `FrameDrawBindings` / `DisasmResult` + `ir_source` / `ShaderOfDrawcallResult` + `bindings` / `uniforms` / `DumpUniformsResult` 等）
 3. **端到端验证链路** — ✅ LYSK 65/65 RPS 反查 + 244/244 draw→RPS 映射 + 244/244 draw vertex/fragment binding 表 + 65/65 RPS reflection 捕获 + AIR ∪ SDI = 96/96 IR 命中率 100% + draw N 上 cbuffer 字段名/offset/dataType 与 shader 源码字节级一致 + **draw N → IR + bindings + uniforms 三件套一行命令 (R7.6-D)**
 4. **GPU Trace 分析 skill**（`.codebuddy/skills/gpu-trace-analysis/`）— ✅ 自包含，含 SKILL.md + scripts/ + references/，从任意目录可独立运行
-5. **R7：Frame-Inspection 能力补全** — ✅ 主线主体收尾。**当前 P0：R7.5**（depth/stencil blit + compute dispatch 计数，1–1.5 天，独立横向能力，无前置依赖）。详见 TODO + `subdocs/20260521-R7-frame-inspection-gap.md`
+5. **R7：Frame-Inspection 能力补全** — ✅ 主线主体收尾。**当前 P0：R7.6-E**（label/shader-name → draw 反查，0.3 天 wrapper-only，bridge 零变更）；R7.6-E 后接棒 P0：R7.5（depth/stencil blit + compute dispatch 计数）。详见 TODO + `subdocs/20260521-R7-frame-inspection-gap.md`
 
 ## 样本 trace 路径（回归基线）
 
@@ -83,16 +84,25 @@ R7 各 chunk 的实现细节、设计决策、回归基线一律落在 R7 子文
 
 ### 当前卡点
 
-无。R7.6-D 已落地（2026-05-21），R7 主线"frame-inspection 能力补全"主体功能已闭环，剩余 R7.5（depth/stencil blit export + compute dispatch 计数）为独立横向能力，无前置依赖。
+无。R7.6-D 已落地（2026-05-21），R7 主线 frame-inspection 主体功能闭环；剩 R7.6-E（GUI↔CLI 入口阻抗的 wrapper-only 收尾）+ R7.5（depth/stencil + dispatch 横向硬能力）两个独立小项。
 
 ### 下一步（当前最高优先级）
 
-**R7.5：depth/stencil export + compute dispatch 计数补齐 — 1–1.5 天，独立横向能力**
+**R7.6-E：`find-draws` 按 label / shader 名反查 draw 列表 — 0.3 天，wrapper-only，bridge 零变更**
+
+- 用户在 LYSK 皮肤渲染实战中（`LocalDocs/OfflineSourceRecovery/scripts/locate_shader.py`）**绕过**了我们的 `shader-of-drawcall <draw_index>` 链路，自己写脚本扫 device-resources blob 来定位 shader。**根因不是工具能力不足**（R7.6-D 三件套已经能产出全部数据），**而是入口阻抗**：用户在 Xcode GUI 看到 "shader 名 SkinMakeupNew / RPS label / 函数名 X"，但 CLI 入口要 `draw_index` 整数；用户没有现成办法把 GUI 视图实体跳到我们的 CLI 入口参数。
+- 交付：`find-draws <trace> [--by-label SUBSTR] [--by-shader-name SUBSTR] [--by-rps-key K] [--show-first] [--limit N]`，单次 frame-list JSON 后处理，bridge 行为完全不变；`--show-first` 一步到位联动 `shader-of-drawcall <draw_index> --with-ir --with-uniforms`，把 GUI → CLI 的"两步"压缩为一步。
+- frame-list 输出已含 `rps_label` / `vertex_function_name` / `fragment_function_name`（R7.2/R7.6-A 已交付），R7.6-E 是纯过滤封装，无新 swizzle / 新数据来源。
+- 不解决"GUI RPS 指针 0x... → replay RPS_key"反查——两个进程不同地址空间，技术不可达；可达的桥是 shader 名 / RPS label 字符串。
+
+详见 R7 子文档 §5（R7.6 子项 E 段）。
+
+**R7.6-E 落地后，R7.5（depth/stencil export + compute dispatch 计数补齐）接棒 P0**：
 
 - 子项 A：bridge 内部跑一次最小 RPS / blit pass，把 depth 复制到临时 R32Float、stencil 复制到 R8Unorm，再 `getBytes` 落盘（Apple sample code 标准做法，无需私有 API）
 - 子项 B：把 `MTLComputeCommandEncoder.setComputePipelineState:` / `dispatchThreadgroups:*` / `dispatchThreads:*` 接入 R7.3 的 swizzle 集合，记录 dispatch 计数 + compute pipeline pointer；顺手处理 R7.6-C 暴露的 R7.3 trace-shape 假设盲点（compute-only trace 上 14 个健康路径断言失败 — 改为"draw 类断言仅在有 render encoder 时启用"）
 
-主要服务 ShadowMap / SSS / stencil bit 类问题；同时让 compute-heavy trace 的 dispatch 信息真正可见。详见 R7 子文档 §5（R7.5 段）。
+主要服务 ShadowMap / SSS / stencil bit 类问题（与用户当前 SSS 实战直接相关）；同时让 compute-heavy trace 的 dispatch 信息真正可见。详见 R7 子文档 §5（R7.5 段）。
 
 ## 构建与验证的方法
 
@@ -129,7 +139,8 @@ R7 各 chunk 的实现细节、设计决策、回归基线一律落在 R7 子文
   - **[DONE] R7.6 子项 A**（2026-05-21）：`frame-list --with-bindings`（默认 ON，12 个 binding swizzle，LYSK 244/244 全捕获）
   - **[DONE] R7.6 子项 B**（2026-05-21）：`dump-uniforms <draw_index|rps_key> <bind_slot>`（reflection 解码，LYSK 65/65 RPS 全捕获）
   - **[DONE] R7.6 子项 D**（2026-05-21）：`shader-of-drawcall --with-uniforms` 三件套合一（wrapper 联动，bridge 零变更）
-  - **[P0] R7.5（当前最高优先级）**：depth/stencil export（bridge 内置 blit）+ compute encoder dispatch 计数补齐 — 1–1.5 天合计。独立横向能力，无前置依赖；主要服务 ShadowMap / SSS / stencil bit 类问题；同时顺手处理 R7.3 在 compute-only trace 上的 trace-shape 假设盲点（14 个健康路径断言失败）
+  - **[P0] R7.6 子项 E（当前最高优先级）**：`find-draws` 按 label / shader 名反查 draw 列表 — 0.3 天 wrapper-only，bridge 零变更。消除 GUI 看到 shader 名 ↔ CLI 要 draw_index 的入口阻抗（用户实战 `locate_shader.py` 暴露的真实工作流缺口）；`--show-first` 一步联动 `shader-of-drawcall <draw_index> --with-uniforms`。详见 R7 子文档 §5（R7.6 子项 E 段）
+  - **[P1] R7.5（R7.6-E 后接棒 P0）**：depth/stencil export（bridge 内置 blit）+ compute encoder dispatch 计数补齐 — 1–1.5 天合计。独立横向能力，无前置依赖；主要服务 ShadowMap / SSS / stencil bit 类问题；同时顺手处理 R7.3 在 compute-only trace 上的 trace-shape 假设盲点（14 个健康路径断言失败）
 - **每个 R7 chunk 落地后必须同步**：SKILL.md（"Exploring an unknown trace's pipeline" 工作流 / 已知盲点） + `references/investigation-playbook.md`（frame-overview worked example） + `references/cli-reference.md`（新子命令 schema）。R7.1/R7.2/R7.3/R7.4/R7.6-A/R7.6-C/R7.6-D/R7.7 落地时已同步。
 
 ## 高频复用经验

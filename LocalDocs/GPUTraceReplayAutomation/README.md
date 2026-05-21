@@ -61,16 +61,22 @@
 
 ### 下一步（当前最高优先级）
 
-**R7.2：`pipeline` 输出加 RPS↔shader 关联**
+**R7.2：`pipeline` 输出加 RPS↔shader 关联**（紧接 R7.4：`shader-of-rps` 子命令）
 
-优先级理由：library_key 抽象层级错误已在 LYSK 65 RPS 调查中明确，必须在 `pipeline` 子命令直接给出 vertex/fragment function/library key + attachment 摘要，否则后续 R7.4 / R7.6 都无法做"语义级反查"。R7.1 已暴露 `total_call_count`，刚好为 R7.2 的 swizzle 探针调试提供边界数据。
+优先级理由：
+1. library_key 抽象层级错误已在 LYSK 65 RPS 调查中明确（同一 label 对应 4 个 library；RPS 474/475/476/479 共享 lib_252）— 必须在 `pipeline` 子命令直接给出 vertex/fragment function/library key + attachment 摘要，否则后续 R7.6 / R7.7 都无法做"语义级反查"
+2. **R7.2 + R7.4 视为同一冲刺**：R7.2 仅暴露字段后用户下一步几乎必然是"拿对应 shader 的 IR 看代码"；R7.4 的实现成本很低（直接复用 R7.2 的内表 + R5.1 metallib 导出 + cacheKey 算法 + 现成 `llvm-dis`），合在一起做才能形成"`pipeline` → `shader-of-rps` 一行命令拿 IR"的完整闭环
+3. R7.1 已暴露 `total_call_count` 并稳定了 bridge 时序，刚好为 R7.2 的 swizzle 调试提供边界数据；与 R7.3 (`frame-list`) 相比，R7.2 的探针 (`rps_swizzle_probe.m`) 已在 LYSK trace 验证 65/65 反查成功，风险更低
 
-具体内容：
+R7.2 具体内容：
 - bridge 内部在 `replay_context_init` 之前装 method swizzling（参考 `LocalDocs/OfflineSourceRecovery/scripts/rps_swizzle_probe.m`）
 - 每个 RPS 输出从 `{key, class, label}` 扩展为 `{vertex_function_key, fragment_function_key, vertex_library_key, fragment_library_key, color_attachment_count, color_attachments[], depth_format, stencil_format}`
 - 回归基线：`subdocs/20260521-R7-frame-inspection-gap.md` §6 LYSK 65 RPS 表
 
-详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.2。
+R7.4 紧接内容（同一冲刺）：
+- `shader-of-rps <trace> <rps_key> [--stage fragment|vertex] [--with-ir]` — 内部走 R7.2 内表，默认输出 fragment metallib 路径 + cacheKey；`--with-ir` 自动调 `llvm-dis` 产出 `.ll`
+
+详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.2 / §5.4。
 
 ## 构建与验证的方法
 
@@ -99,9 +105,9 @@
 - **[CANCELLED] R6.3**：自动化流水线集成（CI/CD + 样本库管理）— 不做
 - **[IN-PROGRESS][P0] R7**：Frame-Inspection 能力补全（来自 LYSK trace 全景调查反馈，详见 `subdocs/20260521-R7-frame-inspection-gap.md`）
   - **[DONE] R7.1**：bridge 越界保护 + 资源元数据补齐 — `total_call_count` / `last_call_index` / `--bounds` / `playto_out_of_range`(exit 12) / SIGSEGV 兜底 / texture+buffer storageMode/usage/hazardTracking 等。详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.1
-  - **[P0] R7.2**：`pipeline` 输出加 RPS↔shader 关联（vertex/fragment function/library key + attachment 摘要，内部 swizzle，参考 `LocalDocs/OfflineSourceRecovery/scripts/rps_swizzle_probe.m`）— 1 天，低风险
+  - **[P0] R7.2**：`pipeline` 输出加 RPS↔shader 关联（vertex/fragment function/library key + attachment 摘要，内部 swizzle，参考 `LocalDocs/OfflineSourceRecovery/scripts/rps_swizzle_probe.m`）— 1 天，低风险。**与 R7.4 同冲刺**
+  - **[P0] R7.4**：`shader-of-rps` 子命令（语义级反查 + `--with-ir` 直出 `.ll`，复用 R7.2 内表）— 1 天，中风险。**紧接 R7.2**
   - **[P1] R7.3**：`frame-list` 子命令（CommandBuffer/Encoder 枚举 + attachments + per-encoder timing）— 1 天，中风险
-  - **[P1] R7.4**：`shader-of-rps` 子命令（语义级反查 + `--with-ir`）— 1 天，中风险
   - **[P1] R7.5**：depth/stencil export（bridge 内置 blit）+ compute encoder 在 frame-list 中明确化 — 0.5 天，低风险
   - **[P1] R7.6**：`frame-list --with-draws --with-bindings` + `dump-uniforms` + `shader-of-drawcall`（用户最终目标：draw_index → IR 一行命令）— 3 天，中风险
   - **[P2] R7.7**：`disasm` 子命令（cacheKey 算法 ObjC 复刻 + llvm-dis 集成）— 1.5 天，低风险，**skill 自包含最后一公里**

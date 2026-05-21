@@ -258,7 +258,7 @@ flag 增量：
 
 **工时**：1 天（不含 draws/bindings）+ 2 天（含）；**风险**：中；**解锁**：把"推断"二字从全景报告里彻底抹掉；compute encoder 也一并纳入（不再只有 `compute_pipeline_states_count=0` 一个数字）。
 
-### R7.4（原 C2.5）：`shader-of-rps` 子命令（语义级反查）
+### R7.4（原 C2.5）：`shader-of-rps` 子命令（语义级反查）— **与 R7.2 同冲刺**
 
 ```bash
 gputrace_replay_bridge shader-of-rps <trace> <rps_key> [--stage fragment|vertex] [--with-ir]
@@ -270,6 +270,8 @@ gputrace_replay_bridge shader-of-rps <trace> <rps_key> [--stage fragment|vertex]
 3. `--with-ir` 时若 `llvm-dis` 与本机 SDI 目录可用，自动产出 `.ll`
 
 **工时**：1 天；**风险**：中；**解锁**：从 RPS_key 一行命令拿 IR，不需要懂中间任何抽象层。
+
+> **优先级提升原因**（2026-05-21 重新评估）：R7.2 单独完成只暴露 schema 字段，用户拿到后下一步几乎必然是"看对应 shader 代码"。R7.4 的实现成本极低（直接复用 R7.2 内表 + R5.1 metallib 导出 + §3.1 cacheKey 算法 + 现成 `llvm-dis`）。把两者作为同一冲刺一气呵成，才能形成"`pipeline` → `shader-of-rps` 一行命令拿 IR"的完整闭环，比起拆成两个独立 chunk 更符合最终目标。
 
 ### R7.5（原 C3）：depth/stencil export + 完整 compute 支持
 

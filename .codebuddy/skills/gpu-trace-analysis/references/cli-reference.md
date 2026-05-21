@@ -373,10 +373,10 @@ The cacheKey can also be used to manually find the corresponding ShaderDebugInfo
 
 ## Subcommand: frame-list
 
-Replays the trace once with public-API method swizzling armed and emits the full `command_buffer → encoder → draw` timeline plus a flat `draw_to_rps_map[]`. This is the **R7.3** "frame inspector" entry point — the equivalent of expanding the encoder/draw tree in Xcode's Frame Debugger UI, but as a shell-pipe-able JSON document.
+Replays the trace once with public-API method swizzling armed and emits the full `command_buffer → encoder → draw` timeline plus a flat `draw_to_rps_map[]`. This is the **R7.3** "frame inspector" entry point — the equivalent of expanding the encoder/draw tree in Xcode's Frame Debugger UI, but as a shell-pipe-able JSON document. **R7.6-A** extends this with per-draw vertex/fragment binding tables (resource-id-resolved buffers, textures, and samplers).
 
 ```bash
-gputrace_replay_bridge frame-list <.gputrace> [--with-draws] [--no-draws] [--with-timing]
+gputrace_replay_bridge frame-list <.gputrace> [--with-draws] [--no-draws] [--with-timing] [--with-bindings] [--no-bindings]
 ```
 
 | Flag | Default | Meaning |
@@ -384,6 +384,8 @@ gputrace_replay_bridge frame-list <.gputrace> [--with-draws] [--no-draws] [--wit
 | `--with-draws` | on | Include per-encoder `draws[]` records and the top-level `draw_to_rps_map[]` view. The default; pass explicitly only for symmetry with `--no-draws`. |
 | `--no-draws` | off | Suppress per-draw records (encoder list only). Useful for very high-draw-count traces or when you only need the encoder timeline. |
 | `--with-timing` | off | Populate per-cb `gpu_start_ms` / `gpu_end_ms` / `gpu_duration_ms` from `MTLCommandBuffer.GPUStartTime/GPUEndTime`. Replay-internal CBs that never `commit` will surface `null` here. |
+| `--with-bindings` | on | **R7.6-A**: capture per-draw vertex/fragment binding snapshots (`bindings.{vertex,fragment}.{buffers,textures,samplers}[]`). The default; explicit for symmetry with `--no-bindings`. |
+| `--no-bindings` | off | **R7.6-A**: skip binding capture (output ~75% smaller; LYSK ~390KB → ~105KB). Useful for `shader-of-drawcall`-style chains that only need `draw_to_rps_map`. |
 
 Output JSON top-level fields:
 
@@ -392,7 +394,7 @@ Output JSON top-level fields:
 | `command` | string | Always `"frame-list"` |
 | `trace_path`, `device` | string | Echo + `MTLDevice.name` |
 | `replay_rc`, `success`, `elapsed_ms`, `total_call_count` | mixed | Same semantics as `replay` |
-| `with_draws`, `with_timing` | bool | Echoes the requested mode |
+| `with_draws`, `with_timing`, `with_bindings` | bool | Echoes the requested mode |
 | `command_buffer_count`, `encoder_count`, `draw_count` | int | Aggregate counts captured during this `playAll` |
 | `rps_correlated_count` | int | How many RPS keys were resolvable from the captured RPS pointer table — used to validate R7.2 swizzle health |
 | `command_buffers` | array | Tree, see below |
@@ -439,12 +441,26 @@ Output JSON top-level fields:
       "index_count": 6726,
       "rps_key": 472,
       "rps_label": "Papegame/Cloth/ClothStandard",
-      "fragment_function_key": 375
+      "fragment_function_key": 375,
+      "bindings": {
+        "vertex": {
+          "buffers":  [{"index": 0, "resource_id": 2, "offset": 262144}, ...],
+          "textures": [{"index": 0, "resource_id": 91}],
+          "samplers": [{"index": 0, "sampler_ptr": "0x12a3e4500"}]
+        },
+        "fragment": {
+          "buffers":  [{"index": 0, "resource_id": 8, "offset": 0}, ...],
+          "textures": [{"index": 0, "resource_id": 186}, {"index": 3, "resource_id": 211}, ...],
+          "samplers": []
+        }
+      }
     },
     ...
   ]
 }
 ```
+
+The `bindings` field is **present iff `--with-bindings` is on AND the draw lives on a render encoder** (compute/blit encoders never emit per-draw records). Slot lists are sparse — only slots set to a non-nil resource appear. Inline bindings from `setVertexBytes:length:atIndex:` / `setFragmentBytes:length:atIndex:` use the `{"index": N, "inline_bytes_size": SIZE}` shape (no `resource_id` because inline data is not in `objectMap.resources`). Sampler entries surface a hex pointer string for diagnostic identity matching — sampler states are not in `objectMap.resources` so no `resource_id` is available.
 
 `encoders[j]` for `type == "compute"` adds `compute_dispatch_count` (current implementation records dispatches as future work; the encoder is still listed so downstream tools can branch on type without parsing the call index).
 
@@ -461,18 +477,21 @@ This array is the simplest entry point for the user-level question "which shader
 ### Implementation notes
 
 - Swizzles are installed on `MTLCommandQueue.commandBuffer*`, `MTLCommandBuffer.{render,compute,blit}CommandEncoder*`, and `MTLRenderCommandEncoder.{setRenderPipelineState:, drawPrimitives:*, drawIndexedPrimitives:*, endEncoding}`. The render-encoder swizzles are installed lazily on first encoder creation, since the concrete encoder class is not known up front.
+- **R7.6-A binding swizzles** are co-installed with the render-encoder swizzles: `setVertexBuffer:offset:atIndex:` / `setVertexBuffers:offsets:withRange:` / `setVertexBytes:length:atIndex:` / `setVertexTexture:atIndex:` / `setVertexTextures:withRange:` / `setVertexSamplerState:atIndex:` (six selectors) and the symmetric `setFragment*` family (six selectors). Thunks short-circuit when `g_frame_capture_bindings == 0`, so installing them adds zero overhead to non-`frame-list` paths.
 - Capture is gated to the actual `playAll` traversal — a process-global flag is opened immediately before `playAll` and closed after. Throwaway CBs/encoders the framework creates during `makeController` are filtered out.
 - `first_call_index` / `last_call_index` come from `*(uint32_t *)(controller + 0x5810)` (R7.1's controller offset), read synchronously inside each swizzle thunk.
 - The render encoder's `color_attachments[]` / `depth_attachment` / `stencil_attachment` are snapshotted at encoder begin from the `MTLRenderPassDescriptor`. Attachment `texture_id` references match the IDs surfaced by `replay --list-resources`.
 - `rps_key` for each draw is resolved by combining: (a) R7.3's `current_rps_ptr` tracked across `setRenderPipelineState:` and `drawXXX:` calls inside the encoder, with (b) a `(rps_ptr → rps_key)` map built post-replay by probing `objectMap.renderPipelineStateForKey:` over the same key range `pipeline` uses.
+- **R7.6-A `resource_id` resolution**: a single `(buffer/texture ptr → resource_key)` dict is built once post-`playAll` from `objectMap.resources` and used for every binding emit (avoids per-binding linear scan, ~60k lookups → ~60k O(1) probes on LYSK).
 
 ### Health checks / invariants
 
-After `frame-list` completes, the following invariants hold on any healthy run:
+After `frame-list` completes, the following invariants hold on any healthy render-bearing run:
 
 - `sum(encoder.draw_count) == draw_count == len(draw_to_rps_map)`
 - For every entry in `draw_to_rps_map[]`, `rps_key` is non-null when the trace's draws all hit pipeline states captured by the R7.2 swizzle (LYSK trace baseline: 244/244 = 100%).
 - `rps_correlated_count` should equal the number of `render_pipeline_states` returned by `pipeline` — they share the same swizzle health gate.
+- **R7.6-A**: when `--with-bindings` is on, every render-encoder draw has a `bindings` object; vertex buffer slot 0 is bound on every draw (LYSK 244/244 invariant — vb0 = vertex stream is the universal Metal vertex shader entry contract).
 
 If any of these fails, the swizzle install path is broken (likely a macOS update changed the implementation class hierarchy); inspect stderr and re-run `setup.sh`.
 
@@ -713,6 +732,7 @@ python3 gputrace_replay_wrapper.py shader <trace> 248 --source /tmp/new.metal --
 python3 gputrace_replay_wrapper.py shader-of-rps <trace> 484 --with-ir --output-dir /tmp/out
 python3 gputrace_replay_wrapper.py frame-list <trace>
 python3 gputrace_replay_wrapper.py frame-list <trace> --no-draws
+python3 gputrace_replay_wrapper.py frame-list <trace> --no-bindings        # R7.6-A: skip per-draw bindings
 python3 gputrace_replay_wrapper.py frame-list <trace> --with-timing --pretty
 python3 gputrace_replay_wrapper.py shader-of-drawcall <trace> 0 --with-ir --output-dir /tmp/out
 python3 gputrace_replay_wrapper.py disasm <trace> 374 --with-ir --output-dir /tmp/out               # R7.7: direct library_key

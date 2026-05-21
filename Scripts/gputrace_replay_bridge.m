@@ -9,7 +9,7 @@
  *   pipeline       — library 枚举 + metallib/AIR 导出 + RPS↔shader 关联（R7.2）
  *   shader         — setLibrary:forKey: 热替换 + 验证（R6.1d）
  *   shader-of-rps  — 通过 RPS_key 反查 fragment/vertex shader 并可选导出 IR（R7.4，R7.7 SDI fallback）
- *   frame-list     — encoder 时间序列 + draw→RPS 映射 + per-cb timing（R7.3）
+ *   frame-list     — encoder 时间序列 + draw→RPS 映射 + per-cb timing（R7.3）+ per-draw bindings（R7.6-A）
  *   disasm         — 直接 library_key/RPS_key 反汇编 + SDI module.bc fallback（R7.7）
  *   config         — 调用链控制 + validation 全局变量（R6.1e）
  *
@@ -23,7 +23,7 @@
  *   ./gputrace_replay_bridge pipeline <path-to-.gputrace> [output_dir]
  *   ./gputrace_replay_bridge shader <path-to-.gputrace> <library_key> <metallib_path>
  *   ./gputrace_replay_bridge shader-of-rps <path-to-.gputrace> <rps_key> [--stage fragment|vertex] [--with-ir] [--output-dir DIR]
- *   ./gputrace_replay_bridge frame-list <path-to-.gputrace> [--with-draws] [--no-draws] [--with-timing]
+ *   ./gputrace_replay_bridge frame-list <path-to-.gputrace> [--with-draws] [--no-draws] [--with-timing] [--with-bindings] [--no-bindings]
  *   ./gputrace_replay_bridge disasm <path-to-.gputrace> <key> [--key-type rps|library] [--stage fragment|vertex] [--with-ir] [--output-dir DIR]
  *   ./gputrace_replay_bridge config <path-to-.gputrace> [key=value ...]
  */
@@ -404,7 +404,7 @@ static void replay_context_cleanup(void) {
 static int cmd_help(int argc, const char *argv[]) {
     JSON_BEGIN();
     JSON_KV_STR("tool", "gputrace_replay_bridge");
-    JSON_KV_STR("version", "0.5.0");
+    JSON_KV_STR("version", "0.6.0");
     JSON_SEP();
     printf("\"commands\":[");
     printf("{\"name\":\"help\",\"description\":\"Show available commands\"}");
@@ -412,7 +412,7 @@ static int cmd_help(int argc, const char *argv[]) {
     printf(",{\"name\":\"pipeline\",\"description\":\"Library enumeration + metallib/AIR export + RPS↔shader correlation (vertex/fragment function/library key + attachment summary captured via method swizzling).\",\"usage\":\"pipeline <.gputrace> [output_dir]\"}");
     printf(",{\"name\":\"shader\",\"description\":\"Hot-replace library via setLibrary:forKey:\",\"usage\":\"shader <.gputrace> <lib_key> <metallib_path>\"}");
     printf(",{\"name\":\"shader-of-rps\",\"description\":\"Reverse-lookup the fragment/vertex shader of a render pipeline state. Reuses the pipeline-subcommand swizzle to map RPS_key -> function_key -> library_key -> metallib + (optionally) llvm-dis to .ll IR. R7.7: auto-falls-back to PlayCover SDI module.bc when MTLLibrary lacks bitcodeData.\",\"usage\":\"shader-of-rps <.gputrace> <rps_key> [--stage fragment|vertex] [--with-ir] [--output-dir DIR]\"}");
-    printf(",{\"name\":\"frame-list\",\"description\":\"Enumerate command buffers / encoders / draw calls captured during replay and map each draw to its render pipeline state. Outputs a tree (command_buffers[].encoders[].draws[]) plus a flat draw_to_rps_map[] view. Optional per-cb GPU timing.\",\"usage\":\"frame-list <.gputrace> [--with-draws] [--no-draws] [--with-timing]\"}");
+    printf(",{\"name\":\"frame-list\",\"description\":\"Enumerate command buffers / encoders / draw calls captured during replay and map each draw to its render pipeline state. Outputs a tree (command_buffers[].encoders[].draws[]) plus a flat draw_to_rps_map[] view. Optional per-cb GPU timing. R7.6-A: --with-bindings (default ON) snapshots per-draw vertex/fragment buffer/texture/sampler bindings via setVertexBuffer/setFragmentTexture/etc swizzles.\",\"usage\":\"frame-list <.gputrace> [--with-draws] [--no-draws] [--with-timing] [--with-bindings] [--no-bindings]\"}");
     printf(",{\"name\":\"disasm\",\"description\":\"Direct library-key (default) or RPS-key disassembly. Library path: looks up library_key -> metallib + cacheKey + (optionally) IR. Tries bitcodeData first then PlayCover SDI module.bc fallback (R7.7), so libraries without bitcode still produce .ll. Use --key-type rps to forward to shader-of-rps.\",\"usage\":\"disasm <.gputrace> <key> [--key-type rps|library] [--stage fragment|vertex] [--with-ir] [--output-dir DIR]\"}");
     printf(",{\"name\":\"config\",\"description\":\"Configuration control (call chain + validation)\",\"usage\":\"config <.gputrace> [key=value ...]\"}");
     printf("]");
@@ -825,6 +825,19 @@ static const RPSCaptureEntry *rps_find_entry(void *rps_ptr) {
 //       drawPrimitives: variants (3)
 //       drawIndexedPrimitives: variants (2)
 //       endEncoding
+//       R7.6-A binding swizzles (default ON, suppressed by --no-bindings):
+//         setVertexBuffer:offset:atIndex:
+//         setVertexBuffers:offsets:withRange:
+//         setVertexBytes:length:atIndex:                  (inline)
+//         setVertexTexture:atIndex:
+//         setVertexTextures:withRange:
+//         setVertexSamplerState:atIndex:
+//         setFragmentBuffer:offset:atIndex:
+//         setFragmentBuffers:offsets:withRange:
+//         setFragmentBytes:length:atIndex:                (inline)
+//         setFragmentTexture:atIndex:
+//         setFragmentTextures:withRange:
+//         setFragmentSamplerState:atIndex:
 //
 // Why swizzle-first instead of reflecting the controller? Reflection of
 // `controller.commandBuffers` requires undocumented offsets that may shift on
@@ -843,6 +856,13 @@ static const RPSCaptureEntry *rps_find_entry(void *rps_ptr) {
 #define MAX_CAPTURED_DRAWS     16384
 #define ENC_LABEL_LEN          128
 #define ENC_TYPE_LEN           16
+
+// R7.6-A binding capacities. Metal allows up to 31 buffers + 31 textures +
+// 16 samplers per stage (vertex/fragment). We keep 32 for buffers/textures
+// (gives us a small headroom) and 16 for samplers.
+#define MAX_BINDING_BUFFERS    32
+#define MAX_BINDING_TEXTURES   32
+#define MAX_BINDING_SAMPLERS   16
 
 typedef enum {
     FRAME_ENC_TYPE_RENDER  = 0,
@@ -892,7 +912,55 @@ typedef struct {
     // Currently-bound RPS (for render encoders), used to attribute draws.
     void    *current_rps_ptr;
     BOOL     ended;
+
+    // R7.6-A: per-stage rolling binding state. set* swizzles update these
+    // slots on the active encoder; on each draw we snapshot whichever slots
+    // are non-empty into the FrameDrawEntry.
+    //
+    // For buffers, we track BOTH a buffer_ptr (resolvable to a resource_id
+    // via objectMap.resources scan at draw time) AND an offset. Inline
+    // setVertexBytes:length:atIndex: bindings have buffer_ptr=NULL and we
+    // record `inline_bytes_size` instead.
+    void       *cur_v_buffer_ptr   [MAX_BINDING_BUFFERS];
+    uint64_t    cur_v_buffer_offset[MAX_BINDING_BUFFERS];
+    uint32_t    cur_v_inline_size  [MAX_BINDING_BUFFERS];  // 0 = not inline
+    uint8_t     cur_v_buffer_set   [MAX_BINDING_BUFFERS];  // bit 1 if slot ever set & not nil
+
+    void       *cur_v_texture_ptr  [MAX_BINDING_TEXTURES];
+    uint8_t     cur_v_texture_set  [MAX_BINDING_TEXTURES];
+
+    void       *cur_v_sampler_ptr  [MAX_BINDING_SAMPLERS];
+    uint8_t     cur_v_sampler_set  [MAX_BINDING_SAMPLERS];
+
+    void       *cur_f_buffer_ptr   [MAX_BINDING_BUFFERS];
+    uint64_t    cur_f_buffer_offset[MAX_BINDING_BUFFERS];
+    uint32_t    cur_f_inline_size  [MAX_BINDING_BUFFERS];
+    uint8_t     cur_f_buffer_set   [MAX_BINDING_BUFFERS];
+
+    void       *cur_f_texture_ptr  [MAX_BINDING_TEXTURES];
+    uint8_t     cur_f_texture_set  [MAX_BINDING_TEXTURES];
+
+    void       *cur_f_sampler_ptr  [MAX_BINDING_SAMPLERS];
+    uint8_t     cur_f_sampler_set  [MAX_BINDING_SAMPLERS];
 } FrameEncoderEntry;
+
+// R7.6-A: per-draw snapshot of all four binding tables. Each table is a
+// fixed-size sparse array — only the .set[i] flag tells whether slot i is
+// populated. We deliberately materialize the full slot array so the JSON
+// emit step is a simple linear scan; memory cost is ~280 bytes per draw,
+// totaling ~70KB on LYSK (244 draws), negligible.
+typedef struct {
+    void       *buffer_ptr   [MAX_BINDING_BUFFERS];
+    uint64_t    buffer_offset[MAX_BINDING_BUFFERS];
+    uint32_t    inline_size  [MAX_BINDING_BUFFERS];
+    uint8_t     buffer_set   [MAX_BINDING_BUFFERS];
+
+    void       *texture_ptr  [MAX_BINDING_TEXTURES];
+    uint8_t     texture_set  [MAX_BINDING_TEXTURES];
+
+    void       *sampler_ptr  [MAX_BINDING_SAMPLERS];
+    uint8_t     sampler_set  [MAX_BINDING_SAMPLERS];
+} FrameStageBindings;
 
 typedef struct {
     int      draw_index_global;
@@ -905,6 +973,12 @@ typedef struct {
     NSUInteger instance_count;
     NSUInteger index_count;       // 0 for non-indexed
     BOOL     indexed;
+
+    // R7.6-A: snapshot of vertex/fragment binding tables at draw time.
+    // Only populated when `g_frame_capture_bindings` is set.
+    BOOL                bindings_captured;
+    FrameStageBindings  v_bind;
+    FrameStageBindings  f_bind;
 } FrameDrawEntry;
 
 static FrameCBEntry      g_cb_captured[MAX_CAPTURED_CB];
@@ -923,6 +997,11 @@ static int               g_render_enc_swizzled = 0;
 // the actual `playAll` traversal. The gate is closed by default and toggled
 // by `cmd_frame_list` around its `playAll` call.
 static volatile int      g_frame_capture_armed = 0;
+
+// R7.6-A: when nonzero, set* swizzle thunks update encoder.cur_*_set tables
+// AND draw record threads through frame_snapshot_bindings(). Toggled only by
+// cmd_frame_list (so the binding swizzles are zero-overhead for other paths).
+static volatile int      g_frame_capture_bindings = 0;
 
 // Forward declarations.
 static void frame_install_render_encoder_swizzles(Class encoderClass);
@@ -960,6 +1039,30 @@ static enc_draw_vib_imp   g_orig_enc_draw_vib   = NULL;
 static enc_draw_idx_imp   g_orig_enc_draw_idx   = NULL;
 static enc_draw_idxi_imp  g_orig_enc_draw_idxi  = NULL;
 static enc_draw_idxib_imp g_orig_enc_draw_idxib = NULL;
+
+// R7.6-A: per-stage binding setter IMP types. NSRange for *Range variants
+// is passed by value (8 bytes on arm64 since it's two NSUInteger fields).
+typedef void (*enc_set_buf_imp)        (id self, SEL _cmd, id buf, NSUInteger off, NSUInteger idx);
+typedef void (*enc_set_bufs_imp)       (id self, SEL _cmd, const id _Nullable *bufs, const NSUInteger *offs, NSRange r);
+typedef void (*enc_set_bytes_imp)      (id self, SEL _cmd, const void *bytes, NSUInteger len, NSUInteger idx);
+typedef void (*enc_set_tex_imp)        (id self, SEL _cmd, id tex, NSUInteger idx);
+typedef void (*enc_set_texs_imp)       (id self, SEL _cmd, const id _Nullable *texs, NSRange r);
+typedef void (*enc_set_samp_imp)       (id self, SEL _cmd, id samp, NSUInteger idx);
+
+// vertex stage
+static enc_set_buf_imp   g_orig_enc_set_v_buf      = NULL;
+static enc_set_bufs_imp  g_orig_enc_set_v_bufs     = NULL;
+static enc_set_bytes_imp g_orig_enc_set_v_bytes    = NULL;
+static enc_set_tex_imp   g_orig_enc_set_v_tex      = NULL;
+static enc_set_texs_imp  g_orig_enc_set_v_texs     = NULL;
+static enc_set_samp_imp  g_orig_enc_set_v_samp     = NULL;
+// fragment stage
+static enc_set_buf_imp   g_orig_enc_set_f_buf      = NULL;
+static enc_set_bufs_imp  g_orig_enc_set_f_bufs     = NULL;
+static enc_set_bytes_imp g_orig_enc_set_f_bytes    = NULL;
+static enc_set_tex_imp   g_orig_enc_set_f_tex      = NULL;
+static enc_set_texs_imp  g_orig_enc_set_f_texs     = NULL;
+static enc_set_samp_imp  g_orig_enc_set_f_samp     = NULL;
 
 // --- Lookup helpers ---------------------------------------------------------
 
@@ -1199,6 +1302,30 @@ static void frame_record_draw(id self, BOOL indexed,
     d->instance_count = instance_count;
     d->index_count = index_count;
     d->indexed = indexed;
+    // R7.6-A: snapshot binding tables onto the draw entry. We copy the slot
+    // arrays whether `g_frame_capture_bindings` is set or not (cheap memcpy);
+    // emission decides whether to actually output them.
+    if (g_frame_capture_bindings) {
+        d->bindings_captured = YES;
+        // vertex stage
+        memcpy(d->v_bind.buffer_ptr,    e->cur_v_buffer_ptr,    sizeof(d->v_bind.buffer_ptr));
+        memcpy(d->v_bind.buffer_offset, e->cur_v_buffer_offset, sizeof(d->v_bind.buffer_offset));
+        memcpy(d->v_bind.inline_size,   e->cur_v_inline_size,   sizeof(d->v_bind.inline_size));
+        memcpy(d->v_bind.buffer_set,    e->cur_v_buffer_set,    sizeof(d->v_bind.buffer_set));
+        memcpy(d->v_bind.texture_ptr,   e->cur_v_texture_ptr,   sizeof(d->v_bind.texture_ptr));
+        memcpy(d->v_bind.texture_set,   e->cur_v_texture_set,   sizeof(d->v_bind.texture_set));
+        memcpy(d->v_bind.sampler_ptr,   e->cur_v_sampler_ptr,   sizeof(d->v_bind.sampler_ptr));
+        memcpy(d->v_bind.sampler_set,   e->cur_v_sampler_set,   sizeof(d->v_bind.sampler_set));
+        // fragment stage
+        memcpy(d->f_bind.buffer_ptr,    e->cur_f_buffer_ptr,    sizeof(d->f_bind.buffer_ptr));
+        memcpy(d->f_bind.buffer_offset, e->cur_f_buffer_offset, sizeof(d->f_bind.buffer_offset));
+        memcpy(d->f_bind.inline_size,   e->cur_f_inline_size,   sizeof(d->f_bind.inline_size));
+        memcpy(d->f_bind.buffer_set,    e->cur_f_buffer_set,    sizeof(d->f_bind.buffer_set));
+        memcpy(d->f_bind.texture_ptr,   e->cur_f_texture_ptr,   sizeof(d->f_bind.texture_ptr));
+        memcpy(d->f_bind.texture_set,   e->cur_f_texture_set,   sizeof(d->f_bind.texture_set));
+        memcpy(d->f_bind.sampler_ptr,   e->cur_f_sampler_ptr,   sizeof(d->f_bind.sampler_ptr));
+        memcpy(d->f_bind.sampler_set,   e->cur_f_sampler_set,   sizeof(d->f_bind.sampler_set));
+    }
     if (e->draw_first < 0) e->draw_first = d->draw_index_global;
     e->draw_count++;
     g_draws_n_captured++;
@@ -1239,6 +1366,157 @@ static void swz_enc_end(id self, SEL _cmd) {
         }
     }
     g_orig_enc_end(self, _cmd);
+}
+
+// --- R7.6-A binding swizzle thunks ----------------------------------------
+//
+// All thunks share the same shape: call original IMP first (so framework
+// state stays correct), then if capture is armed + bindings opt-in,
+// update the encoder's per-stage rolling slot tables.
+
+static inline FrameEncoderEntry *frame_active_render_encoder(id self) {
+    if (!g_frame_capture_armed || !g_frame_capture_bindings) return NULL;
+    FrameEncoderEntry *e = frame_find_active_encoder((__bridge void *)self);
+    if (!e || e->type != FRAME_ENC_TYPE_RENDER) return NULL;
+    return e;
+}
+
+// vertex buffer
+static void swz_enc_set_v_buf(id self, SEL _cmd, id buf, NSUInteger off, NSUInteger idx) {
+    g_orig_enc_set_v_buf(self, _cmd, buf, off, idx);
+    FrameEncoderEntry *e = frame_active_render_encoder(self);
+    if (!e) return;
+    if (idx >= MAX_BINDING_BUFFERS) return;
+    e->cur_v_buffer_ptr   [idx] = buf ? (__bridge void *)buf : NULL;
+    e->cur_v_buffer_offset[idx] = (uint64_t)off;
+    e->cur_v_inline_size  [idx] = 0;
+    e->cur_v_buffer_set   [idx] = (buf != nil) ? 1 : 0;
+}
+
+static void swz_enc_set_v_bufs(id self, SEL _cmd, const id _Nullable *bufs, const NSUInteger *offs, NSRange r) {
+    g_orig_enc_set_v_bufs(self, _cmd, bufs, offs, r);
+    FrameEncoderEntry *e = frame_active_render_encoder(self);
+    if (!e) return;
+    for (NSUInteger i = 0; i < r.length; i++) {
+        NSUInteger idx = r.location + i;
+        if (idx >= MAX_BINDING_BUFFERS) break;
+        id buf = bufs ? bufs[i] : nil;
+        e->cur_v_buffer_ptr   [idx] = buf ? (__bridge void *)buf : NULL;
+        e->cur_v_buffer_offset[idx] = offs ? (uint64_t)offs[i] : 0;
+        e->cur_v_inline_size  [idx] = 0;
+        e->cur_v_buffer_set   [idx] = (buf != nil) ? 1 : 0;
+    }
+}
+
+static void swz_enc_set_v_bytes(id self, SEL _cmd, const void *bytes, NSUInteger len, NSUInteger idx) {
+    g_orig_enc_set_v_bytes(self, _cmd, bytes, len, idx);
+    FrameEncoderEntry *e = frame_active_render_encoder(self);
+    if (!e) return;
+    if (idx >= MAX_BINDING_BUFFERS) return;
+    e->cur_v_buffer_ptr   [idx] = NULL;          // inline = no resource id
+    e->cur_v_buffer_offset[idx] = 0;
+    e->cur_v_inline_size  [idx] = (uint32_t)((len > UINT32_MAX) ? UINT32_MAX : len);
+    e->cur_v_buffer_set   [idx] = 1;
+}
+
+static void swz_enc_set_v_tex(id self, SEL _cmd, id tex, NSUInteger idx) {
+    g_orig_enc_set_v_tex(self, _cmd, tex, idx);
+    FrameEncoderEntry *e = frame_active_render_encoder(self);
+    if (!e) return;
+    if (idx >= MAX_BINDING_TEXTURES) return;
+    e->cur_v_texture_ptr[idx] = tex ? (__bridge void *)tex : NULL;
+    e->cur_v_texture_set[idx] = (tex != nil) ? 1 : 0;
+}
+
+static void swz_enc_set_v_texs(id self, SEL _cmd, const id _Nullable *texs, NSRange r) {
+    g_orig_enc_set_v_texs(self, _cmd, texs, r);
+    FrameEncoderEntry *e = frame_active_render_encoder(self);
+    if (!e) return;
+    for (NSUInteger i = 0; i < r.length; i++) {
+        NSUInteger idx = r.location + i;
+        if (idx >= MAX_BINDING_TEXTURES) break;
+        id tex = texs ? texs[i] : nil;
+        e->cur_v_texture_ptr[idx] = tex ? (__bridge void *)tex : NULL;
+        e->cur_v_texture_set[idx] = (tex != nil) ? 1 : 0;
+    }
+}
+
+static void swz_enc_set_v_samp(id self, SEL _cmd, id samp, NSUInteger idx) {
+    g_orig_enc_set_v_samp(self, _cmd, samp, idx);
+    FrameEncoderEntry *e = frame_active_render_encoder(self);
+    if (!e) return;
+    if (idx >= MAX_BINDING_SAMPLERS) return;
+    e->cur_v_sampler_ptr[idx] = samp ? (__bridge void *)samp : NULL;
+    e->cur_v_sampler_set[idx] = (samp != nil) ? 1 : 0;
+}
+
+// fragment buffer
+static void swz_enc_set_f_buf(id self, SEL _cmd, id buf, NSUInteger off, NSUInteger idx) {
+    g_orig_enc_set_f_buf(self, _cmd, buf, off, idx);
+    FrameEncoderEntry *e = frame_active_render_encoder(self);
+    if (!e) return;
+    if (idx >= MAX_BINDING_BUFFERS) return;
+    e->cur_f_buffer_ptr   [idx] = buf ? (__bridge void *)buf : NULL;
+    e->cur_f_buffer_offset[idx] = (uint64_t)off;
+    e->cur_f_inline_size  [idx] = 0;
+    e->cur_f_buffer_set   [idx] = (buf != nil) ? 1 : 0;
+}
+
+static void swz_enc_set_f_bufs(id self, SEL _cmd, const id _Nullable *bufs, const NSUInteger *offs, NSRange r) {
+    g_orig_enc_set_f_bufs(self, _cmd, bufs, offs, r);
+    FrameEncoderEntry *e = frame_active_render_encoder(self);
+    if (!e) return;
+    for (NSUInteger i = 0; i < r.length; i++) {
+        NSUInteger idx = r.location + i;
+        if (idx >= MAX_BINDING_BUFFERS) break;
+        id buf = bufs ? bufs[i] : nil;
+        e->cur_f_buffer_ptr   [idx] = buf ? (__bridge void *)buf : NULL;
+        e->cur_f_buffer_offset[idx] = offs ? (uint64_t)offs[i] : 0;
+        e->cur_f_inline_size  [idx] = 0;
+        e->cur_f_buffer_set   [idx] = (buf != nil) ? 1 : 0;
+    }
+}
+
+static void swz_enc_set_f_bytes(id self, SEL _cmd, const void *bytes, NSUInteger len, NSUInteger idx) {
+    g_orig_enc_set_f_bytes(self, _cmd, bytes, len, idx);
+    FrameEncoderEntry *e = frame_active_render_encoder(self);
+    if (!e) return;
+    if (idx >= MAX_BINDING_BUFFERS) return;
+    e->cur_f_buffer_ptr   [idx] = NULL;
+    e->cur_f_buffer_offset[idx] = 0;
+    e->cur_f_inline_size  [idx] = (uint32_t)((len > UINT32_MAX) ? UINT32_MAX : len);
+    e->cur_f_buffer_set   [idx] = 1;
+}
+
+static void swz_enc_set_f_tex(id self, SEL _cmd, id tex, NSUInteger idx) {
+    g_orig_enc_set_f_tex(self, _cmd, tex, idx);
+    FrameEncoderEntry *e = frame_active_render_encoder(self);
+    if (!e) return;
+    if (idx >= MAX_BINDING_TEXTURES) return;
+    e->cur_f_texture_ptr[idx] = tex ? (__bridge void *)tex : NULL;
+    e->cur_f_texture_set[idx] = (tex != nil) ? 1 : 0;
+}
+
+static void swz_enc_set_f_texs(id self, SEL _cmd, const id _Nullable *texs, NSRange r) {
+    g_orig_enc_set_f_texs(self, _cmd, texs, r);
+    FrameEncoderEntry *e = frame_active_render_encoder(self);
+    if (!e) return;
+    for (NSUInteger i = 0; i < r.length; i++) {
+        NSUInteger idx = r.location + i;
+        if (idx >= MAX_BINDING_TEXTURES) break;
+        id tex = texs ? texs[i] : nil;
+        e->cur_f_texture_ptr[idx] = tex ? (__bridge void *)tex : NULL;
+        e->cur_f_texture_set[idx] = (tex != nil) ? 1 : 0;
+    }
+}
+
+static void swz_enc_set_f_samp(id self, SEL _cmd, id samp, NSUInteger idx) {
+    g_orig_enc_set_f_samp(self, _cmd, samp, idx);
+    FrameEncoderEntry *e = frame_active_render_encoder(self);
+    if (!e) return;
+    if (idx >= MAX_BINDING_SAMPLERS) return;
+    e->cur_f_sampler_ptr[idx] = samp ? (__bridge void *)samp : NULL;
+    e->cur_f_sampler_set[idx] = (samp != nil) ? 1 : 0;
 }
 
 // --- Swizzle install helpers -----------------------------------------------
@@ -1295,6 +1573,34 @@ static void frame_install_render_encoder_swizzles(Class encoderClass) {
     swizzle_in_hierarchy(encoderClass,
                          @selector(drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:baseVertex:baseInstance:),
                          (IMP)swz_enc_draw_idxib, (void **)&g_orig_enc_draw_idxib);
+
+    // R7.6-A: per-stage binding setters. Always installed; the thunks
+    // short-circuit when g_frame_capture_bindings == 0, so installing them
+    // unconditionally adds zero observable overhead to non-frame-list paths.
+    swizzle_in_hierarchy(encoderClass, @selector(setVertexBuffer:offset:atIndex:),
+                         (IMP)swz_enc_set_v_buf, (void **)&g_orig_enc_set_v_buf);
+    swizzle_in_hierarchy(encoderClass, @selector(setVertexBuffers:offsets:withRange:),
+                         (IMP)swz_enc_set_v_bufs, (void **)&g_orig_enc_set_v_bufs);
+    swizzle_in_hierarchy(encoderClass, @selector(setVertexBytes:length:atIndex:),
+                         (IMP)swz_enc_set_v_bytes, (void **)&g_orig_enc_set_v_bytes);
+    swizzle_in_hierarchy(encoderClass, @selector(setVertexTexture:atIndex:),
+                         (IMP)swz_enc_set_v_tex, (void **)&g_orig_enc_set_v_tex);
+    swizzle_in_hierarchy(encoderClass, @selector(setVertexTextures:withRange:),
+                         (IMP)swz_enc_set_v_texs, (void **)&g_orig_enc_set_v_texs);
+    swizzle_in_hierarchy(encoderClass, @selector(setVertexSamplerState:atIndex:),
+                         (IMP)swz_enc_set_v_samp, (void **)&g_orig_enc_set_v_samp);
+    swizzle_in_hierarchy(encoderClass, @selector(setFragmentBuffer:offset:atIndex:),
+                         (IMP)swz_enc_set_f_buf, (void **)&g_orig_enc_set_f_buf);
+    swizzle_in_hierarchy(encoderClass, @selector(setFragmentBuffers:offsets:withRange:),
+                         (IMP)swz_enc_set_f_bufs, (void **)&g_orig_enc_set_f_bufs);
+    swizzle_in_hierarchy(encoderClass, @selector(setFragmentBytes:length:atIndex:),
+                         (IMP)swz_enc_set_f_bytes, (void **)&g_orig_enc_set_f_bytes);
+    swizzle_in_hierarchy(encoderClass, @selector(setFragmentTexture:atIndex:),
+                         (IMP)swz_enc_set_f_tex, (void **)&g_orig_enc_set_f_tex);
+    swizzle_in_hierarchy(encoderClass, @selector(setFragmentTextures:withRange:),
+                         (IMP)swz_enc_set_f_texs, (void **)&g_orig_enc_set_f_texs);
+    swizzle_in_hierarchy(encoderClass, @selector(setFragmentSamplerState:atIndex:),
+                         (IMP)swz_enc_set_f_samp, (void **)&g_orig_enc_set_f_samp);
 }
 
 // Install MTLCommandQueue/MTLCommandBuffer swizzles up-front. Render encoder
@@ -2849,22 +3155,30 @@ static int cmd_disasm(int argc, const char *argv[]) {
 
 
 // ============================================================
-#pragma mark - Subcommand: frame-list (R7.3)
+#pragma mark - Subcommand: frame-list (R7.3 + R7.6-A)
 // ============================================================
 //
-// frame-list <trace> [--with-draws] [--no-draws] [--with-timing]
+// frame-list <trace> [--with-draws] [--no-draws] [--with-timing] [--with-bindings] [--no-bindings]
 //
 // Replays the trace once with the R7.3 frame swizzles armed and emits a
 // command_buffers / encoders / draws tree plus a flat draw_to_rps_map[]
 // suitable for chaining into shader-of-rps.
 //
 // Defaults:
-//   --with-draws  ON  (cheap; encoder.draws[] populated)
-//   --no-draws    OFF (omit per-draw records, keep encoder list only)
-//   --with-timing OFF (sets per-cb gpu_start/end_ms from MTLCommandBuffer
-//                      properties; many replay-created CBs never commit so
-//                      these properties remain 0 — flag is provided for
-//                      forward compatibility)
+//   --with-draws    ON  (cheap; encoder.draws[] populated)
+//   --no-draws      OFF (omit per-draw records, keep encoder list only)
+//   --with-timing   OFF (sets per-cb gpu_start/end_ms from MTLCommandBuffer
+//                       properties; many replay-created CBs never commit so
+//                       these properties remain 0 — flag is provided for
+//                       forward compatibility)
+//   --with-bindings ON  (R7.6-A: snapshot per-draw vertex/fragment binding
+//                       tables via setVertexBuffer/setFragmentTexture/...
+//                       swizzles; emits draw.bindings.{vertex,fragment}.
+//                       {buffers,textures,samplers}[] only for non-empty
+//                       slots)
+//   --no-bindings   OFF (suppress binding capture + emission; useful for
+//                       shader-of-drawcall-style chains that only need
+//                       draw_to_rps_map and want minimal overhead)
 //
 // Reuses R7.2's `rps_install_swizzles` so the per-draw rps_ptr is also
 // resolvable to a stable rps_key in the same invocation.
@@ -2872,18 +3186,23 @@ static int cmd_disasm(int argc, const char *argv[]) {
 typedef struct {
     const char *trace_path;
     BOOL with_draws;       // default YES
-    BOOL no_draws;          // explicit suppression overrides with_draws
-    BOOL with_timing;       // default NO
+    BOOL no_draws;         // explicit suppression overrides with_draws
+    BOOL with_timing;      // default NO
+    BOOL with_bindings;    // R7.6-A, default YES
+    BOOL no_bindings;      // explicit suppression overrides with_bindings
 } FrameListOptions;
 
 static FrameListOptions parse_frame_list_options(int argc, const char *argv[]) {
     FrameListOptions o = {0};
     o.with_draws = YES;
+    o.with_bindings = YES;
     if (argc >= 1) o.trace_path = argv[0];
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--with-draws") == 0) o.with_draws = YES;
         else if (strcmp(argv[i], "--no-draws") == 0) o.no_draws = YES;
         else if (strcmp(argv[i], "--with-timing") == 0) o.with_timing = YES;
+        else if (strcmp(argv[i], "--with-bindings") == 0) o.with_bindings = YES;
+        else if (strcmp(argv[i], "--no-bindings") == 0) o.no_bindings = YES;
     }
     return o;
 }
@@ -2908,16 +3227,79 @@ static const char *primitive_type_name(int pt) {
     }
 }
 
+// R7.6-A: emit one stage's binding table as a JSON object
+//   {"buffers":[{"index":N,"resource_id":R,"offset":O} | {"index":N,"inline_bytes_size":S}, ...],
+//    "textures":[{"index":N,"resource_id":R}, ...],
+//    "samplers":[{"index":N,"sampler_ptr":P}, ...]}
+// resPtr2Id is the prebuilt {NSValue(ptr) -> resource_key} dict; pass nil
+// if not built (resource_id falls back to 0 in that case).
+//
+// Sparse: only slots where set[i] == 1 are emitted. Empty stage emits
+// "buffers":[],"textures":[],"samplers":[]" so consumers can rely on the keys.
+static void emit_stage_bindings(const FrameStageBindings *b, NSDictionary *resPtr2Id) {
+    // buffers
+    printf("\"buffers\":[");
+    BOOL first = YES;
+    for (int i = 0; i < MAX_BINDING_BUFFERS; i++) {
+        if (!b->buffer_set[i]) continue;
+        if (!first) printf(",");
+        first = NO;
+        if (b->inline_size[i] > 0) {
+            // inline setVertexBytes/setFragmentBytes — no resource_id
+            printf("{\"index\":%d,\"inline_bytes_size\":%u}", i, (unsigned)b->inline_size[i]);
+        } else {
+            uint64_t rid = 0;
+            if (resPtr2Id && b->buffer_ptr[i]) {
+                NSNumber *n = [resPtr2Id objectForKey:[NSValue valueWithNonretainedObject:(__bridge id)b->buffer_ptr[i]]];
+                if (n) rid = [n unsignedLongLongValue];
+            }
+            printf("{\"index\":%d,\"resource_id\":%llu,\"offset\":%llu}",
+                   i, (unsigned long long)rid, (unsigned long long)b->buffer_offset[i]);
+        }
+    }
+    printf("],");
+    // textures
+    printf("\"textures\":[");
+    first = YES;
+    for (int i = 0; i < MAX_BINDING_TEXTURES; i++) {
+        if (!b->texture_set[i]) continue;
+        if (!first) printf(",");
+        first = NO;
+        uint64_t rid = 0;
+        if (resPtr2Id && b->texture_ptr[i]) {
+            NSNumber *n = [resPtr2Id objectForKey:[NSValue valueWithNonretainedObject:(__bridge id)b->texture_ptr[i]]];
+            if (n) rid = [n unsignedLongLongValue];
+        }
+        printf("{\"index\":%d,\"resource_id\":%llu}", i, (unsigned long long)rid);
+    }
+    printf("],");
+    // samplers — sampler states are not in objectMap.resources, so no
+    // resource_id; emit slot index + raw pointer for diagnostic identity.
+    printf("\"samplers\":[");
+    first = YES;
+    for (int i = 0; i < MAX_BINDING_SAMPLERS; i++) {
+        if (!b->sampler_set[i]) continue;
+        if (!first) printf(",");
+        first = NO;
+        printf("{\"index\":%d,\"sampler_ptr\":\"%p\"}", i, b->sampler_ptr[i]);
+    }
+    printf("]");
+}
+
 static int cmd_frame_list(int argc, const char *argv[]) {
     if (argc < 1) {
-        fprintf(stderr, "Usage: gputrace_replay_bridge frame-list <path-to-.gputrace> [--with-draws] [--no-draws] [--with-timing]\n");
+        fprintf(stderr, "Usage: gputrace_replay_bridge frame-list <path-to-.gputrace> [--with-draws] [--no-draws] [--with-timing] [--with-bindings] [--no-bindings]\n");
         fprintf(stderr, "\nEnumerates command buffers / encoders / draws captured during replay.\n");
         fprintf(stderr, "Outputs JSON tree (command_buffers[].encoders[].draws[]) plus flat draw_to_rps_map[].\n");
+        fprintf(stderr, "R7.6-A: --with-bindings (default ON) snapshots per-draw vertex/fragment binding tables.\n");
         return EXIT_USAGE;
     }
     FrameListOptions opts = parse_frame_list_options(argc, argv);
     if (!opts.trace_path) return EXIT_USAGE;
     BOOL emit_draws = opts.with_draws && !opts.no_draws;
+    // R7.6-A: bindings are emitted only when draws are emitted (no point in
+    // computing bindings when the caller asked --no-draws).
+    BOOL emit_bindings = emit_draws && opts.with_bindings && !opts.no_bindings;
 
     // Reset and install swizzles BEFORE replay_context_init — the framework's
     // PSO compilation in makeController would otherwise create CBs we don't
@@ -2931,10 +3313,12 @@ static int cmd_frame_list(int argc, const char *argv[]) {
 
     // Arm capture only for the actual playAll traversal.
     g_frame_capture_armed = 1;
+    g_frame_capture_bindings = emit_bindings ? 1 : 0;
     int play_signal = 0;
     double elapsed_ms = 0;
     int play_rc = safe_playAll(&elapsed_ms, &play_signal);
     g_frame_capture_armed = 0;
+    g_frame_capture_bindings = 0;
 
     uint32_t total_call_count = controller_last_call_index(g_ctx.controller);
 
@@ -2984,6 +3368,24 @@ static int cmd_frame_list(int argc, const char *argv[]) {
         }
     }
 
+    // R7.6-A: build a single ptr→resource_id table from objectMap.resources
+    // up-front. Per-draw scans through 247 resources × 244 draws would be
+    // ~60k linear lookups per stage; building the dict once lets each
+    // binding emit do an O(1) NSValue probe. Used only when emit_bindings.
+    NSMutableDictionary *resPtr2Id = nil;
+    if (emit_bindings && g_ctx.objectMap) {
+        resPtr2Id = [NSMutableDictionary dictionary];
+        NSDictionary *res = nil;
+        @try { res = [g_ctx.objectMap performSelector:@selector(resources)]; } @catch (NSException *ex) {}
+        if (res && [res isKindOfClass:[NSDictionary class]]) {
+            for (id key in res) {
+                id obj = res[key];
+                if (!obj) continue;
+                [resPtr2Id setObject:key forKey:[NSValue valueWithNonretainedObject:obj]];
+            }
+        }
+    }
+
     // ===== Emit JSON =====
     JSON_BEGIN();
     JSON_KV_STR("command", "frame-list");
@@ -2996,6 +3398,7 @@ static int cmd_frame_list(int argc, const char *argv[]) {
     JSON_KV_UINT("total_call_count", total_call_count);
     JSON_KV_BOOL("with_draws", emit_draws);
     JSON_KV_BOOL("with_timing", opts.with_timing);
+    JSON_KV_BOOL("with_bindings", emit_bindings);
     JSON_KV_INT("command_buffer_count", g_cb_n_captured);
     JSON_KV_INT("encoder_count", g_encoder_n_captured);
     JSON_KV_INT("draw_count", g_draws_n_captured);
@@ -3102,6 +3505,17 @@ static int cmd_frame_list(int argc, const char *argv[]) {
                                 : nil;
                             if (fnK) printf(",\"fragment_function_key\":%llu", [fnK unsignedLongLongValue]);
                         }
+                    }
+                    // R7.6-A: per-draw binding tables (vertex + fragment).
+                    // Rendered only for render-encoder draws; compute / blit
+                    // encoders never enter this code path because they don't
+                    // emit FrameDrawEntry rows.
+                    if (emit_bindings && d->bindings_captured) {
+                        printf(",\"bindings\":{\"vertex\":{");
+                        emit_stage_bindings(&d->v_bind, resPtr2Id);
+                        printf("},\"fragment\":{");
+                        emit_stage_bindings(&d->f_bind, resPtr2Id);
+                        printf("}}");
                     }
                     printf("}");
                 }

@@ -17,7 +17,7 @@ A self-contained CLI (`gputrace_replay_bridge`) plus a Python wrapper (`gputrace
 | Texture / buffer inspection | `replay --list-resources --export` | Are render targets blank? Is uniform data sane? Do values contain NaN? |
 | Pipeline / shader dump + RPS↔shader correlation | `pipeline` | Which library compiled which function; metallib + AIR for offline inspection; **R7.2: each RPS now reports its vertex/fragment function keys, library keys, color/depth/stencil attachment formats, write masks, and raster sample count — without requiring an external swizzle probe** |
 | RPS → shader IR reverse-lookup | `shader-of-rps` | **R7.4: one command from a render-pipeline-state key to its fragment/vertex `MTLFunction`, the owning metallib, the PlayTools cacheKey, and (with `--with-ir`) the disassembled LLVM IR `.ll` file. R7.7: when MTLLibrary lacks `bitcodeData`, transparently falls back to PlayCover ShaderDebugInfo `module.bc` — IR coverage on LYSK rises from ~3% (AIR-only) to ~100%.** |
-| Frame timeline (encoder/draw) + draw→RPS map | `frame-list` | **R7.3: command buffers, render/compute/blit encoders with attachment summaries, every draw with primitive type / vertex / instance counts and its bound RPS_key. Pipe `draw_to_rps_map[].rps_key` directly into `shader-of-rps --with-ir` for "draw N → shader IR" in two commands.** |
+| Frame timeline (encoder/draw) + draw→RPS map | `frame-list` | **R7.3: command buffers, render/compute/blit encoders with attachment summaries, every draw with primitive type / vertex / instance counts and its bound RPS_key. Pipe `draw_to_rps_map[].rps_key` directly into `shader-of-rps --with-ir` for "draw N → shader IR" in two commands. R7.6-A: each draw now also carries a full per-stage binding snapshot (`bindings.{vertex,fragment}.{buffers,textures,samplers}[]` with `resource_id` / `offset` / `inline_bytes_size`) — answers "what was bound when this draw executed".** |
 | **draw_index → shader IR (one-shot)** | `shader-of-drawcall` (Python wrapper) | **R7.6-C: thin封装 — `frame-list → draw_to_rps_map[draw_index] → shader-of-rps`. Mirrors `shader-of-rps` for the "I know the draw index, give me the shader" mental model. OOR draw_index returns structured `draw_index_out_of_range` (exit 12); compute-only traces gracefully report `draw_count=0`. Wrapper-only — bridge unchanged. Combined with R7.7 SDI fallback, `--with-ir` now produces a real `.ll` for ~100% of LYSK draws.** |
 | **library_key → IR (direct)** | `disasm` | **R7.7: `disasm <trace> <lib_key> --with-ir` skips the RPS detour and goes straight library_key → metallib → cacheKey → bitcodeData/SDI module.bc → llvm-dis. Optional `--key-type rps` forwards to `shader-of-rps`. Includes the same SDI fallback used by `shader-of-rps`.** |
 | Shader hot-replace | `shader --verify` | Bisect: replace a suspect shader with a corrected/instrumented one and re-replay |
@@ -130,13 +130,27 @@ jq '.render_pipeline_states[] | select(.label | contains("SkinMakeupNew"))' /tmp
 #   (RPS 476 = Z-prepass: 0 colors, fragment_library_key=252)
 #   (RPS 484 = main pass: 2 colors RGBA8Unorm, fragment_library_key=356)
 
-# Step 3 — frame timeline + draw→RPS map (R7.3)
+# Step 3 — frame timeline + draw→RPS map (R7.3) + per-draw bindings (R7.6-A)
 "$BRIDGE" frame-list /tmp/foo.gputrace > /tmp/foo-frame.json
-jq '{cb: .command_buffer_count, enc: .encoder_count, draws: .draw_count}' /tmp/foo-frame.json
-# → e.g. {cb:4, enc:62, draws:244}
+jq '{cb: .command_buffer_count, enc: .encoder_count, draws: .draw_count, with_bindings: .with_bindings}' /tmp/foo-frame.json
+# → e.g. {cb:4, enc:62, draws:244, with_bindings:true}
 # Pick the first draw's RPS:
 jq '.draw_to_rps_map[0]' /tmp/foo-frame.json
 # → {"draw_index_global":0,"encoder_index":2,"draw_in_encoder":0,"call_index":131,"rps_key":472}
+
+# R7.6-A: each draw also carries a full per-stage binding snapshot. Use this
+# to answer "what was bound when this draw executed" without writing a probe.
+jq '.command_buffers[].encoders[].draws[0] | select(.bindings) | .bindings | {v_bufs: (.vertex.buffers|length), v_tex: (.vertex.textures|length), f_bufs: (.fragment.buffers|length), f_tex: (.fragment.textures|length)}' /tmp/foo-frame.json | head -5
+# → e.g. {"v_bufs":10,"v_tex":1,"f_bufs":4,"f_tex":16}  (typical PBR draw)
+#
+# Pull buffer 0 / fragment texture 0 of draw 0 — links straight back to
+# replay --list-resources / replay --export <id>:
+jq '.draw_to_rps_map[0].draw_index_global as $i | .command_buffers[].encoders[].draws[] | select(.draw_index_global==$i) | {v_buf0: .bindings.vertex.buffers[0], f_tex0: .bindings.fragment.textures[0]}' /tmp/foo-frame.json
+# → {"v_buf0":{"index":0,"resource_id":2,"offset":262144},"f_tex0":{"index":0,"resource_id":186}}
+# Now you can `replay --export 186 /tmp/draw0_ftex0.bin` to inspect the actual texture.
+#
+# If output volume is a concern (LYSK: ~390KB with bindings vs ~105KB without),
+# add `--no-bindings` to skip the per-draw binding snapshot.
 
 # Step 4 — pick RPS 484 (main pass), get IR
 "$BRIDGE" shader-of-rps /tmp/foo.gputrace 484 --with-ir --output-dir /tmp/foo-shaders
@@ -166,10 +180,11 @@ The exported `cache_key_metallib` follows PlayCover's convention; the skill's IR
 
 These are limitations of the current skill — agents should not waste cycles trying to work around them with grep / zlib / unsorted-capture parsing.
 
-- **Per-encoder attachment binding tables (vertex/fragment buffers + textures bound on each draw)** — `frame-list` exposes encoder-level color/depth/stencil attachments and per-draw RPS / vertex / instance counts, but does NOT yet record `setVertexBuffer:` / `setFragmentTexture:` / inline `setVertexBytes:` calls. R7.6 子项 A (planned).
 - **Depth/stencil texture export** — `replay --export` refuses depth/stencil; sample inside a shader and write to a color target as a workaround. R7.5 (planned).
-- **Uniform / cbuffer inspector** — no API to read what was bound at draw time (depends on the binding tables above). R7.6 子项 B (planned).
+- **Uniform / cbuffer content inspection** — `frame-list --with-bindings` (R7.6-A) tells you which buffer is at which slot with what offset, but does NOT yet decode the bytes inside that buffer. R7.6 子项 B (planned, depends on R7.6-A binding tables).
 - **Per-encoder GPU timing** — `frame-list --with-timing` reads `MTLCommandBuffer.GPUStartTime/GPUEndTime`, but on traces whose internal CBs never `commit` these properties remain 0 / null. The flag is provided for forward compatibility; for accurate host-side per-segment timing use `replay --playto N` bisection (see playbook Pattern 4).
+- **Compute encoder dispatch counts** — R7.3 lists `type=compute` encoders in the timeline, but `compute_dispatch_count` remains 0; `setComputePipelineState:` / `dispatchThreadgroups:*` swizzles are not yet installed (R7.5 子项 B planned).
+- **Indirect draws / mesh shaders** — `drawPrimitives:indirectBuffer:*` / `drawMeshThreadgroups:*` are not in the R7.3 swizzle set (LYSK doesn't use them; add when needed).
 
 If a user asks for any of the above, explain the gap and offer the closest available substitute (typically: `pipeline` to find the suspect library, then `shader-of-rps --with-ir` for IR; or `replay --playto` for bisection).
 
@@ -190,7 +205,7 @@ bash "$SKILL_DIR/scripts/test_bridge.sh"
 GPUTRACE_PATH=/path/to/sample.gputrace bash "$SKILL_DIR/scripts/test_bridge.sh"
 ```
 
-29 + 38 R7-specific assertions cover argument parsing, exit codes, JSON shape, codesign validity, R7.1 bounds checking + texture/buffer metadata, R7.2 RPS↔shader correlation, R7.3 frame-list timeline + draw_to_rps_map invariants + frame-list→shader-of-rps end-to-end chain, R7.4 `shader-of-rps` reverse lookup, R7.6-C `shader-of-drawcall` wrapper byte-level equivalence + OOR + module-API contract, **R7.7 `disasm` + SDI module.bc fallback (verifies `ir_source=sdi_module_bc`, deprecated `no_air_bitcode` is gone, lib & rps key-type both produce IR)**, and (when GPUTRACE_PATH is set) a live replay/pipeline/config/shader-of-rps/frame-list/shader-of-drawcall/disasm sextet — **102 total assertions** on a render-bearing trace.
+29 + 38 R7-specific assertions cover argument parsing, exit codes, JSON shape, codesign validity, R7.1 bounds checking + texture/buffer metadata, R7.2 RPS↔shader correlation, R7.3 frame-list timeline + draw_to_rps_map invariants + frame-list→shader-of-rps end-to-end chain, R7.4 `shader-of-rps` reverse lookup, R7.6-C `shader-of-drawcall` wrapper byte-level equivalence + OOR + module-API contract, **R7.7 `disasm` + SDI module.bc fallback (verifies `ir_source=sdi_module_bc`, deprecated `no_air_bitcode` is gone, lib & rps key-type both produce IR)**, **R7.6-A frame-list per-draw bindings (verifies `bindings.{vertex,fragment}.{buffers,textures,samplers}` schema, vb0 invariant on every render draw, `--no-bindings` size-shrink + suppression, plus chain-compatibility with `shader-of-rps`)**, and (when GPUTRACE_PATH is set) a live replay/pipeline/config/shader-of-rps/frame-list/shader-of-drawcall/disasm sextet — **116 total assertions** on a render-bearing trace.
 
 For multi-sample regression (so the suite doesn't only validate against one trace shape), point `GPUTRACE_PATH` at a compute-only trace too — `shader-of-drawcall`'s OOR + `frame-list`'s `draw_count=0` paths and `disasm` SDI graceful "no_air_bitcode_and_no_sdi" branch all exercise that branch. Pre-existing R7.3 assertions that assume render draws will fail on compute-only traces, which is expected.
 

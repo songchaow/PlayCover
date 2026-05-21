@@ -369,7 +369,21 @@ Behavior summary:
 
 The wrapper is symmetric to `shader-of-rps`: pick whichever entry point matches your mental model (RPS_key vs draw_index). Both produce the same artifacts on disk.
 
-**When to stop here**: once the user can match user-visible symptoms (e.g. "the SkinMakeupNew layer is wrong") to a concrete shader IR file, you've handed them everything the bridge can give. Further drilling — per-draw bindings, uniform values — is on the R7 backlog and not yet available.
+**When to stop here**: once the user can match user-visible symptoms (e.g. "the SkinMakeupNew layer is wrong") to a concrete shader IR file + the binding table at that draw, you've handed them everything the bridge currently exposes.
+
+**R7.6-A: per-draw bindings (default ON)**: `frame-list` (with `--with-bindings`, the default) attaches `bindings.{vertex,fragment}.{buffers,textures,samplers}[]` to every render-encoder draw. Combined with `shader-of-drawcall`, the workflow "draw N → IR + bindings" is now a single-`jq`-pipe answer. Example for a "wrong-texture" hypothesis:
+
+```bash
+# Find draw 0's fragment textures (resource_id values reference replay --list-resources)
+jq '.command_buffers[].encoders[].draws[] | select(.draw_index_global==0) | .bindings.fragment.textures' \
+   /tmp/foo-frame.json
+# → [{"index":0,"resource_id":186},{"index":3,"resource_id":211}, ...]
+
+# Export texture bound at fragment slot 3 to inspect:
+"$BRIDGE" replay /tmp/foo.gputrace --export 211 /tmp/draw0_ftex3.bin
+```
+
+What's still on the R7 backlog: **uniform/cbuffer content** decoding (R7.6-B; depends on R7.6-A binding tables to locate the right buffer + offset, then needs argument-encoder reflection to interpret bytes), **depth/stencil texture export** (R7.5-A), **compute encoder dispatch counts** (R7.5-B).
 
 ---
 

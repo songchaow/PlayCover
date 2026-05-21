@@ -311,6 +311,57 @@ class FrameAttachment:
     index: Optional[int] = None  # only set on color attachments
 
 
+# R7.6-A — per-draw binding dataclasses
+@dataclass
+class FrameBufferBinding:
+    """R7.6-A: 单个 vertex/fragment buffer 槽位绑定。
+
+    资源型（普通 ``setVertexBuffer:offset:atIndex:``）填 ``resource_id`` + ``offset``;
+    inline 型（``setVertexBytes:length:atIndex:``）填 ``inline_bytes_size``，
+    ``resource_id`` 与 ``offset`` 为 None。
+    """
+    index: int
+    resource_id: Optional[int] = None
+    offset: Optional[int] = None
+    inline_bytes_size: Optional[int] = None
+
+
+@dataclass
+class FrameTextureBinding:
+    """R7.6-A: 单个 vertex/fragment texture 槽位绑定。"""
+    index: int
+    resource_id: int
+
+
+@dataclass
+class FrameSamplerBinding:
+    """R7.6-A: 单个 vertex/fragment sampler 槽位绑定。
+
+    sampler 不存在 trace 内部 resource_id（不在 ``objectMap.resources`` 里），
+    只输出原始指针字符串供诊断身份匹配使用。
+    """
+    index: int
+    sampler_ptr: str
+
+
+@dataclass
+class FrameStageBindings:
+    """R7.6-A: 单个 stage（vertex / fragment）的绑定快照。
+
+    所有列表都是稀疏的 — 仅含被 set* 调用过且非 nil 的槽位。
+    """
+    buffers: list[FrameBufferBinding] = field(default_factory=list)
+    textures: list[FrameTextureBinding] = field(default_factory=list)
+    samplers: list[FrameSamplerBinding] = field(default_factory=list)
+
+
+@dataclass
+class FrameDrawBindings:
+    """R7.6-A: 一次 draw 的全部 vertex + fragment 绑定。"""
+    vertex: FrameStageBindings = field(default_factory=FrameStageBindings)
+    fragment: FrameStageBindings = field(default_factory=FrameStageBindings)
+
+
 @dataclass
 class FrameDraw:
     """R7.3: 单个 draw call 记录"""
@@ -326,6 +377,7 @@ class FrameDraw:
     rps_key: Optional[int] = None
     rps_label: Optional[str] = None
     fragment_function_key: Optional[int] = None
+    bindings: Optional[FrameDrawBindings] = None  # R7.6-A; None when --no-bindings
 
 
 @dataclass
@@ -378,6 +430,7 @@ class FrameListResult:
     total_call_count: int
     with_draws: bool
     with_timing: bool
+    with_bindings: bool  # R7.6-A
     command_buffer_count: int
     encoder_count: int
     draw_count: int
@@ -1040,6 +1093,7 @@ class ReplayBridge:
         *,
         with_draws: bool = True,
         with_timing: bool = False,
+        with_bindings: bool = True,
         timeout: float = 300.0,
     ) -> FrameListResult:
         """
@@ -1051,6 +1105,9 @@ class ReplayBridge:
             with_draws: 是否输出 draws 数组与扁平化 draw_to_rps_map（默认 True）
             with_timing: 是否输出 per-cb GPU 时间（默认 False；许多 replay
                 内部 cb 不 commit，timing 字段可能为 null）
+            with_bindings: R7.6-A — 是否每 draw 输出 vertex/fragment buffer/
+                texture/sampler 绑定快照（默认 True）。设 False 时 bridge 端
+                跳过 binding swizzle 累积，输出体积约 -75%
             timeout: 超时秒数
 
         Returns:
@@ -1064,6 +1121,8 @@ class ReplayBridge:
             args.append("--no-draws")
         if with_timing:
             args.append("--with-timing")
+        if not with_bindings:
+            args.append("--no-bindings")
 
         data, _ = self._run(args, timeout=timeout)
 
@@ -1076,7 +1135,36 @@ class ReplayBridge:
                 index=idx,
             )
 
+        def _parse_buffer_binding(b: dict[str, Any]) -> FrameBufferBinding:
+            # inline-bytes form lacks resource_id/offset; resource form lacks inline_bytes_size
+            return FrameBufferBinding(
+                index=b.get("index", 0),
+                resource_id=b.get("resource_id"),
+                offset=b.get("offset"),
+                inline_bytes_size=b.get("inline_bytes_size"),
+            )
+
+        def _parse_stage_bindings(sb: dict[str, Any]) -> FrameStageBindings:
+            return FrameStageBindings(
+                buffers=[_parse_buffer_binding(b) for b in sb.get("buffers", [])],
+                textures=[
+                    FrameTextureBinding(index=t.get("index", 0), resource_id=t.get("resource_id", 0))
+                    for t in sb.get("textures", [])
+                ],
+                samplers=[
+                    FrameSamplerBinding(index=s.get("index", 0), sampler_ptr=s.get("sampler_ptr", ""))
+                    for s in sb.get("samplers", [])
+                ],
+            )
+
         def _parse_draw(d: dict[str, Any]) -> FrameDraw:
+            bd = d.get("bindings")
+            bindings = None
+            if isinstance(bd, dict):
+                bindings = FrameDrawBindings(
+                    vertex=_parse_stage_bindings(bd.get("vertex", {})),
+                    fragment=_parse_stage_bindings(bd.get("fragment", {})),
+                )
             return FrameDraw(
                 draw_index_global=d.get("draw_index_global", 0),
                 draw_in_encoder=d.get("draw_in_encoder", 0),
@@ -1090,6 +1178,7 @@ class ReplayBridge:
                 rps_key=d.get("rps_key"),
                 rps_label=d.get("rps_label"),
                 fragment_function_key=d.get("fragment_function_key"),
+                bindings=bindings,
             )
 
         def _parse_encoder(e: dict[str, Any]) -> FrameEncoder:
@@ -1146,6 +1235,7 @@ class ReplayBridge:
             total_call_count=data.get("total_call_count", 0),
             with_draws=data.get("with_draws", with_draws),
             with_timing=data.get("with_timing", with_timing),
+            with_bindings=data.get("with_bindings", with_bindings),
             command_buffer_count=data.get("command_buffer_count", 0),
             encoder_count=data.get("encoder_count", 0),
             draw_count=data.get("draw_count", 0),
@@ -1349,14 +1439,16 @@ def _cli_main():
     p_sor.add_argument("--output-dir", default=None,
                        help="Output directory (default: system tmp)")
 
-    # frame-list (R7.3)
+    # frame-list (R7.3 + R7.6-A)
     p_fl = subparsers.add_parser("frame-list", parents=[parent],
-                                  help="Enumerate cb/encoder/draw timeline + draw_to_rps_map (R7.3)")
+                                  help="Enumerate cb/encoder/draw timeline + draw_to_rps_map (R7.3) + per-draw bindings (R7.6-A)")
     p_fl.add_argument("trace", help="Path to .gputrace bundle")
     p_fl.add_argument("--no-draws", action="store_true",
                       help="Suppress per-draw records and draw_to_rps_map")
     p_fl.add_argument("--with-timing", action="store_true",
                       help="Include per-cb GPU start/end/duration (often null for replay-internal CBs)")
+    p_fl.add_argument("--no-bindings", action="store_true",
+                      help="R7.6-A: suppress per-draw vertex/fragment binding tables (default ON; output ~75%% smaller without)")
 
     # shader-of-drawcall (R7.6 子项 C — 薄封装)
     p_sod = subparsers.add_parser(
@@ -1463,6 +1555,7 @@ def _cli_main():
                 args.trace,
                 with_draws=not args.no_draws,
                 with_timing=args.with_timing,
+                with_bindings=not args.no_bindings,
                 timeout=args.timeout,
             )
             print(json.dumps(result.raw, indent=indent))

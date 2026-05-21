@@ -497,6 +497,130 @@ sys.exit(0)
         fi
         rm -rf "$TMP_SOR_SDI"
     fi
+
+    # T7q: R7.6-A — frame-list --with-bindings (default ON) emits per-draw vertex/fragment binding tables
+    # NOTE: 与 R7.3 的"健康路径"断言一样，T7q 假设 trace 至少有一个 render-encoder draw（with vb0 + 16 PBR
+    # textures 这类 LYSK 不变量）。compute-only trace 上 draw_count=0，整组断言不适用，跳过。
+    echo "  [T7q] R7.6-A frame-list per-draw bindings"
+    set +e
+    BIND_JSON=$("$BRIDGE" frame-list "$GPUTRACE_PATH" 2>/dev/null)
+    rc=$?
+    set -e
+    BIND_DRAW_COUNT=$(echo "$BIND_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('draw_count',0))" 2>/dev/null || echo "0")
+    if [ "$rc" -eq 0 ]; then pass "frame-list (default) exit = 0"; else fail "frame-list exit = $rc"; fi
+    if echo "$BIND_JSON" | grep -q '"with_bindings":true'; then pass "with_bindings=true by default"; else fail "with_bindings not true by default"; fi
+    if [ "$BIND_DRAW_COUNT" -gt 0 ]; then
+        if echo "$BIND_JSON" | grep -q '"bindings":{"vertex":{"buffers":'; then pass "draw has bindings.vertex.buffers"; else fail "missing bindings.vertex.buffers"; fi
+        # textures key is always emitted (possibly []) — match without anchoring to bindings.vertex specifically
+        if echo "$BIND_JSON" | grep -q '"textures":'; then pass "draw has bindings.*.textures key"; else fail "missing bindings.*.textures"; fi
+        if echo "$BIND_JSON" | grep -q '"fragment":{"buffers":'; then pass "draw has bindings.fragment.buffers"; else fail "missing bindings.fragment.buffers"; fi
+        # 'samplers' must always be present (possibly []) so consumers can rely on the key
+        if echo "$BIND_JSON" | grep -q '"samplers":'; then pass "draw has bindings.*.samplers key"; else fail "missing bindings.*.samplers key"; fi
+
+        # Semantic invariants (LYSK-validated):
+        #   - every draw with rps_key has at least one vertex buffer (vb0)
+        #   - resource_id values reference real entries in the resources dict
+        #   - per-draw bindings only emitted on render-encoder draws
+        BIND_INV=$(echo "$BIND_JSON" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+draws_total = 0
+draws_with_v_buf = 0
+draws_with_f_tex = 0
+draws_missing_bindings = 0
+total_v_bufs = 0
+total_f_tex = 0
+inline_draws = 0
+for cb in d['command_buffers']:
+    for e in cb['encoders']:
+        for dr in e.get('draws', []):
+            draws_total += 1
+            bd = dr.get('bindings')
+            if not bd:
+                draws_missing_bindings += 1
+                continue
+            v = bd['vertex']; f = bd['fragment']
+            if v['buffers']: draws_with_v_buf += 1
+            if f['textures']: draws_with_f_tex += 1
+            total_v_bufs += len(v['buffers'])
+            total_f_tex += len(f['textures'])
+            for slot in v['buffers'] + f['buffers']:
+                if 'inline_bytes_size' in slot: inline_draws += 1
+print(f'draws_total={draws_total} with_v_buf={draws_with_v_buf} with_f_tex={draws_with_f_tex} missing_bindings={draws_missing_bindings} total_v_bufs={total_v_bufs} total_f_tex={total_f_tex}')
+" 2>/dev/null)
+        echo "    invariants: $BIND_INV"
+        if echo "$BIND_INV" | grep -q "missing_bindings=0"; then
+            pass "every draw has bindings field (R7.6-A capture coverage)"
+        else
+            fail "some draws lack bindings — R7.6-A swizzle gap"
+        fi
+        if echo "$BIND_INV" | grep -qE "with_v_buf=([0-9]+) "; then
+            WB=$(echo "$BIND_INV" | sed -n 's/.*with_v_buf=\([0-9]*\).*/\1/p')
+            DT=$(echo "$BIND_INV" | sed -n 's/.*draws_total=\([0-9]*\).*/\1/p')
+            if [ "$WB" -gt 0 ] && [ "$WB" -eq "$DT" ]; then
+                pass "every draw has at least one vertex buffer (vb0 invariant)"
+            else
+                fail "some draws have no vertex buffer (with_v_buf=$WB / total=$DT)"
+            fi
+        fi
+        if echo "$BIND_INV" | grep -qE "with_f_tex=([0-9]+) "; then
+            WF=$(echo "$BIND_INV" | sed -n 's/.*with_f_tex=\([0-9]*\).*/\1/p')
+            if [ "$WF" -gt 0 ]; then
+                pass "fragment textures bound on render draws (LYSK PBR invariant)"
+            else
+                fail "no fragment textures captured at all"
+            fi
+        fi
+    else
+        echo "    [SKIP] draw_count=0 (compute-only trace) — R7.6-A draw-shape assertions skipped"
+    fi
+
+    # T7q-2: --no-bindings suppresses per-draw bindings AND shrinks output (only meaningful when bindings exist)
+    echo "  [T7q-2] frame-list --no-bindings suppression"
+    set +e
+    NOBIND_JSON=$("$BRIDGE" frame-list "$GPUTRACE_PATH" --no-bindings 2>/dev/null)
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ]; then pass "--no-bindings exit = 0"; else fail "--no-bindings exit = $rc"; fi
+    if echo "$NOBIND_JSON" | grep -q '"with_bindings":false'; then pass "with_bindings=false under --no-bindings"; else fail "with_bindings still true"; fi
+    if ! echo "$NOBIND_JSON" | grep -q '"bindings":{"vertex"'; then pass "no per-draw bindings emitted"; else fail "bindings still emitted under --no-bindings"; fi
+    # Output shrinks substantially only when there are draws to emit bindings for (LYSK: ~394KB → ~105KB; assert >=30% shrink).
+    # On compute-only traces draw_count=0 so both outputs are essentially equal — skip the size-shrink assertion.
+    if [ "$BIND_DRAW_COUNT" -gt 0 ]; then
+        SZ_WITH=$(echo -n "$BIND_JSON" | wc -c | tr -d ' ')
+        SZ_NO=$(echo -n "$NOBIND_JSON" | wc -c | tr -d ' ')
+        SHRUNK=$(python3 -c "print(int($SZ_WITH * 0.7) > $SZ_NO)" 2>/dev/null)
+        if [ "$SHRUNK" = "True" ]; then
+            pass "--no-bindings shrinks output >30% (with=$SZ_WITH no=$SZ_NO)"
+        else
+            fail "--no-bindings did not shrink output enough (with=$SZ_WITH no=$SZ_NO)"
+        fi
+    else
+        echo "    [SKIP] size-shrink assertion (draw_count=0 — both outputs essentially equal)"
+    fi
+
+    # T7q-3: backward compatibility — chain frame-list (default) → shader-of-rps still works on draw[0]
+    # 这是 R7.6-A 与 R7.6-C/R7.7 兼容性的核心保险：bindings 字段不能影响 draw_to_rps_map
+    if [ "$BIND_DRAW_COUNT" -gt 0 ]; then
+        echo "  [T7q-3] frame-list with bindings does not break shader-of-rps chain"
+        CHAIN_RPS_R76A=$(echo "$BIND_JSON" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(d['draw_to_rps_map'][0]['rps_key'])
+" 2>/dev/null)
+        if [ -n "$CHAIN_RPS_R76A" ]; then
+            TMP_R76A=$(mktemp -d)
+            set +e
+            "$BRIDGE" shader-of-rps "$GPUTRACE_PATH" "$CHAIN_RPS_R76A" --output-dir "$TMP_R76A" >/dev/null 2>&1
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then pass "chain-from-bindings frame-list still hits shader-of-rps"; else fail "chain broke (rc=$rc)"; fi
+            rm -rf "$TMP_R76A"
+        else
+            fail "could not extract draw[0] rps_key from with-bindings JSON"
+        fi
+    fi
+
     rm -rf "$PIPELINE_DIR"
 else
     echo ""

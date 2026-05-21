@@ -18,6 +18,7 @@ A self-contained CLI (`gputrace_replay_bridge`) plus a Python wrapper (`gputrace
 | Pipeline / shader dump + RPS↔shader correlation | `pipeline` | Which library compiled which function; metallib + AIR for offline inspection; **R7.2: each RPS now reports its vertex/fragment function keys, library keys, color/depth/stencil attachment formats, write masks, and raster sample count — without requiring an external swizzle probe** |
 | RPS → shader IR reverse-lookup | `shader-of-rps` | **R7.4: one command from a render-pipeline-state key to its fragment/vertex `MTLFunction`, the owning metallib, the PlayTools cacheKey, and (with `--with-ir`) the disassembled LLVM IR `.ll` file** |
 | Frame timeline (encoder/draw) + draw→RPS map | `frame-list` | **R7.3: command buffers, render/compute/blit encoders with attachment summaries, every draw with primitive type / vertex / instance counts and its bound RPS_key. Pipe `draw_to_rps_map[].rps_key` directly into `shader-of-rps --with-ir` for "draw N → shader IR" in two commands.** |
+| **draw_index → shader IR (one-shot)** | `shader-of-drawcall` (Python wrapper) | **R7.6-C: thin封装 — `frame-list → draw_to_rps_map[draw_index] → shader-of-rps`. Mirrors `shader-of-rps` for the "I know the draw index, give me the shader" mental model. OOR draw_index returns structured `draw_index_out_of_range` (exit 12); compute-only traces gracefully report `draw_count=0`. Wrapper-only — bridge unchanged.** |
 | Shader hot-replace | `shader --verify` | Bisect: replace a suspect shader with a corrected/instrumented one and re-replay |
 | Replay configuration | `config` | Toggle Metal validation, optimization, unused-resource loading to isolate causes |
 
@@ -143,6 +144,11 @@ jq '.draw_to_rps_map[0]' /tmp/foo-frame.json
 # Or: directly chain frame-list → shader-of-rps (the R7 final-mile).
 RPS=$(jq -r '.draw_to_rps_map[0].rps_key' /tmp/foo-frame.json)
 "$BRIDGE" shader-of-rps /tmp/foo.gputrace "$RPS" --with-ir --output-dir /tmp/foo-shaders
+
+# Or: one-shot via the R7.6-C thin wrapper — same byte-level metallib/AIR output,
+# but no manual jq plumbing. Best entry point when you know "I want draw N's shader".
+python3 "$SKILL_DIR/scripts/gputrace_replay_wrapper.py" \
+    shader-of-drawcall /tmp/foo.gputrace 0 --with-ir --output-dir /tmp/foo-shaders
 ```
 
 If `--with-ir` returns `ir_error: "no_air_bitcode"`, the library is metallib-only — that's expected for many `_MTLLibrary` instances. The metallib itself is still exported and you can use the `cache_key_metallib` to find the PlayCover ShaderDebugInfo entry: `~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/<bundle>/<cache_key>/`. See `references/investigation-playbook.md` §3 for the cacheKey algorithm and full SDI cross-reference path.
@@ -176,7 +182,9 @@ bash "$SKILL_DIR/scripts/test_bridge.sh"
 GPUTRACE_PATH=/path/to/sample.gputrace bash "$SKILL_DIR/scripts/test_bridge.sh"
 ```
 
-29 + 38 R7-specific assertions cover argument parsing, exit codes, JSON shape, codesign validity, R7.1 bounds checking + texture/buffer metadata, R7.2 RPS↔shader correlation, R7.3 frame-list timeline + draw_to_rps_map invariants + frame-list→shader-of-rps end-to-end chain, R7.4 `shader-of-rps` reverse lookup, and (when GPUTRACE_PATH is set) a live replay/pipeline/config/shader-of-rps/frame-list quintet — 81 total assertions on a real trace.
+29 + 38 R7-specific assertions cover argument parsing, exit codes, JSON shape, codesign validity, R7.1 bounds checking + texture/buffer metadata, R7.2 RPS↔shader correlation, R7.3 frame-list timeline + draw_to_rps_map invariants + frame-list→shader-of-rps end-to-end chain, R7.4 `shader-of-rps` reverse lookup, **R7.6-C `shader-of-drawcall` wrapper byte-level equivalence + OOR + module-API contract**, and (when GPUTRACE_PATH is set) a live replay/pipeline/config/shader-of-rps/frame-list/shader-of-drawcall sextet — 88 total assertions on a render-bearing trace.
+
+For multi-sample regression (so the suite doesn't only validate against one trace shape), point `GPUTRACE_PATH` at a compute-only trace too — `shader-of-drawcall`'s OOR + `frame-list`'s `draw_count=0` paths are the parts that exercise that branch. Pre-existing R7.3 assertions that assume render draws will fail on compute-only traces, which is expected; the R7.6-C assertions themselves remain green.
 
 ## Reference files
 

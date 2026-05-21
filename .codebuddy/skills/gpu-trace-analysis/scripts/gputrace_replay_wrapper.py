@@ -335,6 +335,50 @@ class FrameListResult:
 
 
 # ---------------------------------------------------------------------------
+# R7.6 子项 C — shader-of-drawcall 薄封装
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DrawIndexOutOfRange(Exception):
+    """R7.6-C: draw_index 超出 frame-list 输出的 draw_to_rps_map 长度"""
+    draw_index: int
+    draw_count: int
+    trace_path: str
+
+    def __str__(self) -> str:
+        return (
+            f"draw_index_out_of_range: requested draw_index={self.draw_index}, "
+            f"trace has draw_count={self.draw_count} ({self.trace_path})"
+        )
+
+
+@dataclass
+class ShaderOfDrawcallResult:
+    """
+    R7.6-C: ``shader-of-drawcall`` 结果。
+
+    包装一对 ``(frame-list draw 元信息, shader-of-rps 反查结果)``，让用户
+    一次拿到 "draw N → shader IR" 链路的全部上下文，无需自己拼两次调用。
+    """
+    trace_path: str
+    draw_index: int
+    stage: str
+    output_dir: str
+    # frame-list 上下文（来自 draw_to_rps_map[draw_index]）
+    encoder_index: Optional[int] = None
+    draw_in_encoder: Optional[int] = None
+    call_index: Optional[int] = None
+    rps_key: Optional[int] = None
+    rps_label: Optional[str] = None
+    # shader-of-rps 透传（嵌入完整结果以便上层消费 .ir_ll_path 等字段）
+    shader: Optional[ShaderOfRpsResult] = None
+    # 链路上的错误（仅在 wrapper 自身产生，例如 rps_key 为 null 而非 OOR 时）
+    error: Optional[str] = None
+    hint: Optional[str] = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
 # Bridge Class
 # ---------------------------------------------------------------------------
 
@@ -912,6 +956,128 @@ class ReplayBridge:
             raw=data,
         )
 
+    def shader_of_drawcall(
+        self,
+        trace_path: str | Path,
+        draw_index: int,
+        *,
+        stage: str = "fragment",
+        with_ir: bool = False,
+        output_dir: Optional[str | Path] = None,
+        timeout: float = 300.0,
+    ) -> ShaderOfDrawcallResult:
+        """
+        R7.6-C: ``draw_index`` → shader (metallib / AIR / 可选 LLVM IR) 一行调用。
+
+        薄封装：内部串联 ``frame_list(...)`` 拿 ``draw_to_rps_map[draw_index]``，
+        再调 ``shader_of_rps(...)`` 透传 stage / with_ir / output_dir。等价于
+        "知 draw_index" 这一用户心智入口与 ``shader_of_rps`` ("知 RPS_key")
+        形成对称。
+
+        Args:
+            trace_path: .gputrace bundle 路径
+            draw_index: ``draw_to_rps_map`` 中的 ``draw_index_global``
+            stage: 'fragment' (默认) 或 'vertex'
+            with_ir: True 时调用 llvm-dis 产出 .ll IR 文件
+            output_dir: shader-of-rps 输出目录
+            timeout: 每个底层子命令的超时秒数
+
+        Returns:
+            ShaderOfDrawcallResult — 包含 frame-list 元信息 + shader-of-rps 嵌入
+
+        Raises:
+            DrawIndexOutOfRange: 当 ``draw_index`` 超出 trace 实际 draw 数量
+                （含 ``draw_count == 0`` 的 compute-only trace）
+            ValueError: stage 非法
+            BridgeError: 任一底层子命令以非 11/12 退出码失败
+        """
+        if stage not in ("fragment", "vertex"):
+            raise ValueError(f"stage must be 'fragment' or 'vertex', got {stage!r}")
+        if draw_index < 0:
+            raise ValueError(f"draw_index must be >= 0, got {draw_index}")
+
+        trace_path = self._validate_trace(trace_path)
+
+        # 1. frame-list 拿 draw→RPS 映射。这里只需要 map，不需要 timing。
+        fl = self.frame_list(trace_path, with_draws=True, with_timing=False, timeout=timeout)
+
+        # 2. 边界检查：包括 compute-only trace (draw_count==0) 与超出范围
+        if draw_index >= fl.draw_count or draw_index >= len(fl.draw_to_rps_map):
+            raise DrawIndexOutOfRange(
+                draw_index=draw_index,
+                draw_count=fl.draw_count,
+                trace_path=str(trace_path),
+            )
+
+        entry = fl.draw_to_rps_map[draw_index]
+
+        # frame-list 已经把 (draw_index, encoder_index, draw_in_encoder, call_index, rps_key) 串好。
+        # 进一步从 command_buffers 树里拿 rps_label 作为人类可读上下文。
+        rps_label: Optional[str] = None
+        for cb in fl.command_buffers:
+            for enc in cb.encoders:
+                if enc.index != entry.encoder_index:
+                    continue
+                for d in enc.draws:
+                    if d.draw_index_global == entry.draw_index_global:
+                        rps_label = d.rps_label
+                        break
+                if rps_label is not None:
+                    break
+            if rps_label is not None:
+                break
+
+        result = ShaderOfDrawcallResult(
+            trace_path=str(trace_path),
+            draw_index=draw_index,
+            stage=stage,
+            output_dir=str(output_dir or ""),
+            encoder_index=entry.encoder_index,
+            draw_in_encoder=entry.draw_in_encoder,
+            call_index=entry.call_index,
+            rps_key=entry.rps_key,
+            rps_label=rps_label,
+        )
+
+        # 3. rps_key 缺失（swizzle gap，不是 OOR）— 透传为软错误，不抛异常
+        if entry.rps_key is None:
+            result.error = "draw_has_no_rps_key"
+            result.hint = (
+                "frame-list 在该 draw 上未捕获 RPS pointer; 通常是 swizzle 安装失败"
+                "或 trace 走了非公开 API 路径。检查 frame-list 输出 rps_correlated_count 与 stderr。"
+            )
+            return result
+
+        # 4. shader-of-rps 透传
+        sor = self.shader_of_rps(
+            trace_path,
+            entry.rps_key,
+            stage=stage,
+            with_ir=with_ir,
+            output_dir=output_dir,
+            timeout=timeout,
+        )
+        result.shader = sor
+        # 把 shader-of-rps 的结构化错误也提到顶层，方便 CLI exit-code 判断
+        if sor.error:
+            result.error = sor.error
+            result.hint = sor.hint
+        # raw 留作 round-trip：包含两条命令的原始 JSON
+        result.raw = {
+            "frame_list_meta": {
+                "draw_index_global": entry.draw_index_global,
+                "encoder_index": entry.encoder_index,
+                "draw_in_encoder": entry.draw_in_encoder,
+                "call_index": entry.call_index,
+                "rps_key": entry.rps_key,
+                "rps_label": rps_label,
+                "draw_count": fl.draw_count,
+                "rps_correlated_count": fl.rps_correlated_count,
+            },
+            "shader_of_rps": sor.raw,
+        }
+        return result
+
     # ------------------------------------------------------------------
     # Validation Helpers
     # ------------------------------------------------------------------
@@ -993,6 +1159,21 @@ def _cli_main():
     p_fl.add_argument("--with-timing", action="store_true",
                       help="Include per-cb GPU start/end/duration (often null for replay-internal CBs)")
 
+    # shader-of-drawcall (R7.6 子项 C — 薄封装)
+    p_sod = subparsers.add_parser(
+        "shader-of-drawcall", parents=[parent],
+        help="Reverse-lookup shader by draw_index (frame-list → shader-of-rps thin wrapper, R7.6-C)",
+    )
+    p_sod.add_argument("trace", help="Path to .gputrace bundle")
+    p_sod.add_argument("draw_index", type=int,
+                       help="Global draw index from frame-list draw_to_rps_map[]")
+    p_sod.add_argument("--stage", choices=["fragment", "vertex"], default="fragment",
+                       help="Which stage to look up (default: fragment)")
+    p_sod.add_argument("--with-ir", action="store_true",
+                       help="Run llvm-dis on the AIR bitcode and emit a .ll file")
+    p_sod.add_argument("--output-dir", default=None,
+                       help="Output directory passed through to shader-of-rps (default: system tmp)")
+
     # config
     p_config = subparsers.add_parser("config", parents=[parent], help="Configuration control")
     p_config.add_argument("trace", help="Path to .gputrace bundle")
@@ -1069,6 +1250,38 @@ def _cli_main():
             )
             print(json.dumps(result.raw, indent=indent))
 
+        elif args.command == "shader-of-drawcall":
+            result = bridge.shader_of_drawcall(
+                args.trace,
+                args.draw_index,
+                stage=args.stage,
+                with_ir=args.with_ir,
+                output_dir=args.output_dir,
+                timeout=args.timeout,
+            )
+            # 输出 schema：顶层 frame-list 元信息 + 嵌入 shader-of-rps 完整 raw
+            payload: dict[str, Any] = {
+                "command": "shader-of-drawcall",
+                "trace_path": result.trace_path,
+                "draw_index": result.draw_index,
+                "stage": result.stage,
+                "output_dir": result.output_dir,
+                "encoder_index": result.encoder_index,
+                "draw_in_encoder": result.draw_in_encoder,
+                "call_index": result.call_index,
+                "rps_key": result.rps_key,
+                "rps_label": result.rps_label,
+                "shader_of_rps": result.shader.raw if result.shader else None,
+            }
+            if result.error:
+                payload["error"] = result.error
+                payload["hint"] = result.hint
+            print(json.dumps(payload, indent=indent))
+            # 与 shader-of-rps 同款 — 把链路上的结构化失败映射成 exit 11，让 shell 流水线
+            # 不必解析 JSON 也能感知。OOR 单独走 except 分支映射到 exit 12。
+            if result.error:
+                sys.exit(11)
+
         elif args.command == "config":
             # Parse key=value pairs into kwargs
             kwargs: dict[str, Any] = {}
@@ -1094,6 +1307,21 @@ def _cli_main():
             "command": e.command,
         }, indent=indent), file=sys.stderr)
         sys.exit(e.exit_code)
+    except DrawIndexOutOfRange as e:
+        # R7.6-C: 与 bridge 的 PLAYTO_OOR (exit 12) 同语义 — "用户给了一个超出范围的索引"。
+        # 复用 exit 12，但 error 字符串区分为 draw_index_out_of_range，方便 shell 解析。
+        print(json.dumps({
+            "error": "draw_index_out_of_range",
+            "draw_index": e.draw_index,
+            "draw_count": e.draw_count,
+            "trace_path": e.trace_path,
+            "hint": (
+                "frame-list reports draw_count=0 for compute-only traces; "
+                "shader-of-drawcall is only meaningful when the trace has render draws."
+            ) if e.draw_count == 0 else
+                f"valid draw_index range is [0, {e.draw_count - 1}].",
+        }, indent=indent))
+        sys.exit(12)
     except (FileNotFoundError, ValueError) as e:
         print(json.dumps({"error": True, "message": str(e)}, indent=indent), file=sys.stderr)
         sys.exit(2)

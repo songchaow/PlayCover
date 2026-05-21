@@ -2,7 +2,10 @@
 
 **来源**：2026-05-21 别的 agent 在使用 `gpu-trace-analysis` skill 调查 `com.papegames.lysk capture_20260518_110050.gputrace`（247 资源 / 50 RPS / 96 lib / ~81 400 GPU API 调用）时反馈的能力缺口；以及"从 draw call 反查 shader IR"的 7 段链路验证。
 **结论**：当前 bridge/skill 在"渲染 bug 调查"任务上称职，但在"未知 trace 整体管线分析"与"draw call → shader 反查"两类任务上**严重欠拟合**。R7 的目标是补齐这些能力。
-**进度**：R7.1 / R7.2 / R7.3 / R7.4 ✅（2026-05-21）；剩余 R7.5 / R7.6 / R7.7。
+**进度**：R7.1 / R7.2 / R7.3 / R7.4 / R7.6-C ✅（2026-05-21）；剩余 R7.5 / R7.6 子项 A·B / R7.7。
+**主回归基线 trace 路径**：
+- LYSK：`/Users/songdogwang/Library/Containers/com.papegames.lysk/Data/Documents/Captures/capture_20260518_110050.gputrace`（4 cb / 62 enc / 244 draws / 65 RPS / 96 lib / 3425 calls）— 端到端 IR 链主基线
+- compute-only：`~/Desktop/reference_test_inject.gputrace`（2 cb / 2 compute enc / 0 draws / 0 RPS / 3 compute PSO / 27 calls）— OOR / `draw_count=0` / `rps_not_found` 多样本回归
 
 > 本文档是 R7 的总入口。R6.3（CI/样本库自动化流水线）已确认不做，R7 是 R6 之后唯一的主线。
 
@@ -42,7 +45,7 @@ LYSK trace 全景调查任务里按出现顺序遇到的限制（每条都是"�
 | 11 | 区分 stencil bit | depth/stencil 不能导出 | ⏳ R7.5 子项 A |
 | 12 | 确认本帧无 compute dispatch | ~~`compute_pipeline_states_count=0`，但 trace 元数据有大量 compute 函数名~~ → ✅ R7.3：`frame-list` 已 type=compute 列出 ComputeCommandEncoder（dispatch 计数留 R7.5 子项 B 补齐） | 已基本解决 |
 | 13 | 从 RPS 反查 fragment/vertex shader | ~~bridge 无 RPS↔function/library 关联；`shader` 子命令仅按 lib_key 替换~~ → ✅ R7.2：`pipeline` 内置 swizzle，输出 vertex/fragment fn key + lib key + attachment 摘要 | 已解决 |
-| 14 | 从 draw call 反查 shader IR | ~~段 1（draw→RPS_key）完全未通；段 2~3 需用户写探针；段 4~7 跨 bridge / extract_shader_raw / llvm-dis 三工具拼装~~ → ✅ R7.3 通段 1（`draw_to_rps_map`）+ R7.2/R7.4 通段 2~7（`shader-of-rps --with-ir`）；端到端两条命令完成。**`shader-of-drawcall` 薄封装由 R7.6 子项 C 补齐** | 已解决（薄封装 + 0.5 天封装即用户最终目标） |
+| 14 | 从 draw call 反查 shader IR | ~~段 1（draw→RPS_key）完全未通；段 2~3 需用户写探针；段 4~7 跨 bridge / extract_shader_raw / llvm-dis 三工具拼装~~ → ✅ R7.3 通段 1（`draw_to_rps_map`）+ R7.2/R7.4 通段 2~7（`shader-of-rps --with-ir`）；端到端两条命令完成。✅ R7.6 子项 C（2026-05-21）`shader-of-drawcall <draw_index> --with-ir` 把两条命令合成一条，与 `shader-of-rps` 形成 `(知 RPS / 知 draw_index)` 两入口对称 | 已解决（一行命令） |
 
 ---
 
@@ -120,7 +123,7 @@ cacheKey 直接对应 `~/Library/Containers/io.playcover.PlayCover/ShaderDebugIn
 
 R7 拆成 7 个独立可 PR 的 chunk。每个 chunk 列出工时、风险、解锁能力与新 JSON schema。
 
-**优先级**：原计划按 R7.1 → R7.7 顺序；R7.1/R7.2/R7.3/R7.4 已完成。**当前最高优先级**已从 R7.5 切换为 **R7.6 子项 C**（`shader-of-drawcall` 薄封装 + 第二样本回归），见 §5.6。R7.5/R7.6 子项 A/B/R7.7 排在其后。详细切换理由见主文档 README §"下一步"。
+**优先级**：原计划按 R7.1 → R7.7 顺序；R7.1/R7.2/R7.3/R7.4 + **R7.6 子项 C** 已完成（2026-05-21；R7.6-C 详见 §5.6）。**当前最高优先级**为 **R7.5**（depth/stencil blit + compute dispatch 计数）。R7.6 子项 A/B/R7.7 排在其后。
 
 ### R7.1（原 C1）：bridge 越界保护 + 资源元数据补齐 — ✅ 已完成（2026-05-21）
 
@@ -322,7 +325,7 @@ cache_key_metallib:    CB535F216771DC94_7888
 
 ### R7.5（原 C3）：depth/stencil export + compute dispatch 计数补齐
 
-> **优先级**：在 2026-05-21 整理时被 R7.6 子项 C（`shader-of-drawcall` 薄封装）抢占。R7.5 排在子项 C 之后。原因：R7.5 子项 A 是新能力（写 Metal blit pipeline + 测试 + 文档 ≈ 1.5 天实际工时），而子项 C 是已有能力的 0.5 天封装且直击用户最终目标"draw N → shader IR 一行命令"。R7.5 仍是必要工作，只是不再是最高优先级。
+> **优先级**：R7.6 子项 C 已于 2026-05-21 完成；**R7.5 现为当前最高优先级**。子项 A（depth/stencil blit）是新能力，工时 ≈ 1.5 天（写 Metal blit pipeline + 测试 + 文档）；子项 B（compute dispatch 计数）依赖 R7.3 swizzle 基础设施，工时 ≈ 0.5 天。整体 1–1.5 天合计。
 
 **子项 A — depth/stencil blit export**
 - 当前 `replay --export <id> <path>` 直接拒绝 depth/stencil 纹理
@@ -337,28 +340,56 @@ cache_key_metallib:    CB535F216771DC94_7888
 
 ### R7.6（原 C4 + C4.5）：完整 Frame Debugger 等价 + draw 级 shader 反查
 
-> **注**：R7.3 改为 swizzle-first 后，"段 1 draw→RPS_key" 已在 R7.3 完成。R7.6 退化为以下三块。**子项 C 在 2026-05-21 整理时被提为 R7 全局当前最高优先级**（替换原"R7.5 优先"判断），原因见下。
+> **注**：R7.3 改为 swizzle-first 后，"段 1 draw→RPS_key" 已在 R7.3 完成。R7.6 退化为以下三块。**子项 C 已于 2026-05-21 完成（wrapper-only 路径）**；子项 A/B 排在 R7.5 之后。
 
-**子项 C — `shader-of-drawcall`（薄封装；当前最高优先级）**
+### R7.6 子项 C（原"当前最高优先级"）：`shader-of-drawcall` 薄封装 — ✅ 已完成（2026-05-21）
 
-```bash
-# CLI（建议先 wrapper-only 实现，bridge 不动）
-python3 gputrace_replay_wrapper.py shader-of-drawcall <trace> <draw_index> [--stage fragment|vertex] [--with-ir] [--output-dir DIR]
+**交付摘要**
 
-# 等价两步链
-RPS=$(./gputrace_replay_bridge frame-list <trace> | jq ".draw_to_rps_map[<draw_index>].rps_key")
-./gputrace_replay_bridge shader-of-rps <trace> $RPS --with-ir
-```
+| 项目 | 内容 |
+|------|------|
+| 实现路径 | wrapper-only（`Scripts/gputrace_replay_wrapper.py`），bridge 二进制完全不改 |
+| 新增 dataclass | `ShaderOfDrawcallResult`（含 `draw_index / encoder_index / draw_in_encoder / call_index / rps_key / rps_label / shader: ShaderOfRpsResult? / error? / hint?`），`DrawIndexOutOfRange` 异常类 |
+| 新增方法 | `ReplayBridge.shader_of_drawcall(trace, draw_index, *, stage='fragment', with_ir=False, output_dir=None, timeout=300.0)` |
+| CLI subparser | `python3 gputrace_replay_wrapper.py shader-of-drawcall <trace> <draw_index> [--stage fragment\|vertex] [--with-ir] [--output-dir DIR]` |
+| 错误模型 | `draw_index >= draw_count` → `DrawIndexOutOfRange`（CLI exit 12，含 `draw_count=0` compute-only 友好 hint）；下游 `shader-of-rps` 的 `rps_not_found` / `no_air_bitcode` / `descriptor_not_captured` 等结构化错误透传到顶层并 CLI exit 11；负 idx / 非法 stage → `ValueError` |
+| Skill 同步 | `.codebuddy/skills/gpu-trace-analysis/scripts/gputrace_replay_wrapper.py`、`scripts/test_bridge.sh`、`SKILL.md` 能力表 + worked example、`references/cli-reference.md` 新增 §"Subcommand: shader-of-drawcall (wrapper-only)" + dataclass 表项、`references/investigation-playbook.md` Pattern 7 末尾"One-shot"小节 |
+| 集成测试 | `Scripts/test_gputrace_replay_bridge.sh` T7o 系列（3 个子测试，7 个断言）：①LYSK draw_index=0 wrapper 输出与手工链 metallib 字节级一致 + 顶层 frame-list 嵌入字段完整 ②OOR 99999999 → exit 12 + structured error ③模块 API 三种异常合约（`DrawIndexOutOfRange` + 负 idx ValueError + 非法 stage ValueError） |
 
-实现路径：
-- **wrapper-only（推荐）**：`Scripts/gputrace_replay_wrapper.py` 增加 `ReplayBridge.shader_of_drawcall(trace, draw_index, stage="fragment", with_ir=False, output_dir=None)`；内部 `self.frame_list(trace)` 拿 `draw_to_rps_map`，OOR 抛 `DrawIndexOutOfRange`，否则 `self.shader_of_rps(trace, rps_key, ...)` 透传。新增 `ShaderOfDrawcallResult` dataclass 包含 `draw_index / rps_key / rps_label / encoder_index / draw_in_encoder / call_index` 等 frame-list 上下文 + `ShaderOfRpsResult` 全字段嵌入。优点：bridge 完全不改，0 集成测试增量复杂度。
-- **可选 bridge 子命令**：保持 CLI 形态对称（`shader-of-rps` 与 `shader-of-drawcall` 都是 bridge 子命令），但 ObjC 端实现是 `cmd_frame_list_lookup_draw + cmd_shader_of_rps` 复用，~50 行胶水。该路径**只在 wrapper 完成验证后**评估是否做。
+**端到端验证（LYSK trace, 2026-05-21）**
 
-工时：~0.5 天，全部纯封装代码。
-风险：零 — 所有底层能力 R7.3 / R7.4 已就绪。
-解锁：用户最终目标"draw N → shader IR"由两条命令降为一条；与 `shader-of-rps` 形成 `(知 RPS / 知 draw_index)` 两入口对称。
+| 案例 | rps_key | rps_label | metallib | AIR | cacheKey | .ll |
+|------|---------|-----------|----------|-----|----------|-----|
+| `shader-of-drawcall 0 --with-ir` | 472 | Papegame/Cloth/ClothStandard | `library_236.metallib` ✅ 字节一致 | (no AIR) | ✅ | (no IR; `no_air_bitcode`) |
+| `shader-of-drawcall 103 --with-ir` | 444 | Hidden/InternalClearMetal | `library_276.metallib` ✅ 字节一致 | `library_276.air` ✅ 字节一致 | `CB535F216771DC94_7888` ✅ | ✅ 仅差 `; ModuleID = '...air'` 路径注释（llvm-dis 行为，非语义差异） |
 
-**子项 A — `frame-list --with-bindings`**
+**Compute-only trace 回归（reference_test_inject.gputrace, 2026-05-21）**
+
+| 断言 | 实测 |
+|------|------|
+| `frame-list` exit | 0 ✅ |
+| `frame-list` 输出 `draw_count` | 0 ✅ |
+| `frame-list` 输出 `command_buffer_count` | 2 ✅ |
+| `frame-list` 输出 `encoder_count` | 2（compute encoder） ✅ |
+| `frame-list` 输出 `draw_to_rps_map` | `[]` ✅ |
+| `shader-of-rps 999` | exit 11，`rps_not_found` ✅ |
+| `shader-of-drawcall 0` | exit 12，`draw_index_out_of_range` + 友好 hint "trace has no render draws" ✅ |
+| `pipeline` 输出 `render_pipeline_states_count` | 0 ✅ |
+| `pipeline` 输出 `compute_pipeline_states_count` | 3 ✅ |
+
+**测试套件总数**：81 → 88（GPUTRACE_PATH=LYSK 时全部通过）。compute-only trace 上 R7.3 原有"健康路径"断言（draw_count > 0、rps_correlated_count > 0 等）会失败 14 项，属 R7.3 的 trace-shape 假设盲点暴露，**不在 R7.6-C 责任范围**。
+
+**实现亮点**
+- 纯 Python 胶水代码 ~120 行（不含 dataclass 定义和文档），bridge 二进制零变更。
+- `rps_label` 通过遍历 `frame_list.command_buffers` 树补齐（`draw_to_rps_map` 扁平表里没有 label），让用户在顶层 JSON 直接看到 "Papegame/Cloth/ClothStandard" 这类语义信息，不必再回查 frame-list 输出。
+- 与 `shader-of-rps` 同款 exit-code 语义：软错误 exit 11、OOR exit 12、bridge 子进程错误透传原码，shell 流水线无需解析 JSON 即可分支。
+- compute-only OOR hint 单独定制（"trace has no render draws"），帮助用户区分"这个 trace 不该用 shader-of-drawcall"vs"我打错了 draw_index"两种心智错误。
+
+详见 `executions/20260521-R7.6-C-shader-of-drawcall-execution.md`。
+
+---
+
+### R7.6 子项 A — `frame-list --with-bindings`
 
 - swizzle `setVertexBuffer:offset:atIndex:` / `setVertexTexture:atIndex:` / `setFragmentBuffer:*` / `setFragmentTexture:*` / `setVertexBytes:length:atIndex:`（inline）等
 - 每个 draw 关联当时的完整 binding 表（buffer_id / texture_id / offset / index）
@@ -462,7 +493,7 @@ R7.2 已交付：bridge `pipeline` 与本表 65/65 一致。**回归测试命令
 | RPS → fragment/vertex shader 反查 | `pipeline` 输出加 function/library key | ✅ R7.2 |
 | RPS_key → shader IR 一行命令 | `shader-of-rps --with-ir` | ✅ R7.4 |
 | **Draw call → RPS_key 反查** | `frame-list` 输出 `draw_to_rps_map` | ✅ R7.3 |
-| **Draw call → shader IR 一行命令** | `shader-of-drawcall <draw_index>` | ⏳ R7.6 子项 C（薄封装：`frame-list` → `shader-of-rps`，0.5 天） |
+| **Draw call → shader IR 一行命令** | `shader-of-drawcall <draw_index>` | ✅ R7.6-C |
 | Shader 反编译（覆盖无 AIR 的 library） | `disasm <rps_key>` SDI module.bc 路径 | ⏳ R7.7 |
 
 ---
@@ -495,4 +526,4 @@ R7.1/R7.2/R7.3/R7.4 落地时已同步过这三处。后续 R7.5/R7.6/R7.7 起�
 
 ## 10. 一句话总结
 
-draw call → shader IR 的 7 段映射在 macOS Metal replay 框架下技术可达且已 7/7 走通：R7.1（边界）+ R7.2（pipeline RPS↔shader）+ R7.3（frame-list swizzle-first：encoder timeline + draw→RPS_key）+ R7.4（shader-of-rps 一行命令出 metallib/AIR/IR）四个 chunk 端到端串通，用户最终目标"draw_index → IR"已用两条命令完成。**当前最高优先级是 R7.6 子项 C**（`shader-of-drawcall` 薄封装 + reference_test_inject 第二样本回归）—— 把两条命令合成一条，同时补上当前 100% LYSK-only 的回归基线盲区。R7.5（depth/stencil blit + compute dispatch 计数）/ R7.6 子项 A/B（binding/uniform）/ R7.7（SDI module.bc 覆盖无 AIR）排在其后，属体验补完。
+draw call → shader IR 的 7 段映射在 macOS Metal replay 框架下技术可达且已 7/7 走通：R7.1（边界）+ R7.2（pipeline RPS↔shader）+ R7.3（frame-list swizzle-first：encoder timeline + draw→RPS_key）+ R7.4（shader-of-rps 一行命令出 metallib/AIR/IR）+ **R7.6-C（shader-of-drawcall 薄封装 — 两命令合一，2026-05-21）** 五个 chunk 端到端串通，用户最终目标"draw_index → IR"已经是**真正的一行命令**（`python3 gputrace_replay_wrapper.py shader-of-drawcall <trace> <draw_index> --with-ir`）。LYSK 主基线 + reference_test_inject compute-only 第二样本两路回归通过，集成测试 88/88。**当前最高优先级切换为 R7.5**（depth/stencil blit + compute dispatch 计数）。R7.6 子项 A/B（binding/uniform）/ R7.7（SDI module.bc 覆盖无 AIR）排在其后，属体验补完。

@@ -9,11 +9,12 @@ Complete surface for the bundled tools. Skim the table of contents and jump to w
 4. [Subcommand: shader](#subcommand-shader)
 5. [Subcommand: shader-of-rps](#subcommand-shader-of-rps)
 6. [Subcommand: frame-list](#subcommand-frame-list)
-7. [Subcommand: config](#subcommand-config)
-8. [Exit codes](#exit-codes)
-9. [Python wrapper — CLI mode](#python-wrapper--cli-mode)
-10. [Python wrapper — module mode](#python-wrapper--module-mode)
-11. [Pixel format helpers](#pixel-format-helpers)
+7. [Subcommand: shader-of-drawcall (wrapper-only)](#subcommand-shader-of-drawcall-wrapper-only)
+8. [Subcommand: config](#subcommand-config)
+9. [Exit codes](#exit-codes)
+10. [Python wrapper — CLI mode](#python-wrapper--cli-mode)
+11. [Python wrapper — module mode](#python-wrapper--module-mode)
+12. [Pixel format helpers](#pixel-format-helpers)
 
 ---
 
@@ -454,6 +455,67 @@ If any of these fails, the swizzle install path is broken (likely a macOS update
 
 ---
 
+## Subcommand: shader-of-drawcall (wrapper-only)
+
+**R7.6-C** thin封装 — symmetric counterpart of `shader-of-rps`. Mental model: "I know the **draw index**, give me its shader IR." Equivalent to `frame-list <trace> | jq '.draw_to_rps_map[N].rps_key'` piped into `shader-of-rps`, but as a single command with proper structured-error handling for the compute-only / out-of-range edge cases.
+
+Lives in the Python wrapper only — the bridge binary is **unchanged**. Run via:
+
+```bash
+python3 scripts/gputrace_replay_wrapper.py shader-of-drawcall <.gputrace> <draw_index> \
+    [--stage fragment|vertex] [--with-ir] [--output-dir DIR]
+```
+
+Internally:
+
+1. Calls `frame-list` (with `--with-draws`, no timing) to obtain `draw_to_rps_map[]`.
+2. Reads `draw_to_rps_map[draw_index]` for the `(rps_key, encoder_index, draw_in_encoder, call_index)` tuple, plus walks the `command_buffers` tree to recover `rps_label`.
+3. Calls `shader-of-rps <rps_key> --stage <stage> [--with-ir] [--output-dir DIR]` and embeds the full result.
+
+Output JSON top-level fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `command` | string | Always `"shader-of-drawcall"` |
+| `trace_path`, `draw_index`, `stage`, `output_dir` | echo | Echo of inputs |
+| `encoder_index`, `draw_in_encoder`, `call_index`, `rps_key`, `rps_label` | mixed | Resolved from `frame-list` |
+| `shader_of_rps` | object | Full `shader-of-rps` JSON (metallib path/size, AIR path/size, cacheKey, IR `.ll` path/size, structured errors). May be `null` only if `error == "draw_has_no_rps_key"` (swizzle gap on this draw). |
+| `error` | string? | Surfaces lookup failures uniformly: `"draw_has_no_rps_key"` (rare; swizzle health gap), or any `shader-of-rps` error string (`rps_not_found` / `descriptor_not_captured` / `stage_function_absent` / `no_air_bitcode` / `llvm_dis_not_found`) |
+| `hint` | string? | Human-readable hint paired with `error` |
+
+### Out-of-range / invalid-input handling
+
+| Input | Behavior |
+|---|---|
+| `draw_index >= draw_count` (incl. compute-only traces with `draw_count == 0`) | exit **12** + structured `{"error":"draw_index_out_of_range","draw_index":N,"draw_count":K,"hint":"..."}` (with a special hint when `draw_count == 0` explaining the trace is compute-only). Module API raises `DrawIndexOutOfRange`. |
+| `draw_index < 0` | Module API raises `ValueError` (CLI exit 2 via the wrapper's catch-all). |
+| `--stage geometry` (or any non-`fragment`/`vertex`) | Module API raises `ValueError`; CLI argparse rejects before the call. |
+| Soft failure on the `shader-of-rps` half (`rps_not_found` etc.) | The wrapper still prints the full payload (with `error` / `hint`) and exits **11**, mirroring `shader-of-rps` behavior. |
+| Bridge subprocess error (exit 4–10) | Re-raised as `BridgeError`; CLI maps to that exit code. |
+
+### Equivalence guarantee
+
+For any `draw_index` where `frame-list`'s `draw_to_rps_map[draw_index].rps_key == K`, the produced `metallib`, `AIR`, and `cacheKey` are **byte-identical** to running `shader-of-rps <K>` directly. The disassembled `.ll` output differs only in the `; ModuleID = '...air'` header comment because `llvm-dis` writes the temporary input path; everything past that line is identical. (Verified via the LYSK regression baseline at `draw_index=103 → rps_key=444 → library_276`, `metallib`/`AIR`/`cacheKey` `cmp -s` clean; `.ll` diff limited to one comment line.)
+
+### Sample call (LYSK trace)
+
+```bash
+TRACE=/Users/<you>/Library/Containers/com.papegames.lysk/Data/Documents/Captures/capture_20260518_110050.gputrace
+WRAPPER=$SKILL_DIR/scripts/gputrace_replay_wrapper.py
+OUT=$(mktemp -d)
+
+python3 "$WRAPPER" shader-of-drawcall "$TRACE" 0 --with-ir --output-dir "$OUT" --pretty
+# → {"command":"shader-of-drawcall","draw_index":0,
+#    "encoder_index":2,"draw_in_encoder":0,"call_index":144,
+#    "rps_key":472,"rps_label":"Papegame/Cloth/ClothStandard",
+#    "shader_of_rps":{ ...metallib_path, cache_key_metallib, ir_error?... }}
+
+python3 "$WRAPPER" shader-of-drawcall "$TRACE" 99999999 --pretty
+# → exit 12, {"error":"draw_index_out_of_range","draw_index":99999999,"draw_count":244,"hint":"..."}
+```
+
+---
+
 ## Subcommand: config
 
 Runs a complete replay with one of three knobs flipped, isolating their individual effect. Each invocation creates a fresh replay context.
@@ -545,6 +607,7 @@ python3 gputrace_replay_wrapper.py shader-of-rps <trace> 484 --with-ir --output-
 python3 gputrace_replay_wrapper.py frame-list <trace>
 python3 gputrace_replay_wrapper.py frame-list <trace> --no-draws
 python3 gputrace_replay_wrapper.py frame-list <trace> --with-timing --pretty
+python3 gputrace_replay_wrapper.py shader-of-drawcall <trace> 0 --with-ir --output-dir /tmp/out
 python3 gputrace_replay_wrapper.py config <trace> disableOptimizeRestores=0 enableValidation=1
 ```
 
@@ -603,6 +666,18 @@ for cb in fl.command_buffers:
 first = fl.draw_to_rps_map[0]
 sor = bridge.shader_of_rps("/path/to/foo.gputrace", first.rps_key, with_ir=True, output_dir="/tmp/out")
 
+# R7.6-C — same chain in one call (mirror of shader_of_rps for the "I know draw N" entry point)
+from gputrace_replay_wrapper import DrawIndexOutOfRange
+try:
+    sod = bridge.shader_of_drawcall("/path/to/foo.gputrace", 0, with_ir=True, output_dir="/tmp/out")
+    print(f"draw 0 → enc#{sod.encoder_index} rps={sod.rps_key} ({sod.rps_label})")
+    if sod.shader and sod.shader.ir_ll_path:
+        print("LLVM IR:", sod.shader.ir_ll_path, sod.shader.ir_ll_size, "bytes")
+    elif sod.error:
+        print("lookup failed:", sod.error, sod.hint)
+except DrawIndexOutOfRange as e:
+    print(f"trace only has {e.draw_count} draws; idx {e.draw_index} is out of range")
+
 # shader hot-replace + verify
 target = p.libraries[0]
 s = bridge.shader("/path/to/foo.gputrace", target.key,
@@ -642,6 +717,8 @@ Returned dataclasses (see `gputrace_replay_wrapper.py` for full field lists):
 | `FrameDraw` | `draw_index_global`, `draw_in_encoder`, `call_index`, `primitive_type`, `primitive_type_name`, `vertex_count`, `instance_count`, `indexed`, `index_count?`, `rps_key?`, `rps_label?`, `fragment_function_key?` |
 | `FrameAttachment` | `texture_id`, `pixel_format`, `format`, `index?` |
 | `FrameDrawToRps` | `draw_index_global`, `encoder_index`, `draw_in_encoder`, `call_index`, `rps_key?` |
+| `ShaderOfDrawcallResult` (R7.6-C) | `draw_index`, `stage`, `output_dir`, `encoder_index?`, `draw_in_encoder?`, `call_index?`, `rps_key?`, `rps_label?`, `shader: ShaderOfRpsResult?`, `error?` (`draw_has_no_rps_key` / forwarded from `shader-of-rps`), `hint?` |
+| `DrawIndexOutOfRange(Exception)` (R7.6-C) | `draw_index`, `draw_count`, `trace_path` — raised by `shader_of_drawcall` when `draw_index >= draw_count` (incl. compute-only traces with `draw_count == 0`) |
 | `ConfigResult` | `config: dict[str,bool]`, `success`, `elapsed_ms`, `resource_count` |
 | `BridgeError(Exception)` | `exit_code`, `exit_name`, `stderr`, `command`, `args` |
 

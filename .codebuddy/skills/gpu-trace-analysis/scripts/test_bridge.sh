@@ -304,6 +304,88 @@ print(m[0]['rps_key']) if m else exit(1)
     else
         fail "could not derive a draw[0].rps_key for frame-list→shader-of-rps chain"
     fi
+
+    # T7o: R7.6-C — shader-of-drawcall wrapper (thin封装) — 端到端 + OOR 兼测
+    # wrapper-only (Scripts/gputrace_replay_wrapper.py)，bridge 不动；用 python3 调用。
+    echo "  [T7o] shader-of-drawcall wrapper (R7.6-C)"
+    WRAPPER="$SCRIPT_DIR/gputrace_replay_wrapper.py"
+    if [ -f "$WRAPPER" ]; then
+        # T7o-1: live trace draw_index=0（draw_count > 0 时）→ 验证产物与 frame-list→shader-of-rps 链字节级一致
+        DRAW_COUNT=$(echo "$FRAME_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('draw_count',0))" 2>/dev/null || echo "0")
+        if [ "$DRAW_COUNT" -gt 0 ]; then
+            TMPDIR_SOD_A=$(mktemp -d)
+            TMPDIR_SOD_B=$(mktemp -d)
+            # 路径 A：手动两步 (frame-list → shader-of-rps)
+            CHAIN_RPS=$(echo "$FRAME_JSON" | python3 -c "
+import json, sys
+d=json.load(sys.stdin)
+print(d['draw_to_rps_map'][0]['rps_key'])
+" 2>/dev/null)
+            "$BRIDGE" shader-of-rps "$GPUTRACE_PATH" "$CHAIN_RPS" --output-dir "$TMPDIR_SOD_A" >"$TMPDIR_SOD_A/r.json" 2>/dev/null
+            # 路径 B：wrapper shader-of-drawcall 0
+            set +e
+            python3 "$WRAPPER" shader-of-drawcall "$GPUTRACE_PATH" 0 --output-dir "$TMPDIR_SOD_B" >"$TMPDIR_SOD_B/r.json" 2>/dev/null
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then pass "shader-of-drawcall 0 exit = 0"; else fail "shader-of-drawcall 0 exit = $rc"; fi
+            # 校验 rps_key 一致
+            WRAPPER_RPS=$(python3 -c "import json; print(json.load(open('$TMPDIR_SOD_B/r.json'))['rps_key'])" 2>/dev/null || echo "")
+            if [ "$WRAPPER_RPS" = "$CHAIN_RPS" ]; then pass "rps_key matches frame-list chain ($WRAPPER_RPS)"; else fail "rps_key mismatch wrapper=$WRAPPER_RPS chain=$CHAIN_RPS"; fi
+            # 校验 metallib 字节级一致（如果产生了 metallib）
+            ML_A=$(python3 -c "import json; print(json.load(open('$TMPDIR_SOD_A/r.json')).get('library_metallib_path') or '')" 2>/dev/null)
+            ML_B=$(python3 -c "import json; print(json.load(open('$TMPDIR_SOD_B/r.json'))['shader_of_rps'].get('library_metallib_path') or '')" 2>/dev/null)
+            if [ -n "$ML_A" ] && [ -n "$ML_B" ] && [ -f "$ML_A" ] && [ -f "$ML_B" ]; then
+                if cmp -s "$ML_A" "$ML_B"; then pass "wrapper metallib byte-identical to chain"; else fail "wrapper metallib differs from chain"; fi
+            else
+                pass "metallib not produced for draw[0] (acceptable: not all libs have metallib)"
+            fi
+            # 校验顶层 schema 字段（rps_label / encoder_index / call_index 来自 frame-list 嵌入）
+            if python3 -c "import json,sys; d=json.load(open('$TMPDIR_SOD_B/r.json')); assert 'encoder_index' in d and 'draw_in_encoder' in d and 'call_index' in d and 'shader_of_rps' in d" 2>/dev/null; then
+                pass "wrapper output has frame-list embed fields"
+            else
+                fail "wrapper output missing frame-list embed fields"
+            fi
+            rm -rf "$TMPDIR_SOD_A" "$TMPDIR_SOD_B"
+        else
+            echo "    note: trace has draw_count=0; skipping live IR-chain assertion (compute-only trace)"
+        fi
+
+        # T7o-2: OOR — draw_index 显著超出 draw_count → exit 12 + structured error
+        set +e
+        OUTPUT=$(python3 "$WRAPPER" shader-of-drawcall "$GPUTRACE_PATH" 99999999 2>&1)
+        rc=$?
+        set -e
+        if [ "$rc" -eq 12 ]; then pass "shader-of-drawcall OOR exit = 12"; else fail "OOR exit = $rc (expected 12)"; fi
+        if echo "$OUTPUT" | grep -q '"error": "draw_index_out_of_range"'; then pass "OOR has structured error"; else fail "missing draw_index_out_of_range error"; fi
+
+        # T7o-3: 模块 API（DrawIndexOutOfRange 异常 + ValueError）
+        set +e
+        python3 -c "
+import sys
+sys.path.insert(0, '$SCRIPT_DIR')
+from gputrace_replay_wrapper import ReplayBridge, DrawIndexOutOfRange
+b = ReplayBridge()
+ok=0
+try:
+    b.shader_of_drawcall('$GPUTRACE_PATH', 99999999)
+except DrawIndexOutOfRange:
+    ok+=1
+try:
+    b.shader_of_drawcall('$GPUTRACE_PATH', -1)
+except ValueError:
+    ok+=1
+try:
+    b.shader_of_drawcall('$GPUTRACE_PATH', 0, stage='geometry')
+except ValueError:
+    ok+=1
+sys.exit(0 if ok==3 else 1)
+" >/dev/null 2>&1
+        rc=$?
+        set -e
+        if [ "$rc" -eq 0 ]; then pass "module API raises DrawIndexOutOfRange + ValueError"; else fail "module API error contract failed"; fi
+    else
+        fail "wrapper not found at $WRAPPER"
+    fi
 else
     echo ""
     echo "[INFO] Skipping live trace tests (set GPUTRACE_PATH to enable)"

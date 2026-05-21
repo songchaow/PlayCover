@@ -18,20 +18,40 @@
 | **RPS↔shader 关联** | `pipeline` 输出 vertex/fragment function/lib key + attachment | ✅ R7.2 |
 | **RPS → shader IR 反查** | `shader-of-rps` 子命令（含 `--with-ir`） | ✅ R7.4 |
 | **Draw call → RPS_key 反查** | `frame-list` 输出 `draw_to_rps_map[]` | ✅ R7.3 |
-| **Draw call → shader IR 反查** | `shader-of-drawcall` 子命令（薄封装：frame-list → shader-of-rps） | ⏳ R7.6 子项 C（**当前最高优先级**） |
+| **Draw call → shader IR 反查** | `shader-of-drawcall` 子命令（薄封装：frame-list → shader-of-rps） | ✅ R7.6-C |
 | **Depth/Stencil 可视化** | bridge 内置 blit + export | ⏳ R7.5 |
 | **Uniform / cbuffer 内容查看** | `dump-uniforms` 子命令 | ⏳ R7.6 子项 B |
 | **Shader 反编译（IR 直接产出）** | `disasm` 子命令集成 cacheKey + llvm-dis | ⏳ R7.7 |
 | GPU Counters / Profiler / Derived | 需 Apple 私有 entitlement + SIP 关闭 | ⛔ 跳过 |
 
-**完成度**：R0~R6 已完成（基础能力 + bridge + Python wrapper + skill 打包）；R7.1 + R7.2 + R7.3 + R7.4 已完成（bridge 7 子命令 / 81 集成测试 / 端到端 draw→IR 闭环）；R7.5/R7.6/R7.7 为剩余主线（按依赖顺序进行）。
+**完成度**：R0~R6 已完成（基础能力 + bridge + Python wrapper + skill 打包）；R7.1 + R7.2 + R7.3 + R7.4 + R7.6-C 已完成（bridge 7 子命令 + wrapper 8 子命令 / 88 集成测试 / 端到端 draw_index→IR 一行命令闭环）；R7.5/R7.6 子项 A·B/R7.7 为剩余主线（按依赖顺序进行）。
 
 最终交付物：
-1. **统一 ObjC bridge CLI**（`Scripts/gputrace_replay_bridge.m`）— ✅ 7 子命令，Makefile 构建，集成测试 81/81 通过
-2. **Python CLI wrapper**（`Scripts/gputrace_replay_wrapper.py`）— ✅ CLI + 模块双接口，dataclass 返回值（含 R7.2 `ColorAttachment` / R7.4 `ShaderOfRpsResult` / R7.3 `FrameListResult` 等）
-3. **端到端验证链路** — ✅ LYSK trace 65/65 RPS 反查 + 244/244 draw→RPS 映射 + frame-list → shader-of-rps 端到端取 metallib/IR
+1. **统一 ObjC bridge CLI**（`Scripts/gputrace_replay_bridge.m`）— ✅ 7 子命令，Makefile 构建，集成测试 88/88 通过
+2. **Python CLI wrapper**（`Scripts/gputrace_replay_wrapper.py`）— ✅ CLI + 模块双接口，dataclass 返回值（含 R7.2 `ColorAttachment` / R7.4 `ShaderOfRpsResult` / R7.3 `FrameListResult` / **R7.6-C `ShaderOfDrawcallResult` + `DrawIndexOutOfRange` 异常** 等）
+3. **端到端验证链路** — ✅ LYSK trace 65/65 RPS 反查 + 244/244 draw→RPS 映射 + frame-list → shader-of-rps 端到端取 metallib/IR + **R7.6-C `shader-of-drawcall 0/103 --with-ir` 与手工链字节级一致（metallib/AIR/cacheKey clean，.ll 仅差 ModuleID 路径注释）**
 4. **GPU Trace 分析 skill**（`.codebuddy/skills/gpu-trace-analysis/`）— ✅ 自包含，含 SKILL.md + scripts/ + references/，从任意目录可独立运行
-5. **R7：Frame-Inspection 能力补全** — ⏳ 进行中，剩余 R7.6 子项 C（薄封装，当前最高优先级）→ R7.5（depth/stencil blit + compute dispatch 计数）→ R7.6 子项 A/B（bindings + uniforms）→ R7.7（disasm + SDI 覆盖）。详见 TODO + `subdocs/20260521-R7-frame-inspection-gap.md`
+5. **R7：Frame-Inspection 能力补全** — ⏳ 进行中，剩余 R7.5（depth/stencil blit + compute dispatch 计数）→ R7.6 子项 A/B（bindings + uniforms）→ R7.7（disasm + SDI 覆盖）。详见 TODO + `subdocs/20260521-R7-frame-inspection-gap.md`
+
+## 样本 trace 路径（回归基线）
+
+| 样本 | 路径 | 形态 | 用途 |
+|------|------|------|------|
+| **LYSK**（主基线） | `/Users/songdogwang/Library/Containers/com.papegames.lysk/Data/Documents/Captures/capture_20260518_110050.gputrace` | 4 cb / 62 enc / 244 draws / 65 RPS / 96 lib / 3425 calls | R7.2/R7.3/R7.4/R7.6-C 主回归（端到端 IR 链） |
+| reference_test_inject | `~/Desktop/reference_test_inject.gputrace` | 2 cb / 2 enc / 0 draws / 0 RPS / 3 compute PSO / 27 calls | R7.6-C compute-only 回归（OOR / `draw_count=0` / `rps_not_found`） |
+| reference_144316 | `~/Desktop/reference_144316.gputrace` | compute-only (与 inject 同形态) | 备用 compute-only 样本 |
+
+设置 `GPUTRACE_PATH` 即可让 `Scripts/test_gputrace_replay_bridge.sh` 跑 live-trace 断言：
+
+```bash
+GPUTRACE_PATH="/Users/songdogwang/Library/Containers/com.papegames.lysk/Data/Documents/Captures/capture_20260518_110050.gputrace" \
+    bash Scripts/test_gputrace_replay_bridge.sh
+# → 88 passed, 0 failed, 88 total
+
+GPUTRACE_PATH="$HOME/Desktop/reference_test_inject.gputrace" \
+    bash Scripts/test_gputrace_replay_bridge.sh
+# → R7.6-C 自身断言通过；R7.3 在 compute-only 上的 14 个"健康路径"断言失败属于已知盲点（trace-shape 假设错误，由 R7.3 而非 R7.6-C 负责）
+```
 
 ## 全局约束
 
@@ -58,29 +78,18 @@
 - **`frame-list` 子命令（swizzle-first）**（R7.3）：在 `replay_context_init` 之前装一组 swizzle（`MTLCommandQueue.commandBuffer*` / `MTLCommandBuffer.{render,compute,blit}CommandEncoder*` / `MTLRenderCommandEncoder.{setRenderPipelineState:, drawXXX:*, endEncoding}`），`playAll` 期间打开 capture gate 把 (cb, encoder, draw, RPS) 落到进程级 `g_cb_captured / g_encoder_captured / g_draws_captured`。输出 `command_buffers[].encoders[].draws[]` 树 + 扁平 `draw_to_rps_map[]`。LYSK 实测：4 cb / 62 encoder（56 render / 2 compute / 4 blit）/ 244 draws 全部解析到 65/65 RPS。`first/last_call_index` 直接读 R7.1 的 controller offset。`--with-timing` 在 replay-internal cb 上常返 null（已文档说明）。`shader-of-drawcall` 退化为薄封装（R7.6 子项 C，0.5 天）。详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.3
 - **统一 Bridge**（R6.1+）：`Scripts/gputrace_replay_bridge.m` — 7 子命令（help/replay/pipeline/shader/shader-of-rps/frame-list/config），Makefile 构建 + ad-hoc 签名 + 集成测试 81/81 通过。详见 `subdocs/20260520-R6.1-bridge-implementation.md`
 - **Python wrapper + skill 打包**（R6.2）：`Scripts/gputrace_replay_wrapper.py` + `.codebuddy/skills/gpu-trace-analysis/`。详见 `subdocs/20260521-R6.2-wrapper-and-skill.md`
-- **R7 缺口诊断**：`pipeline` 缺 RPS↔shader 关联（→ ✅ R7.2）；无 encoder/draw 时间序（→ ✅ R7.3）；7 段 draw→IR 反查链已 7/7 通过（段 1 由 R7.3 swizzle-first 路径打通），用户最终目标"draw N → IR 一行命令"由 R7.6 子项 C 薄封装收尾（**当前最高优先级**）；depth/stencil 不能 export → ⏳ R7.5。详见 `subdocs/20260521-R7-frame-inspection-gap.md`
+- **R7 缺口诊断**：`pipeline` 缺 RPS↔shader 关联（→ ✅ R7.2）；无 encoder/draw 时间序（→ ✅ R7.3）；7 段 draw→IR 反查链已 7/7 通过（段 1 由 R7.3 swizzle-first 路径打通），用户最终目标"draw N → IR 一行命令"由 R7.6 子项 C 薄封装收尾（→ ✅ 2026-05-21）；depth/stencil 不能 export → ⏳ R7.5。详见 `subdocs/20260521-R7-frame-inspection-gap.md`
+- **`shader-of-drawcall` 薄封装**（R7.6-C）：Python wrapper-only，bridge 不动。`bridge.shader_of_drawcall(trace, draw_index, stage, with_ir, output_dir)` = `frame_list → draw_to_rps_map[draw_index] → shader_of_rps`，输出嵌入完整 `shader_of_rps` 结果 + frame-list 上下文（`encoder_index` / `draw_in_encoder` / `call_index` / `rps_label`）。OOR 抛 `DrawIndexOutOfRange`（CLI exit 12，含 `draw_count=0` 的 compute-only 友好 hint）；`shader-of-rps` 软错误透传到顶层（CLI exit 11）；负 idx / 非法 stage → `ValueError`。LYSK draw[0]/draw[103] 的 metallib/AIR/cacheKey 与手工链字节级一致（`.ll` 仅差 ModuleID 路径注释，是 llvm-dis 行为）。详见 `executions/20260521-R7.6-C-shader-of-drawcall-execution.md`
 
 ### 当前卡点
 
-无。R7.3 完成（2026-05-21）。
+无。R7.6-C 完成（2026-05-21）。
 
 ### 下一步（当前最高优先级）
 
-**R7.6 子项 C：`shader-of-drawcall` 薄封装 + 第二个 trace 的 R7.3/R7.4 回归**
+**R7.5：depth/stencil export（bridge 内置 blit）+ compute encoder dispatch 计数补齐 — 1–1.5 天**
 
-优先级理由（在 R7.5 之前先做的根因）：
-1. **这是用户最终目标的字面落地**。`R7` 全章节都把"draw call → shader IR"作为核心叙事，但当前用户仍要执行两条命令（`frame-list` → `shader-of-rps`）。`shader-of-drawcall <draw_index>` 把它合并为**一行**，与 `shader-of-rps <rps_key>` 形成认知对称（两条命令分别对应两种用户心智入口：知 RPS / 知 draw_index）。
-2. **工时极小、风险为零**：纯 wrapper 代码（约半天）。可以在 Python wrapper 端实现（`ReplayBridge.shader_of_drawcall(trace, draw_index, ...)` = `frame_list(...).draw_to_rps_map[draw_index].rps_key` → `shader_of_rps(...)`），也可以再加一个 bridge 子命令使 CLI 形态对称。优先选 wrapper-only 实现，bridge 不动，集成测试只加几条断言。
-3. **顺便用 reference_test_inject.gputrace 做第二样本回归**：当前 R7.3/R7.4 的回归基线**完全依赖 LYSK 单样本**，是显著的盲区。reference_test_inject 是 compute-only trace（3 kernel / 4 buffer / 无 render pipeline / 无 draw call），它能立刻暴露：(a) `frame-list` 在没有 RenderCommandEncoder 时是否正常返回 `draw_count=0` 而不 crash；(b) `compute_encoder_count` 是否真按 R7.3 文档承诺的列出 compute encoder；(c) `shader-of-rps` 在 `rps_count=0` 的 trace 上是否走到正确的 `rps_not_found` 分支；(d) `shader-of-drawcall` 在 draw_index 不存在时返回友好的 OOR 错误。这是低成本高 ROI 的多样本回归。
-4. **R7.5 子项 A 的"立刻解锁 ShadowMap 可视化"价值有限**：用户当前任务并未要看 ShadowMap，且 depth/stencil blit 真实工时是"半天写 blit pipeline + 半天测试 + 半天文档" ≈ 1.5 天，不是文档所述 0.5 天。R7.5 应排在 R7.6 子项 C 之后。
-5. **与 agent 工作流原则一致**：R7.6 子项 C 显然小于 R7.5，应优先选取"最小可交付的最高语义价值任务"。
-
-具体内容（详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.6 子项 C）：
-- 在 `Scripts/gputrace_replay_wrapper.py` 增加 `ReplayBridge.shader_of_drawcall(trace, draw_index, stage="fragment", with_ir=False, output_dir=None)` + `ShaderOfDrawcallResult` dataclass（包装 `frame_list` 结果中的 draw 元信息 + `shader_of_rps` 的 IR 元信息）+ CLI subparser `shader-of-drawcall`。
-- 错误处理：`draw_index` OOR → 结构化 `DrawIndexOutOfRange` 异常；下游 `shader-of-rps` 的 `rps_not_found` / `no_air_bitcode` 等错误透传。
-- 集成测试：在 `test_gputrace_replay_bridge.sh` 加 T7o（live-trace 链测试 `shader-of-drawcall 0 --with-ir` 出 `.ll` 文件）；reference_test_inject 离线断言（`frame-list` 在 compute-only trace 上 `draw_count=0` 且不 crash）+ Python wrapper 单元测试。
-- skill 同源同步：`scripts/gputrace_replay_wrapper.py`、SKILL.md（worked example 加 `shader-of-drawcall` 一行调用）、`cli-reference.md`（新增 `## CLI: shader-of-drawcall`）、`investigation-playbook.md`（Pattern 7 末尾加薄封装入口）。
-- 验收标准：①LYSK trace `shader-of-drawcall 0 --with-ir` 直出 `.ll`（与 R7.3 + R7.4 链式调用结果字节级一致）；②reference_test_inject `frame-list` 返回 `{draw_count: 0, command_buffer_count: 0/N, encoder_count: K (compute)}`；③R7.4 的 `shader-of-rps` 在 reference_test_inject 上行为正确（`rps_count=0` → 任意 RPS_key 返回 `rps_not_found` exit 11）。
+详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.5。R7.6-C 已完成（同日落地，详见 `executions/20260521-R7.6-C-shader-of-drawcall-execution.md`）；R7.6-C 之后按 README §"完成度" 排序：R7.5 → R7.6 子项 A/B → R7.7。
 
 ## 构建与验证的方法
 
@@ -112,11 +121,11 @@
   - **[DONE] R7.2**：`pipeline` 输出加 RPS↔shader 关联（vertex/fragment function/library key + attachment 摘要 + raster sample count，bridge 内置 swizzle）。LYSK 65/65 RPS 反查通过
   - **[DONE] R7.3**：`frame-list` 子命令（swizzle-first 路径）— encoder 列表（含 compute/blit）+ draw→RPS 映射 + `--with-timing` flag 一次冲刺打通。LYSK trace 实测 244/244 draw 全部解析到 65/65 RPS；timing 字段在 replay-internal cb 上常返 null（已文档说明）
   - **[DONE] R7.4**：`shader-of-rps` 子命令（语义级反查 + `--with-ir` 调 `llvm-dis` 直出 `.ll` + `cache_key_metallib`），与 R7.2 同冲刺完成
-  - **[P0] R7.6 子项 C（当前最高优先级）**：`shader-of-drawcall` 薄封装（wrapper-only：`frame-list → draw_to_rps_map → shader-of-rps`）+ reference_test_inject.gputrace 第二样本回归 — 0.5 天
-  - **[P1] R7.5**：depth/stencil export（bridge 内置 blit）+ compute encoder dispatch 计数补齐 — 1–1.5 天合计
+  - **[DONE] R7.6 子项 C**（2026-05-21）：`shader-of-drawcall` 薄封装（wrapper-only：`frame-list → draw_to_rps_map → shader-of-rps`）+ LYSK draw_index=0/103 字节级一致回归 + reference_test_inject compute-only OOR/`draw_count=0` 回归。集成测试 88/88 通过。详见 `executions/20260521-R7.6-C-shader-of-drawcall-execution.md`
+  - **[P0] R7.5（当前最高优先级）**：depth/stencil export（bridge 内置 blit）+ compute encoder dispatch 计数补齐 — 1–1.5 天合计
   - **[P1] R7.6 子项 A/B**：`frame-list --with-bindings`（1.5 天）+ `dump-uniforms`（1 天，依赖子项 A 的 binding 表）
   - **[P2] R7.7**：`disasm` 子命令（直接读 SDI module.bc，覆盖无 AIR 的 library）— 1.5 天，低风险，**skill 自包含最后一公里**
-- **每个 R7 chunk 落地后必须同步**：SKILL.md（"Exploring an unknown trace's pipeline" 工作流 / 已知盲点） + `references/investigation-playbook.md`（frame-overview worked example） + `references/cli-reference.md`（新子命令 schema）。R7.1/R7.2/R7.3/R7.4 落地时已同步。
+- **每个 R7 chunk 落地后必须同步**：SKILL.md（"Exploring an unknown trace's pipeline" 工作流 / 已知盲点） + `references/investigation-playbook.md`（frame-overview worked example） + `references/cli-reference.md`（新子命令 schema）。R7.1/R7.2/R7.3/R7.4/R7.6-C 落地时已同步。
 
 ## 高频复用经验
 

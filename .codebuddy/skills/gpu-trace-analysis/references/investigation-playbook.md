@@ -348,6 +348,27 @@ RPS=$(jq -r '.draw_to_rps_map[0].rps_key' "$WORKDIR/frame.json")
 
 If `--with-ir` returns `ir_error: "no_air_bitcode"`, fall back to the metallib (use the `cache_key_metallib` field to find the corresponding PlayCover ShaderDebugInfo entry — see Reference §3.1 below).
 
+### One-shot: `shader-of-drawcall` (R7.6-C薄封装)
+
+When you already know the draw_index (e.g. from `frame-list` output, or from a user complaint phrased as "draw N looks wrong"), skip the manual `jq | shader-of-rps` plumbing and use the wrapper:
+
+```bash
+WRAPPER=$SKILL_DIR/scripts/gputrace_replay_wrapper.py
+python3 "$WRAPPER" shader-of-drawcall "$TRACE" 0 --with-ir --output-dir "$WORKDIR/shaders"
+# → JSON with frame-list metadata (encoder_index, draw_in_encoder, call_index, rps_key, rps_label)
+#   plus the embedded shader_of_rps result (metallib_path, AIR, cacheKey, ir_ll_path, etc.).
+```
+
+Behavior summary:
+
+| Scenario | Result |
+|---|---|
+| Valid draw_index in a render-bearing trace | exit 0; output mirrors `frame-list[draw_to_rps_map[N]] + shader-of-rps[rps_key]`; metallib/AIR/cacheKey are byte-identical to the chained call. |
+| `draw_index >= draw_count` (incl. compute-only traces with `draw_count == 0`) | exit 12; structured `{"error":"draw_index_out_of_range","draw_count":K,"hint":"..."}`. Compute-only hint is explicit ("trace has no render draws"). |
+| `shader-of-rps` half fails (e.g. `rps_not_found` for the resolved RPS_key, or `no_air_bitcode` with `--with-ir`) | exit 11; payload still printed in full so callers can inspect the embedded `shader_of_rps.error` / `ir_error`. |
+
+The wrapper is symmetric to `shader-of-rps`: pick whichever entry point matches your mental model (RPS_key vs draw_index). Both produce the same artifacts on disk.
+
 **When to stop here**: once the user can match user-visible symptoms (e.g. "the SkinMakeupNew layer is wrong") to a concrete shader IR file, you've handed them everything the bridge can give. Further drilling — per-draw bindings, uniform values — is on the R7 backlog and not yet available.
 
 ---

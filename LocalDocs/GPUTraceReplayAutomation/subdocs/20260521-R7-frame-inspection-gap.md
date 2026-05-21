@@ -2,6 +2,7 @@
 
 **来源**：2026-05-21 别的 agent 在使用 `gpu-trace-analysis` skill 调查 `com.papegames.lysk capture_20260518_110050.gputrace`（247 资源 / 50 RPS / 96 lib / ~81 400 GPU API 调用）时反馈的能力缺口；以及"从 draw call 反查 shader IR"的 7 段链路验证。
 **结论**：当前 bridge/skill 在"渲染 bug 调查"任务上称职，但在"未知 trace 整体管线分析"与"draw call → shader 反查"两类任务上**严重欠拟合**。R7 的目标是补齐这些能力。
+**进度**：R7.1 ✅（2026-05-21，越界保护 + 资源元数据补齐）；下一步 R7.2（`pipeline` 输出加 RPS↔shader 关联）。
 
 > 本文档是 R7 的总入口。R6.3（CI/样本库自动化流水线）已确认不做，R7 是 R6 之后唯一的主线。
 
@@ -30,13 +31,13 @@ LYSK trace 全景调查任务里按出现顺序遇到的限制（每条都是"�
 | # | 想做的事 | 限制 | 绕路代价 |
 |---|---|---|---|
 | 1 | 拿本帧 encoder/pass/draw call 时间序 | bridge 仅暴露 ObjectMap 静态视图，无 CommandBuffer/Encoder 列表 | `--playto N` 二分扫 RT SHA-1 反推（±2k–5k 精度） |
-| 2 | 知道 `--playto N` 的 N 上限 | 越界直接 `SIGSEGV`，无 `bounds` / `total_call_count` | 二分 16 次定位到 ~81 400 |
+| 2 | 知道 `--playto N` 的 N 上限 | ~~越界直接 `SIGSEGV`，无 `bounds` / `total_call_count`~~ → ✅ R7.1：`--bounds` + `total_call_count` + OOR 结构化错误 | 已解决 |
 | 3 | 把 `playto N` 换算成 draw index | N 是 GPU API 调用编号，含大量 set\* | 完全无法精确换算 |
 | 4 | 直接读 `.gputrace` bundle 内 `capture` / `index` / `device-resources-*` | 私有二进制（`MTSP`/`xdic`），无文档 schema | 放弃 |
 | 5 | 解 `store0`（zlib 流）拿 shader 元数据 | 50 MB 内 90% 是本帧未派发的反射元数据 | 噪声大，仅能确认"shader 名存在过" |
 | 6 | 导 `DirectionalShadowDepth` / stencil | bridge 拒绝 depth/stencil getBytes | 完全无法可视化 ShadowMap / stencil bit |
 | 7 | 拿每个 encoder 的 attachments / bindings | 无 API | 用 RT format/尺寸/命名硬猜 |
-| 8 | 拿 RT 的 `storageMode` / `usage` / `framebufferOnly` / `memoryless` | 资源元数据仅 `width/height/depth/format/textureType/mip/label` | 无法分辨 transient / persistent / 跨帧 RT |
+| 8 | 拿 RT 的 `storageMode` / `usage` / `framebufferOnly` / `memoryless` | ~~资源元数据仅 `width/height/depth/format/textureType/mip/label`~~ → ✅ R7.1：texture/buffer 元数据全补齐 | 已解决 |
 | 9 | 区分 buffer 用途（vertex/index/uniform/argbuf） | 仅 `length`+`label` | 靠命名经验 |
 | 10 | 看某个 draw 的 cbuffer 实际值 | 无 API | 无法回答 |
 | 11 | 区分 stencil bit | depth/stencil 不能导出 | 无法回答 |
@@ -133,19 +134,68 @@ LYSK trace 65 个 RPS 的反查结果作为回归基线见 §6。
 
 R7 拆成 7 个独立可 PR 的 chunk。每个 chunk 列出工时、风险、解锁能力与新 JSON schema。**优先级按 C1 → C5 顺序**。
 
-### R7.1（原 C1）：bridge 越界保护 + 资源元数据补齐
+### R7.1（原 C1）：bridge 越界保护 + 资源元数据补齐 — ✅ 已完成（2026-05-21）
 
-**子项 A — `replay --bounds` / `total_call_count`**
-- 调用 `controller.totalCallCount`（必要时偏移定位），`replay` 输出多带 `total_call_count`
-- `--playto` 越界改返回 `{"error":"playto_out_of_range","max":N}`，**不再 SIGSEGV**
+**交付摘要**
 
-**子项 B — 资源元数据补齐**
-- texture 当前仅 `width/height/depth/pixelFormat/pixelFormatName/textureType/mipmapLevelCount/label`
-- 补：`storageMode` / `usage`(数组) / `framebufferOnly` / `memoryless` / `sampleCount` / `arrayLength`
-- buffer 补：`storageMode` / `cpuCacheMode` / `hazardTrackingMode`
-- `MTLTexture` 直接有这些 property，几行 ObjC 即可
+- `replay` 输出新增 `total_call_count` / `last_call_index`
+- 新增 `replay --bounds`：仅探边界后退出，不做资源枚举/导出
+- `replay --playto N` 越界返回结构化 `{"error":"playto_out_of_range","max":...}`，exit 12 (`EXIT_PLAYTO_OOR`)，不再 SIGSEGV
+- SIGSEGV/SIGBUS 兜底（`setjmp` + `sigaction`），框架行为变化时不 crash 进程
+- texture 元数据补齐：`storageMode` / `cpuCacheMode` / `hazardTrackingMode` / `usage`(数组) / `framebufferOnly` / `memoryless` / `sampleCount` / `arrayLength` / `isDepthStencil`
+- buffer 元数据补齐：`storageMode` / `cpuCacheMode` / `hazardTrackingMode`
 
-**工时**：半天；**风险**：低；**解锁**：脚本能稳定遍历 trace；不再 segfault；分辨 transient vs persistent。
+**关键技术点（沉淀知识）**
+
+- `total_call_count` 字段在 `controller + 0x5810`，类型 `uint32_t`，语义为**最后被 played 的 call index**。`playAll` 完成后等于 trace 的 total（LYSK 实测 = 3425）；`playTo(N)` 后实时变成 `N`。常量名：`CONTROLLER_LAST_CALL_INDEX_OFFSET`。
+- 反汇编证据：`GTMTLReplayController_playTo` prologue `+0x038: add x23, x0, #0x5000` + `+0x110: ldr w8, [x23, #0x810]` + `+0x114: cmp w8, w19`（w19=target）。证据探针 `Scripts/call_count_probe.m` 保留作回归。
+- LYSK 全景调查里看到的 ~81 400 是源 trace 的 raw GPU API 调用数（含每个 `setVertexBuffer:` 等），与 controller 时间序的 call index 粒度不同 — controller 维度的 3425 才是 `playTo` 合法上限。
+- `--playto N` 当前先 `playAll` 探边界再 `rewind` + `playTo(N)`，多一次全帧开销（LYSK ~9ms，可忽略）；如未来某 trace `playAll` 代价大，可考虑做"二分而不全跑"探边界。
+
+**越界保护策略**
+
+| 场景 | 处理 |
+|------|------|
+| `--bounds` | 仅 1 次 `playAll` 探得 `total_call_count` 后退出 |
+| `--playto N`（N ≤ total） | `playAll` → `rewind` → `playTo(N)`，正常输出 |
+| `--playto N`（N > total） | 直接返回 OOR JSON，不调用 `playTo`，exit 12 |
+| 默认 | 等价以前 `playAll`，附加 `total_call_count` / `last_call_index` |
+| SIGSEGV/SIGBUS | `longjmp` 兜底，`replay_signal` 字段写入 JSON，进程不 crash（仅最后一道墙） |
+
+**实测样例**（LYSK trace `capture_20260518_110050.gputrace`）
+
+`replay --bounds`：
+```json
+{"command":"replay","bounds_only":true,"probe_rc":0,
+ "probe_elapsed_ms":8.733,"total_call_count":3425}
+```
+
+`replay --playto 9999999`（OOR，exit 12）：
+```json
+{"command":"replay","error":"playto_out_of_range",
+ "playto_index":9999999,"total_call_count":3425,"max":3425}
+```
+
+`replay --list-resources` 单条 texture：
+```json
+{"id":231,"type":"texture","width":583,"height":835,
+ "pixelFormatName":"Depth32Float_Stencil8","textureType":"2D",
+ "mipmapLevelCount":1,"sampleCount":1,"arrayLength":1,
+ "storageMode":"shared","cpuCacheMode":"default",
+ "hazardTrackingMode":"tracked",
+ "usage":["shaderRead","renderTarget"],
+ "framebufferOnly":false,"memoryless":false,
+ "isDepthStencil":true,"label":"TempBuffer 123 583x835"}
+```
+
+**测试覆盖**：T7e/T7f/T7g/T7h（4 组 14 断言）已加入 `Scripts/test_gputrace_replay_bridge.sh` 和 skill 内同步副本，43/43 通过；常规集成测试 17/17 通过。
+
+**对后续 R7 chunk 的衔接**
+
+- R7.2 可在 `replay_context_init` 入口前安装 method swizzling，与 R7.1 改动（仅 `cmd_replay` 内）无冲突
+- R7.3 (`frame-list`) 可用 `total_call_count` 校验每个 encoder 的 `[first_call_index, last_call_index]` 闭合性
+
+**已知限制**：`+0x5810` 偏移在当前 macOS 版本稳定；系统升级后若反汇编 prologue 模式变化，需更新常量，回归脚本：`Scripts/call_count_probe.m`。
 
 ### R7.2（原 C1.5）：`pipeline` 输出加 RPS↔shader 关联
 

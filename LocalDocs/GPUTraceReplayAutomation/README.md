@@ -50,9 +50,10 @@
 - **Pipeline Binary 导出**：`libraryForKey:(uint64_t)` → `libraryDataContents`(metallib) / `bitcodeData`(AIR)。Key 偶数=Library，奇数=Function，规则：`library_key = function_key - 1`
 - **Shader 热替换**：`objectMap.setLibrary:forKey:` → rewind → playAll。shaderIR(metallib binary) 可无源码替换
 - **Configuration**：调用链控制（disableOptimizeRestores/forceLoadUnusedResources）+ 全局变量（g_runningValidationCI）
+- **Call-index 边界与越界保护**（R7.1）：`*(uint32_t *)(controller + 0x5810)` = last played call index；`playAll` 完成后即 trace 总 call 数；bridge 已加 `--bounds` / OOR 结构化错误（exit 12） / SIGSEGV 兜底；texture/buffer 元数据全补齐。详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.1
 - **统一 Bridge**（R6.1）：`Scripts/gputrace_replay_bridge.m` — 5 子命令（help/replay/pipeline/shader/config），Makefile 构建 + ad-hoc 签名 + 集成测试 17/17 通过。详见 `subdocs/20260520-R6.1-bridge-implementation.md`
 - **Python wrapper + skill 打包**（R6.2）：`Scripts/gputrace_replay_wrapper.py` + `.codebuddy/skills/gpu-trace-analysis/`。详见 `subdocs/20260521-R6.2-wrapper-and-skill.md`
-- **R7 缺口诊断**（来自 LYSK trace 全景调查反馈）：`pipeline` 缺 RPS↔shader 关联；无 encoder/draw 时间序；`--playto` 越界 SIGSEGV；depth/stencil 不能 export；7 段 draw→IR 反查链已验证可行。详见 `subdocs/20260521-R7-frame-inspection-gap.md`
+- **R7 缺口诊断**（来自 LYSK trace 全景调查反馈）：`pipeline` 缺 RPS↔shader 关联；无 encoder/draw 时间序；depth/stencil 不能 export；7 段 draw→IR 反查链已验证可行。详见 `subdocs/20260521-R7-frame-inspection-gap.md`
 
 ### 当前卡点
 
@@ -97,7 +98,7 @@
   - **[DONE] R6.2c**：skill 打包（`.codebuddy/skills/gpu-trace-analysis/`，自包含 + 17/17 通过）
 - **[CANCELLED] R6.3**：自动化流水线集成（CI/CD + 样本库管理）— 不做
 - **[IN-PROGRESS][P0] R7**：Frame-Inspection 能力补全（来自 LYSK trace 全景调查反馈，详见 `subdocs/20260521-R7-frame-inspection-gap.md`）
-  - **[DONE] R7.1**：bridge 越界保护 + 资源元数据补齐 — `total_call_count` / `last_call_index` / `--bounds` / `playto_out_of_range`(exit 12) / SIGSEGV 兜底 / texture+buffer storageMode/usage/hazardTracking 等。详见 `executions/20260521-R7.1-bounds-and-resource-metadata.md`
+  - **[DONE] R7.1**：bridge 越界保护 + 资源元数据补齐 — `total_call_count` / `last_call_index` / `--bounds` / `playto_out_of_range`(exit 12) / SIGSEGV 兜底 / texture+buffer storageMode/usage/hazardTracking 等。详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.1
   - **[P0] R7.2**：`pipeline` 输出加 RPS↔shader 关联（vertex/fragment function/library key + attachment 摘要，内部 swizzle，参考 `LocalDocs/OfflineSourceRecovery/scripts/rps_swizzle_probe.m`）— 1 天，低风险
   - **[P1] R7.3**：`frame-list` 子命令（CommandBuffer/Encoder 枚举 + attachments + per-encoder timing）— 1 天，中风险
   - **[P1] R7.4**：`shader-of-rps` 子命令（语义级反查 + `--with-ir`）— 1 天，中风险

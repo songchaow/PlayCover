@@ -10,11 +10,12 @@ Complete surface for the bundled tools. Skim the table of contents and jump to w
 5. [Subcommand: shader-of-rps](#subcommand-shader-of-rps)
 6. [Subcommand: frame-list](#subcommand-frame-list)
 7. [Subcommand: shader-of-drawcall (wrapper-only)](#subcommand-shader-of-drawcall-wrapper-only)
-8. [Subcommand: config](#subcommand-config)
-9. [Exit codes](#exit-codes)
-10. [Python wrapper — CLI mode](#python-wrapper--cli-mode)
-11. [Python wrapper — module mode](#python-wrapper--module-mode)
-12. [Pixel format helpers](#pixel-format-helpers)
+8. [Subcommand: disasm](#subcommand-disasm)
+9. [Subcommand: config](#subcommand-config)
+10. [Exit codes](#exit-codes)
+11. [Python wrapper — CLI mode](#python-wrapper--cli-mode)
+12. [Python wrapper — module mode](#python-wrapper--module-mode)
+13. [Pixel format helpers](#pixel-format-helpers)
 
 ---
 
@@ -26,13 +27,13 @@ Complete surface for the bundled tools. Skim the table of contents and jump to w
 gputrace_replay_bridge <command> [args...]
 ```
 
-Available commands: `help`, `replay`, `pipeline`, `shader`, `shader-of-rps`, `frame-list`, `config`.
+Available commands: `help`, `replay`, `pipeline`, `shader`, `shader-of-rps`, `frame-list`, `disasm`, `config`.
 
 `help` prints the JSON schema of all commands:
 
 ```bash
 gputrace_replay_bridge help
-# → {"tool":"gputrace_replay_bridge","version":"0.4.0","commands":[...]}
+# → {"tool":"gputrace_replay_bridge","version":"0.5.0","commands":[...]}
 ```
 
 ---
@@ -297,7 +298,7 @@ Defaults:
 - `--stage fragment`
 - `--output-dir` = system temp directory (e.g. `/var/folders/.../T/`)
 
-Output JSON (success path):
+Output JSON (success path, `bitcodeData` is present — legacy R7.4 path, `ir_source = "bitcodeData"`):
 
 ```json
 {
@@ -315,8 +316,32 @@ Output JSON (success path):
   "library_air_path": "/tmp/r74/library_356.air",
   "library_air_size": 3920,
   "cache_key_metallib": "636181106F7E31A0_4593",
+  "ir_source": "bitcodeData",
   "ir_ll_path": "/tmp/r74/library_356.ll",
   "ir_ll_size": 3257,
+  "ir_dis_path": "/opt/homebrew/opt/llvm/bin/llvm-dis"
+}
+```
+
+Output JSON (R7.7 SDI fallback path — `bitcodeData` missing but PlayCover's `ShaderDebugInfo` cache has `module.bc`; this is the common case on PlayCover-launched apps, ~97% of LYSK libraries):
+
+```json
+{
+  "command": "shader-of-rps",
+  "rps_key": 472,
+  "rps_label": "Papegame/Cloth/ClothStandard",
+  "library_key": 374,
+  "library_metallib_path": "/tmp/out/library_374.metallib",
+  "library_metallib_size": 11041,
+  "cache_key_metallib": "5368B920C0D59DE1_11041",
+  "sdi_module_bc_path": "/tmp/out/library_374.module.bc",
+  "sdi_module_bc_size": 10800,
+  "sdi_bundle_id": "com.papegames.lysk",
+  "sdi_module_hash": "cb5a538c241f59268019ef2b35c834cf9edd3e87cc27ec9bc8ae389f951b85de",
+  "sdi_source_path": "/Users/.../ShaderDebugInfo/com.papegames.lysk/5368B920C0D59DE1_11041/modules/cb5a538c.../module.bc",
+  "ir_source": "sdi_module_bc",
+  "ir_ll_path": "/tmp/out/library_374.ll",
+  "ir_ll_size": 22019,
   "ir_dis_path": "/opt/homebrew/opt/llvm/bin/llvm-dis"
 }
 ```
@@ -336,11 +361,13 @@ Failure modes (all emit valid JSON; exit code is 11 = `SUBCMD_FAIL`):
 
 | `ir_error` | Meaning | `ir_hint` |
 |---|---|---|
-| `no_air_bitcode` | Library doesn't expose `bitcodeData`. Many `_MTLLibrary` instances have only metallib, not AIR. | (none) |
+| `no_air_bitcode_and_no_sdi` | **R7.7**: neither `bitcodeData` nor PlayCover's `ShaderDebugInfo` cache had bitcode for this library. Run the app once through PlayCover to populate the SDI cache, then retry. | populated with run-the-app guidance |
 | `llvm_dis_not_found` | Bridge couldn't locate `llvm-dis` on Homebrew or PATH. | `install via 'brew install llvm' (Apple toolchain lacks llvm-dis)` |
 | `llvm_dis_failed` | `llvm-dis` ran but exited non-zero. `ir_dis_rc` and `ir_dis_stderr` are populated for debugging. | (none) |
 
-The cacheKey can be used to find the corresponding ShaderDebugInfo directory under `~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/<bundle>/<cache_key>/`, which holds the original compile-time `module.bc` for cross-referencing — see [investigation playbook §3](./investigation-playbook.md).
+> **Deprecated**: the legacy `no_air_bitcode` (R7.4-only) is no longer produced by R7.7 — it's been replaced by the auto-fallback path described above. If you see `no_air_bitcode_and_no_sdi`, it means BOTH paths failed.
+
+The cacheKey can also be used to manually find the corresponding ShaderDebugInfo directory under `~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/<bundle>/<cache_key>/` — but R7.7's auto-fallback usually removes the need for manual lookups. See [investigation playbook §3](./investigation-playbook.md).
 
 ---
 
@@ -516,6 +543,86 @@ python3 "$WRAPPER" shader-of-drawcall "$TRACE" 99999999 --pretty
 
 ---
 
+## Subcommand: disasm
+
+**R7.7**: Direct `library_key` (default) or `rps_key` disassembly with the same SDI module.bc fallback used by `shader-of-rps`. The library-key path is the convenience entry point when you've already run `pipeline` and know which library you want — no need to detour through an RPS_key.
+
+```bash
+gputrace_replay_bridge disasm <.gputrace> <key> [--key-type rps|library] [--stage fragment|vertex] [--with-ir] [--output-dir DIR]
+```
+
+Defaults:
+- `--key-type library`
+- `--stage fragment` (only used when `--key-type=rps`)
+- `--output-dir` = system temp directory
+
+### Library-key path (default)
+
+```bash
+gputrace_replay_bridge disasm /path/foo.gputrace 374 --with-ir --output-dir /tmp/out
+```
+
+Internally:
+1. `replay_context_init` + `playAll` (so the objectMap is populated).
+2. `objectMap.libraryForKey:374` → `MTLLibrary`.
+3. Dump `libraryDataContents` → `library_374.metallib` and compute `cache_key_metallib`.
+4. Try `bitcodeData` first (R7.4 path). If non-empty: write `library_374.air` and treat that as the IR source.
+5. Otherwise (most LYSK libraries): scan `~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/<bundle>/<cache_key>/modules/<hash>/module.bc` and copy the first match into `library_374.module.bc`. The bridge iterates every `<bundle>` directory, so you don't have to specify which app the trace came from.
+6. With `--with-ir`: pipe whichever bitcode source we got through `llvm-dis` to produce `library_374.ll`.
+
+The output JSON includes `ir_source: "bitcodeData" | "sdi_module_bc"` so callers can tell which path was used. SDI fields (`sdi_module_bc_path`, `sdi_bundle_id`, `sdi_module_hash`, `sdi_source_path`) are populated only on the SDI fallback path.
+
+Output JSON (R7.7 SDI fallback path — same shape as `shader-of-rps` minus the RPS-specific fields):
+
+```json
+{
+  "command": "disasm",
+  "trace_path": "...",
+  "key_type": "library",
+  "library_key": 374,
+  "output_dir": "/tmp/out",
+  "library_metallib_path": "/tmp/out/library_374.metallib",
+  "library_metallib_size": 11041,
+  "cache_key_metallib": "5368B920C0D59DE1_11041",
+  "sdi_module_bc_path": "/tmp/out/library_374.module.bc",
+  "sdi_module_bc_size": 10800,
+  "sdi_bundle_id": "com.papegames.lysk",
+  "sdi_module_hash": "cb5a538c...",
+  "sdi_source_path": "/Users/.../ShaderDebugInfo/com.papegames.lysk/5368B920C0D59DE1_11041/modules/cb5a538c.../module.bc",
+  "ir_source": "sdi_module_bc",
+  "ir_ll_path": "/tmp/out/library_374.ll",
+  "ir_ll_size": 22019,
+  "ir_dis_path": "/opt/homebrew/opt/llvm/bin/llvm-dis"
+}
+```
+
+### RPS-key path (`--key-type rps`)
+
+`disasm <key> --key-type rps` is equivalent to `shader-of-rps <key>` — the bridge forwards internally. The output JSON's `command` field will be `"shader-of-rps"` (not `"disasm"`), reflecting the actual handler. Use this when you want a single CLI entry point with a uniform name across both keying conventions.
+
+### Failure modes
+
+Same `ir_error` taxonomy as `shader-of-rps` (`no_air_bitcode_and_no_sdi` / `llvm_dis_not_found` / `llvm_dis_failed`). Plus library-path-specific:
+
+| `error` | Meaning |
+|---|---|
+| `library_not_found` | `objectMap.libraryForKey:` returned nothing, or the returned object isn't an `MTLLibrary`. Pass a key from `pipeline`'s `libraries[].key` to be safe. |
+
+| `warning` | Meaning |
+|---|---|
+| `library_has_no_libraryDataContents` | The `MTLLibrary` exists but exposes no metallib bytes — extremely rare; cacheKey/IR will be unavailable. |
+
+### Hit-rate (LYSK main baseline, 96 libraries)
+
+| Path | Coverage |
+|---|---|
+| `bitcodeData` only (legacy R7.4) | 3 / 96 (3.1%) |
+| `bitcodeData` ∪ SDI module.bc (R7.7) | 96 / 96 (100%) |
+
+In other words: R7.7 is the difference between "1 in 30 calls produces IR" and "every call produces IR" on a typical PlayCover-launched app.
+
+---
+
 ## Subcommand: config
 
 Runs a complete replay with one of three knobs flipped, isolating their individual effect. Each invocation creates a fresh replay context.
@@ -608,6 +715,8 @@ python3 gputrace_replay_wrapper.py frame-list <trace>
 python3 gputrace_replay_wrapper.py frame-list <trace> --no-draws
 python3 gputrace_replay_wrapper.py frame-list <trace> --with-timing --pretty
 python3 gputrace_replay_wrapper.py shader-of-drawcall <trace> 0 --with-ir --output-dir /tmp/out
+python3 gputrace_replay_wrapper.py disasm <trace> 374 --with-ir --output-dir /tmp/out               # R7.7: direct library_key
+python3 gputrace_replay_wrapper.py disasm <trace> 484 --key-type rps --with-ir --output-dir /tmp/out  # R7.7: forwards to shader-of-rps
 python3 gputrace_replay_wrapper.py config <trace> disableOptimizeRestores=0 enableValidation=1
 ```
 
@@ -672,11 +781,23 @@ try:
     sod = bridge.shader_of_drawcall("/path/to/foo.gputrace", 0, with_ir=True, output_dir="/tmp/out")
     print(f"draw 0 → enc#{sod.encoder_index} rps={sod.rps_key} ({sod.rps_label})")
     if sod.shader and sod.shader.ir_ll_path:
-        print("LLVM IR:", sod.shader.ir_ll_path, sod.shader.ir_ll_size, "bytes")
+        # R7.7: ir_source distinguishes bitcodeData (legacy AIR) vs sdi_module_bc (PlayCover SDI fallback)
+        print(f"LLVM IR ({sod.shader.ir_source}):", sod.shader.ir_ll_path, sod.shader.ir_ll_size, "bytes")
     elif sod.error:
         print("lookup failed:", sod.error, sod.hint)
 except DrawIndexOutOfRange as e:
     print(f"trace only has {e.draw_count} draws; idx {e.draw_index} is out of range")
+
+# R7.7 — direct library_key disassembly (skip the RPS detour)
+dis = bridge.disasm("/path/to/foo.gputrace", 374, with_ir=True, output_dir="/tmp/out")
+if dis.error:
+    print("disasm failed:", dis.error)
+else:
+    print(f"library 374 → {dis.library_metallib_path} (cacheKey={dis.cache_key_metallib})")
+    if dis.ir_ll_path:
+        print(f"  IR via {dis.ir_source}: {dis.ir_ll_path} ({dis.ir_ll_size} bytes)")
+        if dis.ir_source == "sdi_module_bc":
+            print(f"  source: {dis.sdi_source_path}")
 
 # shader hot-replace + verify
 target = p.libraries[0]

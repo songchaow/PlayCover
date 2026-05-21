@@ -2,7 +2,7 @@
 
 **来源**：2026-05-21 别的 agent 在使用 `gpu-trace-analysis` skill 调查 `com.papegames.lysk capture_20260518_110050.gputrace`（247 资源 / 50 RPS / 96 lib / ~81 400 GPU API 调用）时反馈的能力缺口；以及"从 draw call 反查 shader IR"的 7 段链路验证。
 **结论**：当前 bridge/skill 在"渲染 bug 调查"任务上称职，但在"未知 trace 整体管线分析"与"draw call → shader 反查"两类任务上**严重欠拟合**。R7 的目标是补齐这些能力。
-**进度**：R7.1 / R7.2 / R7.3 / R7.4 / R7.6-C ✅（2026-05-21）；剩余 R7.7（当前最高优先级，把 R7.6-C 主样本命中率从 ~3% 拉到 ~100%） → R7.5 → R7.6 子项 A·B。
+**进度**：R7.1 / R7.2 / R7.3 / R7.4 / R7.6-C / R7.7 ✅（2026-05-21）；剩余 R7.5（当前最高优先级，depth/stencil + compute dispatch 计数） → R7.6 子项 A·B（bindings + uniforms）。
 **主回归基线 trace 路径**：
 - LYSK：`/Users/songdogwang/Library/Containers/com.papegames.lysk/Data/Documents/Captures/capture_20260518_110050.gputrace`（4 cb / 62 enc / 244 draws / 65 RPS / 96 lib / 3425 calls）— 端到端 IR 链主基线
 - compute-only：`~/Desktop/reference_test_inject.gputrace`（2 cb / 2 compute enc / 0 draws / 0 RPS / 3 compute PSO / 27 calls）— OOR / `draw_count=0` / `rps_not_found` 多样本回归
@@ -123,7 +123,7 @@ cacheKey 直接对应 `~/Library/Containers/io.playcover.PlayCover/ShaderDebugIn
 
 R7 拆成 7 个独立可 PR 的 chunk。每个 chunk 列出工时、风险、解锁能力与新 JSON schema。
 
-**优先级**：原计划按 R7.1 → R7.7 顺序；R7.1/R7.2/R7.3/R7.4 + **R7.6 子项 C** 已完成（2026-05-21；R7.6-C 详见 §5.6）。**当前最高优先级调整为 R7.7**（disasm + SDI module.bc 覆盖），理由是 R7.6-C 刚交付的 `shader-of-drawcall --with-ir` 在 LYSK 主样本上 96 lib 中只有 3 个有 AIR（~3% 命中率），95%+ 请求会得到 `no_air_bitcode`，"先解锁刚交付能力"比"再加 depth/stencil 新能力"更紧迫。R7.5（depth/stencil + compute dispatch）排在 R7.7 之后；R7.6 子项 A/B 排在 R7.5 之后。
+**优先级**：原计划按 R7.1 → R7.7 顺序；R7.1/R7.2/R7.3/R7.4 + **R7.6 子项 C** + **R7.7** 已完成（2026-05-21；R7.7 详见 §5.7）。**当前最高优先级是 R7.5**（depth/stencil + compute dispatch 计数）。R7.6 子项 A/B 排在 R7.5 之后。
 
 ### R7.1（原 C1）：bridge 越界保护 + 资源元数据补齐 — ✅ 已完成（2026-05-21）
 
@@ -323,9 +323,9 @@ cache_key_metallib:    CB535F216771DC94_7888
 | 非法 `--stage` | `--stage banana` | 1 (USAGE) | — (stderr message) |
 | 库无 AIR | `shader-of-rps … 484 --with-ir` | 0 | `ir_error: no_air_bitcode`（多数 `_MTLLibrary` 仅有 metallib，约 LYSK 96 lib 中 3 个有 AIR） |
 
-### R7.5（原 C3）：depth/stencil export + compute dispatch 计数补齐
+### R7.5（原 C3）：depth/stencil export + compute dispatch 计数补齐 — 当前最高优先级（2026-05-21 R7.7 完成后）
 
-> **优先级调整（2026-05-21）**：R7.5 原排在 R7.6-C 之后作"当前最高优先级"，现让位给 R7.7。理由：R7.6-C 刚交付的 `shader-of-drawcall --with-ir` 在主样本上 95%+ 返回 `no_air_bitcode`，R7.7 通过 SDI module.bc 路径把命中率拉到 ~100%，是"先解锁刚交付能力"的最紧迫工作。R7.5 是新能力但相对独立，不堵塞已交付能力；子项 A（depth/stencil blit）≈ 1.5 天 + 子项 B（compute dispatch 计数）≈ 0.5 天，整体 1–1.5 天合计，**排在 R7.7 之后**。
+> **优先级**：R7.7 已于 2026-05-21 完成，让 `shader-of-rps` / `shader-of-drawcall` / `disasm` 三入口在 LYSK 主样本上 IR 命中率达到 100%。R7.5 现接棒为当前最高优先级。子项 A（depth/stencil blit）≈ 1.5 天 + 子项 B（compute dispatch 计数）≈ 0.5 天，整体 1–1.5 天合计。R7.6 子项 A/B 排在 R7.5 之后。
 
 **子项 A — depth/stencil blit export**
 - 当前 `replay --export <id> <path>` 直接拒绝 depth/stencil 纹理
@@ -447,43 +447,79 @@ bridge 的 `frame-list` 与 `shader-of-rps` 都需要完整 `playAll`，整套�
 
 新增**回归基线表**（除 LYSK 65 RPS 之外）保存于 §6 末尾。
 
-### R7.7（原 C5）：`disasm` 子命令 + SDI module.bc 覆盖 — 当前最高优先级（2026-05-21 起）
+### R7.7（原 C5）：`disasm` 子命令 + SDI module.bc 覆盖 — ✅ 已完成（2026-05-21）
 
 > **抢占 R7.5 成为 P0 的理由**：R7.6-C 刚交付的 `shader-of-drawcall <draw_index> --with-ir` 是用户最高频入口，但在 LYSK 主样本（96 lib）上仅 3 个 library 有 `bitcodeData`（~3% 命中率），95%+ 请求得到 `ir_error: no_air_bitcode` — 即"刚交付的一行命令在主样本上几乎不可用"。R7.7 通过 SDI 路径把命中率拉到接近 100%，是当前对最终目标贡献最大的工作。R7.5 / R7.6 子项 A·B 是新能力，相对独立，不堵塞已交付能力，排在 R7.7 之后。
 
 ```bash
-gputrace_replay_bridge disasm <trace> <rps_key>      # 自动选 fragment, 产出 .ll
-gputrace_replay_bridge disasm <trace> <lib_key>      # 直接产出 .ll
+gputrace_replay_bridge disasm <trace> <library_key> --with-ir [--output-dir DIR]                # library 路径（默认）
+gputrace_replay_bridge disasm <trace> <rps_key> --key-type rps --with-ir [--output-dir DIR]      # rps 路径，转发到 shader-of-rps
 ```
 
-**实施要点**
+**交付摘要**
 
-R7.4 已把 cacheKey + llvm-dis 集成进 `shader-of-rps`。R7.7 主要做两件事：
+- **新子命令 `disasm`**（library_key 路径默认；`--key-type rps` 时 bridge 内部转发到 `cmd_shader_of_rps`）
+- **统一的 IR 产出 helper `emit_ir_for_library()`**：先试 `bitcodeData` (R7.4 路径，`ir_source = "bitcodeData"`)，失败则按 SDI 路径找 `module.bc` (`ir_source = "sdi_module_bc"`)，最终都失败返回 `ir_error = "no_air_bitcode_and_no_sdi"`
+- `shader-of-rps` / `shader-of-drawcall` / `disasm` 三入口**自动共享 R7.7 fallback 路径** — 对用户透明，无需改命令
+- **bundle id 解析策略转向"无需解析"**：扫描 `~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/*/<cacheKey>/modules/*/module.bc`，取第一个匹配。理由：trace 内 `metadata` plist **不存** bundle id（实测仅 `(uuid)` / `DYCaptureSession.*` / `DYCaptureEngine.*`），路径解析方式（如 `Containers/<bundle>/Data/Documents/Captures`）不稳健（用户可能拷贝到 Desktop）；cacheKey 含 metallib 字节长度后缀 + FNV-style 哈希，跨 app 碰撞统计可忽略；副作用是 `sdi_bundle_id` 字段从扫描反向得出，对用户依然是有用的诊断信息
+- bridge version 0.4.0 → **0.5.0**；集成测试 88 → **102/102** 通过
 
-1. **新子命令 `disasm`** — 支持直接传 `lib_key`（不必先有 RPS_key），方便用户在 `pipeline` 输出后直接对某个 library 反编译；输入 `rps_key` 时退化为 `shader-of-rps --stage <auto>` 内部调用。
-2. **SDI module.bc 路径探测** — `bitcodeData` 缺失时（93/96 LYSK lib 命中此分支），按 `~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/<bundle>/<cacheKey>/modules/<hash>/module.bc` 路径探测：
-   - `<bundle>` 来自 trace 内进程 bundle id（已可从 `replay --list-resources` 提取；如不行可通过 `.gputrace` bundle 内的 `metadata.plist` 拿）
-   - `<cacheKey>` 已在 R7.4 算出（`compute_playtools_cache_key(metallib_data)`）
-   - `<hash>` 是 module.bc 自身名（按 SDI 目录结构枚举即可）
-   - 找到 `module.bc` → 直接 `llvm-dis module.bc -o output.ll`，不需经 `bitcodeData` 中转
-3. **`shader-of-rps` / `shader-of-drawcall` 自动 fallback** — 这两个子命令在 `bitcodeData` 缺失时自动尝试 SDI 路径，对用户透明；`ir_error` 字段细分为 `no_air_bitcode_and_no_sdi`（真没救）vs `no_air_bitcode`（已废弃，新 fallback 不再返回此值）。
+**新输出字段（`shader-of-rps` / `disasm` 共用）**
 
-**预期落地交付**
+```json
+{
+  "ir_source": "bitcodeData" | "sdi_module_bc",
+  "sdi_module_bc_path": "/tmp/out/library_374.module.bc",       // 仅 sdi_module_bc 路径
+  "sdi_module_bc_size": 10800,
+  "sdi_bundle_id": "com.papegames.lysk",                          // 反向得出的 bundle
+  "sdi_module_hash": "cb5a538c241f59268019ef2b35c834cf9edd3e87cc27ec9bc8ae389f951b85de",
+  "sdi_source_path": "/Users/.../ShaderDebugInfo/com.papegames.lysk/5368B920C0D59DE1_11041/modules/cb5a538c.../module.bc"
+}
+```
 
-- bridge 新增 `cmd_disasm` + 内部 `try_load_sdi_module_bc(bundle_id, cache_key)` 辅助函数
-- `shader-of-rps` / `shader-of-drawcall` 输出新增 `ir_source: "bitcodeData"|"sdi_module_bc"` 字段，方便用户知道 IR 来自哪条路径
-- LYSK 主样本回归：96 lib 中目标 ≥ 90 个能产出 `.ll`（含 SDI fallback 命中）
-- 集成测试新增 T7p 系列：①`disasm <trace> <lib_key>` 直接产出 `.ll`；②无 AIR 但 SDI 命中的 library `--with-ir` 产出 `.ll`；③SDI 真不存在时降级为 `no_air_bitcode_and_no_sdi`
+**LYSK 96 lib 命中率实测**
 
-**已知风险与盲点**
+| 路径 | 命中数 | 命中率 |
+|------|--------|--------|
+| `bitcodeData` only（R7.4 原路径） | 3 / 96 | 3.1% |
+| SDI module.bc only（R7.7 新增） | 93 / 96 | 96.9% |
+| AIR ∪ SDI（实际并集，**完全互斥**） | **96 / 96** | **100.0%** |
 
-- **bundle id 提取路径**：trace 内的 bundle id 必须能稳定拿到。当前 `replay` 子命令未输出此字段，需 R7.7 在 bridge 加 `replay --bundle-id` 或在 SDI 探测时从 `.gputrace` bundle metadata 提取。
-- **SDI 缓存策略**：用户清过 PlayCover 的 ShaderDebugInfo 缓存后，`module.bc` 不在；这是真"不可达"，文档需说明用户重启一次 app 触发缓存即可。
-- **`<hash>` 多个候选**：SDI 目录里同一 cacheKey 下可能有多个 `<hash>/module.bc`（kernel 变体）。R7.7 第一版按"取第一个"策略，第二版可按 metallib 内 function name 匹配。
+LYSK 上 AIR 与 SDI 没有任何重叠 — 这印证了"必须双路径才能完整覆盖"的实现策略。
 
-**工时**：1.5 天；**风险**：低（cacheKey 算法已在 bridge，SDI 路径解析是文件 I/O，无私有 API）；**解锁**：**全链路 7 段在一个二进制里完成 + R7.6-C 一行命令在主样本上真正可用**。
+**端到端验证（LYSK draw[0] / RPS 472 = `Papegame/Cloth/ClothStandard`，原 R7.6-C 在 R7.4 下返回 `no_air_bitcode`）**
 
-**与 R7.5 的依赖关系**：完全独立，R7.7 落地不阻塞 R7.5。落地后再做 R7.5 / R7.6 子项 A·B。
+```bash
+$BRIDGE shader-of-drawcall  /path/lysk.gputrace 0 --with-ir --output-dir /tmp/r77_sod
+# {
+#   "rps_key": 472, "rps_label": "Papegame/Cloth/ClothStandard",
+#   "shader_of_rps": {
+#     "library_key": 374, "library_metallib_size": 11041,
+#     "cache_key_metallib": "5368B920C0D59DE1_11041",
+#     "ir_source": "sdi_module_bc",
+#     "ir_ll_path": "/tmp/r77_sod/library_374.ll", "ir_ll_size": 22019,
+#     "sdi_bundle_id": "com.papegames.lysk", ...
+#   }
+# }
+```
+
+`.ll` 头部确认是真 LLVM IR：`source_filename = "xlatMtlMain"` + `target triple = "air64_v24-apple-ios15.0.0"` + `%struct.UnityPerCamera_Type` + 3 个 `define` 函数。这是 LYSK Cloth/ClothStandard fragment shader 的原始 IR。
+
+**集成测试新增 T7p 系列（12 断言）**
+
+- T7p-1：`disasm <library_key>` exit=0 + 含 `cache_key_metallib` / `library_metallib_path` ✅
+- T7p-2：`disasm <no-AIR lib_key> --with-ir` 在 LYSK 上 `ir_source = "sdi_module_bc"` + `ir_ll_path` + `sdi_bundle_id` 全部存在；compute-only trace 上降级为"软失败结构正确（`no_air_bitcode_and_no_sdi`）即可" ✅
+- T7p-3：`disasm <rps_key> --key-type rps` 转发后输出 `"command":"shader-of-rps"` ✅
+- T7p-4：`shader-of-rps <draw[0].rps_key> --with-ir` 不再返回旧的 `no_air_bitcode` ✅
+
+**已知局限**
+
+- **`<hash>` 多个候选**：SDI 目录里同一 cacheKey 下可能有多个 `<sha256>/module.bc`（理论上为不同 entry-point 变体）。R7.7 v1 是"取第一个"策略；LYSK 实测下每个 cacheKey 目录都只有一个 hash，未碰到歧义。如未来碰到多 hash，v2 可按 metallib 内 function name 与 `module.meta.json.functionNames[]` 匹配
+- **跨 bundle 路径假设**：实现遍历所有 `<bundle>/` 目录而非锁定到单一 bundle。如果用户在多 app 共用同一台机器、且不同 app 编译出 metallib 字节恰好碰撞 cacheKey，理论上会取到错误版本。**实际**：cacheKey 含 metallib 长度后缀，且 FNV-style 哈希分布，跨 app 碰撞概率统计可忽略；如未来有用户报告，可在 R7.7 v2 加 `--sdi-bundle-id` flag 显式覆盖
+- **SDI 缓存清理**：用户清过 PlayCover 缓存后 `module.bc` 不在 → R7.7 会降级为 `no_air_bitcode_and_no_sdi` 软失败 + hint "run the app once through PlayCover to populate ShaderDebugInfo"
+- **bundle_id 解析功能未做**：原计划在 bridge 加 `replay --bundle-id`，但因 SDI 路径扫描方式无需 bundle_id，**省略此项**。如未来需要 bundle_id 用于其他场景，可后续按需加，不阻塞 R7.7 主线
+
+**与 R7.5 的依赖关系**：完全独立，R7.7 落地不阻塞 R7.5。R7.7 完成后下一步进入 R7.5（depth/stencil + compute dispatch 计数）。详见 `executions/20260521-R7.7-disasm-sdi-fallback-execution.md`。
 
 ---
 
@@ -531,8 +567,8 @@ R7.2 已交付：bridge `pipeline` 与本表 65/65 一致。**回归测试命令
 | RPS → fragment/vertex shader 反查 | `pipeline` 输出加 function/library key | ✅ R7.2 |
 | RPS_key → shader IR 一行命令 | `shader-of-rps --with-ir` | ✅ R7.4 |
 | **Draw call → RPS_key 反查** | `frame-list` 输出 `draw_to_rps_map` | ✅ R7.3 |
-| **Draw call → shader IR 一行命令** | `shader-of-drawcall <draw_index>` | ✅ R7.6-C（CLI 形态闭环；主样本上命中率 ~3% — 由 R7.7 拉到 ~100%） |
-| Shader 反编译（覆盖无 AIR 的 library） | `disasm <rps_key>` SDI module.bc 路径 | ⏳ **R7.7（当前最高优先级）** — 把 R7.6-C 主样本命中率从 ~3% 拉到 ~100% |
+| **Draw call → shader IR 一行命令** | `shader-of-drawcall <draw_index>` | ✅ R7.6-C + **R7.7（SDI fallback 把 LYSK 主样本命中率从 ~3% 拉到 100%）** |
+| Shader 反编译（覆盖无 AIR 的 library） | `disasm <library_key>` SDI module.bc 路径 | ✅ **R7.7（2026-05-21 完成）** — bridge 0.5.0；LYSK 96 lib 命中 96 个（AIR 3 + SDI 93 完全互补） |
 
 ---
 
@@ -564,4 +600,4 @@ R7.1/R7.2/R7.3/R7.4 落地时已同步过这三处。后续 R7.5/R7.6/R7.7 起�
 
 ## 10. 一句话总结
 
-draw call → shader IR 的 7 段映射在 macOS Metal replay 框架下技术可达且已 7/7 走通：R7.1（边界）+ R7.2（pipeline RPS↔shader）+ R7.3（frame-list swizzle-first：encoder timeline + draw→RPS_key）+ R7.4（shader-of-rps 一行命令出 metallib/AIR/IR）+ **R7.6-C（shader-of-drawcall 薄封装 — 两命令合一，2026-05-21）** 五个 chunk 端到端串通，CLI 形态上"draw_index → IR" 已是真正的一行命令。LYSK 主基线 + reference_test_inject compute-only 两路回归通过，集成测试 88/88。**当前最高优先级切换为 R7.7**（disasm + SDI module.bc 覆盖）— 因为 LYSK 96 lib 中仅 3 个有 AIR bitcode（~3% 命中率），R7.6-C 的 `--with-ir` 在主样本上 95%+ 返回 `no_air_bitcode`；R7.7 通过 SDI 路径把命中率拉到 ~100%，让刚交付的入口真正可用。R7.5（depth/stencil + compute dispatch）/ R7.6 子项 A·B（bindings + uniforms）排在其后，属体验补完。
+draw call → shader IR 的 7 段映射在 macOS Metal replay 框架下技术可达且已 7/7 走通：R7.1（边界）+ R7.2（pipeline RPS↔shader）+ R7.3（frame-list swizzle-first：encoder timeline + draw→RPS_key）+ R7.4（shader-of-rps 一行命令出 metallib/AIR/IR）+ R7.6-C（shader-of-drawcall 薄封装 — 两命令合一）+ **R7.7（disasm + SDI module.bc fallback — 把 LYSK 主样本 IR 命中率从 3.1% 拉到 100%）** 六个 chunk 端到端串通，CLI 形态上"draw_index → IR" 是真正的一行命令，**且在任何 PlayCover 启动过的 app trace 上都能产出真实 LLVM IR**。LYSK 主基线 + reference_test_inject compute-only 两路回归通过，集成测试 102/102。**当前最高优先级切换为 R7.5**（depth/stencil export + compute dispatch 计数）— 新能力补完，1–1.5 天合计；R7.6 子项 A·B（bindings + uniforms）排在其后。

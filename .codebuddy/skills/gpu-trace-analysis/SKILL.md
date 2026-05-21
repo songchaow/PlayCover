@@ -16,9 +16,10 @@ A self-contained CLI (`gputrace_replay_bridge`) plus a Python wrapper (`gputrace
 | Headless replay | `replay` | Whether the trace itself reproduces; per-call timing; resource snapshot |
 | Texture / buffer inspection | `replay --list-resources --export` | Are render targets blank? Is uniform data sane? Do values contain NaN? |
 | Pipeline / shader dump + RPS↔shader correlation | `pipeline` | Which library compiled which function; metallib + AIR for offline inspection; **R7.2: each RPS now reports its vertex/fragment function keys, library keys, color/depth/stencil attachment formats, write masks, and raster sample count — without requiring an external swizzle probe** |
-| RPS → shader IR reverse-lookup | `shader-of-rps` | **R7.4: one command from a render-pipeline-state key to its fragment/vertex `MTLFunction`, the owning metallib, the PlayTools cacheKey, and (with `--with-ir`) the disassembled LLVM IR `.ll` file** |
+| RPS → shader IR reverse-lookup | `shader-of-rps` | **R7.4: one command from a render-pipeline-state key to its fragment/vertex `MTLFunction`, the owning metallib, the PlayTools cacheKey, and (with `--with-ir`) the disassembled LLVM IR `.ll` file. R7.7: when MTLLibrary lacks `bitcodeData`, transparently falls back to PlayCover ShaderDebugInfo `module.bc` — IR coverage on LYSK rises from ~3% (AIR-only) to ~100%.** |
 | Frame timeline (encoder/draw) + draw→RPS map | `frame-list` | **R7.3: command buffers, render/compute/blit encoders with attachment summaries, every draw with primitive type / vertex / instance counts and its bound RPS_key. Pipe `draw_to_rps_map[].rps_key` directly into `shader-of-rps --with-ir` for "draw N → shader IR" in two commands.** |
-| **draw_index → shader IR (one-shot)** | `shader-of-drawcall` (Python wrapper) | **R7.6-C: thin封装 — `frame-list → draw_to_rps_map[draw_index] → shader-of-rps`. Mirrors `shader-of-rps` for the "I know the draw index, give me the shader" mental model. OOR draw_index returns structured `draw_index_out_of_range` (exit 12); compute-only traces gracefully report `draw_count=0`. Wrapper-only — bridge unchanged.** |
+| **draw_index → shader IR (one-shot)** | `shader-of-drawcall` (Python wrapper) | **R7.6-C: thin封装 — `frame-list → draw_to_rps_map[draw_index] → shader-of-rps`. Mirrors `shader-of-rps` for the "I know the draw index, give me the shader" mental model. OOR draw_index returns structured `draw_index_out_of_range` (exit 12); compute-only traces gracefully report `draw_count=0`. Wrapper-only — bridge unchanged. Combined with R7.7 SDI fallback, `--with-ir` now produces a real `.ll` for ~100% of LYSK draws.** |
+| **library_key → IR (direct)** | `disasm` | **R7.7: `disasm <trace> <lib_key> --with-ir` skips the RPS detour and goes straight library_key → metallib → cacheKey → bitcodeData/SDI module.bc → llvm-dis. Optional `--key-type rps` forwards to `shader-of-rps`. Includes the same SDI fallback used by `shader-of-rps`.** |
 | Shader hot-replace | `shader --verify` | Bisect: replace a suspect shader with a corrected/instrumented one and re-replay |
 | Replay configuration | `config` | Toggle Metal validation, optimization, unused-resource loading to isolate causes |
 
@@ -147,11 +148,19 @@ RPS=$(jq -r '.draw_to_rps_map[0].rps_key' /tmp/foo-frame.json)
 
 # Or: one-shot via the R7.6-C thin wrapper — same byte-level metallib/AIR output,
 # but no manual jq plumbing. Best entry point when you know "I want draw N's shader".
+# As of R7.7, this also produces .ll IR via SDI module.bc fallback when the
+# library has no bitcodeData (LYSK: 3% AIR + 97% SDI = ~100% IR coverage).
 python3 "$SKILL_DIR/scripts/gputrace_replay_wrapper.py" \
     shader-of-drawcall /tmp/foo.gputrace 0 --with-ir --output-dir /tmp/foo-shaders
+
+# Or: directly disassemble a library_key (skip the RPS detour) — also tries
+# bitcodeData first then PlayCover SDI module.bc fallback.
+"$BRIDGE" disasm /tmp/foo.gputrace 374 --with-ir --output-dir /tmp/foo-shaders
 ```
 
-If `--with-ir` returns `ir_error: "no_air_bitcode"`, the library is metallib-only — that's expected for many `_MTLLibrary` instances. The metallib itself is still exported and you can use the `cache_key_metallib` to find the PlayCover ShaderDebugInfo entry: `~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/<bundle>/<cache_key>/`. See `references/investigation-playbook.md` §3 for the cacheKey algorithm and full SDI cross-reference path.
+If `--with-ir` returns `ir_error: "no_air_bitcode_and_no_sdi"` (R7.7), neither the in-trace `bitcodeData` nor PlayCover's `ShaderDebugInfo` cache could provide LLVM bitcode — usually because the SDI cache was never populated. Run the app once through PlayCover to populate it, or use the metallib directly. The legacy `no_air_bitcode` error is gone in R7.7 (replaced by the auto-fallback path).
+
+The exported `cache_key_metallib` follows PlayCover's convention; the skill's IR-emission path will scan `~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/<bundle>/<cache_key>/modules/<hash>/module.bc` automatically. See `references/investigation-playbook.md` §3 for the cacheKey algorithm and full SDI cross-reference path.
 
 ### Known blind spots (still on the R7 backlog)
 
@@ -160,7 +169,6 @@ These are limitations of the current skill — agents should not waste cycles tr
 - **Per-encoder attachment binding tables (vertex/fragment buffers + textures bound on each draw)** — `frame-list` exposes encoder-level color/depth/stencil attachments and per-draw RPS / vertex / instance counts, but does NOT yet record `setVertexBuffer:` / `setFragmentTexture:` / inline `setVertexBytes:` calls. R7.6 子项 A (planned).
 - **Depth/stencil texture export** — `replay --export` refuses depth/stencil; sample inside a shader and write to a color target as a workaround. R7.5 (planned).
 - **Uniform / cbuffer inspector** — no API to read what was bound at draw time (depends on the binding tables above). R7.6 子项 B (planned).
-- **Bare cacheKey → SDI module.bc → IR via `disasm`** — the algorithm is known (see investigation playbook §3.1) but not yet exposed as a single bridge subcommand. R7.7 (planned).
 - **Per-encoder GPU timing** — `frame-list --with-timing` reads `MTLCommandBuffer.GPUStartTime/GPUEndTime`, but on traces whose internal CBs never `commit` these properties remain 0 / null. The flag is provided for forward compatibility; for accurate host-side per-segment timing use `replay --playto N` bisection (see playbook Pattern 4).
 
 If a user asks for any of the above, explain the gap and offer the closest available substitute (typically: `pipeline` to find the suspect library, then `shader-of-rps --with-ir` for IR; or `replay --playto` for bisection).
@@ -182,9 +190,9 @@ bash "$SKILL_DIR/scripts/test_bridge.sh"
 GPUTRACE_PATH=/path/to/sample.gputrace bash "$SKILL_DIR/scripts/test_bridge.sh"
 ```
 
-29 + 38 R7-specific assertions cover argument parsing, exit codes, JSON shape, codesign validity, R7.1 bounds checking + texture/buffer metadata, R7.2 RPS↔shader correlation, R7.3 frame-list timeline + draw_to_rps_map invariants + frame-list→shader-of-rps end-to-end chain, R7.4 `shader-of-rps` reverse lookup, **R7.6-C `shader-of-drawcall` wrapper byte-level equivalence + OOR + module-API contract**, and (when GPUTRACE_PATH is set) a live replay/pipeline/config/shader-of-rps/frame-list/shader-of-drawcall sextet — 88 total assertions on a render-bearing trace.
+29 + 38 R7-specific assertions cover argument parsing, exit codes, JSON shape, codesign validity, R7.1 bounds checking + texture/buffer metadata, R7.2 RPS↔shader correlation, R7.3 frame-list timeline + draw_to_rps_map invariants + frame-list→shader-of-rps end-to-end chain, R7.4 `shader-of-rps` reverse lookup, R7.6-C `shader-of-drawcall` wrapper byte-level equivalence + OOR + module-API contract, **R7.7 `disasm` + SDI module.bc fallback (verifies `ir_source=sdi_module_bc`, deprecated `no_air_bitcode` is gone, lib & rps key-type both produce IR)**, and (when GPUTRACE_PATH is set) a live replay/pipeline/config/shader-of-rps/frame-list/shader-of-drawcall/disasm sextet — **102 total assertions** on a render-bearing trace.
 
-For multi-sample regression (so the suite doesn't only validate against one trace shape), point `GPUTRACE_PATH` at a compute-only trace too — `shader-of-drawcall`'s OOR + `frame-list`'s `draw_count=0` paths are the parts that exercise that branch. Pre-existing R7.3 assertions that assume render draws will fail on compute-only traces, which is expected; the R7.6-C assertions themselves remain green.
+For multi-sample regression (so the suite doesn't only validate against one trace shape), point `GPUTRACE_PATH` at a compute-only trace too — `shader-of-drawcall`'s OOR + `frame-list`'s `draw_count=0` paths and `disasm` SDI graceful "no_air_bitcode_and_no_sdi" branch all exercise that branch. Pre-existing R7.3 assertions that assume render draws will fail on compute-only traces, which is expected.
 
 ## Reference files
 

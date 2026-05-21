@@ -216,8 +216,61 @@ class ShaderOfRpsResult:
     ir_dis_path: Optional[str] = None
     ir_error: Optional[str] = None
     ir_hint: Optional[str] = None
+    # R7.7 — IR source provenance + SDI fallback metadata.
+    # ir_source: "bitcodeData" (R7.4 legacy AIR path) or "sdi_module_bc"
+    # (R7.7 PlayCover ShaderDebugInfo fallback). Absent when no IR was emitted.
+    ir_source: Optional[str] = None
+    sdi_module_bc_path: Optional[str] = None       # local copy in output_dir
+    sdi_module_bc_size: Optional[int] = None
+    sdi_bundle_id: Optional[str] = None            # which app the SDI came from
+    sdi_module_hash: Optional[str] = None          # sha256(bitcode) folder name
+    sdi_source_path: Optional[str] = None          # original SDI path on disk
     error: Optional[str] = None
     hint: Optional[str] = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class DisasmResult:
+    """
+    R7.7: ``disasm`` 子命令结果 — 直接 library_key (默认) 或 RPS_key 反汇编。
+
+    library 路径下输出 ``library_metallib_*`` + ``cache_key_metallib`` +
+    ``library_air_*`` 或 ``sdi_module_bc_*`` + ``ir_ll_*``，与 ``shader-of-rps``
+    共享 R7.7 IR-emission helper (``ir_source`` 区分 bitcodeData / sdi_module_bc)。
+
+    rps 路径下行为等价于 ``shader-of-rps``（bridge 内部直接转发），
+    JSON ``command`` 字段为 ``shader-of-rps``；wrapper 把 ``key_type`` 标记为
+    ``rps`` 以便区分。
+    """
+    trace_path: str
+    key: int
+    key_type: str  # "library" | "rps"
+    output_dir: str
+    # library 路径独有（rps 路径下从嵌入的 shader_of_rps 读）
+    library_key: Optional[int] = None
+    library_metallib_path: Optional[str] = None
+    library_metallib_size: Optional[int] = None
+    cache_key_metallib: Optional[str] = None
+    library_air_path: Optional[str] = None
+    library_air_size: Optional[int] = None
+    # R7.7 SDI fallback fields
+    ir_source: Optional[str] = None
+    sdi_module_bc_path: Optional[str] = None
+    sdi_module_bc_size: Optional[int] = None
+    sdi_bundle_id: Optional[str] = None
+    sdi_module_hash: Optional[str] = None
+    sdi_source_path: Optional[str] = None
+    ir_ll_path: Optional[str] = None
+    ir_ll_size: Optional[int] = None
+    ir_dis_path: Optional[str] = None
+    ir_error: Optional[str] = None
+    ir_hint: Optional[str] = None
+    # rps 路径的嵌入结果（key_type=="rps" 时为 ShaderOfRpsResult）
+    shader_of_rps: Optional["ShaderOfRpsResult"] = None
+    error: Optional[str] = None
+    hint: Optional[str] = None
+    warning: Optional[str] = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -786,8 +839,154 @@ class ReplayBridge:
             ir_dis_path=data.get("ir_dis_path"),
             ir_error=data.get("ir_error"),
             ir_hint=data.get("ir_hint"),
+            # R7.7
+            ir_source=data.get("ir_source"),
+            sdi_module_bc_path=data.get("sdi_module_bc_path"),
+            sdi_module_bc_size=data.get("sdi_module_bc_size"),
+            sdi_bundle_id=data.get("sdi_bundle_id"),
+            sdi_module_hash=data.get("sdi_module_hash"),
+            sdi_source_path=data.get("sdi_source_path"),
             error=data.get("error"),
             hint=data.get("hint"),
+            raw=data,
+        )
+
+    def disasm(
+        self,
+        trace_path: str | Path,
+        key: int,
+        *,
+        key_type: str = "library",
+        stage: str = "fragment",
+        with_ir: bool = False,
+        output_dir: Optional[str | Path] = None,
+        timeout: float = 300.0,
+    ) -> DisasmResult:
+        """
+        R7.7: 直接 ``library_key`` (默认) 或 ``rps_key`` 反汇编。
+
+        - ``key_type="library"``: 直接拿 ``MTLLibrary`` 的 metallib + cacheKey，
+          再走 R7.7 IR-emission helper（``bitcodeData`` 优先 → SDI module.bc fallback）。
+          适合在 ``pipeline`` 输出后直接对某个 library 反编译，免去先找 RPS。
+        - ``key_type="rps"``: bridge 内部转发到 ``shader-of-rps``，行为等价；
+          wrapper 把结果包装到 ``DisasmResult.shader_of_rps`` 内嵌字段。
+
+        Args:
+            trace_path: .gputrace bundle 路径
+            key: library_key (默认) 或 rps_key
+            key_type: 'library' (默认) 或 'rps'
+            stage: 仅 key_type='rps' 有效；'fragment' (默认) 或 'vertex'
+            with_ir: True 时调用 llvm-dis 产出 .ll IR 文件
+            output_dir: 导出目录 (None=系统临时目录)
+            timeout: 超时秒数
+
+        Returns:
+            DisasmResult — 软错误（如 library_not_found）通过 .error 字段暴露
+        """
+        if key_type not in ("library", "rps"):
+            raise ValueError(f"key_type must be 'library' or 'rps', got {key_type!r}")
+        if stage not in ("fragment", "vertex"):
+            raise ValueError(f"stage must be 'fragment' or 'vertex', got {stage!r}")
+        trace_path = self._validate_trace(trace_path)
+
+        args = ["disasm", str(trace_path), str(key), "--key-type", key_type]
+        if key_type == "rps":
+            args += ["--stage", stage]
+        if with_ir:
+            args.append("--with-ir")
+        if output_dir:
+            args += ["--output-dir", str(output_dir)]
+
+        data, _ = self._run(args, timeout=timeout)
+
+        # rps 路径下 bridge 输出 "command":"shader-of-rps"，字段格式与
+        # ShaderOfRpsResult 完全一致。我们包一层 DisasmResult 让上层调用方
+        # 不必区分两种 schema。
+        if key_type == "rps":
+            sor = ShaderOfRpsResult(
+                trace_path=data.get("trace_path", str(trace_path)),
+                rps_key=data.get("rps_key", key),
+                stage=data.get("stage", stage),
+                output_dir=data.get("output_dir", str(output_dir or "")),
+                rps_label=data.get("rps_label"),
+                function_key=data.get("function_key"),
+                function_name=data.get("function_name"),
+                library_key=data.get("library_key"),
+                library_metallib_path=data.get("library_metallib_path"),
+                library_metallib_size=data.get("library_metallib_size"),
+                library_air_path=data.get("library_air_path"),
+                library_air_size=data.get("library_air_size"),
+                cache_key_metallib=data.get("cache_key_metallib"),
+                ir_ll_path=data.get("ir_ll_path"),
+                ir_ll_size=data.get("ir_ll_size"),
+                ir_dis_path=data.get("ir_dis_path"),
+                ir_error=data.get("ir_error"),
+                ir_hint=data.get("ir_hint"),
+                ir_source=data.get("ir_source"),
+                sdi_module_bc_path=data.get("sdi_module_bc_path"),
+                sdi_module_bc_size=data.get("sdi_module_bc_size"),
+                sdi_bundle_id=data.get("sdi_bundle_id"),
+                sdi_module_hash=data.get("sdi_module_hash"),
+                sdi_source_path=data.get("sdi_source_path"),
+                error=data.get("error"),
+                hint=data.get("hint"),
+                raw=data,
+            )
+            return DisasmResult(
+                trace_path=data.get("trace_path", str(trace_path)),
+                key=key,
+                key_type="rps",
+                output_dir=data.get("output_dir", str(output_dir or "")),
+                # rps 路径下顶层产物镜像到 DisasmResult 同名字段，方便消费
+                library_key=data.get("library_key"),
+                library_metallib_path=data.get("library_metallib_path"),
+                library_metallib_size=data.get("library_metallib_size"),
+                cache_key_metallib=data.get("cache_key_metallib"),
+                library_air_path=data.get("library_air_path"),
+                library_air_size=data.get("library_air_size"),
+                ir_source=data.get("ir_source"),
+                sdi_module_bc_path=data.get("sdi_module_bc_path"),
+                sdi_module_bc_size=data.get("sdi_module_bc_size"),
+                sdi_bundle_id=data.get("sdi_bundle_id"),
+                sdi_module_hash=data.get("sdi_module_hash"),
+                sdi_source_path=data.get("sdi_source_path"),
+                ir_ll_path=data.get("ir_ll_path"),
+                ir_ll_size=data.get("ir_ll_size"),
+                ir_dis_path=data.get("ir_dis_path"),
+                ir_error=data.get("ir_error"),
+                ir_hint=data.get("ir_hint"),
+                shader_of_rps=sor,
+                error=data.get("error"),
+                hint=data.get("hint"),
+                raw=data,
+            )
+
+        # library 路径
+        return DisasmResult(
+            trace_path=data.get("trace_path", str(trace_path)),
+            key=key,
+            key_type="library",
+            output_dir=data.get("output_dir", str(output_dir or "")),
+            library_key=data.get("library_key", key),
+            library_metallib_path=data.get("library_metallib_path"),
+            library_metallib_size=data.get("library_metallib_size"),
+            cache_key_metallib=data.get("cache_key_metallib"),
+            library_air_path=data.get("library_air_path"),
+            library_air_size=data.get("library_air_size"),
+            ir_source=data.get("ir_source"),
+            sdi_module_bc_path=data.get("sdi_module_bc_path"),
+            sdi_module_bc_size=data.get("sdi_module_bc_size"),
+            sdi_bundle_id=data.get("sdi_bundle_id"),
+            sdi_module_hash=data.get("sdi_module_hash"),
+            sdi_source_path=data.get("sdi_source_path"),
+            ir_ll_path=data.get("ir_ll_path"),
+            ir_ll_size=data.get("ir_ll_size"),
+            ir_dis_path=data.get("ir_dis_path"),
+            ir_error=data.get("ir_error"),
+            ir_hint=data.get("ir_hint"),
+            error=data.get("error"),
+            hint=data.get("hint"),
+            warning=data.get("warning"),
             raw=data,
         )
 
@@ -1174,6 +1373,24 @@ def _cli_main():
     p_sod.add_argument("--output-dir", default=None,
                        help="Output directory passed through to shader-of-rps (default: system tmp)")
 
+    # disasm (R7.7)
+    p_disasm = subparsers.add_parser(
+        "disasm", parents=[parent],
+        help="Direct library_key (default) or rps_key disassembly + SDI module.bc fallback (R7.7)",
+    )
+    p_disasm.add_argument("trace", help="Path to .gputrace bundle")
+    p_disasm.add_argument("key", type=int,
+                          help="library_key (default) or rps_key (with --key-type rps)")
+    p_disasm.add_argument("--key-type", choices=["library", "rps"], default="library",
+                          help="Interpret <key> as library_key (default) or rps_key")
+    p_disasm.add_argument("--stage", choices=["fragment", "vertex"], default="fragment",
+                          help="Only used when --key-type=rps (default: fragment)")
+    p_disasm.add_argument("--with-ir", action="store_true",
+                          help="Run llvm-dis and emit a .ll file (uses bitcodeData first, "
+                               "falls back to PlayCover SDI module.bc — raises hit-rate ~3%% → ~100%% on LYSK)")
+    p_disasm.add_argument("--output-dir", default=None,
+                          help="Output directory (default: system tmp)")
+
     # config
     p_config = subparsers.add_parser("config", parents=[parent], help="Configuration control")
     p_config.add_argument("trace", help="Path to .gputrace bundle")
@@ -1280,6 +1497,21 @@ def _cli_main():
             # 与 shader-of-rps 同款 — 把链路上的结构化失败映射成 exit 11，让 shell 流水线
             # 不必解析 JSON 也能感知。OOR 单独走 except 分支映射到 exit 12。
             if result.error:
+                sys.exit(11)
+
+        elif args.command == "disasm":
+            disasm_result = bridge.disasm(
+                args.trace,
+                args.key,
+                key_type=args.key_type,
+                stage=args.stage,
+                with_ir=args.with_ir,
+                output_dir=args.output_dir,
+                timeout=args.timeout,
+            )
+            print(json.dumps(disasm_result.raw, indent=indent))
+            # 与 shader-of-rps 同款：library_not_found 等结构化错误映射 exit 11
+            if disasm_result.error:
                 sys.exit(11)
 
         elif args.command == "config":

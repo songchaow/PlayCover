@@ -54,8 +54,8 @@ if echo "$OUTPUT" | grep -q '"tool"'; then pass "JSON has 'tool' field"; else fa
 if echo "$OUTPUT" | grep -q '"commands"'; then pass "JSON has 'commands' array"; else fail "missing 'commands'"; fi
 if echo "$OUTPUT" | grep -q '"version"'; then pass "JSON has 'version' field"; else fail "missing 'version'"; fi
 
-# Check all 6 commands listed
-for cmd in help replay pipeline shader shader-of-rps frame-list config; do
+# Check all 8 commands listed
+for cmd in help replay pipeline shader shader-of-rps frame-list disasm config; do
     if echo "$OUTPUT" | grep -q "\"$cmd\""; then
         pass "commands contains '$cmd'"
     else
@@ -73,7 +73,7 @@ if [ "$rc" -eq 1 ]; then pass "exit code = 1"; else fail "exit code = $rc (expec
 
 # --- Test 4: Subcommands without required args → exit code 1 ---
 echo "[T4] Subcommands without required args → exit code 1"
-for cmd in replay pipeline shader shader-of-rps frame-list config; do
+for cmd in replay pipeline shader shader-of-rps frame-list disasm config; do
     set +e
     "$BRIDGE" "$cmd" >/dev/null 2>&1
     rc=$?
@@ -386,6 +386,118 @@ sys.exit(0 if ok==3 else 1)
     else
         fail "wrapper not found at $WRAPPER"
     fi
+
+    # T7p: R7.7 — disasm subcommand + SDI module.bc fallback (raises IR hit-rate ~3% → ~100% on LYSK)
+    echo "  [T7p] R7.7 disasm + SDI module.bc fallback"
+    # T7p-1: disasm <library_key> --with-ir 直接产 metallib + cacheKey
+    # 选择第一个 library_key（来自 pipeline 输出），保证健壮性
+    PIPELINE_DIR=$(mktemp -d)
+    set +e
+    "$BRIDGE" pipeline "$GPUTRACE_PATH" "$PIPELINE_DIR" >"$PIPELINE_DIR/pipe.json" 2>/dev/null
+    rc=$?
+    set -e
+    LIB_KEY=$(python3 -c "
+import json
+d = json.load(open('$PIPELINE_DIR/pipe.json'))
+libs = d.get('libraries', [])
+# 取第一个有 metallib_file 的 library
+for L in libs:
+    if L.get('metallib_file'):
+        print(L['key'])
+        break
+" 2>/dev/null)
+    if [ -n "$LIB_KEY" ]; then
+        pass "derived first library_key=$LIB_KEY for disasm test"
+        TMP_DISASM=$(mktemp -d)
+        set +e
+        "$BRIDGE" disasm "$GPUTRACE_PATH" "$LIB_KEY" --output-dir "$TMP_DISASM" >"$TMP_DISASM/r.json" 2>/dev/null
+        rc=$?
+        set -e
+        if [ "$rc" -eq 0 ]; then pass "disasm <lib_key> exit = 0"; else fail "disasm <lib_key> exit = $rc"; fi
+        # 必须输出 cache_key_metallib + library_metallib_path
+        if grep -q '"cache_key_metallib"' "$TMP_DISASM/r.json"; then pass "disasm output has cache_key_metallib"; else fail "disasm output missing cache_key_metallib"; fi
+        if grep -q '"library_metallib_path"' "$TMP_DISASM/r.json"; then pass "disasm output has library_metallib_path"; else fail "disasm output missing library_metallib_path"; fi
+        rm -rf "$TMP_DISASM"
+    else
+        fail "could not derive a library_key from pipeline output"
+    fi
+
+    # T7p-2: disasm <library_key> --with-ir，对一个无 AIR 的 library，验证 SDI fallback 命中
+    # 选第一个 没有 bitcode_file 的 library 作为 SDI fallback 测试目标
+    NO_AIR_LIB=$(python3 -c "
+import json
+d = json.load(open('$PIPELINE_DIR/pipe.json'))
+for L in d.get('libraries', []):
+    if not L.get('bitcode_file') and L.get('metallib_file'):
+        print(L['key'])
+        break
+" 2>/dev/null)
+    if [ -n "$NO_AIR_LIB" ]; then
+        TMP_SDI=$(mktemp -d)
+        set +e
+        "$BRIDGE" disasm "$GPUTRACE_PATH" "$NO_AIR_LIB" --with-ir --output-dir "$TMP_SDI" >"$TMP_SDI/r.json" 2>/dev/null
+        rc=$?
+        set -e
+        if [ "$rc" -eq 0 ]; then pass "disasm --with-ir on no-AIR lib exit = 0"; else fail "disasm --with-ir exit = $rc"; fi
+        # 命中 SDI 时应有 ir_source=sdi_module_bc + ir_ll_path
+        IR_SOURCE=$(python3 -c "import json; d=json.load(open('$TMP_SDI/r.json')); print(d.get('ir_source',''))" 2>/dev/null)
+        if [ "$IR_SOURCE" = "sdi_module_bc" ]; then
+            pass "ir_source = sdi_module_bc (R7.7 fallback hit)"
+            if grep -q '"ir_ll_path"' "$TMP_SDI/r.json"; then pass "SDI fallback produced .ll"; else fail "SDI hit but no ir_ll_path"; fi
+            if grep -q '"sdi_bundle_id"' "$TMP_SDI/r.json"; then pass "ir output has sdi_bundle_id"; else fail "missing sdi_bundle_id"; fi
+        elif python3 -c "import json,sys; d=json.load(open('$TMP_SDI/r.json')); sys.exit(0 if d.get('ir_error')=='no_air_bitcode_and_no_sdi' else 1)"; then
+            # 在 SDI 缓存被清空的环境下，断言降级为"软失败结构正确即可"
+            pass "no SDI cache for this lib_key; got structured no_air_bitcode_and_no_sdi (acceptable)"
+        else
+            fail "ir_source unexpected (got '$IR_SOURCE')"
+        fi
+        rm -rf "$TMP_SDI"
+    else
+        echo "    note: all libs have AIR; skipping SDI fallback assertion"
+    fi
+
+    # T7p-3: disasm --key-type rps 路径转发到 shader-of-rps
+    if [ -n "${CHAIN_RPS:-}" ]; then
+        TMP_RPS=$(mktemp -d)
+        set +e
+        "$BRIDGE" disasm "$GPUTRACE_PATH" "$CHAIN_RPS" --key-type rps --output-dir "$TMP_RPS" >"$TMP_RPS/r.json" 2>/dev/null
+        rc=$?
+        set -e
+        if [ "$rc" -eq 0 ]; then pass "disasm --key-type rps exit = 0"; else fail "disasm --key-type rps exit = $rc"; fi
+        # 转发后 command 字段应为 shader-of-rps
+        if grep -q '"command":"shader-of-rps"' "$TMP_RPS/r.json"; then pass "disasm rps forwards to shader-of-rps"; else fail "disasm rps did not forward correctly"; fi
+        rm -rf "$TMP_RPS"
+    else
+        echo "    note: no CHAIN_RPS available; skipping rps-key forward test"
+    fi
+
+    # T7p-4: shader-of-rps --with-ir 在原本 no_air_bitcode 的 RPS 上现在透明命中 SDI
+    # 复用 CHAIN_RPS（来自 frame-list draw[0]）— LYSK 上该 RPS 的 library 通常没有 AIR
+    if [ -n "${CHAIN_RPS:-}" ]; then
+        TMP_SOR_SDI=$(mktemp -d)
+        set +e
+        "$BRIDGE" shader-of-rps "$GPUTRACE_PATH" "$CHAIN_RPS" --with-ir --output-dir "$TMP_SOR_SDI" >"$TMP_SOR_SDI/r.json" 2>/dev/null
+        rc=$?
+        set -e
+        if [ "$rc" -eq 0 ]; then pass "shader-of-rps --with-ir on draw[0] RPS exit = 0"; else fail "shader-of-rps --with-ir exit = $rc"; fi
+        # 不应再返回旧的 no_air_bitcode；要么 ir_source=bitcodeData/sdi_module_bc，要么是 no_air_bitcode_and_no_sdi
+        if python3 -c "
+import json,sys
+d=json.load(open('$TMP_SOR_SDI/r.json'))
+ir_err = d.get('ir_error')
+ir_src = d.get('ir_source')
+# 验收：不再返回旧的 no_air_bitcode（应替换为 no_air_bitcode_and_no_sdi 或直接成功）
+if ir_err == 'no_air_bitcode':
+    sys.exit(1)
+sys.exit(0)
+" 2>/dev/null; then
+            pass "shader-of-rps no longer returns deprecated 'no_air_bitcode'"
+        else
+            fail "shader-of-rps still returns deprecated 'no_air_bitcode' (R7.7 fallback not active)"
+        fi
+        rm -rf "$TMP_SOR_SDI"
+    fi
+    rm -rf "$PIPELINE_DIR"
 else
     echo ""
     echo "[INFO] Skipping live trace tests (set GPUTRACE_PATH to enable)"

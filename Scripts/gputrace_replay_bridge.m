@@ -8,8 +8,9 @@
  *   replay         — headless replay（playAll），输出 JSON 摘要
  *   pipeline       — library 枚举 + metallib/AIR 导出 + RPS↔shader 关联（R7.2）
  *   shader         — setLibrary:forKey: 热替换 + 验证（R6.1d）
- *   shader-of-rps  — 通过 RPS_key 反查 fragment/vertex shader 并可选导出 IR（R7.4）
+ *   shader-of-rps  — 通过 RPS_key 反查 fragment/vertex shader 并可选导出 IR（R7.4，R7.7 SDI fallback）
  *   frame-list     — encoder 时间序列 + draw→RPS 映射 + per-cb timing（R7.3）
+ *   disasm         — 直接 library_key/RPS_key 反汇编 + SDI module.bc fallback（R7.7）
  *   config         — 调用链控制 + validation 全局变量（R6.1e）
  *
  * 编译：
@@ -23,6 +24,7 @@
  *   ./gputrace_replay_bridge shader <path-to-.gputrace> <library_key> <metallib_path>
  *   ./gputrace_replay_bridge shader-of-rps <path-to-.gputrace> <rps_key> [--stage fragment|vertex] [--with-ir] [--output-dir DIR]
  *   ./gputrace_replay_bridge frame-list <path-to-.gputrace> [--with-draws] [--no-draws] [--with-timing]
+ *   ./gputrace_replay_bridge disasm <path-to-.gputrace> <key> [--key-type rps|library] [--stage fragment|vertex] [--with-ir] [--output-dir DIR]
  *   ./gputrace_replay_bridge config <path-to-.gputrace> [key=value ...]
  */
 
@@ -402,15 +404,16 @@ static void replay_context_cleanup(void) {
 static int cmd_help(int argc, const char *argv[]) {
     JSON_BEGIN();
     JSON_KV_STR("tool", "gputrace_replay_bridge");
-    JSON_KV_STR("version", "0.4.0");
+    JSON_KV_STR("version", "0.5.0");
     JSON_SEP();
     printf("\"commands\":[");
     printf("{\"name\":\"help\",\"description\":\"Show available commands\"}");
     printf(",{\"name\":\"replay\",\"description\":\"Headless replay with playAll/playTo + resource enumeration/export. Always reports total_call_count; --playto N is bounds-checked and returns error \\\"playto_out_of_range\\\" instead of crashing when N > total_call_count.\",\"usage\":\"replay <.gputrace> [--bounds] [--playto N] [--list-resources] [--export ID output_path]\"}");
     printf(",{\"name\":\"pipeline\",\"description\":\"Library enumeration + metallib/AIR export + RPS↔shader correlation (vertex/fragment function/library key + attachment summary captured via method swizzling).\",\"usage\":\"pipeline <.gputrace> [output_dir]\"}");
     printf(",{\"name\":\"shader\",\"description\":\"Hot-replace library via setLibrary:forKey:\",\"usage\":\"shader <.gputrace> <lib_key> <metallib_path>\"}");
-    printf(",{\"name\":\"shader-of-rps\",\"description\":\"Reverse-lookup the fragment/vertex shader of a render pipeline state. Reuses the pipeline-subcommand swizzle to map RPS_key -> function_key -> library_key -> metallib + (optionally) llvm-dis to .ll IR.\",\"usage\":\"shader-of-rps <.gputrace> <rps_key> [--stage fragment|vertex] [--with-ir] [--output-dir DIR]\"}");
+    printf(",{\"name\":\"shader-of-rps\",\"description\":\"Reverse-lookup the fragment/vertex shader of a render pipeline state. Reuses the pipeline-subcommand swizzle to map RPS_key -> function_key -> library_key -> metallib + (optionally) llvm-dis to .ll IR. R7.7: auto-falls-back to PlayCover SDI module.bc when MTLLibrary lacks bitcodeData.\",\"usage\":\"shader-of-rps <.gputrace> <rps_key> [--stage fragment|vertex] [--with-ir] [--output-dir DIR]\"}");
     printf(",{\"name\":\"frame-list\",\"description\":\"Enumerate command buffers / encoders / draw calls captured during replay and map each draw to its render pipeline state. Outputs a tree (command_buffers[].encoders[].draws[]) plus a flat draw_to_rps_map[] view. Optional per-cb GPU timing.\",\"usage\":\"frame-list <.gputrace> [--with-draws] [--no-draws] [--with-timing]\"}");
+    printf(",{\"name\":\"disasm\",\"description\":\"Direct library-key (default) or RPS-key disassembly. Library path: looks up library_key -> metallib + cacheKey + (optionally) IR. Tries bitcodeData first then PlayCover SDI module.bc fallback (R7.7), so libraries without bitcode still produce .ll. Use --key-type rps to forward to shader-of-rps.\",\"usage\":\"disasm <.gputrace> <key> [--key-type rps|library] [--stage fragment|vertex] [--with-ir] [--output-dir DIR]\"}");
     printf(",{\"name\":\"config\",\"description\":\"Configuration control (call chain + validation)\",\"usage\":\"config <.gputrace> [key=value ...]\"}");
     printf("]");
     JSON_END();
@@ -2292,6 +2295,208 @@ static NSString *find_llvm_dis(void) {
     return nil;
 }
 
+// ============================================================
+#pragma mark - R7.7: SDI module.bc path lookup
+// ============================================================
+//
+// PlayCover persists "ShaderDebugInfo" extractions under
+//   ~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/
+//     <bundle_id>/<cacheKey>/modules/<hash>/module.bc
+// where:
+//   - <bundle_id>  is the running app's bundle id (e.g. "com.papegames.lysk")
+//   - <cacheKey>   = compute_playtools_cache_key(metallib_bytes)
+//                   (already implemented above; identical to PlayTools algorithm)
+//   - <hash>       = sha256 of the LLVM bitcode module
+//   - <module.bc>  = LLVM bitcode (= what `bitcodeData` would have been if
+//                   the trace's MTLLibrary instance still carried the AIR).
+//
+// Most LYSK MTLLibrary objects do NOT have `bitcodeData` (LYSK measured: 3/96),
+// so falling back to the SDI path raises the IR hit-rate from ~3% to ~100%
+// for any binary that has been launched through PlayCover at least once.
+//
+// We deliberately scan all `<bundle_id>/` subdirectories and pick the first
+// matching <cacheKey>. This avoids needing to extract the bundle id from the
+// .gputrace bundle (which has no plain-text bundle id stored). The cacheKey
+// already includes the metallib byte length as a suffix, which makes
+// collisions across unrelated games statistically negligible.
+
+static NSString *sdi_root_path(void) {
+    NSString *home = NSHomeDirectory();
+    return [home stringByAppendingPathComponent:
+            @"Library/Containers/io.playcover.PlayCover/ShaderDebugInfo"];
+}
+
+// Locate the SDI module.bc for a given cacheKey.
+// Returns nil if not found. On success, fills *outBundleId and *outModuleHash
+// with the matching directory components (caller may pass NULL for either).
+//
+// Strategy:
+//   1. Iterate every <bundle_id> directory under SDI root.
+//   2. Check whether `<bundle_id>/<cacheKey>/modules/` exists.
+//   3. Pick the first <hash>/module.bc inside it.
+//
+// "Pick the first" is the documented R7.7 v1 strategy. For libraries with
+// multiple kernel variants under one cacheKey (rare) we may want to match by
+// metallib function name in v2.
+static NSString *find_sdi_module_bc(NSString *cacheKey,
+                                     NSString **outBundleId,
+                                     NSString **outModuleHash) {
+    if (!cacheKey) return nil;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *root = sdi_root_path();
+    NSError *err = nil;
+    NSArray<NSString *> *bundles = [fm contentsOfDirectoryAtPath:root error:&err];
+    if (!bundles) return nil;
+
+    for (NSString *bundle in bundles) {
+        // Skip dotfiles (.DS_Store etc.)
+        if ([bundle hasPrefix:@"."]) continue;
+        NSString *cacheDir = [[root stringByAppendingPathComponent:bundle]
+                              stringByAppendingPathComponent:cacheKey];
+        BOOL isDir = NO;
+        if (![fm fileExistsAtPath:cacheDir isDirectory:&isDir] || !isDir) continue;
+
+        NSString *modulesDir = [cacheDir stringByAppendingPathComponent:@"modules"];
+        if (![fm fileExistsAtPath:modulesDir isDirectory:&isDir] || !isDir) continue;
+
+        NSArray<NSString *> *hashes = [fm contentsOfDirectoryAtPath:modulesDir error:nil];
+        for (NSString *h in hashes) {
+            if ([h hasPrefix:@"."]) continue;
+            NSString *hashDir = [modulesDir stringByAppendingPathComponent:h];
+            if (![fm fileExistsAtPath:hashDir isDirectory:&isDir] || !isDir) continue;
+            NSString *bcPath = [hashDir stringByAppendingPathComponent:@"module.bc"];
+            if ([fm fileExistsAtPath:bcPath]) {
+                if (outBundleId)   *outBundleId   = bundle;
+                if (outModuleHash) *outModuleHash = h;
+                return bcPath;
+            }
+        }
+    }
+    return nil;
+}
+
+// ============================================================
+#pragma mark - R7.4 / R7.7: IR emission helper
+// ============================================================
+//
+// Centralised IR (.ll) production for `shader-of-rps` / `disasm`:
+//   1. If `airData` (= MTLLibrary.bitcodeData) is non-empty, write it as
+//      "library_<key>.air" and run llvm-dis on it (legacy R7.4 path,
+//      ir_source = "bitcodeData").
+//   2. Else, look up `<cacheKey>` under PlayCover's SDI root and copy the
+//      first matching module.bc into "library_<key>.module.bc"; run llvm-dis
+//      on it (R7.7 SDI fallback, ir_source = "sdi_module_bc").
+//   3. If neither path works, emit ir_error = "no_air_bitcode_and_no_sdi"
+//      (or "llvm_dis_not_found" / "llvm_dis_failed" as appropriate).
+//
+// Requires JSON_SEP / JSON_KV_* macros to be active (i.e. inside an open
+// JSON_BEGIN()/JSON_END() block in the caller).
+static void emit_ir_for_library(uint64_t lib_key,
+                                 NSData *airData,
+                                 NSString *cacheKey,
+                                 NSString *outputDir,
+                                 BOOL with_ir) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *bitcodePath = nil;       // file fed to llvm-dis
+    NSString *ir_source = nil;         // "bitcodeData" or "sdi_module_bc"
+
+    // R7.4 path: library has bitcodeData attached → write & emit AIR.
+    if (airData && [airData length] > 0) {
+        NSString *fn = [NSString stringWithFormat:@"library_%llu.air", lib_key];
+        NSString *path = [outputDir stringByAppendingPathComponent:fn];
+        if ([airData writeToFile:path atomically:YES]) {
+            JSON_KV_STR("library_air_path", [path UTF8String]);
+            JSON_KV_UINT("library_air_size", (uint64_t)[airData length]);
+            bitcodePath = path;
+            ir_source = @"bitcodeData";
+        }
+    }
+
+    // R7.7 path: bitcodeData missing → try SDI module.bc lookup.
+    if (!bitcodePath && cacheKey) {
+        NSString *bundleId = nil;
+        NSString *moduleHash = nil;
+        NSString *sdiPath = find_sdi_module_bc(cacheKey, &bundleId, &moduleHash);
+        if (sdiPath) {
+            // Copy SDI module.bc into outputDir as "library_<key>.module.bc"
+            // so callers get a stable path (the SDI cache may be cleared at
+            // any time; users want a reproducible artifact).
+            NSString *fn = [NSString stringWithFormat:@"library_%llu.module.bc", lib_key];
+            NSString *dst = [outputDir stringByAppendingPathComponent:fn];
+            // Remove any prior copy to make writeToFile/copy idempotent.
+            [fm removeItemAtPath:dst error:nil];
+            NSError *err = nil;
+            if ([fm copyItemAtPath:sdiPath toPath:dst error:&err]) {
+                JSON_KV_STR("sdi_module_bc_path", [dst UTF8String]);
+                NSDictionary *attr = [fm attributesOfItemAtPath:dst error:nil];
+                if (attr) JSON_KV_UINT("sdi_module_bc_size", (uint64_t)[attr fileSize]);
+                if (bundleId)   JSON_KV_STR("sdi_bundle_id", [bundleId UTF8String]);
+                if (moduleHash) JSON_KV_STR("sdi_module_hash", [moduleHash UTF8String]);
+                JSON_KV_STR("sdi_source_path", [sdiPath UTF8String]);
+                bitcodePath = dst;
+                ir_source = @"sdi_module_bc";
+            }
+        }
+    }
+
+    if (!with_ir) {
+        // Caller didn't ask for IR — only the metadata above is interesting.
+        if (ir_source) JSON_KV_STR("ir_source", [ir_source UTF8String]);
+        return;
+    }
+
+    if (!bitcodePath) {
+        // Neither bitcodeData nor SDI worked → terminal IR-error.
+        JSON_KV_STR("ir_error", "no_air_bitcode_and_no_sdi");
+        JSON_KV_STR("ir_hint",
+            "MTLLibrary has no bitcodeData and no PlayCover SDI module.bc "
+            "matched this cache_key (run the app once through PlayCover to "
+            "populate ShaderDebugInfo, or check that ~/Library/Containers/"
+            "io.playcover.PlayCover/ShaderDebugInfo/ exists).");
+        return;
+    }
+
+    if (ir_source) JSON_KV_STR("ir_source", [ir_source UTF8String]);
+
+    NSString *llvmDis = find_llvm_dis();
+    if (!llvmDis) {
+        JSON_KV_STR("ir_error", "llvm_dis_not_found");
+        JSON_KV_STR("ir_hint",
+            "install via 'brew install llvm' (Apple toolchain lacks llvm-dis)");
+        return;
+    }
+
+    NSString *llPath = [outputDir stringByAppendingPathComponent:
+                        [NSString stringWithFormat:@"library_%llu.ll", lib_key]];
+    NSTask *t = [[NSTask alloc] init];
+    t.launchPath = llvmDis;
+    t.arguments = @[bitcodePath, @"-o", llPath];
+    NSPipe *errPipe = [NSPipe pipe];
+    t.standardError = errPipe;
+    t.standardOutput = [NSPipe pipe];
+    int dis_rc = -1;
+    NSString *errStr = nil;
+    @try {
+        [t launch];
+        [t waitUntilExit];
+        dis_rc = t.terminationStatus;
+        NSData *d = [[errPipe fileHandleForReading] readDataToEndOfFile];
+        if (d.length) errStr = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+    } @catch (NSException *ex) {
+        errStr = [ex reason];
+    }
+    if (dis_rc == 0 && [fm fileExistsAtPath:llPath]) {
+        JSON_KV_STR("ir_ll_path", [llPath UTF8String]);
+        NSDictionary *attr = [fm attributesOfItemAtPath:llPath error:nil];
+        if (attr) JSON_KV_UINT("ir_ll_size", (uint64_t)[attr fileSize]);
+        JSON_KV_STR("ir_dis_path", [llvmDis UTF8String]);
+    } else {
+        JSON_KV_STR("ir_error", "llvm_dis_failed");
+        JSON_KV_INT("ir_dis_rc", dis_rc);
+        if (errStr) JSON_KV_STR("ir_dis_stderr", [errStr UTF8String]);
+    }
+}
+
 static int cmd_shader_of_rps(int argc, const char *argv[]) {
     if (argc < 2) {
         fprintf(stderr, "Usage: gputrace_replay_bridge shader-of-rps <.gputrace> <rps_key> [--stage fragment|vertex] [--with-ir] [--output-dir DIR]\n");
@@ -2457,78 +2662,191 @@ static int cmd_shader_of_rps(int argc, const char *argv[]) {
         @try { airData = [lib performSelector:bcSel]; } @catch (NSException *ex) {}
     }
 
+    NSString *cacheKey = nil;
     if (metallibData && [metallibData length] > 0) {
         NSString *fn = [NSString stringWithFormat:@"library_%llu.metallib", lib_key];
         NSString *path = [outputDir stringByAppendingPathComponent:fn];
         if ([metallibData writeToFile:path atomically:YES]) {
             JSON_KV_STR("library_metallib_path", [path UTF8String]);
             JSON_KV_UINT("library_metallib_size", (uint64_t)[metallibData length]);
-            NSString *cacheKey = compute_playtools_cache_key(metallibData);
+            cacheKey = compute_playtools_cache_key(metallibData);
             if (cacheKey) {
                 JSON_KV_STR("cache_key_metallib", [cacheKey UTF8String]);
             }
         }
     }
 
-    NSString *airPath = nil;
-    if (airData && [airData length] > 0) {
-        NSString *fn = [NSString stringWithFormat:@"library_%llu.air", lib_key];
-        airPath = [outputDir stringByAppendingPathComponent:fn];
-        if ([airData writeToFile:airPath atomically:YES]) {
-            JSON_KV_STR("library_air_path", [airPath UTF8String]);
-            JSON_KV_UINT("library_air_size", (uint64_t)[airData length]);
-        } else {
-            airPath = nil;
-        }
-    }
-
-    // --with-ir — pipe AIR bitcode through llvm-dis to produce .ll.
-    if (with_ir) {
-        if (!airPath) {
-            JSON_KV_STR("ir_error", "no_air_bitcode");
-        } else {
-            NSString *llvmDis = find_llvm_dis();
-            if (!llvmDis) {
-                JSON_KV_STR("ir_error", "llvm_dis_not_found");
-                JSON_KV_STR("ir_hint", "install via 'brew install llvm' (Apple toolchain lacks llvm-dis)");
-            } else {
-                NSString *llPath = [outputDir stringByAppendingPathComponent:
-                                    [NSString stringWithFormat:@"library_%llu.ll", lib_key]];
-                NSTask *t = [[NSTask alloc] init];
-                t.launchPath = llvmDis;
-                t.arguments = @[airPath, @"-o", llPath];
-                NSPipe *errPipe = [NSPipe pipe];
-                t.standardError = errPipe;
-                t.standardOutput = [NSPipe pipe];
-                int dis_rc = -1;
-                NSString *errStr = nil;
-                @try {
-                    [t launch];
-                    [t waitUntilExit];
-                    dis_rc = t.terminationStatus;
-                    NSData *d = [[errPipe fileHandleForReading] readDataToEndOfFile];
-                    if (d.length) errStr = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
-                } @catch (NSException *ex) {
-                    errStr = [ex reason];
-                }
-                if (dis_rc == 0 && [fm fileExistsAtPath:llPath]) {
-                    JSON_KV_STR("ir_ll_path", [llPath UTF8String]);
-                    NSDictionary *attr = [fm attributesOfItemAtPath:llPath error:nil];
-                    if (attr) JSON_KV_UINT("ir_ll_size", (uint64_t)[attr fileSize]);
-                    JSON_KV_STR("ir_dis_path", [llvmDis UTF8String]);
-                } else {
-                    JSON_KV_STR("ir_error", "llvm_dis_failed");
-                    JSON_KV_INT("ir_dis_rc", dis_rc);
-                    if (errStr) JSON_KV_STR("ir_dis_stderr", [errStr UTF8String]);
-                }
-            }
-        }
-    }
+    // R7.4 + R7.7: Centralised IR emission. Tries `bitcodeData` first, then
+    // PlayCover's SDI module.bc fallback (raises LYSK hit-rate ~3% → ~100%).
+    emit_ir_for_library(lib_key, airData, cacheKey, outputDir, with_ir);
 
     JSON_END();
     replay_context_cleanup();
     return EXIT_OK;
 }
+
+// ============================================================
+#pragma mark - Subcommand: disasm (R7.7)
+// ============================================================
+//
+//   disasm <.gputrace> <key> [--key-type rps|library] [--stage fragment|vertex]
+//                            [--with-ir] [--output-dir DIR]
+//
+// Direct library-key (default) or RPS-key reverse lookup with metallib export
+// + cacheKey + optional LLVM IR via `--with-ir`. Symmetric to `shader-of-rps`
+// but accepts a raw `library_key`, which is convenient after a `pipeline`
+// dump where the user already knows the library they want disassembled.
+//
+// Output schema (lib path):
+//   { "command":"disasm", "library_key": ..., "library_metallib_path": ...,
+//     "library_metallib_size": ..., "cache_key_metallib": ...,
+//     "library_air_path": ... | "sdi_module_bc_path": ...,
+//     "ir_source": "bitcodeData" | "sdi_module_bc",
+//     "ir_ll_path": ... }
+//
+// Output schema (rps path): forwards to shader_of_rps logic and produces the
+// same fields as `shader-of-rps`, plus "command":"disasm" and "key_type":"rps".
+
+static int cmd_disasm(int argc, const char *argv[]) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: gputrace_replay_bridge disasm <.gputrace> <key> [--key-type rps|library] [--stage fragment|vertex] [--with-ir] [--output-dir DIR]\n");
+        fprintf(stderr, "\nDirect library-key (default) or RPS-key disassembly. Tries `bitcodeData` first,\n"
+                        "then falls back to PlayCover's ShaderDebugInfo/<bundle>/<cacheKey>/modules/<hash>/module.bc\n"
+                        "to cover libraries whose MTLLibrary instance lacks bitcodeData.\n");
+        return EXIT_USAGE;
+    }
+
+    const char *trace_path = argv[0];
+    uint64_t target_key = strtoull(argv[1], NULL, 10);
+    const char *key_type = "library";   // default — `disasm` operates on library_key
+    const char *stage = "fragment";      // only used for --key-type rps
+    BOOL with_ir = NO;
+    const char *output_dir_c = NULL;
+
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--key-type") == 0 && i + 1 < argc) {
+            key_type = argv[++i];
+        } else if (strcmp(argv[i], "--stage") == 0 && i + 1 < argc) {
+            stage = argv[++i];
+        } else if (strcmp(argv[i], "--with-ir") == 0) {
+            with_ir = YES;
+        } else if (strcmp(argv[i], "--output-dir") == 0 && i + 1 < argc) {
+            output_dir_c = argv[++i];
+        }
+    }
+    if (strcmp(key_type, "library") != 0 && strcmp(key_type, "rps") != 0) {
+        fprintf(stderr, "[ERROR] --key-type must be 'library' or 'rps'\n");
+        return EXIT_USAGE;
+    }
+    if (strcmp(stage, "fragment") != 0 && strcmp(stage, "vertex") != 0) {
+        fprintf(stderr, "[ERROR] --stage must be 'fragment' or 'vertex'\n");
+        return EXIT_USAGE;
+    }
+
+    // RPS-key path: forward to cmd_shader_of_rps, but note the wrapper command
+    // name in JSON. The simplest correct implementation rebuilds argv and
+    // dispatches.
+    if (strcmp(key_type, "rps") == 0) {
+        // Build arg list for cmd_shader_of_rps. We pre-compute the count
+        // before allocating the array to keep things tidy.
+        const char *forwarded[12];
+        int n = 0;
+        forwarded[n++] = trace_path;
+        forwarded[n++] = argv[1];
+        forwarded[n++] = "--stage";
+        forwarded[n++] = stage;
+        if (with_ir)        forwarded[n++] = "--with-ir";
+        if (output_dir_c) {
+            forwarded[n++] = "--output-dir";
+            forwarded[n++] = output_dir_c;
+        }
+        // Note: cmd_shader_of_rps emits "command":"shader-of-rps". We add the
+        // mapping note by writing to stderr (informational) so that the
+        // single-JSON-line stdout contract is preserved.
+        fprintf(stderr, "[INFO] disasm --key-type=rps forwarding to shader-of-rps\n");
+        return cmd_shader_of_rps(n, forwarded);
+    }
+
+    // Library-key path: replay → fetch library → metallib + cacheKey + IR.
+    NSString *outputDir = output_dir_c
+        ? [NSString stringWithUTF8String:output_dir_c]
+        : NSTemporaryDirectory();
+    NSFileManager *fm = [NSFileManager defaultManager];
+    [fm createDirectoryAtPath:outputDir withIntermediateDirectories:YES attributes:nil error:nil];
+
+    // disasm <library_key> doesn't strictly need the RPS swizzle, but install
+    // it anyway so users can inspect a library that's only referenced via
+    // RPS metadata later in the same session.
+    rps_install_swizzles();
+
+    int rc = replay_context_init(trace_path);
+    if (rc != EXIT_OK) return rc;
+
+    int play_rc = -1;
+    @try {
+        play_rc = g_ctx.fn_playAll(g_ctx.controller);
+    } @catch (NSException *ex) {
+        fprintf(stderr, "[ERROR] playAll exception: %s\n", [[ex reason] UTF8String]);
+        replay_context_cleanup();
+        return EXIT_REPLAY_FAIL;
+    }
+    if (play_rc != 0) {
+        fprintf(stderr, "[ERROR] playAll failed (rc=%d)\n", play_rc);
+        replay_context_cleanup();
+        return EXIT_REPLAY_FAIL;
+    }
+
+    JSON_BEGIN();
+    JSON_KV_STR("command", "disasm");
+    JSON_KV_STR("trace_path", trace_path);
+    JSON_KV_STR("key_type", "library");
+    JSON_KV_UINT("library_key", target_key);
+    JSON_KV_STR("output_dir", [outputDir UTF8String]);
+
+    SEL libSel = @selector(libraryForKey:);
+    SEL ldcSel = NSSelectorFromString(@"libraryDataContents");
+    SEL bcSel  = NSSelectorFromString(@"bitcodeData");
+
+    id lib = ((id (*)(id, SEL, uint64_t))objc_msgSend)(g_ctx.objectMap, libSel, target_key);
+    if (!lib || ![lib conformsToProtocol:@protocol(MTLLibrary)]) {
+        JSON_KV_STR("error", "library_not_found");
+        JSON_KV_UINT("attempted_library_key", target_key);
+        JSON_END();
+        replay_context_cleanup();
+        return EXIT_SUBCMD_FAIL;
+    }
+
+    NSData *metallibData = nil;
+    if ([lib respondsToSelector:ldcSel]) {
+        @try { metallibData = [lib performSelector:ldcSel]; } @catch (NSException *ex) {}
+    }
+    NSData *airData = nil;
+    if ([lib respondsToSelector:bcSel]) {
+        @try { airData = [lib performSelector:bcSel]; } @catch (NSException *ex) {}
+    }
+
+    NSString *cacheKey = nil;
+    if (metallibData && [metallibData length] > 0) {
+        NSString *fn = [NSString stringWithFormat:@"library_%llu.metallib", target_key];
+        NSString *path = [outputDir stringByAppendingPathComponent:fn];
+        if ([metallibData writeToFile:path atomically:YES]) {
+            JSON_KV_STR("library_metallib_path", [path UTF8String]);
+            JSON_KV_UINT("library_metallib_size", (uint64_t)[metallibData length]);
+            cacheKey = compute_playtools_cache_key(metallibData);
+            if (cacheKey) JSON_KV_STR("cache_key_metallib", [cacheKey UTF8String]);
+        }
+    } else {
+        // Library exists in objectMap but exposes no metallib bytes — rare.
+        JSON_KV_STR("warning", "library_has_no_libraryDataContents");
+    }
+
+    emit_ir_for_library(target_key, airData, cacheKey, outputDir, with_ir);
+
+    JSON_END();
+    replay_context_cleanup();
+    return EXIT_OK;
+}
+
 
 // ============================================================
 #pragma mark - Subcommand: frame-list (R7.3)
@@ -3023,6 +3341,7 @@ static Subcommand g_commands[] = {
     { "shader",        cmd_shader },
     { "shader-of-rps", cmd_shader_of_rps },
     { "frame-list",    cmd_frame_list },
+    { "disasm",        cmd_disasm },
     { "config",        cmd_config },
     { NULL, NULL }
 };

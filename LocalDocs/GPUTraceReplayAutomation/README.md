@@ -22,6 +22,7 @@
 1. **统一 ObjC bridge CLI**（`Scripts/gputrace_replay_bridge.m`）— ✅ 已完成，5 子命令，Makefile 构建，集成测试 17/17 通过
 2. **Python CLI wrapper**（`Scripts/gputrace_replay_wrapper.py`）— ✅ 已完成，CLI + 模块双接口，dataclass 返回值
 3. **端到端验证链路** — ✅ 已完成，2 样本 × 5 子命令全部通过
+4. **GPU Trace 分析 skill**（`.codebuddy/skills/gpu-trace-analysis/`）— ✅ 已完成，自包含，含 SKILL.md + scripts/ + references/，从任意目录可独立运行
 
 ## 全局约束
 
@@ -95,6 +96,7 @@
 | `subdocs/20260520-R6.1-bridge-implementation.md` | **总是建议读取** — 已实现 bridge 的完整架构与子命令用法 | 5 子命令实现、JSON schema、构建方法、测试覆盖 |
 | `executions/20260521-R6.2a-e2e-dynamic-validation.md` | 在检查验证结果时按需读取 | 2 样本 × 5 子命令端到端验证详情、文件格式确认 |
 | `executions/20260521-R6.2b-python-cli-wrapper.md` | 在使用 Python wrapper 时按需读取 | wrapper 架构、API 签名、测试覆盖 |
+| `executions/20260521-skill-packaging.md` | 在改造 / 调用 gpu-trace-analysis skill 时按需读取 | skill 目录结构、自包含验证、设计决策 |
 | `subdocs/20260520-R5.2-shader-hot-replace.md` | 在扩展 shader 功能时按需读取 | 替换路径对比、Xcode UI 能力缺口 |
 | `subdocs/20260520-R5.3-shader-debug.md` | 在探索 IPC/debug 后续方向时按需读取 | ShaderDebug 类族、instrumented debug、IPC 探索结论 |
 | `subdocs/20260520-R5.4-configuration.md` | 在扩展 config 功能时按需读取 | 13 属性映射、Service 路径 |

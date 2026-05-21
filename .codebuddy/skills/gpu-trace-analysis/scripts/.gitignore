@@ -1,0 +1,4 @@
+# Build artifacts produced by setup.sh / Makefile.
+# Regenerate locally; never commit.
+gputrace_replay_bridge
+*.dSYM/

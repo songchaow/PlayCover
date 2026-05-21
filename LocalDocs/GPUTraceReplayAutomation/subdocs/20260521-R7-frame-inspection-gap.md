@@ -385,7 +385,18 @@ cache_key_metallib:    CB535F216771DC94_7888
 - 与 `shader-of-rps` 同款 exit-code 语义：软错误 exit 11、OOR exit 12、bridge 子进程错误透传原码，shell 流水线无需解析 JSON 即可分支。
 - compute-only OOR hint 单独定制（"trace has no render draws"），帮助用户区分"这个 trace 不该用 shader-of-drawcall"vs"我打错了 draw_index"两种心智错误。
 
-详见 `executions/20260521-R7.6-C-shader-of-drawcall-execution.md`。
+**为什么 wrapper-only（决策理由）**
+
+bridge 的 `frame-list` 与 `shader-of-rps` 都需要完整 `playAll`，整套链路两次 replay 不可避免。在 ObjC 端写一个新子命令可以省掉一次 Python 出入栈，但代价不成比例：①需要在 bridge 内**复刻** R7.3 swizzle 安装路径 + R7.4 cacheKey 算法 + llvm-dis 调用（实质是把两个子命令的实现合并成一个，~150 行胶水），代码冗余；②必须重构 bridge 内全局表（`g_draws_captured` / `g_rps_captured`）让两条逻辑并存；③集成测试需新加 bridge 端 + wrapper 端双份。wrapper-only 路径直接复用 R7.3 + R7.4 两个已测试过的 Python 入口，胶水代码 ~120 行，bridge 二进制零变更。性能差异（多一次 Python 进程出入 ~50ms）对单次调试任务可忽略；批量场景仍可用模块 API。本次结论：CLI 形态对称对用户认知没有显著增量价值，**`shader-of-drawcall` 不进 bridge ObjC 子命令**（除非未来 R7.6 子项 A/B 引入需要 bridge 内联落地的强约束）。
+
+**风险与盲点（已在文档中标注）**
+
+| 风险 | 缓解 |
+|---|---|
+| llvm-dis `.ll` 输出含 ModuleID 路径注释 → 字节比较失败 | 已知 — 是 llvm-dis 写 IR 头时把临时文件路径写进去的固定行为，非封装层 bug。文档 + cli-reference.md 明确说明；测试以"除 ModuleID 行外字节一致"为弱判据 |
+| compute-only trace 上 R7.3 原 T7l 健康路径断言 14 项 fail | 是 R7.3 trace-shape 假设盲点（断言隐式假设 `draw_count > 0`），不在 R7.6-C 责任范围；放进 R7.5 子项 B 顺手处理（断言改为"draw 类断言仅在有 render encoder 时启用"） |
+| LYSK trace 仅 3/96 lib 有 AIR → `--with-ir` 多数返回 `no_air_bitcode` | 是 R7.4 已知盲点，由 R7.7 通过 SDI module.bc 路径补足；wrapper 端把 `ir_error` 透传到顶层 `error` 字段，CLI exit 11 通知用户软失败 |
+| `shader-of-drawcall` 不在 bridge `help` 输出里 | 设计选择（wrapper-only）；wrapper `--help` 已包含；SKILL.md / cli-reference.md 同步说明 |
 
 ---
 

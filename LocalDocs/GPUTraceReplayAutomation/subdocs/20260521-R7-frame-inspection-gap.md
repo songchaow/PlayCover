@@ -29,20 +29,20 @@ LYSK trace 全景调查任务里按出现顺序遇到的限制（每条都是"�
 
 | # | 想做的事 | 限制 | 绕路代价 |
 |---|---|---|---|
-| 1 | 拿本帧 encoder/pass/draw call 时间序 | bridge 仅暴露 ObjectMap 静态视图，无 CommandBuffer/Encoder 列表 | `--playto N` 二分扫 RT SHA-1 反推（±2k–5k 精度） |
+| 1 | 拿本帧 encoder/pass/draw call 时间序 | ~~bridge 仅暴露 ObjectMap 静态视图，无 CommandBuffer/Encoder 列表~~ → ✅ R7.3：`frame-list` 输出 `command_buffers[].encoders[].draws[]` 树 + 扁平 `draw_to_rps_map[]`；`first/last_call_index` 来自 R7.1 controller offset | 已解决 |
 | 2 | 知道 `--playto N` 的 N 上限 | ~~越界直接 `SIGSEGV`，无 `bounds` / `total_call_count`~~ → ✅ R7.1：`--bounds` + `total_call_count` + OOR 结构化错误 | 已解决 |
-| 3 | 把 `playto N` 换算成 draw index | N 是 GPU API 调用编号，含大量 set\* | 完全无法精确换算 |
-| 4 | 直接读 `.gputrace` bundle 内 `capture` / `index` / `device-resources-*` | 私有二进制（`MTSP`/`xdic`），无文档 schema | 放弃 |
-| 5 | 解 `store0`（zlib 流）拿 shader 元数据 | 50 MB 内 90% 是本帧未派发的反射元数据 | 噪声大，仅能确认"shader 名存在过" |
-| 6 | 导 `DirectionalShadowDepth` / stencil | bridge 拒绝 depth/stencil getBytes | 完全无法可视化 ShadowMap / stencil bit |
-| 7 | 拿每个 encoder 的 attachments / bindings | 无 API | 用 RT format/尺寸/命名硬猜 |
+| 3 | 把 `playto N` 换算成 draw index | ~~N 是 GPU API 调用编号，含大量 set\*~~ → ✅ R7.3：每个 encoder 的 `[first_call_index, last_call_index]` + 每 draw 的 `call_index` 字段已落表，`playto N` 与 draw index 已可精确换算 | 已解决 |
+| 4 | 直接读 `.gputrace` bundle 内 `capture` / `index` / `device-resources-*` | 私有二进制（`MTSP`/`xdic`），无文档 schema | 放弃（绕过：R7.3 swizzle-first 路径完全不依赖落盘 schema） |
+| 5 | 解 `store0`（zlib 流）拿 shader 元数据 | 50 MB 内 90% 是本帧未派发的反射元数据 | 已绕过：R7.2/R7.3/R7.4 直接从内存对象拿 |
+| 6 | 导 `DirectionalShadowDepth` / stencil | bridge 拒绝 depth/stencil getBytes | ⏳ R7.5 子项 A |
+| 7 | 拿每个 encoder 的 attachments / bindings | ~~无 API~~ → ✅ R7.3：`frame-list` 每个 render encoder 输出 `color_attachments[]` / `depth_attachment` / `stencil_attachment`（reference 到 trace-internal resource id）。**bindings 仍待 R7.6 子项 A** | attachments 已解决；bindings 待 R7.6 |
 | 8 | 拿 RT 的 `storageMode` / `usage` / `framebufferOnly` / `memoryless` | ~~资源元数据仅 `width/height/depth/format/textureType/mip/label`~~ → ✅ R7.1：texture/buffer 元数据全补齐 | 已解决 |
-| 9 | 区分 buffer 用途（vertex/index/uniform/argbuf） | 仅 `length`+`label` | 靠命名经验 |
-| 10 | 看某个 draw 的 cbuffer 实际值 | 无 API | 无法回答 |
-| 11 | 区分 stencil bit | depth/stencil 不能导出 | 无法回答 |
-| 12 | 确认本帧无 compute dispatch | `compute_pipeline_states_count=0`，但 trace 元数据有大量 compute 函数名 | 仅能间接判断 |
+| 9 | 区分 buffer 用途（vertex/index/uniform/argbuf） | 仅 `length`+`label` | ⏳ R7.6 子项 A 落地后由 binding 表反推（如 `setVertexBuffer:atIndex:0` → vertex；`setFragmentBuffer:atIndex:K` 且 K 是已知 cbuffer 槽 → uniform） |
+| 10 | 看某个 draw 的 cbuffer 实际值 | 无 API | ⏳ R7.6 子项 B（`dump-uniforms`） |
+| 11 | 区分 stencil bit | depth/stencil 不能导出 | ⏳ R7.5 子项 A |
+| 12 | 确认本帧无 compute dispatch | ~~`compute_pipeline_states_count=0`，但 trace 元数据有大量 compute 函数名~~ → ✅ R7.3：`frame-list` 已 type=compute 列出 ComputeCommandEncoder（dispatch 计数留 R7.5 子项 B 补齐） | 已基本解决 |
 | 13 | 从 RPS 反查 fragment/vertex shader | ~~bridge 无 RPS↔function/library 关联；`shader` 子命令仅按 lib_key 替换~~ → ✅ R7.2：`pipeline` 内置 swizzle，输出 vertex/fragment fn key + lib key + attachment 摘要 | 已解决 |
-| 14 | 从 draw call 反查 shader IR | ~~段 1（draw→RPS_key）完全未通；段 2~3 需用户写探针；段 4~7 跨 bridge / extract_shader_raw / llvm-dis 三工具拼装~~ → ✅ R7.4 已通段 2~7：`shader-of-rps <rps_key> --with-ir` 一行命令出 `.ll`；段 1 仍待 R7.6 完成 | 已部分解决 |
+| 14 | 从 draw call 反查 shader IR | ~~段 1（draw→RPS_key）完全未通；段 2~3 需用户写探针；段 4~7 跨 bridge / extract_shader_raw / llvm-dis 三工具拼装~~ → ✅ R7.3 通段 1（`draw_to_rps_map`）+ R7.2/R7.4 通段 2~7（`shader-of-rps --with-ir`）；端到端两条命令完成。**`shader-of-drawcall` 薄封装由 R7.6 子项 C 补齐** | 已解决（薄封装 + 0.5 天封装即用户最终目标） |
 
 ---
 
@@ -71,7 +71,7 @@ draw call N  ──[段1]── RPS_key ──[段2]── fragment MTLFunction*
 
 | 段 | 现状 | 关键点 |
 |---|------|--------|
-| 1: draw→RPS | ❌ 未通 | 需 swizzle `MTLRenderCommandEncoder.setRenderPipelineState:` + `drawIndexedPrimitives:*` 计数。**前置依赖 R7.3** 给出 encoder 列表与 `[first_call_index, last_call_index]` |
+| 1: draw→RPS | ✅ R7.3 已通（bridge 内置 swizzle） | swizzle `MTLCommandQueue.commandBuffer*` / `MTLCommandBuffer.{render,compute,blit}CommandEncoder*` / `MTLRenderCommandEncoder.{setRenderPipelineState:, drawXXX:*, endEncoding}`。`current_rps_ptr` 在每个 encoder 上独立维护，`drawXXX:` 落表时取当前值。LYSK 244/244 命中。详见 §5.3 |
 | 2: RPS→MTLFunction | ✅ R7.2 已通（bridge 内置 swizzle） | swizzle `MTLDevice.newRenderPipelineStateWithDescriptor:[options:reflection:]error:`，从 descriptor 取 fragment/vertexFunction。**PSO 编译完不再持有 function 引用**，只能创建那一刻拦截 |
 | 3: MTLFunction→fn_key | ✅ R7.2 已通 | `objectMap.functionMap` 反向构建 `fnPtr→key`；用 `[NSValue valueWithNonretainedObject:fn]` 作 key 比直接 `id` 安全 |
 | 4: fn_key→lib_key | ✅ R7.2 已通 | `library_key = function_key - 1`（trace 内部约定，非 Apple 通用）。bridge 实现兜底：约定失败按偶数 key 向下扫一遍 `libraryForKey:` |
@@ -203,14 +203,42 @@ R7 拆成 7 个独立可 PR 的 chunk。每个 chunk 列出工时、风险、解
 - Python wrapper 同步：新增 `FrameListResult` / `FrameCommandBuffer` / `FrameEncoder` / `FrameDraw` / `FrameAttachment` / `FrameDrawToRps` dataclass + `ReplayBridge.frame_list()` 方法 + CLI 子命令 `python3 gputrace_replay_wrapper.py frame-list <trace>`。
 - 集成测试：原 63 项 + 新增 18 项 R7.3 断言（含 invariant 检查与 frame-list→shader-of-rps 链） = **81/81 通过**。
 
-**关键技术点**
+**CLI 形态**
 
-- swizzle 安装顺序：`rps_install_swizzles()` → `frame_install_swizzles()` 都必须在 `replay_context_init()` 之前。`frame_install_swizzles` 通过 `MTLCreateSystemDefaultDevice → newCommandQueue → commandBuffer` 拿到 concrete impl 类，立即 swizzle queue 与 command buffer 上的方法。
-- render encoder 类**延迟安装**：`MTLRenderCommandEncoder` 的 concrete class（如 `AGXG16XFamilyRenderCommandEncoder`）在 `MTLCommandBuffer.renderCommandEncoderWithDescriptor:` 第一次调用之前不易拿到 — 我们在该方法的 swizzle thunk 内首次拿到 encoder 实例时立即 `frame_install_render_encoder_swizzles(object_getClass(encoder))`，幂等保护。
-- `swizzle_in_hierarchy(cls, sel, newImp, &origSlot)` 需要校验"该类自己声明了这个方法"（用 `class_copyMethodList` 而不是 `class_getInstanceMethod`，后者会沿继承链返回 NSObject 上的实现），避免污染基类。
-- `current_rps_ptr` 在每个 render encoder 上独立维护（存在 `FrameEncoderEntry.current_rps_ptr`），通过 `setRenderPipelineState:` 更新，每个 `drawXXX:` 落表时取当前值；`endEncoding` 清零。
-- 7 个 `drawPrimitives:* / drawIndexedPrimitives:*` 变体全部 swizzle，包含 `baseVertex/baseInstance` 版本。Indirect draw（`drawPrimitives:indirectBuffer:` 等）暂未覆盖（trace 中很少出现）。
-- `MTLCommandBuffer.GPUStartTime/EndTime` 在很多 replay-internal CB 上保持 0 — bridge 把这种情况翻译成 `gpu_duration_ms: null`，避免 callers 误用 `duration_ms == 0` 当作"零开销"。`--with-timing` 文档已说明。
+```bash
+gputrace_replay_bridge frame-list <trace> [--with-draws|--no-draws] [--with-timing]
+```
+
+`--with-draws` 默认开启（成本极低）。`--with-bindings` 字段保留给 R7.6 子项 A。
+
+JSON schema（精简示例，完整 schema 见 `.codebuddy/skills/gpu-trace-analysis/references/cli-reference.md`）：
+
+```json
+{
+  "command_buffer_count": 4, "encoder_count": 62, "draw_count": 244,
+  "rps_correlated_count": 65, "total_call_count": 3425,
+  "command_buffers": [{
+    "index": 0, "encoders": [
+      {"index": 0, "type": "render", "first_call_index": 12, "last_call_index": 287,
+       "color_attachments": [], "depth_attachment": 225, "draw_count": 18,
+       "draws": [{"draw_index_global": 0, "rps_key": 449, "primitive_type": "triangle", ...}]}
+    ]}],
+  "draw_to_rps_map": [{"draw_index_global": 0, "rps_key": 449, "encoder_index": 0, "draw_in_encoder": 0}]
+}
+```
+
+**关键技术点（实现层根因）**
+
+- **swizzle 安装顺序**：`rps_install_swizzles()` → `frame_install_swizzles()` 都必须在 `replay_context_init()` 之前。`frame_install_swizzles` 通过 `MTLCreateSystemDefaultDevice → newCommandQueue → commandBuffer` 拿到 concrete impl 类，立即 swizzle queue / cb 上的方法。
+- **render encoder 类延迟安装**：`MTLRenderCommandEncoder` 的 concrete class（如 `AGXG16XFamilyRenderCommandEncoder`）在 `renderCommandEncoderWithDescriptor:` 第一次调用前不易拿到 — 在该方法 swizzle thunk 内首次拿到 encoder 实例时立即 `frame_install_render_encoder_swizzles(object_getClass(encoder))`，幂等保护。
+- **`swizzle_in_hierarchy(cls, sel, newImp, &origSlot)`** 校验"该类自己声明了这个方法"（用 `class_copyMethodList`，而不是 `class_getInstanceMethod`，后者会沿继承链返回 NSObject 实现），避免污染基类。该 helper 同时被 R7.2 RPS swizzle 与 R7.3 frame swizzle 复用，~30 行代码 deduplication。
+- **capture gate** `g_frame_capture_armed`（`volatile sig_atomic_t`）：`frame_install_swizzles` 期间为 0，throwaway queue+cb 被 swizzle 但落表函数早退；`cmd_frame_list` 在 `safe_playAll` 之前置 1，之后置 0。结果：`g_cb_captured / g_encoder_captured / g_draws_captured` 只反映真实回放，不会被 framework 在 `makeController` 阶段创建的辅助对象污染。
+- **draw → rps_key 两步映射**：每次 `drawXXX:` swizzle thunk 落表 `current_rps_ptr`（在 `FrameEncoderEntry` 上独立维护，`setRenderPipelineState:` 更新，`endEncoding` 清零）。输出时按 `[objectMap renderPipelineStateForKey:k]` 在 `[0..rpsScan]` 内建 `rps_ptr → rps_key` 字典（headroom 与 `pipeline` 子命令一致）。LYSK 244/244 命中。
+- **render pass attachment 快照**：encoder 在 `renderCommandEncoderWithDescriptor:` swizzle thunk 内立即 snapshot RenderPassDescriptor — `colorAttachments[0..7]` / `depthAttachment` / `stencilAttachment` 的 `texture / pixelFormat`，`texture` 通过 `frame_lookup_resource_id` 反查 `objectMap.resources` 得 trace-internal resource id（与 `replay --list-resources` 对齐）。
+- **进程级容量预算**：`g_cb_captured[256]` / `g_encoder_captured[1024]` / `g_draws_captured[16384]`，按 LYSK 3425 calls / 244 draw 留 ~50× headroom。
+- **`first/last_call_index` 来源**：复用 R7.1 的 `*(uint32_t *)(controller + 0x5810)`，每次 swizzle 入口实时读取。
+- **draw 变体覆盖**：7 个 `drawPrimitives:* / drawIndexedPrimitives:*` 变体全部 swizzle（含 `baseVertex/baseInstance`）。Indirect draw（`drawPrimitives:indirectBuffer:` 等）暂未覆盖，LYSK trace 不用；如未来需要，加入 `frame_install_render_encoder_swizzles` 即可（结构化数据上 `vertex_count/instance_count=0 + indirect:true`）。
+- **timing 字段语义**：`MTLCommandBuffer.GPUStartTime/EndTime` 在很多 replay-internal CB 上保持 0，bridge 翻译为 `gpu_duration_ms: null`（不让 callers 误把 0 当"零开销"）。`--with-timing` 仍保留 flag，未来若需精确可补"基于 `addCompletedHandler:` 回调"的路径。
 
 **回归基线**
 
@@ -225,92 +253,37 @@ R7 拆成 7 个独立可 PR 的 chunk。每个 chunk 列出工时、风险、解
 | `total_call_count` | 3425 | 3425 |
 | `frame-list elapsed_ms` | <50ms | ~12ms |
 
-**已知局限**
-
-- per-encoder timing 字段在 LYSK trace 上始终为 null（如上所述）。这是 replay 内部 cb 不 commit 导致；用户希望精准 per-segment 时间应回退到 `replay --playto N` 二分（playbook Pattern 4）。
-- compute encoder 的 `setComputePipelineState:` / `dispatchThreadgroups:*` 还未接入 swizzle — 这是 R7.5 子项 B 的范围。当前 `compute_dispatch_count` 字段恒为 0；compute encoder 本身仍在 timeline 中可见。
-- binding 表（`setVertexBuffer:` / `setFragmentTexture:` 等）按设计推迟到 R7.6 子项 A，原因是数据量比 draws 大一个数量级，且依赖独立的 binding 模型。
-
-**实现要点（建议沿用 R7.2 的代码组织）— 历史方案描述（保留作回顾，已对应实现）**
+**端到端 draw → IR 闭环（LYSK 实测）**
 
 ```bash
-gputrace_replay_bridge frame-list <trace> [--with-draws] [--with-timing] [--with-bindings]
+RPS_KEY=$(./gputrace_replay_bridge frame-list "$LYSK" 2>/dev/null \
+            | jq '.draw_to_rps_map[0].rps_key')          # → 472
+./gputrace_replay_bridge shader-of-rps "$LYSK" $RPS_KEY --output-dir /tmp/r73_chained
+# → library_374.metallib (11041B) + cache_key_metallib=5368B920C0D59DE1_11041
 ```
 
-`--with-draws` 默认开启（成本极低，输出 draw 数组与 RPS 关联），`--with-bindings` 默认关闭（成本较高且依赖 R7.6 的 binding 模型）。
+7 段全通：draw 0 → RPS 472 → fragment_function_key 375 → library_key 374 → metallib (11041B) + AIR + cacheKey。
 
-输出形如：
+**改动量（参考）**
 
-```json
-{
-  "command_buffers": [{
-    "index": 0, "label": "Frame Render",
-    "encoders": [
-      {"index": 0, "type": "render", "label": "Shadows.Draw",
-       "color_attachments": [], "depth_attachment": 225, "stencil_attachment": null,
-       "first_call_index": 12, "last_call_index": 287, "draw_count": 18,
-       "gpu_start_ms": 0.0, "gpu_end_ms": 0.32, "gpu_duration_ms": 0.32,
-       "draws": [
-         {"draw_index_global": 0, "draw_index_in_encoder": 0,
-          "rps_key": 449, "rps_label": "Hidden/Papegame/ScreenSpaceShadowMap",
-          "fragment_function_key": 299, "vertex_function_key": 261,
-          "primitive_type": "triangle", "vertex_count": 3, "instance_count": 1,
-          "indexed": false, "call_index": 25}
-       ]}
-    ]
-  }],
-  "draw_to_rps_map": [
-    {"draw_index_global": 0, "rps_key": 449, "encoder_index": 0, "draw_in_encoder": 0}
-  ]
-}
-```
+- `Scripts/gputrace_replay_bridge.m` +~620 行（"Frame Swizzle Capture" + `cmd_frame_list`），version 0.3.0 → 0.4.0
+- `Scripts/gputrace_replay_wrapper.py` +6 dataclass + `frame_list()` 方法 + CLI subparser（~150 行）
+- `Scripts/test_gputrace_replay_bridge.sh` +18 项 R7.3 断言（T7l/T7m/T7n），总数 63 → 81
+- skill 同源同步：`scripts/gputrace_replay_bridge.m` / `gputrace_replay_wrapper.py` / `test_bridge.sh` / `setup.sh` 重编 + ad-hoc 签名
+- 文档同步：SKILL.md（六→七子命令 + workflow 加 frame timeline）、`cli-reference.md`（新 `## Subcommand: frame-list`）、`investigation-playbook.md`（Pattern 7 升级为 R7.2+R7.3+R7.4 联动）
 
-#### 为什么是 swizzle-first，而不是反射 `controller.commandBuffers`
+**已知局限**
 
-原 R7.3 计划是反射 `MTLReplayController.commandBuffers`。该假设有两个未验证的风险：
-1. controller 是否真的持有一份扁平的 CommandBuffer 列表（vs 用 dispatch queue 直接派发并不缓存）— 未导出符号无法静态验证
-2. 即使持有，每个 cb 的 encoder 列表是否能反射到、各 encoder 的 RenderPassDescriptor 是否还在内存里 — 都是问号
+- per-encoder timing 在 LYSK 上恒为 null（replay-internal cb 不 commit）。需要精准 per-segment 时间时回退到 `replay --playto N` 二分（playbook Pattern 4）。
+- compute encoder 的 `setComputePipelineState:` / `dispatchThreadgroups:*` 未接入 swizzle — R7.5 子项 B 顺手补齐；当前 `compute_dispatch_count` 恒为 0，但 compute encoder 本身已列在 timeline 中。
+- binding 表（`setVertexBuffer:` / `setFragmentTexture:` 等）按设计推迟到 R7.6 子项 A（数据量比 draws 大 ~1 数量级 + 独立 binding 模型）。
+- indirect draw 未覆盖（同上"draw 变体覆盖"段）。
 
-**swizzle 公开 API 路径** 把这两个风险全部消除：Metal 的 `MTLCommandQueue → MTLCommandBuffer → MTLRenderCommandEncoder → drawXXX` 是公开 API，replay 框架不可能绕过；只要 swizzle 装在 `replay_context_init` 之前（与 R7.2 RPS swizzle 同时机），`playAll` 期间真实发生的每个 encoder/draw 都会被 100% 命中。
+**架构决策：为什么 swizzle-first，不是反射 `controller.commandBuffers`**
 
-#### 实现要点（建议沿用 R7.2 的代码组织）
+原 R7.3 计划是反射 `MTLReplayController.commandBuffers`，存在两个未验证风险：(1) controller 是否真的持有扁平 CommandBuffer 列表（vs dispatch queue 派发不缓存）—— 未导出符号无法静态确认；(2) 每个 cb 的 encoder 列表能否反射到、RenderPassDescriptor 是否还在内存 —— 全是问号。
 
-1. **新增的 swizzle 集**（与 `rps_install_swizzles` 同处安装）：
-
-   | 类 | 方法 | 作用 |
-   |---|---|---|
-   | `MTLCommandQueue` 实现类 | `commandBuffer` / `commandBufferWithUnretainedReferences` | 开新 cb 槽，记 `cb_index` 与 `cb_label`（label 通常是 frame 名） |
-   | `MTLCommandBuffer` 实现类 | `renderCommandEncoderWithDescriptor:` | 开新 encoder 槽：snapshot RenderPassDescriptor 的 attachments / depth / stencil；`encoder_index` ++；`draw_in_encoder` 清零；记 `first_call_index = controller.last_call_index` |
-   | 同上 | `computeCommandEncoder` / `computeCommandEncoderWithDispatchType:` | 同上，type=compute（R7.5 子项 B 一并解决） |
-   | 同上 | `blitCommandEncoder` | 同上，type=blit |
-   | `MTLRenderCommandEncoder` 实现类 | `setRenderPipelineState:` | 更新当前 encoder 的 `current_rps_ptr` |
-   | 同上 | `drawPrimitives:vertexStart:vertexCount:instanceCount:[baseInstance:]` 全部变体 | `draw_in_encoder` ++、`global_draw_index` ++；落表 `(global_draw_index, encoder_index, draw_in_encoder, current_rps_ptr, primitive_type, counts)` |
-   | 同上 | `drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:[instanceCount:[baseVertex:baseInstance:]]` 全部变体 | 同上，indexed=true |
-   | 同上 | `endEncoding` | 关闭当前 encoder 槽：`last_call_index = controller.last_call_index`；清 `current_rps_ptr` |
-   | `MTLComputeCommandEncoder` | `setComputePipelineState:` / `dispatchThreadgroups:*` | （R7.5 子项 B；最小实现可仅记 dispatch 数） |
-
-2. **数据结构**：与 R7.2 同模式 — 进程级单例 `g_cb_captured[256]`、`g_encoder_captured[1024]`、`g_draws_captured[16384]`（按 LYSK 经验，3425 calls 对应几百个 draw，留 ~50× headroom）。
-
-3. **`first/last_call_index` 来源**：`*(uint32_t *)(controller + 0x5810)` 即 R7.1 已确认的 `last_played_call_index`。在每次 swizzle 入口实时读取即可，不需要额外反射。
-
-4. **PSO 反查**：`current_rps_ptr` → 用 R7.2 已建立的 `g_rps_captured[]` 反查 `rps_key`。Metal swizzle 拿到的是 `id<MTLRenderPipelineState>` 实例指针，与 RPS swizzle 落表的 `rps_ptr` **是同一个对象**（都是 `newRenderPipelineStateWithDescriptor:` 的返回值）。
-
-5. **`draw_to_rps_map` 顶层视图**：扁平化 `(draw_index_global → rps_key)` 数组方便用户最终目标"draw call → IR"直接对接 `shader-of-rps`。
-
-#### `--with-timing`
-
-每个 cb 的 `GPUStartTime/GPUEndTime` — replay 完成后 swizzle `addCompletedHandler:` 也能拿，但更简单的做法是 `playAll` 完成后直接遍历 `g_cb_captured[]`，用每个 cb 的 `MTLCommandBuffer.GPUStartTime / GPUEndTime` 属性。这两属性 Metal 在 commitedHandler 之后就 valid。
-
-#### `--with-bindings`（推迟到 R7.6）
-
-`setVertexBuffer:offset:atIndex:` / `setFragmentTexture:atIndex:` / `setVertexBytes:length:atIndex:` 等需要建一个完整的 binding 表模型，落表数据量比 draw 大一个数量级，先单独立项。
-
-#### 工时与风险
-
-**工时**：1.5–2 天（含 draws，不含 bindings）。比原方案（R7.3 反射 1 天 + R7.6 段 1 swizzle 1 天 = 2 天）略短并合并风险。
-**风险**：低 — 全公开 API，与 R7.2 同样的"装在 replay_context_init 之前"模式，已有基础设施 `rps_install_swizzles`/`g_rps_captured` 可复用。
-**解锁**：① encoder 时间序与 attachments 一次到位；② `--playto` 从盲扫升级为定向跳转（`encoder.first_call_index`）；③ **"draw call → RPS_key" 段 1 直接打通，与 R7.4 的 `shader-of-rps` 一拼即得 `shader-of-drawcall` 闭环**（这是 R7.6 的核心子项 C，本 chunk 完成后 R7.6 退化为薄薄的 wrapper + uniform 部分）。
-**回归基线**：在 LYSK trace 上 `draw_count` 累加应等于 `playAll` 期间的总 `drawXXX` 调用数；`draw_to_rps_map` 中每个条目的 `rps_key` 必须在 R7.2 的 `pipeline` 输出中存在。
+swizzle 公开 API 把两个风险一起消除：`MTLCommandQueue → MTLCommandBuffer → MTLRenderCommandEncoder → drawXXX` 是公开 Metal API，replay 框架不可能绕过；只要装在 `replay_context_init` 之前（与 R7.2 RPS swizzle 同时机），`playAll` 期间真实发生的每个 encoder/draw 100% 命中。同时**一次冲刺顺手打通原 R7.6 段 1（draw→RPS_key）**，把 `shader-of-drawcall` 退化为薄封装（R7.6 子项 C 工时 1 天 → 0.5 天）。
 
 ### R7.4（原 C2.5）：`shader-of-rps` 子命令（语义级反查）— ✅ 已完成（2026-05-21）
 
@@ -345,18 +318,18 @@ cache_key_metallib:    CB535F216771DC94_7888
 | 非法 `--stage` | `--stage banana` | 1 (USAGE) | — (stderr message) |
 | 库无 AIR | `shader-of-rps … 484 --with-ir` | 0 | `ir_error: no_air_bitcode`（多数 `_MTLLibrary` 仅有 metallib，约 LYSK 96 lib 中 3 个有 AIR） |
 
-### R7.5（原 C3）：depth/stencil export + 完整 compute 支持
+### R7.5（原 C3）：depth/stencil export + compute dispatch 计数补齐
 
 **子项 A — depth/stencil blit export**
-- 当前 `--export` 直接拒绝 depth/stencil
-- bridge 内部跑一次最小 RPS，把 depth 复制到一张临时 R32Float、stencil 复制到 R8Unorm，再 `getBytes`
+- 当前 `replay --export <id> <path>` 直接拒绝 depth/stencil 纹理
+- bridge 内部跑一次最小 RPS / blit pass，把 depth 复制到临时 R32Float、stencil 复制到 R8Unorm，再 `getBytes` 落盘
 - Apple sample code 标准做法，**无需私有 API**
 
-**子项 B — compute encoder 在 frame-list 中明确化**
-- trace 真没 compute 时返回 `compute_encoder_count: 0`
-- 有 compute 时把 ComputeCommandEncoder 也列出来（与 render encoder 平级）
+**子项 B — compute encoder dispatch 计数（R7.3 占位字段补齐）**
+- R7.3 已让 ComputeCommandEncoder 在 `frame-list` timeline 中与 render/blit encoder 平级列出（type=compute），但 `compute_dispatch_count` 字段恒为 0
+- 子项 B：把 `MTLComputeCommandEncoder.setComputePipelineState:` / `dispatchThreadgroups:*` / `dispatchThreads:*` 接入 R7.3 的 swizzle 集合，记录 dispatch 计数 + 每次 dispatch 的 compute pipeline pointer（最小实现：仅 dispatch 数；完整实现：把 dispatch 也落到 `draws[]` 兄弟字段如 `dispatches[]`）
 
-**工时**：半天；**风险**：低；**解锁**：ShadowMap 可视化 / stencil bit 可读 / SSS mask / character mask 等可见。
+**工时**：半天；**风险**：低；**解锁**：ShadowMap 可视化 / stencil bit 可读 / SSS mask / character mask 等可见 + compute-heavy trace 的真实 dispatch 数。
 
 ### R7.6（原 C4 + C4.5）：完整 Frame Debugger 等价 + draw 级 shader 反查 — 范围在 R7.3' 调整后大幅缩小
 
@@ -440,17 +413,17 @@ R7.2 已交付：bridge `pipeline` 与本表 65/65 一致。**回归测试命令
 
 | 能力维度 | CLI 等价目标 | R7 之后状态 |
 |----------|-------------|-------------|
-| Encoder/Pass 枚举 | `frame-list` 列出所有 encoder + attachments | ⏳ R7.3（swizzle-first） |
-| Draw call 列表 | `frame-list --with-draws`（默认开启） | ⏳ R7.3 |
+| Encoder/Pass 枚举 | `frame-list` 列出所有 encoder + attachments | ✅ R7.3 |
+| Draw call 列表 | `frame-list --with-draws`（默认开启） | ✅ R7.3 |
 | Binding 表 | `frame-list --with-bindings` | ⏳ R7.6 子项 A |
 | Uniform Inspector | `dump-uniforms` | ⏳ 部分 R7.6 子项 B（依赖 layout 元数据） |
 | Depth/Stencil 可视化 | `--export` 内置 blit | ⏳ R7.5 子项 A |
-| Per-encoder GPU timing | `frame-list --with-timing` | ⏳ R7.3 |
-| Compute encoder 在 frame-list 中明确化 | `frame-list` 含 type=compute | ⏳ R7.5 子项 B（与 R7.3 同 swizzle 集合，可一起做） |
+| Per-encoder GPU timing | `frame-list --with-timing` | ⚠️ R7.3 部分（replay-internal cb 不 commit，时间字段 null） |
+| Compute encoder 在 frame-list 中明确化 | `frame-list` 含 type=compute | ✅ R7.3（compute encoder 已平级列出，dispatch 计数留 R7.5 子项 B） |
 | RPS → fragment/vertex shader 反查 | `pipeline` 输出加 function/library key | ✅ R7.2 |
 | RPS_key → shader IR 一行命令 | `shader-of-rps --with-ir` | ✅ R7.4 |
-| **Draw call → RPS_key 反查** | `frame-list` 输出 `draw_to_rps_map` | ⏳ R7.3（swizzle-first 路径直接附带） |
-| **Draw call → shader IR 一行命令** | `shader-of-drawcall <draw_index>` | ⏳ R7.6 子项 C（R7.3 完成后退化为薄封装） |
+| **Draw call → RPS_key 反查** | `frame-list` 输出 `draw_to_rps_map` | ✅ R7.3 |
+| **Draw call → shader IR 一行命令** | `shader-of-drawcall <draw_index>` | ⏳ R7.6 子项 C（薄封装：`frame-list` → `shader-of-rps`，0.5 天） |
 | Shader 反编译（覆盖无 AIR 的 library） | `disasm <rps_key>` SDI module.bc 路径 | ⏳ R7.7 |
 
 ---
@@ -477,10 +450,10 @@ R7.2 已交付：bridge `pipeline` 与本表 65/65 一致。**回归测试命令
 - **`references/investigation-playbook.md`** — 加 "frame-overview" worked example（用 LYSK trace 作样例：从空白到 12-pass 全景报告需要的最少 bridge 调用序列）
 - **`references/cli-reference.md`** — 同步新子命令的 flag/JSON schema/Python wrapper 接口
 
-R7.1/R7.2/R7.4 落地时已同步过这三处。R7.3 起按相同惯例。
+R7.1/R7.2/R7.3/R7.4 落地时已同步过这三处。后续 R7.5/R7.6/R7.7 起按相同惯例。
 
 ---
 
 ## 10. 一句话总结
 
-从 draw call 反查到 shader IR 的链路在 macOS Metal replay 框架下是技术可达的（7 段全部走通），bridge 现在已覆盖段 2~7（R7.2/R7.4），唯一剩下的是段 1（draw→RPS）。R7.3 把原计划的"反射 controller 内部布局"路径切换为"swizzle 公开 Metal API"路径，**一次冲刺同时打通 R7.3 自身与原 R7.6 段 1 子项 C 的核心**——`frame-list` 输出 `draw_to_rps_map` + `shader-of-drawcall` 退化为薄封装。完成 R7.3 后，用户最终目标"draw_index → shader IR 一行命令"即基本闭环，剩余 R7.5/R7.6/R7.7 是体验补完（depth blit、binding/uniform、SDI 路径覆盖率）。
+draw call → shader IR 的 7 段映射在 macOS Metal replay 框架下技术可达且已 7/7 走通：R7.1（边界）+ R7.2（pipeline RPS↔shader）+ R7.3（frame-list swizzle-first：encoder timeline + draw→RPS_key）+ R7.4（shader-of-rps 一行命令出 metallib/AIR/IR）四个 chunk 端到端串通，用户最终目标"draw_index → IR"在两条命令内完成（`frame-list` → `shader-of-rps`）。剩余 R7.5（depth/stencil blit + compute dispatch 计数）/ R7.6（binding/uniform/`shader-of-drawcall` 薄封装）/ R7.7（SDI module.bc 覆盖无 AIR 的 library）属体验补完，依赖顺序与等价性表 §7 一致。

@@ -31,7 +31,7 @@
 2. **Python CLI wrapper**（`Scripts/gputrace_replay_wrapper.py`）— ✅ CLI + 模块双接口，dataclass 返回值（含 R7.2 `ColorAttachment` / R7.4 `ShaderOfRpsResult` / R7.3 `FrameListResult` / **R7.6-C `ShaderOfDrawcallResult` + `DrawIndexOutOfRange` 异常** 等）
 3. **端到端验证链路** — ✅ LYSK trace 65/65 RPS 反查 + 244/244 draw→RPS 映射 + frame-list → shader-of-rps 端到端取 metallib/IR + **R7.6-C `shader-of-drawcall 0/103 --with-ir` 与手工链字节级一致（metallib/AIR/cacheKey clean，.ll 仅差 ModuleID 路径注释）**
 4. **GPU Trace 分析 skill**（`.codebuddy/skills/gpu-trace-analysis/`）— ✅ 自包含，含 SKILL.md + scripts/ + references/，从任意目录可独立运行
-5. **R7：Frame-Inspection 能力补全** — ⏳ 进行中，剩余 R7.5（depth/stencil blit + compute dispatch 计数）→ R7.6 子项 A/B（bindings + uniforms）→ R7.7（disasm + SDI 覆盖）。详见 TODO + `subdocs/20260521-R7-frame-inspection-gap.md`
+5. **R7：Frame-Inspection 能力补全** — ⏳ 进行中，剩余按"先解锁已交付能力 → 再加新能力"重排：**R7.7（disasm + SDI module.bc 覆盖，把 R7.6-C 的实际命中率从 ~3% 提升到 ~100%） → R7.5（depth/stencil blit + compute dispatch 计数） → R7.6 子项 A/B（bindings + uniforms）**。详见 TODO + `subdocs/20260521-R7-frame-inspection-gap.md`
 
 ## 样本 trace 路径（回归基线）
 
@@ -87,9 +87,11 @@ GPUTRACE_PATH="$HOME/Desktop/reference_test_inject.gputrace" \
 
 ### 下一步（当前最高优先级）
 
-**R7.5：depth/stencil export（bridge 内置 blit）+ compute encoder dispatch 计数补齐 — 1–1.5 天**
+**R7.7：`disasm` 子命令 + SDI module.bc 路径覆盖无 AIR 的 library — 1.5 天**
 
-详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.5。R7.6-C 已完成（同日落地，详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.6）；R7.6-C 之后按 README §"完成度" 排序：R7.5 → R7.6 子项 A/B → R7.7。
+**抢占 R7.5 的理由**：R7.6-C 刚交付的 `shader-of-drawcall <draw_index> --with-ir` 是用户最直接、最高频的入口；但 LYSK 主样本 96 lib 中只有 3 个有 AIR bitcode（~3% 命中率），意味着 95%+ 的请求会得到 `no_air_bitcode`，刚交付的"一行命令拿 IR"承诺在主样本上几乎兑现不了。R7.7 通过探测 `~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/<bundle>/<cacheKey>/modules/<hash>/module.bc`（cacheKey 已在 R7.4 算出），把命中率从 ~3% 提升到接近 100%，让 `shader-of-drawcall --with-ir` / `shader-of-rps --with-ir` 真正可用。R7.5（depth/stencil + compute dispatch）是新能力但相对独立，没有"刚交付能力被堵塞"的紧迫感，按"先解锁已交付能力，再加新能力"原则排在 R7.7 之后。
+
+详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.7（R7.7）与 §3（7 段映射的最后一段）。R7.7 之后排序：R7.5（1–1.5 天） → R7.6 子项 A/B（bindings 1.5 天 + uniforms 1 天）。
 
 ## 构建与验证的方法
 
@@ -122,9 +124,9 @@ GPUTRACE_PATH="$HOME/Desktop/reference_test_inject.gputrace" \
   - **[DONE] R7.3**：`frame-list` 子命令（swizzle-first 路径）— encoder 列表（含 compute/blit）+ draw→RPS 映射 + `--with-timing` flag 一次冲刺打通。LYSK trace 实测 244/244 draw 全部解析到 65/65 RPS；timing 字段在 replay-internal cb 上常返 null（已文档说明）
   - **[DONE] R7.4**：`shader-of-rps` 子命令（语义级反查 + `--with-ir` 调 `llvm-dis` 直出 `.ll` + `cache_key_metallib`），与 R7.2 同冲刺完成
   - **[DONE] R7.6 子项 C**（2026-05-21）：`shader-of-drawcall` 薄封装（wrapper-only：`frame-list → draw_to_rps_map → shader-of-rps`）+ LYSK draw_index=0/103 字节级一致回归 + reference_test_inject compute-only OOR/`draw_count=0` 回归。集成测试 88/88 通过。详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.6
-  - **[P0] R7.5（当前最高优先级）**：depth/stencil export（bridge 内置 blit）+ compute encoder dispatch 计数补齐 — 1–1.5 天合计
-  - **[P1] R7.6 子项 A/B**：`frame-list --with-bindings`（1.5 天）+ `dump-uniforms`（1 天，依赖子项 A 的 binding 表）
-  - **[P2] R7.7**：`disasm` 子命令（直接读 SDI module.bc，覆盖无 AIR 的 library）— 1.5 天，低风险，**skill 自包含最后一公里**
+  - **[P0] R7.7（当前最高优先级）**：`disasm` 子命令 + SDI module.bc 路径 — 1.5 天。把 R7.6-C 的 `shader-of-drawcall --with-ir` 命中率从 ~3%（仅 `bitcodeData` 非空的 library）提升到 ~100%（探测 `~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/<bundle>/<cacheKey>/modules/<hash>/module.bc`），让刚交付的"一行命令拿 IR"在 LYSK 主样本上真正可用。低风险（cacheKey 算法已落 bridge，SDI 路径解析是文件 I/O）。
+  - **[P1] R7.5**：depth/stencil export（bridge 内置 blit）+ compute encoder dispatch 计数补齐 — 1–1.5 天合计。新能力但相对独立，没有"刚交付能力被堵塞"的紧迫感
+  - **[P2] R7.6 子项 A/B**：`frame-list --with-bindings`（1.5 天）+ `dump-uniforms`（1 天，依赖子项 A 的 binding 表）
 - **每个 R7 chunk 落地后必须同步**：SKILL.md（"Exploring an unknown trace's pipeline" 工作流 / 已知盲点） + `references/investigation-playbook.md`（frame-overview worked example） + `references/cli-reference.md`（新子命令 schema）。R7.1/R7.2/R7.3/R7.4/R7.6-C 落地时已同步。
 
 ## 高频复用经验

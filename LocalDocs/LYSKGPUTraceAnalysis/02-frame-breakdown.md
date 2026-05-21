@@ -70,43 +70,50 @@ ClothStandard ic=10047 → EyeSpec ic=2280 → EyeSpec ic=2280 → HairScreenDoo
 
 ---
 
-## 阶段 B — GBuffer / 角色主几何
+## 阶段 B — Velocity + Normal Pre-pass（不是 GBuffer！）
 
-### E4 — GBuffer + Z
+### E4 — Velocity + Normal Pre-pass + Z
+
+> ⚠ 注意：此 pass **不是传统 deferred GBuffer**。228/229 不存材质属性；它们是**TAA 用的 motion vector**（228）和 **screen-space octahedral normal + 角色 mask**（229）。完整证据与解码方法见 `06-gbuffer-truth.md`。
 
 | 字段 | 值 |
 |---|---|
 | Calls | 570–671 |
 | 类型 | render |
 | Draws | 12 |
-| RT | color={`228 RGBA8`, `229 RGBA8`} + d/s=`227 D32S8` |
+| RT | color={`228 RGBA8 (Velocity)`, `229 RGBA8 (Normal+Mask)`} + d/s=`227 D32S8` |
 | RPS | 440, 468, 481, 482, 483, 484, 485, 486, 487, 488, 489 |
 
-**用途**：写主 GBuffer（228/229）+ 主深度模板（227）+ 角色全部 opaque 几何。
+**用途**：在角色几何上写：
+- **228 = packed motion vector**（curr.NDC.xy − prev.NDC.xy）→ 服务于 TAA reprojection；
+- **229 = octahedral world-normal + sign(N.z) + A 通道角色前景 mask（0.047）**；
+- **227 = 主深度+模板**（同时 Z-write，使后续屏幕空间 pass 能拿到 depth）。
+
+所有 9 个角色 RPS（481–489）的 fragment shader **是同一份 motion+normal pack 模板**（详见 `06-gbuffer-truth.md §4`），**完全不采样任何材质纹理**（488/489 例外，做 alpha-test/stipple discard 才有 sample）。
 
 **draw 列表（按时序）**：
 
 ```
-draw40 RPS=468 Unlit/InverseTonemapping       ic=792    // 把上帧 TAA 历史从 sRGB 转回线性，预填到 buffer
+draw40 RPS=468 Unlit/InverseTonemapping       ic=792    // 在 history TAA buffer 上做反映射，写 A=0 mask
 draw41 RPS=481 Cloth/ClothStandard           ic=10047
 draw42 RPS=482 Cloth/ClothStandard           ic=15099
 draw43 RPS=483 Cloth/ClothStandard           ic=13434
-draw44 RPS=484 SkinMakeupNew                 ic=27894   ← 关键 SkinMakeup GBuffer 变体
+draw44 RPS=484 SkinMakeupNew                 ic=27894   ← 关键 SkinMakeupNew velocity-prepass 变体
 draw45 RPS=485 SkinSSS                       ic=1698
 draw46 RPS=486 EyeSpec                       ic=2280
 draw47 RPS=486 EyeSpec                       ic=2280
 draw48 RPS=487 Teeth                         ic=8682
-draw49 RPS=488 Cloth/ClothStandard           ic=51699
-draw50 RPS=489 HairScreenDoor                ic=50835
-draw51 RPS=440 Unlit/TAA/TemporalAA          ic=null    // 可能是 attachment 收尾 / blit-style 全屏 quad
+draw49 RPS=488 Cloth/ClothStandard           ic=51699   // alpha-test 变体
+draw50 RPS=489 HairScreenDoor                ic=50835   // stipple alpha 变体
+draw51 RPS=440 Unlit/TAA/TemporalAA          ic=null    // 收尾全屏 quad
 ```
 
 **产物**：
-- `228` — GBuffer slot 0（baseColor + ?）
-- `229` — GBuffer slot 1（normal/material）
-- `227` — 主深度+模板
+- **228 (motion vector)** — 仅消费方：**E18 TAA (RPS 441)** 内的 `_VelocityTexture`
+- **229 (octa-normal + mask)** — **本帧无 fragment 显式 sample**（细节见 `06-gbuffer-truth.md §8.5`）
+- **227 (深度+模板)** — 被 E6, E9, E10, E13, E17 大量消费
 
-→ 之后**所有屏幕空间 pass**都依赖这三张图。
+→ 这一 pass 的产物**不喂给后续 lighting**。后续的 lighting compose（E10 / E13 / E17）**重新光栅化几何**并直接采样原始材质纹理，跑的是 forward 路线。
 
 ---
 
@@ -205,6 +212,15 @@ draw51 RPS=440 Unlit/TAA/TemporalAA          ic=null    // 可能是 attachment 
 | RPS | 490 (`Teeth`), 491 (`SkinMakeupNew`), 492 (`SkinSSS`) |
 
 **用途**：在半分辨率上对**仅皮肤+牙齿**做光照计算，写入 lighting buffer 232。同时把 234 的对应通道写为 SSS-mask（用于后面 SeparableSSS 是否启用的早出口）。
+
+**注意**：这个 pass **重新光栅化角色几何**（vertex shader 的 input 是 POSITION0/NORMAL0/TANGENT0/TEXCOORD0..3 — 真实 mesh 数据），fragment shader 直接采样 5 张纹理：
+- `_LightIndexMap` (rid 145，**CalcLighting.CSMain 的输出**)
+- `_SpecularTex` (PL_Head_R)
+- `_NormalTex` (PL_Head_MU_N — 直接读原图，**不通过 229**)
+- `_EyelidTex` (PL_Makeup_Eyelid_07_D)
+- `_ScreenShadowTexture` (236 — 半分辨率屏幕空间阴影)
+
+→ **这是 forward shading 在 half-res 下的实例化**，不是 deferred lighting。
 
 **产物**：
 - `232` — 半分辨率皮肤 lighting，**SSS 输入**（E11/E12）
@@ -428,7 +444,7 @@ draw121 RPS=466 Hidden/EffectCombine2     ic=600     // 全屏特效叠加（最
 | 阶段 | encoder | draws | 产物 | 主要消费方 |
 |---|---|---|---|---|
 | A. Pre-frame & Shadow | E1–E3 | 0+30+10 | lighting buf, 225, 226 | E10, E13, E17 |
-| B. GBuffer | E4 | 12 | 228, 229, 227 | E5–E13, E17 |
+| B. Velocity+Normal Pre-pass | E4 | 12 | 228 (velocity), 229 (octa-normal+mask), 227 (D+S) | E18 (228), E6/E9/E10/E13/E17 (227)；229 本帧无消费 |
 | C. Half-res SS Effects | E5–E10 | 1+1+1+1+3+3 = 10 | 230, 231, 233, 234, 235, 236, 232 | E11, E13 |
 | D. SSS | E11–E12 | 2 | 232 (滤波后) | E13 (RPS 496/497) |
 | E. Full-res Compose | E13 | 18 | **224** | E14, E17, E18 |

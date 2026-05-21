@@ -17,7 +17,9 @@
 ## 一句话结论
 
 > 这是一段 **Unity URP-like 自研管线 + Papegame 后处理栈** 的双帧捕获：
-> **`Z-Prepass → Cascade/Local Shadows → GBuffer (1167×1671 RGBA8×2 + D32S8) → Half-res SSAO/SSS-Lighting → Separable SSS → Full-res HDR Compose + Sky + FX (1167×1671 RGBA16F) → DOF → TAA (双历史 ping-pong) → Bloom (5 级金字塔) → Tonemap → FSR EASU (1167×1671 → 1668×2388) → FSR RCAS + UI 叠加 → Present`**，外加一个 `CalcLighting.CSMain` compute pass 做 cluster lighting。
+> **`Z-Prepass → Cascade/Local Shadows → "Velocity + Normal" Pre-pass (1167×1671 RGBA8×2 + D32S8) → Half-res SSAO/SSS-Lighting → Separable SSS → Full-res HDR Forward Compose + Sky + FX (1167×1671 RGBA16F) → DOF → TAA (双历史 ping-pong) → Bloom (5 级金字塔) → Tonemap → FSR EASU (1167×1671 → 1668×2388) → FSR RCAS + UI 叠加 → Present`**，外加一个 `CalcLighting.CSMain` compute pass 做 cluster lighting。
+>
+> **关键发现**：之前以为是 deferred GBuffer 的 E4 (228/229) **实际上是 Velocity + Normal Pre-pass**（详见 `06-gbuffer-truth.md`）。LYSK 是 **forward shading**，lighting 通过重新光栅化几何 + 直接采样原始材质纹理完成，不是从 228/229 解码。
 
 ## 规模一览
 
@@ -40,6 +42,7 @@
 | `02-frame-breakdown.md` | CB1 一帧 30 个 encoder 的逐项 breakdown：calls / draws / RT / RPS / 用途 / 产物去向 |
 | `03-rps-and-textures.md` | 65 个 RPS（label、vf/fragment、attachments）+ 关键 attachment 纹理表 |
 | `04-skin-and-sss-pipeline.md` | SkinMakeupNew / SkinSSS / SeparableSubsurfaceScatter 在帧内的 5 个变体定位（与 `OfflineSourceRecovery/` 抓出的 `.ll` 文件一一对应） |
+| **`06-gbuffer-truth.md`** | **重要** — 通过纹理字节统计 + fragment IR 反编译，证明 228/229 不是传统 deferred GBuffer 而是 **velocity buffer + octahedral normal mask**；LYSK 是 forward shading 不是 deferred |
 | `05-reproduction.md` | 复现命令、工作目录、所用工具版本、输出 schema 速查 |
 | `data/` | 原始 JSON（直接来自 bridge 输出）：`bounds / replay / pipelines / frame / cb1_summary / cb3_summary / rps_index / textures_index` |
 

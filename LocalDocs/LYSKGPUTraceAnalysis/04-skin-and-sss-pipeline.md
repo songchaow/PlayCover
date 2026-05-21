@@ -10,7 +10,7 @@ LYSK 把同一种「皮肤+底妆」材质按渲染阶段拆成了 5 个 RPS。�
 | RPS | label | vf=v/f | encoder | RT | 含义 |
 |---|---|---|---|---|---|
 | **476** | Papegame/SkinMakeupNew | **251/253** | E2（cascade shadow ×3）+ E3（local shadow atlas） | depth=`225` / `226` D32F | **Z-Prepass / Shadow Caster** — 仅写 depth、做 alpha-test mask |
-| **484** | Papegame/SkinMakeupNew | **289/357** | E4（GBuffer pass） | color={`228`, `229`} RGBA8 + d/s=`227` D32S8 | **GBuffer 主写入** — 写 baseColor/normal/material 到 GBuffer |
+| **484** | Papegame/SkinMakeupNew | **289/357** | E4（velocity+normal pre-pass） | color={`228`, `229`} RGBA8 + d/s=`227` D32S8 | **Velocity + Normal pre-pass**（**不是 GBuffer**） — 写 motion vector 到 228、octa-normal+角色 mask 到 229、深度模板到 227。**不写材质属性、不被 lighting pass 读取**（详见 `06-gbuffer-truth.md`）|
 | **491** | Papegame/SkinMakeupNew | **389/391** | E10（half-res lighting） | color={`232` RG11B10F, `234` R8} + d/s=`231` D32S8 | **半分辨率皮肤光照** — 输出皮肤 lighting 到 232（喂给 SSS）+ 写 SSS-mask 到 234 |
 | **496** | Papegame/SkinMakeupNew | **409/411** | E13（full-res HDR compose） | color=`224` RGBA16F + d/s=`227` D32S8 | **全分辨率合成** — 采样 232（已 SSS 滤波）+ GBuffer + 阴影 → HDR 颜色 |
 | ⚠ — | — | — | — | — | **第 5 个变体（refraction/transparent 阶段）在本 trace 中没出现**（皮肤本身不需要 refraction，眼睛/头发才有 — 见 RPS 502/503/504） |

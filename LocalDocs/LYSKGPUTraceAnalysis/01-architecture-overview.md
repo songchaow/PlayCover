@@ -22,10 +22,10 @@
 
 ```
 A. Pre-frame & Shadow                   (E1–E3)
-B. GBuffer / 角色主几何 + Z              (E4)
+B. Velocity + Normal Pre-pass + Z       (E4)             ← 不是传统 deferred GBuffer
 C. Half-res Screen-Space Effects        (E5–E10)
 D. Separable Subsurface Scattering      (E11–E12)
-E. Full-res HDR Compose + Sky + FX      (E13)
+E. Full-res HDR Forward Compose + Sky   (E13)            ← 重新光栅化几何 + 直接采样原图
 F. Depth of Field                       (E14–E16)
 G. Eyes / Hair / Effect 收尾            (E17)
 H. TAA + Bloom 5 级金字塔               (E18–E27)
@@ -62,14 +62,23 @@ I. Tonemap / FSR / UI / Present         (E28–E30)
 
 E2 用 30 draws / E3 用 10 draws 对**同一组 9 个角色 RPS（472–480）×3 cascade slice / ×1 atlas slice** 渲染（draw 列表表现为 `RPS 472–480` 重复 3 次写到 atlas 三段 viewport）。
 
-### 3.3 GBuffer 布局（推断）
+### 3.3 ⚠ E4 不是 deferred GBuffer，是 Velocity + Normal Pre-pass（**详见 `06-gbuffer-truth.md`**）
+
+> **重要**：此前一版文档把 `E4 → {228, 229}` 当作"GBuffer baseColor + normal/material"，**这个判断是错误的**。
+> 通过反编译 fragment IR 与导出真实纹理字节，确认了 LYSK 的实际架构：
 
 E4 的 MRT 是 `RGBA8Unorm × 2 + D32S8`：
 
-- **MRT0 (228)**：baseColor + 某通道（roughness/metallic 之一）
-- **MRT1 (229)**：normal（pack 进 RG）+ 其它材质参数
+- **MRT0 (228)**：**packed 16-bit motion vector**（per-pixel reprojection delta，每分量 2 字节）→ 唯一消费方是 **TAA (RPS 441 `_VelocityTexture`)**
+- **MRT1 (229)**：**octahedral-encoded world normal (RG) + sign(N.z) flag (B) + 角色前景 mask (A: 0.047 角色 / 0 InverseTonemap)** → **本帧无 fragment 显式 sample**（可能是引擎全局 binding 占位 / 为非本帧场景预留）
+- **227 D32S8**：主深度+模板（这部分判断不变）
 
-> 仅 2 个 RGBA8 颜色目标 + 深度，比常见 thin-GBuffer 还更瘦 — 配合主合成阶段从 lighting buffer 232 + GBuffer 228/229 + 阴影 230/234 + 深度 227 进行延迟解算，是非常激进的「**两 8-bit GBuffer + 半分辨率 lighting buffer**」延迟方案。
+**LYSK 的实际 lighting 架构是 Forward + Visibility-Style Velocity Buffer**：lighting **不**通过解码 GBuffer 完成，而是在 **E10**（half-res，仅皮肤+牙齿）和 **E13**（full-res，全部材质）**重新光栅化几何**，并直接采样原始材质纹理（`PL_Head_MU_N`、`PL_Head_R`、`PL_Makeup_*` 等）+ cluster lighting buffer 来计算光照。
+
+→ 这是非常激进的「**Velocity Pre-pass + 全场景两次 Forward 重光栅化（half-res + full-res）**」方案，区别于经典 deferred 的「GBuffer 写一次 + lighting 解码一次」。代价是几何被画 6 次（3 cascade shadow + 1 local shadow + 1 velocity-prepass + 1 half-res lighting + 1 full-res compose），收益是：
+- 不需要厚 GBuffer，省带宽（只有 RGBA8×2 = 8 字节/像素）；
+- Lighting 直接在 forward 域算，可以无损 SSS / 复杂材质参数（不被 GBuffer 通道数限制）；
+- TAA 拥有专门的 motion vector buffer，独立于 lighting 决策。
 
 ### 3.4 角色材质的「四变体 / 五阶段」组合
 
@@ -112,38 +121,42 @@ E30 RCAS sharpen + UI overlay → 147/160 swapchain (1668×2388 BGRA8)
 E1 = `CalcLighting.CSMain`，是这一整帧**唯一**的 compute 工作。它发生在：
 
 - **晚于** swapchain present prep（CB0 blit 已结束）；
-- **早于** GBuffer（E4）；
-- **同帧内** 持续被 E10 / E13 / E17 等所有「读 lighting」的 fragment shader 消费。
+- **早于** Velocity-Pre-pass（E4）；
+- **同帧内** 持续被 E10 / E13 / E17 等所有「读 lighting」的 fragment shader 消费 — **作为 fragment shader 中名为 `_LightIndexMap` 的 texture2d 输入**（rid 145, 128×128 RGBA8）。
 
-→ 推测它写一个 **cluster / tile light buffer**（per-cluster light list / per-tile light index），在角色 fragment shader 里查询。具体 dispatch 大小、buffer 绑定槽位，受 R7.5 子项 B 盲区影响，本文不下细化结论。
+→ 这是一个 cluster / tile lighting **index buffer**：把屏幕分成 128×128 grid，每个 grid cell 存「这个 cell 里影响哪些光源」的索引列表。在 491（half-res lighting）的 fragment IR 中已确认了名字 `_LightIndexMap` 的存在。具体 dispatch 大小受 R7.5 子项 B 盲区影响，仍待补 swizzle。
 
 ## 4. 帧级数据流 DAG
 
 ```
                         CSMain (E1, compute)
                             │
-                            │  cluster/tile lighting buffer
+                            │  _LightIndexMap (rid 145, 128×128 RGBA8 cluster light index)
                             ▼
-ShadowDepth(225)   GBuf0/1(228/229) ───── Depth+Stencil(227)
+ShadowDepth(225)   "Velocity+Normal Pre-pass" (228 motion / 229 octa-norm+mask)  Depth+Stencil(227)
    E2/E3   ──────► E4
                             │
+                            │  注意：228 / 229 不喂给 lighting，只 227 (depth) 被后续 pass 读。
+                            │       228 仅消费方 = E18 TAA 的 _VelocityTexture
+                            │       229 本帧无 fragment 显式 sample
                             ├─► E5 SSSM 1/4 (230 R8 291×417)
                             ├─► E6 DepthResolve (233 R32F + 231 D32S8)
                             ├─► E7 SSAO (235 R8) ─► E8 SSAOBlur (234 R8)
                             ├─► E9 ScreenSpaceShadows (236 RGBA8)
-                            └─► E10 Half-res lighting (232 RG11B10F) + 234 SSS-mask
-                                            │
+                            └─► E10 Half-res Forward Lighting (232 RG11B10F) + 234 SSS-mask
+                                            │   ↑ 重新光栅化几何 + 直接采样 PL_*_D/N/R 原图 + _LightIndexMap
                                             ▼
                               E11 SSS H-blur (232 → 237)
                               E12 SSS V-blur (237 → 232)
                                             │
                                             ▼
-              ┌─── E13 Full-res HDR Compose + Sky + FX  (224 RGBA16F 1167×1671) ───┐
-              │   18 draws: Cloth/Skin/Eye/Teeth/Hair compose + Sky + EffectFresnel │
-              ▼                                                                      ▼
+              ┌─── E13 Full-res Forward Compose + Sky + FX  (224 RGBA16F 1167×1671) ─┐
+              │   18 draws: Cloth/Skin/Eye/Teeth/Hair compose + Sky + EffectFresnel    │
+              │   ↑ 又一次重新光栅化几何 + 采样原图 + 上采样 232 SSS lighting           │
+              ▼                                                                        ▼
           E14/E16 DOF (238 → 224)                                  E17 Eyes/Hair/Dissolve (224)
-              │                                                                      │
-              └────────────────► E18 TAA (224 + 247_prev) → 239_now ─────────────────┘
+              │                                                                        │
+              └────────────────► E18 TAA (224 + 247_prev + 228 velocity) → 239_now ────┘
                                               │
                                 E19–E23 Bloom Down (244→240→241→242→243)
                                 E24–E27 Bloom Up   (243→242→241→240→244)

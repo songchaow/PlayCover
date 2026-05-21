@@ -61,7 +61,9 @@
 
 → 出现在 **E2（Cascade shadow）+ E3（Local shadow atlas）**。注意 474/475/476 共享 `vf=251/253`，是同一个 depth-only shader 在不同 render-state 下的实例（很可能 alpha-test mask 不同）。
 
-### 1.3 角色材质 — GBuffer 主写入（481–489，全部 `color#=2, depth=D32S8`）
+### 1.3 角色材质 — Velocity+Normal Pre-pass（481–489，全部 `color#=2, depth=D32S8`）
+
+> ⚠ 之前误标为 "GBuffer 主写入"。实测这些 fragment shader 是**统一的 motion+normal pack 模板**，不写材质属性。详见 `06-gbuffer-truth.md`。
 
 | key | label | vf=v/f |
 |---|---|---|
@@ -72,10 +74,10 @@
 | 485 | Papegame/SkinSSS | 289/357 |
 | 486 | Papegame/EyeSpec | 289/357 |
 | 487 | Papegame/Teeth | 289/357 |
-| 488 | Papegame/Cloth/ClothStandard | 371/373 |
-| 489 | Papegame/HairScreenDoor | 381/383 |
+| 488 | Papegame/Cloth/ClothStandard (alpha-test) | 371/373 |
+| 489 | Papegame/HairScreenDoor (stipple) | 381/383 |
 
-→ 出现在 **E4 GBuffer pass**。484–487 共享 `vf=289/357`，说明皮肤/眼/牙在 GBuffer 阶段使用**同一个 fragment shader**（差异由 binding 决定）。
+→ 出现在 **E4 Velocity+Normal Pre-pass**。484–487 共享 `vf=289/357`，说明皮肤/眼/牙在此阶段**使用同一个 vertex+fragment shader**（输入 mesh 不同，但 motion+normal pack 算法一致）。488/489 因为需要 alpha-test/stipple discard 而有独立 fragment（多了纹理 sample）。
 
 ### 1.4 角色材质 — Half-res Lighting Branch（490–492，仅皮肤+牙齿）
 
@@ -137,8 +139,8 @@
 | **225** | 3072×1024 | Depth32Float | `DirectionalShadowDepth` | **主光定向阴影 atlas（3 cascade）** |
 | **226** | 1024×1024 | Depth32Float | `LocalShadowmapAtlas` | **局部光阴影 atlas** |
 | **227** | 1167×1671 | D32S8 | `TempBuffer 119` | **主深度+模板** |
-| **228** | 1167×1671 | RGBA8Unorm | `TempBuffer 120` | **GBuffer slot 0** |
-| **229** | 1167×1671 | RGBA8Unorm | `TempBuffer 121` | **GBuffer slot 1** |
+| **228** | 1167×1671 | RGBA8Unorm | `TempBuffer 120` | **Packed motion vector**（TAA `_VelocityTexture` 输入）— 不是 GBuffer baseColor |
+| **229** | 1167×1671 | RGBA8Unorm | `TempBuffer 121` | **Octahedral world-normal + sign(N.z) + 角色前景 mask (A=12 / 0)** — 本帧无 fragment sample |
 | 230 | 291×417 | R8Unorm | `TempBuffer 122` | 1/4 area Coarse SSSM（E5） |
 | 231 | 583×835 | D32S8 | `TempBuffer 123` | 半分辨率深度+模板（E6 输出） |
 | **232** | 583×835 | RG11B10Float | `TempBuffer 124` | **半分辨率皮肤 lighting / SSS in-out** |
@@ -165,7 +167,8 @@
 | 225 | E2（30 draws） | E9, E10, E13 |
 | 226 | E3（10 draws） | E10, E13 |
 | 227 | E4 | E6, E9, E10, E13, E17 |
-| 228 / 229 | E4 | E5–E10, E13, E17 |
+| 228 (velocity) | E4 | **E18 (TAA `_VelocityTexture`)**（其它 RPS 仅 binding 占位、IR 不 sample） |
+| 229 (octa-normal+mask) | E4 | 本帧无 fragment 显式 sample（dead store / 引擎全局 binding 占位 — 详见 `06-gbuffer-truth.md §8.5`）|
 | 230 | E5 | E9 |
 | 231 / 233 | E6 | E7, E8, E9, E10 |
 | 234 | E8（写）, E10（再写） | E10, E13, E17 |

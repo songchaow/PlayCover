@@ -31,7 +31,7 @@
 2. **Python CLI wrapper**（`Scripts/gputrace_replay_wrapper.py`）— ✅ CLI + 模块双接口，dataclass 返回值（含 R7.2 `ColorAttachment` / R7.4 `ShaderOfRpsResult` / R7.3 `FrameListResult` / R7.6-C `ShaderOfDrawcallResult` + `DrawIndexOutOfRange` 异常 / **R7.7 `DisasmResult` + `ir_source` / SDI fallback 字段** 等）
 3. **端到端验证链路** — ✅ LYSK trace 65/65 RPS 反查 + 244/244 draw→RPS 映射 + frame-list → shader-of-rps 端到端取 metallib/IR + R7.6-C `shader-of-drawcall 0/103 --with-ir` 与手工链字节级一致 + **R7.7 SDI fallback 把 LYSK 96 lib 的 IR 命中率从 3.1% 拉到 100%（AIR 3 + SDI 93 完全互补）**
 4. **GPU Trace 分析 skill**（`.codebuddy/skills/gpu-trace-analysis/`）— ✅ 自包含，含 SKILL.md + scripts/ + references/，从任意目录可独立运行
-5. **R7：Frame-Inspection 能力补全** — ⏳ 进行中，剩余按"先解锁已交付能力 → 再加新能力"重排：**R7.5（depth/stencil blit + compute dispatch 计数）→ R7.6 子项 A/B（bindings + uniforms）**。详见 TODO + `subdocs/20260521-R7-frame-inspection-gap.md`
+5. **R7：Frame-Inspection 能力补全** — ⏳ 进行中，剩余按"先解锁已交付能力 → 再加新能力"重排：**R7.6 子项 A（bindings，紧邻 `shader-of-drawcall` 补足）→ R7.6 子项 B（uniforms，依赖 A）→ R7.5（depth/stencil blit + compute dispatch 计数，横向新能力）**。详见 TODO + `subdocs/20260521-R7-frame-inspection-gap.md`
 
 ## 样本 trace 路径（回归基线）
 
@@ -86,11 +86,21 @@ GPUTRACE_PATH="$HOME/Desktop/reference_test_inject.gputrace" \
 
 ### 下一步（当前最高优先级）
 
-**R7.5：depth/stencil export（bridge 内置 blit）+ compute encoder dispatch 计数补齐 — 1–1.5 天合计**
+**R7.6 子项 A：`frame-list --with-bindings`（draw 级 binding 表）— 1.5 天**
 
-R7.5 是新能力但相对独立，没有"刚交付能力被堵塞"的紧迫感。子项 A（depth/stencil blit）≈ 1.5 天 + 子项 B（compute dispatch 计数）≈ 0.5 天。完成后排序：R7.6 子项 A（bindings 1.5 天） → R7.6 子项 B（uniforms 1 天）。
+**优先级调整理由（2026-05-21 二次评估）**：原计划 R7.5 → R7.6-A → R7.6-B，但按 R7.7 抢占 R7.5 时遵循的同一原则——**"先解锁已交付能力，再加新能力"**——R7.6-A 是 R7.6-C 刚交付的 `shader-of-drawcall <draw_index> --with-ir` 的天然紧邻补足：
 
-详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.5。
+| 当前 | 缺失 |
+|------|------|
+| `shader-of-drawcall N` → "用了哪段 shader" ✅ | `shader-of-drawcall N + bindings` → "用了哪段 shader **+ 绑了哪些 buffer/texture**" ⏳ R7.6-A |
+
+R7.5（depth/stencil + compute dispatch 计数）是横向新能力，主要服务 ShadowMap / SSS / stencil bit 类专项问题；R7.6-A 是几乎所有渲染问题（UV 错、错绑纹理、cbuffer 错、模型错位、参数缺失）的调查入口，场景覆盖更广。**R7.6-A 落地后 `shader-of-drawcall` 体验质变；R7.5 留作 ShadowMap 类专项再补**。
+
+R7.6-A 的实现成本与 R7.5 相当（基础设施已就绪：R7.3 swizzle 框架 + frame-list 树结构 — 加 `--with-bindings` 是对现有 swizzle 集合的对称扩展，~6 个 set\*Buffer/Texture 方法）；R7.5-A 需要新写 blit pass + 新 export 接口设计。
+
+**新执行顺序**：R7.6-A（1.5 天，P0）→ R7.6-B（1 天，P1，强依赖 A 的 binding 表）→ R7.5-A/B（1.5 天，P2，独立专项）。
+
+详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5（R7.6 子项 A/B 与 R7.5 章节描述了实现细节）。
 
 ## 构建与验证的方法
 
@@ -124,8 +134,9 @@ R7.5 是新能力但相对独立，没有"刚交付能力被堵塞"的紧迫感�
   - **[DONE] R7.4**：`shader-of-rps` 子命令（语义级反查 + `--with-ir` 调 `llvm-dis` 直出 `.ll` + `cache_key_metallib`），与 R7.2 同冲刺完成
   - **[DONE] R7.6 子项 C**（2026-05-21）：`shader-of-drawcall` 薄封装（wrapper-only：`frame-list → draw_to_rps_map → shader-of-rps`）+ LYSK draw_index=0/103 字节级一致回归 + reference_test_inject compute-only OOR/`draw_count=0` 回归。集成测试 88/88 通过。详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.6
   - **[DONE] R7.7**（2026-05-21）：`disasm` 子命令 + SDI module.bc fallback。`shader-of-rps` / `shader-of-drawcall` / `disasm` 三入口在 LYSK 96 lib 上 IR 总命中率 100%（AIR 3 + SDI 93 完全互补，vs R7.4 仅 3.1%）。bridge 0.4.0 → 0.5.0；集成测试 88 → 102/102。新增字段：`ir_source` / `sdi_module_bc_*` / `sdi_bundle_id` / `sdi_module_hash` / `sdi_source_path`；废弃 `ir_error="no_air_bitcode"`，替换为 `no_air_bitcode_and_no_sdi`（仅两条路径都失败时返回）。详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.7
-  - **[P0] R7.5（当前最高优先级）**：depth/stencil export（bridge 内置 blit）+ compute encoder dispatch 计数补齐 — 1–1.5 天合计。新能力，无前置依赖
-  - **[P1] R7.6 子项 A/B**：`frame-list --with-bindings`（1.5 天）+ `dump-uniforms`（1 天，依赖子项 A 的 binding 表）
+  - **[P0] R7.6 子项 A（当前最高优先级，2026-05-21 二次评估抢占 R7.5）**：`frame-list --with-bindings` — swizzle `setVertexBuffer:offset:atIndex:` / `setVertexTexture:atIndex:` / `setFragmentBuffer:*` / `setFragmentTexture:*` / `setVertexBytes:length:atIndex:` 等，每 draw 关联完整 binding 表（buffer_id / texture_id / offset / index）。1.5 天。落地后 `shader-of-drawcall` 可同时输出 "用了哪段 shader + 绑了哪些资源"，是 R7.6-C 的天然紧邻补足
+  - **[P1] R7.6 子项 B**：`dump-uniforms <encoder_index> <draw_index> <bind_slot>` — 强依赖子项 A 的 binding 表来定位 buffer。1 天
+  - **[P2] R7.5（横向新能力）**：depth/stencil export（bridge 内置 blit）+ compute encoder dispatch 计数补齐 — 1–1.5 天合计。独立专项，无依赖；主要服务 ShadowMap / SSS / stencil bit 类问题
 - **每个 R7 chunk 落地后必须同步**：SKILL.md（"Exploring an unknown trace's pipeline" 工作流 / 已知盲点） + `references/investigation-playbook.md`（frame-overview worked example） + `references/cli-reference.md`（新子命令 schema）。R7.1/R7.2/R7.3/R7.4/R7.6-C/R7.7 落地时已同步。
 
 ## 高频复用经验

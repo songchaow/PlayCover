@@ -739,6 +739,195 @@ for cb in d['command_buffers']:
         echo "    [SKIP] draw_count=0 (compute-only trace) — R7.6-B draw-shape assertions skipped"
     fi
 
+    # T7s: R7.6-D — shader-of-drawcall 三件套合一 (wrapper 联动收尾)
+    # wrapper-only：bridge 零变更。验证：
+    #   1. --with-bindings 把 frame-list 的 binding 表附到结果 (与 R7.3/R7.6-A 字节级一致)
+    #   2. --with-uniforms 隐含 --with-bindings
+    #   3. uniforms[] 中 slot 数 = bindings.{stage}.buffers 长度，per-slot 字节级与 dump-uniforms 直调一致
+    #   4. 默认 (无 flag) 行为不变 — 仅输出 IR (R7.6-C 原约定)
+    #   5. 两个 stage (fragment/vertex) 独立验证
+    #   6. compute-only trace 自动 SKIP (等同 T7r)
+    if [ "$BIND_DRAW_COUNT" -gt 0 ]; then
+        echo "  [T7s] R7.6-D shader-of-drawcall triple-bundle (IR + bindings + uniforms)"
+        WRAPPER_PY="$SCRIPT_DIR/gputrace_replay_wrapper.py"
+        if [ -f "$WRAPPER_PY" ]; then
+            TMP_SOD_D=$(mktemp -d)
+
+            # T7s-1: 默认 (无 flag) 行为与 R7.6-C 一致 — 不带 bindings / uniforms
+            set +e
+            python3 "$WRAPPER_PY" shader-of-drawcall "$GPUTRACE_PATH" 0 \
+                --output-dir "$TMP_SOD_D" >"$TMP_SOD_D/r0.json" 2>/dev/null
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then pass "T7s-1 default invocation exit = 0"; else fail "T7s-1 default exit = $rc"; fi
+            if python3 -c "
+import json,sys
+d=json.load(open('$TMP_SOD_D/r0.json'))
+sys.exit(0 if d.get('with_bindings') is False and d.get('with_uniforms') is False
+              and d.get('bindings') is None and d.get('uniforms') is None
+         else 1)
+" 2>/dev/null; then
+                pass "T7s-1 default omits bindings/uniforms (R7.6-C compat)"
+            else
+                fail "T7s-1 default unexpectedly emitted bindings/uniforms"
+            fi
+
+            # T7s-2: --with-bindings 附 bindings, 不附 uniforms
+            set +e
+            python3 "$WRAPPER_PY" shader-of-drawcall "$GPUTRACE_PATH" 0 \
+                --with-bindings --output-dir "$TMP_SOD_D" >"$TMP_SOD_D/r1.json" 2>/dev/null
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then pass "T7s-2 --with-bindings exit = 0"; else fail "T7s-2 --with-bindings exit = $rc"; fi
+            if python3 -c "
+import json,sys
+d=json.load(open('$TMP_SOD_D/r1.json'))
+b=d.get('bindings')
+ok = (d.get('with_bindings') is True
+      and d.get('with_uniforms') is False
+      and isinstance(b, dict)
+      and 'vertex' in b and 'fragment' in b
+      and 'buffers' in b['fragment'] and 'textures' in b['fragment'])
+sys.exit(0 if ok else 1)
+" 2>/dev/null; then
+                pass "T7s-2 emits bindings.{vertex,fragment}.{buffers,textures,samplers}"
+            else
+                fail "T7s-2 bindings shape wrong"
+            fi
+            # 与单独的 frame-list 输出 byte-level 等价 (不严格逐字段，但保证 buffers 数量一致)
+            FL_FB=$(echo "$BIND_JSON" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+for cb in d['command_buffers']:
+    for e in cb['encoders']:
+        for dr in e.get('draws', []):
+            if dr.get('draw_index_global')==0:
+                bd=dr.get('bindings') or {}
+                f=bd.get('fragment') or {}
+                print(len(f.get('buffers') or []))
+                sys.exit(0)
+print(0)
+" 2>/dev/null || echo "0")
+            SOD_FB=$(python3 -c "import json; print(len(json.load(open('$TMP_SOD_D/r1.json'))['bindings']['fragment']['buffers']))" 2>/dev/null || echo "0")
+            if [ "$FL_FB" = "$SOD_FB" ] && [ "$FL_FB" != "0" ]; then
+                pass "T7s-2 fragment buffer count matches frame-list (n=$FL_FB)"
+            else
+                fail "T7s-2 fragment buffer count mismatch (frame-list=$FL_FB, sod=$SOD_FB)"
+            fi
+
+            # T7s-3: --with-uniforms 隐含 --with-bindings
+            set +e
+            python3 "$WRAPPER_PY" shader-of-drawcall "$GPUTRACE_PATH" 0 \
+                --with-uniforms --output-dir "$TMP_SOD_D" >"$TMP_SOD_D/r2.json" 2>/dev/null
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then pass "T7s-3 --with-uniforms exit = 0"; else fail "T7s-3 --with-uniforms exit = $rc"; fi
+            if python3 -c "
+import json,sys
+d=json.load(open('$TMP_SOD_D/r2.json'))
+sys.exit(0 if d.get('with_bindings') is True and d.get('with_uniforms') is True
+              and d.get('bindings') is not None and d.get('uniforms') is not None
+         else 1)
+" 2>/dev/null; then
+                pass "T7s-3 --with-uniforms implies --with-bindings"
+            else
+                fail "T7s-3 --with-uniforms did not imply --with-bindings"
+            fi
+
+            # T7s-4: uniforms[] 长度 = fragment.buffers 长度
+            UN_LEN=$(python3 -c "import json; print(len(json.load(open('$TMP_SOD_D/r2.json'))['uniforms']))" 2>/dev/null || echo "0")
+            if [ "$UN_LEN" = "$SOD_FB" ] && [ "$UN_LEN" != "0" ]; then
+                pass "T7s-4 uniforms length == fragment.buffers length (n=$UN_LEN)"
+            else
+                fail "T7s-4 uniforms length mismatch (uniforms=$UN_LEN, fragment_buffers=$SOD_FB)"
+            fi
+
+            # T7s-5: per-slot uniforms 字节级与单独 dump-uniforms 直调一致
+            #        取 slot 0 (LYSK 上几乎总是 PerCamera 这种成功 cbuffer)，对比 decoded 字段
+            set +e
+            python3 "$WRAPPER_PY" dump-uniforms "$GPUTRACE_PATH" 0 "$DU_SLOT" \
+                --stage "$DU_STAGE" --output-dir "$TMP_SOD_D" >"$TMP_SOD_D/du_solo.json" 2>/dev/null
+            set -e
+            if python3 -c "
+import json,sys
+sod=json.load(open('$TMP_SOD_D/r2.json'))
+solo=json.load(open('$TMP_SOD_D/du_solo.json'))
+# 在 sod['uniforms'] 中找 stage='$DU_STAGE' 且 bind_slot=$DU_SLOT 的项
+target=None
+for u in sod.get('uniforms', []):
+    if u.get('bind_slot')==$DU_SLOT and u.get('stage')=='$DU_STAGE':
+        target=u
+        break
+if target is None:
+    sys.exit(2)
+# 比较 layout (反射结构) 与 decoded (字节解码) — 都来自同一 RPS+slot，应严格相等
+def keep(d, k):
+    return d.get(k)
+ok = (keep(target,'layout')==keep(solo,'layout')
+      and keep(target,'binding_name')==keep(solo,'binding_name')
+      and keep(target,'decoded')==keep(solo,'decoded')
+      and keep(target,'decoded_ok')==keep(solo,'decoded_ok'))
+sys.exit(0 if ok else 1)
+" 2>/dev/null; then
+                pass "T7s-5 per-slot uniforms byte-level matches dump-uniforms direct call"
+            else
+                fail "T7s-5 per-slot uniforms differs from dump-uniforms direct call"
+            fi
+
+            # T7s-6: vertex stage 也能跑 (LYSK draw 0 通常 vertex 也有 buffers — 至少 vb0)
+            set +e
+            python3 "$WRAPPER_PY" shader-of-drawcall "$GPUTRACE_PATH" 0 \
+                --stage vertex --with-uniforms --output-dir "$TMP_SOD_D" >"$TMP_SOD_D/r3.json" 2>/dev/null
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ] || [ "$rc" -eq 11 ]; then pass "T7s-6 vertex stage exit in (0,11)"; else fail "T7s-6 vertex stage exit = $rc"; fi
+            if python3 -c "
+import json,sys
+d=json.load(open('$TMP_SOD_D/r3.json'))
+ok = (d.get('stage')=='vertex'
+      and d.get('with_uniforms') is True
+      and isinstance(d.get('uniforms'), list))
+sys.exit(0 if ok else 1)
+" 2>/dev/null; then
+                pass "T7s-6 vertex stage emits uniforms list"
+            else
+                fail "T7s-6 vertex stage missing uniforms list"
+            fi
+
+            # T7s-7: module API surface — 关键字参数与默认值
+            set +e
+            python3 -c "
+import sys
+sys.path.insert(0, '$SCRIPT_DIR')
+from gputrace_replay_wrapper import ReplayBridge
+b = ReplayBridge()
+# 默认 with_bindings=False, with_uniforms=False
+r0 = b.shader_of_drawcall('$GPUTRACE_PATH', 0)
+assert r0.bindings is None, 'default bindings should be None'
+assert r0.uniforms is None, 'default uniforms should be None'
+# with_uniforms=True 自动开 bindings
+r1 = b.shader_of_drawcall('$GPUTRACE_PATH', 0, with_uniforms=True)
+assert r1.bindings is not None, 'with_uniforms should imply bindings'
+assert r1.uniforms is not None and len(r1.uniforms) > 0, 'uniforms should be a non-empty list'
+# uniforms[*] 元素是 DumpUniformsResult
+from gputrace_replay_wrapper import DumpUniformsResult, FrameDrawBindings
+assert isinstance(r1.bindings, FrameDrawBindings)
+assert all(isinstance(u, DumpUniformsResult) for u in r1.uniforms)
+print('OK')
+" >/dev/null 2>&1
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then pass "T7s-7 module API contract (defaults + uniforms implies bindings + types)"; else fail "T7s-7 module API contract failed (rc=$rc)"; fi
+
+            rm -rf "$TMP_SOD_D"
+        else
+            fail "T7s — wrapper not found at $WRAPPER_PY"
+        fi
+    else
+        echo "  [T7s] R7.6-D shader-of-drawcall triple-bundle"
+        echo "    [SKIP] draw_count=0 (compute-only trace) — R7.6-D draw-shape assertions skipped"
+    fi
+
     rm -rf "$PIPELINE_DIR"
 else
     echo ""

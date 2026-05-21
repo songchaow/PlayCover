@@ -461,10 +461,17 @@ class DrawIndexOutOfRange(Exception):
 @dataclass
 class ShaderOfDrawcallResult:
     """
-    R7.6-C: ``shader-of-drawcall`` 结果。
+    R7.6-C/D: ``shader-of-drawcall`` 结果。
 
-    包装一对 ``(frame-list draw 元信息, shader-of-rps 反查结果)``，让用户
+    包装 ``(frame-list draw 元信息, shader-of-rps 反查结果)``，让用户
     一次拿到 "draw N → shader IR" 链路的全部上下文，无需自己拼两次调用。
+
+    R7.6-D 升级为"三件套真合一"：``with_bindings`` 时附 ``bindings`` 字段
+    (复用 ``frame_list`` 同一次调用的输出)；``with_uniforms`` 时对该 draw 的
+    ``bindings.{stage}.buffers[]`` 中每个 slot 调一次 ``dump-uniforms``，
+    组装到 ``uniforms`` 列表。Per-slot 软错误（``reflection_not_captured`` /
+    ``binding_not_a_buffer`` / ``offset_out_of_range`` 等）落到该 slot 的
+    ``DumpUniformsResult.error`` 字段，不阻塞整体。
     """
     trace_path: str
     draw_index: int
@@ -478,6 +485,13 @@ class ShaderOfDrawcallResult:
     rps_label: Optional[str] = None
     # shader-of-rps 透传（嵌入完整结果以便上层消费 .ir_ll_path 等字段）
     shader: Optional[ShaderOfRpsResult] = None
+    # R7.6-D — bindings (该 draw 的 vertex/fragment binding 快照；
+    # 仅当 with_bindings=True 时填，从同一次 frame_list 复用)
+    bindings: Optional[FrameDrawBindings] = None
+    # R7.6-D — uniforms (对 bindings.{stage}.buffers[] 每个 slot 跑一次
+    # dump-uniforms 的结果列表；仅当 with_uniforms=True 时填。即使 per-slot
+    # 失败也会留一项，错误透传到 DumpUniformsResult.error)
+    uniforms: Optional[list["DumpUniformsResult"]] = None
     # 链路上的错误（仅在 wrapper 自身产生，例如 rps_key 为 null 而非 OOR 时）
     error: Optional[str] = None
     hint: Optional[str] = None
@@ -1313,27 +1327,43 @@ class ReplayBridge:
         *,
         stage: str = "fragment",
         with_ir: bool = False,
+        with_bindings: bool = False,
+        with_uniforms: bool = False,
         output_dir: Optional[str | Path] = None,
         timeout: float = 300.0,
     ) -> ShaderOfDrawcallResult:
         """
-        R7.6-C: ``draw_index`` → shader (metallib / AIR / 可选 LLVM IR) 一行调用。
+        R7.6-C/D: ``draw_index`` → shader (metallib / AIR / 可选 LLVM IR
+        + bindings + uniforms 三件套) 一行调用。
 
-        薄封装：内部串联 ``frame_list(...)`` 拿 ``draw_to_rps_map[draw_index]``，
-        再调 ``shader_of_rps(...)`` 透传 stage / with_ir / output_dir。等价于
-        "知 draw_index" 这一用户心智入口与 ``shader_of_rps`` ("知 RPS_key")
-        形成对称。
+        薄封装：内部串联 ``frame_list(...)`` 拿 ``draw_to_rps_map[draw_index]``
+        + 该 draw 的 vertex/fragment binding 快照，再调 ``shader_of_rps(...)``
+        透传 stage / with_ir / output_dir。R7.6-D 进一步联动 ``dump-uniforms``
+        把所有 buffer slot 的字节按反射解码，让"知 draw_index"这一用户心智
+        入口与 GUI 选 draw 时默认看到的一屏完整上下文（IR + bindings +
+        uniforms）对齐。
 
         Args:
             trace_path: .gputrace bundle 路径
             draw_index: ``draw_to_rps_map`` 中的 ``draw_index_global``
             stage: 'fragment' (默认) 或 'vertex'
             with_ir: True 时调用 llvm-dis 产出 .ll IR 文件
+            with_bindings: R7.6-D — True 时附该 draw 的 vertex/fragment
+                binding 快照到 ``ShaderOfDrawcallResult.bindings``。复用
+                同一次 frame_list 调用的 bindings 字段，无额外子进程开销。
+                ``with_uniforms`` 隐含此项。
+            with_uniforms: R7.6-D — True 时对 ``bindings.{stage}.buffers[]``
+                中每个 slot 调一次 bridge ``dump-uniforms``，结果按 slot 顺序
+                写入 ``ShaderOfDrawcallResult.uniforms``。Per-slot 软错误
+                (``reflection_not_captured`` / ``binding_not_a_buffer`` /
+                ``offset_out_of_range`` 等) 落到该 slot 的 ``error`` 字段，
+                不阻塞整体。隐含 ``with_bindings``。
             output_dir: shader-of-rps 输出目录
             timeout: 每个底层子命令的超时秒数
 
         Returns:
-            ShaderOfDrawcallResult — 包含 frame-list 元信息 + shader-of-rps 嵌入
+            ShaderOfDrawcallResult — 包含 frame-list 元信息 + shader-of-rps
+            嵌入 + 可选 bindings + 可选 uniforms 列表
 
         Raises:
             DrawIndexOutOfRange: 当 ``draw_index`` 超出 trace 实际 draw 数量
@@ -1346,10 +1376,23 @@ class ReplayBridge:
         if draw_index < 0:
             raise ValueError(f"draw_index must be >= 0, got {draw_index}")
 
+        # with_uniforms 隐含 with_bindings — 后者承载前者所需的 (slot, buffer_key, offset)
+        if with_uniforms:
+            with_bindings = True
+
         trace_path = self._validate_trace(trace_path)
 
-        # 1. frame-list 拿 draw→RPS 映射。这里只需要 map，不需要 timing。
-        fl = self.frame_list(trace_path, with_draws=True, with_timing=False, timeout=timeout)
+        # 1. frame-list 拿 draw→RPS 映射 + 可选 bindings。R7.6-D 收尾：
+        #    当 with_bindings=True 时复用同一次调用即可拿到 bindings，
+        #    避免 R7.6-C 旧实现那种"明明 frame-list 已含 bindings 字段
+        #    却只取了 draw_to_rps_map"的浪费。
+        fl = self.frame_list(
+            trace_path,
+            with_draws=True,
+            with_timing=False,
+            with_bindings=with_bindings,
+            timeout=timeout,
+        )
 
         # 2. 边界检查：包括 compute-only trace (draw_count==0) 与超出范围
         if draw_index >= fl.draw_count or draw_index >= len(fl.draw_to_rps_map):
@@ -1362,8 +1405,9 @@ class ReplayBridge:
         entry = fl.draw_to_rps_map[draw_index]
 
         # frame-list 已经把 (draw_index, encoder_index, draw_in_encoder, call_index, rps_key) 串好。
-        # 进一步从 command_buffers 树里拿 rps_label 作为人类可读上下文。
+        # 进一步从 command_buffers 树里拿 rps_label 与（可选）bindings 作为人类可读上下文。
         rps_label: Optional[str] = None
+        draw_bindings: Optional[FrameDrawBindings] = None
         for cb in fl.command_buffers:
             for enc in cb.encoders:
                 if enc.index != entry.encoder_index:
@@ -1371,10 +1415,11 @@ class ReplayBridge:
                 for d in enc.draws:
                     if d.draw_index_global == entry.draw_index_global:
                         rps_label = d.rps_label
+                        draw_bindings = d.bindings
                         break
-                if rps_label is not None:
+                if rps_label is not None or draw_bindings is not None:
                     break
-            if rps_label is not None:
+            if rps_label is not None or draw_bindings is not None:
                 break
 
         result = ShaderOfDrawcallResult(
@@ -1387,6 +1432,7 @@ class ReplayBridge:
             call_index=entry.call_index,
             rps_key=entry.rps_key,
             rps_label=rps_label,
+            bindings=draw_bindings if with_bindings else None,
         )
 
         # 3. rps_key 缺失（swizzle gap，不是 OOR）— 透传为软错误，不抛异常
@@ -1412,7 +1458,56 @@ class ReplayBridge:
         if sor.error:
             result.error = sor.error
             result.hint = sor.hint
-        # raw 留作 round-trip：包含两条命令的原始 JSON
+
+        # 5. R7.6-D — uniforms 列表：对该 draw 的指定 stage buffers 每 slot
+        #    调一次 bridge dump-uniforms。复用上面已解析好的 (rps_key,
+        #    buffer_key, offset)，避免内部再跑一次 frame-list。Per-slot
+        #    软错误（反射缺失 / 非 buffer / OOR 等）通过 BridgeError 软处理 —
+        #    bridge 在 exit 11 时仍输出 JSON，_run() 会把 payload 还原为 data。
+        uniforms_list: Optional[list[DumpUniformsResult]] = None
+        if with_uniforms and draw_bindings is not None:
+            uniforms_list = []
+            stage_b = draw_bindings.fragment if stage == "fragment" else draw_bindings.vertex
+            for buf in stage_b.buffers:
+                # inline-bytes 形式 (setVertexBytes:length:atIndex:) 没有 resource_id —
+                # bridge 反射可能仍能给 layout，但没字节可解。遵循 R7.6-D 设计：
+                # 调用并把软错误透传 (binding_not_a_buffer / no_buffer_resource_id 等)。
+                buffer_key = buf.resource_id
+                offset = buf.offset
+                try:
+                    du = self._dump_uniforms_for_resolved(
+                        trace_path=trace_path,
+                        rps_key=entry.rps_key,
+                        bind_slot=buf.index,
+                        stage=stage,
+                        buffer_key=buffer_key,
+                        offset=offset,
+                        draw_index=draw_index,
+                        encoder_index=entry.encoder_index,
+                        draw_in_encoder=entry.draw_in_encoder,
+                        call_index=entry.call_index,
+                        output_dir=output_dir,
+                        timeout=timeout,
+                    )
+                except BridgeError as e:
+                    # 极少见 — exit 非 11/12 的硬故障。落一个伪结果让上层观察。
+                    du = DumpUniformsResult(
+                        trace_path=str(trace_path),
+                        rps_key=entry.rps_key or -1,
+                        stage=stage,
+                        bind_slot=buf.index,
+                        output_dir=str(output_dir or ""),
+                        draw_index=draw_index,
+                        encoder_index=entry.encoder_index,
+                        draw_in_encoder=entry.draw_in_encoder,
+                        call_index=entry.call_index,
+                        error=f"bridge_error_exit_{e.exit_code}",
+                        hint=e.stderr.strip()[:512] if e.stderr else None,
+                    )
+                uniforms_list.append(du)
+            result.uniforms = uniforms_list
+
+        # raw 留作 round-trip：包含三条命令的原始 JSON（uniforms 仅含 raw 字段，体积可控）
         result.raw = {
             "frame_list_meta": {
                 "draw_index_global": entry.draw_index_global,
@@ -1426,7 +1521,102 @@ class ReplayBridge:
             },
             "shader_of_rps": sor.raw,
         }
+        if with_bindings and draw_bindings is not None:
+            # 仅落 vertex/fragment 计数，不复制整个 bindings 对象 — wrapper 调用方
+            # 用 result.bindings (dataclass) 拿结构化数据。
+            result.raw["bindings_summary"] = {
+                "vertex": {
+                    "buffers": len(draw_bindings.vertex.buffers),
+                    "textures": len(draw_bindings.vertex.textures),
+                    "samplers": len(draw_bindings.vertex.samplers),
+                },
+                "fragment": {
+                    "buffers": len(draw_bindings.fragment.buffers),
+                    "textures": len(draw_bindings.fragment.textures),
+                    "samplers": len(draw_bindings.fragment.samplers),
+                },
+            }
+        if uniforms_list is not None:
+            result.raw["uniforms"] = [u.raw for u in uniforms_list]
         return result
+
+    # --- internal helper ---------------------------------------------------
+
+    def _dump_uniforms_for_resolved(
+        self,
+        *,
+        trace_path: Path,
+        rps_key: int,
+        bind_slot: int,
+        stage: str,
+        buffer_key: Optional[int],
+        offset: Optional[int],
+        draw_index: Optional[int],
+        encoder_index: Optional[int],
+        draw_in_encoder: Optional[int],
+        call_index: Optional[int],
+        output_dir: Optional[str | Path],
+        timeout: float,
+    ) -> DumpUniformsResult:
+        """
+        R7.6-D 内部 helper：在调用方已经解析出 (rps_key, buffer_key, offset)
+        的前提下直接调 bridge ``dump-uniforms`` (target=rps_key)，跳过
+        :meth:`dump_uniforms` 本身在 ``target_kind="draw"`` 路径下会重新
+        跑一次 ``frame-list`` 的开销。
+
+        与 :meth:`dump_uniforms` 的 ``target_kind="rps"`` 路径行为等价，
+        但额外附加 wrapper 已知的 ``draw_index`` / ``encoder_index`` 等
+        上下文字段到结果，方便消费方 round-trip。
+        """
+        args = [
+            "dump-uniforms",
+            str(trace_path),
+            str(rps_key),
+            str(bind_slot),
+            "--stage", stage,
+        ]
+        if buffer_key is not None and buffer_key > 0:
+            args += ["--buffer-key", str(buffer_key)]
+            if offset is not None:
+                args += ["--offset", str(offset)]
+        if output_dir:
+            args += ["--output-dir", str(output_dir)]
+
+        data, _ = self._run(args, timeout=timeout)
+
+        return DumpUniformsResult(
+            trace_path=data.get("trace_path", str(trace_path)),
+            rps_key=data.get("rps_key", rps_key),
+            stage=data.get("stage", stage),
+            bind_slot=data.get("bind_slot", bind_slot),
+            output_dir=data.get("output_dir", str(output_dir or "")),
+            rps_label=data.get("rps_label"),
+            binding_name=data.get("binding_name"),
+            buffer_data_size=data.get("buffer_data_size"),
+            buffer_data_type=data.get("buffer_data_type"),
+            layout=data.get("layout"),
+            layout_source=data.get("layout_source"),
+            layout_warning=data.get("layout_warning"),
+            buffer_key=data.get("buffer_key"),
+            buffer_offset=data.get("buffer_offset"),
+            buffer_length=data.get("buffer_length"),
+            buffer_label=data.get("buffer_label"),
+            decoded=data.get("decoded"),
+            decoded_ok=data.get("decoded_ok"),
+            decoded_bytes=data.get("decoded_bytes"),
+            decoded_skip_reason=data.get("decoded_skip_reason"),
+            hex=data.get("hex"),
+            hex_bytes_emitted=data.get("hex_bytes_emitted"),
+            draw_index=draw_index,
+            encoder_index=encoder_index,
+            draw_in_encoder=draw_in_encoder,
+            call_index=call_index,
+            error=data.get("error"),
+            hint=data.get("hint"),
+            rps_captured_count=data.get("rps_captured_count"),
+            binding_type=data.get("binding_type"),
+            raw=data,
+        )
 
     def dump_uniforms(
         self,
@@ -1704,10 +1894,11 @@ def _cli_main():
     p_fl.add_argument("--no-bindings", action="store_true",
                       help="R7.6-A: suppress per-draw vertex/fragment binding tables (default ON; output ~75%% smaller without)")
 
-    # shader-of-drawcall (R7.6 子项 C — 薄封装)
+    # shader-of-drawcall (R7.6 子项 C/D — 薄封装 + 三件套合一)
     p_sod = subparsers.add_parser(
         "shader-of-drawcall", parents=[parent],
-        help="Reverse-lookup shader by draw_index (frame-list → shader-of-rps thin wrapper, R7.6-C)",
+        help=("Reverse-lookup shader by draw_index (frame-list → shader-of-rps thin wrapper, R7.6-C); "
+              "with --with-bindings / --with-uniforms for full draw-context (IR + bindings + uniforms, R7.6-D)"),
     )
     p_sod.add_argument("trace", help="Path to .gputrace bundle")
     p_sod.add_argument("draw_index", type=int,
@@ -1716,6 +1907,12 @@ def _cli_main():
                        help="Which stage to look up (default: fragment)")
     p_sod.add_argument("--with-ir", action="store_true",
                        help="Run llvm-dis on the AIR bitcode and emit a .ll file")
+    p_sod.add_argument("--with-bindings", action="store_true",
+                       help="R7.6-D: attach this draw's vertex/fragment binding snapshot "
+                            "(reuses the same frame-list call, no extra cost). Implied by --with-uniforms.")
+    p_sod.add_argument("--with-uniforms", action="store_true",
+                       help="R7.6-D: for each buffer slot of <stage>, run dump-uniforms and "
+                            "decode the bytes via captured reflection. Implies --with-bindings.")
     p_sod.add_argument("--output-dir", default=None,
                        help="Output directory passed through to shader-of-rps (default: system tmp)")
 
@@ -1846,10 +2043,13 @@ def _cli_main():
                 args.draw_index,
                 stage=args.stage,
                 with_ir=args.with_ir,
+                with_bindings=args.with_bindings,
+                with_uniforms=args.with_uniforms,
                 output_dir=args.output_dir,
                 timeout=args.timeout,
             )
             # 输出 schema：顶层 frame-list 元信息 + 嵌入 shader-of-rps 完整 raw
+            # R7.6-D: 当 with_bindings / with_uniforms 时附 bindings / uniforms 字段
             payload: dict[str, Any] = {
                 "command": "shader-of-drawcall",
                 "trace_path": result.trace_path,
@@ -1863,6 +2063,54 @@ def _cli_main():
                 "rps_label": result.rps_label,
                 "shader_of_rps": result.shader.raw if result.shader else None,
             }
+            # R7.6-D — bindings: 直接落 raw 中保存的 bindings_summary 与原始字典
+            #         (用 result.raw 中已有的 bindings_summary 给一个简洁视图；
+            #         完整结构通过 frame-list 子命令获取)
+            if result.bindings is not None:
+                payload["with_bindings"] = True
+                # 把 frame-list 同来源的 bindings dict 重新塞回 (保证字节级 round-trip)
+                # 这里直接构造 dict，因为 dataclass→dict 不复杂。
+                def _bg(sb: FrameStageBindings) -> dict[str, Any]:
+                    return {
+                        "buffers": [
+                            {k: v for k, v in {
+                                "index": b.index,
+                                "resource_id": b.resource_id,
+                                "offset": b.offset,
+                                "inline_bytes_size": b.inline_bytes_size,
+                            }.items() if v is not None}
+                            for b in sb.buffers
+                        ],
+                        "textures": [
+                            {"index": t.index, "resource_id": t.resource_id}
+                            for t in sb.textures
+                        ],
+                        "samplers": [
+                            {"index": s.index, "sampler_ptr": s.sampler_ptr}
+                            for s in sb.samplers
+                        ],
+                    }
+                payload["bindings"] = {
+                    "vertex": _bg(result.bindings.vertex),
+                    "fragment": _bg(result.bindings.fragment),
+                }
+            else:
+                payload["with_bindings"] = False
+            if result.uniforms is not None:
+                payload["with_uniforms"] = True
+                payload["uniforms"] = [u.raw for u in result.uniforms]
+                # 同时给一个简洁汇总，让消费方一眼看到 per-slot 健康度
+                payload["uniforms_summary"] = {
+                    "slot_count": len(result.uniforms),
+                    "slot_ok": sum(1 for u in result.uniforms if u.error is None),
+                    "slot_failed": sum(1 for u in result.uniforms if u.error is not None),
+                    "errors": [
+                        {"bind_slot": u.bind_slot, "error": u.error}
+                        for u in result.uniforms if u.error is not None
+                    ],
+                }
+            else:
+                payload["with_uniforms"] = False
             if result.error:
                 payload["error"] = result.error
                 payload["hint"] = result.hint

@@ -504,20 +504,31 @@ If any of these fails, the swizzle install path is broken (likely a macOS update
 
 ## Subcommand: shader-of-drawcall (wrapper-only)
 
-**R7.6-C** thin封装 — symmetric counterpart of `shader-of-rps`. Mental model: "I know the **draw index**, give me its shader IR." Equivalent to `frame-list <trace> | jq '.draw_to_rps_map[N].rps_key'` piped into `shader-of-rps`, but as a single command with proper structured-error handling for the compute-only / out-of-range edge cases.
+**R7.6-C/D** thin封装 — symmetric counterpart of `shader-of-rps`. Mental model: "I know the **draw index**, give me its shader IR (and bindings, and uniforms)." Equivalent to `frame-list <trace> | jq '.draw_to_rps_map[N].rps_key'` piped into `shader-of-rps`, but as a single command with proper structured-error handling for the compute-only / out-of-range edge cases.
+
+**R7.6-D upgrade**: with `--with-bindings` / `--with-uniforms`, the same one-shot invocation also returns the draw's per-stage binding snapshot **and** decodes every buffer slot's bytes through the captured `MTLRenderPipelineReflection`. This is the "draw → IR + bindings + uniforms" triple-bundle promised since R7.6-A, finally landed without bridge changes (pure wrapper glue reusing the already-shipped `frame-list`/`shader-of-rps`/`dump-uniforms` entries).
 
 Lives in the Python wrapper only — the bridge binary is **unchanged**. Run via:
 
 ```bash
 python3 scripts/gputrace_replay_wrapper.py shader-of-drawcall <.gputrace> <draw_index> \
-    [--stage fragment|vertex] [--with-ir] [--output-dir DIR]
+    [--stage fragment|vertex] [--with-ir] [--with-bindings] [--with-uniforms] [--output-dir DIR]
 ```
 
 Internally:
 
-1. Calls `frame-list` (with `--with-draws`, no timing) to obtain `draw_to_rps_map[]`.
-2. Reads `draw_to_rps_map[draw_index]` for the `(rps_key, encoder_index, draw_in_encoder, call_index)` tuple, plus walks the `command_buffers` tree to recover `rps_label`.
+1. Calls `frame-list` (with `--with-draws`, optional `--with-bindings`) to obtain `draw_to_rps_map[]` plus, when bindings are requested, every draw's full vertex/fragment binding snapshot. **One** `frame-list` call covers both — no double pass.
+2. Reads `draw_to_rps_map[draw_index]` for the `(rps_key, encoder_index, draw_in_encoder, call_index)` tuple; walks the `command_buffers` tree once more to recover `rps_label` and the requested draw's `bindings` dataclass.
 3. Calls `shader-of-rps <rps_key> --stage <stage> [--with-ir] [--output-dir DIR]` and embeds the full result.
+4. **R7.6-D** — When `--with-uniforms`, iterates `bindings.{stage}.buffers[]` and calls `bridge dump-uniforms <rps_key> <bind_slot> --buffer-key K --offset N --stage <stage>` for every slot. Per-slot soft errors (`reflection_not_captured`, `binding_not_a_buffer`, `offset_out_of_range`, …) land in that slot's `DumpUniformsResult.error` field and never abort the chain.
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--stage fragment\|vertex` | fragment | Which stage's shader/bindings/uniforms to look up. |
+| `--with-ir` | off | Run `llvm-dis` on the AIR/SDI bitcode and emit a `.ll` next to the metallib. |
+| `--with-bindings` | off | **R7.6-D**: attach this draw's full vertex+fragment binding snapshot (`bindings.{vertex,fragment}.{buffers,textures,samplers}[]`). Reuses the same `frame-list` call — zero extra subprocess cost. Implied by `--with-uniforms`. |
+| `--with-uniforms` | off | **R7.6-D**: for each buffer slot of `<stage>`, run `dump-uniforms` and decode the bytes via captured reflection; results land in `uniforms[]` keyed by `bind_slot`. Implies `--with-bindings`. |
+| `--output-dir` | tmp dir | Passed through to `shader-of-rps` and `dump-uniforms`. |
 
 Output JSON top-level fields:
 
@@ -527,7 +538,12 @@ Output JSON top-level fields:
 | `trace_path`, `draw_index`, `stage`, `output_dir` | echo | Echo of inputs |
 | `encoder_index`, `draw_in_encoder`, `call_index`, `rps_key`, `rps_label` | mixed | Resolved from `frame-list` |
 | `shader_of_rps` | object | Full `shader-of-rps` JSON (metallib path/size, AIR path/size, cacheKey, IR `.ll` path/size, structured errors). May be `null` only if `error == "draw_has_no_rps_key"` (swizzle gap on this draw). |
-| `error` | string? | Surfaces lookup failures uniformly: `"draw_has_no_rps_key"` (rare; swizzle health gap), or any `shader-of-rps` error string (`rps_not_found` / `descriptor_not_captured` / `stage_function_absent` / `no_air_bitcode` / `llvm_dis_not_found`) |
+| `with_bindings` | bool | Whether bindings were requested / attached. |
+| `bindings` | object? | **R7.6-D**: present iff `with_bindings`. Same shape as a `frame-list` draw's `bindings` field (`{vertex,fragment}.{buffers,textures,samplers}[]`). |
+| `with_uniforms` | bool | Whether uniforms were requested / attached. |
+| `uniforms` | array? | **R7.6-D**: present iff `with_uniforms`. One entry per `bindings.<stage>.buffers[i]`, each is the same JSON shape as a standalone `dump-uniforms` call (incl. `layout`, `decoded`, `binding_name`, `error?`). Order matches `bindings.<stage>.buffers[]`. |
+| `uniforms_summary` | object? | **R7.6-D**: aggregate `{slot_count, slot_ok, slot_failed, errors[]}` to skim per-slot health. |
+| `error` | string? | Surfaces lookup failures uniformly: `"draw_has_no_rps_key"` (rare; swizzle health gap), or any `shader-of-rps` error string (`rps_not_found` / `descriptor_not_captured` / `stage_function_absent` / `no_air_bitcode_and_no_sdi` / `llvm_dis_not_found`) |
 | `hint` | string? | Human-readable hint paired with `error` |
 
 ### Out-of-range / invalid-input handling
@@ -538,11 +554,14 @@ Output JSON top-level fields:
 | `draw_index < 0` | Module API raises `ValueError` (CLI exit 2 via the wrapper's catch-all). |
 | `--stage geometry` (or any non-`fragment`/`vertex`) | Module API raises `ValueError`; CLI argparse rejects before the call. |
 | Soft failure on the `shader-of-rps` half (`rps_not_found` etc.) | The wrapper still prints the full payload (with `error` / `hint`) and exits **11**, mirroring `shader-of-rps` behavior. |
+| Per-slot `dump-uniforms` soft failure (`reflection_not_captured` / `binding_not_a_buffer` / `offset_out_of_range` …) | Surfaces only on that slot's `uniforms[i].error` — top-level exit stays 0. Use `uniforms_summary.slot_failed` to detect. |
 | Bridge subprocess error (exit 4–10) | Re-raised as `BridgeError`; CLI maps to that exit code. |
 
 ### Equivalence guarantee
 
 For any `draw_index` where `frame-list`'s `draw_to_rps_map[draw_index].rps_key == K`, the produced `metallib`, `AIR`, and `cacheKey` are **byte-identical** to running `shader-of-rps <K>` directly. The disassembled `.ll` output differs only in the `; ModuleID = '...air'` header comment because `llvm-dis` writes the temporary input path; everything past that line is identical. (Verified via the LYSK regression baseline at `draw_index=103 → rps_key=444 → library_276`, `metallib`/`AIR`/`cacheKey` `cmp -s` clean; `.ll` diff limited to one comment line.)
+
+**R7.6-D**: per-slot `uniforms[i]` is byte-identical to a standalone `bridge dump-uniforms <rps_key> <bind_slot> --buffer-key K --offset N --stage <stage>` for the same draw — same `layout` (reflection tree), same `decoded` (cbuffer field tree), same `binding_name`. Verified by the T7s integration suite (LYSK draw 0 fragment slot 0 → `AsukaPerShader_PerCamera`, draw 10 vertex slot 0 → `AsukaPerShader_ShadowParams`).
 
 ### Sample call (LYSK trace)
 
@@ -551,11 +570,24 @@ TRACE=/Users/<you>/Library/Containers/com.papegames.lysk/Data/Documents/Captures
 WRAPPER=$SKILL_DIR/scripts/gputrace_replay_wrapper.py
 OUT=$(mktemp -d)
 
+# IR-only (R7.6-C original behavior — unchanged):
 python3 "$WRAPPER" shader-of-drawcall "$TRACE" 0 --with-ir --output-dir "$OUT" --pretty
 # → {"command":"shader-of-drawcall","draw_index":0,
 #    "encoder_index":2,"draw_in_encoder":0,"call_index":144,
 #    "rps_key":472,"rps_label":"Papegame/Cloth/ClothStandard",
-#    "shader_of_rps":{ ...metallib_path, cache_key_metallib, ir_error?... }}
+#    "shader_of_rps":{ ...metallib_path, cache_key_metallib, ir_ll_path... },
+#    "with_bindings":false, "with_uniforms":false}
+
+# R7.6-D — full draw context (one command, three deliverables):
+python3 "$WRAPPER" shader-of-drawcall "$TRACE" 0 \
+    --stage fragment --with-ir --with-uniforms --output-dir "$OUT" --pretty
+# → ... shader_of_rps with .ll path
+#    "with_bindings":true,
+#    "bindings":{"vertex":{...},"fragment":{"buffers":[{...},{...},...]}},
+#    "with_uniforms":true,
+#    "uniforms":[{"bind_slot":0,"binding_name":"AsukaPerShader_PerCamera",
+#                 "layout":{...},"decoded":{"_MainLightPosition":{...},...}}, ...],
+#    "uniforms_summary":{"slot_count":4,"slot_ok":4,"slot_failed":0,"errors":[]}
 
 python3 "$WRAPPER" shader-of-drawcall "$TRACE" 99999999 --pretty
 # → exit 12, {"error":"draw_index_out_of_range","draw_index":99999999,"draw_count":244,"hint":"..."}

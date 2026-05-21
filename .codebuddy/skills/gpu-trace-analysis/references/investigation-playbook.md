@@ -417,6 +417,33 @@ python3 "$SKILL_DIR/scripts/gputrace_replay_wrapper.py" \
 
 `layout` is always present (whenever reflection was captured). `decoded` only appears when `--buffer-key` was supplied. If reflection capture failed, the bridge returns `error: "reflection_not_captured"` (exit 11) — `--with-hex --buffer-key K` still gives a hex dump as a fallback.
 
+### Pattern: "Show me draw N's full context — IR + bindings + uniforms — in one command" (R7.6-D)
+
+Once you've localized the suspect to a specific draw (via `frame-list` or visual narrowing), the typical follow-up is "give me the shader source, what was bound to it, and the uniform values it actually saw" — i.e. exactly what an Xcode GUI selection would put on screen. R7.6-D collapses that into one wrapper call by reusing the already-shipped `frame-list` + `shader-of-rps` + `dump-uniforms` plumbing:
+
+```bash
+python3 "$SKILL_DIR/scripts/gputrace_replay_wrapper.py" \
+    shader-of-drawcall /tmp/foo.gputrace 0 \
+    --stage fragment --with-ir --with-uniforms --output-dir "$WORKDIR/draw0" --pretty
+```
+
+Output JSON contains:
+- `shader_of_rps.ir_ll_path` — the disassembled `.ll` IR (via R7.7 SDI fallback when no AIR)
+- `bindings.fragment.{buffers,textures,samplers}[]` — exact byte-level identical to a standalone `frame-list --with-bindings` for the same draw
+- `uniforms[]` — one entry per `bindings.fragment.buffers[i]`, each with the `MTLStructType` `layout` and decoded field tree (`AsukaPerShader_PerCamera._MainLightPosition`, `_ProjectionMatrix`, …); per-slot soft errors land in `uniforms[i].error` without aborting the chain
+- `uniforms_summary.{slot_count, slot_ok, slot_failed, errors}` — quick health view to skim before diving into individual slots
+
+`--with-bindings` alone (no uniforms) is also useful when you only want the binding inventory but not the byte decode — same output shape, just no `uniforms[]`. `--with-uniforms` implies `--with-bindings`. Default invocation (no flags) preserves R7.6-C behavior — IR-only, smallest output.
+
+When to prefer `shader-of-drawcall --with-uniforms` over hand-stitching `frame-list` + `dump-uniforms`:
+
+| Scenario | Recommended path |
+|---|---|
+| Investigating one specific draw end-to-end | `shader-of-drawcall --with-uniforms` (one command, complete context) |
+| Iterating over many draws (loop over draw_to_rps_map) | One `frame-list --with-bindings`, then per-draw `dump-uniforms --buffer-key K --offset N` (avoids re-running frame-list per draw) |
+| Want only binding inventory across all draws | `frame-list --with-bindings`, no follow-up |
+| Already know the RPS_key (not draw_index) | `dump-uniforms <rps_key> <slot> --target-kind rps` (skips frame-list) |
+
 What's still on the R7 backlog: **depth/stencil texture export** (R7.5-A), **compute encoder dispatch counts** (R7.5-B).
 
 ---

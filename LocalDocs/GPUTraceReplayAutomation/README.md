@@ -25,14 +25,14 @@
 | **Shader 反编译（IR 直接产出）** | `disasm` 子命令集成 cacheKey + llvm-dis | ✅ R7.7 |
 | GPU Counters / Profiler / Derived | 需 Apple 私有 entitlement + SIP 关闭 | ⛔ 跳过 |
 
-**完成度**：R0~R6 已完成（基础能力 + bridge + Python wrapper + skill 打包）；R7.1 + R7.2 + R7.3 + R7.4 + R7.6-A + R7.6-C + R7.7 已完成（bridge 8 子命令 + wrapper 9 子命令 / 116 集成测试 / **draw_index→IR 一行命令在 LYSK 主样本上 IR 命中率 100%** + **每 draw vertex/fragment binding 表 244/244 全捕获**）；R7.5 / R7.6 子项 B 为剩余主线（按依赖顺序进行）。
+**完成度**：R0~R6 已完成（基础能力 + bridge + Python wrapper + skill 打包）；R7.1 / R7.2 / R7.3 / R7.4 / R7.6-A / R7.6-C / R7.7 已完成（bridge 8 子命令 + wrapper 9 子命令 / 116 集成测试 / **draw_index→IR 一行命令在 LYSK 主样本上 IR 命中率 100%** + **每 draw vertex/fragment binding 表 244/244 全捕获**）；R7.6-B / R7.5 为剩余主线（按依赖顺序）。
 
 最终交付物：
-1. **统一 ObjC bridge CLI**（`Scripts/gputrace_replay_bridge.m`）— ✅ 8 子命令，Makefile 构建，集成测试 116/116 通过
-2. **Python CLI wrapper**（`Scripts/gputrace_replay_wrapper.py`）— ✅ CLI + 模块双接口，dataclass 返回值（含 R7.2 `ColorAttachment` / R7.4 `ShaderOfRpsResult` / R7.3 `FrameListResult` / R7.6-C `ShaderOfDrawcallResult` + `DrawIndexOutOfRange` 异常 / **R7.7 `DisasmResult` + `ir_source` / SDI fallback 字段** / **R7.6-A `FrameDrawBindings` + `FrameStageBindings` + `FrameBufferBinding` / `FrameTextureBinding` / `FrameSamplerBinding`** 等）
-3. **端到端验证链路** — ✅ LYSK trace 65/65 RPS 反查 + 244/244 draw→RPS 映射 + frame-list → shader-of-rps 端到端取 metallib/IR + R7.6-C `shader-of-drawcall 0/103 --with-ir` 与手工链字节级一致 + **R7.7 SDI fallback 把 LYSK 96 lib 的 IR 命中率从 3.1% 拉到 100%（AIR 3 + SDI 93 完全互补）** + **R7.6-A 244/244 draw 全部捕获 vertex/fragment binding 表（avg 8 vbuf + 16 ftex / draw）**
+1. **统一 ObjC bridge CLI**（`Scripts/gputrace_replay_bridge.m`）— ✅ 8 子命令，Makefile 构建，集成测试 116/116
+2. **Python CLI wrapper**（`Scripts/gputrace_replay_wrapper.py`）— ✅ CLI + 模块双接口，dataclass 返回值（含 R7.6-A `FrameDrawBindings` / R7.7 `DisasmResult` + `ir_source` / SDI fallback 字段 / R7.6-C `ShaderOfDrawcallResult` 等）
+3. **端到端验证链路** — ✅ LYSK trace 65/65 RPS 反查 + 244/244 draw→RPS 映射 + frame-list → shader-of-rps 端到端取 metallib/IR + R7.6-A 244/244 draw 全部捕获 vertex/fragment binding 表 + R7.7 SDI fallback 把 IR 命中率从 3.1% 拉到 100%（AIR ∪ SDI = 96/96）
 4. **GPU Trace 分析 skill**（`.codebuddy/skills/gpu-trace-analysis/`）— ✅ 自包含，含 SKILL.md + scripts/ + references/，从任意目录可独立运行
-5. **R7：Frame-Inspection 能力补全** — ⏳ 进行中，剩余按"先解锁已交付能力 → 再加新能力"重排：**R7.6 子项 B（uniforms，依赖 R7.6-A 的 binding 表）→ R7.5（depth/stencil blit + compute dispatch 计数，横向新能力）**。详见 TODO + `subdocs/20260521-R7-frame-inspection-gap.md`
+5. **R7：Frame-Inspection 能力补全** — ⏳ 进行中。剩余按"先解锁已交付能力 → 再加新能力"重排：**R7.6-B（uniforms，依赖 R7.6-A 的 binding 表，1 天）→ R7.5（depth/stencil blit + compute dispatch 计数，独立专项，1.5 天）**。详见 TODO + `subdocs/20260521-R7-frame-inspection-gap.md`
 
 ## 样本 trace 路径（回归基线）
 
@@ -78,8 +78,8 @@ GPUTRACE_PATH="$HOME/Desktop/reference_test_inject.gputrace" \
 - **`frame-list` 子命令（swizzle-first）**（R7.3）：在 `replay_context_init` 之前装一组 swizzle（`MTLCommandQueue.commandBuffer*` / `MTLCommandBuffer.{render,compute,blit}CommandEncoder*` / `MTLRenderCommandEncoder.{setRenderPipelineState:, drawXXX:*, endEncoding}`），capture gate 仅在 `playAll` 期间打开。输出 `command_buffers[].encoders[].draws[]` 树 + 扁平 `draw_to_rps_map[]`。LYSK 实测 4 cb / 62 encoder / 244 draws 全部 → 65/65 RPS。`--with-timing` 在 replay-internal cb 常返 null。详见 R7 子文档 §5.3
 - **`shader-of-rps` 子命令**（R7.4）：一行命令从 RPS_key 拿 fragment/vertex 的 metallib + AIR + `cache_key_metallib`；`--with-ir` 调 `llvm-dis` 产 `.ll`。失败结构化 exit 11，JSON 完整保留。详见 R7 子文档 §5.4
 - **`shader-of-drawcall` 薄封装**（R7.6-C）：wrapper-only，bridge 零变更。`shader_of_drawcall(trace, draw_index, ...)` = `frame_list → draw_to_rps_map[draw_index] → shader_of_rps`。OOR → `DrawIndexOutOfRange`（CLI exit 12，含 `draw_count=0` compute-only 友好 hint）。详见 R7 子文档 §5.6
-- **`disasm` 子命令 + SDI module.bc fallback**（R7.7，2026-05-21）：bridge 第 8 子命令 `disasm <trace> <key> [--key-type rps|library] [--with-ir]`。统一 helper `emit_ir_for_library()` 把"先 `bitcodeData`，后 PlayCover SDI module.bc"逻辑让 `shader-of-rps` / `shader-of-drawcall` / `disasm` 三入口免改命令受益。SDI 策略：扫描 `~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/*/<cacheKey>/modules/*/module.bc` 取第一个匹配（cacheKey 含 metallib 长度后缀，跨 app 碰撞概率可忽略）— 因此**不需要从 trace 解析 bundle id**。新字段 `ir_source` / `sdi_module_bc_*` / `sdi_bundle_id` / `sdi_module_hash` / `sdi_source_path`；`no_air_bitcode` → `no_air_bitcode_and_no_sdi`（仅两路径都失败时）。LYSK 96 lib：AIR 3 + SDI 93 完全互补，**IR 总命中率 100%**（vs R7.4 仅 3.1%）。bridge 0.4.0 → 0.5.0；集成测试 88 → 102/102。详见 R7 子文档 §5.7
-- **`frame-list --with-bindings`（R7.6-A，2026-05-21）**：在 R7.3 swizzle 集合上扩展 12 个 set\* 方法（vertex/fragment × buffer/buffers/bytes/texture/textures/sampler），每 draw 在 `setRenderPipelineState`/`drawXXX` 进入时把当前 encoder 的 vertex/fragment binding state snapshot 到 `FrameDrawEntry`。emit 时通过预构建的 `(ptr → resource_id)` 字典 O(1) 解析 buffer/texture id；inline `setVertexBytes` 落 `inline_bytes_size` 字段。LYSK trace 实测：244/244 draw 全部捕获 binding；avg 8 vertex buffer / draw + 16 fragment texture / draw（典型 PBR 渲染密度）；JSON 体积 105KB → 394KB（+275%，可控）。`--no-bindings` 抑制后 -73%。bridge 版本 0.5.0 → 0.6.0；集成测试 102 → 116（新增 14 项断言：schema / vb0 不变量 / 抑制效果 / 与 shader-of-rps 链兼容）。compute-only trace 上 draw 类断言通过 `[ "$BIND_DRAW_COUNT" -gt 0 ]` 守卫自动跳过。详见 `subdocs/20260521-R7.6-A-frame-list-bindings.md`
+- **`disasm` 子命令 + SDI module.bc fallback**（R7.7）：bridge 第 8 子命令 `disasm <trace> <key> [--key-type rps|library] [--with-ir]`。统一 helper `emit_ir_for_library()` 让 `shader-of-rps` / `shader-of-drawcall` / `disasm` 三入口共享"先 `bitcodeData`，后 PlayCover SDI module.bc"逻辑。SDI 路径直接遍历 `~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/*/<cacheKey>/modules/*/module.bc`，**不解析 bundle id**（cacheKey 含字节长度后缀，跨 app 碰撞概率可忽略）。新字段：`ir_source` / `sdi_module_bc_*` / `sdi_bundle_id` / `sdi_module_hash` / `sdi_source_path`；`ir_error` 由 `no_air_bitcode` 改为 `no_air_bitcode_and_no_sdi`（仅两路径都失败时）。LYSK 96 lib：AIR 3 + SDI 93 完全互补，**IR 总命中率 100%**（vs R7.4 仅 3.1%）。详见 R7 子文档 §5.7
+- **`frame-list --with-bindings`（R7.6-A）**：在 R7.3 swizzle 集合上扩展 12 个 set\* 方法（vertex/fragment × buffer/buffers/bytes/texture/textures/sampler），每 draw snapshot 当前 encoder 的 vertex/fragment binding 状态；emit 阶段通过 `(ptr → resource_id)` 反向字典 O(1) 解析。LYSK 244/244 全捕获（avg 8 vbuf + 16 ftex / draw）；JSON 体积 +275%（可控），`--no-bindings` -73%。新增 dataclass `FrameDrawBindings` / `FrameStageBindings` / `FrameBufferBinding` / `FrameTextureBinding` / `FrameSamplerBinding`。详见 `subdocs/20260521-R7.6-A-frame-list-bindings.md`
 - **统一 Bridge + Python wrapper + skill 打包**（R6.1 + R6.2）：`Scripts/gputrace_replay_bridge.m` 8 子命令 + `Scripts/gputrace_replay_wrapper.py` 9 子命令 + `.codebuddy/skills/gpu-trace-analysis/`。详见 `subdocs/20260520-R6.1-bridge-implementation.md` + `subdocs/20260521-R6.2-wrapper-and-skill.md`
 
 ### 当前卡点
@@ -157,8 +157,9 @@ R7.5（depth/stencil + compute dispatch 计数）排在 R7.6-B 之后（独立�
 
 | 子文档 | 阅读建议 | 内容概述 |
 |--------|---------|---------|
-| `subdocs/20260521-R7-frame-inspection-gap.md` | **总是建议读取** — R7 是当前主线，本文档是入口 | 14 处卡点（已解决/未解决标注）/ 7 段 draw→IR 反查 / 改进矩阵 7 chunk（含 R7.1~R7.7 完整交付摘要 + 设计决策 + 已知局限）/ LYSK 65 RPS 回归基线 / compute-only 回归断言表 |
+| `subdocs/20260521-R7-frame-inspection-gap.md` | **总是建议读取** — R7 是当前主线，本文档是入口 | 14 处卡点（已解决/未解决标注）/ 7 段 draw→IR 反查 / 改进矩阵 7 chunk（含 R7.1~R7.7 + R7.6-A 完整交付摘要 + 设计决策 + 已知局限）/ LYSK 65 RPS 回归基线 / compute-only 回归断言表 |
 | `subdocs/20260520-R4.2-controller-path.md` | **总是建议读取** — Controller 路径是所有任务的基础 | 完整调用链、偏移表、ObjectMap、playTo、Pipeline 导出 |
+| `subdocs/20260521-R7.6-A-frame-list-bindings.md` | 在改 binding 表实现 / R7.6-B 设计取数路径时按需读取 | 12 swizzle 集合、per-encoder rolling slot 表、emit 阶段 (ptr→id) 反向字典、JSON schema、LYSK 数据基线、已知局限 |
 | `subdocs/20260520-R6.1-bridge-implementation.md` | 在改 bridge 子命令实现 / 加新子命令时按需读取 | 子命令架构、JSON schema、构建方法、测试覆盖 |
 | `subdocs/20260521-R6.2-wrapper-and-skill.md` | 在使用 Python wrapper / 改造 skill 时按需读取 | wrapper API、skill 目录结构、自包含验证、设计决策 |
 | `subdocs/20260520-R5.2-shader-hot-replace.md` | 在扩展 shader 替换功能时按需读取 | 替换路径对比、Xcode UI 能力缺口 |

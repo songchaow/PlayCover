@@ -2,7 +2,7 @@
 
 **来源**：2026-05-21 别的 agent 在使用 `gpu-trace-analysis` skill 调查 LYSK trace（247 资源 / 50 RPS / 96 lib）时反馈的能力缺口；以及"draw call 反查 shader IR"的 7 段链路验证。
 **结论**：当前 bridge/skill 在"渲染 bug 调查"任务上称职；R7 的目标是把"未知 trace 整体管线分析"与"draw call → shader 反查"两类任务也补齐。
-**进度**：R7.1 / R7.2 / R7.3 / R7.4 / R7.6-C / R7.7 ✅（2026-05-21）；**剩余 R7.6-A（当前最高优先级）→ R7.6-B（依赖 A）→ R7.5（横向新能力）**。优先级二次评估见 §5。
+**进度**：R7.1 / R7.2 / R7.3 / R7.4 / R7.6-A / R7.6-C / R7.7 ✅（2026-05-21）；**剩余 R7.6-B（当前最高优先级，依赖 A）→ R7.5（横向新能力）**。优先级二次评估见 §5。
 **主回归基线 trace**：
 - LYSK：`/Users/songdogwang/Library/Containers/com.papegames.lysk/Data/Documents/Captures/capture_20260518_110050.gputrace`（4 cb / 62 enc / 244 draws / 65 RPS / 96 lib / 3425 calls）— 端到端 IR 链主基线
 - compute-only：`~/Desktop/reference_test_inject.gputrace`（2 cb / 2 compute enc / 0 draws / 0 RPS / 3 compute PSO / 27 calls）— OOR / `draw_count=0` / `rps_not_found` 多样本回归
@@ -31,9 +31,9 @@ LYSK 全景调查中按出现顺序遇到的限制：
 | 4 | 直接读 `.gputrace` bundle 内私有二进制 | 无文档 schema | 放弃（R7.3 swizzle-first 不依赖落盘） |
 | 5 | 解 `store0`（zlib）拿 shader 元数据 | 90% 是反射元数据 | 已绕过（R7.2/R7.3/R7.4 内存对象） |
 | 6 | 导 depth/stencil 纹理 | bridge 拒绝 | ⏳ R7.5 子项 A |
-| 7 | 拿 encoder attachments / bindings | 无 API | attachments ✅ R7.3；bindings ⏳ R7.6-A |
+| 7 | 拿 encoder attachments / bindings | 无 API | attachments ✅ R7.3；bindings ✅ R7.6-A |
 | 8 | RT 的 storageMode/usage/framebufferOnly/memoryless | 元数据缺失 | ✅ R7.1 |
-| 9 | 区分 buffer 用途（vertex/index/uniform/argbuf） | 仅 length+label | ⏳ R7.6-A 落地后由 binding 表反推 |
+| 9 | 区分 buffer 用途（vertex/index/uniform/argbuf） | 仅 length+label | ✅ R7.6-A（binding 表反推） |
 | 10 | 看某 draw 的 cbuffer 实际值 | 无 API | ⏳ R7.6 子项 B |
 | 11 | 区分 stencil bit | 不能导出 | ⏳ R7.5 子项 A |
 | 12 | 确认本帧无 compute dispatch | RPS 元数据有 compute 函数名误导 | ✅ R7.3（dispatch 计数留 R7.5-B） |
@@ -108,17 +108,14 @@ cacheKey 直接对应 `~/Library/Containers/io.playcover.PlayCover/ShaderDebugIn
 
 ## 5. R7 改进矩阵（按依赖排序）
 
-R7 拆成 7 个独立 chunk。已完成 6 个（R7.1/R7.2/R7.3/R7.4/R7.6-C/R7.7），剩余 R7.6-A（**当前 P0**）→ R7.6-B（P1，依赖 A）→ R7.5（P2，横向新能力）。
+R7 拆成 7 个独立 chunk。已完成 7 个（R7.1/R7.2/R7.3/R7.4/R7.6-A/R7.6-C/R7.7），剩余 R7.6-B（**当前 P0**，依赖 R7.6-A 的 binding 表）→ R7.5（P2，横向新能力）。
 
-**优先级二次评估（2026-05-21）**：原排期 R7.5 → R7.6-A → R7.6-B；依据 R7.7 抢占 R7.5 时确立的同一原则——**"先解锁已交付能力，再加新能力"**——R7.6-A 改为 P0，理由：
+**优先级演进史**（2026-05-21 多次二次评估）：原排期 R7.5 → R7.6-A → R7.6-B；按"先解锁已交付能力，再加新能力"原则，R7.7（SDI fallback 把 R7.4 命中率从 3.1% 拉到 100%）抢占 R7.5；随后 R7.6-A（紧邻 `shader-of-drawcall` 补 binding 表）抢占 R7.5；R7.6-A 落地后，R7.6-B（依赖 R7.6-A）成为 P0；R7.5（depth/stencil + dispatch 计数）落到 P2。理由：
 
 | 能力 | 是否紧邻已交付能力？ | 场景覆盖 | 实现成本 |
 |------|---------------------|----------|----------|
-| **R7.6-A**（bindings） | ✅ 是 R7.6-C `shader-of-drawcall` 的天然紧邻补足（"用了哪段 shader" → "用了哪段 shader **+ 绑了哪些资源**"） | 几乎所有渲染问题（UV 错、错绑纹理、cbuffer 错、模型错位、参数缺失） | 1.5 天，复用 R7.3 swizzle 框架 + frame-list 树结构，~6 个 set\*Buffer/Texture swizzle |
-| R7.6-B（uniforms） | 强依赖 A 的 binding 表 | UV / 矩阵 / 光源 / 材质参数错 | 1 天 |
-| R7.5（depth/stencil + dispatch 计数） | ❌ 是横向新能力 | ShadowMap / SSS / stencil bit 类专项 | 1.5 天，需新写 blit pass + 新 export 接口设计 |
-
-R7.6-A 落地后，`shader-of-drawcall <draw_index>` 能同时输出"用了哪段 shader + 绑了哪些 buffer/texture"，体验质变；R7.5 留作 ShadowMap 专项再补，独立可达。
+| **R7.6-B**（uniforms） | ✅ R7.6-A 的 binding 表给出 buffer_id+offset 后，B 是把字节解码成 cbuffer JSON 的天然下一步 | UV 错 / 矩阵错 / 光源错 / 材质参数错 — 几乎所有"shader 看似正确但输出错"的最终调查终点 | 1 天，bridge 复用 `bufferForKey:` + reflection / hex dump |
+| R7.5（depth/stencil + dispatch 计数） | ❌ 横向新能力 | ShadowMap / SSS / stencil bit 类专项 + compute-heavy trace | 1.5 天，需新写 blit pass + 新 export 接口 |
 
 ### R7.1：bridge 越界保护 + 资源元数据补齐 — ✅ 已完成
 
@@ -213,39 +210,19 @@ R7.6-A 落地后，`shader-of-drawcall <draw_index>` 能同时输出"用了哪�
 
 **为什么 wrapper-only**：bridge 内复刻 R7.3 swizzle + R7.4 cacheKey + llvm-dis 调用约 ~150 行胶水，需重构全局表让两条逻辑并存，集成测试需 bridge+wrapper 双份。wrapper-only 直接复用两个已测试 Python 入口，~120 行胶水，bridge 二进制零变更。性能差异（多一次 Python 出入 ~50ms）单次调试可忽略。
 
-### R7.6 子项 A — `frame-list --with-bindings`（**当前最高优先级 P0**，1.5 天）
+### R7.6 子项 A — `frame-list --with-bindings` — ✅ 已完成（2026-05-21）
 
-**优先级**：2026-05-21 二次评估抢占 R7.5 成为 P0（理由见 §5 顶部）。
+**交付**：`frame-list <trace> [--with-bindings|--no-bindings]`（默认 ON）。在 R7.3 swizzle 集合上扩展 12 个 `set*` 方法（vertex/fragment × buffer/buffers/bytes/texture/textures/sampler），每 draw 把当前 encoder 的 vertex/fragment binding state snapshot 到 `FrameDrawEntry`；emit 阶段通过 (ptr → resource_id) 反向字典 O(1) 解析；inline `setVertexBytes` 落 `inline_bytes_size` 字段。
 
-**实现思路**：
-- 复用 R7.3 已建立的 `frame_install_render_encoder_swizzles` 路径，扩展 swizzle 集合到：
-  - `setVertexBuffer:offset:atIndex:` / `setVertexBytes:length:atIndex:`(inline)
-  - `setVertexTexture:atIndex:` / `setVertexTextures:withRange:`
-  - `setFragmentBuffer:offset:atIndex:` / `setFragmentBytes:length:atIndex:`(inline)
-  - `setFragmentTexture:atIndex:` / `setFragmentTextures:withRange:`
-  - 可选：`setVertexSamplerState:atIndex:` / `setFragmentSamplerState:atIndex:`
-- 每个 set\* swizzle thunk 在 encoder 的 binding state 上更新对应槽位；`drawXXX:` swizzle 入口时 snapshot 完整 binding state 落到 `FrameDrawEntry.bindings`
-- 输出 schema（每 draw 增加 `bindings` 字段）：
-  ```json
-  {"draw_index_global": 0, "rps_key": 472, "bindings": {
-    "vertex_buffers": [{"index":0,"resource_id":12,"offset":0}, ...],
-    "vertex_textures": [{"index":0,"resource_id":34}, ...],
-    "fragment_buffers": [...],
-    "fragment_textures": [...]
-  }}
-  ```
-- `resource_id` 通过 `frame_lookup_resource_id` 反查 `objectMap.resources`（与 R7.3 attachment 对齐）
-- inline `setVertexBytes:` / `setFragmentBytes:` 没有 resource_id，落字段 `inline_bytes_size` + 可选 hex preview
-- `--with-bindings` 默认开启（数据量虽比 draws 大 ~1 数量级，单 trace 仍可控；如需可加 `--no-bindings`）
+**LYSK 主基线实测**：244/244 draw 全部捕获 vertex + fragment binding；avg 8 vertex buffer / draw + 16 fragment texture / draw（PBR 渲染密度不变量）；inline_count=0；vb0 不变量 244/244；JSON 体积 105KB → 394KB（+275%，可控），`--no-bindings` -73%。
 
-**集成测试基线（LYSK）**：
-- 每 draw `bindings.vertex_buffers.length >= 1`（至少 vertex buffer 0）
-- `bindings.fragment_textures` 中至少能找到一个 attachment-coherent texture（如 ShadowMap）
-- 总数据量大致 244 draws × ~20 bindings = ~5000 records，JSON 体积 ~500KB（可接受）
+**版本与测试**：bridge 0.5.0 → 0.6.0；集成测试 102 → **116/116**（新增 14 项断言：schema / vb0 不变量 / 抑制效果 / 与 shader-of-rps 链兼容）。compute-only trace 上 draw 类断言通过 `[ "$BIND_DRAW_COUNT" -gt 0 ]` 守卫自动跳过。
 
-**与 R7.6-C 联动**：`shader-of-drawcall N` 输出顶层附 `bindings`，让用户一行命令同时拿"shader IR + 绑了哪些资源"。
+**新增 dataclass**（wrapper 侧）：`FrameBufferBinding` / `FrameTextureBinding` / `FrameSamplerBinding` / `FrameStageBindings` / `FrameDrawBindings`；`FrameDraw +bindings`；`FrameListResult +with_bindings`；`frame_list() +with_bindings: bool = True`。
 
-**`dump-uniforms` 衔接（子项 B）**：A 落地后 B 可定位到 buffer_id + offset，再通过 `bufferForKey:` 拿数据 + 按 cbuffer layout 反射输出 JSON。
+**已知局限**：inline buffer 只记 size 不复制 bytes；sampler 不解析 resource_id（不在 objectMap.resources）；compute encoder bindings 留 R7.5-B；indirect draw 留待后补；argument buffer 二级 indirect 由 R7.6-B 配合 reflection 展开。
+
+**详见** `subdocs/20260521-R7.6-A-frame-list-bindings.md`（设计决策 / 数据结构 / JSON schema / 测试断言矩阵）。
 
 ### R7.6 子项 B — `dump-uniforms <encoder_index> <draw_index> <bind_slot>`（P1，1 天，依赖子项 A）
 
@@ -362,8 +339,8 @@ R7.2 已交付：bridge `pipeline` 与本表 65/65 一致。回归命令：跑 `
 |----------|-------------|------|
 | Encoder/Pass 枚举 | `frame-list` 列出所有 encoder + attachments | ✅ R7.3 |
 | Draw call 列表 | `frame-list --with-draws`（默认开启） | ✅ R7.3 |
-| Binding 表 | `frame-list --with-bindings` | ⏳ R7.6-A |
-| Uniform Inspector | `dump-uniforms` | ⏳ R7.6-B |
+| Binding 表 | `frame-list --with-bindings`（默认开启） | ✅ R7.6-A |
+| Uniform Inspector | `dump-uniforms` | ⏳ R7.6-B（**当前 P0**） |
 | Depth/Stencil 可视化 | `--export` 内置 blit | ⏳ R7.5-A |
 | Per-encoder GPU timing | `frame-list --with-timing` | ⚠️ R7.3 部分（replay-internal cb 不 commit） |
 | Compute encoder 在 frame-list 中明确化 | `frame-list` 含 type=compute | ✅ R7.3（dispatch 计数留 R7.5-B） |
@@ -371,6 +348,7 @@ R7.2 已交付：bridge `pipeline` 与本表 65/65 一致。回归命令：跑 `
 | RPS_key → shader IR 一行命令 | `shader-of-rps --with-ir` | ✅ R7.4 + R7.7 |
 | Draw call → RPS_key 反查 | `frame-list draw_to_rps_map` | ✅ R7.3 |
 | Draw call → shader IR 一行命令 | `shader-of-drawcall <draw_index>` | ✅ R7.6-C + R7.7 |
+| Draw call → bindings 表 | `frame-list --with-bindings` 内建 | ✅ R7.6-A |
 | Shader 反编译（覆盖无 AIR 的 library） | `disasm <library_key>` SDI module.bc 路径 | ✅ R7.7（LYSK 96/96） |
 
 ---
@@ -390,10 +368,10 @@ R7.2 已交付：bridge `pipeline` 与本表 65/65 一致。回归命令：跑 `
 - **`references/investigation-playbook.md`** — frame-overview worked example
 - **`references/cli-reference.md`** — 新子命令 flag/JSON schema/wrapper 接口
 
-R7.1~R7.7 落地时已同步过这三处。后续 R7.5/R7.6-A/B 起按相同惯例。
+R7.1~R7.7 + R7.6-A 落地时已同步过这三处。后续 R7.5/R7.6-B 起按相同惯例。
 
 ---
 
 ## 10. 一句话总结
 
-draw call → shader IR 的 7 段映射在 macOS Metal replay 框架下技术可达且已 7/7 走通：R7.1（边界）+ R7.2（pipeline RPS↔shader）+ R7.3（frame-list swizzle-first：encoder timeline + draw→RPS_key）+ R7.4（shader-of-rps）+ R7.6-C（shader-of-drawcall 薄封装）+ R7.7（disasm + SDI module.bc fallback — LYSK 主样本 IR 命中率 3.1%→100%）六个 chunk 端到端串通，CLI 形态上 "draw_index → IR" 是真正的一行命令，**且在任何 PlayCover 启动过的 app trace 上都能产出真实 LLVM IR**。LYSK 主基线 + reference_test_inject compute-only 两路回归通过，集成测试 102/102。**当前最高优先级 R7.6-A**（`frame-list --with-bindings`，二次评估抢占 R7.5 — 理由：紧邻 `shader-of-drawcall` 的天然补足，"用了哪段 shader" → "用了哪段 shader **+ 绑了哪些资源**"，场景覆盖广 + 工时与 R7.5 相当但基础设施已就绪）— 1.5 天；R7.6-B（uniforms，1 天，强依赖 A）→ R7.5（depth/stencil + dispatch 计数，1.5 天，独立专项）排在其后。
+draw call → shader IR 的 7 段映射在 macOS Metal replay 框架下技术可达且已 7/7 走通：R7.1（边界）+ R7.2（pipeline RPS↔shader）+ R7.3（frame-list swizzle-first：encoder timeline + draw→RPS_key）+ R7.4（shader-of-rps）+ R7.6-A（frame-list --with-bindings：每 draw vertex/fragment buffer/texture/sampler 表，LYSK 244/244）+ R7.6-C（shader-of-drawcall 薄封装）+ R7.7（disasm + SDI module.bc fallback — IR 命中率 3.1%→100%）端到端串通，CLI 形态上 "draw_index → IR + bindings" 是真正的一行命令。LYSK 主基线 + reference_test_inject compute-only 两路回归通过，集成测试 116/116。**当前最高优先级 R7.6-B**（`dump-uniforms`，强依赖 R7.6-A 已交付的 binding 表 — 把 buffer_id+offset 延伸到"buffer 字节按 cbuffer 布局解码成 JSON"）— 1 天；R7.5（depth/stencil + dispatch 计数，1.5 天，独立专项）排在其后。

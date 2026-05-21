@@ -7,29 +7,30 @@ Complete surface for the bundled tools. Skim the table of contents and jump to w
 2. [Subcommand: replay](#subcommand-replay)
 3. [Subcommand: pipeline](#subcommand-pipeline)
 4. [Subcommand: shader](#subcommand-shader)
-5. [Subcommand: config](#subcommand-config)
-6. [Exit codes](#exit-codes)
-7. [Python wrapper — CLI mode](#python-wrapper--cli-mode)
-8. [Python wrapper — module mode](#python-wrapper--module-mode)
-9. [Pixel format helpers](#pixel-format-helpers)
+5. [Subcommand: shader-of-rps](#subcommand-shader-of-rps)
+6. [Subcommand: config](#subcommand-config)
+7. [Exit codes](#exit-codes)
+8. [Python wrapper — CLI mode](#python-wrapper--cli-mode)
+9. [Python wrapper — module mode](#python-wrapper--module-mode)
+10. [Pixel format helpers](#pixel-format-helpers)
 
 ---
 
 ## The bridge binary
 
-`scripts/gputrace_replay_bridge` is a single ObjC binary built from `gputrace_replay_bridge.m`. After running `setup.sh`, invoke it with one of five subcommands. Output is always one JSON object on stdout per invocation; diagnostic messages go to stderr.
+`scripts/gputrace_replay_bridge` is a single ObjC binary built from `gputrace_replay_bridge.m`. After running `setup.sh`, invoke it with one of six subcommands. Output is always one JSON object on stdout per invocation; diagnostic messages go to stderr.
 
 ```bash
 gputrace_replay_bridge <command> [args...]
 ```
 
-Available commands: `help`, `replay`, `pipeline`, `shader`, `config`.
+Available commands: `help`, `replay`, `pipeline`, `shader`, `shader-of-rps`, `config`.
 
 `help` prints the JSON schema of all commands:
 
 ```bash
 gputrace_replay_bridge help
-# → {"tool":"gputrace_replay_bridge","version":"0.2.0","commands":[...]}
+# → {"tool":"gputrace_replay_bridge","version":"0.3.0","commands":[...]}
 ```
 
 ---
@@ -153,13 +154,15 @@ Output JSON top-level fields (in addition to the obvious `trace_path` / `device`
 | Field | Type | Description |
 |---|---|---|
 | `libraries` | array | Per-library record (see below) |
-| `render_pipeline_states` | array | `{key, class, label?}` |
+| `render_pipeline_states` | array | Per-RPS record (see below). Since R7.2 each entry includes RPS↔shader correlation when the bridge swizzle captured the descriptor. |
 | `compute_pipeline_states` | array | `{key, class, label?}` |
 | `functions` | array | `{key, class, name?, functionType, functionTypeStr}` |
 | `libraries_count` | int | Total libraries discovered |
 | `metallibs_exported` | int | How many `.metallib` files were written |
 | `bitcodes_exported` | int | How many `.air` files were written (some libs lack AIR) |
 | `render_pipeline_states_count`, `compute_pipeline_states_count`, `functions_count` | int | Totals matching their arrays |
+| `rps_correlated_count` | int | R7.2 — how many enumerated RPS got their descriptor matched via the swizzle. Healthy traces should have this equal to `render_pipeline_states_count`. |
+| `rps_captured_count` | int | R7.2 — how many `(descriptor, rps)` pairs the swizzle captured during replay. May be larger than `render_pipeline_states_count` when the trace creates RPS objects that don't end up keyed in the replay objectMap. **If this is `0` while `render_pipeline_states_count > 0`, the swizzle is broken** (e.g. macOS update changed the device class hierarchy). |
 
 Per-library record:
 
@@ -180,7 +183,39 @@ Per-library record:
 }
 ```
 
-Magic-number sanity checks:
+Per-render-pipeline-state record (R7.2 — extended with shader correlation when descriptor was captured):
+
+```json
+{
+  "key": 484,
+  "class": "AGXG16XFamilyRenderPipeline",
+  "label": "Papegame/SkinMakeupNew",
+
+  "vertex_function_key": 289,
+  "fragment_function_key": 357,
+  "vertex_library_key": 288,
+  "fragment_library_key": 356,
+  "vertex_function_name": "xlatMtlMain1",
+  "fragment_function_name": "xlatMtlMain",
+
+  "color_attachment_count": 2,
+  "color_attachments": [
+    {"index": 0, "format": "RGBA8Unorm", "pixelFormat": 70, "writeMask": "RGBA", "blendingEnabled": false},
+    {"index": 1, "format": "RGBA8Unorm", "pixelFormat": 70, "writeMask": "RGBA", "blendingEnabled": false}
+  ],
+  "depth_format": "Depth32Float_Stencil8",
+  "depth_format_value": 260,
+  "stencil_format": "Depth32Float_Stencil8",
+  "stencil_format_value": 260,
+  "raster_sample_count": 1
+}
+```
+
+The R7.2 fields are present **only** when the bridge's method swizzle on `MTLDevice newRenderPipelineStateWithDescriptor:*` captured this RPS at PSO-creation time. If a RPS is enumerable in the objectMap but absent from the swizzle table, only the basic three fields (`key`, `class`, `label`) appear.
+
+Library-key convention: `library_key = function_key - 1` (validated empirically across ~100 LYSK trace shaders; a fallback even-key downward scan is used if the convention happens to be broken in a specific trace).
+
+Magic-number sanity checks on exported library files:
 - metallib: `0x424C544D` (`"BLTM"` little-endian, "Metal Library Binary")
 - AIR bitcode: `0x0B17C0DE` (LLVM bitcode wrapper)
 
@@ -190,7 +225,7 @@ library_248.metallib: MetalLib executable, version 1.2.6
 library_248.air:      LLVM bitcode, wrapper
 ```
 
-Library/function key relationship: libraries occupy even keys, the matching MTLFunction is at the next odd key (e.g. library 248 ↔ function 249). Pipeline states use a separate continuous key range.
+Library/function key relationship: libraries occupy even keys, the matching MTLFunction is at the next odd key (e.g. library 248 ↔ function 249). Pipeline states use a separate continuous key range that is typically larger than function keys; the bridge scans it with extra headroom (function-max + 250) to avoid silent truncation.
 
 ---
 
@@ -235,6 +270,75 @@ Output JSON:
 Notes:
 - The replacement library's function names should generally match the originals; if not, downstream `MTLFunction` lookups will fail at the next pipeline-state creation. Use `pipeline` first to confirm the original function name.
 - For an MSL-source replacement, the bridge calls `newLibraryWithSource:options:error:` with default `MTLCompileOptions` — match the original target if you need feature parity.
+
+---
+
+## Subcommand: shader-of-rps
+
+Reverse-lookup the fragment or vertex shader of a render pipeline state. This is the **R7.4** "one command, one IR file" entry point — the user gives a `rps_key` (from `pipeline` output) and the bridge produces metallib, AIR, and (optionally) LLVM IR `.ll`.
+
+```bash
+gputrace_replay_bridge shader-of-rps <.gputrace> <rps_key> [--stage fragment|vertex] [--with-ir] [--output-dir DIR]
+```
+
+Internally this:
+1. Installs the same swizzle as `pipeline` so descriptors are captured during replay.
+2. Runs `playAll` once.
+3. Looks up the RPS by key in the objectMap, then finds its captured descriptor.
+4. Resolves the chosen stage's `MTLFunction` pointer to a function key via `objectMap.functionMap` reverse map.
+5. Computes `library_key = function_key - 1` (with even-key fallback scan).
+6. Dumps the library's `metallib` data via `libraryDataContents` (and `bitcodeData` AIR when available).
+7. Computes the PlayTools `cacheKey` on the metallib bytes (matches the algorithm used by the offline `extract_shader_raw.py` tool — see [investigation playbook §3.1](./investigation-playbook.md) for the full reference).
+8. With `--with-ir`: pipes the AIR through `llvm-dis` (auto-detected from Homebrew or `$PATH`) to produce a `.ll` file.
+
+Defaults:
+- `--stage fragment`
+- `--output-dir` = system temp directory (e.g. `/var/folders/.../T/`)
+
+Output JSON (success path):
+
+```json
+{
+  "command": "shader-of-rps",
+  "trace_path": "...",
+  "rps_key": 484,
+  "stage": "fragment",
+  "output_dir": "/tmp/r74",
+  "rps_label": "Papegame/SkinMakeupNew",
+  "function_name": "xlatMtlMain",
+  "function_key": 357,
+  "library_key": 356,
+  "library_metallib_path": "/tmp/r74/library_356.metallib",
+  "library_metallib_size": 4593,
+  "library_air_path": "/tmp/r74/library_356.air",
+  "library_air_size": 3920,
+  "cache_key_metallib": "636181106F7E31A0_4593",
+  "ir_ll_path": "/tmp/r74/library_356.ll",
+  "ir_ll_size": 3257,
+  "ir_dis_path": "/opt/homebrew/opt/llvm/bin/llvm-dis"
+}
+```
+
+Failure modes (all emit valid JSON; exit code is 11 = `SUBCMD_FAIL`):
+
+| `error` | Meaning |
+|---|---|
+| `rps_not_found` | The given `rps_key` is not present in the trace's objectMap. Check `rps_captured_count` to see if the swizzle worked at all. |
+| `descriptor_not_captured` | The RPS exists in the objectMap but the swizzle didn't capture it at PSO creation time (this should not happen on a healthy run; if it does, the swizzle install path is broken). |
+| `stage_function_absent` | The descriptor has no function for the requested stage (e.g. `--stage fragment` on a depth-only / vertex-only RPS). |
+| `function_key_unresolved` | The captured function pointer isn't present in `objectMap.functionMap` — usually a sign the trace is in an inconsistent state. |
+| `library_key_unresolved` | `function_key=0` makes `library_key=-1`, an invalid case — should never happen for legitimate traces. |
+| `library_not_found` | Neither the `function_key - 1` convention nor the even-key downward scan found a `MTLLibrary` for this RPS. |
+
+`--with-ir` substitutes `ir_error` with one of:
+
+| `ir_error` | Meaning | `ir_hint` |
+|---|---|---|
+| `no_air_bitcode` | Library doesn't expose `bitcodeData`. Many `_MTLLibrary` instances have only metallib, not AIR. | (none) |
+| `llvm_dis_not_found` | Bridge couldn't locate `llvm-dis` on Homebrew or PATH. | `install via 'brew install llvm' (Apple toolchain lacks llvm-dis)` |
+| `llvm_dis_failed` | `llvm-dis` ran but exited non-zero. `ir_dis_rc` and `ir_dis_stderr` are populated for debugging. | (none) |
+
+The cacheKey can be used to find the corresponding ShaderDebugInfo directory under `~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/<bundle>/<cache_key>/`, which holds the original compile-time `module.bc` for cross-referencing — see [investigation playbook §3](./investigation-playbook.md).
 
 ---
 
@@ -291,7 +395,8 @@ Both the bridge and the wrapper use the same numeric scheme:
 | 8 | OBJECTMAP_FAIL | `GTMTLReplayObjectMap initWithDevice:` failed |
 | 9 | CONTROLLER_FAIL | `makeController` returned NULL |
 | 10 | REPLAY_FAIL | `playAll` / `playTo` returned non-zero |
-| 11 | SUBCMD_FAIL | Subcommand-specific failure (shader compile, etc.) |
+| 11 | SUBCMD_FAIL | Subcommand-specific failure (shader compile, `shader-of-rps` lookup error, etc.) |
+| 12 | PLAYTO_OOR | `--playto N` with N > `total_call_count` (graceful, structured error) |
 | 124 | (wrapper only) | Subprocess timeout |
 
 Codes 4–9 indicate the macOS or framework environment shifted under us — re-run `setup.sh` and consider checking for an OS update.
@@ -324,10 +429,13 @@ python3 gputrace_replay_wrapper.py replay <trace> --export 17 /tmp/tex.bin
 python3 gputrace_replay_wrapper.py pipeline <trace> /tmp/out
 python3 gputrace_replay_wrapper.py shader <trace> 248 /tmp/out/library_248.metallib --verify
 python3 gputrace_replay_wrapper.py shader <trace> 248 --source /tmp/new.metal --verify
+python3 gputrace_replay_wrapper.py shader-of-rps <trace> 484 --with-ir --output-dir /tmp/out
 python3 gputrace_replay_wrapper.py config <trace> disableOptimizeRestores=0 enableValidation=1
 ```
 
 On error, the wrapper prints a JSON diagnostic to stderr and uses an appropriate exit code.
+
+For graceful structured failures (`shader-of-rps` rps_not_found / `replay --playto` out-of-range), the wrapper still prints the JSON payload to stdout and uses exit code 11/12 so callers see the diagnostic without needing to parse stderr.
 
 ---
 
@@ -350,12 +458,26 @@ for res in r.resources:
     if res.type == "texture":
         print(res.id, res.pixel_format_name, f"{res.width}x{res.height}")
 
-# pipeline + export
+# pipeline + R7.2 RPS↔shader correlation
 p = bridge.pipeline("/path/to/foo.gputrace", "/tmp/out")
-target = next(lib for lib in p.libraries if "skin" in (lib.functions or [None])[0].lower())
-print("found suspect lib at key", target.key, "size", target.metallib_size)
+print("RPS correlated:", p.rps_correlated_count, "/", p.rps_captured_count)
+for ps in p.render_pipeline_states:
+    if ps.fragment_function_key is not None:
+        print(ps.key, ps.label, "frag=", ps.fragment_function_key,
+              "lib=", ps.fragment_library_key, "depth=", ps.depth_format)
+
+# R7.4 — RPS reverse-lookup → IR in one call
+sor = bridge.shader_of_rps("/path/to/foo.gputrace", 484, with_ir=True, output_dir="/tmp/out")
+if sor.error:
+    print("lookup failed:", sor.error, sor.hint)
+else:
+    print(sor.function_name, "→", sor.library_metallib_path,
+          "cacheKey=", sor.cache_key_metallib)
+    if sor.ir_ll_path:
+        print("LLVM IR:", sor.ir_ll_path, sor.ir_ll_size, "bytes")
 
 # shader hot-replace + verify
+target = p.libraries[0]
 s = bridge.shader("/path/to/foo.gputrace", target.key,
                   "/tmp/out/" + target.metallib_file, verify=True)
 print("verify ok?", s.verify["success"], "elapsed", s.verify["elapsed_ms"])
@@ -380,11 +502,13 @@ Returned dataclasses (see `gputrace_replay_wrapper.py` for full field lists):
 | `HelpResult` | `tool`, `version`, `commands`, `raw` |
 | `ReplayResult` | `success`, `elapsed_ms`, `resource_count`, `resources: list[Resource]`, `export_*` |
 | `Resource` | `id`, `type`, `width/height/depth/pixel_format_name/texture_type` (texture) or `length` (buffer), `label` |
-| `PipelineResult` | `libraries: list[Library]`, `render_pipeline_states`, `compute_pipeline_states`, `functions`, plus `*_count` totals |
+| `PipelineResult` | `libraries: list[Library]`, `render_pipeline_states`, `compute_pipeline_states`, `functions`, plus `*_count` totals; R7.2 adds `rps_correlated_count` / `rps_captured_count` |
 | `Library` | `key`, `functions`, `metallib_size/file`, `bitcode_size/file`, `install_name`, `label` |
-| `PipelineState` | `key`, `class_name`, `label` |
+| `PipelineState` | `key`, `class_name`, `label`; R7.2 render-PSOs add `vertex_function_key` / `fragment_function_key` / `vertex_library_key` / `fragment_library_key` / `color_attachment_count` / `color_attachments: list[ColorAttachment]` / `depth_format` / `stencil_format` / `raster_sample_count` / `vertex_function_name` / `fragment_function_name` |
+| `ColorAttachment` | `index`, `format`, `pixel_format`, `write_mask`, `blending_enabled` |
 | `Function` | `key`, `name`, `function_type`, `function_type_str` |
 | `ShaderResult` | `replacement_done`, `original`, `replacement`, `verify` |
+| `ShaderOfRpsResult` (R7.4) | `rps_key`, `stage`, `function_key`, `function_name`, `library_key`, `library_metallib_path`, `library_air_path`, `cache_key_metallib`, `ir_ll_path`, `error?` (`rps_not_found` / `descriptor_not_captured` / `stage_function_absent` / ...) |
 | `ConfigResult` | `config: dict[str,bool]`, `success`, `elapsed_ms`, `resource_count` |
 | `BridgeError(Exception)` | `exit_code`, `exit_name`, `stderr`, `command`, `args` |
 

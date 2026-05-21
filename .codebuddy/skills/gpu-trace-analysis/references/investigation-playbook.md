@@ -101,15 +101,32 @@ Hypothesis space: shader is computing the wrong thing, wrong texture bound, wron
 Recipe:
 
 ```bash
-# 1. Dump everything. Pipeline gives you names.
+# 1. Dump everything. Pipeline gives you names AND (R7.2) the RPS↔shader mapping.
 "$BRIDGE" pipeline "$TRACE" "$WORKDIR/pipelines" > "$WORKDIR/pipeline.json"
 ```
 
-In `pipeline.json`, scan `libraries[*].functions` for names that match the user's description. Function names usually carry intent (`fragment_skin_subsurface`, `compute_blur_horizontal`, `vertex_water_caustic`).
+In `pipeline.json`, scan two views:
+
+- `libraries[*].functions` for names that match the user's description (e.g. `fragment_skin_subsurface`, `compute_blur_horizontal`, `vertex_water_caustic`).
+- `render_pipeline_states[*]` for `label`s that match the user's description, **then read the new R7.2 fields directly** to find the right `fragment_function_key` / `fragment_library_key` without re-deriving them yourself:
 
 ```bash
-# 2. Inspect the suspect shader's bytecode. AIR (LLVM bitcode) is more
-#    diff-friendly than the metallib container.
+jq '.render_pipeline_states[] | select(.label | test("Skin|Eye"; "i"))' "$WORKDIR/pipeline.json"
+```
+
+Common gotcha: the same `label` often appears on multiple RPSs (e.g. one Z-prepass variant + one main pass variant). Use `color_attachment_count`, `depth_format`, and the fragment_library_key to disambiguate before swapping shaders.
+
+```bash
+# 2. Once you've picked an RPS, get its shader code in one command (R7.4).
+"$BRIDGE" shader-of-rps "$TRACE" 484 --with-ir --output-dir "$WORKDIR/shaders"
+# → produces .metallib, .air, and (with --with-ir) .ll for that RPS's fragment function.
+# JSON also reports cache_key_metallib for cross-referencing PlayCover ShaderDebugInfo.
+```
+
+If you instead already know the library key (e.g. from grepping function names) and just want the IR:
+
+```bash
+# Older path — still works for arbitrary library keys not tied to a particular RPS.
 ls "$WORKDIR/pipelines/library_<KEY>.air"
 # If you have llvm-dis available system-wide:
 xcrun llvm-dis "$WORKDIR/pipelines/library_<KEY>.air" -o "$WORKDIR/lib.ll"
@@ -252,6 +269,82 @@ for tag, path in [("good","$WORKDIR/good.json"),("bad","$WORKDIR/bad.json")]:
     print(tag, sizes[:5], '...', sizes[-5:])
 PY
 ```
+
+---
+
+## Pattern 7: Frame overview — exploring an unknown trace (R7.2 + R7.4)
+
+**When to use**: the user hands over a `.gputrace` and asks "what does this frame even render?", "give me a high-level summary", or wants to map RPS labels to shader code without specifying a bug. Pre-R7 this required either Xcode's GUI or hand-rolled swizzle probes; with the bridge it's now four commands.
+
+```bash
+WORKDIR=$(mktemp -d -t frame-overview-XXXXXX)
+TRACE=/path/to/foo.gputrace
+
+# 1. Confirm trace replays cleanly + get total_call_count for any later --playto bisecting.
+"$BRIDGE" replay "$TRACE" --bounds | jq '{success: (.bounds_only==true), total_call_count}'
+
+# 2. Pipeline overview with R7.2 RPS↔shader correlation. The output is the
+#    backbone of every subsequent step — keep it on disk.
+"$BRIDGE" pipeline "$TRACE" "$WORKDIR/pipelines" > "$WORKDIR/pipeline.json"
+jq '{rps_count: .render_pipeline_states_count,
+     rps_correlated_count, rps_captured_count,
+     libs: .libraries_count, fns: .functions_count}' "$WORKDIR/pipeline.json"
+```
+
+`rps_correlated_count` should equal `render_pipeline_states_count`; if it's `0`, the swizzle is broken (see SKILL.md).
+
+```bash
+# 3. Pass-by-pass summary — group RPS by label and attachment shape.
+jq -r '.render_pipeline_states[]
+       | "\(.key)\t\(.label)\tcolors=\(.color_attachment_count // "?")\tdepth=\(.depth_format)\tf_lib=\(.fragment_library_key // "?")"' \
+   "$WORKDIR/pipeline.json" | sort
+```
+
+You'll see patterns like:
+
+```
+474   Papegame/Teeth                colors=0  depth=Depth32Float           f_lib=252   ← Z-prepass cluster
+475   Papegame/SkinSSS              colors=0  depth=Depth32Float           f_lib=252
+476   Papegame/SkinMakeupNew        colors=0  depth=Depth32Float           f_lib=252
+479   Papegame/EyeSpec              colors=0  depth=Depth32Float           f_lib=252
+484   Papegame/SkinMakeupNew        colors=2  depth=Depth32Float_Stencil8  f_lib=356   ← main pass
+491   Papegame/SkinMakeupNew        colors=2  depth=Depth32Float_Stencil8  f_lib=390   ← variant
+```
+
+This is the kind of "frame overview" Xcode's GPU debugger UI gives you, but as a shell-pipe-able stream.
+
+```bash
+# 4. Drill into any RPS in one command — produces metallib + AIR + .ll IR.
+"$BRIDGE" shader-of-rps "$TRACE" 484 --with-ir --output-dir "$WORKDIR/shaders"
+# Inspect the IR:
+head -40 "$WORKDIR/shaders/library_356.ll"
+```
+
+If `--with-ir` returns `ir_error: "no_air_bitcode"`, fall back to the metallib (use the `cache_key_metallib` field to find the corresponding PlayCover ShaderDebugInfo entry — see Reference §3.1 below).
+
+**When to stop here**: once the user can match user-visible symptoms (e.g. "the SkinMakeupNew layer is wrong") to a concrete shader IR file, you've handed them everything the bridge can give. Further drilling — per-draw bindings, uniform values, exact draw-call → IR — is on the R7 backlog and not yet available.
+
+---
+
+## Reference §3.1: PlayTools cacheKey algorithm
+
+The bridge's `shader-of-rps` and the offline `extract_shader_raw.py` tool both compute a "cacheKey" on a metallib's bytes. This key matches PlayCover's ShaderDebugInfo directory layout: `~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/<bundle>/<cache_key>/modules/<hash>/module.bc`.
+
+Algorithm (FNV-style 64-bit hash with a head/tail sample):
+
+```python
+def compute_cache_key(data: bytes) -> str:
+    size = len(data)
+    h = size
+    for i in range(min(32, size)):
+        h = (h * 31 + data[i]) & 0xFFFFFFFFFFFFFFFF
+    if size > 32:
+        for i in range(size - min(16, size - 32), size):
+            h = (h * 31 + data[i]) & 0xFFFFFFFFFFFFFFFF
+    return f"{h:016X}_{size}"
+```
+
+Use this when you want to cross-reference a metallib produced by replay against the corresponding compile-time `module.bc` PlayCover persisted on first launch. The bridge already computes this and reports it as `cache_key_metallib` on every `shader-of-rps` invocation, so you typically don't need to run this Python yourself.
 
 ---
 

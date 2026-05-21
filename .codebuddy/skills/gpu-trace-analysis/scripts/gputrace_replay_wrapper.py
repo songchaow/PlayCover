@@ -47,6 +47,7 @@ EXIT_CODE_MAP = {
     9: "CONTROLLER_FAIL",
     10: "REPLAY_FAIL",
     11: "SUBCMD_FAIL",
+    12: "PLAYTO_OOR",
 }
 
 
@@ -132,11 +133,34 @@ class Library:
 
 
 @dataclass
+class ColorAttachment:
+    """R7.2: 单个 color attachment 摘要"""
+    index: int
+    format: str
+    pixel_format: int
+    write_mask: str
+    blending_enabled: bool
+
+
+@dataclass
 class PipelineState:
-    """Pipeline state"""
+    """Pipeline state — R7.2: render PSO 现在带 RPS↔shader 关联字段"""
     key: int
     class_name: str
     label: Optional[str] = None
+    # R7.2 — RPS↔shader correlation (only present on render_pipeline_states
+    # whose descriptor was captured by the bridge swizzle).
+    vertex_function_key: Optional[int] = None
+    fragment_function_key: Optional[int] = None
+    vertex_library_key: Optional[int] = None
+    fragment_library_key: Optional[int] = None
+    vertex_function_name: Optional[str] = None
+    fragment_function_name: Optional[str] = None
+    color_attachment_count: Optional[int] = None
+    color_attachments: list[ColorAttachment] = field(default_factory=list)
+    depth_format: Optional[str] = None
+    stencil_format: Optional[str] = None
+    raster_sample_count: Optional[int] = None
 
 
 @dataclass
@@ -165,6 +189,35 @@ class PipelineResult:
     render_pipeline_states_count: int = 0
     compute_pipeline_states_count: int = 0
     functions_count: int = 0
+    # R7.2 — swizzle correlation health
+    rps_correlated_count: int = 0
+    rps_captured_count: int = 0
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ShaderOfRpsResult:
+    """R7.4: shader-of-rps 子命令结果 — RPS 反查 shader"""
+    trace_path: str
+    rps_key: int
+    stage: str
+    output_dir: str
+    rps_label: Optional[str] = None
+    function_key: Optional[int] = None
+    function_name: Optional[str] = None
+    library_key: Optional[int] = None
+    library_metallib_path: Optional[str] = None
+    library_metallib_size: Optional[int] = None
+    library_air_path: Optional[str] = None
+    library_air_size: Optional[int] = None
+    cache_key_metallib: Optional[str] = None
+    ir_ll_path: Optional[str] = None
+    ir_ll_size: Optional[int] = None
+    ir_dis_path: Optional[str] = None
+    ir_error: Optional[str] = None
+    ir_hint: Optional[str] = None
+    error: Optional[str] = None
+    hint: Optional[str] = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -268,6 +321,16 @@ class ReplayBridge:
             ) from e
 
         if proc.returncode != 0:
+            # Exit codes 11 (SUBCMD_FAIL) and 12 (PLAYTO_OOR) are graceful
+            # structured failures: the bridge still produced a JSON payload on
+            # stdout describing the error. Don't lose that payload by raising —
+            # callers can inspect `error`/`hint` fields on the parsed JSON and
+            # branch on the exit code via .raw if needed.
+            if proc.returncode in (11, 12) and proc.stdout.strip():
+                try:
+                    return json.loads(proc.stdout.strip()), proc.stderr
+                except json.JSONDecodeError:
+                    pass
             raise BridgeError(
                 exit_code=proc.returncode,
                 exit_name=EXIT_CODE_MAP.get(proc.returncode, f"UNKNOWN_{proc.returncode}"),
@@ -411,11 +474,37 @@ class ReplayBridge:
                 bitcode_file=lib.get("bitcode_file"),
             ))
 
-        # Parse pipeline states
-        render_ps = [
-            PipelineState(key=ps["key"], class_name=ps.get("class", ""), label=ps.get("label"))
-            for ps in data.get("render_pipeline_states", [])
-        ]
+        # Parse pipeline states. Render pipelines now carry R7.2 correlation
+        # fields when the bridge swizzle captured the descriptor.
+        def _parse_render_ps(ps: dict[str, Any]) -> PipelineState:
+            cas = [
+                ColorAttachment(
+                    index=ca["index"],
+                    format=ca.get("format", ""),
+                    pixel_format=ca.get("pixelFormat", 0),
+                    write_mask=ca.get("writeMask", ""),
+                    blending_enabled=ca.get("blendingEnabled", False),
+                )
+                for ca in ps.get("color_attachments", [])
+            ]
+            return PipelineState(
+                key=ps["key"],
+                class_name=ps.get("class", ""),
+                label=ps.get("label"),
+                vertex_function_key=ps.get("vertex_function_key"),
+                fragment_function_key=ps.get("fragment_function_key"),
+                vertex_library_key=ps.get("vertex_library_key"),
+                fragment_library_key=ps.get("fragment_library_key"),
+                vertex_function_name=ps.get("vertex_function_name"),
+                fragment_function_name=ps.get("fragment_function_name"),
+                color_attachment_count=ps.get("color_attachment_count"),
+                color_attachments=cas,
+                depth_format=ps.get("depth_format"),
+                stencil_format=ps.get("stencil_format"),
+                raster_sample_count=ps.get("raster_sample_count"),
+            )
+
+        render_ps = [_parse_render_ps(ps) for ps in data.get("render_pipeline_states", [])]
         compute_ps = [
             PipelineState(key=ps["key"], class_name=ps.get("class", ""), label=ps.get("label"))
             for ps in data.get("compute_pipeline_states", [])
@@ -447,6 +536,8 @@ class ReplayBridge:
             render_pipeline_states_count=data.get("render_pipeline_states_count", 0),
             compute_pipeline_states_count=data.get("compute_pipeline_states_count", 0),
             functions_count=data.get("functions_count", 0),
+            rps_correlated_count=data.get("rps_correlated_count", 0),
+            rps_captured_count=data.get("rps_captured_count", 0),
             raw=data,
         )
 
@@ -504,6 +595,66 @@ class ReplayBridge:
             original=data.get("original", {}),
             replacement=data.get("replacement", {}),
             verify=data.get("verify"),
+            raw=data,
+        )
+
+    def shader_of_rps(
+        self,
+        trace_path: str | Path,
+        rps_key: int,
+        *,
+        stage: str = "fragment",
+        with_ir: bool = False,
+        output_dir: Optional[str | Path] = None,
+        timeout: float = 300.0,
+    ) -> ShaderOfRpsResult:
+        """
+        R7.4: 通过 RPS_key 反查 fragment/vertex shader, 可选生成 LLVM IR (.ll)。
+
+        Args:
+            trace_path: .gputrace bundle 路径
+            rps_key: render pipeline state key (来自 pipeline 子命令)
+            stage: 'fragment' (默认) 或 'vertex'
+            with_ir: True 时调用 llvm-dis 产出 .ll IR 文件
+            output_dir: 导出目录 (None=系统临时目录)
+            timeout: 超时秒数
+
+        Returns:
+            ShaderOfRpsResult — 失败时 .error 字段填充人类可读原因
+        """
+        if stage not in ("fragment", "vertex"):
+            raise ValueError(f"stage must be 'fragment' or 'vertex', got {stage!r}")
+        trace_path = self._validate_trace(trace_path)
+
+        args = ["shader-of-rps", str(trace_path), str(rps_key), "--stage", stage]
+        if with_ir:
+            args.append("--with-ir")
+        if output_dir:
+            args += ["--output-dir", str(output_dir)]
+
+        data, _ = self._run(args, timeout=timeout)
+
+        return ShaderOfRpsResult(
+            trace_path=data.get("trace_path", str(trace_path)),
+            rps_key=data.get("rps_key", rps_key),
+            stage=data.get("stage", stage),
+            output_dir=data.get("output_dir", str(output_dir or "")),
+            rps_label=data.get("rps_label"),
+            function_key=data.get("function_key"),
+            function_name=data.get("function_name"),
+            library_key=data.get("library_key"),
+            library_metallib_path=data.get("library_metallib_path"),
+            library_metallib_size=data.get("library_metallib_size"),
+            library_air_path=data.get("library_air_path"),
+            library_air_size=data.get("library_air_size"),
+            cache_key_metallib=data.get("cache_key_metallib"),
+            ir_ll_path=data.get("ir_ll_path"),
+            ir_ll_size=data.get("ir_ll_size"),
+            ir_dis_path=data.get("ir_dis_path"),
+            ir_error=data.get("ir_error"),
+            ir_hint=data.get("ir_hint"),
+            error=data.get("error"),
+            hint=data.get("hint"),
             raw=data,
         )
 
@@ -611,6 +762,18 @@ def _cli_main():
     p_shader.add_argument("--source", default=None, help="MSL source file path")
     p_shader.add_argument("--verify", action="store_true", help="Verify after replace")
 
+    # shader-of-rps (R7.4)
+    p_sor = subparsers.add_parser("shader-of-rps", parents=[parent],
+                                   help="Reverse-lookup shader by RPS key (optionally produce LLVM IR)")
+    p_sor.add_argument("trace", help="Path to .gputrace bundle")
+    p_sor.add_argument("rps_key", type=int, help="Render pipeline state key (from `pipeline` output)")
+    p_sor.add_argument("--stage", choices=["fragment", "vertex"], default="fragment",
+                       help="Which stage to look up (default: fragment)")
+    p_sor.add_argument("--with-ir", action="store_true",
+                       help="Run llvm-dis on the AIR bitcode and emit a .ll file")
+    p_sor.add_argument("--output-dir", default=None,
+                       help="Output directory (default: system tmp)")
+
     # config
     p_config = subparsers.add_parser("config", parents=[parent], help="Configuration control")
     p_config.add_argument("trace", help="Path to .gputrace bundle")
@@ -662,6 +825,21 @@ def _cli_main():
                 timeout=args.timeout,
             )
             print(json.dumps(result.raw, indent=indent))
+
+        elif args.command == "shader-of-rps":
+            result = bridge.shader_of_rps(
+                args.trace,
+                args.rps_key,
+                stage=args.stage,
+                with_ir=args.with_ir,
+                output_dir=args.output_dir,
+                timeout=args.timeout,
+            )
+            print(json.dumps(result.raw, indent=indent))
+            # Surface the bridge's structured error (e.g. rps_not_found) via
+            # exit code so shell pipelines can detect it without parsing JSON.
+            if result.error:
+                sys.exit(11)
 
         elif args.command == "config":
             # Parse key=value pairs into kwargs

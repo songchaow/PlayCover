@@ -1,14 +1,15 @@
 /**
- * gputrace_replay_bridge.m — R6.1a 统一 ObjC Bridge CLI
+ * gputrace_replay_bridge.m — 统一 ObjC Bridge CLI
  *
  * 单一多子命令二进制，覆盖所有已验证的 GPU Trace Replay 能力，JSON 输出。
  *
  * 子命令：
- *   help      — 输出子命令列表
- *   replay    — headless replay（playAll），输出 JSON 摘要
- *   pipeline  — library 枚举 + metallib/AIR 导出（R6.1c）
- *   shader    — setLibrary:forKey: 热替换 + 验证（R6.1d）
- *   config    — 调用链控制 + validation 全局变量（R6.1e）
+ *   help           — 输出子命令列表
+ *   replay         — headless replay（playAll），输出 JSON 摘要
+ *   pipeline       — library 枚举 + metallib/AIR 导出 + RPS↔shader 关联（R7.2）
+ *   shader         — setLibrary:forKey: 热替换 + 验证（R6.1d）
+ *   shader-of-rps  — 通过 RPS_key 反查 fragment/vertex shader 并可选导出 IR（R7.4）
+ *   config         — 调用链控制 + validation 全局变量（R6.1e）
  *
  * 编译：
  *   clang -framework Foundation -framework Metal -ldl -lobjc \
@@ -19,6 +20,7 @@
  *   ./gputrace_replay_bridge replay <path-to-.gputrace>
  *   ./gputrace_replay_bridge pipeline <path-to-.gputrace> [output_dir]
  *   ./gputrace_replay_bridge shader <path-to-.gputrace> <library_key> <metallib_path>
+ *   ./gputrace_replay_bridge shader-of-rps <path-to-.gputrace> <rps_key> [--stage fragment|vertex] [--with-ir] [--output-dir DIR]
  *   ./gputrace_replay_bridge config <path-to-.gputrace> [key=value ...]
  */
 
@@ -398,13 +400,14 @@ static void replay_context_cleanup(void) {
 static int cmd_help(int argc, const char *argv[]) {
     JSON_BEGIN();
     JSON_KV_STR("tool", "gputrace_replay_bridge");
-    JSON_KV_STR("version", "0.2.0");
+    JSON_KV_STR("version", "0.3.0");
     JSON_SEP();
     printf("\"commands\":[");
     printf("{\"name\":\"help\",\"description\":\"Show available commands\"}");
     printf(",{\"name\":\"replay\",\"description\":\"Headless replay with playAll/playTo + resource enumeration/export. Always reports total_call_count; --playto N is bounds-checked and returns error \\\"playto_out_of_range\\\" instead of crashing when N > total_call_count.\",\"usage\":\"replay <.gputrace> [--bounds] [--playto N] [--list-resources] [--export ID output_path]\"}");
-    printf(",{\"name\":\"pipeline\",\"description\":\"Library enumeration + metallib/AIR export\",\"usage\":\"pipeline <.gputrace> [output_dir]\"}");
+    printf(",{\"name\":\"pipeline\",\"description\":\"Library enumeration + metallib/AIR export + RPS↔shader correlation (vertex/fragment function/library key + attachment summary captured via method swizzling).\",\"usage\":\"pipeline <.gputrace> [output_dir]\"}");
     printf(",{\"name\":\"shader\",\"description\":\"Hot-replace library via setLibrary:forKey:\",\"usage\":\"shader <.gputrace> <lib_key> <metallib_path>\"}");
+    printf(",{\"name\":\"shader-of-rps\",\"description\":\"Reverse-lookup the fragment/vertex shader of a render pipeline state. Reuses the pipeline-subcommand swizzle to map RPS_key -> function_key -> library_key -> metallib + (optionally) llvm-dis to .ll IR.\",\"usage\":\"shader-of-rps <.gputrace> <rps_key> [--stage fragment|vertex] [--with-ir] [--output-dir DIR]\"}");
     printf(",{\"name\":\"config\",\"description\":\"Configuration control (call chain + validation)\",\"usage\":\"config <.gputrace> [key=value ...]\"}");
     printf("]");
     JSON_END();
@@ -547,6 +550,251 @@ static void print_texture_usage_array(MTLTextureUsage usage) {
     }
     #undef EMIT
     printf("]");
+}
+
+// ============================================================
+#pragma mark - RPS Swizzle Capture (R7.2)
+// ============================================================
+//
+// Background: GTMTLReplayObjectMap exposes RPS objects keyed by trace-internal
+// keys, but does NOT expose the back-link from a RPS object to its source
+// MTLRenderPipelineDescriptor (and thus to its vertex/fragmentFunction).
+// `MTLDevice newRenderPipelineStateWithDescriptor:*` swallows the descriptor
+// after compilation; once the PSO is built, that link is gone.
+//
+// Workaround (validated by LocalDocs/OfflineSourceRecovery/scripts/rps_swizzle_probe.m
+// against LYSK trace, 65/65 RPS reverse-mapped successfully):
+//   1. Before any replay invocation, swizzle the device's
+//      newRenderPipelineStateWithDescriptor:error: AND
+//      newRenderPipelineStateWithDescriptor:options:reflection:error:
+//      so we capture each (descriptor, returned-RPS) pair.
+//   2. From the captured descriptor, snapshot:
+//        - vertexFunction / fragmentFunction (object pointers + names)
+//        - color attachment formats / writeMasks
+//        - depth/stencil attachment pixel formats
+//   3. After replay, build an rps_ptr → rps_key map by probing
+//      [objectMap renderPipelineStateForKey:] for k in [0, maxKey].
+//   4. Build a fnPtr → fn_key map from objectMap.functionMap.
+//   5. Cross-reference to produce {rps_key → vertex_fn_key, fragment_fn_key,
+//      vertex_lib_key (= v_fn_key - 1), fragment_lib_key (= f_fn_key - 1),
+//      color_attachments[], depth_format, stencil_format}.
+//
+// The swizzle MUST be installed before replay_context_init(), because
+// makeController triggers the framework's PSO compilation pass.
+
+#define MAX_CAPTURED_RPS 1024
+#define RPS_LABEL_LEN     128
+#define RPS_FN_NAME_LEN   128
+#define RPS_FMT_NAME_LEN  48
+#define RPS_MAX_COLOR_ATT 8
+
+typedef struct {
+    int      index;
+    char     format_name[RPS_FMT_NAME_LEN];
+    NSUInteger format_value;
+    char     write_mask[8]; // "RGBA" / subset
+    BOOL     blending_enabled;
+} RPSColorAttachmentInfo;
+
+typedef struct {
+    void *rps_ptr;
+    void *vfunc_ptr;
+    void *ffunc_ptr;
+    char  vfunc_name[RPS_FN_NAME_LEN];
+    char  ffunc_name[RPS_FN_NAME_LEN];
+    char  label[RPS_LABEL_LEN];
+    int   color_attachment_count;
+    RPSColorAttachmentInfo color[RPS_MAX_COLOR_ATT];
+    char  depth_format[RPS_FMT_NAME_LEN];
+    NSUInteger depth_format_value;
+    char  stencil_format[RPS_FMT_NAME_LEN];
+    NSUInteger stencil_format_value;
+    NSUInteger raster_sample_count;
+} RPSCaptureEntry;
+
+static RPSCaptureEntry g_rps_captured[MAX_CAPTURED_RPS];
+static int             g_rps_n_captured = 0;
+static int             g_rps_swizzles_installed = 0;
+
+// Original IMP storage
+typedef id (*new_rps_with_desc_imp)(id self, SEL _cmd, id desc, NSError **err);
+typedef id (*new_rps_with_desc_options_imp)(id self, SEL _cmd, id desc, NSUInteger options, id *reflection, NSError **err);
+
+static new_rps_with_desc_imp         g_rps_orig_imp        = NULL;
+static new_rps_with_desc_options_imp g_rps_orig_imp_opts   = NULL;
+
+static const char* write_mask_string(MTLColorWriteMask m, char *out, size_t n) {
+    size_t i = 0;
+    if ((m & MTLColorWriteMaskRed)   && i + 1 < n) out[i++] = 'R';
+    if ((m & MTLColorWriteMaskGreen) && i + 1 < n) out[i++] = 'G';
+    if ((m & MTLColorWriteMaskBlue)  && i + 1 < n) out[i++] = 'B';
+    if ((m & MTLColorWriteMaskAlpha) && i + 1 < n) out[i++] = 'A';
+    out[i] = '\0';
+    return out;
+}
+
+static void rps_capture_descriptor(id rps, id desc) {
+    if (!rps || !desc) return;
+    if (g_rps_n_captured >= MAX_CAPTURED_RPS) return;
+    int idx = g_rps_n_captured++;
+    RPSCaptureEntry *e = &g_rps_captured[idx];
+    memset(e, 0, sizeof(*e));
+    e->rps_ptr = (__bridge void *)rps;
+
+    id vf = nil, ff = nil;
+    NSString *label = nil;
+    @try { vf = [desc valueForKey:@"vertexFunction"]; } @catch (NSException *ex) {}
+    @try { ff = [desc valueForKey:@"fragmentFunction"]; } @catch (NSException *ex) {}
+    @try { label = [desc valueForKey:@"label"]; } @catch (NSException *ex) {}
+
+    e->vfunc_ptr = (__bridge void *)vf;
+    e->ffunc_ptr = (__bridge void *)ff;
+    if (vf) {
+        NSString *n = nil;
+        @try { n = [vf valueForKey:@"name"]; } @catch (NSException *ex) {}
+        snprintf(e->vfunc_name, sizeof(e->vfunc_name), "%s", n ? [n UTF8String] : "");
+    }
+    if (ff) {
+        NSString *n = nil;
+        @try { n = [ff valueForKey:@"name"]; } @catch (NSException *ex) {}
+        snprintf(e->ffunc_name, sizeof(e->ffunc_name), "%s", n ? [n UTF8String] : "");
+    }
+    if (label) {
+        snprintf(e->label, sizeof(e->label), "%s", [label UTF8String]);
+    }
+
+    // Color attachments — MTLRenderPipelineDescriptor.colorAttachments is a
+    // MTLRenderPipelineColorAttachmentDescriptorArray; we index it 0..7.
+    id colorAttsArr = nil;
+    @try { colorAttsArr = [desc valueForKey:@"colorAttachments"]; } @catch (NSException *ex) {}
+    if (colorAttsArr) {
+        SEL objAtIdx = @selector(objectAtIndexedSubscript:);
+        for (int i = 0; i < RPS_MAX_COLOR_ATT; i++) {
+            id att = nil;
+            if ([colorAttsArr respondsToSelector:objAtIdx]) {
+                @try {
+                    att = ((id (*)(id, SEL, NSUInteger))objc_msgSend)(colorAttsArr, objAtIdx, (NSUInteger)i);
+                } @catch (NSException *ex) {}
+            }
+            if (!att) continue;
+            NSUInteger pf = 0;
+            @try { pf = [[att valueForKey:@"pixelFormat"] unsignedLongValue]; } @catch (NSException *ex) {}
+            if (pf == 0) continue; // empty slot
+            RPSColorAttachmentInfo *c = &e->color[e->color_attachment_count];
+            c->index = i;
+            c->format_value = pf;
+            snprintf(c->format_name, sizeof(c->format_name), "%s", pixel_format_name((MTLPixelFormat)pf));
+            MTLColorWriteMask wm = MTLColorWriteMaskAll;
+            @try { wm = (MTLColorWriteMask)[[att valueForKey:@"writeMask"] unsignedLongValue]; } @catch (NSException *ex) {}
+            write_mask_string(wm, c->write_mask, sizeof(c->write_mask));
+            BOOL be = NO;
+            @try { be = [[att valueForKey:@"isBlendingEnabled"] boolValue]; } @catch (NSException *ex) {}
+            c->blending_enabled = be;
+            e->color_attachment_count++;
+        }
+    }
+
+    // Depth / stencil pixel formats live directly on the descriptor.
+    NSUInteger dpf = 0, spf = 0;
+    @try { dpf = [[desc valueForKey:@"depthAttachmentPixelFormat"] unsignedLongValue]; } @catch (NSException *ex) {}
+    @try { spf = [[desc valueForKey:@"stencilAttachmentPixelFormat"] unsignedLongValue]; } @catch (NSException *ex) {}
+    e->depth_format_value = dpf;
+    e->stencil_format_value = spf;
+    snprintf(e->depth_format,   sizeof(e->depth_format),   "%s", pixel_format_name((MTLPixelFormat)dpf));
+    snprintf(e->stencil_format, sizeof(e->stencil_format), "%s", pixel_format_name((MTLPixelFormat)spf));
+
+    // rasterSampleCount (older key on macOS: sampleCount; newer: rasterSampleCount).
+    NSUInteger rsc = 1;
+    @try { rsc = [[desc valueForKey:@"rasterSampleCount"] unsignedLongValue]; } @catch (NSException *ex) {}
+    if (rsc == 0) {
+        @try { rsc = [[desc valueForKey:@"sampleCount"] unsignedLongValue]; } @catch (NSException *ex) {}
+    }
+    e->raster_sample_count = rsc;
+}
+
+static id rps_swizzled_imp(id self, SEL _cmd, id desc, NSError **err) {
+    id rps = g_rps_orig_imp(self, _cmd, desc, err);
+    rps_capture_descriptor(rps, desc);
+    return rps;
+}
+
+static id rps_swizzled_imp_opts(id self, SEL _cmd, id desc, NSUInteger options, id *refl, NSError **err) {
+    id rps = g_rps_orig_imp_opts(self, _cmd, desc, options, refl, err);
+    rps_capture_descriptor(rps, desc);
+    return rps;
+}
+
+// Install the swizzles. Walks the device class hierarchy until it finds an
+// implementation owner (e.g. AGXG16XDevice) and replaces the IMP. Idempotent.
+static void rps_install_swizzles(void) {
+    if (g_rps_swizzles_installed) return;
+    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+    if (!dev) return;
+    Class deviceClass = object_getClass(dev);
+
+    Class c = deviceClass;
+    while (c && c != [NSObject class]) {
+        Method m = class_getInstanceMethod(c, @selector(newRenderPipelineStateWithDescriptor:error:));
+        if (m && method_getImplementation(m)) {
+            g_rps_orig_imp = (new_rps_with_desc_imp)method_getImplementation(m);
+            method_setImplementation(m, (IMP)rps_swizzled_imp);
+            break;
+        }
+        c = class_getSuperclass(c);
+    }
+    c = deviceClass;
+    while (c && c != [NSObject class]) {
+        Method m = class_getInstanceMethod(c, @selector(newRenderPipelineStateWithDescriptor:options:reflection:error:));
+        if (m && method_getImplementation(m)) {
+            g_rps_orig_imp_opts = (new_rps_with_desc_options_imp)method_getImplementation(m);
+            method_setImplementation(m, (IMP)rps_swizzled_imp_opts);
+            break;
+        }
+        c = class_getSuperclass(c);
+    }
+    g_rps_swizzles_installed = 1;
+}
+
+// Build (rps_ptr → rps_key) by probing the objectMap for k in [0, maxKey].
+// Currently unused by the bridge subcommands (they iterate per-key directly to
+// avoid an extra pass), but kept here as documented infrastructure for future
+// chunks (R7.3 frame-list correlation) and parity with rps_swizzle_probe.m.
+__attribute__((unused))
+static NSMutableDictionary *rps_build_ptr_to_key_map(id objectMap, uint64_t maxKey) {
+    NSMutableDictionary *m = [NSMutableDictionary dictionary];
+    if (!objectMap) return m;
+    SEL sel = @selector(renderPipelineStateForKey:);
+    for (uint64_t k = 0; k <= maxKey; k++) {
+        id rps = ((id (*)(id, SEL, uint64_t))objc_msgSend)(objectMap, sel, k);
+        if (rps) {
+            [m setObject:@(k) forKey:[NSValue valueWithNonretainedObject:rps]];
+        }
+    }
+    return m;
+}
+
+// Build (fn_ptr → fn_key) from objectMap.functionMap (NSDictionary key→fnObj).
+static NSMutableDictionary *rps_build_fn_ptr_to_key_map(id objectMap) {
+    NSMutableDictionary *m = [NSMutableDictionary dictionary];
+    if (!objectMap) return m;
+    id fnMap = nil;
+    @try { fnMap = [objectMap performSelector:@selector(functionMap)]; } @catch (NSException *ex) {}
+    if (![fnMap isKindOfClass:[NSDictionary class]]) return m;
+    for (id key in (NSDictionary *)fnMap) {
+        id fn = [(NSDictionary *)fnMap objectForKey:key];
+        if (fn) {
+            [m setObject:key forKey:[NSValue valueWithNonretainedObject:fn]];
+        }
+    }
+    return m;
+}
+
+// Find the capture entry for a given rps_ptr; NULL if not found.
+static const RPSCaptureEntry *rps_find_entry(void *rps_ptr) {
+    for (int i = 0; i < g_rps_n_captured; i++) {
+        if (g_rps_captured[i].rps_ptr == rps_ptr) return &g_rps_captured[i];
+    }
+    return NULL;
 }
 
 // ============================================================
@@ -900,6 +1148,12 @@ static int cmd_pipeline(int argc, const char *argv[]) {
     const char *trace_path = argv[0];
     const char *output_dir_c = (argc >= 2) ? argv[1] : NULL;
 
+    // R7.2 — install method swizzling on the device's
+    // newRenderPipelineStateWithDescriptor:* BEFORE replay_context_init.
+    // makeController triggers PSO compilation; if the swizzle isn't installed
+    // by then, we miss every (rps, descriptor) pair.
+    rps_install_swizzles();
+
     int rc = replay_context_init(trace_path);
     if (rc != EXIT_OK) return rc;
 
@@ -928,7 +1182,12 @@ static int cmd_pipeline(int argc, const char *argv[]) {
     NSFileManager *fm = [NSFileManager defaultManager];
     [fm createDirectoryAtPath:outputDir withIntermediateDirectories:YES attributes:nil error:nil];
 
-    // Determine max key from functionMap
+    // Determine max key from functionMap.
+    // Note: render-pipeline-state keys live in a *different* numeric range than
+    // function keys — they're typically larger (e.g. LYSK trace: max fn key
+    // ~439 but RPS keys go up through ~496). We scan generously for RPS so
+    // we don't silently truncate the upper tail; the cost is bounded by the
+    // objectMap probe being a O(1) dictionary lookup per index.
     id funcMapRaw = [g_ctx.objectMap performSelector:@selector(functionMap)];
     uint64_t maxKey = 200;
     if (funcMapRaw && [funcMapRaw isKindOfClass:[NSDictionary class]]) {
@@ -938,6 +1197,9 @@ static int cmd_pipeline(int argc, const char *argv[]) {
         }
         maxKey += 50;
     }
+    // RPS-specific scan ceiling: rps keys may run well past fn keys. Add a
+    // generous headroom; the probe is cheap (one objc_msgSend per slot).
+    uint64_t rpsMaxKey = maxKey + 200;
 
     // === Scan libraries ===
     SEL libSel = @selector(libraryForKey:);
@@ -1049,10 +1311,18 @@ static int cmd_pipeline(int argc, const char *argv[]) {
     SEL cpsSel = @selector(computePipelineStateForKey:);
     int render_ps_count = 0, compute_ps_count = 0;
 
+    // R7.2 — build (fn_ptr → fn_key) map once for cross-referencing captured
+    // descriptors. Captured pairs are populated by the swizzle during
+    // makeController/playAll. If the swizzles never fired (e.g. the device
+    // class hierarchy unexpectedly lacks the methods), we still emit basic
+    // RPS info but the *_function_key / attachment fields will be absent.
+    NSMutableDictionary *fnPtr2Key = rps_build_fn_ptr_to_key_map(g_ctx.objectMap);
+    int rps_correlation_count = 0;
+
     JSON_SEP();
     printf("\"render_pipeline_states\":[");
     BOOL first_rps = YES;
-    for (uint64_t k = 0; k <= maxKey; k++) {
+    for (uint64_t k = 0; k <= rpsMaxKey; k++) {
         id rps = ((id (*)(id, SEL, uint64_t))objc_msgSend)(g_ctx.objectMap, rpsSel, k);
         if (!rps) continue;
         render_ps_count++;
@@ -1064,6 +1334,57 @@ static int cmd_pipeline(int argc, const char *argv[]) {
             id lbl = [rps performSelector:@selector(label)];
             if (lbl) { printf(",\"label\":"); json_print_string([lbl UTF8String]); }
         }
+
+        // R7.2 — RPS↔shader correlation, when the swizzle captured this RPS.
+        const RPSCaptureEntry *e = rps_find_entry((__bridge void *)rps);
+        if (e) {
+            rps_correlation_count++;
+            id v_fn_k = e->vfunc_ptr ? [fnPtr2Key objectForKey:[NSValue valueWithNonretainedObject:(__bridge id)e->vfunc_ptr]] : nil;
+            id f_fn_k = e->ffunc_ptr ? [fnPtr2Key objectForKey:[NSValue valueWithNonretainedObject:(__bridge id)e->ffunc_ptr]] : nil;
+
+            if (v_fn_k) {
+                uint64_t vk = [v_fn_k unsignedLongLongValue];
+                printf(",\"vertex_function_key\":%llu", vk);
+                if (vk > 0) printf(",\"vertex_library_key\":%llu", vk - 1);
+            }
+            if (f_fn_k) {
+                uint64_t fk = [f_fn_k unsignedLongLongValue];
+                printf(",\"fragment_function_key\":%llu", fk);
+                if (fk > 0) printf(",\"fragment_library_key\":%llu", fk - 1);
+            }
+            if (e->vfunc_name[0]) {
+                printf(",\"vertex_function_name\":");
+                json_print_string(e->vfunc_name);
+            }
+            if (e->ffunc_name[0]) {
+                printf(",\"fragment_function_name\":");
+                json_print_string(e->ffunc_name);
+            }
+
+            // Attachment summary — always emitted so consumers can branch on
+            // color_attachment_count even if it's 0 (e.g. depth-only passes).
+            printf(",\"color_attachment_count\":%d", e->color_attachment_count);
+            printf(",\"color_attachments\":[");
+            for (int ci = 0; ci < e->color_attachment_count; ci++) {
+                if (ci > 0) printf(",");
+                const RPSColorAttachmentInfo *c = &e->color[ci];
+                printf("{\"index\":%d,\"format\":", c->index);
+                json_print_string(c->format_name);
+                printf(",\"pixelFormat\":%lu,\"writeMask\":", (unsigned long)c->format_value);
+                json_print_string(c->write_mask);
+                printf(",\"blendingEnabled\":%s}", c->blending_enabled ? "true" : "false");
+            }
+            printf("]");
+
+            printf(",\"depth_format\":");
+            json_print_string(e->depth_format);
+            printf(",\"depth_format_value\":%lu", (unsigned long)e->depth_format_value);
+            printf(",\"stencil_format\":");
+            json_print_string(e->stencil_format);
+            printf(",\"stencil_format_value\":%lu", (unsigned long)e->stencil_format_value);
+            printf(",\"raster_sample_count\":%lu", (unsigned long)e->raster_sample_count);
+        }
+
         printf("}");
     }
     printf("]");
@@ -1071,7 +1392,7 @@ static int cmd_pipeline(int argc, const char *argv[]) {
     JSON_SEP();
     printf("\"compute_pipeline_states\":[");
     BOOL first_cps = YES;
-    for (uint64_t k = 0; k <= maxKey; k++) {
+    for (uint64_t k = 0; k <= rpsMaxKey; k++) {
         id cps = ((id (*)(id, SEL, uint64_t))objc_msgSend)(g_ctx.objectMap, cpsSel, k);
         if (!cps) continue;
         compute_ps_count++;
@@ -1125,6 +1446,12 @@ static int cmd_pipeline(int argc, const char *argv[]) {
     JSON_KV_INT("render_pipeline_states_count", render_ps_count);
     JSON_KV_INT("compute_pipeline_states_count", compute_ps_count);
     JSON_KV_INT("functions_count", func_count);
+    // R7.2 — swizzle correlation health: how many RPS in the trace got their
+    // descriptor captured. If this is 0 while render_pipeline_states_count > 0,
+    // the swizzle install path is broken (e.g. macOS update changed the device
+    // class hierarchy) and downstream `shader-of-rps` will return errors.
+    JSON_KV_INT("rps_correlated_count", rps_correlation_count);
+    JSON_KV_INT("rps_captured_count", g_rps_n_captured);
 
     JSON_END();
 
@@ -1331,6 +1658,330 @@ static int cmd_shader(int argc, const char *argv[]) {
 }
 
 // ============================================================
+#pragma mark - Subcommand: shader-of-rps (R7.4)
+// ============================================================
+//
+// shader-of-rps <trace> <rps_key> [--stage fragment|vertex] [--with-ir] [--output-dir DIR]
+//
+// Walks the R7.2 swizzle table and the objectMap to answer the user-level
+// question "what shader does this RPS use?" — a one-line semantic lookup that
+// hides every intermediate abstraction (function key, library key, metallib,
+// AIR bitcode, llvm-dis).
+//
+// Output (always JSON on stdout):
+//   {
+//     "command": "shader-of-rps",
+//     "rps_key": 484,
+//     "stage": "fragment",
+//     "function_key": 357,
+//     "function_name": "...",
+//     "library_key": 356,
+//     "library_metallib_path": ".../library_356.metallib",
+//     "library_metallib_size": 4577,
+//     "library_air_path": ".../library_356.air",   // when bitcode available
+//     "library_air_size": 3920,
+//     "ir_ll_path": ".../library_356.ll",          // present iff --with-ir succeeded
+//     "ir_ll_size": ...,
+//     "cache_key": "...."                          // PlayTools cacheKey on the metallib bytes
+//   }
+//
+// On lookup failures emits a structured "error" string (see EXIT_SUBCMD_FAIL).
+// Reuses `replay_context_init` + the swizzle-driven RPS↔function correlation,
+// so it pays one playAll cost per invocation. That's the same cost as
+// `pipeline`, and necessary to populate the objectMap.
+
+// Compute the PlayTools cacheKey (FNV-style) on a binary blob. See
+// LocalDocs/GPUTraceReplayAutomation/subdocs/20260521-R7-frame-inspection-gap.md §3.1.
+static NSString *compute_playtools_cache_key(NSData *data) {
+    if (!data) return nil;
+    NSUInteger size = [data length];
+    const uint8_t *bytes = (const uint8_t *)[data bytes];
+    uint64_t h = (uint64_t)size;
+    NSUInteger head_n = size < 32 ? size : 32;
+    for (NSUInteger i = 0; i < head_n; i++) {
+        h = h * 31 + bytes[i];
+    }
+    if (size > 32) {
+        NSUInteger tail_n = (size - 32) < 16 ? (size - 32) : 16;
+        for (NSUInteger i = size - tail_n; i < size; i++) {
+            h = h * 31 + bytes[i];
+        }
+    }
+    return [NSString stringWithFormat:@"%016llX_%lu", (unsigned long long)h,
+            (unsigned long)size];
+}
+
+// Locate llvm-dis on disk (Homebrew first, then $PATH). Returns nil if absent.
+static NSString *find_llvm_dis(void) {
+    NSArray *candidates = @[
+        @"/opt/homebrew/opt/llvm/bin/llvm-dis",
+        @"/opt/homebrew/bin/llvm-dis",
+        @"/usr/local/opt/llvm/bin/llvm-dis",
+        @"/usr/local/bin/llvm-dis",
+    ];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *p in candidates) {
+        if ([fm isExecutableFileAtPath:p]) return p;
+    }
+    // Fall back to PATH lookup via /usr/bin/which.
+    NSTask *t = [[NSTask alloc] init];
+    t.launchPath = @"/usr/bin/which";
+    t.arguments = @[@"llvm-dis"];
+    NSPipe *out = [NSPipe pipe];
+    t.standardOutput = out;
+    t.standardError = [NSPipe pipe];
+    @try {
+        [t launch];
+        [t waitUntilExit];
+        if (t.terminationStatus == 0) {
+            NSData *d = [[out fileHandleForReading] readDataToEndOfFile];
+            NSString *s = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+            s = [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            if (s.length && [fm isExecutableFileAtPath:s]) return s;
+        }
+    } @catch (NSException *ex) {}
+    return nil;
+}
+
+static int cmd_shader_of_rps(int argc, const char *argv[]) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: gputrace_replay_bridge shader-of-rps <.gputrace> <rps_key> [--stage fragment|vertex] [--with-ir] [--output-dir DIR]\n");
+        fprintf(stderr, "\nReverse-lookup the shader (vertex or fragment) attached to a RPS, optionally producing LLVM IR.\n");
+        fprintf(stderr, "Default --stage = fragment.\n");
+        return EXIT_USAGE;
+    }
+
+    const char *trace_path = argv[0];
+    uint64_t target_rps_key = strtoull(argv[1], NULL, 10);
+    const char *stage = "fragment";
+    BOOL with_ir = NO;
+    const char *output_dir_c = NULL;
+
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--stage") == 0 && i + 1 < argc) {
+            stage = argv[++i];
+        } else if (strcmp(argv[i], "--with-ir") == 0) {
+            with_ir = YES;
+        } else if (strcmp(argv[i], "--output-dir") == 0 && i + 1 < argc) {
+            output_dir_c = argv[++i];
+        }
+    }
+    if (strcmp(stage, "fragment") != 0 && strcmp(stage, "vertex") != 0) {
+        fprintf(stderr, "[ERROR] --stage must be 'fragment' or 'vertex'\n");
+        return EXIT_USAGE;
+    }
+
+    // Output dir — needed even without --with-ir to keep paths predictable.
+    NSString *outputDir = output_dir_c
+        ? [NSString stringWithUTF8String:output_dir_c]
+        : NSTemporaryDirectory();
+    NSFileManager *fm = [NSFileManager defaultManager];
+    [fm createDirectoryAtPath:outputDir withIntermediateDirectories:YES attributes:nil error:nil];
+
+    // R7.2 — install swizzle BEFORE replay_context_init.
+    rps_install_swizzles();
+
+    int rc = replay_context_init(trace_path);
+    if (rc != EXIT_OK) return rc;
+
+    int play_rc = -1;
+    @try {
+        play_rc = g_ctx.fn_playAll(g_ctx.controller);
+    } @catch (NSException *ex) {
+        fprintf(stderr, "[ERROR] playAll exception: %s\n", [[ex reason] UTF8String]);
+        replay_context_cleanup();
+        return EXIT_REPLAY_FAIL;
+    }
+    if (play_rc != 0) {
+        fprintf(stderr, "[ERROR] playAll failed (rc=%d)\n", play_rc);
+        replay_context_cleanup();
+        return EXIT_REPLAY_FAIL;
+    }
+
+    // Resolve target RPS by key.
+    SEL rpsSel = @selector(renderPipelineStateForKey:);
+    id rps = ((id (*)(id, SEL, uint64_t))objc_msgSend)(g_ctx.objectMap, rpsSel, target_rps_key);
+
+    JSON_BEGIN();
+    JSON_KV_STR("command", "shader-of-rps");
+    JSON_KV_STR("trace_path", trace_path);
+    JSON_KV_UINT("rps_key", target_rps_key);
+    JSON_KV_STR("stage", stage);
+    JSON_KV_STR("output_dir", [outputDir UTF8String]);
+
+    if (!rps) {
+        JSON_KV_STR("error", "rps_not_found");
+        JSON_KV_INT("rps_captured_count", g_rps_n_captured);
+        JSON_END();
+        replay_context_cleanup();
+        return EXIT_SUBCMD_FAIL;
+    }
+
+    if ([rps respondsToSelector:@selector(label)]) {
+        id lbl = [rps performSelector:@selector(label)];
+        if (lbl) { JSON_KV_STR("rps_label", [lbl UTF8String]); }
+    }
+
+    const RPSCaptureEntry *e = rps_find_entry((__bridge void *)rps);
+    if (!e) {
+        JSON_KV_STR("error", "descriptor_not_captured");
+        JSON_KV_STR("hint", "swizzle either failed to install or this RPS was created before install");
+        JSON_KV_INT("rps_captured_count", g_rps_n_captured);
+        JSON_END();
+        replay_context_cleanup();
+        return EXIT_SUBCMD_FAIL;
+    }
+
+    BOOL is_fragment = (strcmp(stage, "fragment") == 0);
+    void *target_fn_ptr = is_fragment ? e->ffunc_ptr : e->vfunc_ptr;
+    const char *target_fn_name = is_fragment ? e->ffunc_name : e->vfunc_name;
+
+    if (!target_fn_ptr) {
+        JSON_KV_STR("error", "stage_function_absent");
+        JSON_KV_STR("hint", "this RPS has no function for the requested stage (e.g. vertex-only / depth-only pass)");
+        JSON_END();
+        replay_context_cleanup();
+        return EXIT_SUBCMD_FAIL;
+    }
+
+    if (target_fn_name && target_fn_name[0]) {
+        JSON_KV_STR("function_name", target_fn_name);
+    }
+
+    NSMutableDictionary *fnPtr2Key = rps_build_fn_ptr_to_key_map(g_ctx.objectMap);
+    id fn_k_obj = [fnPtr2Key objectForKey:[NSValue valueWithNonretainedObject:(__bridge id)target_fn_ptr]];
+    if (!fn_k_obj) {
+        JSON_KV_STR("error", "function_key_unresolved");
+        JSON_KV_STR("hint", "objectMap.functionMap does not contain the captured function pointer");
+        JSON_END();
+        replay_context_cleanup();
+        return EXIT_SUBCMD_FAIL;
+    }
+
+    uint64_t fn_key = [fn_k_obj unsignedLongLongValue];
+    JSON_KV_UINT("function_key", fn_key);
+
+    // Library key — convention library_key = function_key - 1 (validated in
+    // R5.1; documented in subdocs/20260521-R7-frame-inspection-gap.md §3 row 4).
+    if (fn_key == 0) {
+        JSON_KV_STR("error", "library_key_unresolved");
+        JSON_KV_STR("hint", "function_key=0 makes library_key=-1, which is invalid");
+        JSON_END();
+        replay_context_cleanup();
+        return EXIT_SUBCMD_FAIL;
+    }
+    uint64_t lib_key = fn_key - 1;
+    JSON_KV_UINT("library_key", lib_key);
+
+    // Look up the library and dump metallib + AIR.
+    SEL libSel = @selector(libraryForKey:);
+    SEL ldcSel = NSSelectorFromString(@"libraryDataContents");
+    SEL bcSel  = NSSelectorFromString(@"bitcodeData");
+
+    id lib = ((id (*)(id, SEL, uint64_t))objc_msgSend)(g_ctx.objectMap, libSel, lib_key);
+    if (!lib) {
+        // Try fallback: scan even keys downward; rare safety net for traces
+        // where the (-1) convention is broken.
+        for (int64_t k = (int64_t)fn_key - 1; k >= 0; k -= 2) {
+            id maybe = ((id (*)(id, SEL, uint64_t))objc_msgSend)(g_ctx.objectMap, libSel, (uint64_t)k);
+            if (maybe && [maybe conformsToProtocol:@protocol(MTLLibrary)]) {
+                lib = maybe;
+                lib_key = (uint64_t)k;
+                break;
+            }
+        }
+    }
+    if (!lib || ![lib conformsToProtocol:@protocol(MTLLibrary)]) {
+        JSON_KV_STR("error", "library_not_found");
+        JSON_KV_UINT("attempted_library_key", lib_key);
+        JSON_END();
+        replay_context_cleanup();
+        return EXIT_SUBCMD_FAIL;
+    }
+
+    NSData *metallibData = nil;
+    if ([lib respondsToSelector:ldcSel]) {
+        @try { metallibData = [lib performSelector:ldcSel]; } @catch (NSException *ex) {}
+    }
+    NSData *airData = nil;
+    if ([lib respondsToSelector:bcSel]) {
+        @try { airData = [lib performSelector:bcSel]; } @catch (NSException *ex) {}
+    }
+
+    if (metallibData && [metallibData length] > 0) {
+        NSString *fn = [NSString stringWithFormat:@"library_%llu.metallib", lib_key];
+        NSString *path = [outputDir stringByAppendingPathComponent:fn];
+        if ([metallibData writeToFile:path atomically:YES]) {
+            JSON_KV_STR("library_metallib_path", [path UTF8String]);
+            JSON_KV_UINT("library_metallib_size", (uint64_t)[metallibData length]);
+            NSString *cacheKey = compute_playtools_cache_key(metallibData);
+            if (cacheKey) {
+                JSON_KV_STR("cache_key_metallib", [cacheKey UTF8String]);
+            }
+        }
+    }
+
+    NSString *airPath = nil;
+    if (airData && [airData length] > 0) {
+        NSString *fn = [NSString stringWithFormat:@"library_%llu.air", lib_key];
+        airPath = [outputDir stringByAppendingPathComponent:fn];
+        if ([airData writeToFile:airPath atomically:YES]) {
+            JSON_KV_STR("library_air_path", [airPath UTF8String]);
+            JSON_KV_UINT("library_air_size", (uint64_t)[airData length]);
+        } else {
+            airPath = nil;
+        }
+    }
+
+    // --with-ir — pipe AIR bitcode through llvm-dis to produce .ll.
+    if (with_ir) {
+        if (!airPath) {
+            JSON_KV_STR("ir_error", "no_air_bitcode");
+        } else {
+            NSString *llvmDis = find_llvm_dis();
+            if (!llvmDis) {
+                JSON_KV_STR("ir_error", "llvm_dis_not_found");
+                JSON_KV_STR("ir_hint", "install via 'brew install llvm' (Apple toolchain lacks llvm-dis)");
+            } else {
+                NSString *llPath = [outputDir stringByAppendingPathComponent:
+                                    [NSString stringWithFormat:@"library_%llu.ll", lib_key]];
+                NSTask *t = [[NSTask alloc] init];
+                t.launchPath = llvmDis;
+                t.arguments = @[airPath, @"-o", llPath];
+                NSPipe *errPipe = [NSPipe pipe];
+                t.standardError = errPipe;
+                t.standardOutput = [NSPipe pipe];
+                int dis_rc = -1;
+                NSString *errStr = nil;
+                @try {
+                    [t launch];
+                    [t waitUntilExit];
+                    dis_rc = t.terminationStatus;
+                    NSData *d = [[errPipe fileHandleForReading] readDataToEndOfFile];
+                    if (d.length) errStr = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+                } @catch (NSException *ex) {
+                    errStr = [ex reason];
+                }
+                if (dis_rc == 0 && [fm fileExistsAtPath:llPath]) {
+                    JSON_KV_STR("ir_ll_path", [llPath UTF8String]);
+                    NSDictionary *attr = [fm attributesOfItemAtPath:llPath error:nil];
+                    if (attr) JSON_KV_UINT("ir_ll_size", (uint64_t)[attr fileSize]);
+                    JSON_KV_STR("ir_dis_path", [llvmDis UTF8String]);
+                } else {
+                    JSON_KV_STR("ir_error", "llvm_dis_failed");
+                    JSON_KV_INT("ir_dis_rc", dis_rc);
+                    if (errStr) JSON_KV_STR("ir_dis_stderr", [errStr UTF8String]);
+                }
+            }
+        }
+    }
+
+    JSON_END();
+    replay_context_cleanup();
+    return EXIT_OK;
+}
+
+// ============================================================
 #pragma mark - Subcommand: config
 // ============================================================
 
@@ -1525,11 +2176,12 @@ typedef struct {
 } Subcommand;
 
 static Subcommand g_commands[] = {
-    { "help",     cmd_help },
-    { "replay",   cmd_replay },
-    { "pipeline", cmd_pipeline },
-    { "shader",   cmd_shader },
-    { "config",   cmd_config },
+    { "help",          cmd_help },
+    { "replay",        cmd_replay },
+    { "pipeline",      cmd_pipeline },
+    { "shader",        cmd_shader },
+    { "shader-of-rps", cmd_shader_of_rps },
+    { "config",        cmd_config },
     { NULL, NULL }
 };
 

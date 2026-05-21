@@ -15,21 +15,22 @@
 | Configuration 修改 | 调用链控制 + 全局变量 | ✅ |
 | 输出自动化 | bridge JSON/bin 导出 | ✅ |
 | **Encoder/Pass/Draw 时间序枚举** | `frame-list` 子命令 | ⏳ R7.3 |
-| **RPS↔shader 关联** | `pipeline` 输出 vertex/fragment function/lib key + attachment | ⏳ R7.2 |
+| **RPS↔shader 关联** | `pipeline` 输出 vertex/fragment function/lib key + attachment | ✅ R7.2 |
+| **RPS → shader IR 反查** | `shader-of-rps` 子命令（含 `--with-ir`） | ✅ R7.4 |
 | **Draw call → shader IR 反查** | `shader-of-drawcall` 子命令 | ⏳ R7.6 |
 | **Depth/Stencil 可视化** | bridge 内置 blit + export | ⏳ R7.5 |
 | **Uniform / cbuffer 内容查看** | `dump-uniforms` 子命令 | ⏳ R7.6 |
 | **Shader 反编译（IR 直接产出）** | `disasm` 子命令集成 cacheKey + llvm-dis | ⏳ R7.7 |
 | GPU Counters / Profiler / Derived | 需 Apple 私有 entitlement + SIP 关闭 | ⛔ 跳过 |
 
-**完成度**：R0~R6 已完成（基础能力 + bridge + Python wrapper + skill 打包）；R7 frame-inspection 能力补全为剩余主线。
+**完成度**：R0~R6 已完成（基础能力 + bridge + Python wrapper + skill 打包）；R7.1 + R7.2 + R7.4 已完成（bridge 6 子命令 / 63 集成测试 / RPS↔shader 一行命令拿 IR 闭环）；R7.3/R7.5/R7.6/R7.7 为剩余主线（按依赖顺序进行）。
 
 最终交付物：
-1. **统一 ObjC bridge CLI**（`Scripts/gputrace_replay_bridge.m`）— ✅ 已完成，5 子命令，Makefile 构建，集成测试 17/17 通过
-2. **Python CLI wrapper**（`Scripts/gputrace_replay_wrapper.py`）— ✅ 已完成，CLI + 模块双接口，dataclass 返回值
-3. **端到端验证链路** — ✅ 已完成，2 样本 × 5 子命令全部通过
-4. **GPU Trace 分析 skill**（`.codebuddy/skills/gpu-trace-analysis/`）— ✅ 已完成，自包含，含 SKILL.md + scripts/ + references/，从任意目录可独立运行
-5. **R7：Frame-Inspection 能力补全** — ⏳ 进行中，7 个独立 chunk（详见 TODO + `subdocs/20260521-R7-frame-inspection-gap.md`）
+1. **统一 ObjC bridge CLI**（`Scripts/gputrace_replay_bridge.m`）— ✅ 已完成，6 子命令，Makefile 构建，集成测试 63/63 通过
+2. **Python CLI wrapper**（`Scripts/gputrace_replay_wrapper.py`）— ✅ 已完成，CLI + 模块双接口，dataclass 返回值（含 R7.2 `ColorAttachment` / R7.4 `ShaderOfRpsResult`）
+3. **端到端验证链路** — ✅ 已完成，LYSK trace 65/65 RPS 反查通过 + `shader-of-rps --with-ir` 出 `.ll`
+4. **GPU Trace 分析 skill**（`.codebuddy/skills/gpu-trace-analysis/`）— ✅ 已完成，自包含，含 SKILL.md + scripts/ + references/，从任意目录可独立运行；含"Exploring an unknown trace's pipeline" workflow
+5. **R7：Frame-Inspection 能力补全** — ⏳ 进行中，剩余 4 个独立 chunk（R7.3/R7.5/R7.6/R7.7，详见 TODO + `subdocs/20260521-R7-frame-inspection-gap.md`）
 
 ## 全局约束
 
@@ -51,30 +52,29 @@
 - **Shader 热替换**：`objectMap.setLibrary:forKey:` → rewind → playAll。shaderIR(metallib binary) 可无源码替换
 - **Configuration**：调用链控制（disableOptimizeRestores/forceLoadUnusedResources）+ 全局变量（g_runningValidationCI）
 - **Call-index 边界与越界保护**（R7.1）：`*(uint32_t *)(controller + 0x5810)` = last played call index；`playAll` 完成后即 trace 总 call 数；bridge 已加 `--bounds` / OOR 结构化错误（exit 12） / SIGSEGV 兜底；texture/buffer 元数据全补齐。详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.1
-- **统一 Bridge**（R6.1）：`Scripts/gputrace_replay_bridge.m` — 5 子命令（help/replay/pipeline/shader/config），Makefile 构建 + ad-hoc 签名 + 集成测试 17/17 通过。详见 `subdocs/20260520-R6.1-bridge-implementation.md`
+- **RPS↔shader 内置关联**（R7.2）：bridge 在 `replay_context_init` 之前装 method swizzling（`MTLDevice newRenderPipelineStateWithDescriptor:[options:reflection:]error:`），把每对 (descriptor, RPS) 落到 `g_rps_captured[]`；`pipeline` dump 时给每个 RPS 加 `vertex/fragment function key` / `library key (= fn-1)` / `color_attachments[]` / `depth_format` / `stencil_format` / `raster_sample_count`。LYSK trace 65/65 反查通过，与 §6 基线完全一致。`rps_correlated_count` / `rps_captured_count` 是 swizzle 健康度指标，0 表示 swizzle 未生效。详见 `executions/20260521-R7.2-R7.4-pipeline-rps-and-shader-of-rps.md`
+- **`shader-of-rps` 子命令**（R7.4）：`shader-of-rps <trace> <rps_key> [--stage fragment|vertex] [--with-ir] [--output-dir DIR]` — 复用 R7.2 内表 + functionMap 反向表 → metallib + AIR + `cache_key_metallib`；`--with-ir` 自动找 `llvm-dis`（Homebrew/PATH）产出 `.ll`。失败结构化（rps_not_found / descriptor_not_captured / stage_function_absent / no_air_bitcode / llvm_dis_not_found），exit 11 但 JSON 完整保留。详见 `executions/20260521-R7.2-R7.4-pipeline-rps-and-shader-of-rps.md`
+- **统一 Bridge**（R6.1+）：`Scripts/gputrace_replay_bridge.m` — 6 子命令（help/replay/pipeline/shader/shader-of-rps/config），Makefile 构建 + ad-hoc 签名 + 集成测试 63/63 通过（含 R7.2/R7.4 共 20 项新断言）。详见 `subdocs/20260520-R6.1-bridge-implementation.md`
 - **Python wrapper + skill 打包**（R6.2）：`Scripts/gputrace_replay_wrapper.py` + `.codebuddy/skills/gpu-trace-analysis/`。详见 `subdocs/20260521-R6.2-wrapper-and-skill.md`
 - **R7 缺口诊断**（来自 LYSK trace 全景调查反馈）：`pipeline` 缺 RPS↔shader 关联；无 encoder/draw 时间序；depth/stencil 不能 export；7 段 draw→IR 反查链已验证可行。详见 `subdocs/20260521-R7-frame-inspection-gap.md`
 
 ### 当前卡点
 
-无。R7.1 完成（2026-05-21）。
+无。R7.2 + R7.4 完成（2026-05-21）。
 
 ### 下一步（当前最高优先级）
 
-**R7.2：`pipeline` 输出加 RPS↔shader 关联**（紧接 R7.4：`shader-of-rps` 子命令）
+**R7.3：`frame-list` 子命令**（CommandBuffer/Encoder 枚举 + attachments + per-encoder timing）
 
 优先级理由：
-1. library_key 抽象层级错误已在 LYSK 65 RPS 调查中明确（同一 label 对应 4 个 library；RPS 474/475/476/479 共享 lib_252）— 必须在 `pipeline` 子命令直接给出 vertex/fragment function/library key + attachment 摘要，否则后续 R7.6 / R7.7 都无法做"语义级反查"
-2. **R7.2 + R7.4 视为同一冲刺**：R7.2 仅暴露字段后用户下一步几乎必然是"拿对应 shader 的 IR 看代码"；R7.4 的实现成本很低（直接复用 R7.2 的内表 + R5.1 metallib 导出 + cacheKey 算法 + 现成 `llvm-dis`），合在一起做才能形成"`pipeline` → `shader-of-rps` 一行命令拿 IR"的完整闭环
-3. R7.1 已暴露 `total_call_count` 并稳定了 bridge 时序，刚好为 R7.2 的 swizzle 调试提供边界数据；与 R7.3 (`frame-list`) 相比，R7.2 的探针 (`rps_swizzle_probe.m`) 已在 LYSK trace 验证 65/65 反查成功，风险更低
+1. R7.2 + R7.4 已通：`pipeline` 一行命令出 RPS↔shader 全表，`shader-of-rps --with-ir` 一行从 RPS_key 拿 IR；从 RPS 视角的"语义级反查"闭环完整。
+2. 距离用户最终目标（draw call → IR）只剩"段 1：draw → RPS_key"未通；这一段必须靠 `MTLRenderCommandEncoder.setRenderPipelineState:` swizzle + draw 计数，但**前置依赖**是 bridge 能枚举本帧的 CommandBuffer/Encoder 列表（即 R7.3）。
+3. R7.3 还能解决 LYSK 调查里"靠 `--playto N` 二分扫 RT SHA-1"绕路的硬伤——直接给出 encoder 的 `[first_call_index, last_call_index]`，把 `--playto` 从盲扫升级为定向跳转。
 
-R7.2 具体内容：
-- bridge 内部在 `replay_context_init` 之前装 method swizzling（参考 `LocalDocs/OfflineSourceRecovery/scripts/rps_swizzle_probe.m`）
-- 每个 RPS 输出从 `{key, class, label}` 扩展为 `{vertex_function_key, fragment_function_key, vertex_library_key, fragment_library_key, color_attachment_count, color_attachments[], depth_format, stencil_format}`
-- 回归基线：`subdocs/20260521-R7-frame-inspection-gap.md` §6 LYSK 65 RPS 表
-
-R7.4 紧接内容（同一冲刺）：
-- `shader-of-rps <trace> <rps_key> [--stage fragment|vertex] [--with-ir]` — 内部走 R7.2 内表，默认输出 fragment metallib 路径 + cacheKey；`--with-ir` 自动调 `llvm-dis` 产出 `.ll`
+R7.3 具体内容（与 §5.3 一致）：
+- bridge 反射 `MTLReplayController.commandBuffers` 与每个 cb 的 `commandEncoders`，逐 encoder 拿 RenderPassDescriptor 的 attachments
+- 每 encoder 输出 `{type, label, color_attachments[], depth_attachment, stencil_attachment, first_call_index, last_call_index}`
+- flag 增量：`--with-timing` (gpuStart/gpuEnd)，`--with-draws` 与 `--with-bindings` 留给 R7.6
 
 详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.2 / §5.4。
 
@@ -105,9 +105,9 @@ R7.4 紧接内容（同一冲刺）：
 - **[CANCELLED] R6.3**：自动化流水线集成（CI/CD + 样本库管理）— 不做
 - **[IN-PROGRESS][P0] R7**：Frame-Inspection 能力补全（来自 LYSK trace 全景调查反馈，详见 `subdocs/20260521-R7-frame-inspection-gap.md`）
   - **[DONE] R7.1**：bridge 越界保护 + 资源元数据补齐 — `total_call_count` / `last_call_index` / `--bounds` / `playto_out_of_range`(exit 12) / SIGSEGV 兜底 / texture+buffer storageMode/usage/hazardTracking 等。详见 `subdocs/20260521-R7-frame-inspection-gap.md` §5.1
-  - **[P0] R7.2**：`pipeline` 输出加 RPS↔shader 关联（vertex/fragment function/library key + attachment 摘要，内部 swizzle，参考 `LocalDocs/OfflineSourceRecovery/scripts/rps_swizzle_probe.m`）— 1 天，低风险。**与 R7.4 同冲刺**
-  - **[P0] R7.4**：`shader-of-rps` 子命令（语义级反查 + `--with-ir` 直出 `.ll`，复用 R7.2 内表）— 1 天，中风险。**紧接 R7.2**
-  - **[P1] R7.3**：`frame-list` 子命令（CommandBuffer/Encoder 枚举 + attachments + per-encoder timing）— 1 天，中风险
+  - **[DONE] R7.2**：`pipeline` 输出加 RPS↔shader 关联（vertex/fragment function/library key + attachment 摘要 + raster sample count，bridge 内置 swizzle）。LYSK 65/65 RPS 反查通过。详见 `executions/20260521-R7.2-R7.4-pipeline-rps-and-shader-of-rps.md`
+  - **[DONE] R7.4**：`shader-of-rps` 子命令（语义级反查 + `--with-ir` 调 `llvm-dis` 直出 `.ll` + `cache_key_metallib`），与 R7.2 同冲刺完成。详见 `executions/20260521-R7.2-R7.4-pipeline-rps-and-shader-of-rps.md`
+  - **[P1] R7.3**：`frame-list` 子命令（CommandBuffer/Encoder 枚举 + attachments + per-encoder timing）— 1 天，中风险。当前最高优先级
   - **[P1] R7.5**：depth/stencil export（bridge 内置 blit）+ compute encoder 在 frame-list 中明确化 — 0.5 天，低风险
   - **[P1] R7.6**：`frame-list --with-draws --with-bindings` + `dump-uniforms` + `shader-of-drawcall`（用户最终目标：draw_index → IR 一行命令）— 3 天，中风险
   - **[P2] R7.7**：`disasm` 子命令（cacheKey 算法 ObjC 复刻 + llvm-dis 集成）— 1.5 天，低风险，**skill 自包含最后一公里**

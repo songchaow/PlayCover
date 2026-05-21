@@ -189,6 +189,14 @@ R7 拆成 8 个独立 chunk（R7.1~R7.7 + R7.6-D 收尾联动）。已完成 9 �
 - CLI payload 新增顶层 `with_bindings` / `bindings` / `with_uniforms` / `uniforms` / `uniforms_summary`（`{slot_count, slot_ok, slot_failed, errors[]}`）
 - 默认无 flag 调用产物与 R7.6-C 完全一致（T7s-1 测试覆盖）
 
+**核心设计决策**：
+
+1. **`with_uniforms` 隐含 `with_bindings`**：`uniforms[]` 每个元素需要 `(rps_key, bind_slot, buffer_key, offset)`——前两个来自 frame-list 的 `draw_to_rps_map`，后两个来自 R7.6-A 的 `bindings.<stage>.buffers[i].{resource_id, offset}`。绕过 bindings 拿不到 buffer_key/offset。
+2. **单次 frame-list 调用承载两份数据**：R7.6-C 旧实现已经在内部跑 `frame_list(with_draws=True)` 但调用方没传 `with_bindings`——意味着 wrapper 已付 binding 捕获代价却扔掉输出。R7.6-D 不增加新子进程调用，复用同一次 frame-list 输出 O(1) 增量代价回收 bindings。
+3. **内部 helper `_dump_uniforms_for_resolved()` 避免重复 frame-list**：公共 `dump_uniforms(target_kind="draw")` 自己跑一次 frame-list 解析 `(rps_key, buffer_key, offset)`；在 `shader_of_drawcall` 上下文里所有解析信息都已在手，对 N=4 个 buffer slot 直调公共 API 会重复跑 4 次 frame-list（理论 ~6.8s 浪费）。helper 直接构造 bridge args（`target=rps_key, --buffer-key, --offset` 都已知），跳过 wrapper 层 frame-list。LYSK draw 0 fragment 4 slot 实测从理论 ~6.8s → 实际 ~1.7s（一次 frame-list + 4 次 ~50ms bridge dump-uniforms）。
+4. **per-slot 软错误隔离**：bridge `dump-uniforms` 软失败（exit 11 + 结构化 error）由 `_run()` 已有的 exit 11/12 graceful 路径自然落到 `DumpUniformsResult.error` 字段；顶层 `result.error` 仍只反映 `shader-of-rps` 半边的错误（与 R7.6-C 行为一致）；`uniforms_summary.slot_failed` 让消费方一眼看到 per-slot 健康度；极少见 bridge 硬故障（exit 4–10）通过 try/except `BridgeError` 捕获，落伪 `DumpUniformsResult` 标 `error="bridge_error_exit_N"`。
+5. **bindings 字段在 CLI payload 中的形态**：`FrameDrawBindings` dataclass 通过手写 `_bg()` 转成 dict（保留 `inline_bytes_size` 仅在 inline 形态出现，其余字段过滤 `None`），与 frame-list 子命令的 JSON 输出形态一致——让消费方对 `shader-of-drawcall --with-bindings` 输出可与同一 trace 的 `frame-list` 输出做字面比较（T7s-2 断言覆盖）。
+
 **端到端验证（LYSK）**：
 
 | 案例 | 期望 | 实测 |
@@ -198,7 +206,15 @@ R7 拆成 8 个独立 chunk（R7.1~R7.7 + R7.6-D 收尾联动）。已完成 9 �
 
 **版本与测试**：bridge 二进制零变更（仍 0.7.0）；wrapper 模块版本 patch +1；集成测试 136 → **148/148**（新增 T7s 系列 12 项断言：默认行为兼容 / `--with-bindings` 字段形态 / `--with-uniforms` 隐含 `--with-bindings` / `uniforms[]` 长度 = `bindings.<stage>.buffers` / per-slot 字节级与单调 `dump-uniforms` 一致 / vertex stage 独立 / 模块 API 契约）；compute-only trace 79/93 与基线一致（`[SKIP] draw_count=0` 自动守卫）。
 
-**详细执行记录**：`executions/20260521-R7.6-D-shader-of-drawcall-triple-bundle.md`
+**改动量**：仅 `Scripts/gputrace_replay_wrapper.py`（+ helper / dataclass 字段 / CLI flag）+ `Scripts/test_gputrace_replay_bridge.sh`（T7s 系列）+ `.codebuddy/skills/gpu-trace-analysis/` 同步副本与 SKILL/cli-reference/playbook 文档。
+
+**不变量**：默认（无 flag）调用产物与 R7.6-C 完全相同（T7s-1）；`--with-bindings` 不改变 `shader_of_rps` 嵌入字段（同 RPS metallib/AIR/cacheKey 字节级一致；T7q-3 chain 兼容性测试覆盖）；各 stage 独立（`--stage vertex` 取 `bindings.vertex.buffers`，fragment 同理）；compute-only trace 上 OOR 行为不变（exit 12 + `draw_index_out_of_range`）。
+
+**已知局限**：
+- inline-bytes 形态 buffer slot（`setVertexBytes:length:atIndex:`）没有 `resource_id`；当前 R7.6-D 仍调 `dump-uniforms`（`buffer_key=None` 不传 `--buffer-key`），bridge 仅返回 layout，`decoded` 缺失（`error` 字段会有结构化标记如 `binding_not_a_buffer`）。LYSK 实测 inline_count=0，未触发；改进留给后续 chunk。
+- `uniforms[]` 不包含 sampler / texture 反射；仅 buffer 类绑定走解码（与 `dump-uniforms` 子命令设计边界一致）。
+- 同一 draw 多个 slot 解码不会互相覆盖文件（bridge 内部用 rps_key+slot 命名）；跨多次调用复用同一 `--output-dir` 需注意。
+- 性能：LYSK draw 0 三件套 ≈ 1.9s（一次 frame-list ~1.6s + 一次 shader-of-rps ~0.2s + 4 次 dump-uniforms ~50ms 各）。批量循环建议用 `frame-list` 一次性 + per-draw `dump-uniforms` 直调（playbook 决策表已注明）。
 
 ---
 

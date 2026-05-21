@@ -2,7 +2,7 @@
 
 **来源**：2026-05-21 别的 agent 在使用 `gpu-trace-analysis` skill 调查 LYSK trace（247 资源 / 50 RPS / 96 lib）时反馈的能力缺口；以及"draw call 反查 shader IR"的 7 段链路验证。
 **结论**：当前 bridge/skill 在"渲染 bug 调查"任务上称职；R7 的目标是把"未知 trace 整体管线分析"与"draw call → shader 反查"两类任务也补齐。
-**进度**：R7.1 / R7.2 / R7.3 / R7.4 / R7.6-A / R7.6-C / R7.7 ✅（2026-05-21）；**剩余 R7.6-B（当前最高优先级，依赖 A）→ R7.5（横向新能力）**。优先级二次评估见 §5。
+**进度**：R7.1 / R7.2 / R7.3 / R7.4 / R7.6-A / R7.6-B / R7.6-C / R7.7 ✅（2026-05-21）；**剩余 R7.5（depth/stencil + dispatch 计数，独立专项）**。优先级二次评估见 §5。
 **主回归基线 trace**：
 - LYSK：`/Users/songdogwang/Library/Containers/com.papegames.lysk/Data/Documents/Captures/capture_20260518_110050.gputrace`（4 cb / 62 enc / 244 draws / 65 RPS / 96 lib / 3425 calls）— 端到端 IR 链主基线
 - compute-only：`~/Desktop/reference_test_inject.gputrace`（2 cb / 2 compute enc / 0 draws / 0 RPS / 3 compute PSO / 27 calls）— OOR / `draw_count=0` / `rps_not_found` 多样本回归
@@ -34,7 +34,7 @@ LYSK 全景调查中按出现顺序遇到的限制：
 | 7 | 拿 encoder attachments / bindings | 无 API | attachments ✅ R7.3；bindings ✅ R7.6-A |
 | 8 | RT 的 storageMode/usage/framebufferOnly/memoryless | 元数据缺失 | ✅ R7.1 |
 | 9 | 区分 buffer 用途（vertex/index/uniform/argbuf） | 仅 length+label | ✅ R7.6-A（binding 表反推） |
-| 10 | 看某 draw 的 cbuffer 实际值 | 无 API | ⏳ R7.6 子项 B |
+| 10 | 看某 draw 的 cbuffer 实际值 | 无 API | ✅ R7.6-B |
 | 11 | 区分 stencil bit | 不能导出 | ⏳ R7.5 子项 A |
 | 12 | 确认本帧无 compute dispatch | RPS 元数据有 compute 函数名误导 | ✅ R7.3（dispatch 计数留 R7.5-B） |
 | 13 | RPS → fragment/vertex shader | 无关联 | ✅ R7.2 |
@@ -108,7 +108,7 @@ cacheKey 直接对应 `~/Library/Containers/io.playcover.PlayCover/ShaderDebugIn
 
 ## 5. R7 改进矩阵（按依赖排序）
 
-R7 拆成 7 个独立 chunk。已完成 7 个（R7.1/R7.2/R7.3/R7.4/R7.6-A/R7.6-C/R7.7），剩余 R7.6-B（**当前 P0**，依赖 R7.6-A 的 binding 表）→ R7.5（P2，横向新能力）。
+R7 拆成 7 个独立 chunk。已完成 8 个（R7.1/R7.2/R7.3/R7.4/R7.6-A/R7.6-B/R7.6-C/R7.7），剩余 R7.5（**当前 P0**，横向新能力，独立无依赖）。
 
 **优先级演进史**（2026-05-21 多次二次评估）：原排期 R7.5 → R7.6-A → R7.6-B；按"先解锁已交付能力，再加新能力"原则，R7.7（SDI fallback 把 R7.4 命中率从 3.1% 拉到 100%）抢占 R7.5；随后 R7.6-A（紧邻 `shader-of-drawcall` 补 binding 表）抢占 R7.5；R7.6-A 落地后，R7.6-B（依赖 R7.6-A）成为 P0；R7.5（depth/stencil + dispatch 计数）落到 P2。理由：
 
@@ -224,52 +224,39 @@ R7 拆成 7 个独立 chunk。已完成 7 个（R7.1/R7.2/R7.3/R7.4/R7.6-A/R7.6-
 
 **详见** `subdocs/20260521-R7.6-A-frame-list-bindings.md`（设计决策 / 数据结构 / JSON schema / 测试断言矩阵）。
 
-### R7.6 子项 B — `dump-uniforms <draw_index> <bind_slot>`（**当前最高优先级 P0**，1 天，依赖子项 A）
+### R7.6 子项 B — `dump-uniforms <draw_index|rps_key> <bind_slot>` — ✅ 已完成（2026-05-21）
 
-**任务**：把 R7.6-A 已交付的 `bindings.{vertex|fragment}.buffers[bind_slot].{resource_id, offset}` 延伸到"buffer 字节按 cbuffer 布局解码成 JSON"——绝大多数渲染问题（UV 错、矩阵错、光源错、材质参数错）的最终调查终点。
+**交付**：bridge 第 9 子命令 `dump-uniforms` + wrapper `dump_uniforms()`（draw / rps 两种模式）。把 R7.6-A 已交付的 `bindings.{vertex|fragment}.buffers[bind_slot].{resource_id, offset}` 延伸到"buffer 字节按 cbuffer 布局解码成 JSON"。
 
-**关键洞察（2026-05-21 新发现）**：bridge 已经在 R7.2 swizzle 中拦截 `newRenderPipelineStateWithDescriptor:options:reflection:error:`（见 `gputrace_replay_bridge.m` §"RPS Swizzle Capture"），但当前用 `NULL` 丢弃 reflection out 参数。**只需把 reflection 接住并按 RPS_key 缓存**，即可拿到每个 PSO 的 `vertexBindings` / `fragmentBindings`（`id<MTLBinding>` 数组），其中 `MTLBufferBinding.bufferDataType` / `MTLBufferBinding.bufferStructType` 提供完整 `MTLStructType` 反射树（field name + offset + dataType）。这把 R7.6-B 的实现风险从"reflection 数据可能不全"降为"低风险 1 天"。
+**实现摘要**：
+- **反射来源**：复用 R7.2 swizzle 的 `newRenderPipelineStateWithDescriptor:options:reflection:error:` 拦截，把之前丢弃的 reflection out-param 接住强引用到 file-scope `static id g_rps_reflections[]`（ARC 下 C 结构体不能直接持有 `id`，平行数组 + `RPSCaptureEntry.reflection_index` 桥接）。无-options thunk 通过额外发起一次 options-version 调用 + `MTLPipelineOptionBindingInfo|BufferTypeInfo` 强制反射生成（PSO 缓存命中 ≈ 零成本）。
+- **解码**：bridge 递归走 `MTLStructType.members[].{name, offset, dataType, structType, arrayType}`，输出 `{fieldName: {offset, data_type, value}}` 树；NaN/±Inf → 字符串哨兵（`"NaN" / "Infinity" / "-Infinity"`）；矩阵 column-major 存储 → row-major 读、emit 二维数组；递归深度 cap 8（`DU_MAX_DECODE_DEPTH`）、数组 cap 16 + `truncated:true,truncated_at:16`（`DU_MAX_ARRAY_ELEMS`）。
+- **wrapper draw mode**：自动串 `frame_list(--with-bindings) → draw_to_rps_map[N] → bindings → bridge dump-uniforms`，与 R7.6-C `shader-of-drawcall` 同款 wrapper-only 风格。
+- **三种入口**：bridge layout-only（无 `--buffer-key`）/ bridge 完整 decoded（有 `--buffer-key + --offset`）/ wrapper draw mode（自动 resolve）。
 
-**实现思路（细化）**：
+**LYSK 主基线实测**：
+- 65/65 RPS 全部捕获 reflection（无 `reflection_not_captured`）
+- draw 0 fragment slot 0：`AsukaPerShader_PerCamera` 9 字段（`hlslcc_mtx4x4_WorldToLight[4]`、`_MainLightPosition`、`_MainLightColor`、`_ScaledScreenParams`、`_GridInfo`、`_AuroraGridInfo`、`_MainLightRealtime`、`_DOFEnable`、`_GlobalMipBias`）字段名/offset/dataType 与 LYSK shader 源码完全一致；`_GlobalMipBias = -1.51465`（meaningful float value）
+- draw 10 vertex slot 0：`AsukaPerShader_ShadowParams` 2 字段（`_ShadowBias=(0.007, -0.000292, 0, 0)`、`_ShadowLightDirection ≈ (0.292, 0.274, 0.916)` 单位向量），与字节级 hex dump（`0x42 0x60 0xe5 0x3b` ≈ 0.00699997）交叉验证一致
 
-1. **R7.2 swizzle 增强**（半天）：在 `cmd_pipeline` / `cmd_frame_list` 已有 `RpsCaptureEntry` 结构上增加 `id<MTLAutoreleasedRenderPipelineReflection> reflection;` 字段；swizzle thunks `new_rps_with_desc_options_imp` / `new_rps_with_desc_imp_no_reflection` 中传 `&out_reflection` 而非 `NULL`，并 strong-retain 到 entry 上（生命周期 = bridge 进程）。
-2. **bridge `dump-uniforms` 子命令**（半天）：
-   ```bash
-   gputrace_replay_bridge dump-uniforms <trace> <draw_index> <bind_slot> [--stage vertex|fragment] [--with-hex] [--output-dir DIR]
-   ```
-   - 内部 = `frame-list → draw_to_rps_map[draw_index] → rps_key → reflection.{vertex|fragment}Bindings[bind_slot]`
-   - 拿 `bufferStructType` 递归解码，按 `MTLStructMember.{name, offset, dataType}` 输出 JSON
-   - 字节源：`objectMap.bufferForKey:(resource_id)` + `[buf contents]` + `offset`
-   - 无 layout 时退化为 `--with-hex` 输出 `inline_bytes_hex` + 基本类型猜测（4-aligned float groups）
-3. **wrapper `dump_uniforms()` + dataclass `DumpUniformsResult`**（小时级）
-4. **集成测试 T7r 系列**：LYSK draw 0 的常见 cbuffer（`PerView` / `PerObject` / 光源参数）能解出明文字段 + 与已知 layout 一致
+**版本与测试**：bridge 0.6.0 → 0.7.0；集成测试 116 → **136/136**（新增 T7r 系列 6 组 20 断言：layout-only / decoded / wrapper draw mode / bind_slot OOR / rps_not_found / draw OOR）。compute-only `reference_test_inject` trace 上 T7r 因 `draw_count=0` 自动 SKIP（与 R7.6-A 一致），79/93 不变。
 
-**输出 JSON 示例**（LYSK `shader-of-drawcall 0`）：
-```json
-{
-  "draw_index": 0,
-  "rps_key": 472,
-  "stage": "fragment",
-  "bind_slot": 0,
-  "buffer": {"resource_id": 8, "offset": 0, "length": 4096},
-  "layout_source": "metallib_reflection",
-  "decoded": {
-    "AsukaPerShader_PerCamera": {
-      "_MainLightDirection": [0.42, -0.85, 0.31, 0.0],
-      "_ProjectionMatrix": [[1.5, 0, 0, 0], [0, 2.4, 0, 0], ...]
-    }
-  }
-}
-```
+**新增 dataclass**（wrapper 侧）：`DumpUniformsResult`（含 `layout` / `decoded` / `decoded_ok` / `decoded_bytes` / `buffer_key` / `buffer_offset` / `buffer_label` / `binding_name` / `buffer_data_size` / `hex` / `draw_index` / `encoder_index` / `error` / `hint` 等字段）。
 
-**与 `shader-of-drawcall` 联动（顺手 0.2 天）**：`ShaderOfDrawcallResult` 加 `bindings` + `uniforms` 字段（每个 binding 旁带可选 `decoded` 子树），让 `shader-of-drawcall N --with-uniforms` 一行输出"shader IR + bindings + uniforms"三件套。
+**错误模型（exit 11，与 R7.4/R7.6-C/R7.7 同款"软错误结构化"）**：
+- `rps_not_found` / `descriptor_not_captured` / `reflection_not_captured`（reflection 出参 nil；可 `--with-hex` 退化为 hex dump）
+- `bind_slot_not_in_reflection` / `binding_not_a_buffer`
+- `buffer_not_found` / `buffer_contents_unavailable`（GPU-private 存储）/ `offset_out_of_range`
 
-**已知风险与降级路径**：
-- argument buffer 二级 indirect resources：layout 已有但 inner resource 还需通过 `MTLArgumentEncoder.argumentBuffer` 二级查找；v1 直接打印 argument buffer 内的 64-bit handles，v2 再展开
-- inline `setVertexBytes` 字节路径：R7.6-A 仅记 size，R7.6-B 顺带补 `--with-inline-bytes` flag 把字节复制到 FrameDrawEntry
-- 无 reflection 的 PSO（罕见）：fallback 到 hex dump + 基本类型猜测
+**wrapper draw OOR**：exit 12，`error="draw_index_out_of_range"`（与 R7.6-C 一致）。
 
-**验收**：LYSK 主基线上"用户能看到 PerCamera/PerObject/光源参数的实际数值"+ compute-only trace 上 `dump-uniforms` 直接报 `draw_count=0`（与 R7.6-C 一致的友好错误）+ 集成测试 116 → ~125/125
+**已知局限**：
+- argument buffer 二级 indirect resources：`bufferStructType` 描述布局但 inner GPU resource 句柄需要 `MTLArgumentEncoder.argumentBuffer` 二次查找。当前 dump 直接打印 64-bit handles，v2 再展开
+- inline `setVertexBytes` 字节路径：R7.6-A 仅记 size，R7.6-B 暂无 decoded（layout 仍可用）
+- 无 reflection 的 PSO（极罕见）：fallback 到 `--with-hex` hex dump
+- compute encoder 反射（`MTLComputePipelineReflection`）未接，留 R7.5-B 顺手
+
+**详见** `executions/20260521-R7.6-B-dump-uniforms-execution.md`。
 
 ### R7.7：`disasm` 子命令 + SDI module.bc fallback — ✅ 已完成（2026-05-21）
 
@@ -376,7 +363,7 @@ R7.2 已交付：bridge `pipeline` 与本表 65/65 一致。回归命令：跑 `
 | Encoder/Pass 枚举 | `frame-list` 列出所有 encoder + attachments | ✅ R7.3 |
 | Draw call 列表 | `frame-list --with-draws`（默认开启） | ✅ R7.3 |
 | Binding 表 | `frame-list --with-bindings`（默认开启） | ✅ R7.6-A |
-| Uniform Inspector | `dump-uniforms` | ⏳ R7.6-B（**当前 P0**） |
+| Uniform Inspector | `dump-uniforms` | ✅ R7.6-B |
 | Depth/Stencil 可视化 | `--export` 内置 blit | ⏳ R7.5-A |
 | Per-encoder GPU timing | `frame-list --with-timing` | ⚠️ R7.3 部分（replay-internal cb 不 commit） |
 | Compute encoder 在 frame-list 中明确化 | `frame-list` 含 type=compute | ✅ R7.3（dispatch 计数留 R7.5-B） |

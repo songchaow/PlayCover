@@ -11,23 +11,24 @@ Complete surface for the bundled tools. Skim the table of contents and jump to w
 6. [Subcommand: frame-list](#subcommand-frame-list)
 7. [Subcommand: shader-of-drawcall (wrapper-only)](#subcommand-shader-of-drawcall-wrapper-only)
 8. [Subcommand: disasm](#subcommand-disasm)
-9. [Subcommand: config](#subcommand-config)
-10. [Exit codes](#exit-codes)
-11. [Python wrapper — CLI mode](#python-wrapper--cli-mode)
-12. [Python wrapper — module mode](#python-wrapper--module-mode)
-13. [Pixel format helpers](#pixel-format-helpers)
+9. [Subcommand: dump-uniforms](#subcommand-dump-uniforms)
+10. [Subcommand: config](#subcommand-config)
+11. [Exit codes](#exit-codes)
+12. [Python wrapper — CLI mode](#python-wrapper--cli-mode)
+13. [Python wrapper — module mode](#python-wrapper--module-mode)
+14. [Pixel format helpers](#pixel-format-helpers)
 
 ---
 
 ## The bridge binary
 
-`scripts/gputrace_replay_bridge` is a single ObjC binary built from `gputrace_replay_bridge.m`. After running `setup.sh`, invoke it with one of seven subcommands. Output is always one JSON object on stdout per invocation; diagnostic messages go to stderr.
+`scripts/gputrace_replay_bridge` is a single ObjC binary built from `gputrace_replay_bridge.m`. After running `setup.sh`, invoke it with one of nine subcommands. Output is always one JSON object on stdout per invocation; diagnostic messages go to stderr.
 
 ```bash
 gputrace_replay_bridge <command> [args...]
 ```
 
-Available commands: `help`, `replay`, `pipeline`, `shader`, `shader-of-rps`, `frame-list`, `disasm`, `config`.
+Available commands: `help`, `replay`, `pipeline`, `shader`, `shader-of-rps`, `frame-list`, `disasm`, `dump-uniforms`, `config`.
 
 `help` prints the JSON schema of all commands:
 
@@ -642,6 +643,132 @@ In other words: R7.7 is the difference between "1 in 30 calls produces IR" and "
 
 ---
 
+## Subcommand: dump-uniforms
+
+R7.6-B. Decodes the bytes of a vertex/fragment buffer binding using the captured `MTLRenderPipelineReflection` (`MTLStructType` tree). Answers the "what cbuffer values did the shader actually see at this draw" question — typically the final-mile question for UV / matrix / light-param / material-param bugs.
+
+```bash
+gputrace_replay_bridge dump-uniforms <.gputrace> <rps_key> <bind_slot>
+                                     [--stage fragment|vertex]
+                                     [--buffer-key K] [--offset N]
+                                     [--with-hex] [--max-hex-bytes N]
+                                     [--output-dir DIR]
+```
+
+The bridge accepts a raw `rps_key`. To go from `draw_index` directly use the wrapper (auto-resolves `(rps_key, buffer_key, offset)` via `frame-list --with-bindings`):
+
+```bash
+python3 scripts/gputrace_replay_wrapper.py \
+    dump-uniforms <.gputrace> <draw_index> <bind_slot>
+                  [--target-kind draw|rps]
+                  [--stage fragment|vertex]
+                  [--buffer-key K] [--offset N]
+                  [--with-hex] [--max-hex-bytes N]
+                  [--output-dir DIR]
+```
+
+### Two-step pipeline
+
+```
+rps_key
+  ─> RPSCaptureEntry              (R7.2 swizzle: NewRenderPipelineStateWithDescriptor:options:reflection:error:)
+  ─> g_rps_reflections[entry]     (R7.6-B: reflection captured via the same swizzle)
+  ─> reflection.{vertex|fragment}Bindings[bind_slot]
+  ─> id<MTLBufferBinding>.bufferStructType   (MTLStructType*)
+  ─> recursive decode against bytes from objectMap.bufferForKey:(buffer_key)
+                                              starting at `offset`.
+```
+
+### Modes
+
+1. **Layout-only** (no `--buffer-key`): emits the `MTLStructType` reflection tree as `layout`. Useful as a "what does this shader expect at slot S?" query.
+2. **Layout + decoded bytes** (with `--buffer-key K --offset N`): also decodes the actual bytes — emits a `decoded` field with `{fieldName: {offset, data_type, value}}` per member. `value` is JSON-typed (numbers / arrays / nested objects).
+3. **Layout + hex dump** (`--with-hex`): adds a raw hex dump of the buffer bytes (clipped at `--max-hex-bytes`, default 256) — useful for cross-checking the decoded JSON.
+
+### JSON schema (top-level fields)
+
+```jsonc
+{
+  "command":           "dump-uniforms",
+  "trace_path":        "<input>",
+  "rps_key":           472,
+  "stage":             "fragment",
+  "bind_slot":         0,
+  "output_dir":        "/tmp/...",
+  "rps_label":         "Papegame/Cloth/ClothStandard",
+  "binding_name":      "AsukaPerShader_PerCamera",   // from MTLBinding.name
+  "buffer_data_size":  144,                          // bufferDataSize in bytes
+  "buffer_data_type":  "struct",                     // top-level dtype
+  "layout":            { /* MTLStructType tree, always present when reflection is captured */ },
+  "layout_source":     "metallib_reflection",       // or "none"
+  "buffer_key":        2,                            // only present when --buffer-key was supplied
+  "buffer_offset":     262208,
+  "buffer_length":     4194304,
+  "buffer_label":      "ScratchBuffer0_0",
+  "decoded":           { /* same shape as `layout`, but with decoded "value" fields */ },
+  "decoded_ok":        true,
+  "decoded_bytes":     144,
+  "hex":               "4260e53b9517...",            // only when --with-hex
+  "hex_bytes_emitted": 64,
+  "decode_status":     "layout_only",                // only in layout-only mode
+  "decode_skip_reason":"no_buffer_key_supplied"
+}
+```
+
+### Layout / decoded tree shape
+
+Each struct member becomes a key in the parent JSON object; the value is `{"offset": N, "data_type": "...", "value": <decoded>}`. For nested structs the `value` is itself a recursive object; for arrays the `value` is `{"length": L, "stride": S, "element_type": "...", "elements": [...]}` (truncated at 16 elements with `truncated:true` if longer). Matrices are emitted as 2D JSON arrays in row-major reading order; vectors as flat 1D arrays. Floats use `%.6g`; NaN/Infinity become string sentinels (`"NaN"` / `"Infinity"` / `"-Infinity"`) so the JSON stays parseable.
+
+### Failure modes (exit 11 with structured `error` field)
+
+| Error | Meaning |
+|-------|---------|
+| `rps_not_found` | `objectMap.renderPipelineStateForKey:` returned nil for the key |
+| `descriptor_not_captured` | RPS exists but the swizzle didn't capture its descriptor (rare; usually means the swizzle was installed too late) |
+| `reflection_not_captured` | RPS captured but reflection out-param was nil at creation time. Try `--with-hex --buffer-key K --offset N` to fall back to a hex dump |
+| `bind_slot_not_in_reflection` | The reflection has no binding at the requested `(stage, slot)` — check `pipeline` / `shader-of-rps` for what the shader actually expects |
+| `binding_not_a_buffer` | The slot is occupied by a texture/sampler/threadgroup binding, not a buffer |
+| `buffer_not_found` | `objectMap.bufferForKey:` returned nil for `--buffer-key` (invalid key or not in this trace) |
+| `buffer_contents_unavailable` | `[buffer contents]` returned NULL — buffer uses private/GPU-only storage |
+| `offset_out_of_range` | `--offset` exceeds `[buffer length]` |
+
+`draw_index_out_of_range` (exit 12) is wrapper-side only, raised when `target_kind=draw` and `draw_index >= draw_count` (mirrors `shader-of-drawcall` R7.6-C semantics).
+
+### Sample call (LYSK trace)
+
+```bash
+# Wrapper draw-mode: the most common path. Auto-resolves rps_key=472,
+# buffer_key=2, offset=262208 from frame-list bindings → bridge dumps the
+# AsukaPerShader_PerCamera cbuffer values for fragment slot 0 of draw 0.
+python3 scripts/gputrace_replay_wrapper.py \
+    dump-uniforms /Users/.../capture_20260518_110050.gputrace 0 0 --stage fragment
+
+# bridge-direct rps-mode: useful when you're iterating from `pipeline` output
+# and already know which RPS / buffer / offset you want.
+gputrace_replay_bridge dump-uniforms /Users/.../capture.gputrace 472 0 \
+    --stage vertex --buffer-key 2 --offset 262144
+
+# Layout-only ("what does slot 0 of fragment in this RPS expect?"):
+gputrace_replay_bridge dump-uniforms /Users/.../capture.gputrace 472 0 --stage fragment
+# → layout tree, no decoded field; decode_status=layout_only
+```
+
+### Implementation notes
+
+- The reflection capture lives entirely inside `rps_install_swizzles()` (R7.2 swizzle, extended in R7.6-B). The thunks now (a) always pass a non-NULL reflection out-pointer, and (b) when called via the no-options variant, issue a follow-up `newRenderPipelineStateWithDescriptor:options:reflection:error:` with `MTLPipelineOptionBindingInfo|BufferTypeInfo` to force reflection generation. The OS PSO cache typically makes this nearly free (same descriptor → cache hit).
+- Reflection objects live for the bridge process lifetime in a parallel `static id g_rps_reflections[]` array (file-scope `__strong` keeps them alive under ARC; `RPSCaptureEntry.reflection_index = -1` when capture failed).
+- `du_emit_struct` recurses up to depth 8 (`DU_MAX_DECODE_DEPTH`). Arrays decode at most 16 elements (`DU_MAX_ARRAY_ELEMS`) — surfaces `truncated:true,truncated_at:16` when clipped.
+- The half-precision decoder is local (`du_half_to_double`); float, int, uint, and bool families all share `du_emit_scalar_value`.
+
+### Known limits / future work
+
+- **Argument buffers (Tier-2 indirect resources)**: `bufferStructType` describes the argument buffer layout but inner resource handles need a second `MTLArgumentEncoder.argumentBuffer` lookup to resolve. Current dump shows the 64-bit handles; the deeper resolution is deferred.
+- **`setVertexBytes` inline buffers**: R7.6-A records inline `inline_bytes_size` but not the bytes themselves; R7.6-B can't decode inline-only bindings yet (would need an `--with-inline-bytes` capture flag during frame-list).
+- **No reflection PSOs**: rare on Apple Silicon, but if the device rejects `BindingInfo|BufferTypeInfo` options, the entry's `reflection_index = -1` and dump-uniforms returns `reflection_not_captured` with a hex-dump fallback path.
+- **Compute encoders**: R7.6-B is render-pipeline-state-only; compute pipeline reflection (`MTLComputePipelineReflection`) is not yet wired up. Tracked under R7.5-B.
+
+---
+
 ## Subcommand: config
 
 Runs a complete replay with one of three knobs flipped, isolating their individual effect. Each invocation creates a fresh replay context.
@@ -737,6 +864,10 @@ python3 gputrace_replay_wrapper.py frame-list <trace> --with-timing --pretty
 python3 gputrace_replay_wrapper.py shader-of-drawcall <trace> 0 --with-ir --output-dir /tmp/out
 python3 gputrace_replay_wrapper.py disasm <trace> 374 --with-ir --output-dir /tmp/out               # R7.7: direct library_key
 python3 gputrace_replay_wrapper.py disasm <trace> 484 --key-type rps --with-ir --output-dir /tmp/out  # R7.7: forwards to shader-of-rps
+python3 gputrace_replay_wrapper.py dump-uniforms <trace> 0 0 --stage fragment                       # R7.6-B: draw-mode (auto-resolve buffer)
+python3 gputrace_replay_wrapper.py dump-uniforms <trace> 472 0 --target-kind rps --stage fragment   # R7.6-B: rps-mode (layout only)
+python3 gputrace_replay_wrapper.py dump-uniforms <trace> 472 0 --target-kind rps --stage vertex \
+        --buffer-key 2 --offset 262144                                                              # R7.6-B: rps-mode + decoded
 python3 gputrace_replay_wrapper.py config <trace> disableOptimizeRestores=0 enableValidation=1
 ```
 

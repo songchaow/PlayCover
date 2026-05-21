@@ -485,6 +485,67 @@ class ShaderOfDrawcallResult:
 
 
 # ---------------------------------------------------------------------------
+# R7.6 子项 B — dump-uniforms (cbuffer 字节按反射树解码)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DumpUniformsResult:
+    """
+    R7.6-B: ``dump-uniforms`` 子命令结果 — 把指定 (RPS, stage, bind_slot) 处
+    的 buffer 字节按 ``MTLRenderPipelineReflection`` 的 ``MTLStructType`` 树
+    解码成 JSON。
+
+    - ``layout`` 始终输出（来自反射），即使没传 ``buffer_key``；让用户先看到
+      shader 期望的 cbuffer 字段名 / 偏移 / 类型。
+    - 传 ``buffer_key + offset`` 时，``decoded`` 输出实际数值。``buffer_key``
+      通常来自 R7.6-A 的 ``frame-list --with-bindings`` 输出。
+    - 反射不可用时返回 ``error="reflection_not_captured"``；可用 ``with_hex=True``
+      退化为 hex dump。
+
+    Wrapper 同时支持 ``draw`` 模式（见 :meth:`ReplayBridge.dump_uniforms`）：
+    传 ``draw_index`` 时 wrapper 内部先跑 ``frame-list --with-bindings``，
+    自动解析出 ``rps_key`` / ``buffer_key`` / ``offset`` 再调 bridge。
+    """
+    trace_path: str
+    rps_key: int
+    stage: str
+    bind_slot: int
+    output_dir: str
+    rps_label: Optional[str] = None
+    binding_name: Optional[str] = None
+    buffer_data_size: Optional[int] = None  # 反射给出的 struct/leaf 总长度
+    buffer_data_type: Optional[str] = None  # "struct" / "float4" / ...
+    layout: Optional[dict[str, Any]] = None  # MTLStructType 反射树（始终在）
+    layout_source: Optional[str] = None      # "metallib_reflection" / "none"
+    layout_warning: Optional[str] = None
+    # 字节级解码（仅当 buffer_key 传入时存在）
+    buffer_key: Optional[int] = None
+    buffer_offset: Optional[int] = None
+    buffer_length: Optional[int] = None
+    buffer_label: Optional[str] = None
+    decoded: Optional[Any] = None            # 解码后的字段树（与 layout 同形）
+    decoded_ok: Optional[bool] = None
+    decoded_bytes: Optional[int] = None
+    decoded_skip_reason: Optional[str] = None
+    # hex 调试
+    hex: Optional[str] = None
+    hex_bytes_emitted: Optional[int] = None
+    # frame-list 转发上下文（仅在 wrapper 内通过 draw_index 入口时填）
+    draw_index: Optional[int] = None
+    encoder_index: Optional[int] = None
+    draw_in_encoder: Optional[int] = None
+    call_index: Optional[int] = None
+    # 错误模型
+    error: Optional[str] = None
+    hint: Optional[str] = None
+    rps_captured_count: Optional[int] = None
+    binding_type: Optional[int] = None
+    # 原 JSON 留作 round-trip
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
 # Bridge Class
 # ---------------------------------------------------------------------------
 
@@ -1367,6 +1428,199 @@ class ReplayBridge:
         }
         return result
 
+    def dump_uniforms(
+        self,
+        trace_path: str | Path,
+        target: int,
+        bind_slot: int,
+        *,
+        target_kind: str = "draw",
+        stage: str = "fragment",
+        buffer_key: Optional[int] = None,
+        offset: Optional[int] = None,
+        with_hex: bool = False,
+        max_hex_bytes: int = 256,
+        output_dir: Optional[str | Path] = None,
+        timeout: float = 300.0,
+    ) -> DumpUniformsResult:
+        """
+        R7.6-B: 把指定 (RPS / draw + stage + bind_slot) 处的 buffer 字节按
+        ``MTLRenderPipelineReflection`` 解码成 JSON。
+
+        - ``target_kind="draw"`` (默认)：``target`` = ``draw_index``。
+          wrapper 内部串联 ``frame_list(--with-bindings)`` 拿
+          ``draw_to_rps_map[draw_index]`` + 该 draw 的 buffer 绑定，自动算出
+          ``rps_key``、``buffer_key``、``offset``，再调 bridge ``dump-uniforms``。
+          这是绝大多数 "看 draw N 时 cbuffer 实际值" 用例的入口。
+        - ``target_kind="rps"``：``target`` = ``rps_key``。直接调 bridge。
+          需要显式传 ``buffer_key`` / ``offset`` 才能解出字节；不传则只输出
+          反射 layout。
+
+        Args:
+            trace_path: .gputrace bundle 路径
+            target: ``draw_index`` (默认) 或 ``rps_key``
+            bind_slot: 反射里 binding 的 ``index`` 字段（NOT 数组下标）
+            target_kind: 'draw' (默认) 或 'rps'
+            stage: 'fragment' (默认) 或 'vertex'
+            buffer_key: 显式 buffer key（仅 ``target_kind=rps`` 时有用，
+                draw 模式下从 frame-list 自动解析）
+            offset: 显式 offset（同上）
+            with_hex: True 时附带 hex dump（裁到 ``max_hex_bytes``）
+            max_hex_bytes: hex dump 截断阈值（默认 256）
+            output_dir: bridge 临时输出目录
+            timeout: 每个底层子命令的超时秒数
+
+        Returns:
+            DumpUniformsResult — ``layout`` 始终非空（除非反射缺失），
+            ``decoded`` 仅当字节实际可用时非空
+
+        Raises:
+            DrawIndexOutOfRange: draw 模式下 draw_index 超出 trace 范围
+            ValueError: stage / target_kind / bind_slot 非法
+            BridgeError: bridge 以非 11/12 退出码失败
+        """
+        if stage not in ("fragment", "vertex"):
+            raise ValueError(f"stage must be 'fragment' or 'vertex', got {stage!r}")
+        if target_kind not in ("draw", "rps"):
+            raise ValueError(f"target_kind must be 'draw' or 'rps', got {target_kind!r}")
+        if bind_slot < 0:
+            raise ValueError(f"bind_slot must be >= 0, got {bind_slot}")
+        if target < 0:
+            raise ValueError(f"target must be >= 0, got {target}")
+
+        trace_path = self._validate_trace(trace_path)
+
+        # Resolve (rps_key, buffer_key, offset) in draw mode by running frame-list.
+        draw_index_for_result: Optional[int] = None
+        encoder_index_for_result: Optional[int] = None
+        draw_in_encoder_for_result: Optional[int] = None
+        call_index_for_result: Optional[int] = None
+
+        if target_kind == "draw":
+            fl = self.frame_list(
+                trace_path,
+                with_draws=True,
+                with_bindings=True,
+                with_timing=False,
+                timeout=timeout,
+            )
+            if target >= fl.draw_count or target >= len(fl.draw_to_rps_map):
+                raise DrawIndexOutOfRange(
+                    draw_index=target,
+                    draw_count=fl.draw_count,
+                    trace_path=str(trace_path),
+                )
+            entry = fl.draw_to_rps_map[target]
+            draw_index_for_result = target
+            encoder_index_for_result = entry.encoder_index
+            draw_in_encoder_for_result = entry.draw_in_encoder
+            call_index_for_result = entry.call_index
+            rps_key_resolved = entry.rps_key
+            if rps_key_resolved is None:
+                # 软错误：透传到结果，不抛
+                return DumpUniformsResult(
+                    trace_path=str(trace_path),
+                    rps_key=-1,
+                    stage=stage,
+                    bind_slot=bind_slot,
+                    output_dir=str(output_dir or ""),
+                    draw_index=target,
+                    encoder_index=encoder_index_for_result,
+                    draw_in_encoder=draw_in_encoder_for_result,
+                    call_index=call_index_for_result,
+                    error="draw_has_no_rps_key",
+                    hint=(
+                        "frame-list did not capture a RPS pointer for this draw. "
+                        "Inspect 'frame-list rps_correlated_count' and stderr."
+                    ),
+                )
+            # 找到对应 draw 中 (stage, bind_slot) 的 buffer binding
+            resolved_buf_key: Optional[int] = None
+            resolved_offset: Optional[int] = None
+            for cb in fl.command_buffers:
+                for enc in cb.encoders:
+                    if enc.index != entry.encoder_index:
+                        continue
+                    for d in enc.draws:
+                        if d.draw_index_global != entry.draw_index_global:
+                            continue
+                        if d.bindings is None:
+                            break
+                        stage_b = d.bindings.fragment if stage == "fragment" else d.bindings.vertex
+                        if stage_b is None:
+                            break
+                        for b in stage_b.buffers:
+                            if b.index == bind_slot:
+                                resolved_buf_key = b.resource_id
+                                resolved_offset = b.offset
+                                break
+                        break
+                    break
+            # 用户显式传入 buffer_key/offset 优先级最高（罕见 override）
+            if buffer_key is None:
+                buffer_key = resolved_buf_key
+            if offset is None:
+                offset = resolved_offset
+            target_for_bridge = rps_key_resolved
+        else:
+            # rps mode
+            target_for_bridge = target
+
+        # Build bridge args
+        args = [
+            "dump-uniforms",
+            str(trace_path),
+            str(target_for_bridge),
+            str(bind_slot),
+            "--stage", stage,
+        ]
+        if buffer_key is not None and buffer_key > 0:
+            args += ["--buffer-key", str(buffer_key)]
+            if offset is not None:
+                args += ["--offset", str(offset)]
+        if with_hex:
+            args.append("--with-hex")
+            args += ["--max-hex-bytes", str(max_hex_bytes)]
+        if output_dir:
+            args += ["--output-dir", str(output_dir)]
+
+        data, _ = self._run(args, timeout=timeout)
+
+        result = DumpUniformsResult(
+            trace_path=data.get("trace_path", str(trace_path)),
+            rps_key=data.get("rps_key", target_for_bridge),
+            stage=data.get("stage", stage),
+            bind_slot=data.get("bind_slot", bind_slot),
+            output_dir=data.get("output_dir", str(output_dir or "")),
+            rps_label=data.get("rps_label"),
+            binding_name=data.get("binding_name"),
+            buffer_data_size=data.get("buffer_data_size"),
+            buffer_data_type=data.get("buffer_data_type"),
+            layout=data.get("layout"),
+            layout_source=data.get("layout_source"),
+            layout_warning=data.get("layout_warning"),
+            buffer_key=data.get("buffer_key"),
+            buffer_offset=data.get("buffer_offset"),
+            buffer_length=data.get("buffer_length"),
+            buffer_label=data.get("buffer_label"),
+            decoded=data.get("decoded"),
+            decoded_ok=data.get("decoded_ok"),
+            decoded_bytes=data.get("decoded_bytes"),
+            decoded_skip_reason=data.get("decoded_skip_reason"),
+            hex=data.get("hex"),
+            hex_bytes_emitted=data.get("hex_bytes_emitted"),
+            draw_index=draw_index_for_result,
+            encoder_index=encoder_index_for_result,
+            draw_in_encoder=draw_in_encoder_for_result,
+            call_index=call_index_for_result,
+            error=data.get("error"),
+            hint=data.get("hint"),
+            rps_captured_count=data.get("rps_captured_count"),
+            binding_type=data.get("binding_type"),
+            raw=data,
+        )
+        return result
+
     # ------------------------------------------------------------------
     # Validation Helpers
     # ------------------------------------------------------------------
@@ -1482,6 +1736,32 @@ def _cli_main():
                                "falls back to PlayCover SDI module.bc — raises hit-rate ~3%% → ~100%% on LYSK)")
     p_disasm.add_argument("--output-dir", default=None,
                           help="Output directory (default: system tmp)")
+
+    # dump-uniforms (R7.6-B)
+    p_du = subparsers.add_parser(
+        "dump-uniforms", parents=[parent],
+        help="Decode a buffer binding's bytes via captured MTLRenderPipelineReflection (R7.6-B)",
+    )
+    p_du.add_argument("trace", help="Path to .gputrace bundle")
+    p_du.add_argument("target", type=int,
+                      help="draw_index (default --target-kind draw) or rps_key (--target-kind rps)")
+    p_du.add_argument("bind_slot", type=int,
+                      help="MTLBinding.index of the buffer binding to decode")
+    p_du.add_argument("--target-kind", choices=["draw", "rps"], default="draw",
+                      help="Interpret <target> as draw_index (default) or rps_key")
+    p_du.add_argument("--stage", choices=["fragment", "vertex"], default="fragment",
+                      help="Pipeline stage (default: fragment)")
+    p_du.add_argument("--buffer-key", type=int, default=None,
+                      help="Override the resolved buffer key (only meaningful in --target-kind=rps; "
+                           "in draw mode it's auto-resolved from frame-list bindings)")
+    p_du.add_argument("--offset", type=int, default=None,
+                      help="Override the buffer offset (see --buffer-key)")
+    p_du.add_argument("--with-hex", action="store_true",
+                      help="Also emit a hex dump of the buffer bytes")
+    p_du.add_argument("--max-hex-bytes", type=int, default=256,
+                      help="Truncate hex dump at this many bytes (default: 256)")
+    p_du.add_argument("--output-dir", default=None,
+                      help="Output directory (default: system tmp)")
 
     # config
     p_config = subparsers.add_parser("config", parents=[parent], help="Configuration control")
@@ -1605,6 +1885,31 @@ def _cli_main():
             print(json.dumps(disasm_result.raw, indent=indent))
             # 与 shader-of-rps 同款：library_not_found 等结构化错误映射 exit 11
             if disasm_result.error:
+                sys.exit(11)
+
+        elif args.command == "dump-uniforms":
+            du_result = bridge.dump_uniforms(
+                args.trace,
+                args.target,
+                args.bind_slot,
+                target_kind=args.target_kind,
+                stage=args.stage,
+                buffer_key=args.buffer_key,
+                offset=args.offset,
+                with_hex=args.with_hex,
+                max_hex_bytes=args.max_hex_bytes,
+                output_dir=args.output_dir,
+                timeout=args.timeout,
+            )
+            # 把 wrapper 自身合成的 frame-list 上下文也带进 raw（如 draw_index/encoder_index）
+            payload = dict(du_result.raw)
+            if du_result.draw_index is not None:
+                payload.setdefault("draw_index", du_result.draw_index)
+                payload.setdefault("encoder_index", du_result.encoder_index)
+                payload.setdefault("draw_in_encoder", du_result.draw_in_encoder)
+                payload.setdefault("call_index", du_result.call_index)
+            print(json.dumps(payload, indent=indent))
+            if du_result.error:
                 sys.exit(11)
 
         elif args.command == "config":

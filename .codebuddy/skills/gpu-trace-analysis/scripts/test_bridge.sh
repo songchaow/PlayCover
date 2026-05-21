@@ -54,8 +54,8 @@ if echo "$OUTPUT" | grep -q '"tool"'; then pass "JSON has 'tool' field"; else fa
 if echo "$OUTPUT" | grep -q '"commands"'; then pass "JSON has 'commands' array"; else fail "missing 'commands'"; fi
 if echo "$OUTPUT" | grep -q '"version"'; then pass "JSON has 'version' field"; else fail "missing 'version'"; fi
 
-# Check all 8 commands listed
-for cmd in help replay pipeline shader shader-of-rps frame-list disasm config; do
+# Check all 9 commands listed
+for cmd in help replay pipeline shader shader-of-rps frame-list disasm dump-uniforms config; do
     if echo "$OUTPUT" | grep -q "\"$cmd\""; then
         pass "commands contains '$cmd'"
     else
@@ -73,7 +73,7 @@ if [ "$rc" -eq 1 ]; then pass "exit code = 1"; else fail "exit code = $rc (expec
 
 # --- Test 4: Subcommands without required args → exit code 1 ---
 echo "[T4] Subcommands without required args → exit code 1"
-for cmd in replay pipeline shader shader-of-rps frame-list disasm config; do
+for cmd in replay pipeline shader shader-of-rps frame-list disasm dump-uniforms config; do
     set +e
     "$BRIDGE" "$cmd" >/dev/null 2>&1
     rc=$?
@@ -619,6 +619,124 @@ print(d['draw_to_rps_map'][0]['rps_key'])
         else
             fail "could not extract draw[0] rps_key from with-bindings JSON"
         fi
+    fi
+
+    # T7r: R7.6-B — dump-uniforms (cbuffer 反射解码)
+    # 在 LYSK 主基线上验证：
+    #   1. bridge dump-uniforms <rps_key> <bind_slot> 输出 layout（反射 captured 的证据）
+    #   2. 加 --buffer-key/--offset 后输出 decoded 字段树
+    #   3. wrapper draw 模式：直接 draw_index 自动解析 buffer_key/offset
+    #   4. OOR / rps_not_found / bind_slot_not_in_reflection 的结构化错误
+    # 与 R7.6-A 一样，draw 类断言只在 draw_count > 0 时启用。
+    if [ "$BIND_DRAW_COUNT" -gt 0 ]; then
+        echo "  [T7r] R7.6-B dump-uniforms reflection decode"
+        # 取 frame-list 的 draw[0]：rps_key + 一个真实存在的 vertex/fragment buffer 绑定
+        DU_DRAW0=$(echo "$BIND_JSON" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for cb in d['command_buffers']:
+    for e in cb['encoders']:
+        for dr in e.get('draws', []):
+            if dr.get('draw_index_global') == 0:
+                bd = dr.get('bindings', {})
+                # 选 fragment 第一个非空 buffer slot（通常 slot 0 是 PerCamera 这种 cbuffer）
+                for stage_key in ('fragment', 'vertex'):
+                    for b in bd.get(stage_key, {}).get('buffers', []):
+                        if 'resource_id' in b and b.get('resource_id', 0) > 0:
+                            print(dr.get('rps_key'), b['index'], stage_key, b['resource_id'], b.get('offset', 0))
+                            sys.exit(0)
+" 2>/dev/null)
+        if [ -n "$DU_DRAW0" ]; then
+            DU_RPS=$(echo "$DU_DRAW0" | awk '{print $1}')
+            DU_SLOT=$(echo "$DU_DRAW0" | awk '{print $2}')
+            DU_STAGE=$(echo "$DU_DRAW0" | awk '{print $3}')
+            DU_BUFKEY=$(echo "$DU_DRAW0" | awk '{print $4}')
+            DU_OFFSET=$(echo "$DU_DRAW0" | awk '{print $5}')
+
+            # T7r-1: bridge dump-uniforms <rps_key> <slot> 仅输出 layout
+            TMP_DU=$(mktemp -d)
+            set +e
+            "$BRIDGE" dump-uniforms "$GPUTRACE_PATH" "$DU_RPS" "$DU_SLOT" --stage "$DU_STAGE" --output-dir "$TMP_DU" >"$TMP_DU/layout.json" 2>/dev/null
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then pass "dump-uniforms layout-only exit = 0"; else fail "dump-uniforms layout-only exit = $rc"; fi
+            if grep -q '"layout":' "$TMP_DU/layout.json"; then pass "dump-uniforms emits layout"; else fail "dump-uniforms missing layout"; fi
+            if grep -q '"layout_source":"metallib_reflection"' "$TMP_DU/layout.json"; then
+                pass "layout_source=metallib_reflection (R7.6-B reflection capture working)"
+            else
+                fail "layout_source != metallib_reflection — reflection capture broken"
+            fi
+            if grep -q '"binding_name"' "$TMP_DU/layout.json"; then pass "layout has binding_name"; else fail "missing binding_name"; fi
+            if ! grep -q '"decoded":' "$TMP_DU/layout.json"; then pass "layout-only mode does not emit decoded"; else fail "layout-only unexpectedly emitted decoded"; fi
+
+            # T7r-2: bridge dump-uniforms with --buffer-key + --offset 输出 decoded
+            set +e
+            "$BRIDGE" dump-uniforms "$GPUTRACE_PATH" "$DU_RPS" "$DU_SLOT" --stage "$DU_STAGE" \
+                --buffer-key "$DU_BUFKEY" --offset "$DU_OFFSET" --output-dir "$TMP_DU" >"$TMP_DU/decoded.json" 2>/dev/null
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then pass "dump-uniforms with buffer exit = 0"; else fail "dump-uniforms with buffer exit = $rc"; fi
+            if grep -q '"decoded":' "$TMP_DU/decoded.json"; then pass "dump-uniforms emits decoded tree"; else fail "missing decoded tree"; fi
+            if grep -q '"decoded_ok":true' "$TMP_DU/decoded.json"; then pass "decoded_ok=true"; else fail "decoded_ok != true"; fi
+
+            # T7r-3: wrapper draw mode 自动解析 buffer_key/offset
+            WRAPPER_PY="$SCRIPT_DIR/gputrace_replay_wrapper.py"
+            if [ -f "$WRAPPER_PY" ]; then
+                set +e
+                python3 "$WRAPPER_PY" dump-uniforms "$GPUTRACE_PATH" 0 "$DU_SLOT" --stage "$DU_STAGE" --output-dir "$TMP_DU" >"$TMP_DU/wrapper_draw.json" 2>/dev/null
+                rc=$?
+                set -e
+                if [ "$rc" -eq 0 ]; then pass "wrapper draw-mode dump-uniforms exit = 0"; else fail "wrapper draw-mode exit = $rc"; fi
+                # 校验 wrapper 自动注入的 frame-list 上下文（用 python 解析，避免 indent 空格踩坑）
+                if python3 -c "import json,sys; d=json.load(open('$TMP_DU/wrapper_draw.json')); sys.exit(0 if d.get('draw_index')==0 else 1)" 2>/dev/null; then
+                    pass "wrapper auto-injects draw_index=0"
+                else
+                    fail "wrapper missing draw_index field"
+                fi
+                # rps_key 应该等于 frame-list 推出的同一 RPS
+                WRAPPER_RPS=$(python3 -c "import json; print(json.load(open('$TMP_DU/wrapper_draw.json')).get('rps_key'))" 2>/dev/null)
+                if [ "$WRAPPER_RPS" = "$DU_RPS" ]; then pass "wrapper rps_key auto-resolves to $DU_RPS"; else fail "wrapper rps_key=$WRAPPER_RPS != expected $DU_RPS"; fi
+                # 应该也有 decoded（因为 buffer_key/offset 自动解析成功）
+                if grep -q '"decoded":' "$TMP_DU/wrapper_draw.json"; then pass "wrapper draw-mode auto-decodes bytes"; else fail "wrapper missing decoded"; fi
+            fi
+
+            # T7r-4: bridge bind_slot 超出反射 → 软错误 + exit 11
+            set +e
+            "$BRIDGE" dump-uniforms "$GPUTRACE_PATH" "$DU_RPS" 31 --stage "$DU_STAGE" --output-dir "$TMP_DU" >"$TMP_DU/oor_slot.json" 2>/dev/null
+            rc=$?
+            set -e
+            if [ "$rc" -eq 11 ]; then pass "bind_slot OOR exit = 11"; else fail "bind_slot OOR exit = $rc (expected 11)"; fi
+            if grep -q '"error":"bind_slot_not_in_reflection"' "$TMP_DU/oor_slot.json"; then pass "bind_slot_not_in_reflection error code"; else fail "wrong error code on bind_slot OOR"; fi
+
+            # T7r-5: bridge rps_key 不存在 → rps_not_found + exit 11
+            set +e
+            "$BRIDGE" dump-uniforms "$GPUTRACE_PATH" 99999999 0 --output-dir "$TMP_DU" >"$TMP_DU/rps_oor.json" 2>/dev/null
+            rc=$?
+            set -e
+            if [ "$rc" -eq 11 ]; then pass "rps_key OOR exit = 11"; else fail "rps_key OOR exit = $rc (expected 11)"; fi
+            if grep -q '"error":"rps_not_found"' "$TMP_DU/rps_oor.json"; then pass "rps_not_found error code"; else fail "wrong error code on rps OOR"; fi
+
+            # T7r-6: wrapper draw_index OOR → exit 12 + draw_index_out_of_range
+            if [ -f "$WRAPPER_PY" ]; then
+                set +e
+                python3 "$WRAPPER_PY" dump-uniforms "$GPUTRACE_PATH" 99999 0 >"$TMP_DU/draw_oor.json" 2>/dev/null
+                rc=$?
+                set -e
+                if [ "$rc" -eq 12 ]; then pass "wrapper draw OOR exit = 12"; else fail "wrapper draw OOR exit = $rc (expected 12)"; fi
+                if python3 -c "import json,sys; d=json.load(open('$TMP_DU/draw_oor.json')); sys.exit(0 if d.get('error')=='draw_index_out_of_range' else 1)" 2>/dev/null; then
+                    pass "wrapper emits draw_index_out_of_range"
+                else
+                    fail "wrapper missing draw_index_out_of_range"
+                fi
+            fi
+
+            rm -rf "$TMP_DU"
+        else
+            echo "    [SKIP] T7r — could not derive (rps_key, slot, buffer_key) from frame-list draw[0]"
+        fi
+    else
+        echo "  [T7r] R7.6-B dump-uniforms"
+        echo "    [SKIP] draw_count=0 (compute-only trace) — R7.6-B draw-shape assertions skipped"
     fi
 
     rm -rf "$PIPELINE_DIR"

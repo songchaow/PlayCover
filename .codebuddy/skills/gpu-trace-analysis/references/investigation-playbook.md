@@ -383,7 +383,41 @@ jq '.command_buffers[].encoders[].draws[] | select(.draw_index_global==0) | .bin
 "$BRIDGE" replay /tmp/foo.gputrace --export 211 /tmp/draw0_ftex3.bin
 ```
 
-What's still on the R7 backlog: **uniform/cbuffer content** decoding (R7.6-B; depends on R7.6-A binding tables to locate the right buffer + offset, then needs argument-encoder reflection to interpret bytes), **depth/stencil texture export** (R7.5-A), **compute encoder dispatch counts** (R7.5-B).
+What's still on the R7 backlog: **depth/stencil texture export** (R7.5-A), **compute encoder dispatch counts** (R7.5-B).
+
+### Pattern: "What did the cbuffer at draw N actually contain?" (R7.6-B)
+
+Once `frame-list --with-bindings` has told you that draw N has a buffer at fragment slot S, the next question is "what were the actual bytes — is `_MainLightDirection` zero? Is the projection matrix transposed? Is `_MipBias` NaN?". The `dump-uniforms` subcommand decodes those bytes by walking the captured `MTLRenderPipelineReflection`'s `MTLStructType` tree.
+
+```bash
+# Wrapper draw-mode is the simplest entry point. It auto-resolves
+# rps_key + buffer_key + offset by running frame-list internally.
+python3 "$SKILL_DIR/scripts/gputrace_replay_wrapper.py" \
+    dump-uniforms /tmp/foo.gputrace 0 0 --stage fragment
+
+# Output (abbreviated):
+# {
+#   "binding_name": "AsukaPerShader_PerCamera",
+#   "buffer_data_size": 144,
+#   "buffer_data_type": "struct",
+#   "layout":  { "_MainLightPosition": {"offset": 64, "data_type": "float4", "value": null}, ... },
+#   "decoded": { "_MainLightPosition": {"offset": 64, "data_type": "float4", "value": [0.42,-0.85,0.31,0]}, ... },
+#   "decoded_ok": true
+# }
+
+# bridge-direct rps-mode is useful when you're looping over many RPS_keys
+# (e.g. iterating over `pipeline` output) and want minimum overhead per call.
+"$BRIDGE" dump-uniforms /tmp/foo.gputrace 472 0 \
+    --stage vertex --buffer-key 2 --offset 262144
+
+# Layout-only mode (no --buffer-key): see what fields the shader expects,
+# without binding to a specific draw's bytes.
+"$BRIDGE" dump-uniforms /tmp/foo.gputrace 472 0 --stage fragment
+```
+
+`layout` is always present (whenever reflection was captured). `decoded` only appears when `--buffer-key` was supplied. If reflection capture failed, the bridge returns `error: "reflection_not_captured"` (exit 11) — `--with-hex --buffer-key K` still gives a hex dump as a fallback.
+
+What's still on the R7 backlog: **depth/stencil texture export** (R7.5-A), **compute encoder dispatch counts** (R7.5-B).
 
 ---
 

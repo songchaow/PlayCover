@@ -9,7 +9,7 @@ This skill turns headless `.gputrace` replay into a programmable workflow for in
 
 ## What this skill gives you
 
-A self-contained CLI (`gputrace_replay_bridge`) plus a Python wrapper (`gputrace_replay_wrapper.py`) that together expose seven capabilities matching what an engineer would otherwise do manually inside Xcode's GPU Frame Debugger:
+A self-contained CLI (`gputrace_replay_bridge`) plus a Python wrapper (`gputrace_replay_wrapper.py`) that together expose eight capabilities matching what an engineer would otherwise do manually inside Xcode's GPU Frame Debugger:
 
 | Capability | Tool | What you can find out |
 |---|---|---|
@@ -20,6 +20,7 @@ A self-contained CLI (`gputrace_replay_bridge`) plus a Python wrapper (`gputrace
 | Frame timeline (encoder/draw) + draw→RPS map | `frame-list` | **R7.3: command buffers, render/compute/blit encoders with attachment summaries, every draw with primitive type / vertex / instance counts and its bound RPS_key. Pipe `draw_to_rps_map[].rps_key` directly into `shader-of-rps --with-ir` for "draw N → shader IR" in two commands. R7.6-A: each draw now also carries a full per-stage binding snapshot (`bindings.{vertex,fragment}.{buffers,textures,samplers}[]` with `resource_id` / `offset` / `inline_bytes_size`) — answers "what was bound when this draw executed".** |
 | **draw_index → shader IR (one-shot)** | `shader-of-drawcall` (Python wrapper) | **R7.6-C: thin封装 — `frame-list → draw_to_rps_map[draw_index] → shader-of-rps`. Mirrors `shader-of-rps` for the "I know the draw index, give me the shader" mental model. OOR draw_index returns structured `draw_index_out_of_range` (exit 12); compute-only traces gracefully report `draw_count=0`. Wrapper-only — bridge unchanged. Combined with R7.7 SDI fallback, `--with-ir` now produces a real `.ll` for ~100% of LYSK draws.** |
 | **library_key → IR (direct)** | `disasm` | **R7.7: `disasm <trace> <lib_key> --with-ir` skips the RPS detour and goes straight library_key → metallib → cacheKey → bitcodeData/SDI module.bc → llvm-dis. Optional `--key-type rps` forwards to `shader-of-rps`. Includes the same SDI fallback used by `shader-of-rps`.** |
+| **Uniform / cbuffer content decode** | `dump-uniforms` | **R7.6-B: `dump-uniforms <trace> <draw_index|rps_key> <bind_slot>` decodes the bytes of a vertex/fragment buffer binding using the captured `MTLRenderPipelineReflection` (`MTLStructType` tree) — outputs `{fieldName: {offset, data_type, value}}` for every member. Wrapper draw-mode auto-resolves `(rps_key, buffer_key, offset)` from R7.6-A's binding table; bridge-direct rps-mode accepts an explicit `--buffer-key`/`--offset`. Layout (struct member names + offsets + types) is always emitted from reflection, even if the bytes can't be read; `--with-hex` adds a raw hex dump for cross-checking. Answers "what cbuffer values did the shader actually see at this draw" — typically the final-mile question for UV / matrix / light-param / material-param bugs.** |
 | Shader hot-replace | `shader --verify` | Bisect: replace a suspect shader with a corrected/instrumented one and re-replay |
 | Replay configuration | `config` | Toggle Metal validation, optimization, unused-resource loading to isolate causes |
 
@@ -170,6 +171,15 @@ python3 "$SKILL_DIR/scripts/gputrace_replay_wrapper.py" \
 # Or: directly disassemble a library_key (skip the RPS detour) — also tries
 # bitcodeData first then PlayCover SDI module.bc fallback.
 "$BRIDGE" disasm /tmp/foo.gputrace 374 --with-ir --output-dir /tmp/foo-shaders
+
+# R7.6-B: see the actual cbuffer values the shader saw at draw N.
+# Wrapper draw-mode auto-resolves (rps_key, buffer_key, offset) from R7.6-A's
+# binding table — no manual plumbing.
+python3 "$SKILL_DIR/scripts/gputrace_replay_wrapper.py" \
+    dump-uniforms /tmp/foo.gputrace 0 0 --stage fragment
+# → JSON with "binding_name":"AsukaPerShader_PerCamera",
+#            "layout":{"_MainLightPosition":{...}, "_ProjectionMatrix":{...}, ...},
+#            "decoded":{"_MainLightPosition":{"value":[0.42,-0.85,0.31,0]}, ...}
 ```
 
 If `--with-ir` returns `ir_error: "no_air_bitcode_and_no_sdi"` (R7.7), neither the in-trace `bitcodeData` nor PlayCover's `ShaderDebugInfo` cache could provide LLVM bitcode — usually because the SDI cache was never populated. Run the app once through PlayCover to populate it, or use the metallib directly. The legacy `no_air_bitcode` error is gone in R7.7 (replaced by the auto-fallback path).
@@ -181,7 +191,6 @@ The exported `cache_key_metallib` follows PlayCover's convention; the skill's IR
 These are limitations of the current skill — agents should not waste cycles trying to work around them with grep / zlib / unsorted-capture parsing.
 
 - **Depth/stencil texture export** — `replay --export` refuses depth/stencil; sample inside a shader and write to a color target as a workaround. R7.5 (planned).
-- **Uniform / cbuffer content inspection** — `frame-list --with-bindings` (R7.6-A) tells you which buffer is at which slot with what offset, but does NOT yet decode the bytes inside that buffer. R7.6 子项 B (planned, depends on R7.6-A binding tables).
 - **Per-encoder GPU timing** — `frame-list --with-timing` reads `MTLCommandBuffer.GPUStartTime/GPUEndTime`, but on traces whose internal CBs never `commit` these properties remain 0 / null. The flag is provided for forward compatibility; for accurate host-side per-segment timing use `replay --playto N` bisection (see playbook Pattern 4).
 - **Compute encoder dispatch counts** — R7.3 lists `type=compute` encoders in the timeline, but `compute_dispatch_count` remains 0; `setComputePipelineState:` / `dispatchThreadgroups:*` swizzles are not yet installed (R7.5 子项 B planned).
 - **Indirect draws / mesh shaders** — `drawPrimitives:indirectBuffer:*` / `drawMeshThreadgroups:*` are not in the R7.3 swizzle set (LYSK doesn't use them; add when needed).

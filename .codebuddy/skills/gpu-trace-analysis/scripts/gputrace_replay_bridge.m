@@ -11,6 +11,7 @@
  *   shader-of-rps  — 通过 RPS_key 反查 fragment/vertex shader 并可选导出 IR（R7.4，R7.7 SDI fallback）
  *   frame-list     — encoder 时间序列 + draw→RPS 映射 + per-cb timing（R7.3）+ per-draw bindings（R7.6-A）
  *   disasm         — 直接 library_key/RPS_key 反汇编 + SDI module.bc fallback（R7.7）
+ *   dump-uniforms  — 把 draw/RPS + bind_slot 处的 buffer 字节按 MTLStructType 反射树解码（R7.6-B）
  *   config         — 调用链控制 + validation 全局变量（R6.1e）
  *
  * 编译：
@@ -39,6 +40,7 @@
 #import <mach/mach_time.h>
 #import <signal.h>
 #import <setjmp.h>
+#import <math.h>
 
 // ============================================================
 #pragma mark - JSON Output Helpers
@@ -404,7 +406,7 @@ static void replay_context_cleanup(void) {
 static int cmd_help(int argc, const char *argv[]) {
     JSON_BEGIN();
     JSON_KV_STR("tool", "gputrace_replay_bridge");
-    JSON_KV_STR("version", "0.6.0");
+    JSON_KV_STR("version", "0.7.0");
     JSON_SEP();
     printf("\"commands\":[");
     printf("{\"name\":\"help\",\"description\":\"Show available commands\"}");
@@ -414,6 +416,7 @@ static int cmd_help(int argc, const char *argv[]) {
     printf(",{\"name\":\"shader-of-rps\",\"description\":\"Reverse-lookup the fragment/vertex shader of a render pipeline state. Reuses the pipeline-subcommand swizzle to map RPS_key -> function_key -> library_key -> metallib + (optionally) llvm-dis to .ll IR. R7.7: auto-falls-back to PlayCover SDI module.bc when MTLLibrary lacks bitcodeData.\",\"usage\":\"shader-of-rps <.gputrace> <rps_key> [--stage fragment|vertex] [--with-ir] [--output-dir DIR]\"}");
     printf(",{\"name\":\"frame-list\",\"description\":\"Enumerate command buffers / encoders / draw calls captured during replay and map each draw to its render pipeline state. Outputs a tree (command_buffers[].encoders[].draws[]) plus a flat draw_to_rps_map[] view. Optional per-cb GPU timing. R7.6-A: --with-bindings (default ON) snapshots per-draw vertex/fragment buffer/texture/sampler bindings via setVertexBuffer/setFragmentTexture/etc swizzles.\",\"usage\":\"frame-list <.gputrace> [--with-draws] [--no-draws] [--with-timing] [--with-bindings] [--no-bindings]\"}");
     printf(",{\"name\":\"disasm\",\"description\":\"Direct library-key (default) or RPS-key disassembly. Library path: looks up library_key -> metallib + cacheKey + (optionally) IR. Tries bitcodeData first then PlayCover SDI module.bc fallback (R7.7), so libraries without bitcode still produce .ll. Use --key-type rps to forward to shader-of-rps.\",\"usage\":\"disasm <.gputrace> <key> [--key-type rps|library] [--stage fragment|vertex] [--with-ir] [--output-dir DIR]\"}");
+    printf(",{\"name\":\"dump-uniforms\",\"description\":\"R7.6-B: decode the bytes of a vertex/fragment buffer binding using the captured MTLRenderPipelineReflection (MTLStructType tree). Resolves draw_index -> RPS_key -> reflection.{vertex|fragment}Bindings[bind_slot] -> bufferStructType, then emits per-field {name, offset, dataType, value} JSON. Falls back to a hex dump (--with-hex) if reflection is unavailable. Accepts a draw_index (default) or a raw rps_key via --key-type rps.\",\"usage\":\"dump-uniforms <.gputrace> <draw_index|rps_key> <bind_slot> [--key-type draw|rps] [--stage fragment|vertex] [--with-hex] [--max-bytes N] [--output-dir DIR]\"}");
     printf(",{\"name\":\"config\",\"description\":\"Configuration control (call chain + validation)\",\"usage\":\"config <.gputrace> [key=value ...]\"}");
     printf("]");
     JSON_END();
@@ -616,9 +619,17 @@ typedef struct {
     char  stencil_format[RPS_FMT_NAME_LEN];
     NSUInteger stencil_format_value;
     NSUInteger raster_sample_count;
+    // R7.6-B: index into g_rps_reflections[] (parallel strong-ref array,
+    // because C structs under ARC can't directly hold strong id refs).
+    // -1 means reflection capture failed for this RPS.
+    int   reflection_index;
 } RPSCaptureEntry;
 
 static RPSCaptureEntry g_rps_captured[MAX_CAPTURED_RPS];
+// R7.6-B: parallel array of strong references to MTLAutoreleasedRenderPipelineReflection
+// objects (one per captured RPS; nil if the RPS had no reflection). File-scope
+// __strong array under ARC keeps these alive for the bridge process lifetime.
+static id              g_rps_reflections[MAX_CAPTURED_RPS];
 static int             g_rps_n_captured = 0;
 static int             g_rps_swizzles_installed = 0;
 
@@ -646,6 +657,7 @@ static void rps_capture_descriptor(id rps, id desc) {
     RPSCaptureEntry *e = &g_rps_captured[idx];
     memset(e, 0, sizeof(*e));
     e->rps_ptr = (__bridge void *)rps;
+    e->reflection_index = -1; // R7.6-B: filled in by the swizzle thunks below
 
     id vf = nil, ff = nil;
     NSString *label = nil;
@@ -718,15 +730,70 @@ static void rps_capture_descriptor(id rps, id desc) {
     e->raster_sample_count = rsc;
 }
 
+// R7.6-B: helper used by both swizzle thunks. Tries to obtain a strong
+// reflection ref for the most-recently-captured RPS by issuing a follow-up
+// reflection-bearing PSO creation on the same device + descriptor. The OS
+// PSO cache should hit (same desc → same pipeline) so the cost is dominated
+// by reflection-tree construction, not full compilation.
+//
+// Stores the reflection in g_rps_reflections[idx] and updates the entry's
+// reflection_index. Silent no-op if the call returns nil reflection or
+// raises (e.g. unsupported on the platform). We never abort the original
+// RPS creation on reflection failure — fallback to hex dump in dump-uniforms.
+static void rps_capture_reflection_for_last_entry(id self, id desc, id direct_refl) {
+    if (g_rps_n_captured == 0) return;
+    int idx = g_rps_n_captured - 1;
+    if (idx < 0 || idx >= MAX_CAPTURED_RPS) return;
+    RPSCaptureEntry *e = &g_rps_captured[idx];
+    if (e->reflection_index >= 0) return; // already captured
+
+    // Path 1: caller already gave us a reflection (only the options thunk hits this).
+    if (direct_refl) {
+        g_rps_reflections[idx] = direct_refl;
+        e->reflection_index = idx;
+        return;
+    }
+    // Path 2: synthesize a reflection by re-creating the PSO with reflection
+    // out-param. PSO cache should make this cheap. Skip silently on failure.
+    if (!self || !desc || !g_rps_orig_imp_opts) return;
+    @try {
+        id refl_out = nil;
+        NSError *err_unused = nil;
+        // MTLPipelineOptionArgumentInfo (1) | MTLPipelineOptionBufferTypeInfo (2)
+        // — covers BindingInfo (which == ArgumentInfo on macOS) + bufferStructType.
+        NSUInteger opts = (NSUInteger)1 | (NSUInteger)2;
+        id _ignored = g_rps_orig_imp_opts(
+            self, @selector(newRenderPipelineStateWithDescriptor:options:reflection:error:),
+            desc, opts, &refl_out, &err_unused);
+        (void)_ignored;
+        if (refl_out) {
+            g_rps_reflections[idx] = refl_out;
+            e->reflection_index = idx;
+        }
+    } @catch (NSException *ex) {
+        // swallow
+    }
+}
+
 static id rps_swizzled_imp(id self, SEL _cmd, id desc, NSError **err) {
     id rps = g_rps_orig_imp(self, _cmd, desc, err);
     rps_capture_descriptor(rps, desc);
+    rps_capture_reflection_for_last_entry(self, desc, nil);
     return rps;
 }
 
 static id rps_swizzled_imp_opts(id self, SEL _cmd, id desc, NSUInteger options, id *refl, NSError **err) {
-    id rps = g_rps_orig_imp_opts(self, _cmd, desc, options, refl, err);
+    // R7.6-B: ensure reflection is requested even if caller passed NULL.
+    // Note: parameters declared `id *` are __autoreleasing under ARC by
+    // default, so we have to use a stand-in __autoreleasing pointer when the
+    // caller didn't provide one (taking the address of an __strong local
+    // would violate ARC's writeback contract).
+    __autoreleasing id local_refl = nil;
+    __autoreleasing id *eff_refl = refl ? refl : &local_refl;
+    NSUInteger eff_options = options | (NSUInteger)1 | (NSUInteger)2; // BindingInfo|ArgumentInfo + BufferTypeInfo
+    id rps = g_rps_orig_imp_opts(self, _cmd, desc, eff_options, eff_refl, err);
     rps_capture_descriptor(rps, desc);
+    rps_capture_reflection_for_last_entry(self, desc, eff_refl ? *eff_refl : nil);
     return rps;
 }
 
@@ -3555,6 +3622,699 @@ static int cmd_frame_list(int argc, const char *argv[]) {
 }
 
 // ============================================================
+#pragma mark - Subcommand: dump-uniforms (R7.6-B)
+// ============================================================
+//
+// dump-uniforms <.gputrace> <rps_key> <bind_slot>
+//               [--stage fragment|vertex]
+//               [--buffer-key K] [--offset N]
+//               [--with-hex] [--max-hex-bytes N]
+//               [--output-dir DIR]
+//
+// Decode the bytes of a vertex/fragment buffer binding using the captured
+// MTLRenderPipelineReflection (MTLStructType tree). Pipeline:
+//
+//   rps_key
+//     -> RPSCaptureEntry
+//     -> g_rps_reflections[entry.reflection_index]
+//     -> reflection.{vertex|fragment}Bindings[bind_slot]
+//     -> id<MTLBufferBinding>.bufferStructType (MTLStructType*)
+//     -> recursive decode against bytes from objectMap.bufferForKey:(buffer_key)
+//        starting at `offset`.
+//
+// Without --buffer-key the bridge emits reflection-only output (layout but no
+// decoded values) — useful for showing the user "this RPS slot expects an
+// AsukaPerShader_PerCamera struct of size 4096". With --buffer-key, bytes are
+// read and decoded in JSON.
+//
+// --with-hex: also emit a hex dump of the buffer bytes (clipped at
+// --max-hex-bytes, default 256). Useful when reflection is missing or when
+// the user wants to cross-check the decoded JSON against raw bytes.
+
+#define DU_DEFAULT_HEX_BYTES 256
+#define DU_MAX_DECODE_DEPTH 8
+#define DU_MAX_ARRAY_ELEMS 16  // cap array decode to keep JSON small
+
+// Forward decl — recursive struct decode.
+static void du_emit_struct(id structType, const uint8_t *bytes, NSUInteger len,
+                           NSUInteger struct_offset, int depth);
+
+// Convert MTLDataType to a stable string for the JSON output. We deliberately
+// only enumerate the cases we actively decode below; everything else falls
+// through to "other" so the JSON stays self-describing and forward compatible.
+static const char *du_data_type_name(NSUInteger t) {
+    switch (t) {
+        case 1:   return "struct";       // MTLDataTypeStruct
+        case 2:   return "array";        // MTLDataTypeArray
+        case 3:   return "float";        // MTLDataTypeFloat
+        case 4:   return "float2";
+        case 5:   return "float3";
+        case 6:   return "float4";
+        case 7:   return "float2x2";
+        case 8:   return "float2x3";
+        case 9:   return "float2x4";
+        case 10:  return "float3x2";
+        case 11:  return "float3x3";
+        case 12:  return "float3x4";
+        case 13:  return "float4x2";
+        case 14:  return "float4x3";
+        case 15:  return "float4x4";
+        case 16:  return "half";
+        case 17:  return "half2";
+        case 18:  return "half3";
+        case 19:  return "half4";
+        case 20:  return "half2x2";
+        case 21:  return "half2x3";
+        case 22:  return "half2x4";
+        case 23:  return "half3x2";
+        case 24:  return "half3x3";
+        case 25:  return "half3x4";
+        case 26:  return "half4x2";
+        case 27:  return "half4x3";
+        case 28:  return "half4x4";
+        case 29:  return "int";
+        case 30:  return "int2";
+        case 31:  return "int3";
+        case 32:  return "int4";
+        case 33:  return "uint";
+        case 34:  return "uint2";
+        case 35:  return "uint3";
+        case 36:  return "uint4";
+        case 37:  return "short";
+        case 38:  return "short2";
+        case 39:  return "short3";
+        case 40:  return "short4";
+        case 41:  return "ushort";
+        case 42:  return "ushort2";
+        case 43:  return "ushort3";
+        case 44:  return "ushort4";
+        case 45:  return "char";
+        case 49:  return "uchar";
+        case 53:  return "bool";
+        case 54:  return "bool2";
+        case 55:  return "bool3";
+        case 56:  return "bool4";
+        default:  return "other";
+    }
+}
+
+// Component count (lanes) for vector / matrix types. Returns 0 for non-fixed
+// types (struct/array/etc) which are handled separately.
+static int du_data_type_components(NSUInteger t) {
+    switch (t) {
+        case 3: case 16: case 29: case 33: case 37: case 41: case 45: case 49: case 53:
+            return 1;
+        case 4: case 17: case 30: case 34: case 38: case 42: case 54:
+            return 2;
+        case 5: case 18: case 31: case 35: case 39: case 43: case 55:
+            return 3;
+        case 6: case 19: case 32: case 36: case 40: case 44: case 56:
+            return 4;
+        case 7: return 2*2;  case 8: return 2*3;  case 9: return 2*4;
+        case 10: return 3*2; case 11: return 3*3; case 12: return 3*4;
+        case 13: return 4*2; case 14: return 4*3; case 15: return 4*4;
+        case 20: return 2*2; case 21: return 2*3; case 22: return 2*4;
+        case 23: return 3*2; case 24: return 3*3; case 25: return 3*4;
+        case 26: return 4*2; case 27: return 4*3; case 28: return 4*4;
+        default: return 0;
+    }
+}
+
+// Bytes per component for a given dtype family ("base" type).
+//   float family -> 4, half/short/ushort/bool family -> 2, int/uint -> 4,
+//   char/uchar -> 1.
+static int du_data_type_component_bytes(NSUInteger t) {
+    if (t >= 3 && t <= 15)  return 4; // float / floatNxM
+    if (t >= 16 && t <= 28) return 2; // half / halfNxM
+    if (t >= 29 && t <= 32) return 4; // int*
+    if (t >= 33 && t <= 36) return 4; // uint*
+    if (t >= 37 && t <= 40) return 2; // short*
+    if (t >= 41 && t <= 44) return 2; // ushort*
+    if (t == 45 || t == 49) return 1; // char/uchar
+    if (t >= 53 && t <= 56) return 1; // bool*
+    return 0;
+}
+
+// Is the dtype a float-like (incl matrix)?
+static BOOL du_is_float_like(NSUInteger t) { return t >= 3 && t <= 15; }
+static BOOL du_is_half_like(NSUInteger t)  { return t >= 16 && t <= 28; }
+static BOOL du_is_int_like(NSUInteger t)   { return (t >= 29 && t <= 32) || (t >= 37 && t <= 40); }
+static BOOL du_is_uint_like(NSUInteger t)  { return (t >= 33 && t <= 36) || (t >= 41 && t <= 44); }
+static BOOL du_is_bool_like(NSUInteger t)  { return t >= 53 && t <= 56; }
+static BOOL du_is_struct(NSUInteger t)     { return t == 1; }
+static BOOL du_is_array(NSUInteger t)      { return t == 2; }
+
+// IEEE-754 half decode (1 sign + 5 exp + 10 mant) → double.
+static double du_half_to_double(uint16_t h) {
+    int sign = (h >> 15) & 0x1;
+    int exp  = (h >> 10) & 0x1F;
+    int mant =  h        & 0x3FF;
+    if (exp == 0) {
+        if (mant == 0) return sign ? -0.0 : 0.0;
+        // subnormal
+        double v = ldexp((double)mant, -24);
+        return sign ? -v : v;
+    } else if (exp == 31) {
+        if (mant == 0) return sign ? -INFINITY : INFINITY;
+        return NAN;
+    }
+    double v = ldexp(1.0 + (double)mant / 1024.0, exp - 15);
+    return sign ? -v : v;
+}
+
+// Format one float / int / uint scalar into JSON (number or "NaN"/"Infinity" string).
+static void du_emit_scalar_value(NSUInteger dtype, const uint8_t *p) {
+    int comp_bytes = du_data_type_component_bytes(dtype);
+    if (du_is_float_like(dtype) && comp_bytes == 4) {
+        float f; memcpy(&f, p, 4);
+        if (isnan(f))            printf("\"NaN\"");
+        else if (isinf(f))       printf("\"%sInfinity\"", f < 0 ? "-" : "");
+        else                     printf("%.6g", (double)f);
+    } else if (du_is_half_like(dtype) && comp_bytes == 2) {
+        uint16_t h; memcpy(&h, p, 2);
+        double d = du_half_to_double(h);
+        if (isnan(d))            printf("\"NaN\"");
+        else if (isinf(d))       printf("\"%sInfinity\"", d < 0 ? "-" : "");
+        else                     printf("%.6g", d);
+    } else if (du_is_int_like(dtype)) {
+        if (comp_bytes == 4) {
+            int32_t v; memcpy(&v, p, 4); printf("%d", (int)v);
+        } else if (comp_bytes == 2) {
+            int16_t v; memcpy(&v, p, 2); printf("%d", (int)v);
+        } else {
+            int8_t v = (int8_t)*p; printf("%d", (int)v);
+        }
+    } else if (du_is_uint_like(dtype)) {
+        if (comp_bytes == 4) {
+            uint32_t v; memcpy(&v, p, 4); printf("%u", (unsigned)v);
+        } else if (comp_bytes == 2) {
+            uint16_t v; memcpy(&v, p, 2); printf("%u", (unsigned)v);
+        } else {
+            uint8_t v = *p; printf("%u", (unsigned)v);
+        }
+    } else if (du_is_bool_like(dtype)) {
+        printf("%s", (*p) ? "true" : "false");
+    } else {
+        printf("null");
+    }
+}
+
+// Emit a value for a "leaf" data type (scalar / vector / matrix). For 1
+// component → bare JSON number. For N components → JSON array of N. For
+// matrices → JSON 2D array (rows × cols) with row-major reading order.
+static void du_emit_leaf_value(NSUInteger dtype,
+                                const uint8_t *bytes, NSUInteger len,
+                                NSUInteger element_offset) {
+    int components = du_data_type_components(dtype);
+    int comp_bytes = du_data_type_component_bytes(dtype);
+    if (components <= 0 || comp_bytes <= 0) { printf("null"); return; }
+    NSUInteger total_size = (NSUInteger)components * (NSUInteger)comp_bytes;
+    if (element_offset + total_size > len) { printf("null"); return; }
+
+    // Scalar
+    if (components == 1) {
+        du_emit_scalar_value(dtype, bytes + element_offset);
+        return;
+    }
+
+    // Matrix: detect via dtype range. floatNxM = 7..15, halfNxM = 20..28.
+    int rows = 0, cols = 0;
+    if ((dtype >= 7 && dtype <= 15) || (dtype >= 20 && dtype <= 28)) {
+        // rows = leading digit, cols = trailing digit (reading from name).
+        // Simpler: hardcode mapping.
+        switch (dtype) {
+            case 7:  rows=2; cols=2; break;
+            case 8:  rows=2; cols=3; break;
+            case 9:  rows=2; cols=4; break;
+            case 10: rows=3; cols=2; break;
+            case 11: rows=3; cols=3; break;
+            case 12: rows=3; cols=4; break;
+            case 13: rows=4; cols=2; break;
+            case 14: rows=4; cols=3; break;
+            case 15: rows=4; cols=4; break;
+            case 20: rows=2; cols=2; break;
+            case 21: rows=2; cols=3; break;
+            case 22: rows=2; cols=4; break;
+            case 23: rows=3; cols=2; break;
+            case 24: rows=3; cols=3; break;
+            case 25: rows=3; cols=4; break;
+            case 26: rows=4; cols=2; break;
+            case 27: rows=4; cols=3; break;
+            case 28: rows=4; cols=4; break;
+        }
+    }
+    // Note: we read components in linear (storage) order, which under Metal's
+    // packing rules is column-major for matrices. We expose that ordering as
+    // a flat row-major-looking 2D array; consumers can transpose if needed.
+    if (rows && cols) {
+        printf("[");
+        for (int r = 0; r < rows; r++) {
+            if (r) printf(",");
+            printf("[");
+            for (int c = 0; c < cols; c++) {
+                if (c) printf(",");
+                NSUInteger off = element_offset + ((NSUInteger)(c * rows + r)) * (NSUInteger)comp_bytes;
+                if (off + (NSUInteger)comp_bytes > len) { printf("null"); }
+                else { du_emit_scalar_value(dtype, bytes + off); }
+            }
+            printf("]");
+        }
+        printf("]");
+        return;
+    }
+
+    // Vector (2/3/4 components)
+    printf("[");
+    for (int i = 0; i < components; i++) {
+        if (i) printf(",");
+        NSUInteger off = element_offset + (NSUInteger)i * (NSUInteger)comp_bytes;
+        if (off + (NSUInteger)comp_bytes > len) { printf("null"); }
+        else { du_emit_scalar_value(dtype, bytes + off); }
+    }
+    printf("]");
+}
+
+// Emit a single member's "value" key (the field's decoded representation).
+// Recurses for struct / array members. `member_offset_bytes` is the absolute
+// offset (relative to `bytes`) where this member's bytes start.
+static void du_emit_member_value(id /*MTLStructMember*/ member,
+                                  const uint8_t *bytes, NSUInteger len,
+                                  NSUInteger member_offset, int depth) {
+    NSUInteger dtype = 0;
+    @try { dtype = [[member valueForKey:@"dataType"] unsignedLongValue]; } @catch (NSException *ex) {}
+
+    if (du_is_struct(dtype)) {
+        id substruct = nil;
+        @try { substruct = [member valueForKey:@"structType"]; } @catch (NSException *ex) {}
+        if (substruct && depth < DU_MAX_DECODE_DEPTH) {
+            du_emit_struct(substruct, bytes, len, member_offset, depth + 1);
+        } else {
+            printf("null");
+        }
+        return;
+    }
+
+    if (du_is_array(dtype)) {
+        id arrayType = nil;
+        @try { arrayType = [member valueForKey:@"arrayType"]; } @catch (NSException *ex) {}
+        if (!arrayType) { printf("null"); return; }
+        NSUInteger length = 0, stride = 0, elem_dtype = 0;
+        @try { length     = [[arrayType valueForKey:@"arrayLength"] unsignedLongValue]; } @catch (NSException *ex) {}
+        @try { stride     = [[arrayType valueForKey:@"stride"]      unsignedLongValue]; } @catch (NSException *ex) {}
+        @try { elem_dtype = [[arrayType valueForKey:@"elementType"] unsignedLongValue]; } @catch (NSException *ex) {}
+        printf("{\"length\":%llu,\"stride\":%llu,\"element_type\":\"%s\",\"elements\":[",
+               (unsigned long long)length, (unsigned long long)stride,
+               du_data_type_name(elem_dtype));
+        NSUInteger emit_count = length;
+        BOOL truncated = NO;
+        if (emit_count > DU_MAX_ARRAY_ELEMS) { emit_count = DU_MAX_ARRAY_ELEMS; truncated = YES; }
+        for (NSUInteger i = 0; i < emit_count; i++) {
+            if (i) printf(",");
+            NSUInteger off = member_offset + i * stride;
+            if (du_is_struct(elem_dtype)) {
+                id sub = nil;
+                @try { sub = [arrayType valueForKey:@"elementStructType"]; } @catch (NSException *ex) {}
+                if (sub && depth < DU_MAX_DECODE_DEPTH) {
+                    du_emit_struct(sub, bytes, len, off, depth + 1);
+                } else {
+                    printf("null");
+                }
+            } else {
+                du_emit_leaf_value(elem_dtype, bytes, len, off);
+            }
+        }
+        printf("]");
+        if (truncated) printf(",\"truncated\":true,\"truncated_at\":%d", DU_MAX_ARRAY_ELEMS);
+        printf("}");
+        return;
+    }
+
+    // Leaf (scalar / vector / matrix)
+    du_emit_leaf_value(dtype, bytes, len, member_offset);
+}
+
+// Recursive struct decode → JSON object. Each field becomes
+//   "fieldName": {"offset": N, "data_type": "...", "value": <decoded>}
+static void du_emit_struct(id structType, const uint8_t *bytes, NSUInteger len,
+                           NSUInteger struct_offset, int depth) {
+    id members = nil;
+    @try { members = [structType valueForKey:@"members"]; } @catch (NSException *ex) {}
+    if (![members isKindOfClass:[NSArray class]]) { printf("null"); return; }
+    printf("{");
+    BOOL first = YES;
+    for (id m in (NSArray *)members) {
+        NSString *name = nil;
+        NSUInteger moff = 0;
+        NSUInteger mtype = 0;
+        @try { name  = [m valueForKey:@"name"]; } @catch (NSException *ex) {}
+        @try { moff  = [[m valueForKey:@"offset"]   unsignedLongValue]; } @catch (NSException *ex) {}
+        @try { mtype = [[m valueForKey:@"dataType"] unsignedLongValue]; } @catch (NSException *ex) {}
+        if (!name) continue;
+        if (!first) printf(",");
+        first = NO;
+        json_print_string([name UTF8String]);
+        printf(":{\"offset\":%llu,\"data_type\":\"%s\",\"value\":",
+               (unsigned long long)moff, du_data_type_name(mtype));
+        du_emit_member_value(m, bytes, len, struct_offset + moff, depth);
+        printf("}");
+    }
+    printf("}");
+}
+
+// ---- Hex dump helper -----------------------------------------------------
+static void du_emit_hex(const uint8_t *bytes, NSUInteger len, NSUInteger max_bytes) {
+    NSUInteger n = (len < max_bytes) ? len : max_bytes;
+    printf("\"");
+    for (NSUInteger i = 0; i < n; i++) {
+        printf("%02x", bytes[i]);
+    }
+    printf("\"");
+}
+
+// ---- Bindings traversal --------------------------------------------------
+// Locate the buffer binding entry for (stage, slot) inside reflection.
+//
+// reflection.{vertexBindings|fragmentBindings} are NSArray<id<MTLBinding>>.
+// On macOS 13+ reflection uses `vertexBindings` / `fragmentBindings`; older
+// SDKs use `vertexArguments` / `fragmentArguments`. Try both. The slot is
+// the binding's `index` property (NOT the array offset, since unused slots
+// may be missing from the array).
+static id du_find_binding(id reflection, BOOL is_fragment, NSUInteger bind_slot) {
+    if (!reflection) return nil;
+    id arr = nil;
+    NSString *modernKey = is_fragment ? @"fragmentBindings" : @"vertexBindings";
+    NSString *legacyKey = is_fragment ? @"fragmentArguments" : @"vertexArguments";
+    @try { arr = [reflection valueForKey:modernKey]; } @catch (NSException *ex) {}
+    if (!arr || ![arr isKindOfClass:[NSArray class]]) {
+        @try { arr = [reflection valueForKey:legacyKey]; } @catch (NSException *ex) {}
+    }
+    if (![arr isKindOfClass:[NSArray class]]) return nil;
+    for (id b in (NSArray *)arr) {
+        NSUInteger idx = NSUIntegerMax;
+        @try { idx = [[b valueForKey:@"index"] unsignedLongValue]; } @catch (NSException *ex) {}
+        if (idx == bind_slot) return b;
+    }
+    return nil;
+}
+
+// Resolve `id<MTLBuffer>` for a given trace-internal buffer key by asking the
+// objectMap. Returns nil if not found.
+static id<MTLBuffer> du_buffer_for_key(id objectMap, uint64_t key) {
+    if (!objectMap) return nil;
+    SEL s = @selector(bufferForKey:);
+    if (![objectMap respondsToSelector:s]) return nil;
+    @try {
+        return ((id (*)(id, SEL, uint64_t))objc_msgSend)(objectMap, s, key);
+    } @catch (NSException *ex) { return nil; }
+}
+
+// ---- cmd_dump_uniforms ----------------------------------------------------
+static int cmd_dump_uniforms(int argc, const char *argv[]) {
+    if (argc < 3) {
+        fprintf(stderr, "Usage: gputrace_replay_bridge dump-uniforms <.gputrace> <rps_key> <bind_slot>\n");
+        fprintf(stderr, "                                    [--stage fragment|vertex]\n");
+        fprintf(stderr, "                                    [--buffer-key K] [--offset N]\n");
+        fprintf(stderr, "                                    [--with-hex] [--max-hex-bytes N]\n");
+        fprintf(stderr, "                                    [--output-dir DIR]\n");
+        fprintf(stderr, "\nDecode a buffer binding's bytes via captured MTLRenderPipelineReflection.\n");
+        fprintf(stderr, "Without --buffer-key, only the layout is emitted (no values decoded).\n");
+        fprintf(stderr, "Default --stage = fragment.\n");
+        return EXIT_USAGE;
+    }
+
+    const char *trace_path = argv[0];
+    uint64_t rps_key       = strtoull(argv[1], NULL, 10);
+    long bind_slot_l       = strtol(argv[2], NULL, 10);
+    if (bind_slot_l < 0 || bind_slot_l > 1000) {
+        fprintf(stderr, "[ERROR] bind_slot must be in [0, 1000], got %ld\n", bind_slot_l);
+        return EXIT_USAGE;
+    }
+    NSUInteger bind_slot = (NSUInteger)bind_slot_l;
+
+    const char *stage = "fragment";
+    BOOL with_hex = NO;
+    NSUInteger max_hex = DU_DEFAULT_HEX_BYTES;
+    BOOL has_buffer_key = NO;
+    uint64_t buffer_key = 0;
+    uint64_t buffer_offset = 0;
+    const char *output_dir_c = NULL;
+    for (int i = 3; i < argc; i++) {
+        if (strcmp(argv[i], "--stage") == 0 && i + 1 < argc) {
+            stage = argv[++i];
+        } else if (strcmp(argv[i], "--with-hex") == 0) {
+            with_hex = YES;
+        } else if (strcmp(argv[i], "--max-hex-bytes") == 0 && i + 1 < argc) {
+            long v = strtol(argv[++i], NULL, 10);
+            if (v > 0) max_hex = (NSUInteger)v;
+        } else if (strcmp(argv[i], "--buffer-key") == 0 && i + 1 < argc) {
+            buffer_key = strtoull(argv[++i], NULL, 10);
+            has_buffer_key = YES;
+        } else if (strcmp(argv[i], "--offset") == 0 && i + 1 < argc) {
+            buffer_offset = strtoull(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "--output-dir") == 0 && i + 1 < argc) {
+            output_dir_c = argv[++i];
+        }
+    }
+    if (strcmp(stage, "fragment") != 0 && strcmp(stage, "vertex") != 0) {
+        fprintf(stderr, "[ERROR] --stage must be 'fragment' or 'vertex'\n");
+        return EXIT_USAGE;
+    }
+    BOOL is_fragment = (strcmp(stage, "fragment") == 0);
+
+    NSString *outputDir = output_dir_c
+        ? [NSString stringWithUTF8String:output_dir_c]
+        : NSTemporaryDirectory();
+    NSFileManager *fm = [NSFileManager defaultManager];
+    [fm createDirectoryAtPath:outputDir withIntermediateDirectories:YES attributes:nil error:nil];
+
+    // R7.2 + R7.6-B — install swizzle BEFORE replay_context_init so we capture
+    // each PSO's reflection on creation.
+    rps_install_swizzles();
+
+    int rc = replay_context_init(trace_path);
+    if (rc != EXIT_OK) return rc;
+
+    int play_rc = -1;
+    @try {
+        play_rc = g_ctx.fn_playAll(g_ctx.controller);
+    } @catch (NSException *ex) {
+        fprintf(stderr, "[ERROR] playAll exception: %s\n", [[ex reason] UTF8String]);
+        replay_context_cleanup();
+        return EXIT_REPLAY_FAIL;
+    }
+    if (play_rc != 0) {
+        fprintf(stderr, "[ERROR] playAll failed (rc=%d)\n", play_rc);
+        replay_context_cleanup();
+        return EXIT_REPLAY_FAIL;
+    }
+
+    // Resolve target RPS by key.
+    SEL rpsSel = @selector(renderPipelineStateForKey:);
+    id rps = ((id (*)(id, SEL, uint64_t))objc_msgSend)(g_ctx.objectMap, rpsSel, rps_key);
+
+    JSON_BEGIN();
+    JSON_KV_STR("command", "dump-uniforms");
+    JSON_KV_STR("trace_path", trace_path);
+    JSON_KV_UINT("rps_key", rps_key);
+    JSON_KV_STR("stage", stage);
+    JSON_KV_UINT("bind_slot", (uint64_t)bind_slot);
+    JSON_KV_STR("output_dir", [outputDir UTF8String]);
+
+    if (!rps) {
+        JSON_KV_STR("error", "rps_not_found");
+        JSON_KV_INT("rps_captured_count", g_rps_n_captured);
+        JSON_END();
+        replay_context_cleanup();
+        return EXIT_SUBCMD_FAIL;
+    }
+
+    if ([rps respondsToSelector:@selector(label)]) {
+        id lbl = [rps performSelector:@selector(label)];
+        if (lbl) JSON_KV_STR("rps_label", [lbl UTF8String]);
+    }
+
+    const RPSCaptureEntry *e = rps_find_entry((__bridge void *)rps);
+    if (!e) {
+        JSON_KV_STR("error", "descriptor_not_captured");
+        JSON_KV_STR("hint",
+            "swizzle either failed to install or this RPS was created before install");
+        JSON_KV_INT("rps_captured_count", g_rps_n_captured);
+        JSON_END();
+        replay_context_cleanup();
+        return EXIT_SUBCMD_FAIL;
+    }
+
+    id reflection = (e->reflection_index >= 0)
+        ? g_rps_reflections[e->reflection_index]
+        : nil;
+    if (!reflection) {
+        JSON_KV_STR("error", "reflection_not_captured");
+        JSON_KV_STR("hint",
+            "RPS creation did not produce a reflection (the device may have rejected "
+            "the BindingInfo/BufferTypeInfo options); fall back to --with-hex if you "
+            "supply --buffer-key.");
+        // Give the caller something useful even without reflection: hex dump if requested.
+        if (with_hex && has_buffer_key) {
+            id<MTLBuffer> mtlBuf = du_buffer_for_key(g_ctx.objectMap, buffer_key);
+            if (mtlBuf) {
+                NSUInteger bufLen = [mtlBuf length];
+                JSON_KV_UINT("buffer_key", buffer_key);
+                JSON_KV_UINT("buffer_offset", buffer_offset);
+                JSON_KV_UINT("buffer_length", (uint64_t)bufLen);
+                const uint8_t *p = (const uint8_t *)[mtlBuf contents];
+                if (p && buffer_offset < bufLen) {
+                    NSUInteger remaining = bufLen - (NSUInteger)buffer_offset;
+                    JSON_SEP();
+                    printf("\"hex\":");
+                    du_emit_hex(p + buffer_offset, remaining, max_hex);
+                    JSON_KV_UINT("hex_bytes_emitted", (uint64_t)((remaining < max_hex) ? remaining : max_hex));
+                }
+            }
+        }
+        JSON_END();
+        replay_context_cleanup();
+        return EXIT_SUBCMD_FAIL;
+    }
+
+    // Find the binding entry at (stage, slot).
+    id binding = du_find_binding(reflection, is_fragment, bind_slot);
+    if (!binding) {
+        JSON_KV_STR("error", "bind_slot_not_in_reflection");
+        JSON_KV_STR("hint",
+            "The RPS reflection has no binding at the requested (stage, slot). "
+            "Either the slot is unused by the shader, or the stage is wrong. "
+            "Inspect 'pipeline' / 'shader-of-rps' output to see what the shader expects.");
+        JSON_END();
+        replay_context_cleanup();
+        return EXIT_SUBCMD_FAIL;
+    }
+
+    // Confirm it's a buffer binding (texture / sampler bindings have no struct decode).
+    NSUInteger btype = NSUIntegerMax;
+    @try { btype = [[binding valueForKey:@"type"] unsignedLongValue]; } @catch (NSException *ex) {}
+    NSString *bname = nil;
+    @try { bname = [binding valueForKey:@"name"]; } @catch (NSException *ex) {}
+    if (bname) JSON_KV_STR("binding_name", [bname UTF8String]);
+    // MTLBindingType: buffer=0, threadgroupMemory=1, texture=2, sampler=3, ...
+    if (btype != 0 && btype != NSUIntegerMax) {
+        JSON_KV_STR("error", "binding_not_a_buffer");
+        JSON_KV_UINT("binding_type", (uint64_t)btype);
+        JSON_KV_STR("hint",
+            "The reflection entry at this slot is not a buffer binding. "
+            "dump-uniforms only decodes buffer-type bindings.");
+        JSON_END();
+        replay_context_cleanup();
+        return EXIT_SUBCMD_FAIL;
+    }
+
+    // Layout: bufferDataSize + bufferDataType + bufferStructType.
+    NSUInteger bdsize = 0, bdtype = 0;
+    id structType = nil;
+    @try { bdsize    = [[binding valueForKey:@"bufferDataSize"] unsignedLongValue]; } @catch (NSException *ex) {}
+    @try { bdtype    = [[binding valueForKey:@"bufferDataType"] unsignedLongValue]; } @catch (NSException *ex) {}
+    @try { structType = [binding valueForKey:@"bufferStructType"]; } @catch (NSException *ex) {}
+
+    JSON_KV_UINT("buffer_data_size", (uint64_t)bdsize);
+    JSON_KV_STR("buffer_data_type", du_data_type_name(bdtype));
+
+    // Emit the static layout (always — useful even without buffer bytes).
+    if (structType) {
+        JSON_SEP();
+        printf("\"layout\":");
+        // For layout we don't actually decode bytes — pass len=0 + bytes=NULL
+        // and a tiny shim. Simpler: dedicated layout walker.
+        // Re-use du_emit_struct with bytes=NULL/len=0 — leaf decode will hit
+        // out-of-range and emit null. That's exactly what we want for layout.
+        const uint8_t *empty = NULL;
+        du_emit_struct(structType, empty, 0, 0, 0);
+        JSON_KV_STR("layout_source", "metallib_reflection");
+    } else {
+        JSON_KV_STR("layout_source", "none");
+        JSON_KV_STR("layout_warning",
+            "binding has bufferDataType but no bufferStructType (e.g. POD scalar buffer)");
+    }
+
+    // If no buffer-key supplied, stop here — caller wanted layout only.
+    if (!has_buffer_key) {
+        JSON_KV_STR("decode_status", "layout_only");
+        JSON_KV_STR("decode_skip_reason", "no_buffer_key_supplied");
+        JSON_END();
+        replay_context_cleanup();
+        return EXIT_OK;
+    }
+
+    // Read bytes from the trace's buffer object.
+    id<MTLBuffer> mtlBuf = du_buffer_for_key(g_ctx.objectMap, buffer_key);
+    if (!mtlBuf) {
+        JSON_KV_STR("error", "buffer_not_found");
+        JSON_KV_UINT("buffer_key", buffer_key);
+        JSON_KV_STR("hint",
+            "objectMap.bufferForKey: returned nil — invalid key or buffer not in this trace.");
+        JSON_END();
+        replay_context_cleanup();
+        return EXIT_SUBCMD_FAIL;
+    }
+
+    NSUInteger bufLen = [mtlBuf length];
+    JSON_KV_UINT("buffer_key", buffer_key);
+    JSON_KV_UINT("buffer_offset", buffer_offset);
+    JSON_KV_UINT("buffer_length", (uint64_t)bufLen);
+    NSString *blabel = [mtlBuf label];
+    if (blabel) JSON_KV_STR("buffer_label", [blabel UTF8String]);
+
+    const uint8_t *bytes = (const uint8_t *)[mtlBuf contents];
+    if (!bytes) {
+        // Private storage / GPU-only — can't read. Emit a clear error.
+        JSON_KV_STR("error", "buffer_contents_unavailable");
+        JSON_KV_STR("hint",
+            "[buffer contents] returned NULL — buffer may use private/GPU storage. "
+            "Replay-time buffer dumps require shared/managed storage.");
+        JSON_END();
+        replay_context_cleanup();
+        return EXIT_SUBCMD_FAIL;
+    }
+
+    if (buffer_offset > bufLen) {
+        JSON_KV_STR("error", "offset_out_of_range");
+        JSON_END();
+        replay_context_cleanup();
+        return EXIT_SUBCMD_FAIL;
+    }
+    NSUInteger remaining = bufLen - (NSUInteger)buffer_offset;
+    NSUInteger decode_len = (bdsize > 0 && bdsize < remaining) ? bdsize : remaining;
+
+    // Decode struct (if available).
+    if (structType) {
+        JSON_SEP();
+        printf("\"decoded\":");
+        du_emit_struct(structType, bytes + buffer_offset, decode_len, 0, 0);
+        JSON_KV_BOOL("decoded_ok", YES);
+        JSON_KV_UINT("decoded_bytes", (uint64_t)decode_len);
+    } else if (bdtype != 0) {
+        // Single-leaf POD buffer (e.g. a vec4 cbuffer) — decode as a leaf.
+        JSON_SEP();
+        printf("\"decoded\":");
+        du_emit_leaf_value(bdtype, bytes + buffer_offset, decode_len, 0);
+        JSON_KV_BOOL("decoded_ok", YES);
+        JSON_KV_UINT("decoded_bytes", (uint64_t)decode_len);
+    } else {
+        JSON_KV_BOOL("decoded_ok", NO);
+        JSON_KV_STR("decoded_skip_reason", "no_layout_and_no_dtype");
+    }
+
+    if (with_hex) {
+        JSON_SEP();
+        printf("\"hex\":");
+        du_emit_hex(bytes + buffer_offset, remaining, max_hex);
+        JSON_KV_UINT("hex_bytes_emitted", (uint64_t)((remaining < max_hex) ? remaining : max_hex));
+    }
+
+    JSON_END();
+    replay_context_cleanup();
+    return EXIT_OK;
+}
+
+// ============================================================
 #pragma mark - Subcommand: config
 // ============================================================
 
@@ -3756,6 +4516,7 @@ static Subcommand g_commands[] = {
     { "shader-of-rps", cmd_shader_of_rps },
     { "frame-list",    cmd_frame_list },
     { "disasm",        cmd_disasm },
+    { "dump-uniforms", cmd_dump_uniforms },
     { "config",        cmd_config },
     { NULL, NULL }
 };

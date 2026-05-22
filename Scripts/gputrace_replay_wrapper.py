@@ -377,6 +377,10 @@ class FrameDraw:
     rps_key: Optional[int] = None
     rps_label: Optional[str] = None
     fragment_function_key: Optional[int] = None
+    # R7.6-E: function names resolved from pipeline RPS correlation.
+    # Populated by find_draws() after joining frame-list × pipeline.
+    vertex_function_name: Optional[str] = None
+    fragment_function_name: Optional[str] = None
     bindings: Optional[FrameDrawBindings] = None  # R7.6-A; None when --no-bindings
 
 
@@ -437,6 +441,40 @@ class FrameListResult:
     rps_correlated_count: int
     command_buffers: list[FrameCommandBuffer] = field(default_factory=list)
     draw_to_rps_map: list[FrameDrawToRps] = field(default_factory=list)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# R7.6 子项 E — find-draws (label / shader-name → draw 反查)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class FindDrawsHit:
+    """R7.6-E: 单条 find-draws 命中记录"""
+    draw_index: int
+    encoder_index: int
+    draw_in_encoder: int
+    call_index: int
+    rps_key: Optional[int] = None
+    rps_label: Optional[str] = None
+    vertex_function_name: Optional[str] = None
+    fragment_function_name: Optional[str] = None
+
+
+@dataclass
+class FindDrawsResult:
+    """R7.6-E: find-draws 子命令结果"""
+    trace_path: str
+    hits: list[FindDrawsHit] = field(default_factory=list)
+    hit_count: int = 0
+    draw_count: int = 0
+    filter_by_label: Optional[str] = None
+    filter_by_shader_name: Optional[str] = None
+    filter_by_rps_key: Optional[int] = None
+    limit: Optional[int] = None
+    truncated: bool = False
+    # 当 --show-first 联动 shader-of-drawcall 时嵌入完整结果
+    show_first_result: Optional["ShaderOfDrawcallResult"] = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -1812,6 +1850,180 @@ class ReplayBridge:
         return result
 
     # ------------------------------------------------------------------
+    # R7.6-E — find-draws (label / shader-name → draw 反查)
+    # ------------------------------------------------------------------
+
+    def find_draws(
+        self,
+        trace_path: str | Path,
+        *,
+        by_label: Optional[str] = None,
+        by_shader_name: Optional[str] = None,
+        by_rps_key: Optional[int] = None,
+        limit: int = 50,
+        show_first: bool = False,
+        show_first_stage: str = "fragment",
+        show_first_with_ir: bool = False,
+        show_first_with_uniforms: bool = False,
+        output_dir: Optional[str | Path] = None,
+        timeout: float = 300.0,
+    ) -> FindDrawsResult:
+        """
+        R7.6-E: 按 RPS label / shader function name / rps_key 反查 draw 列表。
+
+        消除"用户在 Xcode GUI 看到 shader 名但 CLI 要 draw_index"的入口阻抗。
+        Bridge 零变更：内部串联 ``frame-list`` + ``pipeline``，在 wrapper 做
+        内存 join 与过滤。
+
+        Args:
+            trace_path: .gputrace bundle 路径
+            by_label: 按 RPS label 模糊匹配（大小写不敏感子串）
+            by_shader_name: 按 vertex/fragment function name 模糊匹配
+                （大小写不敏感子串）
+            by_rps_key: 按 RPS key 精确匹配
+            limit: 最大返回命中数（默认 50）
+            show_first: True 时自动对第一条命中跑
+                ``shader-of-drawcall --with-ir --with-uniforms``
+            show_first_stage: ``show_first`` 联动时的 stage（默认 fragment）
+            show_first_with_ir: ``show_first`` 联动时是否产出 IR
+            show_first_with_uniforms: ``show_first`` 联动时是否产出 uniforms
+            output_dir: ``show_first`` 联动时传给 shader-of-drawcall
+            timeout: 每个底层子命令的超时秒数
+
+        Returns:
+            FindDrawsResult — 含命中列表 + 可选 show_first_result
+
+        Raises:
+            ValueError: 三个过滤条件都为 None 时
+        """
+        if by_label is None and by_shader_name is None and by_rps_key is None:
+            raise ValueError(
+                "At least one filter must be specified: "
+                "--by-label, --by-shader-name, or --by-rps-key"
+            )
+
+        trace_path = self._validate_trace(trace_path)
+
+        # 1. frame-list 拿 draw→rps 映射（不含 bindings 以减少输出体积）
+        fl = self.frame_list(
+            trace_path,
+            with_draws=True,
+            with_timing=False,
+            with_bindings=False,
+            timeout=timeout,
+        )
+
+        # 2. 如果需要 --by-shader-name，调 pipeline 拿 rps_key → function_name 映射
+        rps_fn_map: dict[int, tuple[Optional[str], Optional[str]]] = {}
+        if by_shader_name is not None:
+            pl = self.pipeline(trace_path, timeout=timeout)
+            for rps in pl.render_pipeline_states:
+                rps_fn_map[rps.key] = (rps.vertex_function_name, rps.fragment_function_name)
+
+        # 3. 收集所有 draw 并做过滤
+        hits: list[FindDrawsHit] = []
+        label_lower = by_label.lower() if by_label else None
+        name_lower = by_shader_name.lower() if by_shader_name else None
+
+        for cb in fl.command_buffers:
+            for enc in cb.encoders:
+                for d in enc.draws:
+                    # 获取该 draw 的 function names（如果已查）
+                    vfn: Optional[str] = None
+                    ffn: Optional[str] = None
+                    if d.rps_key is not None and d.rps_key in rps_fn_map:
+                        vfn, ffn = rps_fn_map[d.rps_key]
+
+                    # 过滤逻辑（所有提供的过滤条件做 AND）
+                    match = True
+
+                    if by_rps_key is not None:
+                        if d.rps_key != by_rps_key:
+                            match = False
+
+                    if match and label_lower is not None:
+                        dl = (d.rps_label or "").lower()
+                        if label_lower not in dl:
+                            match = False
+
+                    if match and name_lower is not None:
+                        vn = (vfn or "").lower()
+                        fn = (ffn or "").lower()
+                        if name_lower not in vn and name_lower not in fn:
+                            match = False
+
+                    if match:
+                        hits.append(FindDrawsHit(
+                            draw_index=d.draw_index_global,
+                            encoder_index=enc.index,
+                            draw_in_encoder=d.draw_in_encoder,
+                            call_index=d.call_index,
+                            rps_key=d.rps_key,
+                            rps_label=d.rps_label,
+                            vertex_function_name=vfn,
+                            fragment_function_name=ffn,
+                        ))
+
+        truncated = len(hits) > limit
+        hits_limited = hits[:limit]
+
+        result = FindDrawsResult(
+            trace_path=str(trace_path),
+            hits=hits_limited,
+            hit_count=len(hits),
+            draw_count=fl.draw_count,
+            filter_by_label=by_label,
+            filter_by_shader_name=by_shader_name,
+            filter_by_rps_key=by_rps_key,
+            limit=limit,
+            truncated=truncated,
+        )
+
+        # 4. --show-first 联动
+        if show_first and hits_limited:
+            first = hits_limited[0]
+            sod = self.shader_of_drawcall(
+                trace_path,
+                first.draw_index,
+                stage=show_first_stage,
+                with_ir=show_first_with_ir,
+                with_bindings=True,
+                with_uniforms=show_first_with_uniforms,
+                output_dir=output_dir,
+                timeout=timeout,
+            )
+            result.show_first_result = sod
+
+        # raw JSON
+        result.raw = {
+            "command": "find-draws",
+            "trace_path": str(trace_path),
+            "filter": {
+                "by_label": by_label,
+                "by_shader_name": by_shader_name,
+                "by_rps_key": by_rps_key,
+            },
+            "hit_count": len(hits),
+            "draw_count": fl.draw_count,
+            "limit": limit,
+            "truncated": truncated,
+            "hits": [
+                {
+                    "draw_index": h.draw_index,
+                    "encoder_index": h.encoder_index,
+                    "draw_in_encoder": h.draw_in_encoder,
+                    "call_index": h.call_index,
+                    "rps_key": h.rps_key,
+                    "rps_label": h.rps_label,
+                    "vertex_function_name": h.vertex_function_name,
+                    "fragment_function_name": h.fragment_function_name,
+                }
+                for h in hits_limited
+            ],
+        }
+        return result
+
+    # ------------------------------------------------------------------
     # Validation Helpers
     # ------------------------------------------------------------------
 
@@ -1959,6 +2171,33 @@ def _cli_main():
                       help="Truncate hex dump at this many bytes (default: 256)")
     p_du.add_argument("--output-dir", default=None,
                       help="Output directory (default: system tmp)")
+
+    # find-draws (R7.6-E — label / shader-name → draw 反查)
+    p_fd = subparsers.add_parser(
+        "find-draws", parents=[parent],
+        help="Find draws by RPS label / shader function name / RPS key (R7.6-E). "
+             "Eliminates the GUI↔CLI entry impedance.",
+    )
+    p_fd.add_argument("trace", help="Path to .gputrace bundle")
+    p_fd.add_argument("--by-label", default=None,
+                      help="Filter by RPS label substring (case-insensitive)")
+    p_fd.add_argument("--by-shader-name", default=None,
+                      help="Filter by vertex/fragment function name substring (case-insensitive)")
+    p_fd.add_argument("--by-rps-key", type=int, default=None,
+                      help="Filter by exact RPS key")
+    p_fd.add_argument("--limit", type=int, default=50,
+                      help="Max number of hits to return (default: 50)")
+    p_fd.add_argument("--show-first", action="store_true",
+                      help="Automatically run shader-of-drawcall on the first hit "
+                           "(with --with-ir and --with-uniforms via passthrough flags)")
+    p_fd.add_argument("--stage", choices=["fragment", "vertex"], default="fragment",
+                      help="Stage for --show-first联动 (default: fragment)")
+    p_fd.add_argument("--with-ir", action="store_true",
+                      help="Pass --with-ir to shader-of-drawcall when --show-first is used")
+    p_fd.add_argument("--with-uniforms", action="store_true",
+                      help="Pass --with-uniforms to shader-of-drawcall when --show-first is used")
+    p_fd.add_argument("--output-dir", default=None,
+                      help="Output directory for --show-first (default: system tmp)")
 
     # config
     p_config = subparsers.add_parser("config", parents=[parent], help="Configuration control")
@@ -2159,6 +2398,34 @@ def _cli_main():
             print(json.dumps(payload, indent=indent))
             if du_result.error:
                 sys.exit(11)
+
+        elif args.command == "find-draws":
+            fd_result = bridge.find_draws(
+                args.trace,
+                by_label=args.by_label,
+                by_shader_name=args.by_shader_name,
+                by_rps_key=args.by_rps_key,
+                limit=args.limit,
+                show_first=args.show_first,
+                show_first_stage=args.stage,
+                show_first_with_ir=args.with_ir,
+                show_first_with_uniforms=args.with_uniforms,
+                output_dir=args.output_dir,
+                timeout=args.timeout,
+            )
+            payload = dict(fd_result.raw)
+            if fd_result.show_first_result is not None:
+                sod = fd_result.show_first_result
+                payload["show_first"] = {
+                    "draw_index": sod.draw_index,
+                    "stage": sod.stage,
+                    "rps_key": sod.rps_key,
+                    "rps_label": sod.rps_label,
+                    "shader_of_rps": sod.shader.raw if sod.shader else None,
+                    "error": sod.error,
+                    "hint": sod.hint,
+                }
+            print(json.dumps(payload, indent=indent))
 
         elif args.command == "config":
             # Parse key=value pairs into kwargs

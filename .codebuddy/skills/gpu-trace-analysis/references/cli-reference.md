@@ -13,10 +13,11 @@ Complete surface for the bundled tools. Skim the table of contents and jump to w
 8. [Subcommand: disasm](#subcommand-disasm)
 9. [Subcommand: dump-uniforms](#subcommand-dump-uniforms)
 10. [Subcommand: config](#subcommand-config)
-11. [Exit codes](#exit-codes)
-12. [Python wrapper — CLI mode](#python-wrapper--cli-mode)
-13. [Python wrapper — module mode](#python-wrapper--module-mode)
-14. [Pixel format helpers](#pixel-format-helpers)
+11. [Subcommand: find-draws (wrapper-only, R7.6-E)](#subcommand-find-draws-wrapper-only-r76-e)
+12. [Exit codes](#exit-codes)
+13. [Python wrapper — CLI mode](#python-wrapper--cli-mode)
+14. [Python wrapper — module mode](#python-wrapper--module-mode)
+15. [Pixel format helpers](#pixel-format-helpers)
 
 ---
 
@@ -834,6 +835,83 @@ Output JSON:
 ```
 
 Use `config` to A/B different replay environments quickly — e.g. compare `enableValidation=0` vs `=1` to surface previously-silent Metal misuse.
+
+---
+
+## Subcommand: find-draws (wrapper-only, R7.6-E)
+
+Searches for draw calls matching a given RPS label, shader function name, or exact RPS key. Eliminates the "GUI shows shader name but CLI needs draw_index" entry impedance. **Bridge binary is never modified** — this is pure wrapper-level JSON post-processing of `frame-list` (and optionally `pipeline`) output.
+
+```bash
+python3 gputrace_replay_wrapper.py find-draws <path-to-.gputrace> \
+    [--by-label SUBSTR] [--by-shader-name SUBSTR] [--by-rps-key KEY] \
+    [--limit N] [--show-first] [--stage fragment|vertex] \
+    [--with-ir] [--with-uniforms] [--output-dir DIR]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--by-label SUBSTR` | Case-insensitive substring match on `rps_label` |
+| `--by-shader-name SUBSTR` | Case-insensitive substring match on vertex/fragment function name (triggers `pipeline` call for rps→function_name mapping) |
+| `--by-rps-key KEY` | Exact RPS key match |
+| `--limit N` | Max hits returned (default: 50) |
+| `--show-first` | Automatically run `shader-of-drawcall` on the first hit |
+| `--stage` | Stage for `--show-first` linkage (default: fragment) |
+| `--with-ir` | Pass to `shader-of-drawcall` when `--show-first` |
+| `--with-uniforms` | Pass to `shader-of-drawcall` when `--show-first` |
+| `--output-dir` | Output dir for `--show-first` |
+
+At least one of `--by-label`, `--by-shader-name`, `--by-rps-key` must be specified. Multiple filters are AND-combined.
+
+Output JSON:
+
+```json
+{
+  "command": "find-draws",
+  "trace_path": "...",
+  "filter": {
+    "by_label": "SkinMakeupNew",
+    "by_shader_name": null,
+    "by_rps_key": null
+  },
+  "hit_count": 14,
+  "draw_count": 244,
+  "limit": 50,
+  "truncated": false,
+  "hits": [
+    {
+      "draw_index": 4,
+      "encoder_index": 2,
+      "draw_in_encoder": 4,
+      "call_index": 178,
+      "rps_key": 476,
+      "rps_label": "Papegame/SkinMakeupNew",
+      "vertex_function_name": null,
+      "fragment_function_name": null
+    }
+  ],
+  "show_first": { ... }
+}
+```
+
+`vertex_function_name` / `fragment_function_name` are populated only when `--by-shader-name` is used (because the `pipeline` call is needed to resolve function names). When only `--by-label` or `--by-rps-key` is used, they are `null` to avoid the extra replay cost.
+
+Python module API:
+
+```python
+from gputrace_replay_wrapper import ReplayBridge, FindDrawsResult, FindDrawsHit
+bridge = ReplayBridge()
+result: FindDrawsResult = bridge.find_draws(
+    "/path/to/trace.gputrace",
+    by_label="SkinMakeupNew",
+    show_first=True,
+    show_first_with_ir=True,
+)
+for hit in result.hits:
+    print(f"draw {hit.draw_index} → rps {hit.rps_key} ({hit.rps_label})")
+if result.show_first_result:
+    print(f"IR path: {result.show_first_result.shader.ir_ll_path}")
+```
 
 ---
 

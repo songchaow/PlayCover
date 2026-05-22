@@ -21,7 +21,7 @@
 | **Draw call → shader IR 反查** | `shader-of-drawcall` 子命令（薄封装：frame-list → shader-of-rps） | ✅ R7.6-C |
 | **Per-draw vertex/fragment binding 表** | `frame-list --with-bindings`（默认 ON） | ✅ R7.6-A |
 | **Draw call → "IR + bindings + uniforms" 三件套一行命令** | `shader-of-drawcall --with-uniforms`（wrapper 联动） | ✅ R7.6-D |
-| **GUI shader 名 / RPS label → draw_index 反查** | `find-draws --by-label / --by-shader-name` | ⏳ R7.6-E |
+| **GUI shader 名 / RPS label → draw_index 反查** | `find-draws --by-label / --by-shader-name` | ✅ R7.6-E |
 | **Per-draw binding 表自动注入 IR `arg_name` / `size_check`** | `frame-list` / `shader-of-drawcall` / `draw-info` schema | ⏳ R8.1 |
 | **NaN/inf/denormal + binding size 不匹配自动告警** | `value_health_summary` + `size_check` | ⏳ R8.2 |
 | **按 IR `arg_name` 反查 cbuffer 字段（不经 bind_slot）** | `dump-uniforms --by-name` | ⏳ R8.3 |
@@ -30,14 +30,14 @@
 | **Shader 反编译（IR 直接产出）** | `disasm` 子命令集成 cacheKey + llvm-dis | ✅ R7.7 |
 | GPU Counters / Profiler / Derived | 需 Apple 私有 entitlement + SIP 关闭 | ⛔ 跳过 |
 
-**完成度**：R0~R6 已完成（基础能力 + bridge + Python wrapper + skill 打包）；R7.1 / R7.2 / R7.3 / R7.4 / R7.6-A / R7.6-B / R7.6-C / R7.6-D / R7.7 已完成（bridge 9 子命令 + wrapper 10 子命令 / 集成测试 LYSK 主基线 **148/148**）；**R7.6-E 是当前 P0**（label/shader-name → draw 反查，0.3 天 wrapper-only，消除 GUI↔CLI 入口阻抗）；R7.6-E 落地后 **R8 Sprint α**（R8.1 merged binding view + R8.2 health summary + R8.3 by-name 查询，合计 1.5 天，结构性消除 agent 多数据源 join 错误）接棒 P0；其后 R7.5（depth/stencil blit export + compute dispatch 计数，1–1.5 天）作为独立横向硬能力收尾。
+**完成度**：R0~R6 已完成（基础能力 + bridge + Python wrapper + skill 打包）；R7.1 / R7.2 / R7.3 / R7.4 / R7.6-A / R7.6-B / R7.6-C / R7.6-D / R7.6-E / R7.7 已完成（bridge 9 子命令 + wrapper 11 子命令 / 集成测试 LYSK 主基线 **148/148**）；**R8 Sprint α 是当前 P0**（R8.1 merged binding view + R8.2 health summary + R8.3 by-name 查询，合计 1.5 天，结构性消除 agent 多数据源 join 错误）；其后 R7.5（depth/stencil blit export + compute dispatch 计数，1–1.5 天）作为独立横向硬能力收尾。
 
 最终交付物：
 1. **统一 ObjC bridge CLI**（`Scripts/gputrace_replay_bridge.m`）— ✅ 9 子命令（help / replay / pipeline / shader / config / frame-list / shader-of-rps / disasm / dump-uniforms），Makefile 构建，LYSK 集成测试 148/148
-2. **Python CLI wrapper**（`Scripts/gputrace_replay_wrapper.py`）— ✅ CLI + 模块双接口，dataclass 返回值（含 `FrameDrawBindings` / `DisasmResult` + `ir_source` / `ShaderOfDrawcallResult` + `bindings` / `uniforms` / `DumpUniformsResult` 等）
+2. **Python CLI wrapper**（`Scripts/gputrace_replay_wrapper.py`）— ✅ CLI + 模块双接口，dataclass 返回值（含 `FrameDrawBindings` / `DisasmResult` + `ir_source` / `ShaderOfDrawcallResult` + `bindings` / `uniforms` / `DumpUniformsResult` / `FindDrawsResult` 等）
 3. **端到端验证链路** — ✅ LYSK 65/65 RPS 反查 + 244/244 draw→RPS 映射 + 244/244 draw vertex/fragment binding 表 + 65/65 RPS reflection 捕获 + AIR ∪ SDI = 96/96 IR 命中率 100% + draw N 上 cbuffer 字段名/offset/dataType 与 shader 源码字节级一致 + **draw N → IR + bindings + uniforms 三件套一行命令 (R7.6-D)**
 4. **GPU Trace 分析 skill**（`.codebuddy/skills/gpu-trace-analysis/`）— ✅ 自包含，含 SKILL.md + scripts/ + references/，从任意目录可独立运行
-5. **R7：Frame-Inspection 能力补全** — ✅ 主线主体收尾（R7.1/R7.2/R7.3/R7.4/R7.6-A/B/C/D/R7.7 全部完成）；剩余工作 R7.6-E + R8 Sprint α + R7.5 见下文"下一步"与 TODO 段。详见 `subdocs/20260521-R7-frame-inspection-gap.md` + `subdocs/20260522-R8-skill-usability-backlog.md`
+5. **R7：Frame-Inspection 能力补全** — ✅ 主线全部收尾（R7.1/R7.2/R7.3/R7.4/R7.6-A/B/C/D/E/R7.7 全部完成）；剩余工作 R8 Sprint α + R7.5 见下文"下一步"与 TODO 段。详见 `subdocs/20260521-R7-frame-inspection-gap.md` + `subdocs/20260522-R8-skill-usability-backlog.md`
 
 ## 样本 trace 路径（回归基线）
 
@@ -87,16 +87,11 @@ R7 各 chunk 的实现细节、设计决策、回归基线一律落在 R7 子文
 
 ### 当前卡点
 
-无。R7.6-D 已落地（2026-05-21），R7 主线 frame-inspection 主体功能闭环；剩 R7.6-E（GUI↔CLI 入口阻抗的 wrapper-only 收尾）+ R8 Sprint α（agent 多数据源 join 错误的结构性消除）+ R7.5（depth/stencil + dispatch 横向硬能力）三档独立工作。
+无。R7.6-E 已落地（2026-05-22），R7 主线 frame-inspection 全部功能闭环（R7.1~R7.7 + R7.6-A~E 共 11 个子项全 DONE）；剩 R8 Sprint α（agent 多数据源 join 错误的结构性消除，当前 P0）+ R7.5（depth/stencil + dispatch 横向硬能力）两档独立工作。
 
 ### 下一步（当前最高优先级）
 
-**R7.6-E：`find-draws` 按 label / shader 名反查 draw 列表 — 0.3 天，wrapper-only，bridge 零变更**
-
-- 用户在 LYSK 皮肤渲染实战中（`LocalDocs/OfflineSourceRecovery/scripts/locate_shader.py`）**绕过**了 `shader-of-drawcall <draw_index>` 链路自己写脚本扫 device-resources blob 来定位 shader。**根因不是工具能力不足**而是**入口阻抗**：用户在 Xcode GUI 看到 "shader 名 SkinMakeupNew / RPS label / 函数名 X"，但 CLI 入口要 `draw_index` 整数；用户没有现成办法把 GUI 视图实体跳到我们的 CLI 入口参数。
-- 交付：`find-draws <trace> [--by-label SUBSTR] [--by-shader-name SUBSTR] [--by-rps-key K] [--show-first] [--limit N]`，单次 frame-list JSON 后处理，bridge 行为完全不变；`--show-first` 一步到位联动 `shader-of-drawcall <draw_index> --with-ir --with-uniforms`，把 GUI → CLI 的"两步"压缩为一步。frame-list 输出已含 `rps_label` / `vertex_function_name` / `fragment_function_name`（R7.2/R7.6-A 已交付），R7.6-E 是纯过滤封装。详见 R7 子文档 §5（R7.6 子项 E 段）。
-
-**R7.6-E 落地后接棒 P0：R8 Sprint α（R8.1 + R8.2 + R8.3 合并，1.5 天）**
+**R8 Sprint α（R8.1 + R8.2 + R8.3 合并，1.5 天）**
 
 2026-05-22 在 LYSK trace 上对 RPS 496 / draw 69 做 binding/uniform 校验时复盘发现：agent 多次"在 frame-list JSON + IR `.ll` + dump-uniforms 三份数据源之间手工 join"出错（slot 5/6 颠倒、texture rid 145 vs 217 错位），~80% 错误根因都是 skill 输出未自动 join。**R7 是把数据通路打通，R8 是把数据 join 后再交给 agent**：
 
@@ -148,9 +143,9 @@ R7 各 chunk 的实现细节、设计决策、回归基线一律落在 R7 子文
   - **[DONE] R7.6 子项 A**（2026-05-21）：`frame-list --with-bindings`（默认 ON，12 个 binding swizzle，LYSK 244/244 全捕获）
   - **[DONE] R7.6 子项 B**（2026-05-21）：`dump-uniforms <draw_index|rps_key> <bind_slot>`（reflection 解码，LYSK 65/65 RPS 全捕获）
   - **[DONE] R7.6 子项 D**（2026-05-21）：`shader-of-drawcall --with-uniforms` 三件套合一（wrapper 联动，bridge 零变更）
-  - **[P0] R7.6 子项 E（当前最高优先级）**：`find-draws` 按 label / shader 名反查 draw 列表 — 0.3 天 wrapper-only，bridge 零变更。消除 GUI 看到 shader 名 ↔ CLI 要 draw_index 的入口阻抗（用户实战 `locate_shader.py` 暴露的真实工作流缺口）；`--show-first` 一步联动 `shader-of-drawcall <draw_index> --with-uniforms`。详见 R7 子文档 §5（R7.6 子项 E 段）
+  - **[DONE] R7.6 子项 E**（2026-05-22）：`find-draws` 按 label / shader 名 / rps_key 反查 draw 列表 — wrapper-only，bridge 零变更。消除 GUI 看到 shader 名 ↔ CLI 要 draw_index 的入口阻抗；`--show-first` 一步联动 `shader-of-drawcall --with-ir --with-uniforms`。LYSK 验证通过（by-label SkinMakeupNew 14 命中 / by-rps-key 476 8 命中 / by-shader-name xlatMtl 242 命中 / compute-only 0 命中无报错）
   - **[P1] R7.5（R8 Sprint α 后接棒 P0）**：depth/stencil export（bridge 内置 blit）+ compute encoder dispatch 计数补齐 — 1–1.5 天合计。独立横向能力，无前置依赖；主要服务 ShadowMap / SSS / stencil bit 类问题；同时顺手处理 R7.3 在 compute-only trace 上的 trace-shape 假设盲点（14 个健康路径断言失败）
-- **[IN-QUEUE][P0 after R7.6-E] R8 Sprint α**：agent 多数据源 join 错误的结构性消除（来源：2026-05-22 RPS 496 / draw 69 复盘 — slot 5/6 颠倒、texture rid 错位、NaN 静默通过 等 ~80% 错误根因都是 skill 让 agent 在 frame-list JSON + IR `.ll` + dump-uniforms 三份数据源之间手工 join）。详见 `subdocs/20260522-R8-skill-usability-backlog.md`
+- **[IN-PROGRESS][P0] R8 Sprint α**：agent 多数据源 join 错误的结构性消除（来源：2026-05-22 RPS 496 / draw 69 复盘 — slot 5/6 颠倒、texture rid 错位、NaN 静默通过 等 ~80% 错误根因都是 skill 让 agent 在 frame-list JSON + IR `.ll` + dump-uniforms 三份数据源之间手工 join）。详见 `subdocs/20260522-R8-skill-usability-backlog.md`
   - **[P0] R8.1**：per-draw merged binding view — `frame-list` / `shader-of-drawcall --with-bindings` 自动注入 `ir_arg_name` / `ir_arg_type_name` / `ir_arg_size` / `size_check`；新增 wrapper-level `draw-info <trace> <draw_index>` 提供扁平 single-draw 视图。0.5–1 天，bridge + wrapper
   - **[P1] R8.2**：`size_check` (`ok/under/over/cross_section_unknown`) + `value_health_summary`（NaN/inf/denormal 计数 + 字段定位），追加到 dump-uniforms / shader-of-drawcall 末尾。0.5 天
   - **[P1] R8.3**：`dump-uniforms --by-name <BINDING_NAME> --field <FIELD>`，按 IR arg_name 直接查值，绕过 bind_slot 心算。0.3 天，wrapper-only

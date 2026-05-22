@@ -234,9 +234,9 @@ R7 拆成 11 个独立 chunk（R7.1~R7.7 + R7.6-A~E），**全部完成**。剩�
 
 ---
 
-### R7.5：depth/stencil export + compute dispatch 计数补齐 — **P1（R8 Sprint α 之后）**
+### R7.5：depth/stencil export + compute dispatch 计数补齐 — **P2 BACKLOG（仅在有明确 depth/stencil 调试需求时启动）**
 
-> **优先级演进**：多次让位 — 先 R7.7 → R7.6-A → R7.6-B → R7.6-D → R7.6-E → **R8 Sprint α**。每次都因为"对最终目标提升 > R7.5 横向硬能力 + 工时显著更小"。R8 Sprint α 落地后 R7.5 重新成为 P0。子项 A ≈ 1 天 + 子项 B ≈ 0.5 天，合计 1–1.5 天。
+> **优先级演进**：多次让位 — 先 R7.7 → R7.6-A → R7.6-B → R7.6-D → R7.6-E → R8 Sprint α → **R9 skill 引导层优化**。每次都因为"对最终目标（skill 易用好用）提升更大 + 工时更小"。R7.5 是独立横向硬能力，对 skill 整体易用性无贡献，降为 P2。子项 A ≈ 1 天 + 子项 B ≈ 0.5 天。
 
 **子项 A — depth/stencil blit export**
 - 当前 `replay --export <id> <path>` 直接拒绝 depth/stencil 纹理

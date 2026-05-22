@@ -30,15 +30,15 @@
 | **Shader 反编译（IR 直接产出）** | `disasm` 子命令集成 cacheKey + llvm-dis | ✅ R7.7 |
 | GPU Counters / Profiler / Derived | 需 Apple 私有 entitlement + SIP 关闭 | ⛔ 跳过 |
 
-**完成度**：R0~R6 已完成（基础能力 + bridge + Python wrapper + skill 打包）；R7.1 / R7.2 / R7.3 / R7.4 / R7.6-A / R7.6-B / R7.6-C / R7.6-D / R7.6-E / R7.7 已完成（bridge 9 子命令 + wrapper 12 子命令 / 集成测试 LYSK 主基线 **148/148**）；**R8 Sprint α 全部完成**（R8.1 draw-info + R8.2 value_health_summary + R8.3 --by-name，agent 多数据源 join 错误结构性消除）；**R7.5 是当前 P0**（depth/stencil blit export + compute dispatch 计数，1–1.5 天）作为独立横向硬能力收尾。skill 文档已于 2026-05-22 同步 `find-draws` 为推荐入口。
+**完成度**：R0~R8 Sprint α 全部完成（bridge 9 子命令 + wrapper 12 子命令 / 集成测试 LYSK 主基线 **148/148**）。**R9（Skill 引导层优化）是当前 P0** — 让 agent 面对渲染问题时能快速选对命令，纯文档层改动。R7.5（depth/stencil）降为 P2 BACKLOG。
 
 最终交付物：
-1. **统一 ObjC bridge CLI**（`Scripts/gputrace_replay_bridge.m`）— ✅ 9 子命令（help / replay / pipeline / shader / config / frame-list / shader-of-rps / disasm / dump-uniforms），Makefile 构建，LYSK 集成测试 148/148
-2. **Python CLI wrapper**（`Scripts/gputrace_replay_wrapper.py`）— ✅ CLI + 模块双接口，dataclass 返回值（含 `FrameDrawBindings` / `DisasmResult` + `ir_source` / `ShaderOfDrawcallResult` + `bindings` / `uniforms` / `DumpUniformsResult` / `FindDrawsResult` / `DrawInfoResult` 等）
-3. **端到端验证链路** — ✅ LYSK 65/65 RPS 反查 + 244/244 draw→RPS 映射 + 244/244 draw vertex/fragment binding 表 + 65/65 RPS reflection 捕获 + AIR ∪ SDI = 96/96 IR 命中率 100% + draw N 上 cbuffer 字段名/offset/dataType 与 shader 源码字节级一致 + **draw N → IR + bindings + uniforms 三件套一行命令 (R7.6-D)** + **draw N → merged binding view with auto-injected IR arg_name (R8.1)**
-4. **GPU Trace 分析 skill**（`.codebuddy/skills/gpu-trace-analysis/`）— ✅ 自包含，含 SKILL.md + scripts/ + references/，从任意目录可独立运行
-5. **R7：Frame-Inspection 能力补全** — ✅ 主线全部收尾（R7.1/R7.2/R7.3/R7.4/R7.6-A/B/C/D/E/R7.7 全部完成）；剩余工作 R8 Sprint α + R7.5 见下文"下一步"与 TODO 段。详见 `subdocs/20260521-R7-frame-inspection-gap.md` + `subdocs/20260522-R8-skill-usability-backlog.md`
-6. **R8 Sprint α：agent 多数据源 join 错误结构性消除** — ✅ R8.1（`draw-info` + AIR metadata 自动注入 + `size_check`）+ R8.2（`value_health_summary` NaN/inf/denormal 告警）+ R8.3（`dump-uniforms --by-name` 按名反查）。详见 `subdocs/20260522-R8-skill-usability-backlog.md`
+1. **统一 ObjC bridge CLI**（`Scripts/gputrace_replay_bridge.m`）— ✅ 9 子命令，Makefile 构建，LYSK 集成测试 148/148
+2. **Python CLI wrapper**（`Scripts/gputrace_replay_wrapper.py`）— ✅ CLI + 模块双接口，12 子命令，dataclass 返回值
+3. **端到端验证链路** — ✅ LYSK 全覆盖（65 RPS / 244 draw / 96 IR / cbuffer 字节级一致）
+4. **GPU Trace 分析 skill**（`.codebuddy/skills/gpu-trace-analysis/`）— ✅ 自包含，含 SKILL.md + scripts/ + references/
+5. **R7：Frame-Inspection 能力补全** — ✅ 主线 11 子项全部完成。详见 `subdocs/20260521-R7-frame-inspection-gap.md`
+6. **R8 Sprint α：agent 多数据源 join 错误结构性消除** — ✅ R8.1 + R8.2 + R8.3。详见 `subdocs/20260522-R8-skill-usability-backlog.md`
 
 ## 样本 trace 路径（回归基线）
 
@@ -88,16 +88,21 @@ R7 各 chunk 的实现细节、设计决策、回归基线一律落在 R7 子文
 
 ### 当前卡点
 
-无。R8 Sprint α 全部落地（2026-05-22），R8.1 + R8.2 + R8.3 三项合计结构性消除了 §1.1~§1.4 复盘出的 ~80% agent 错误。下一步 R7.5（depth/stencil + compute dispatch）为独立横向硬能力收尾。
+无。R8 Sprint α 全部落地（2026-05-22），结构性消除了 ~80% agent join 错误。
 
 ### 下一步（当前最高优先级）
 
-**R7.5（depth/stencil export + compute dispatch 计数补齐，1–1.5 天）**
+**R9：Skill 引导层优化 — 让 agent 面对渲染问题时能"无脑"选对命令（0.5–1 天）**
 
-- 子项 A：bridge 内部跑一次最小 RPS / blit pass，把 depth 复制到临时 R32Float、stencil 复制到 R8Unorm，再 `getBytes` 落盘（Apple sample code 标准做法，无需私有 API）
-- 子项 B：把 `MTLComputeCommandEncoder.setComputePipelineState:` / `dispatchThreadgroups:*` / `dispatchThreads:*` 接入 R7.3 的 swizzle 集合，记录 dispatch 计数 + compute pipeline pointer；顺手处理 R7.6-C 暴露的 R7.3 trace-shape 假设盲点（compute-only trace 上 14 个健康路径断言失败 — 改为"draw 类断言仅在有 render encoder 时启用"）
+当前 skill 有 9 bridge 子命令 + 12 wrapper 子命令，SKILL.md ~250 行，cli-reference 62KB。实测 agent 的主要易用性问题不再是"数据拿不到"或"数据没 join 好"，而是**面对一个渲染问题时不知道走哪条路径**。R9 的目标：
 
-主要服务 ShadowMap / SSS / stencil bit 类问题（与用户当前 SSS 实战直接相关）；同时让 compute-heavy trace 的 dispatch 信息真正可见。详见 R7 子文档 §5（R7.5 段）。
+- 子项 A：**SKILL.md 精简 + 决策树重构** — 将 investigation workflow 从叙述式改为 if-then-else 决策树；当前 80%+ 调查场景只用 3 条命令（`find-draws --show-first` / `draw-info` / `dump-uniforms --by-name`），skill 引导应让 agent 在 10 秒内找到正确入口
+- 子项 B：**5 个最常见 bug 模式速查模板** — 黑屏/颜色错/NaN/材质参数错/纹理缺失 → 直接可复制的命令模板 + 预期输出字段 + 判断标准
+- 子项 C：**cli-reference 层级化** — 当前 62KB 扁平列出所有命令细节，改为"3 个核心命令完整文档 + 其余按需展开"结构
+
+**设计原则**：不改变任何代码实现，只优化 skill 的文档层。让 agent 从"能用"到"用对、用快"。
+
+R7.5（depth/stencil + compute dispatch）降为 P2 BACKLOG — 仅在有明确 depth/stencil 调试需求时启动。理由：当前已有能力覆盖 95%+ 的渲染 bug 调查；R7.5 增加的 depth/stencil 是小众场景，对 skill 整体易用性无贡献。
 
 ## 构建与验证的方法
 
@@ -135,11 +140,15 @@ R7 各 chunk 的实现细节、设计决策、回归基线一律落在 R7 子文
   - **[DONE] R7.6 子项 B**（2026-05-21）：`dump-uniforms <draw_index|rps_key> <bind_slot>`（reflection 解码，LYSK 65/65 RPS 全捕获）
   - **[DONE] R7.6 子项 D**（2026-05-21）：`shader-of-drawcall --with-uniforms` 三件套合一（wrapper 联动，bridge 零变更）
   - **[DONE] R7.6 子项 E**（2026-05-22）：`find-draws` 按 label / shader 名 / rps_key 反查 draw 列表 — wrapper-only，bridge 零变更。消除 GUI 看到 shader 名 ↔ CLI 要 draw_index 的入口阻抗；`--show-first` 一步联动 `shader-of-drawcall --with-ir --with-uniforms`。LYSK 验证通过（by-label SkinMakeupNew 14 命中 / by-rps-key 476 8 命中 / by-shader-name xlatMtl 242 命中 / compute-only 0 命中无报错）
-  - **[P1] R7.5（R8 Sprint α 后接棒 P0）**：depth/stencil export（bridge 内置 blit）+ compute encoder dispatch 计数补齐 — 1–1.5 天合计。独立横向能力，无前置依赖；主要服务 ShadowMap / SSS / stencil bit 类问题；同时顺手处理 R7.3 在 compute-only trace 上的 trace-shape 假设盲点（14 个健康路径断言失败）
+  - **[BACKLOG][P2] R7.5**：depth/stencil export（bridge 内置 blit）+ compute encoder dispatch 计数补齐 — 1–1.5 天合计。独立横向能力；仅在有明确 depth/stencil 调试需求时启动。详见 R7 子文档 §5
 - **[DONE] R8 Sprint α**（2026-05-22）：agent 多数据源 join 错误的结构性消除。详见 `subdocs/20260522-R8-skill-usability-backlog.md`
   - **[DONE] R8.1**（2026-05-22）：per-draw merged binding view — `draw-info <trace> <draw_index>` 子命令（wrapper-only），AIR metadata parser + `_enrich_stage_bindings()` + library_key 缓存。LYSK draw 69 验证通过
   - **[DONE] R8.2**（2026-05-22）：`value_health_summary`（NaN/inf/denormal 计数 + 字段定位），注入 dump-uniforms / shader-of-drawcall --with-uniforms / draw-info --with-uniforms
   - **[DONE] R8.3**（2026-05-22）：`dump-uniforms --by-name <BINDING_NAME> [--field <FIELD>]`，按 IR arg_name 直接查值，绕过 bind_slot 心算
+- **[P0] R9：Skill 引导层优化** — 让 agent 面对渲染问题时能"无脑"选对命令。纯文档层改动，不改代码。
+  - **[TODO] R9.A**：SKILL.md 精简 + 决策树重构 — investigation workflow 改为 if-then-else 决策树；核心 3 命令突出
+  - **[TODO] R9.B**：5 个最常见 bug 模式速查模板 — 黑屏/颜色错/NaN/材质参数错/纹理缺失 → 命令模板 + 判断标准
+  - **[TODO] R9.C**：cli-reference 层级化 — 62KB 扁平文档改为核心命令完整 + 其余按需展开
 - **[BACKLOG][P2] R8 Sprint β**：`dump-diff` 双 dump 自动比对 + `metadata.skill_version` 字段（解决"已存档 dump 与新 dump 冲突未及时校对"）。0.3 天
 - **[BACKLOG][P2] R8 Sprint γ**：`resource-trace <rid>` 资源 provenance（writers / readers / inferred_role），解决"非主流 RT/buffer 没 label，agent 只能猜"。1 天
 - **[WISHLIST][P3] R8.6**：host-side shader function evaluator（白名单 IR 子表达式 JIT），让 agent "把 cbuffer 实测值代入公式 sanity check" 不再手算错。等到 lighting/material 自动校验有第二个明确需求再启动

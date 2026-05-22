@@ -2,7 +2,7 @@
 
 **来源**：2026-05-21 别的 agent 在使用 `gpu-trace-analysis` skill 调查 LYSK trace（247 资源 / 50 RPS / 96 lib）时反馈的能力缺口；以及"draw call 反查 shader IR"的 7 段链路验证。
 **结论**：当前 bridge/skill 在"渲染 bug 调查"任务上称职；R7 的目标是把"未知 trace 整体管线分析"与"draw call → shader 反查"两类任务也补齐。
-**进度**：R7.1 / R7.2 / R7.3 / R7.4 / R7.6-A / R7.6-B / R7.6-C / R7.6-D / R7.7 ✅（2026-05-21）；剩余 **R7.6-E（label/shader-name → draw 反查，0.3 天 wrapper-only，当前 P0）** + **R7.5（depth/stencil + dispatch 计数，1–1.5 天，独立专项，R7.6-E 后接棒 P0）**。集成测试基线：LYSK 主基线 **148/148**（R7.6-D 后），compute-only `reference_test_inject` 79/93（14 个 R7.3 已知盲点不变）。优先级演进史见 §5。
+**进度与剩余项**：以主 dashboard `README.md` 的"下一步"与"任务 TODO" 段为准，本文档只承载实现细节、设计决策、回归基线。集成测试基线：LYSK 主基线 **148/148**（R7.6-D 后），compute-only `reference_test_inject` 79/93（14 个 R7.3 已知盲点不变）。优先级演进史见 §5。
 **主回归基线 trace**：
 - LYSK：`/Users/songdogwang/Library/Containers/com.papegames.lysk/Data/Documents/Captures/capture_20260518_110050.gputrace`（4 cb / 62 enc / 244 draws / 65 RPS / 96 lib / 3425 calls）— 端到端 IR 链主基线
 - compute-only：`~/Desktop/reference_test_inject.gputrace`（2 cb / 2 compute enc / 0 draws / 0 RPS / 3 compute PSO / 27 calls）— OOR / `draw_count=0` / `rps_not_found` 多样本回归
@@ -108,16 +108,17 @@ cacheKey 直接对应 `~/Library/Containers/io.playcover.PlayCover/ShaderDebugIn
 
 ## 5. R7 改进矩阵（按依赖排序）
 
-R7 拆成 9 个独立 chunk（R7.1~R7.7 + R7.6-D 收尾联动 + R7.6-E label 反查）。已完成 9 个（R7.1/R7.2/R7.3/R7.4/R7.6-A/R7.6-B/R7.6-C/R7.6-D/R7.7），剩余 **R7.6-E（当前 P0，wrapper-only label 反查，0.3 天）** + **R7.5（R7.6-E 后接棒 P0，独立横向硬能力，1–1.5 天）**。
+R7 拆成 9 个独立 chunk（R7.1~R7.7 + R7.6-D 收尾联动 + R7.6-E label 反查）。已完成 9 个（R7.1/R7.2/R7.3/R7.4/R7.6-A/R7.6-B/R7.6-C/R7.6-D/R7.7），剩余 **R7.6-E（当前 P0，wrapper-only label 反查，0.3 天）** + **R7.5（R8 Sprint α 后接棒 P0，独立横向硬能力，1–1.5 天）**。**R8 Sprint α**（R8.1+R8.2+R8.3，agent 多数据源 join 错误的结构性消除，1.5 天）在 R7.6-E 与 R7.5 之间接棒 P0 — 详见 `20260522-R8-skill-usability-backlog.md`，本文档不再展开 R8 实现细节。
 
-**优先级演进史**（2026-05-21 多次二次评估）：原排期 R7.5 → R7.6-A → R7.6-B；按"先解锁已交付能力，再加新能力"原则——R7.7（SDI fallback 把 R7.4 命中率 3.1% → 100%）抢占 R7.5；R7.6-A（紧邻 `shader-of-drawcall` 补 binding 表）抢占 R7.5；R7.6-A 落地后 R7.6-B（依赖 R7.6-A）成为 P0；R7.6-B 落地后 R7.5 短暂升回 P0；随后再次让位给 R7.6-D——R7.6-A §9 早已点名"shader-of-drawcall 应在 wrapper 层把 bindings 附加到结果上，R7.6-B 落地后补 uniforms"，但 R7.6-B 实际只做了 `dump-uniforms` 单点子命令，留下"三件套承诺 vs 一行命令实现"的明显缺口。**R7.6-D 已于同日落地（148/148）**，纯 wrapper 层胶水把缺口补齐。本轮深度整理时再次评估 R7.5 → 让位给 **R7.6-E**：用户在 LYSK 实战 `locate_shader.py` 中绕过我们的 `shader-of-drawcall`，自己写脚本扫 device-resources 定位 shader——根因不是工具能力不足而是入口阻抗（GUI 看 shader 名 ↔ CLI 要 draw_index 整数）。R7.6-E 用 0.3 天 wrapper-only 补齐这个鸿沟，让已交付的 R7.6-D 三件套能力真正接入用户工作流，对最终目标提升 > R7.5 的横向硬能力。各候选当时的取舍：
+**优先级演进史**（多次二次评估精简版）：原排期 R7.5 → R7.6-A → R7.6-B；按"先解锁已交付能力，再加新能力"原则，R7.7（SDI fallback 把 R7.4 命中率 3.1% → 100%）→ R7.6-A（紧邻 `shader-of-drawcall` 补 binding 表）→ R7.6-B（依赖 R7.6-A）→ R7.6-D（wrapper 联动三件套）连续抢占 R7.5；R7.6-D 落地后再次让位给 R7.6-E（用户实战 `locate_shader.py` 暴露 GUI↔CLI 入口阻抗，0.3 天 wrapper-only）。**2026-05-22 RPS 496 / draw 69 复盘后又抢占一次**：发现 ~80% agent 错误根源是"在多份数据源之间手工 join"（非"工具能力不够"），R8 Sprint α（merged binding view + size_check + value_health + by-name 查询，1.5 天合并）对真实工作流接入度的提升 > R7.5 横向硬能力，故插队到 R7.5 之前。各候选当时取舍速览：
 
 | 能力 | 紧邻已交付能力？ | 场景覆盖 | 实现成本 |
 |------|---------------------|----------|----------|
 | **R7.6-E（当前 P0）** | ✅ frame-list 已含 rps_label / vertex_function_name / fragment_function_name；纯后处理过滤 | "GUI 看 shader 名 → CLI 拿三件套" — 解锁 R7.6-D 在真实工作流的接入度 | 0.3 天，纯 wrapper 后处理，bridge 零变更 |
+| **R8 Sprint α（R7.6-E 后接棒 P0）** | ✅ R7.2 reflection + R7.4 air metadata + R7.6-A binding 表已交付，sprint = "把它们 join 后再交给 agent" | 消除 ~80% agent 多数据源 join 错误（slot 5/6 颠倒、texture rid 错位、NaN 静默通过、binding 大小不匹配漏检） | 1.5 天合计（共享一份 RPS→library→AIR metadata cache） |
 | R7.6-D（已交付） | ✅ frame-list bindings + dump-uniforms 都已交付，只差 wrapper 层把它们附到 `ShaderOfDrawcallResult` 上 | "draw N → IR + bindings + uniforms 一行命令" — 与 GUI 选 draw 时默认看到一屏完整上下文的体验对齐 | 0.5 天，纯 Python 胶水，bridge 零变更（实测耗时一上午） |
 | R7.6-B（uniforms，已交付） | ✅ R7.6-A 的 binding 表给出 buffer_id+offset 后，B 是把字节解码成 cbuffer JSON 的天然下一步 | UV 错 / 矩阵错 / 光源错 / 材质参数错 — 几乎所有"shader 看似正确但输出错"的最终调查终点 | 1 天，bridge 复用 `bufferForKey:` + reflection / hex dump |
-| **R7.5（R7.6-E 后接棒 P0）** | ❌ 横向新能力 | ShadowMap / SSS / stencil bit 类专项 + compute-heavy trace | 1–1.5 天，需新写 blit pass + 新 export 接口 |
+| **R7.5（R8 Sprint α 后接棒 P0）** | ❌ 横向新能力 | ShadowMap / SSS / stencil bit 类专项 + compute-heavy trace | 1–1.5 天，需新写 blit pass + 新 export 接口 |
 
 ### R7.1：bridge 越界保护 + 资源元数据补齐 — ✅ 已完成
 
@@ -269,9 +270,9 @@ $ python3 gputrace_replay_wrapper.py find-draws "$LYSK" --by-label SkinMakeupNew
 
 ---
 
-### R7.5：depth/stencil export + compute dispatch 计数补齐 — **P1（R7.6-E 之后）**
+### R7.5：depth/stencil export + compute dispatch 计数补齐 — **P1（R8 Sprint α 之后）**
 
-> **优先级演进**：原排期 R7.7 完成后 R7.5 接棒为 P0；2026-05-21 多次二次评估让位给 R7.6-A → R7.6-B → R7.6-D，每次都因为"对最终目标提升 > R7.5 横向硬能力 + 工时显著更小"。R7.6-D 落地后 R7.5 短暂升回 P0；本轮深度整理时再次让位给 **R7.6-E**（按 label 反查 draw —— 用户实战 `locate_shader.py` 暴露的"GUI → CLI 入口阻抗"鸿沟，0.3 天 wrapper-only 收尾，对真实工作流接入度提升大于 R7.5）。R7.6-E 落地后 R7.5 重新成为 P0。子项 A ≈ 1 天 + 子项 B ≈ 0.5 天，合计 1–1.5 天。
+> **优先级演进**：多次让位 — 先 R7.7 → R7.6-A → R7.6-B → R7.6-D → R7.6-E → **R8 Sprint α**。每次都因为"对最终目标提升 > R7.5 横向硬能力 + 工时显著更小"。R8 Sprint α 落地后 R7.5 重新成为 P0。子项 A ≈ 1 天 + 子项 B ≈ 0.5 天，合计 1–1.5 天。
 
 **子项 A — depth/stencil blit export**
 - 当前 `replay --export <id> <path>` 直接拒绝 depth/stencil 纹理
@@ -530,6 +531,8 @@ R7.2 已交付：bridge `pipeline` 与本表 65/65 一致。回归命令：跑 `
 | Shader 反编译（覆盖无 AIR 的 library） | `disasm <library_key>` SDI module.bc 路径 | ✅ R7.7（LYSK 96/96） |
 | **Draw call → "shader IR + bindings + uniforms" 三件套一行命令** | `shader-of-drawcall <draw_index> --with-ir --with-uniforms` | ✅ R7.6-D（wrapper 联动） |
 | **GUI shader 名 / RPS label → draw_index 反查** | `find-draws --by-label / --by-shader-name`（消除 GUI↔CLI 入口阻抗） | ⏳ R7.6-E |
+| **Per-draw binding 表自动注入 IR `arg_name` / `size_check` / value health** | `frame-list` / `shader-of-drawcall` schema + wrapper `draw-info` | ⏳ R8.1+R8.2（详见 `20260522-R8-skill-usability-backlog.md`） |
+| **按 IR `arg_name` 反查 cbuffer 字段（绕过 bind_slot）** | `dump-uniforms --by-name <BINDING_NAME> --field <FIELD>` | ⏳ R8.3 |
 
 ---
 
@@ -554,4 +557,4 @@ R7.1~R7.7 + R7.6-A/B/C 落地时均已同步过这三处。R7.5 落地时按相�
 
 ## 10. 一句话总结
 
-draw call → shader IR + bindings + uniforms 的端到端链在 macOS Metal replay 框架下技术可达且 R7.1~R7.7 + R7.6-A/B/C/D 全部走通。**R7.6-D（2026-05-21 落地，纯 wrapper 胶水，bridge 零变更）把"draw → 三件套"承诺真正落实到一行命令**：`shader_of_drawcall(draw_index, with_uniforms=True)` 一次调用产出 IR + bindings + 每个 buffer slot 的 cbuffer 字段树。剩余 **R7.6-E（label/shader-name → draw 反查，0.3 天 wrapper-only，当前 P0，消除 GUI ↔ CLI 入口阻抗）** + **R7.5（depth/stencil + dispatch 计数，1–1.5 天，独立横向能力，R7.6-E 后接棒 P0）**。LYSK 主基线集成测试 **148/148**，compute-only `reference_test_inject` 79/93。
+draw call → shader IR + bindings + uniforms 的端到端链在 macOS Metal replay 框架下技术可达且 R7.1~R7.7 + R7.6-A/B/C/D 全部走通。**R7.6-D（2026-05-21 落地，纯 wrapper 胶水，bridge 零变更）把"draw → 三件套"承诺真正落实到一行命令**：`shader_of_drawcall(draw_index, with_uniforms=True)` 一次调用产出 IR + bindings + 每个 buffer slot 的 cbuffer 字段树。LYSK 主基线集成测试 **148/148**，compute-only `reference_test_inject` 79/93。剩余主线工作（R7.6-E / R8 Sprint α / R7.5）的状态以主 dashboard `README.md` 为准。

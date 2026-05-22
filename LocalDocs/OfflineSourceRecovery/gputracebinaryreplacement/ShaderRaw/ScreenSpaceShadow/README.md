@@ -54,3 +54,18 @@ E9 (draw 58, RPS 450):  [Spot shadow 叠加]
 - draw 56 (RPS 449) 和 draw 57 (RPS 463) 都写 RGBA 且 blending=false，所以 **draw 57 完全覆盖 draw 56**。draw 56 可能是低质量 fallback path（从预计算 penumbra 直接采样），draw 57 才是最终的 PCSS 完整版本。在有 draw 57 的帧里，draw 56 的结果不可见。
 - draw 58 (RPS 450) writeMask=G + blending=true，**只动 G 通道**，不影响 R/B/A。
 - 所有 shadow 都是物理正确的 depth-compare 投射，只是通过 4 通道 RGBA 打包分发给不同灯。
+
+---
+
+## Analyzed/ — 翻译后的 Unity ShaderLab
+
+Metal IR → Unity ShaderLab 翻译结果，已通过 Unity Editor 编译验证。
+
+| 翻译后文件 | 对应 IR 源 | 说明 |
+|------------|-----------|------|
+| `Analyzed/ScreenSpaceShadowMap_Simple.shader` | `rps449_ScreenSpaceShadowMap_simple_frag_lib298.ll` | 简单采样 penumbra + char light 合成 |
+| `Analyzed/ScreenSpaceShadowMap_Penumbra.shader` | `rps462_ScreenSpaceShadowMap_penumbra_frag_lib330.ll` | 半分辨率 penumbra mask 生成 |
+| `Analyzed/ScreenSpaceShadowMap.shader` | `rps463_ScreenSpaceShadowMap_full_frag_lib332.ll` | 完整 PCSS 软阴影 |
+| `Analyzed/SpotShadow.shader` | `rps450_SpotShadow_frag_lib302.ll` | Spot light 阴影投射 |
+
+所有翻译均已通过语义等价性人工复核 + Unity shader 编译验证。

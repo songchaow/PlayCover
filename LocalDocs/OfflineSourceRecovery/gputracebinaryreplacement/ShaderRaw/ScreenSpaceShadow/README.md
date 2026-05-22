@@ -32,7 +32,7 @@
 │                                                                         │
 │  输入: rid 225 (DirShadowDepth 3072×1024) + rid 227 (CameraDepth)      │
 │  输出: rid 230 (R8Unorm 291×417, quarter-res)                           │
-│  算法: cascade 选择 + dithered 边界混合 + 5×5 PCF tent (9 Gather) + sq  │
+│  算法: cascade 选择 + dithered 边界混合 + 5×5 PCF box (9 Gather) + sq  │
 └────────────────────────────────────┬────────────────────────────────────┘
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -57,7 +57,7 @@
 │        + rid 234 (SSAO, slot 2)                                         │
 │  输出: rid 236 RGBA = (PCF_shadow², 1, 1, SSAO) ← 完全覆写 draw 56     │
 │  算法: 世界坐标重建 → CloseUp 判断 → cascade 选择 + dither              │
-│        → 5×5 PCF tent (9 Gather) → square                               │
+│        → 5×5 PCF box (9 Gather) → square                                │
 └────────────────────────────────────┬────────────────────────────────────┘
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -110,7 +110,7 @@
 
 ## 阴影算法详解
 
-### 算法 A：Cascaded 5×5 PCF Tent（RPS 462 / RPS 463 共用）
+### 算法 A：Cascaded 5×5 PCF Box（RPS 462 / RPS 463 共用）
 
 RPS 462（penumbra pass）和 RPS 463（full pass）使用相同的核心算法，区别仅在于输出目标和
 是否附带 SSAO 采样。
@@ -119,7 +119,7 @@ RPS 462（penumbra pass）和 RPS 463（full pass）使用相同的核心算法�
 
 ```
 深度采样 → 世界坐标重建 → CloseUp 局部光判断 → Cascade 选择
-→ Dithered 边界混合 → Shadow 空间投影 → 5×5 PCF Tent → 平方
+→ Dithered 边界混合 → Shadow 空间投影 → 5×5 PCF Box → 平方
 ```
 
 #### 1. 深度采样与世界坐标重建
@@ -182,7 +182,7 @@ float3 shadowCoord = WorldToShadowArray[matBase+0].xyz * wp.xxx
                    + WorldToShadowArray[matBase+3].xyz;
 ```
 
-#### 6. 5×5 PCF Tent Filter（9 Gather = 36 texels → 25 有效比较）
+#### 6. 5×5 Uniform PCF（9 Gather = 36 texels → 25 有效比较）
 
 核心采样模式：以 `shadowCoord.xy` 为中心，在 3×3 grid（间隔 2 texel）上执行 9 次
 `Texture2D.Gather()`，每次返回 2×2 邻域（4 个深度值），共覆盖 6×6 texel footprint。
@@ -196,26 +196,44 @@ Gather 采样布局（相对 baseUV 的 texel 偏移）:
 ```
 
 每个 Gather 返回的 4 个深度值与 `shadowCoord.z` 比较（`>= ? 1 : 0`），然后按
-**子像素 fractional position** 做加权累加：
+**子像素 fractional position** 做边缘加权累加。
 
-```hlsl
-// 边缘列使用 (1-frac) / frac 权重，中间列权重为 1
-// 边缘行使用 (1-frac.y) / frac.y 权重，中间行权重为 1
-// 例: 左列 bottom row:
-float2 row1 = cmpLeft.wx * (1-frac.x) + cmpLeft.zy   // 左边缘加权
-            + cmpCenter.wx + cmpCenter.zy              // 中间全权重
-            + cmpRight.wx;                              // 右边缘部分
-row1 += cmpRight.zy * frac.x;                          // 右边缘补充
-float pcfRow1 = row1.x * (1-frac.y) + row1.y;         // 行间加权
+**内部权重是均匀的（box filter），不是 tent：**
+
+```
+6 列物理 texel 权重（X 方向）:
+
+  col:      -3       -2       -1        0       +1       +2
+  权重:   (1-fx)     1        1         1        1       fx
+
+  ← 左Gather →    ← 中Gather →    ← 右Gather →
 ```
 
-最终 25 个有效采样点的加权和除以 25 再平方：
+- 中间 4 列权重全为 **1**（均匀）
+- 最外两列使用 `(1-frac)` / `frac` 并非 tent 衰减，而是 **子像素定位**
+- `(1-fx) + 1 + 1 + 1 + 1 + fx = 5`，行方向同理
+- 总权重 = 5 × 5 = **25**
+
+```hlsl
+// 实际累加示例（一行）:
+float2 row = cmpLeft.wx * (1-frac.x) + cmpLeft.zy   // 最外列: 亚像素定位
+           + cmpCenter.wx + cmpCenter.zy              // 中间: 全权重 1
+           + cmpRight.wx;
+row += cmpRight.zy * frac.x;                          // 最外列: 亚像素定位
+float pcfRow = row.x * (1-frac.y) + row.y;           // 行间: 同样是亚像素定位
+```
+
+最终 25 个等效采样点的均匀加权和除以 25 再平方：
 
 ```hlsl
 float shadow = (total * 0.04) * (total * 0.04);  // (sum/25)²
 ```
 
 平方使阴影边缘过渡呈现类 gamma 曲线，视觉上更柔和自然。
+
+> **为何叫 5×5 而不是 6×6？** 物理上 9 Gather 覆盖 6×6 texel，但边缘两列通过
+> `(1-frac) + frac = 1` 互补合并为等效 1 列采样，因此滤波宽度等效为 5×5 uniform box，
+> 且可在子像素精度上连续滑动。
 
 ---
 
@@ -241,7 +259,7 @@ return float4(avg, 1.0, 1.0, SSAO.r);
 
 ### 算法 C：Rotated Poisson Disk 16-Tap（RPS 450，Spot Shadow）
 
-聚光灯阴影使用随机旋转的 Poisson Disk 采样，完全不同于方向光的 PCF tent。
+聚光灯阴影使用随机旋转的 Poisson Disk 采样，完全不同于方向光的均匀 PCF。
 
 **步骤总览：**
 
@@ -298,7 +316,7 @@ return float4(1.0, shadow, 1.0, 1.0);  // 仅 G 通道有效 (writeMask=G)
 
 | | 方向光 Full (RPS 463) | 方向光 Simple (RPS 449) | 聚光灯 (RPS 450) |
 |---|---|---|---|
-| **滤波方式** | 5×5 PCF tent (固定核) | Gather4 average (从预计算 mask) | 16-tap rotated Poisson disk |
+| **滤波方式** | 5×5 uniform PCF (box filter) | Gather4 average (从预计算 mask) | 16-tap rotated Poisson disk |
 | **采样次数** | 9 Gather (36 texel, 25 有效) | 1 Gather (4 texel) | 4 Gather (16 texel) |
 | **采样源** | cascade depth map 实时比较 | quarter-res penumbra mask | spot shadow atlas 实时比较 |
 | **旋转抖动** | Dithered cascade 边界 | 无 | 每像素随机旋转 |

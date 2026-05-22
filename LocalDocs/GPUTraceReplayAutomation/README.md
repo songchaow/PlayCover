@@ -30,7 +30,7 @@
 | **Shader 反编译（IR 直接产出）** | `disasm` 子命令集成 cacheKey + llvm-dis | ✅ R7.7 |
 | GPU Counters / Profiler / Derived | 需 Apple 私有 entitlement + SIP 关闭 | ⛔ 跳过 |
 
-**完成度**：R0~R6 已完成（基础能力 + bridge + Python wrapper + skill 打包）；R7.1 / R7.2 / R7.3 / R7.4 / R7.6-A / R7.6-B / R7.6-C / R7.6-D / R7.6-E / R7.7 已完成（bridge 9 子命令 + wrapper 11 子命令 / 集成测试 LYSK 主基线 **148/148**）；**R8 Sprint α 是当前 P0**（R8.1 merged binding view + R8.2 health summary + R8.3 by-name 查询，合计 1.5 天，结构性消除 agent 多数据源 join 错误）；其后 R7.5（depth/stencil blit export + compute dispatch 计数，1–1.5 天）作为独立横向硬能力收尾。
+**完成度**：R0~R6 已完成（基础能力 + bridge + Python wrapper + skill 打包）；R7.1 / R7.2 / R7.3 / R7.4 / R7.6-A / R7.6-B / R7.6-C / R7.6-D / R7.6-E / R7.7 已完成（bridge 9 子命令 + wrapper 11 子命令 / 集成测试 LYSK 主基线 **148/148**）；**R8 Sprint α 是当前 P0**（R8.1 merged binding view + R8.2 health summary + R8.3 by-name 查询，合计 1.5 天，结构性消除 agent 多数据源 join 错误）；其后 R7.5（depth/stencil blit export + compute dispatch 计数，1–1.5 天）作为独立横向硬能力收尾。skill 文档已于 2026-05-22 同步 `find-draws` 为推荐入口。
 
 最终交付物：
 1. **统一 ObjC bridge CLI**（`Scripts/gputrace_replay_bridge.m`）— ✅ 9 子命令（help / replay / pipeline / shader / config / frame-list / shader-of-rps / disasm / dump-uniforms），Makefile 构建，LYSK 集成测试 148/148
@@ -93,6 +93,8 @@ R7 各 chunk 的实现细节、设计决策、回归基线一律落在 R7 子文
 
 **R8 Sprint α（R8.1 + R8.2 + R8.3 合并，1.5 天）**
 
+> **前置：skill 文档同步（✅ 2026-05-22 已完成）**：R7.6-E `find-draws` 交付后 SKILL.md / playbook 需反映该能力为推荐入口。已完成——SKILL.md 能力表更新、investigation workflow step 2 加入 `find-draws`、playbook Pattern 3 重写为 `find-draws → shader-of-drawcall` 快捷路径。
+
 2026-05-22 在 LYSK trace 上对 RPS 496 / draw 69 做 binding/uniform 校验时复盘发现：agent 多次"在 frame-list JSON + IR `.ll` + dump-uniforms 三份数据源之间手工 join"出错（slot 5/6 颠倒、texture rid 145 vs 217 错位），~80% 错误根因都是 skill 输出未自动 join。**R7 是把数据通路打通，R8 是把数据 join 后再交给 agent**：
 
 - **R8.1（P0）**：per-draw merged binding view — `frame-list` / `shader-of-drawcall --with-bindings` 的 `bindings.<stage>.{buffers|textures}[i]` 自动注入 `ir_arg_name` / `ir_arg_type_name` / `ir_arg_size` / `size_check`（来自 RPS 关联 library 的 `air.struct_type_info`/`air.texture`/`air.buffer`），并新增 wrapper-level `draw-info <trace> <draw_index>` 提供扁平 single-draw 视图
@@ -152,7 +154,7 @@ R7 各 chunk 的实现细节、设计决策、回归基线一律落在 R7 子文
 - **[BACKLOG][P2] R8 Sprint β**：`dump-diff` 双 dump 自动比对 + `metadata.skill_version` 字段（解决"已存档 dump 与新 dump 冲突未及时校对"）。0.3 天
 - **[BACKLOG][P2] R8 Sprint γ**：`resource-trace <rid>` 资源 provenance（writers / readers / inferred_role），解决"非主流 RT/buffer 没 label，agent 只能猜"。1 天
 - **[WISHLIST][P3] R8.6**：host-side shader function evaluator（白名单 IR 子表达式 JIT），让 agent "把 cbuffer 实测值代入公式 sanity check" 不再手算错。等到 lighting/material 自动校验有第二个明确需求再启动
-- **每个 R7 chunk 落地后必须同步**：SKILL.md（"Exploring an unknown trace's pipeline" 工作流 / 已知盲点） + `references/investigation-playbook.md`（frame-overview worked example） + `references/cli-reference.md`（新子命令 schema）。R7.1/R7.2/R7.3/R7.4/R7.6-A/R7.6-C/R7.6-D/R7.7 落地时已同步。
+- **每个 R7 chunk 落地后必须同步**：SKILL.md（"Exploring an unknown trace's pipeline" 工作流 / 已知盲点） + `references/investigation-playbook.md`（frame-overview worked example） + `references/cli-reference.md`（新子命令 schema）。R7.1/R7.2/R7.3/R7.4/R7.6-A/R7.6-C/R7.6-D/R7.6-E/R7.7 落地时已同步。
 
 ## 高频复用经验
 

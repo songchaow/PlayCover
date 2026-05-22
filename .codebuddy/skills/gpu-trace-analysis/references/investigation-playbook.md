@@ -101,14 +101,39 @@ Hypothesis space: shader is computing the wrong thing, wrong texture bound, wron
 Recipe:
 
 ```bash
-# 1. Dump everything. Pipeline gives you names AND (R7.2) the RPS↔shader mapping.
+# FASTEST PATH: if you know the shader/material name (from Xcode GUI or user report),
+# jump directly to the full draw context in one command:
+python3 "$SKILL_DIR/scripts/gputrace_replay_wrapper.py" \
+    find-draws "$TRACE" --by-label "SkinMakeupNew" --show-first \
+    --with-ir --with-uniforms --output-dir "$WORKDIR/shaders"
+# → Finds all draws using that shader, auto-runs shader-of-drawcall on the first hit.
+# Output includes: IR (.ll), per-stage binding tables, and every cbuffer slot decoded.
+```
+
+If `find-draws` returns multiple hits (common — same shader used in multiple passes), pick the one matching your investigation context by RPS_key or encoder_index.
+
+```bash
+# See all matching draws:
+python3 "$SKILL_DIR/scripts/gputrace_replay_wrapper.py" \
+    find-draws "$TRACE" --by-label "SkinMakeupNew"
+# → JSON array with draw_index, rps_key, rps_label, encoder_index for each hit.
+# Pick the one you want, then investigate it fully:
+python3 "$SKILL_DIR/scripts/gputrace_replay_wrapper.py" \
+    shader-of-drawcall "$TRACE" 87 --stage fragment --with-ir --with-uniforms \
+    --output-dir "$WORKDIR/shaders"
+```
+
+**Fallback (when you don't know the shader name):**
+
+```bash
+# 1. Dump the full pipeline to search by function name or attachment count.
 "$BRIDGE" pipeline "$TRACE" "$WORKDIR/pipelines" > "$WORKDIR/pipeline.json"
 ```
 
 In `pipeline.json`, scan two views:
 
 - `libraries[*].functions` for names that match the user's description (e.g. `fragment_skin_subsurface`, `compute_blur_horizontal`, `vertex_water_caustic`).
-- `render_pipeline_states[*]` for `label`s that match the user's description, **then read the new R7.2 fields directly** to find the right `fragment_function_key` / `fragment_library_key` without re-deriving them yourself:
+- `render_pipeline_states[*]` for `label`s that match, **then read the RPS↔shader fields directly** to find the right `fragment_function_key` / `fragment_library_key`:
 
 ```bash
 jq '.render_pipeline_states[] | select(.label | test("Skin|Eye"; "i"))' "$WORKDIR/pipeline.json"
@@ -117,37 +142,22 @@ jq '.render_pipeline_states[] | select(.label | test("Skin|Eye"; "i"))' "$WORKDI
 Common gotcha: the same `label` often appears on multiple RPSs (e.g. one Z-prepass variant + one main pass variant). Use `color_attachment_count`, `depth_format`, and the fragment_library_key to disambiguate before swapping shaders.
 
 ```bash
-# 2. Once you've picked an RPS, get its shader code in one command (R7.4).
+# 2. Once you've picked an RPS, get its shader code in one command.
 "$BRIDGE" shader-of-rps "$TRACE" 484 --with-ir --output-dir "$WORKDIR/shaders"
-# → produces .metallib, .air, and (with --with-ir) .ll for that RPS's fragment function.
-# JSON also reports cache_key_metallib for cross-referencing PlayCover ShaderDebugInfo.
 ```
 
-If you instead already know the library key (e.g. from grepping function names) and just want the IR:
+If you instead already know the library key:
 
 ```bash
-# Older path — still works for arbitrary library keys not tied to a particular RPS.
-ls "$WORKDIR/pipelines/library_<KEY>.air"
-# If you have llvm-dis available system-wide:
-xcrun llvm-dis "$WORKDIR/pipelines/library_<KEY>.air" -o "$WORKDIR/lib.ll"
-head -50 "$WORKDIR/lib.ll"
+"$BRIDGE" disasm "$TRACE" 374 --with-ir --output-dir "$WORKDIR/shaders"
 ```
 
 ```bash
-# 3. Inspect the constant buffers feeding that shader. List buffers,
-#    pick those whose size and label suggest "uniforms" or "params".
-"$BRIDGE" replay "$TRACE" --list-resources \
-  | python3 -c "import json,sys; [print(r) for r in json.load(sys.stdin)['resources'] if r['type']=='buffer' and r['length'] < 4096]"
-
-# 4. Export and dump.
-"$BRIDGE" replay "$TRACE" --export <BUFFER_ID> "$WORKDIR/uniforms.bin"
-hexdump -C "$WORKDIR/uniforms.bin" | head -20
-# Or interpret as floats:
-python3 -c "
-import struct; b=open('$WORKDIR/uniforms.bin','rb').read()
-floats=struct.unpack(f'{len(b)//4}f', b[:4*(len(b)//4)])
-for i in range(0, len(floats), 4): print(i, floats[i:i+4])
-" | head -10
+# 3. Inspect the constant buffers feeding that shader (R7.6-B automatic decode).
+python3 "$SKILL_DIR/scripts/gputrace_replay_wrapper.py" \
+    dump-uniforms "$TRACE" 87 0 --stage fragment
+# → Full cbuffer decode: field names, offsets, types, actual values.
+# No need to manually export+hexdump+struct.unpack anymore.
 ```
 
 If a uniform is obviously bogus (NaN, huge number, suspiciously zero), the bug is upstream of the GPU — report it.

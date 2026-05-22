@@ -9,18 +9,19 @@ This skill turns headless `.gputrace` replay into a programmable workflow for in
 
 ## What this skill gives you
 
-A self-contained CLI (`gputrace_replay_bridge`) plus a Python wrapper (`gputrace_replay_wrapper.py`) that together expose eight capabilities matching what an engineer would otherwise do manually inside Xcode's GPU Frame Debugger:
+A self-contained CLI (`gputrace_replay_bridge`) plus a Python wrapper (`gputrace_replay_wrapper.py`) that together expose these capabilities matching what an engineer would otherwise do manually inside Xcode's GPU Frame Debugger:
 
 | Capability | Tool | What you can find out |
 |---|---|---|
 | Headless replay | `replay` | Whether the trace itself reproduces; per-call timing; resource snapshot |
 | Texture / buffer inspection | `replay --list-resources --export` | Are render targets blank? Is uniform data sane? Do values contain NaN? |
-| Pipeline / shader dump + RPS↔shader correlation | `pipeline` | Which library compiled which function; metallib + AIR for offline inspection; **R7.2: each RPS now reports its vertex/fragment function keys, library keys, color/depth/stencil attachment formats, write masks, and raster sample count — without requiring an external swizzle probe** |
-| RPS → shader IR reverse-lookup | `shader-of-rps` | **R7.4: one command from a render-pipeline-state key to its fragment/vertex `MTLFunction`, the owning metallib, the PlayTools cacheKey, and (with `--with-ir`) the disassembled LLVM IR `.ll` file. R7.7: when MTLLibrary lacks `bitcodeData`, transparently falls back to PlayCover ShaderDebugInfo `module.bc` — IR coverage on LYSK rises from ~3% (AIR-only) to ~100%.** |
-| Frame timeline (encoder/draw) + draw→RPS map | `frame-list` | **R7.3: command buffers, render/compute/blit encoders with attachment summaries, every draw with primitive type / vertex / instance counts and its bound RPS_key. Pipe `draw_to_rps_map[].rps_key` directly into `shader-of-rps --with-ir` for "draw N → shader IR" in two commands. R7.6-A: each draw now also carries a full per-stage binding snapshot (`bindings.{vertex,fragment}.{buffers,textures,samplers}[]` with `resource_id` / `offset` / `inline_bytes_size`) — answers "what was bound when this draw executed".** |
-| **draw_index → shader IR (one-shot)** | `shader-of-drawcall` (Python wrapper) | **R7.6-C: thin封装 — `frame-list → draw_to_rps_map[draw_index] → shader-of-rps`. Mirrors `shader-of-rps` for the "I know the draw index, give me the shader" mental model. OOR draw_index returns structured `draw_index_out_of_range` (exit 12); compute-only traces gracefully report `draw_count=0`. Wrapper-only — bridge unchanged. Combined with R7.7 SDI fallback, `--with-ir` now produces a real `.ll` for ~100% of LYSK draws. R7.6-D: `--with-bindings` / `--with-uniforms` flags lift this from "IR-only" to the full triple-bundle "shader IR + bindings + uniforms" — one command returns the same draw-context an Xcode GUI selection gives you (per-stage buffer/texture/sampler binding tables + every cbuffer slot's bytes decoded through reflection).** |
-| **library_key → IR (direct)** | `disasm` | **R7.7: `disasm <trace> <lib_key> --with-ir` skips the RPS detour and goes straight library_key → metallib → cacheKey → bitcodeData/SDI module.bc → llvm-dis. Optional `--key-type rps` forwards to `shader-of-rps`. Includes the same SDI fallback used by `shader-of-rps`.** |
-| **Uniform / cbuffer content decode** | `dump-uniforms` | **R7.6-B: `dump-uniforms <trace> <draw_index|rps_key> <bind_slot>` decodes the bytes of a vertex/fragment buffer binding using the captured `MTLRenderPipelineReflection` (`MTLStructType` tree) — outputs `{fieldName: {offset, data_type, value}}` for every member. Wrapper draw-mode auto-resolves `(rps_key, buffer_key, offset)` from R7.6-A's binding table; bridge-direct rps-mode accepts an explicit `--buffer-key`/`--offset`. Layout (struct member names + offsets + types) is always emitted from reflection, even if the bytes can't be read; `--with-hex` adds a raw hex dump for cross-checking. Answers "what cbuffer values did the shader actually see at this draw" — typically the final-mile question for UV / matrix / light-param / material-param bugs.** |
+| Pipeline / shader dump + RPS↔shader correlation | `pipeline` | Which library compiled which function; metallib + AIR for offline inspection; each RPS reports its vertex/fragment function keys, library keys, attachment formats, write masks, and raster sample count |
+| RPS → shader IR reverse-lookup | `shader-of-rps` | One command from a render-pipeline-state key to its fragment/vertex `MTLFunction`, the owning metallib, the PlayTools cacheKey, and (with `--with-ir`) the disassembled LLVM IR `.ll` file. When MTLLibrary lacks `bitcodeData`, transparently falls back to PlayCover ShaderDebugInfo `module.bc` — IR coverage ~100%. |
+| Frame timeline (encoder/draw) + draw→RPS map + bindings | `frame-list` | Command buffers, render/compute/blit encoders with attachment summaries, every draw with its bound RPS_key. Each draw also carries a full per-stage binding snapshot (`bindings.{vertex,fragment}.{buffers,textures,samplers}[]` with `resource_id` / `offset` / `inline_bytes_size`). |
+| **Find draws by name (recommended first entry point)** | `find-draws` (Python wrapper) | **When you know a shader name or RPS label from Xcode GUI (e.g. "SkinMakeupNew"), use `find-draws --by-label <name>` to get all matching draw indices. Add `--show-first --with-ir --with-uniforms` for a zero-step jump from GUI name to full triple-bundle (IR + bindings + uniforms). This is the bridge between "what user sees in Xcode" and "what CLI tools need".** |
+| draw_index → shader IR + bindings + uniforms (one-shot) | `shader-of-drawcall` (Python wrapper) | `--with-ir --with-uniforms` gives the full triple-bundle: shader IR + per-stage binding tables + every cbuffer slot decoded through reflection. One command returns the same draw-context an Xcode GUI selection gives you. |
+| library_key → IR (direct) | `disasm` | Skips the RPS detour and goes straight library_key → metallib → cacheKey → IR. |
+| Uniform / cbuffer content decode | `dump-uniforms` | Decodes bytes of a buffer binding using captured `MTLRenderPipelineReflection` — outputs field names, offsets, data types, and actual values. Answers "what cbuffer values did the shader actually see at this draw". |
 | Shader hot-replace | `shader --verify` | Bisect: replace a suspect shader with a corrected/instrumented one and re-replay |
 | Replay configuration | `config` | Toggle Metal validation, optimization, unused-resource loading to isolate causes |
 
@@ -70,12 +71,13 @@ Look at `replay_rc`, `success`, `elapsed_ms`, `resource_count`. If `success=fals
 Re-read the user's report and decide which capability is most likely to surface evidence first. Some heuristics:
 
 - "Output is black / missing / corrupted" → start with `replay --list-resources` to inventory render targets, then `--export` the suspect texture and inspect it (size, format, raw bytes).
-- "Specific material / effect looks wrong" → use `pipeline` to dump every library and look for the shader by `installName` / function name, then plan a shader swap.
+- "Specific material / effect looks wrong" → **use `find-draws --by-label <shader_name> --show-first --with-ir --with-uniforms`** to jump from the shader/material name to full draw context (IR + bindings + uniforms). This is the fastest path when you know the shader name from Xcode GUI.
+- "I know a shader name but not its draw index" → `find-draws --by-label <name>` or `find-draws --by-shader-name <fn>` to get matching draw indices, then `shader-of-drawcall` on any of them.
 - "It crashes / has validation errors" → run `config enableValidation=1` and compare to default.
 - "It's slow / regressed" → compare `config disableOptimizeRestores=0` vs `=1` (typically 3–6× delta). Use `replay --playto N` to bisect which call range dominates.
 - "I want to test a fix to shader X" → use `shader <key> <new.metallib> --verify` (see Shader Replacement section in `references/investigation-playbook.md`).
 
-If you can't decide in 30 seconds, default to: `replay --list-resources` → `pipeline` (with output dir) → present what you found and ask the user to point.
+If you can't decide in 30 seconds, default to: `find-draws --by-label <keyword>` if you have a name; `replay --list-resources` → `pipeline` if you don't.
 
 ### 3. Drill down with the right subcommand
 
@@ -108,11 +110,23 @@ Sometimes the user hands over a `.gputrace` and asks "what does this frame even 
 
 ### Recommended minimal call sequence
 
+**Quick path (when you already know a shader/material name):**
+
+```bash
+# Zero-step jump from GUI name to full draw context:
+python3 "$SKILL_DIR/scripts/gputrace_replay_wrapper.py" \
+    find-draws <trace> --by-label "SkinMakeupNew" --show-first --with-ir --with-uniforms
+```
+
+This gives you the matching draw indices, plus automatically runs `shader-of-drawcall` on the first hit with IR + bindings + uniforms. Skip the full sequence below if this answers your question.
+
+**Full sequence (unknown trace, no specific target):**
+
 1. **Bounds first** — `replay --bounds` for the maximum legal `--playto N`. Cheap (one playAll). Always do this before any `--playto`-based bisecting so the bridge can fail gracefully on out-of-range targets (exit 12 = `EXIT_PLAYTO_OOR`).
-2. **Pipeline overview** — `pipeline <trace> <output_dir>`. Since R7.2 this also produces every render pipeline's vertex/fragment function/library key plus attachment summary. Read `rps_correlated_count` vs `render_pipeline_states_count`: they should match.
-3. **Frame timeline (R7.3)** — `frame-list <trace>`. Lists every `command_buffer.encoders[]` (render / compute / blit) with the encoder's `[first_call_index, last_call_index]` window, plus per-encoder `draws[]` (primitive type, vertex/instance counts) and a flat `draw_to_rps_map[]`. Use this to answer "which RPS does draw N use?" without writing a swizzle probe yourself.
-4. **Pick a RPS to investigate** — e.g. by `label` (often `Project/Pass`-style strings from Unity/UE), by attachment count (depth-only Z-prepasses are typically `color_attachment_count: 0`), or directly from `frame-list`'s `draw_to_rps_map[k].rps_key`.
-5. **One-shot shader reverse lookup** — `shader-of-rps <trace> <rps_key> --with-ir --output-dir <dir>`. This returns the `metallib`, `AIR`, optionally the `.ll` IR, and the PlayTools `cache_key_metallib` for offline cross-reference.
+2. **Pipeline overview** — `pipeline <trace> <output_dir>`. Produces every render pipeline's vertex/fragment function/library key plus attachment summary. Read `rps_correlated_count` vs `render_pipeline_states_count`: they should match.
+3. **Frame timeline** — `frame-list <trace>`. Lists every `command_buffer.encoders[]` (render / compute / blit) with the encoder's `[first_call_index, last_call_index]` window, plus per-encoder `draws[]` and a flat `draw_to_rps_map[]`. Use this to answer "which RPS does draw N use?" without writing a swizzle probe yourself.
+4. **Pick a RPS to investigate** — e.g. by `label`, by attachment count (depth-only Z-prepasses are typically `color_attachment_count: 0`), or directly from `draw_to_rps_map[k].rps_key`. Or use `find-draws --by-label <name>` to filter by shader name.
+5. **One-shot shader reverse lookup** — `shader-of-rps <trace> <rps_key> --with-ir --output-dir <dir>`. Or use `shader-of-drawcall <draw_index> --with-ir --with-uniforms` for the full triple-bundle.
 
 ### Worked example (LYSK trace)
 

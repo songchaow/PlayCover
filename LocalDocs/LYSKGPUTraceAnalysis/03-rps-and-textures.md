@@ -63,7 +63,7 @@
 
 ### 1.3 角色材质 — Velocity+Normal Pre-pass（481–489，全部 `color#=2, depth=D32S8`）
 
-> ⚠ 之前误标为 "GBuffer 主写入"。实测这些 fragment shader 是**统一的 motion+normal pack 模板**，不写材质属性。详见 `06-gbuffer-truth.md`。
+> 这些 fragment shader 是**统一的 motion+normal pack 模板**，不写材质属性。详见 `06-gbuffer-truth.md`。
 
 | key | label | vf=v/f |
 |---|---|---|

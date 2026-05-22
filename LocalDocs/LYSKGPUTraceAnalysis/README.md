@@ -19,7 +19,7 @@
 > 这是一段 **Unity URP-like 自研管线 + Papegame 后处理栈** 的双帧捕获：
 > **`Z-Prepass → Cascade/Local Shadows → "Velocity + Normal" Pre-pass (1167×1671 RGBA8×2 + D32S8) → Half-res SSAO/SSS-Lighting → Separable SSS → Full-res HDR Forward Compose + Sky + FX (1167×1671 RGBA16F) → DOF → TAA (双历史 ping-pong) → Bloom (5 级金字塔) → Tonemap → FSR EASU (1167×1671 → 1668×2388) → FSR RCAS + UI 叠加 → Present`**，外加一个 `CalcLighting.CSMain` compute pass 做 cluster lighting。
 >
-> **关键发现**：之前以为是 deferred GBuffer 的 E4 (228/229) **实际上是 Velocity + Normal Pre-pass**（详见 `06-gbuffer-truth.md`）。LYSK 是 **forward shading**，lighting 通过重新光栅化几何 + 直接采样原始材质纹理完成，不是从 228/229 解码。
+> **架构要点**：E4 (228/229) 是 **Velocity + Normal Pre-pass**（不是 deferred GBuffer，详见 `06-gbuffer-truth.md`）。LYSK 是 **forward shading**，lighting 通过重新光栅化几何 + 直接采样原始材质纹理完成，不是从 228/229 解码。
 
 ## 规模一览
 
@@ -43,6 +43,8 @@
 | `03-rps-and-textures.md` | 65 个 RPS（label、vf/fragment、attachments）+ 关键 attachment 纹理表 |
 | `04-skin-and-sss-pipeline.md` | SkinMakeupNew / SkinSSS / SeparableSubsurfaceScatter 在帧内的 5 个变体定位（与 `OfflineSourceRecovery/` 抓出的 `.ll` 文件一一对应） |
 | **`06-gbuffer-truth.md`** | **重要** — 通过纹理字节统计 + fragment IR 反编译，证明 228/229 不是传统 deferred GBuffer 而是 **velocity buffer + octahedral normal mask**；LYSK 是 forward shading 不是 deferred |
+| **`07-skin-forward-lighting.md`** | **重要** — 把 RPS 496 的 forward 受光剖析到字段级：每一项贡献来自哪个 cbuffer / 哪张纹理、各占多少。结论：①漫反射 ≈ 80% 由上游 SSS pass 提供（不在 RPS 496 自己算）；②主灯颜色由 cb4 `_CharMainLightColor` 提供，URP `_MainLightColor` 是引擎残留 slot 不参与渲染；③环境镜面 ≈ 0（cubemap 全黑）；④附加光走 LightIndexMap 路径仅 2 盏活跃，鼻尖/唇高光区可见 ~3–6% 冷蓝点缀；⑤本帧 sparkle 字段全 0，不贡献 |
+| **`08-rps496-binding-truth.md`** | **重要** — RPS 496 / draw 69 完整 binding 真值表（vertex 10 buffer + 1 texture，fragment 7 cbuffer + 16 texture），每个 slot 给出 resource_id / 资源标签 / 大小 / pixelFormat / IR `air.arg_name` 一一对应；7 个 fragment cbuffer 的全字段实测值（cb0..cb6）。本文不分析 lighting 公式，只描述"绑了什么"——任何 lighting 语义讨论见 07。 |
 | `05-reproduction.md` | 复现命令、工作目录、所用工具版本、输出 schema 速查 |
 | `data/` | 原始 JSON（直接来自 bridge 输出）：`bounds / replay / pipelines / frame / cb1_summary / cb3_summary / rps_index / textures_index` |
 

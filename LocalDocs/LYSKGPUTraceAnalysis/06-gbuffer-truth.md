@@ -1,7 +1,6 @@
 # 06 — GBuffer 真相：不是 Deferred GBuffer，而是 Velocity + Normal Pre-pass
 
-> 这份文档是对 `01` / `02` / `03` 文档中"GBuffer baseColor/normal"叙述的**重要修正**。
-> 通过：(1) 导出真实纹理字节；(2) 反编译 `RPS 484 SkinMakeupNew`、`RPS 481/482/483/485/486/487 ClothStandard/Skin/Eye/Teeth` 等 9 个 GBuffer-pass fragment shader 的 LLVM IR；(3) 对比 `RPS 491 (half-res lighting)` 真实读取的纹理与 binding 名字；得出**与最初猜测相反的结论**。
+> 通过：(1) 导出真实纹理字节；(2) 反编译 `RPS 484 SkinMakeupNew`、`RPS 481/482/483/485/486/487 ClothStandard/Skin/Eye/Teeth` 等 9 个 GBuffer-pass fragment shader 的 LLVM IR；(3) 对比 `RPS 491 (half-res lighting)` 真实读取的纹理与 binding 名字；定性 E4 attachment 的真实语义。
 >
 > 所有原始证据归档在 `data/gbuffer/`：
 > - `gbuf0_228.bin` / `gbuf1_229.bin` — 真实纹理字节
@@ -11,11 +10,11 @@
 
 **E4 (`color={228, 229} RGBA8Unorm + d/s=227 D32S8`) 不是传统 deferred GBuffer**。
 
-| 槽位 | 之前误判 | 实际内容 |
-|---|---|---|
-| **MRT0 (228)** | "baseColor + ?" | **packed 16-bit motion vector**：(NDC.curr.xy / curr.w) − (NDC.prev.xy / prev.w)，每个分量量化为 16 bit 后拆成 high/low 两个字节 → RGBA8 |
-| **MRT1 (229)** | "normal + material" | **octahedral-encoded world normal (RG) + sign(N.z) flag (B) + 常量 0.047 (A，可能是 material/SSS profile id)** |
-| **227 D32S8** | 主深度模板 | ✓ 这个判断没错 |
+| 槽位 | 实际内容 |
+|---|---|
+| **MRT0 (228)** | **packed 16-bit motion vector**：(NDC.curr.xy / curr.w) − (NDC.prev.xy / prev.w)，每个分量量化为 16 bit 后拆成 high/low 两个字节 → RGBA8 |
+| **MRT1 (229)** | **octahedral-encoded world normal (RG) + sign(N.z) flag (B) + 常量 0.047 (A，角色前景 mask)** |
+| **227 D32S8** | 主深度+模板 |
 
 LYSK 是 **forward + visibility-buffer-style** 的混合架构：lighting **不**通过解码 228/229 完成，而是在 `E10`（half-res）和 `E13`（full-res）**重新光栅化几何**、并直接采样原始材质纹理（`PL_Head_MU_N`、`PL_Head_R`、`PL_Makeup_Eyelid_*` 等）来计算光照。228/229 的存在主要是为了**屏幕空间后处理（TAA reproject、SSAO、SSR、Bloom flares）**所需要的 motion vector + screen-space normal。
 
@@ -239,18 +238,17 @@ jq '.command_buffers[1].encoders[].draws[]? | select(.bindings.fragment.textures
 
 **这极有可能是后续 lighting / SSS pass 决定「这个像素该不该走 SSS 路径」的早期判定 mask**。具体如何使用，参见下一节。
 
-## 7. 这个发现改写了什么
+## 7. E4 在管线中的精确定位
 
-之前的 `01-architecture-overview.md §3.3` 与 `02-frame-breakdown.md §E4` 将 228/229 称为「GBuffer baseColor/normal」，**这是错的**。修正版本：
+**E4 是 "Velocity + Normal Pre-pass + Z"**，不是 deferred GBuffer：
 
-> **E4 是 "Velocity + Normal Pre-pass + Z"**，不是 deferred GBuffer：
->   - `228` = packed 16-bit motion vector（per-pixel reprojection delta）
->   - `229` = packed octahedral world normal + sign(N.z) flag + 常量 0.047 alpha
->   - `227` = 主深度模板（这部分判断不变）
->
-> Lighting 通过 `E10`（half-res，仅皮肤+牙齿）和 `E13`（full-res，全部材质）**直接重新光栅化几何 + 采样原图材质纹理 + cluster lighting buffer** 完成。这是 **forward shading 架构 + visibility-style velocity buffer** 的混合方案，不是 deferred shading。
+- `228` = packed 16-bit motion vector（per-pixel reprojection delta）
+- `229` = packed octahedral world normal + sign(N.z) flag + 角色前景 mask（A 通道二态 0.047 / 0）
+- `227` = 主深度+模板
 
-这同时改写了 `04-skin-and-sss-pipeline.md` 中的"GBuffer 主写入" pass 描述（RPS 484）— 它**只写 motion+normal**，不写 baseColor/material。SkinMakeupNew 真正的「材质参数」是被各 lighting pass 中的 cbuffer (`UnityPerMaterial_Type`) 直接拿去用，纹理则是直接采样原 PL_*_D / PL_*_N / PL_*_R 等贴图。
+Lighting 通过 `E10`（half-res，仅皮肤+牙齿）和 `E13`（full-res，全部材质）**直接重新光栅化几何 + 采样原图材质纹理 + cluster lighting buffer** 完成 — **forward shading + visibility-style velocity buffer** 的混合方案，不是 deferred shading。
+
+由此，`04-skin-and-sss-pipeline.md` 中 RPS 484 的角色是 **velocity+normal pre-pass**：只写 motion+normal+mask，不写材质属性、不被 lighting pass 读取。SkinMakeupNew 真正的「材质参数」由各 lighting pass 通过 cbuffer (`UnityPerMaterial_Type`) 与原始 `PL_*_D / PL_*_N / PL_*_R` 贴图直接采样得到。
 
 ## 8. 引用文件清单（在 `data/gbuffer/`）
 

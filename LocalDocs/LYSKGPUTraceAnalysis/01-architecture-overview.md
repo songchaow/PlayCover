@@ -62,16 +62,13 @@ I. Tonemap / FSR / UI / Present         (E28–E30)
 
 E2 用 30 draws / E3 用 10 draws 对**同一组 9 个角色 RPS（472–480）×3 cascade slice / ×1 atlas slice** 渲染（draw 列表表现为 `RPS 472–480` 重复 3 次写到 atlas 三段 viewport）。
 
-### 3.3 ⚠ E4 不是 deferred GBuffer，是 Velocity + Normal Pre-pass（**详见 `06-gbuffer-truth.md`**）
-
-> **重要**：此前一版文档把 `E4 → {228, 229}` 当作"GBuffer baseColor + normal/material"，**这个判断是错误的**。
-> 通过反编译 fragment IR 与导出真实纹理字节，确认了 LYSK 的实际架构：
+### 3.3 E4 是 Velocity + Normal Pre-pass，不是 deferred GBuffer（**详见 `06-gbuffer-truth.md`**）
 
 E4 的 MRT 是 `RGBA8Unorm × 2 + D32S8`：
 
 - **MRT0 (228)**：**packed 16-bit motion vector**（per-pixel reprojection delta，每分量 2 字节）→ 唯一消费方是 **TAA (RPS 441 `_VelocityTexture`)**
-- **MRT1 (229)**：**octahedral-encoded world normal (RG) + sign(N.z) flag (B) + 角色前景 mask (A: 0.047 角色 / 0 InverseTonemap)** → **本帧无 fragment 显式 sample**（可能是引擎全局 binding 占位 / 为非本帧场景预留）
-- **227 D32S8**：主深度+模板（这部分判断不变）
+- **MRT1 (229)**：**octahedral-encoded world normal (RG) + sign(N.z) flag (B) + 角色前景 mask (A: 0.047 角色 / 0 InverseTonemap)** → 本帧无 fragment 显式 sample（引擎全局 binding 占位 / 为非本帧场景预留）
+- **227 D32S8**：主深度+模板
 
 **LYSK 的实际 lighting 架构是 Forward + Visibility-Style Velocity Buffer**：lighting **不**通过解码 GBuffer 完成，而是在 **E10**（half-res，仅皮肤+牙齿）和 **E13**（full-res，全部材质）**重新光栅化几何**，并直接采样原始材质纹理（`PL_Head_MU_N`、`PL_Head_R`、`PL_Makeup_*` 等）+ cluster lighting buffer 来计算光照。
 

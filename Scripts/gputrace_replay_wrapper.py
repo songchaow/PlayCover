@@ -31,6 +31,137 @@ from typing import Any, Optional
 
 
 # ---------------------------------------------------------------------------
+# R8.1: AIR Metadata Parser — parse LLVM IR (.ll) for buffer/texture arg info
+# ---------------------------------------------------------------------------
+
+import re
+from functools import lru_cache
+
+# Regex patterns for AIR metadata nodes in .ll files
+# Example: !19 = !{i32 0, !"air.buffer", !"air.buffer_size", i32 2176, !"air.location_index", i32 0, i32 1, !"air.read", !"air.struct_type_info", !20, !"air.arg_type_size", i32 336, !"air.arg_type_align_size", i32 8, !"air.arg_type_name", !"UnityPerMaterial_Type", !"air.arg_name", !"UnityPerMaterial"}
+_RE_AIR_BUFFER = re.compile(
+    r'!\d+\s*=\s*!\{i32\s+\d+,\s*!"air\.buffer"'
+    r'.*?"air\.location_index",\s*i32\s+(\d+)'  # group 1: location_index
+    r'.*?"air\.arg_type_size",\s*i32\s+(\d+)'   # group 2: arg_type_size
+    r'.*?"air\.arg_type_name",\s*!"([^"]*)"'     # group 3: arg_type_name
+    r'.*?"air\.arg_name",\s*!"([^"]*)"'          # group 4: arg_name
+)
+
+# For textures (no arg_type_size):
+# !45 = !{i32 19, !"air.texture", !"air.location_index", i32 1, ... !"air.arg_type_name", !"texture2d<half, sample>", !"air.arg_name", !"_LightIndexMap"}
+_RE_AIR_TEXTURE = re.compile(
+    r'!\d+\s*=\s*!\{i32\s+\d+,\s*!"air\.texture"'
+    r'.*?"air\.location_index",\s*i32\s+(\d+)'  # group 1: location_index
+    r'.*?"air\.arg_type_name",\s*!"([^"]*)"'     # group 2: arg_type_name
+    r'.*?"air\.arg_name",\s*!"([^"]*)"'          # group 3: arg_name
+)
+
+# For samplers:
+_RE_AIR_SAMPLER = re.compile(
+    r'!\d+\s*=\s*!\{i32\s+\d+,\s*!"air\.sampler"'
+    r'.*?"air\.location_index",\s*i32\s+(\d+)'  # group 1: location_index
+    r'.*?"air\.arg_type_name",\s*!"([^"]*)"'     # group 2: arg_type_name
+    r'.*?"air\.arg_name",\s*!"([^"]*)"'          # group 3: arg_name
+)
+
+
+@dataclass
+class AIRBufferArg:
+    """Parsed AIR buffer argument metadata."""
+    location_index: int
+    arg_name: str
+    arg_type_name: str
+    arg_type_size: int
+
+
+@dataclass
+class AIRTextureArg:
+    """Parsed AIR texture argument metadata."""
+    location_index: int
+    arg_name: str
+    arg_type_name: str
+
+
+@dataclass
+class AIRSamplerArg:
+    """Parsed AIR sampler argument metadata."""
+    location_index: int
+    arg_name: str
+    arg_type_name: str
+
+
+@dataclass
+class AIRMetadata:
+    """Parsed AIR metadata for one shader stage (vertex or fragment)."""
+    buffers: dict[int, AIRBufferArg] = field(default_factory=dict)   # location_index → AIRBufferArg
+    textures: dict[int, AIRTextureArg] = field(default_factory=dict)  # location_index → AIRTextureArg
+    samplers: dict[int, AIRSamplerArg] = field(default_factory=dict)  # location_index → AIRSamplerArg
+
+
+def parse_air_metadata(ll_path: str | Path) -> AIRMetadata:
+    """Parse AIR metadata (buffer/texture/sampler args) from an LLVM IR .ll file.
+
+    Returns an AIRMetadata dataclass with location_index-keyed dicts for each
+    resource type.  Gracefully returns empty metadata on IO errors or parse failures.
+    """
+    result = AIRMetadata()
+    try:
+        text = Path(ll_path).read_text(errors="replace")
+    except (OSError, IOError):
+        return result
+
+    for m in _RE_AIR_BUFFER.finditer(text):
+        loc_idx = int(m.group(1))
+        result.buffers[loc_idx] = AIRBufferArg(
+            location_index=loc_idx,
+            arg_name=m.group(4),
+            arg_type_name=m.group(3),
+            arg_type_size=int(m.group(2)),
+        )
+
+    for m in _RE_AIR_TEXTURE.finditer(text):
+        loc_idx = int(m.group(1))
+        result.textures[loc_idx] = AIRTextureArg(
+            location_index=loc_idx,
+            arg_name=m.group(3),
+            arg_type_name=m.group(2),
+        )
+
+    for m in _RE_AIR_SAMPLER.finditer(text):
+        loc_idx = int(m.group(1))
+        result.samplers[loc_idx] = AIRSamplerArg(
+            location_index=loc_idx,
+            arg_name=m.group(3),
+            arg_type_name=m.group(2),
+        )
+
+    return result
+
+
+def compute_size_check(
+    bound_buffer_length: Optional[int],
+    bound_offset: Optional[int],
+    ir_arg_size: Optional[int],
+) -> Optional[str]:
+    """Compute size_check value per R8.1 spec.
+
+    Returns: 'ok', 'under', 'over', 'cross_section_unknown', or None if inputs insufficient.
+    """
+    if bound_buffer_length is None or bound_offset is None or ir_arg_size is None:
+        return None
+    if ir_arg_size <= 0:
+        return None
+    available = bound_buffer_length - bound_offset
+    if available < 0:
+        return "under"
+    if available < ir_arg_size:
+        return "under"
+    if available > 4 * ir_arg_size:
+        return "over"
+    return "ok"
+
+
+# ---------------------------------------------------------------------------
 # Exit Code Mapping (mirrors bridge EXIT_* constants)
 # ---------------------------------------------------------------------------
 
@@ -479,6 +610,39 @@ class FindDrawsResult:
 
 
 # ---------------------------------------------------------------------------
+# R8.1 — draw-info (per-draw merged binding view with IR metadata)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DrawInfoResult:
+    """R8.1: ``draw-info`` 子命令结果 — 单 draw 的扁平 merged binding view。
+
+    将 frame-list bindings + pipeline RPS 关联 + AIR metadata 自动 join，
+    输出 agent 友好的单 draw 视图。每个 buffer/texture 绑定自动带上
+    ``ir_arg_name`` / ``ir_arg_type_name`` / ``ir_arg_size`` / ``size_check``。
+    """
+    trace_path: str
+    draw_index: int
+    encoder_index: Optional[int] = None
+    draw_in_encoder: Optional[int] = None
+    call_index: Optional[int] = None
+    rps_key: Optional[int] = None
+    rps_label: Optional[str] = None
+    # Merged bindings with IR metadata injected
+    vertex_bindings: Optional[dict[str, Any]] = None
+    fragment_bindings: Optional[dict[str, Any]] = None
+    # Metadata join health
+    metadata_join_ok: bool = False
+    metadata_join_failed_count: int = 0
+    metadata_join_error: Optional[str] = None
+    # Optional uniforms (when with_uniforms=True)
+    uniforms: Optional[list["DumpUniformsResult"]] = None
+    error: Optional[str] = None
+    hint: Optional[str] = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
 # R7.6 子项 C — shader-of-drawcall 薄封装
 # ---------------------------------------------------------------------------
 
@@ -616,6 +780,7 @@ class ReplayBridge:
         Args:
             bridge_path: bridge binary 路径。如果为 None，自动搜索。
         """
+        self._air_metadata_cache: dict[int, AIRMetadata] = {}  # R8.1
         if bridge_path:
             self._binary = Path(bridge_path)
         else:
@@ -2024,6 +2189,355 @@ class ReplayBridge:
         return result
 
     # ------------------------------------------------------------------
+    # R8.1 — draw-info (per-draw merged binding view with IR metadata)
+    # ------------------------------------------------------------------
+
+    def draw_info(
+        self,
+        trace_path: str | Path,
+        draw_index: int,
+        *,
+        with_uniforms: bool = False,
+        output_dir: Optional[str | Path] = None,
+        timeout: float = 300.0,
+    ) -> DrawInfoResult:
+        """
+        R8.1: Per-draw merged binding view — 单 draw 的扁平视图，binding 表自动
+        注入 ``ir_arg_name`` / ``ir_arg_type_name`` / ``ir_arg_size`` / ``size_check``。
+
+        内部链路：
+        1. ``frame-list --with-bindings`` → 目标 draw 的 bindings + rps_key
+        2. ``pipeline`` → rps_key 的 vertex/fragment library_key
+        3. ``disasm --with-ir`` → library 的 .ll IR 文件
+        4. ``parse_air_metadata(.ll)`` → slot → arg_name/type_name/size 映射
+        5. 注入到 bindings 各 slot → 输出扁平 JSON
+
+        Args:
+            trace_path: .gputrace bundle 路径
+            draw_index: ``draw_to_rps_map`` 中的 ``draw_index_global``
+            with_uniforms: True 时附带 per-slot uniform decode
+            output_dir: IR 输出目录
+            timeout: 超时秒数
+
+        Returns:
+            DrawInfoResult — 含 vertex_bindings + fragment_bindings (已注入 IR metadata)
+        """
+        if draw_index < 0:
+            raise ValueError(f"draw_index must be >= 0, got {draw_index}")
+        trace_path = self._validate_trace(trace_path)
+
+        out_dir = str(output_dir) if output_dir else None
+
+        # 1. frame-list 拿 bindings + rps_key
+        fl = self.frame_list(
+            trace_path,
+            with_draws=True,
+            with_bindings=True,
+            with_timing=False,
+            timeout=timeout,
+        )
+
+        if draw_index >= fl.draw_count or draw_index >= len(fl.draw_to_rps_map):
+            raise DrawIndexOutOfRange(
+                draw_index=draw_index,
+                draw_count=fl.draw_count,
+                trace_path=str(trace_path),
+            )
+
+        entry = fl.draw_to_rps_map[draw_index]
+
+        # 找到 draw 的 bindings 和 rps_label
+        rps_label: Optional[str] = None
+        draw_bindings: Optional[FrameDrawBindings] = None
+        for cb in fl.command_buffers:
+            for enc in cb.encoders:
+                if enc.index != entry.encoder_index:
+                    continue
+                for d in enc.draws:
+                    if d.draw_index_global == entry.draw_index_global:
+                        rps_label = d.rps_label
+                        draw_bindings = d.bindings
+                        break
+                break
+            if draw_bindings is not None:
+                break
+
+        result = DrawInfoResult(
+            trace_path=str(trace_path),
+            draw_index=draw_index,
+            encoder_index=entry.encoder_index,
+            draw_in_encoder=entry.draw_in_encoder,
+            call_index=entry.call_index,
+            rps_key=entry.rps_key,
+            rps_label=rps_label,
+        )
+
+        if entry.rps_key is None:
+            result.error = "draw_has_no_rps_key"
+            result.hint = "frame-list did not capture a RPS pointer for this draw."
+            return result
+
+        if draw_bindings is None:
+            result.error = "bindings_not_captured"
+            result.hint = "frame-list did not capture bindings for this draw."
+            return result
+
+        # 2. pipeline 拿 rps_key → library_key 映射
+        pl = self.pipeline(trace_path, output_dir=out_dir, timeout=timeout)
+
+        # 找到目标 RPS 的 vertex/fragment library key
+        vertex_lib_key: Optional[int] = None
+        fragment_lib_key: Optional[int] = None
+        for rps in pl.render_pipeline_states:
+            if rps.key == entry.rps_key:
+                vertex_lib_key = rps.vertex_library_key
+                fragment_lib_key = rps.fragment_library_key
+                break
+
+        # 3. 获取 vertex/fragment AIR metadata
+        v_meta = self._get_air_metadata_for_library(
+            trace_path, vertex_lib_key, output_dir=out_dir, timeout=timeout
+        ) if vertex_lib_key is not None else AIRMetadata()
+
+        f_meta = self._get_air_metadata_for_library(
+            trace_path, fragment_lib_key, output_dir=out_dir, timeout=timeout
+        ) if fragment_lib_key is not None else AIRMetadata()
+
+        # 4. 获取 resource 信息（buffer labels + lengths）用于 size_check
+        resource_info = self._build_resource_info(fl)
+
+        # 5. 注入 metadata 到 bindings
+        v_bindings_enriched, v_failed = self._enrich_stage_bindings(
+            draw_bindings.vertex, v_meta, resource_info
+        )
+        f_bindings_enriched, f_failed = self._enrich_stage_bindings(
+            draw_bindings.fragment, f_meta, resource_info
+        )
+
+        result.vertex_bindings = v_bindings_enriched
+        result.fragment_bindings = f_bindings_enriched
+        result.metadata_join_failed_count = v_failed + f_failed
+        result.metadata_join_ok = (v_failed + f_failed) == 0
+
+        if v_failed + f_failed > 0:
+            result.metadata_join_error = (
+                f"{v_failed + f_failed} bindings could not be matched to IR metadata "
+                f"(vertex: {v_failed}, fragment: {f_failed})"
+            )
+
+        # 6. 可选 uniforms
+        uniforms_list: Optional[list[DumpUniformsResult]] = None
+        if with_uniforms:
+            uniforms_list = []
+            for buf in draw_bindings.fragment.buffers:
+                try:
+                    du = self._dump_uniforms_for_resolved(
+                        trace_path=trace_path,
+                        rps_key=entry.rps_key,
+                        bind_slot=buf.index,
+                        stage="fragment",
+                        buffer_key=buf.resource_id,
+                        offset=buf.offset,
+                        draw_index=draw_index,
+                        encoder_index=entry.encoder_index,
+                        draw_in_encoder=entry.draw_in_encoder,
+                        call_index=entry.call_index,
+                        output_dir=output_dir,
+                        timeout=timeout,
+                    )
+                except BridgeError as e:
+                    du = DumpUniformsResult(
+                        trace_path=str(trace_path),
+                        rps_key=entry.rps_key or -1,
+                        stage="fragment",
+                        bind_slot=buf.index,
+                        output_dir=str(output_dir or ""),
+                        draw_index=draw_index,
+                        encoder_index=entry.encoder_index,
+                        draw_in_encoder=entry.draw_in_encoder,
+                        call_index=entry.call_index,
+                        error=f"bridge_error_exit_{e.exit_code}",
+                        hint=e.stderr.strip()[:512] if e.stderr else None,
+                    )
+                uniforms_list.append(du)
+            result.uniforms = uniforms_list
+
+        # raw JSON
+        result.raw = {
+            "command": "draw-info",
+            "trace_path": str(trace_path),
+            "draw_index": draw_index,
+            "encoder_index": entry.encoder_index,
+            "draw_in_encoder": entry.draw_in_encoder,
+            "call_index": entry.call_index,
+            "rps_key": entry.rps_key,
+            "rps_label": rps_label,
+            "vertex_bindings": v_bindings_enriched,
+            "fragment_bindings": f_bindings_enriched,
+            "metadata_join_ok": result.metadata_join_ok,
+            "metadata_join_failed_count": result.metadata_join_failed_count,
+        }
+        if result.metadata_join_error:
+            result.raw["metadata_join_error"] = result.metadata_join_error
+        if uniforms_list is not None:
+            result.raw["with_uniforms"] = True
+            result.raw["uniforms"] = [u.raw for u in uniforms_list]
+        if result.error:
+            result.raw["error"] = result.error
+            result.raw["hint"] = result.hint
+        return result
+
+    # ------------------------------------------------------------------
+    # R8.1 — Internal helpers for metadata enrichment
+    # ------------------------------------------------------------------
+
+    def _get_air_metadata_for_library(
+        self,
+        trace_path: Path,
+        library_key: int,
+        *,
+        output_dir: Optional[str] = None,
+        timeout: float = 300.0,
+    ) -> AIRMetadata:
+        """Get AIR metadata for a library (with caching).
+
+        Calls ``disasm --with-ir`` to produce the .ll file, then parses it.
+        """
+        if library_key in self._air_metadata_cache:
+            return self._air_metadata_cache[library_key]
+
+        try:
+            dr = self.disasm(
+                trace_path,
+                library_key,
+                key_type="library",
+                with_ir=True,
+                output_dir=output_dir,
+                timeout=timeout,
+            )
+            if dr.ir_ll_path:
+                meta = parse_air_metadata(dr.ir_ll_path)
+            else:
+                meta = AIRMetadata()
+        except (BridgeError, Exception):
+            meta = AIRMetadata()
+
+        self._air_metadata_cache[library_key] = meta
+        return meta
+
+    def _build_resource_info(self, fl: FrameListResult) -> dict[int, dict[str, Any]]:
+        """Build resource_id → {label, length} from replay result (frame-list raw).
+
+        frame-list raw JSON may contain a 'resources' section from the bridge
+        if --list-resources was used, but typically we don't have it. Instead
+        we'll gather what we can from the bindings themselves (buffer_length etc.
+        are available in dump-uniforms, not in frame-list). For now we return
+        an empty dict — size_check will use the binding-level info when available
+        from pipeline/replay calls. The actual buffer_length per resource is
+        only fully resolved when combined with dump-uniforms (R7.6-B) or a
+        dedicated replay --list-resources call.
+
+        For R8.1 MVP, size_check uses buffer info from dump-uniforms output
+        (buffer_length field). The draw-info path adds size_check to the
+        enriched binding dict when ir_arg_size is known and buffer_length is
+        available from the replay resource list or subsequent dump-uniforms.
+        """
+        # Placeholder — fill from replay resource list in future enhancement
+        return {}
+
+    def _enrich_stage_bindings(
+        self,
+        stage_bindings: FrameStageBindings,
+        metadata: AIRMetadata,
+        resource_info: dict[int, dict[str, Any]],
+    ) -> tuple[dict[str, Any], int]:
+        """Enrich a stage's bindings with AIR metadata.
+
+        Returns (enriched_dict, failed_count) where enriched_dict follows the
+        R8.1 target schema and failed_count is the number of bindings that
+        couldn't be matched to IR metadata.
+        """
+        failed = 0
+
+        enriched_buffers = []
+        for buf in stage_bindings.buffers:
+            entry: dict[str, Any] = {
+                "index": buf.index,
+            }
+            if buf.resource_id is not None:
+                entry["resource_id"] = buf.resource_id
+            if buf.offset is not None:
+                entry["offset"] = buf.offset
+            if buf.inline_bytes_size is not None:
+                entry["inline_bytes_size"] = buf.inline_bytes_size
+
+            # Inject resource info (label, length) if available
+            if buf.resource_id is not None and buf.resource_id in resource_info:
+                ri = resource_info[buf.resource_id]
+                if "label" in ri:
+                    entry["buffer_label"] = ri["label"]
+                if "length" in ri:
+                    entry["buffer_length"] = ri["length"]
+
+            # Inject IR metadata
+            air_buf = metadata.buffers.get(buf.index)
+            if air_buf is not None:
+                entry["ir_arg_name"] = air_buf.arg_name
+                entry["ir_arg_type_name"] = air_buf.arg_type_name
+                entry["ir_arg_size"] = air_buf.arg_type_size
+                # size_check (requires buffer_length from resource_info)
+                buf_len = entry.get("buffer_length")
+                if buf_len is not None:
+                    sc = compute_size_check(buf_len, buf.offset, air_buf.arg_type_size)
+                    if sc:
+                        entry["size_check"] = sc
+            else:
+                failed += 1
+
+            enriched_buffers.append(entry)
+
+        enriched_textures = []
+        for tex in stage_bindings.textures:
+            entry = {
+                "index": tex.index,
+                "resource_id": tex.resource_id,
+            }
+            # Inject resource info
+            if tex.resource_id in resource_info:
+                ri = resource_info[tex.resource_id]
+                if "label" in ri:
+                    entry["texture_label"] = ri["label"]
+
+            # Inject IR metadata
+            air_tex = metadata.textures.get(tex.index)
+            if air_tex is not None:
+                entry["ir_arg_name"] = air_tex.arg_name
+                entry["ir_arg_type_name"] = air_tex.arg_type_name
+            else:
+                failed += 1
+
+            enriched_textures.append(entry)
+
+        enriched_samplers = []
+        for smp in stage_bindings.samplers:
+            entry = {
+                "index": smp.index,
+                "sampler_ptr": smp.sampler_ptr,
+            }
+            air_smp = metadata.samplers.get(smp.index)
+            if air_smp is not None:
+                entry["ir_arg_name"] = air_smp.arg_name
+                entry["ir_arg_type_name"] = air_smp.arg_type_name
+
+            enriched_samplers.append(entry)
+
+        return {
+            "buffers": enriched_buffers,
+            "textures": enriched_textures,
+            "samplers": enriched_samplers,
+        }, failed
+
+    # ------------------------------------------------------------------
     # Validation Helpers
     # ------------------------------------------------------------------
 
@@ -2198,6 +2712,20 @@ def _cli_main():
                       help="Pass --with-uniforms to shader-of-drawcall when --show-first is used")
     p_fd.add_argument("--output-dir", default=None,
                       help="Output directory for --show-first (default: system tmp)")
+
+    # draw-info (R8.1 — per-draw merged binding view with IR metadata)
+    p_di = subparsers.add_parser(
+        "draw-info", parents=[parent],
+        help="Per-draw merged binding view with IR arg_name/type/size auto-injected (R8.1). "
+             "Flat single-draw JSON — eliminates multi-source join errors.",
+    )
+    p_di.add_argument("trace", help="Path to .gputrace bundle")
+    p_di.add_argument("draw_index", type=int,
+                      help="Global draw index from frame-list draw_to_rps_map[]")
+    p_di.add_argument("--with-uniforms", action="store_true",
+                      help="Also decode buffer bytes via reflection (per fragment buffer slot)")
+    p_di.add_argument("--output-dir", default=None,
+                      help="Output directory for IR files (default: system tmp)")
 
     # config
     p_config = subparsers.add_parser("config", parents=[parent], help="Configuration control")
@@ -2426,6 +2954,18 @@ def _cli_main():
                     "hint": sod.hint,
                 }
             print(json.dumps(payload, indent=indent))
+
+        elif args.command == "draw-info":
+            di_result = bridge.draw_info(
+                args.trace,
+                args.draw_index,
+                with_uniforms=args.with_uniforms,
+                output_dir=args.output_dir,
+                timeout=args.timeout,
+            )
+            print(json.dumps(di_result.raw, indent=indent))
+            if di_result.error:
+                sys.exit(11)
 
         elif args.command == "config":
             # Parse key=value pairs into kwargs

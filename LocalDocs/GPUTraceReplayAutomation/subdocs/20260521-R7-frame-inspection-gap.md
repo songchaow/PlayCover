@@ -495,8 +495,8 @@ R7.2 已交付：bridge `pipeline` 与本表 65/65 一致。回归命令：跑 `
 | Shader 反编译（覆盖无 AIR 的 library） | `disasm <library_key>` SDI module.bc 路径 | ✅ R7.7（LYSK 96/96） |
 | **Draw call → "shader IR + bindings + uniforms" 三件套一行命令** | `shader-of-drawcall <draw_index> --with-ir --with-uniforms` | ✅ R7.6-D（wrapper 联动） |
 | **GUI shader 名 / RPS label → draw_index 反查** | `find-draws --by-label / --by-shader-name`（消除 GUI↔CLI 入口阻抗） | ✅ R7.6-E |
-| **Per-draw binding 表自动注入 IR `arg_name` / `size_check` / value health** | `frame-list` / `shader-of-drawcall` schema + wrapper `draw-info` | ⏳ R8.1+R8.2（详见 `20260522-R8-skill-usability-backlog.md`） |
-| **按 IR `arg_name` 反查 cbuffer 字段（绕过 bind_slot）** | `dump-uniforms --by-name <BINDING_NAME> --field <FIELD>` | ⏳ R8.3 |
+| **Per-draw binding 表自动注入 IR `arg_name` / `size_check` / value health** | `draw-info` 子命令 + `value_health_summary` | ✅ R8.1+R8.2 |
+| **按 IR `arg_name` 反查 cbuffer 字段（绕过 bind_slot）** | `dump-uniforms --by-name <BINDING_NAME> --field <FIELD>` | ✅ R8.3 |
 
 ---
 

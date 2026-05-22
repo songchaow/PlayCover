@@ -38,7 +38,7 @@
 3. **端到端验证链路** — ✅ LYSK 65/65 RPS 反查 + 244/244 draw→RPS 映射 + 244/244 draw vertex/fragment binding 表 + 65/65 RPS reflection 捕获 + AIR ∪ SDI = 96/96 IR 命中率 100% + draw N 上 cbuffer 字段名/offset/dataType 与 shader 源码字节级一致 + **draw N → IR + bindings + uniforms 三件套一行命令 (R7.6-D)** + **draw N → merged binding view with auto-injected IR arg_name (R8.1)**
 4. **GPU Trace 分析 skill**（`.codebuddy/skills/gpu-trace-analysis/`）— ✅ 自包含，含 SKILL.md + scripts/ + references/，从任意目录可独立运行
 5. **R7：Frame-Inspection 能力补全** — ✅ 主线全部收尾（R7.1/R7.2/R7.3/R7.4/R7.6-A/B/C/D/E/R7.7 全部完成）；剩余工作 R8 Sprint α + R7.5 见下文"下一步"与 TODO 段。详见 `subdocs/20260521-R7-frame-inspection-gap.md` + `subdocs/20260522-R8-skill-usability-backlog.md`
-6. **R8.1：Per-draw Merged Binding View** — ✅ `draw-info` 子命令 + AIR metadata parser + `size_check` + library_key 缓存。结构性消除 §1.1/§1.3 类 slot↔name join 错误。详见 `executions/20260522-R8.1-draw-info-merged-binding-view.md`
+6. **R8 Sprint α：agent 多数据源 join 错误结构性消除** — ✅ R8.1（`draw-info` + AIR metadata 自动注入 + `size_check`）+ R8.2（`value_health_summary` NaN/inf/denormal 告警）+ R8.3（`dump-uniforms --by-name` 按名反查）。详见 `subdocs/20260522-R8-skill-usability-backlog.md`
 
 ## 样本 trace 路径（回归基线）
 
@@ -136,10 +136,10 @@ R7 各 chunk 的实现细节、设计决策、回归基线一律落在 R7 子文
   - **[DONE] R7.6 子项 D**（2026-05-21）：`shader-of-drawcall --with-uniforms` 三件套合一（wrapper 联动，bridge 零变更）
   - **[DONE] R7.6 子项 E**（2026-05-22）：`find-draws` 按 label / shader 名 / rps_key 反查 draw 列表 — wrapper-only，bridge 零变更。消除 GUI 看到 shader 名 ↔ CLI 要 draw_index 的入口阻抗；`--show-first` 一步联动 `shader-of-drawcall --with-ir --with-uniforms`。LYSK 验证通过（by-label SkinMakeupNew 14 命中 / by-rps-key 476 8 命中 / by-shader-name xlatMtl 242 命中 / compute-only 0 命中无报错）
   - **[P1] R7.5（R8 Sprint α 后接棒 P0）**：depth/stencil export（bridge 内置 blit）+ compute encoder dispatch 计数补齐 — 1–1.5 天合计。独立横向能力，无前置依赖；主要服务 ShadowMap / SSS / stencil bit 类问题；同时顺手处理 R7.3 在 compute-only trace 上的 trace-shape 假设盲点（14 个健康路径断言失败）
-- **[DONE] R8 Sprint α**（2026-05-22）：agent 多数据源 join 错误的结构性消除。详见 `subdocs/20260522-R8-skill-usability-backlog.md` + `executions/20260522-R8.1-draw-info-merged-binding-view.md` + `executions/20260522-R8.2-R8.3-health-summary-and-by-name.md`
-  - **[DONE] R8.1**（2026-05-22）：per-draw merged binding view — `draw-info <trace> <draw_index>` 子命令（wrapper-only），AIR metadata parser + `_enrich_stage_bindings()` + library_key 缓存。LYSK draw 69 验证通过（fragment 7/7 buf + 16/16 tex 全注入，§1.1/§1.3 错误结构性消除）
-  - **[DONE] R8.2**（2026-05-22）：`value_health_summary`（NaN/inf/denormal 计数 + 字段定位），注入 dump-uniforms / shader-of-drawcall --with-uniforms / draw-info --with-uniforms。LYSK draw 69 slot 5 验证 `_FresnelColor.x = NaN` 正确检出
-  - **[DONE] R8.3**（2026-05-22）：`dump-uniforms --by-name <BINDING_NAME> [--field <FIELD>]`，按 IR arg_name 直接查值，绕过 bind_slot 心算。LYSK draw 69 `--by-name UnityPerMaterial` 正确解析到 slot 5
+- **[DONE] R8 Sprint α**（2026-05-22）：agent 多数据源 join 错误的结构性消除。详见 `subdocs/20260522-R8-skill-usability-backlog.md`
+  - **[DONE] R8.1**（2026-05-22）：per-draw merged binding view — `draw-info <trace> <draw_index>` 子命令（wrapper-only），AIR metadata parser + `_enrich_stage_bindings()` + library_key 缓存。LYSK draw 69 验证通过
+  - **[DONE] R8.2**（2026-05-22）：`value_health_summary`（NaN/inf/denormal 计数 + 字段定位），注入 dump-uniforms / shader-of-drawcall --with-uniforms / draw-info --with-uniforms
+  - **[DONE] R8.3**（2026-05-22）：`dump-uniforms --by-name <BINDING_NAME> [--field <FIELD>]`，按 IR arg_name 直接查值，绕过 bind_slot 心算
 - **[BACKLOG][P2] R8 Sprint β**：`dump-diff` 双 dump 自动比对 + `metadata.skill_version` 字段（解决"已存档 dump 与新 dump 冲突未及时校对"）。0.3 天
 - **[BACKLOG][P2] R8 Sprint γ**：`resource-trace <rid>` 资源 provenance（writers / readers / inferred_role），解决"非主流 RT/buffer 没 label，agent 只能猜"。1 天
 - **[WISHLIST][P3] R8.6**：host-side shader function evaluator（白名单 IR 子表达式 JIT），让 agent "把 cbuffer 实测值代入公式 sanity check" 不再手算错。等到 lighting/material 自动校验有第二个明确需求再启动
@@ -159,7 +159,7 @@ R7 各 chunk 的实现细节、设计决策、回归基线一律落在 R7 子文
 | 子文档 | 阅读建议 | 内容概述 |
 |--------|---------|---------|
 | `subdocs/20260521-R7-frame-inspection-gap.md` | **总是建议读取** — R7 是当前主线，本文档是入口 | 14 处卡点（已解决/未解决标注）/ 7 段 draw→IR 反查 / 改进矩阵（含 R7.1~R7.7 + R7.6-A/B/C/D 完整交付摘要 + 设计决策 + 已知局限）/ LYSK 65 RPS 回归基线 / compute-only 回归断言表 |
-| `subdocs/20260522-R8-skill-usability-backlog.md` | **总是建议读取** — R8 Sprint α 是 R7.6-E 之后的 P0 | 2026-05-22 RPS 496/draw 69 复盘的 6 类 agent 错误案例 / R8.1~R8.6 子项清单与目标 schema / Sprint 拆分建议 / R7↔R8 边界（"能不能拿到" vs "怎么不让人用错"） |
+| `subdocs/20260522-R8-skill-usability-backlog.md` | **总是建议读取** — R8 是 skill 可用性核心 | 6 类 agent 错误案例复盘 / Sprint α 实现详情（R8.1 draw-info + R8.2 health + R8.3 by-name）/ R8.4~R8.6 BACKLOG / R7↔R8 边界 |
 | `subdocs/20260520-R4.2-controller-path.md` | **总是建议读取** — Controller 路径是所有任务的基础 | 完整调用链、偏移表、ObjectMap、playTo、Pipeline 导出 |
 | `subdocs/20260521-R7.6-A-frame-list-bindings.md` | 在改 binding 表实现 / 加 compute encoder bindings / inline buffer 字节复制 / 实施 R8.1 metadata 注入时按需读取 | 12 swizzle 集合、per-encoder rolling slot 表、emit 阶段 (ptr→id) 反向字典、JSON schema、LYSK 数据基线、已知局限 |
 | `subdocs/20260520-R6.1-bridge-implementation.md` | 在改 bridge 子命令实现 / 加新子命令时按需读取 | 子命令架构、JSON schema、构建方法、测试覆盖 |

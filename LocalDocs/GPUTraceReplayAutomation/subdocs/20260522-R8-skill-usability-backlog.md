@@ -51,189 +51,86 @@ cb5 `_FresnelColor.x = NaN`。`dump-uniforms` 输出字符串 `"NaN"`，技术�
 
 ---
 
-## 2. R8 子项清单（按优先级）
+## 2. R8 子项清单
 
-| 子项 | 优先级 | 工时 | 消除的痛点 | 实现成本 |
-|------|--------|------|-----------|---------|
-| **R8.1** per-draw merged binding view（slot ↔ IR `arg_name` ↔ resource label / size ↔ IR 期望大小） | **P0** | 0.5–1 天 | §1.1 / §1.3 / §2.4 | 低（纯组合现有数据） |
-| **R8.2** size_check + value_health_summary（NaN/inf/denormal/binding 大小不匹配计数与字段定位） | **P1** | 0.5 天 | §1.4 + 隐藏的 OOB | 低 |
-| **R8.3** `dump-uniforms --by-name`（按 IR arg_name 反查字段，绕过 bind_slot） | **P1** | 0.3 天 | §1.1 反向 | 低（wrapper 层即可） |
-| **R8.4** `dump-diff` + `skill_version` metadata（双 dump 自动比对 + 来源标记） | P2 | 0.3 天 | §1.2 | 低 |
-| **R8.5** `resource-trace <rid>`（资源 provenance：写者 / 读者 / 推断 role） | P2 | 1 天 | §1.5 | 中（需扫全 trace 建反向索引） |
-| **R8.6** host-side shader function evaluator（白名单 IR 子表达式 JIT） | P3（搁置） | 高 | §1.6 | 高，覆盖窄 |
+| 子项 | 状态 | 消除的痛点 |
+|------|------|-----------|
+| **R8.1** per-draw merged binding view | ✅ 完成 | §1.1 / §1.3 |
+| **R8.2** value_health_summary | ✅ 完成 | §1.4 |
+| **R8.3** `dump-uniforms --by-name` | ✅ 完成 | §1.1 反向 |
+| **R8.4** `dump-diff` + `skill_version` metadata | BACKLOG | §1.2 |
+| **R8.5** `resource-trace <rid>` 资源 provenance | BACKLOG | §1.5 |
+| **R8.6** host-side shader function evaluator | WISHLIST | §1.6 |
 
 ---
 
-## 3. R8.1 实现要点（per-draw merged binding view）
+## 3. Sprint α 实现详情（已完成 2026-05-22）
 
-### 3.1 目标 schema（新增字段加粗）
+### 3.1 R8.1：`draw-info` 子命令 + AIR Metadata 自动注入
 
-```jsonc
-"bindings": {
-  "fragment": {
-    "buffers": [
-      {
-        "index": 5,
-        "resource_id": 2,
-        "offset": 110912,
-        "buffer_label": "ScratchBuffer0_0",
-        "buffer_length": 4194304,
-        // 新增（来自 RPS 关联 fragment library 的 air metadata）：
-        "ir_arg_name": "UnityPerMaterial",
-        "ir_arg_type_name": "UnityPerMaterial_Type",
-        "ir_arg_size": 336,
-        "size_check": "ok"          // ok / under / over / cross_section_unknown
-      },
-      {
-        "index": 6,
-        "resource_id": 103,
-        "offset": 0,
-        "buffer_label": "Compute_0",
-        "buffer_length": 144,
-        "ir_arg_name": "PapePerRendererCB",
-        "ir_arg_size": 136,
-        "size_check": "ok"
-      }
-    ],
-    "textures": [
-      { "index": 1, "resource_id": 145,
-        "ir_arg_name": "_LightIndexMap",
-        "ir_arg_type_name": "texture2d<half, sample>" }
-    ]
-  }
-}
+**架构**（wrapper-only，bridge 零变更）：
+```
+draw-info <trace> <draw_index> [--with-uniforms] [--output-dir] [--pretty]
+    ├── frame-list --with-bindings → 目标 draw 的 bindings + rps_key
+    ├── pipeline → rps_key 的 vertex/fragment library_key
+    ├── disasm --with-ir (per library, cached) → .ll IR 文件
+    ├── parse_air_metadata(.ll) → slot → {arg_name, type_name, size}
+    └── enrich_stage_bindings() → 注入到 JSON + 计算 size_check
 ```
 
-### 3.2 数据来源链路
+**AIR Metadata Parser**：正则提取 `air.buffer` / `air.texture` / `air.sampler` 的 `{location_index, arg_name, arg_type_name, arg_type_size}`。缓存以 `library_key` 为键。
 
-R7.2（pipeline）已能获取 RPS 关联 library；R7.4（shader-of-rps）已能读取 AIR metadata。R8.1 把这条链路在 `frame-list --with-bindings` 的 emit 阶段跑一遍：每个 draw 的 `rps_key` → fragment library / vertex library → `air.struct_type_info` / `air.texture` / `air.buffer` 元数据 → 注入到 `bindings.<stage>.{buffers|textures}[i]`。
+**size_check 规则**：`ok`（available ≥ ir_arg_size 且 ≤ 4×）/ `under`（真 OOB）/ `over`（疑似借用大 section）/ None（信息不足）。
 
-**关键**：metadata 解析有 cache（同一 RPS 多次复用不重 parse）；解析失败时字段缺省 + 顶层 `metadata_join_failed_count` 上报，不阻塞 binding 输出。
+**验证**（LYSK draw 69 / RPS 496 = SkinMakeupNew）：fragment 7/7 buf + 16/16 tex 全注入，§1.1(slot颠倒)和§1.3(rid错位)结构性消除。vertex 3/10（7 个 stage_in 顶点输入属已知不注入范畴）。
 
-### 3.3 wrapper 层 `draw-info` 子命令（§2.4 痛点）
+**已知局限**：vertex stage_in 不注入 metadata / size_check 需 buffer_length / argument buffer 二级 indirect 不展开。
 
-`frame-list` 整 trace 244 draw 的 JSON ~390KB，agent 用 `jq '.command_buffers[].encoders[].draws[] | select(.draw_index_global==69)'` 路径过深易错。R8.1 在 wrapper 层加 `draw-info <trace> <draw_index>`：
+### 3.2 R8.2：`value_health_summary`
 
-- 内部就是 `frame-list --with-bindings` 后切片到目标 draw
-- 输出**扁平、agent 友好**的单 draw JSON（含 `vertex_bindings` / `fragment_bindings` / 可选 `uniforms` / 可选 `value_health_summary`）
-- 与 `shader-of-drawcall --with-bindings --with-uniforms` 的差别：`draw-info` 默认输出 IR arg_name 已注入的 binding 视图（不强制走 IR + uniforms 决策路径）；`shader-of-drawcall` 是"我要全套"的入口
-
-### 3.4 `shader-of-drawcall --with-bindings` 同步覆盖
-
-R7.6-D 已让 `shader-of-drawcall` 返回 `bindings`，R8.1 同样为这条路径补上 `ir_arg_name` 字段。所有"含 bindings"的输出 schema 严格一致。
-
-### 3.5 corner case
-
-- **vertex_input vs buffer 共表**：`stage_in` 顶点输入与普通 buffer 在 IR `air.buffer` 列表里都有，需用 `air.location_index` 区分
-- **push constant**：M-series 偶发 inline buffer，`resource_id=null` 时 `ir_arg_name` 仍可填
-- **argument buffer 二级 indirect**：当前不展开（与 R7.6-B 已知局限对齐）
-
----
-
-## 4. R8.2 实现要点（size_check + value_health_summary）
-
-### 4.1 size_check 取值
-
-| 取值 | 判定 |
-|------|------|
-| `ok` | `bound_buffer_length - offset >= ir_arg_size` |
-| `under` | `bound_buffer_length - offset < ir_arg_size`（真 OOB / 跨 section） |
-| `over` | `bound_buffer_length - offset > 4 × ir_arg_size`（疑似借用了大 section） |
-| `cross_section_unknown` | 一个 ScratchBuffer 内多个 cbuffer 紧邻，无法仅凭 length 判定（需相邻绑定 offset 推断） |
-
-LYSK 实战中"Compute_0 144B 借给 PapePerRendererCB 136B"是典型 `over` → 引导 agent 单独审视而非默认报错。
-
-### 4.2 value_health_summary
-
+对 decoded 字段树遍历统计 NaN/inf/denormal。输出 schema：
 ```json
-"value_health_summary": {
-  "nan_count": 1,
-  "inf_count": 0,
-  "denormal_count": 2,
-  "fields_with_nan": ["_FresnelColor.x"],
-  "fields_with_inf": [],
-  "fields_with_denormal": ["_EyeSparkle", "_LipSparkle"]
-}
+"value_health_summary": { "nan_count": 1, "inf_count": 0, "denormal_count": 0,
+  "fields_with_nan": ["_FresnelColor"], "fields_with_inf": [], "fields_with_denormal": [] }
 ```
 
-一次遍历 decoded 树即可计算；`dump-uniforms` 与 `shader-of-drawcall --with-uniforms` 在结果末尾追加。负值不计入（部分场景如 spot direction 是合法的，避免误报）。
+检测规则：NaN（`"NaN"` 或 `math.isnan`）/ inf / denormal（`0 < |v| < 6.1e-5` half 阈值）。注入到 `dump-uniforms` / `shader-of-drawcall --with-uniforms` / `draw-info --with-uniforms`。验证：LYSK draw 69 slot 5 `_FresnelColor.x = NaN` 正确检出。
 
----
+### 3.3 R8.3：`dump-uniforms --by-name`
 
-## 5. R8.3 实现要点（dump-uniforms --by-name）
-
+按 IR `arg_name` 直接查值，绕过 `bind_slot` 心算：
 ```bash
-gputrace_replay_bridge dump-uniforms <trace> 69 \
-    --stage fragment --by-name UnityPerMaterial --field _NonMetalSpecular
-# 输出（仅相关字段）：
-# { "draw_index": 69, "stage": "fragment",
-#   "binding_name": "UnityPerMaterial",
-#   "field": "_NonMetalSpecular",
-#   "offset": 54, "data_type": "half", "value": 0.983398,
-#   "buffer_resource_id": 2, "buffer_offset": 110912, "buffer_length": 4194304 }
+python3 gputrace_replay_wrapper.py dump-uniforms <trace> 69 0 --by-name UnityPerMaterial [--field _NonMetalSpecular]
 ```
 
-实现层级：wrapper-only（query name → 经 R7.2 reflection 找到 binding name match → 找到 bind_slot → 调现有 `dump-uniforms`）。bridge 零变更。
+解析链路：`--by-name` → frame-list → pipeline → disasm → parse_air_metadata → name→slot → 精确匹配(失败则子串匹配) → 解析出 bind_slot → 调标准 dump-uniforms。`--field` 从 decoded 树做子串过滤。验证：`--by-name UnityPerMaterial` 正确解析到 slot 5。
+
+### 3.4 设计决策汇总
+
+| 决策 | 理由 |
+|------|------|
+| 全 wrapper-only，bridge 零变更 | R8 Sprint α 纯组合现有数据源，无需新 swizzle/API |
+| AIR metadata 从 .ll 正则解析 | llvm-dis 标准输出格式稳定；解析 bitcode 需链接 llvm-c |
+| 缓存以 library_key 为键 | LYSK 96 lib → 65 RPS → 244 draws，复用率高 |
+| denormal 使用 half 阈值 (6.1e-5) | LYSK cbuffer 主要 half 精度 |
+| --by-name 失败输出 available_names | 避免 agent "name_not_found → 重跑 pipeline → grep IR" 循环 |
+| value_health_summary 仅异常时输出 | 正常 draw 不增加输出噪声 |
 
 ---
 
-## 6. R8.4 / R8.5 / R8.6 概览
+## 4. R8.4 / R8.5 / R8.6 概览（BACKLOG / WISHLIST）
 
-### R8.4：`dump-diff` + skill_version metadata
-
-```bash
-gputrace_replay_wrapper.py dump-diff cb0_old.json cb0_new.json
-# Field "_AdditionalLightShadowWeight[0]": old=(0,1.875,0,0)  new=(0,1,0,0)  DIFF
-# Field "_AdditionalLightShadowWeight[1]": old=(0,1,0,0)      new=(0,0,0,0)  DIFF
-# Field "_AdditionalLightPosition[0]":     old=(2.147,...)    new=(2.147,...) ok
-```
-
-辅助：`dump-uniforms` 输出加 `metadata.skill_version: "R7.7+R8.1"` 字段，让 agent 一眼分辨权威性。纯 JSON 字段名识别，wrapper 层。
-
-### R8.5：`resource-trace <rid>` 资源 provenance
-
-```jsonc
-{
-  "resource_id": 145,
-  "first_seen_call_index": 12,
-  "writers": [
-    { "rps_key": 412, "rps_label": "Papegame/CalcLighting.CSMain",
-      "encoder_index": 1, "call_index": 35 }
-  ],
-  "readers": [
-    { "rps_key": 496, "rps_label": "Papegame/SkinMakeupNew",
-      "encoder_index": 13, "draw_index_global": 69, "stage": "fragment", "tex_slot": 1 }
-  ],
-  "inferred_role": "compute_output_consumed_as_texture"
-}
-```
-
-实现：扫 trace 的 `setBuffer:` / `setFragmentTexture:` / render attachment 配置 / blit 调用建反向索引。可缓存。中等成本，但解决"非主流 RT/buffer 没 label"的猜谜场景。
-
-### R8.6：host-side shader function evaluator（搁置）
-
-让 agent "把 cbuffer 实测值代入公式 sanity check" 不再手算错。需先选 scope（Pape SH / GGX 等常用 lighting 子表达式），用 LLVM JIT 跑反射出的 IR 函数。成本高、覆盖窄，等到第二个明确用例（除 SH 外）再启动。
+- **R8.4**（`dump-diff`）：双 dump JSON 自动比对 + `metadata.skill_version` 来源标记。解决§1.2"旧 dump 与新 dump 冲突"。0.3 天。
+- **R8.5**（`resource-trace <rid>`）：扫全 trace 建资源 writers/readers 反向索引 + `inferred_role`。解决§1.5"非主流 RT/buffer 没 label"。1 天。
+- **R8.6**（shader evaluator）：host-side IR 子表达式 JIT。成本高覆盖窄，等第二个明确用例再启动。
 
 ---
 
-## 7. Sprint 建议
+## 5. 与 R7 的边界
 
-1. **Sprint α（强烈推荐先做）**：R8.1 + R8.2 + R8.3 合并 — 都是 metadata join + 浅遍历，复用一份 `RPS → library → AIR metadata` cache。完成后 §1 中 ~80% 的 agent 错误根源被消除。预计 1.5 天合计。
-2. **Sprint β**：R8.4 单做。`dump-diff` 对长期 cross-trace / cross-version 校验非常有用。
-3. **Sprint γ**：R8.5 单做。是 R7 backlog "frame-inspection-gap" 的子项延伸。
-4. **R8.6 暂搁**，等到 lighting/material 自动校验有第二个明确需求再启动。
+- R7 = "能不能拿到"（数据通路端到端打通）
+- R8 = "拿到的怎么不让人用错"（自动 join 后再交给 agent）
 
----
+两者不重叠。R8 只新增字段、不修改既有字段，数据结构严格向后兼容。
 
-## 8. 与 R7 的边界
-
-- R7 = 把"draw → IR + bindings + uniforms"的端到端**数据通路**打通（R7.1~R7.7 + R7.6-A/B/C/D，已闭环）
-- R8 = 把已通路的数据**自动 join 后再交给 agent**，让 agent 不再承担易错的脑内 join
-
-R7 和 R8 不重叠：R7 是"能不能拿到"，R8 是"拿到的怎么不让人用错"。两者在数据结构（`FrameDrawBindings` / `DumpUniformsResult` / `ShaderOfDrawcallResult`）上严格向后兼容 — R8 只新增字段、不修改既有字段。
-
----
-
-## 9. 自我反思（agent 这一面）
-
-不是所有错都该让 skill 背锅。§1.1 把 slot 5/6 颠倒确实有 agent 自身"读 JSON 不仔细"的成分。但**结构性根源**是 skill 让 agent 在多数据源之间手工 join，错误率随数据源数量平方上升。**最佳防御就是 skill 自己 join 好再交给 agent**，agent 只看一份事实表，错的可能性大幅下降 — R8.1 的核心价值就在这里。
+**根本洞察**：agent 在多数据源间手工 join 的错误率随数据源数量平方上升。skill 自己 join 好再交给 agent 看一份事实表，错误率大幅下降。

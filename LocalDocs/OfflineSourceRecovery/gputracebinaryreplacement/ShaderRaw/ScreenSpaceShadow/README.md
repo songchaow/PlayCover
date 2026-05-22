@@ -14,7 +14,7 @@
 
 | 通道 | 语义 | 数据来源 | 下游消费方式 |
 |:----:|------|----------|-------------|
-| **R** | 主灯方向光 PCSS 阴影 | rid 225 `DirectionalShadowDepth` (3072×1024, 3-cascade) | `charShadow = lerp(1, screenShadow.r, _CharShadowIntensity)` 控制主灯镜面反射 + sparkle |
+| **R** | 主灯方向光阴影 (5×5 PCF²) | rid 225 `DirectionalShadowDepth` (3072×1024, 3-cascade) | `charShadow = lerp(1, screenShadow.r, _CharShadowIntensity)` 控制主灯镜面反射 + sparkle |
 | **G** | Spot Light 0 阴影 | rid 226 `LocalShadowmapAtlas` (1024×1024) | `_AdditionalLightShadowWeight = (0,1,0,0)` → `shadowRaw = dot(1-ss, sw)` |
 | **B** | 空闲 (恒 1.0) | — | 预留通道，当前无灯使用 |
 | **A** | SSAO（环境遮蔽） | rid 234 (583×835 R8Unorm, `Unlit/SSAOBlur` 输出) | `charSpecular * screenShadow.a`（AO 衰减镜面高光）|
@@ -51,11 +51,11 @@
 └────────────────────────────────────┬────────────────────────────────────┘
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  E9 (draw 57, RPS 463) — Full PCSS  ★ 最终主灯结果                     │
+│  E9 (draw 57, RPS 463) — Full PCF  ★ 最终主灯结果                      │
 │                                                                         │
 │  输入: rid 225 (DirShadow, slot 0) + rid 227 (Depth, slot 1)           │
 │        + rid 234 (SSAO, slot 2)                                         │
-│  输出: rid 236 RGBA = (PCSS_shadow², 1, 1, SSAO) ← 完全覆写 draw 56    │
+│  输出: rid 236 RGBA = (PCF_shadow², 1, 1, SSAO) ← 完全覆写 draw 56     │
 │  算法: 世界坐标重建 → CloseUp 判断 → cascade 选择 + dither              │
 │        → 5×5 PCF tent (9 Gather) → square                               │
 └────────────────────────────────────┬────────────────────────────────────┘
@@ -88,7 +88,7 @@
 |------|---------|------|
 | `ScreenSpaceShadowMap_Simple.shader` | lib298 (RPS 449) | Gather penumbra + SSAO 合成 (fallback) |
 | `ScreenSpaceShadowMap_Penumbra.shader` | lib330 (RPS 462) | Quarter-res penumbra mask 生成 |
-| `ScreenSpaceShadowMap.shader` | lib332 (RPS 463) | 完整 PCSS 软阴影 + SSAO |
+| `ScreenSpaceShadowMap.shader` | lib332 (RPS 463) | 完整 5×5 PCF 软阴影 + SSAO |
 | `SpotShadow.shader` | lib302 (RPS 450) | Spot light 16-tap Poisson disk 阴影 |
 
 > 所有翻译均已通过：语义等价性人工复核 + Unity shader 编译验证 + GPU trace 运行时绑定交叉验证。
@@ -108,6 +108,205 @@
 
 ---
 
+## 阴影算法详解
+
+### 算法 A：Cascaded 5×5 PCF Tent（RPS 462 / RPS 463 共用）
+
+RPS 462（penumbra pass）和 RPS 463（full pass）使用相同的核心算法，区别仅在于输出目标和
+是否附带 SSAO 采样。
+
+**步骤总览：**
+
+```
+深度采样 → 世界坐标重建 → CloseUp 局部光判断 → Cascade 选择
+→ Dithered 边界混合 → Shadow 空间投影 → 5×5 PCF Tent → 平方
+```
+
+#### 1. 深度采样与世界坐标重建
+
+```hlsl
+// 带 0.3 texel 偏移的深度采样（减少 self-shadowing aliasing）
+float2 depthUV = _CameraDepthTexture_TexelSize.xy * 0.3 + uv;
+float depth = tex2D(_CameraDepthTexture, depthUV).r;
+
+// 通过 InvViewProjMatrix 从 NDC + depth 重建世界坐标
+float4 clipH = depth.xxxx * InvVP[2] + InvVP[3];
+clipH += ndcY.xxxx * InvVP[1];
+clipH += ndcX.xxxx * InvVP[0];
+float3 worldPos = clipH.xyz / clipH.w;  // camera-relative world position
+```
+
+#### 2. CloseUp 局部光覆盖判断
+
+将世界坐标投影到 CloseUp shadow 矩阵空间，若 NDC 坐标落在 ±0.99 范围内，
+则该像素由局部光 shadow atlas 覆盖（`localShadowFlag = 1`），跳过方向光 cascade。
+
+```hlsl
+float2 cuv = CloseUpWorldToShadow * worldPos;
+bool inLocal = abs(cuv * 2 - 1) < 0.99;  // 两轴均在范围内
+```
+
+#### 3. Cascade 选择（3-cascade + sphere distance）
+
+使用 3 个分割球体的距离平方判定 cascade 归属：
+
+```hlsl
+float3 dists = float3(dot(wp - sphere0), dot(wp - sphere1), dot(wp - sphere2));
+bool3 inside = dists < _DirShadowSplitSphereRadii.xyz;
+```
+
+通过差分编码 `half4(local, c0-local, c1-c0, c2-c1)` 和加权 `dot(..., half4(1,4,3,2))`
+将 cascade 索引打包为单个半精度标量，再经 `4 - packedSum` 反解为 0~3 索引。
+
+#### 4. Dithered Cascade 边界混合
+
+在 cascade 边界处使用 4×4 dither pattern 避免硬切换：
+
+```hlsl
+int ditherIdx = (pixelY % 4) * 4 + (pixelX % 4);  // 16 entry LUT
+half ditherFilter = DitherFilters[ditherIdx];
+// 当 blendRatio >= dither 阈值时，跳到下一个 cascade
+half cascadeOffset = (blendRatio >= ditherFilter) ? selectedWeight : 0;
+uint finalCascade = clamp(cascadeOffset + baseIndex, 0, 3);
+```
+
+这种 dithered 混合比逐像素双采样 blend 便宜，且在时域 TAA 下不可见。
+
+#### 5. Shadow 空间投影
+
+```hlsl
+uint matBase = cascadeIdx * 4;
+float3 shadowCoord = WorldToShadowArray[matBase+0].xyz * wp.xxx
+                   + WorldToShadowArray[matBase+1].xyz * wp.yyy
+                   + WorldToShadowArray[matBase+2].xyz * wp.zzz
+                   + WorldToShadowArray[matBase+3].xyz;
+```
+
+#### 6. 5×5 PCF Tent Filter（9 Gather = 36 texels → 25 有效比较）
+
+核心采样模式：以 `shadowCoord.xy` 为中心，在 3×3 grid（间隔 2 texel）上执行 9 次
+`Texture2D.Gather()`，每次返回 2×2 邻域（4 个深度值），共覆盖 6×6 texel footprint。
+
+```
+Gather 采样布局（相对 baseUV 的 texel 偏移）:
+
+    (-2,-2)   (0,-2)   (2,-2)     ← Row 1 (bottom)
+    (-2, 0)   (0, 0)   (2, 0)     ← Row 2 (middle)
+    (-2,+2)   (0,+2)   (2,+2)     ← Row 3 (top)
+```
+
+每个 Gather 返回的 4 个深度值与 `shadowCoord.z` 比较（`>= ? 1 : 0`），然后按
+**子像素 fractional position** 做加权累加：
+
+```hlsl
+// 边缘列使用 (1-frac) / frac 权重，中间列权重为 1
+// 边缘行使用 (1-frac.y) / frac.y 权重，中间行权重为 1
+// 例: 左列 bottom row:
+float2 row1 = cmpLeft.wx * (1-frac.x) + cmpLeft.zy   // 左边缘加权
+            + cmpCenter.wx + cmpCenter.zy              // 中间全权重
+            + cmpRight.wx;                              // 右边缘部分
+row1 += cmpRight.zy * frac.x;                          // 右边缘补充
+float pcfRow1 = row1.x * (1-frac.y) + row1.y;         // 行间加权
+```
+
+最终 25 个有效采样点的加权和除以 25 再平方：
+
+```hlsl
+float shadow = (total * 0.04) * (total * 0.04);  // (sum/25)²
+```
+
+平方使阴影边缘过渡呈现类 gamma 曲线，视觉上更柔和自然。
+
+---
+
+### 算法 B：Gather4 + Penumbra Average（RPS 449，Simple Fallback）
+
+极简版本，直接从 E5 预计算的 quarter-res penumbra mask 上采样：
+
+```hlsl
+float4 gathered = _PenumbraMask.Gather(sampler, uv);  // 4 个相邻 texel
+float avg = (gathered.x + gathered.y + gathered.z + gathered.w) * 0.25;
+
+// 质量门控：如果采样区域几乎全亮但仍低于 bias，discard 该像素
+if (sum > 0.04 && avg < _PenumbraBias)
+    discard;
+
+return float4(avg, 1.0, 1.0, SSAO.r);
+```
+
+此 pass 在当前帧中被 draw 57 完全覆写，作为低质量 fallback 存在
+（可能在某些设备/质量等级下 draw 57 不执行时生效）。
+
+---
+
+### 算法 C：Rotated Poisson Disk 16-Tap（RPS 450，Spot Shadow）
+
+聚光灯阴影使用随机旋转的 Poisson Disk 采样，完全不同于方向光的 PCF tent。
+
+**步骤总览：**
+
+```
+屏幕 UV 计算 → 伪随机旋转角生成 → 世界坐标重建
+→ 光空间投影 → 4 Gather (16 比较) → 均值
+```
+
+#### 1. 伪随机旋转角
+
+基于屏幕像素坐标生成每像素不同的旋转角，消除规则采样 pattern 的 aliasing：
+
+```hlsl
+// 两轮哈希：screenUV → hashInput → dot(sq, 3571) → frac → sq → dot(7142) → frac
+float angle01 = frac(frac(dot(hashSq, 3571)) ^ 2 * 7142 - 0.5);
+float angleRad = angle01 * 6.28125;  // [0, 2π)
+float sinA = sin(angleRad);
+float cosA = cos(angleRad);
+```
+
+#### 2. 旋转采样偏移
+
+构造 4 个采样点，分为两组正交方向，各自绕中心旋转：
+
+```hlsl
+// 组 1: 沿 baseOffset 方向旋转
+float2 tap1A = shadowCoord.xy + float2(offsetCos.x, offsetSin.x);
+float2 tap1B = shadowCoord.xy + float2(offsetCos.y, offsetSin.y);
+
+// 组 2: 沿垂直方向旋转（无 texelRatio 缩放）
+float2 tap2A = shadowCoord.xy + float2(sin*(-R), cos*(+R));
+float2 tap2B = shadowCoord.xy + float2(sin*(+R), cos*(-R));
+```
+
+Poisson 半径 `R ≈ 0.00196`，由 `_LocalLightShadowmapSize.w / .z` 缩放以适应 atlas 分辨率。
+
+#### 3. 4 Gather → 16 深度比较
+
+```hlsl
+float4 g1 = _LocalShadowMapAtlas.Gather(sampler, tap1A);  // 4 depths
+float4 g2 = _LocalShadowMapAtlas.Gather(sampler, tap1B);  // 4 depths
+float4 g3 = _LocalShadowMapAtlas.Gather(sampler, tap2A);  // 4 depths
+float4 g4 = _LocalShadowMapAtlas.Gather(sampler, tap2B);  // 4 depths
+
+// 16 次比较，均匀权重
+float shadow = (sum_of_all_16_comparisons) * 0.0625;  // 1/16
+
+return float4(1.0, shadow, 1.0, 1.0);  // 仅 G 通道有效 (writeMask=G)
+```
+
+---
+
+### 算法对比总结
+
+| | 方向光 Full (RPS 463) | 方向光 Simple (RPS 449) | 聚光灯 (RPS 450) |
+|---|---|---|---|
+| **滤波方式** | 5×5 PCF tent (固定核) | Gather4 average (从预计算 mask) | 16-tap rotated Poisson disk |
+| **采样次数** | 9 Gather (36 texel, 25 有效) | 1 Gather (4 texel) | 4 Gather (16 texel) |
+| **采样源** | cascade depth map 实时比较 | quarter-res penumbra mask | spot shadow atlas 实时比较 |
+| **旋转抖动** | Dithered cascade 边界 | 无 | 每像素随机旋转 |
+| **后处理** | `(sum/25)²` | 直接 average | `sum/16` |
+| **输出通道** | R (+ A=SSAO) | R (+ A=SSAO) | G only |
+
+---
+
 ## 技术要点
 
 ### Draw 56 vs Draw 57 的覆写关系
@@ -116,7 +315,7 @@ Draw 56 (RPS 449) 和 draw 57 (RPS 463) 均以 `writeMask=RGBA` + `blending=fals
 因此 **draw 57 完全覆盖 draw 56 的输出**。
 
 - **Draw 56** 是低质量 fallback path：从 E5 预计算的 penumbra mask (rid 230) 直接 Gather4 取均值
-- **Draw 57** 是完整 PCSS 版本：直接从 cascade depth map 实时计算 5×5 PCF
+- **Draw 57** 是完整 PCF 版本：直接从 cascade depth map 实时计算 5×5 PCF
 
 在有 draw 57 的帧里，draw 56 的结果完全不可见。
 

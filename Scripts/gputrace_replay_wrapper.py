@@ -161,6 +161,97 @@ def compute_size_check(
     return "ok"
 
 
+def _is_denormal(v: float) -> bool:
+    """Check if a float is denormal (subnormal)."""
+    import struct
+    try:
+        # Use half precision threshold for half values and single for float
+        # A float32 is denormal if 0 < |v| < 2^-126 ≈ 1.175e-38
+        # A float16 is denormal if 0 < |v| < 2^-14 ≈ 6.1e-5
+        # Use the more sensitive half threshold since most values in these
+        # shaders are half precision
+        return v != 0.0 and abs(v) < 6.1e-5
+    except (TypeError, ValueError):
+        return False
+
+
+def compute_value_health_summary(decoded: Any) -> Optional[dict[str, Any]]:
+    """R8.2: Scan decoded uniform tree for NaN/inf/denormal values.
+
+    Args:
+        decoded: The decoded dict from dump-uniforms output.
+                 Shape: {field_name: {offset, data_type, value}} where value
+                 can be a scalar, list, or nested dict.
+
+    Returns:
+        Health summary dict or None if decoded is empty/None:
+        {
+            "nan_count": int,
+            "inf_count": int,
+            "denormal_count": int,
+            "fields_with_nan": [str],
+            "fields_with_inf": [str],
+            "fields_with_denormal": [str]
+        }
+    """
+    if not decoded or not isinstance(decoded, dict):
+        return None
+
+    nan_count = 0
+    inf_count = 0
+    denormal_count = 0
+    fields_with_nan: list[str] = []
+    fields_with_inf: list[str] = []
+    fields_with_denormal: list[str] = []
+
+    def _scan_value(val: Any, field_name: str) -> None:
+        nonlocal nan_count, inf_count, denormal_count
+
+        if isinstance(val, str):
+            if val == "NaN":
+                nan_count += 1
+                if field_name not in fields_with_nan:
+                    fields_with_nan.append(field_name)
+            elif val in ("inf", "-inf", "Infinity", "-Infinity"):
+                inf_count += 1
+                if field_name not in fields_with_inf:
+                    fields_with_inf.append(field_name)
+        elif isinstance(val, float):
+            import math
+            if math.isnan(val):
+                nan_count += 1
+                if field_name not in fields_with_nan:
+                    fields_with_nan.append(field_name)
+            elif math.isinf(val):
+                inf_count += 1
+                if field_name not in fields_with_inf:
+                    fields_with_inf.append(field_name)
+            elif _is_denormal(val):
+                denormal_count += 1
+                if field_name not in fields_with_denormal:
+                    fields_with_denormal.append(field_name)
+        elif isinstance(val, list):
+            for item in val:
+                _scan_value(item, field_name)
+
+    for field_name, field_data in decoded.items():
+        if isinstance(field_data, dict):
+            value = field_data.get("value")
+            if value is not None:
+                _scan_value(value, field_name)
+        else:
+            _scan_value(field_data, field_name)
+
+    return {
+        "nan_count": nan_count,
+        "inf_count": inf_count,
+        "denormal_count": denormal_count,
+        "fields_with_nan": fields_with_nan,
+        "fields_with_inf": fields_with_inf,
+        "fields_with_denormal": fields_with_denormal,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Exit Code Mapping (mirrors bridge EXIT_* constants)
 # ---------------------------------------------------------------------------
@@ -1741,6 +1832,33 @@ class ReplayBridge:
             }
         if uniforms_list is not None:
             result.raw["uniforms"] = [u.raw for u in uniforms_list]
+            # R8.2: aggregate value_health_summary across all decoded slots
+            agg_nan = 0
+            agg_inf = 0
+            agg_denormal = 0
+            agg_nan_fields: list[str] = []
+            agg_inf_fields: list[str] = []
+            agg_denormal_fields: list[str] = []
+            for u in uniforms_list:
+                if u.decoded:
+                    vhs = compute_value_health_summary(u.decoded)
+                    if vhs:
+                        agg_nan += vhs["nan_count"]
+                        agg_inf += vhs["inf_count"]
+                        agg_denormal += vhs["denormal_count"]
+                        prefix = u.binding_name or f"slot_{u.bind_slot}"
+                        agg_nan_fields.extend(f"{prefix}.{f}" for f in vhs["fields_with_nan"])
+                        agg_inf_fields.extend(f"{prefix}.{f}" for f in vhs["fields_with_inf"])
+                        agg_denormal_fields.extend(f"{prefix}.{f}" for f in vhs["fields_with_denormal"])
+            if agg_nan + agg_inf + agg_denormal > 0:
+                result.raw["value_health_summary"] = {
+                    "nan_count": agg_nan,
+                    "inf_count": agg_inf,
+                    "denormal_count": agg_denormal,
+                    "fields_with_nan": agg_nan_fields,
+                    "fields_with_inf": agg_inf_fields,
+                    "fields_with_denormal": agg_denormal_fields,
+                }
         return result
 
     # --- internal helper ---------------------------------------------------
@@ -2382,6 +2500,33 @@ class ReplayBridge:
         if uniforms_list is not None:
             result.raw["with_uniforms"] = True
             result.raw["uniforms"] = [u.raw for u in uniforms_list]
+            # R8.2: aggregate value_health_summary across all decoded slots
+            agg_nan = 0
+            agg_inf = 0
+            agg_denormal = 0
+            agg_nan_fields: list[str] = []
+            agg_inf_fields: list[str] = []
+            agg_denormal_fields: list[str] = []
+            for u in uniforms_list:
+                if u.decoded:
+                    vhs = compute_value_health_summary(u.decoded)
+                    if vhs:
+                        agg_nan += vhs["nan_count"]
+                        agg_inf += vhs["inf_count"]
+                        agg_denormal += vhs["denormal_count"]
+                        prefix = u.binding_name or f"slot_{u.bind_slot}"
+                        agg_nan_fields.extend(f"{prefix}.{f}" for f in vhs["fields_with_nan"])
+                        agg_inf_fields.extend(f"{prefix}.{f}" for f in vhs["fields_with_inf"])
+                        agg_denormal_fields.extend(f"{prefix}.{f}" for f in vhs["fields_with_denormal"])
+            if agg_nan + agg_inf + agg_denormal > 0:
+                result.raw["value_health_summary"] = {
+                    "nan_count": agg_nan,
+                    "inf_count": agg_inf,
+                    "denormal_count": agg_denormal,
+                    "fields_with_nan": agg_nan_fields,
+                    "fields_with_inf": agg_inf_fields,
+                    "fields_with_denormal": agg_denormal_fields,
+                }
         if result.error:
             result.raw["error"] = result.error
             result.raw["hint"] = result.hint
@@ -2685,6 +2830,13 @@ def _cli_main():
                       help="Truncate hex dump at this many bytes (default: 256)")
     p_du.add_argument("--output-dir", default=None,
                       help="Output directory (default: system tmp)")
+    p_du.add_argument("--by-name", default=None,
+                      help="R8.3: Query by IR arg_name instead of bind_slot. "
+                           "Resolves the bind_slot from pipeline + AIR metadata. "
+                           "When set, the positional 'bind_slot' is ignored (use 0 as placeholder).")
+    p_du.add_argument("--field", default=None,
+                      help="R8.3: When used with --by-name, filter decoded output to a single field "
+                           "(case-insensitive substring match on field name)")
 
     # find-draws (R7.6-E — label / shader-name → draw 反查)
     p_fd = subparsers.add_parser(
@@ -2876,6 +3028,33 @@ def _cli_main():
                         for u in result.uniforms if u.error is not None
                     ],
                 }
+                # R8.2: aggregate value_health_summary across all decoded slots
+                agg_nan = 0
+                agg_inf = 0
+                agg_denormal = 0
+                agg_nan_fields: list[str] = []
+                agg_inf_fields: list[str] = []
+                agg_denormal_fields: list[str] = []
+                for u in result.uniforms:
+                    if u.decoded:
+                        vhs = compute_value_health_summary(u.decoded)
+                        if vhs:
+                            agg_nan += vhs["nan_count"]
+                            agg_inf += vhs["inf_count"]
+                            agg_denormal += vhs["denormal_count"]
+                            prefix = u.binding_name or f"slot_{u.bind_slot}"
+                            agg_nan_fields.extend(f"{prefix}.{f}" for f in vhs["fields_with_nan"])
+                            agg_inf_fields.extend(f"{prefix}.{f}" for f in vhs["fields_with_inf"])
+                            agg_denormal_fields.extend(f"{prefix}.{f}" for f in vhs["fields_with_denormal"])
+                if agg_nan + agg_inf + agg_denormal > 0:
+                    payload["value_health_summary"] = {
+                        "nan_count": agg_nan,
+                        "inf_count": agg_inf,
+                        "denormal_count": agg_denormal,
+                        "fields_with_nan": agg_nan_fields,
+                        "fields_with_inf": agg_inf_fields,
+                        "fields_with_denormal": agg_denormal_fields,
+                    }
             else:
                 payload["with_uniforms"] = False
             if result.error:
@@ -2903,19 +3082,107 @@ def _cli_main():
                 sys.exit(11)
 
         elif args.command == "dump-uniforms":
-            du_result = bridge.dump_uniforms(
-                args.trace,
-                args.target,
-                args.bind_slot,
-                target_kind=args.target_kind,
-                stage=args.stage,
-                buffer_key=args.buffer_key,
-                offset=args.offset,
-                with_hex=args.with_hex,
-                max_hex_bytes=args.max_hex_bytes,
-                output_dir=args.output_dir,
-                timeout=args.timeout,
-            )
+            # R8.3: --by-name mode — resolve bind_slot from IR arg_name
+            if args.by_name is not None:
+                # Need to resolve arg_name → bind_slot via pipeline + disasm + AIR metadata
+                trace_path_resolved = ReplayBridge._validate_trace(args.trace)
+                # Step 1: determine rps_key (from draw or directly)
+                if args.target_kind == "draw":
+                    fl = bridge.frame_list(
+                        trace_path_resolved,
+                        with_draws=True,
+                        with_bindings=True,
+                        with_timing=False,
+                        timeout=args.timeout,
+                    )
+                    if args.target >= fl.draw_count:
+                        raise DrawIndexOutOfRange(
+                            draw_index=args.target,
+                            draw_count=fl.draw_count,
+                            trace_path=str(trace_path_resolved),
+                        )
+                    entry = fl.draw_to_rps_map[args.target]
+                    rps_key_resolved = entry.rps_key
+                else:
+                    rps_key_resolved = args.target
+
+                if rps_key_resolved is None:
+                    print(json.dumps({
+                        "error": "draw_has_no_rps_key",
+                        "hint": "Cannot resolve --by-name without a valid RPS key",
+                    }, indent=indent))
+                    sys.exit(11)
+
+                # Step 2: find library_key for the stage
+                pl = bridge.pipeline(trace_path_resolved, timeout=args.timeout)
+                lib_key: Optional[int] = None
+                for rps in pl.render_pipeline_states:
+                    if rps.key == rps_key_resolved:
+                        lib_key = rps.fragment_library_key if args.stage == "fragment" else rps.vertex_library_key
+                        break
+
+                if lib_key is None:
+                    print(json.dumps({
+                        "error": "library_key_not_found",
+                        "hint": f"Could not find {args.stage} library for RPS {rps_key_resolved}",
+                    }, indent=indent))
+                    sys.exit(11)
+
+                # Step 3: parse AIR metadata to find bind_slot by name
+                meta = bridge._get_air_metadata_for_library(
+                    trace_path_resolved, lib_key,
+                    output_dir=args.output_dir, timeout=args.timeout,
+                )
+                name_lower = args.by_name.lower()
+                matched_slot: Optional[int] = None
+                for loc_idx, buf_arg in meta.buffers.items():
+                    if buf_arg.arg_name.lower() == name_lower:
+                        matched_slot = loc_idx
+                        break
+                if matched_slot is None:
+                    # Try substring match
+                    for loc_idx, buf_arg in meta.buffers.items():
+                        if name_lower in buf_arg.arg_name.lower():
+                            matched_slot = loc_idx
+                            break
+                if matched_slot is None:
+                    print(json.dumps({
+                        "error": "binding_name_not_found",
+                        "by_name": args.by_name,
+                        "stage": args.stage,
+                        "available_names": [b.arg_name for b in meta.buffers.values()],
+                        "hint": "No buffer binding matches the given --by-name. Check available names above.",
+                    }, indent=indent))
+                    sys.exit(11)
+
+                # Step 4: run dump-uniforms with the resolved bind_slot
+                du_result = bridge.dump_uniforms(
+                    args.trace,
+                    args.target,
+                    matched_slot,
+                    target_kind=args.target_kind,
+                    stage=args.stage,
+                    buffer_key=args.buffer_key,
+                    offset=args.offset,
+                    with_hex=args.with_hex,
+                    max_hex_bytes=args.max_hex_bytes,
+                    output_dir=args.output_dir,
+                    timeout=args.timeout,
+                )
+            else:
+                du_result = bridge.dump_uniforms(
+                    args.trace,
+                    args.target,
+                    args.bind_slot,
+                    target_kind=args.target_kind,
+                    stage=args.stage,
+                    buffer_key=args.buffer_key,
+                    offset=args.offset,
+                    with_hex=args.with_hex,
+                    max_hex_bytes=args.max_hex_bytes,
+                    output_dir=args.output_dir,
+                    timeout=args.timeout,
+                )
             # 把 wrapper 自身合成的 frame-list 上下文也带进 raw（如 draw_index/encoder_index）
             payload = dict(du_result.raw)
             if du_result.draw_index is not None:
@@ -2923,6 +3190,21 @@ def _cli_main():
                 payload.setdefault("encoder_index", du_result.encoder_index)
                 payload.setdefault("draw_in_encoder", du_result.draw_in_encoder)
                 payload.setdefault("call_index", du_result.call_index)
+            # R8.2: value_health_summary
+            if du_result.decoded:
+                vhs = compute_value_health_summary(du_result.decoded)
+                if vhs:
+                    payload["value_health_summary"] = vhs
+            # R8.3: --field filter — strip decoded down to matching field(s)
+            if args.field and du_result.decoded and isinstance(du_result.decoded, dict):
+                field_lower = args.field.lower()
+                filtered = {
+                    k: v for k, v in du_result.decoded.items()
+                    if field_lower in k.lower()
+                }
+                payload["decoded"] = filtered
+                payload["field_filter"] = args.field
+                payload["field_match_count"] = len(filtered)
             print(json.dumps(payload, indent=indent))
             if du_result.error:
                 sys.exit(11)

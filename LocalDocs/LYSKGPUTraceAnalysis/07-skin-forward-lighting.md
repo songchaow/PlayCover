@@ -119,7 +119,7 @@ sampled @ screenUV → ≈ (主灯 NdotL · _CharMainLightColor · shadow)  ✱ 
 
 → **结论**：URP 内建的 `_MainLightColor` 在 LYSK 这套自研管线里是**残留 slot**，不参与渲染；这套 shader 用 `_CharMainLightColor` 替换之。
 
-→ **方向**：`_MainLightPosition.xyz = (0.292, 0.274, 0.916)` 单位化后的方向 ≈ `(0.300, 0.282, 0.911)`。这是个**朝右上后方**的平行光方向；常见的"室内主光"角度。
+→ **方向**：`_MainLightPosition.xyz = (0.292, 0.274, 0.916)` 已经是单位向量（magnitude = 1.0），w=0 确认为平行光。这是个**朝右上后方**的平行光方向；常见的"室内主光"角度。
 
 ### 主灯镜面 = GGX D·V·F（行 765–795）
 
@@ -247,10 +247,10 @@ float4 lightIndices = floor(lightIndexTex * 255.0 + 0.5);     // 4 个 0..255 �
 | **0 — 暖白 Spot** | (2.15, 2.31, 1.52, 1) | (2.04, 1.77, 1.95, 9) | spotAtten=(28.95, **−26.74**, 1, 1) ⇒ 真锥形 | distAtten ≈ 4.24m | (0, **1**, 0, 0) ⇒ 取 g 通道，权重 1.0 |
 | **1 — 冷蓝 Point** | (0.72, 1.74, 0.54, 1) | (0.69, 0.72, 0.94, 9) | spotAtten=(0, 1, 1, 1) ⇒ 退化为 point | distAtten ≈ 2m | **(0, 0, 0, 0)** ⇒ shadowRaw = 0 ⇒ **不受任何屏幕阴影影响** |
 
-> 角色根节点世界坐标（cb3 `unity_ObjectToWorld` 第 4 行）= `(-0.003, 0.950, -0.005)`。
+> 角色根节点世界坐标（cb3 `unity_ObjectToWorld` 第 4 行 / cb4 `_RootMPosition`）= `(-0.003, 0.950, -0.005)`。
 >
-> - Light 0 距离角色 ≈ √((2.15)²+(2.31−0.95)²+(1.52)²) ≈ 3.04m，落在 4.24m 范围内 ⇒ **有贡献**。
-> - Light 1 距离角色 ≈ √((0.72)²+(1.74−0.95)²+(0.54)²) ≈ 1.16m，落在 2m 范围内 ⇒ **有贡献**。
+> - Light 0 距离角色 ≈ √((2.15)²+(2.31−0.95)²+(1.52)²) ≈ 2.96m，落在 4.24m 范围内 ⇒ **有贡献**。
+> - Light 1 距离角色 ≈ √((0.72)²+(1.74−0.95)²+(0.54)²) ≈ 1.20m，落在 2m 范围内 ⇒ **有贡献**。
 
 ### 6.4 附加光的简化 BRDF（行 873–885）
 
@@ -292,19 +292,19 @@ addLightContribution += addSpecular * addShadow;
 
 ```
 NdotL ≈ 0.5 (典型)
-lightAtten ≈ saturate(1.16² · (-0.0278) + 2.78) / (1.16² · 0.25 + 1) ≈ 0.86
+lightAtten ≈ saturate(1.20² · (-0.0278) + 2.78) / (1.20² · 0.25 + 1) ≈ 0.84
 specFactor_add ≈ D(NdotH≈0.9, r≈0.5) · (0.5·0.25+0.25) = ~5.0 · 0.375 = 1.875
-F0 ≈ specMask · 0.0786  (假设 specMask=1，使用实测 _NonMetalSpecular=0.983)
-specScalar_add ≈ 1.875 · 0.0786 ≈ 0.147
-addBase ≈ (0.69, 0.72, 0.94) · 0.5 · 0.86 ≈ (0.297, 0.310, 0.404)
-addSpecular ≈ (0.297, 0.310, 0.404) · 0.147 ≈ (0.0437, 0.0456, 0.0594)
+F0 ≈ specMask · 0.0787  (假设 specMask=1，使用实测 _NonMetalSpecular=0.983)
+specScalar_add ≈ 1.875 · 0.0787 ≈ 0.148
+addBase ≈ (0.69, 0.72, 0.94) · 0.5 · 0.84 ≈ (0.290, 0.302, 0.395)
+addSpecular ≈ (0.290, 0.302, 0.395) · 0.148 ≈ (0.0429, 0.0447, 0.0585)
 addShadow = 1.0 (Light 1 ShadowWeight = (0,0,0,0))
-最终贡献 ≈ (0.044, 0.046, 0.059)
+最终贡献 ≈ (0.043, 0.045, 0.058)
 ```
 
 → Light 1 在鼻尖/唇高光区贡献约 4–6% 的**冷蓝点缀**，因不受屏幕阴影遮挡，即使角色脸正处于阴影部分也会出现。
 
-Light 0（暖白 spot，距离 3.04m，spotFalloff 还要乘锥形衰减、且 ShadowWeight=(0,1,0,0) 受 `(1-screenShadow).g` 衰减）整体更弱，本帧合计两盏附加光镜面贡献约 **3–6%**。
+Light 0（暖白 spot，距离 2.96m，spotFalloff 还要乘锥形衰减、且 ShadowWeight=(0,1,0,0) 受 `(1-screenShadow).g` 衰减）整体更弱，本帧合计两盏附加光镜面贡献约 **3–6%**。
 
 
 ---
@@ -449,7 +449,7 @@ finalColor =
 |---|---|---|---|---|
 | **`_SSSSkinTexture`**（实质 = 主灯漫反射 + SH 漫反射 + SSS profile） | ★★★★★ | ✅ | rid 232（E12 输出，需先跑 E10/E11/E12） | 不可，省了画面就糊 |
 | **`_CharMainLightColor`** | ★★★★ | ✅ | cb4 idx 2 = `(2.51, 2.26, 2.43, 3.14)` | 不可，主灯镜面/sparkle 都用 |
-| **`_MainLightPosition`** | ★★★★ | ✅ | cb1 idx 1 = `(0.292, 0.274, 0.916, 0)` 单位化 | 不可，主灯方向 |
+| **`_MainLightPosition`** | ★★★★ | ✅ | cb1 idx 1 = `(0.292, 0.274, 0.916, 0)` 已是单位向量 | 不可，主灯方向 |
 | **`_ScreenShadowTexture` 4 通道** | ★★★ | ✅ | rid 236（E9 输出）| 不可，阴影感缺失 |
 | **`_CharShadowIntensity`** | ★★★ | ✅ | cb4 = 1.0 | 设 0 ⇒ 阴影全失 |
 | **Pape SH 7 个 half4** | ★★ | ✅ | cb6 `_SHMaps[0..6]` | 影响 envSpec（但 envSpec ≈ 0），实际可全填 0 |

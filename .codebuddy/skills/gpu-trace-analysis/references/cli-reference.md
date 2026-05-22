@@ -1,1123 +1,392 @@
 # CLI & API Reference
 
-Complete surface for the bundled tools. Skim the table of contents and jump to what you need — you don't need to read top-to-bottom.
+Complete surface for the bundled tools. **Start with the 3 Core Commands** — they cover 80%+ of investigations. Expand the remaining sections only when needed.
 
-## Table of contents
-1. [The bridge binary](#the-bridge-binary)
-2. [Subcommand: replay](#subcommand-replay)
-3. [Subcommand: pipeline](#subcommand-pipeline)
-4. [Subcommand: shader](#subcommand-shader)
-5. [Subcommand: shader-of-rps](#subcommand-shader-of-rps)
-6. [Subcommand: frame-list](#subcommand-frame-list)
-7. [Subcommand: shader-of-drawcall (wrapper-only)](#subcommand-shader-of-drawcall-wrapper-only)
-8. [Subcommand: disasm](#subcommand-disasm)
-9. [Subcommand: dump-uniforms](#subcommand-dump-uniforms)
-10. [Subcommand: config](#subcommand-config)
-11. [Subcommand: find-draws (wrapper-only, R7.6-E)](#subcommand-find-draws-wrapper-only-r76-e)
+## Table of Contents
+
+### Core Commands (full documentation)
+1. [find-draws (wrapper-only)](#core-find-draws)
+2. [draw-info (wrapper-only)](#core-draw-info)
+3. [dump-uniforms](#core-dump-uniforms)
+
+### Supporting Commands (concise reference)
+4. [shader-of-drawcall (wrapper-only)](#shader-of-drawcall)
+5. [replay](#replay)
+6. [pipeline](#pipeline)
+7. [frame-list](#frame-list)
+8. [shader-of-rps](#shader-of-rps)
+9. [disasm](#disasm)
+10. [shader (hot-replace)](#shader)
+11. [config](#config)
+
+### Reference
 12. [Exit codes](#exit-codes)
 13. [Python wrapper — CLI mode](#python-wrapper--cli-mode)
 14. [Python wrapper — module mode](#python-wrapper--module-mode)
-15. [Pixel format helpers](#pixel-format-helpers)
 
 ---
 
-## The bridge binary
+# Core Commands
 
-`scripts/gputrace_replay_bridge` is a single ObjC binary built from `gputrace_replay_bridge.m`. After running `setup.sh`, invoke it with one of nine subcommands. Output is always one JSON object on stdout per invocation; diagnostic messages go to stderr.
-
-```bash
-gputrace_replay_bridge <command> [args...]
-```
-
-Available commands: `help`, `replay`, `pipeline`, `shader`, `shader-of-rps`, `frame-list`, `disasm`, `dump-uniforms`, `config`.
-
-`help` prints the JSON schema of all commands:
-
-```bash
-gputrace_replay_bridge help
-# → {"tool":"gputrace_replay_bridge","version":"0.5.0","commands":[...]}
-```
+These 3 commands cover the vast majority of rendering investigations. Master them first.
 
 ---
 
-## Subcommand: replay
+<a id="core-find-draws"></a>
+## 1. find-draws (wrapper-only, recommended entry point)
 
-Headless replay of a `.gputrace`. Returns timing, replay return code, and (optionally) a resource inventory or a single resource exported to a file.
-
-```bash
-gputrace_replay_bridge replay <path-to-.gputrace> [options]
-```
-
-Options:
-
-| Flag | Semantics |
-|---|---|
-| `--bounds` | Probe the trace's `total_call_count` and exit. Internally runs a single `playAll` then reads the controller's last-played call index. Useful before issuing `--playto N` to know the valid range. (R7.1) |
-| `--playto N` | Replay up to call index N instead of the full frame. Useful for bisecting which call introduces a defect. Default: `playAll`. **Bounds-checked since R7.1**: if N exceeds `total_call_count`, the bridge returns a structured `playto_out_of_range` error (exit 12) rather than crashing. |
-| `--list-resources` | Append a `resources` array to the JSON output describing every texture and buffer in the post-replay ObjectMap. Each entry now includes full Metal property metadata (storage mode, hazard tracking, usage flags, etc.) — see resource entry schema below. (R7.1) |
-| `--export ID PATH` | Dump resource with the given numeric ID to `PATH`. For 2D textures: pixel-perfect raw bytes via `getBytes:`. For buffers: `[buf contents]` memcpy'd to disk. Depth/stencil and non-2D texture types refuse to export and emit `export_error`. |
-
-Output JSON (top-level fields):
-
-| Field | Type | Notes |
-|---|---|---|
-| `command` | string | Always `"replay"` |
-| `trace_path` | string | Echo of the input path |
-| `device` | string | `MTLDevice.name`, e.g. `"Apple M4 Pro"` |
-| `bounds_only` | bool? | Present (and `true`) iff `--bounds` was used (R7.1) |
-| `playto_index` | int? | Present iff `--playto` was used |
-| `replay_rc` | int | Underlying `playAll`/`playTo` return code; 0 = success |
-| `replay_signal` | int? | Present if a SIGSEGV/SIGBUS was caught and recovered (R7.1) |
-| `success` | bool | `replay_rc == 0` |
-| `elapsed_ms` | float | Wall-clock host timing of the replay call |
-| `resource_count` | int | Size of `objectMap.resources` after replay |
-| `total_call_count` | int | The trace's total call count (last play index after `playAll`). **Always emitted** since R7.1. |
-| `last_call_index` | int | The controller's last-played call index after the requested replay action — equals `total_call_count` after default `playAll`, equals N after a successful `--playto N`. (R7.1) |
-| `resources` | array? | Present iff `--list-resources` |
-| `export_id`, `export_path`, `export_bytes` | mixed? | Present on successful export |
-| `export_error` | string? | Present on export failure with a human-readable cause |
-| `error` | string? | Present iff a non-fatal structured error occurred (e.g. `"playto_out_of_range"`, `"bounds_probe_failed"`) (R7.1) |
-| `max` | int? | Present alongside `error: "playto_out_of_range"`; equals `total_call_count` (R7.1) |
-
-Resource entry shape (textures, R7.1 — full metadata):
-
-```json
-{
-  "id": 17,
-  "type": "texture",
-  "width": 1024, "height": 1024, "depth": 1,
-  "pixelFormat": 70, "pixelFormatName": "BGRA8Unorm",
-  "textureType": "2D",
-  "mipmapLevelCount": 1,
-  "sampleCount": 1,
-  "arrayLength": 1,
-  "storageMode": "shared",
-  "cpuCacheMode": "default",
-  "hazardTrackingMode": "tracked",
-  "usage": ["shaderRead", "renderTarget"],
-  "framebufferOnly": false,
-  "memoryless": false,
-  "isDepthStencil": false,
-  "label": "GBuffer.Albedo"
-}
-```
-
-`storageMode` is one of `shared`/`managed`/`private`/`memoryless`/`other`. `cpuCacheMode` is `default`/`writeCombined`/`other`. `hazardTrackingMode` is `default`/`untracked`/`tracked`/`other`. `usage` is the decomposed `MTLTextureUsage` bitmask as a JSON string array; an empty array means `MTLTextureUsageUnknown`. `memoryless` is a convenience boolean (`storageMode == memoryless`). `isDepthStencil` mirrors the bridge's internal classification used by `--export` to refuse depth/stencil dumps.
-
-Resource entry shape (buffers, R7.1 — full metadata):
-
-```json
-{
-  "id": 3,
-  "type": "buffer",
-  "length": 1024,
-  "storageMode": "shared",
-  "cpuCacheMode": "default",
-  "hazardTrackingMode": "tracked",
-  "label": "ConstantBuffer"
-}
-```
-
-### Bounds and out-of-range behavior (R7.1)
-
-The bridge always knows `total_call_count` because every `replay` invocation begins with an internal `playAll` (which doubles as a sanity check that the trace replays cleanly).
-
-- `replay <trace>` — defaults to that internal `playAll` and reports `total_call_count` and `last_call_index` (equal after `playAll`).
-- `replay <trace> --bounds` — same probe but returns immediately afterward, no resource enumeration; cheap way to learn the range before scripting `--playto`.
-- `replay <trace> --playto N` with `N <= total_call_count` — `rewind`s the controller and runs `playTo(N)`; `last_call_index == N` on success.
-- `replay <trace> --playto N` with `N > total_call_count` — returns
-
-```json
-{
-  "command": "replay",
-  "trace_path": "...",
-  "error": "playto_out_of_range",
-  "playto_index": 99999999,
-  "total_call_count": 3425,
-  "max": 3425
-}
-```
-
-with exit code 12 (`EXIT_PLAYTO_OOR`). Older bridge revisions would SIGSEGV in this scenario.
-
-For defense in depth, both `playAll` and `playTo` invocations are wrapped in a `setjmp`/SIGSEGV/SIGBUS handler. If the framework ever does crash anyway, the bridge surfaces `replay_signal` in the JSON instead of letting the process die.
-
----
-
-## Subcommand: pipeline
-
-Enumerates every library, render pipeline state, compute pipeline state, and Metal function visible to the replay. For each library, exports `library_<key>.metallib` and (when available) `library_<key>.air` to the output directory.
+**Purpose**: Bridge the gap between "I see shader name X in Xcode GUI" and "I need a draw_index for CLI tools". One command goes from a name to full draw context.
 
 ```bash
-gputrace_replay_bridge pipeline <path-to-.gputrace> [output_dir]
+python3 "$WRAPPER" find-draws <trace> \
+    --by-label <SUBSTR>          # case-insensitive substring on rps_label
+    [--by-shader-name <SUBSTR>]  # match on vertex/fragment function name
+    [--by-rps-key <KEY>]         # exact RPS key
+    [--show-first]               # auto-run shader-of-drawcall on first hit
+    [--with-ir]                  # include LLVM IR (with --show-first)
+    [--with-uniforms]            # include decoded cbuffer (with --show-first)
+    [--stage fragment|vertex]    # default: fragment
+    [--limit N]                  # max hits (default: 50)
+    [--output-dir DIR]
 ```
 
-If `output_dir` is omitted the current working directory is used. The directory is created if needed.
-
-Output JSON top-level fields (in addition to the obvious `trace_path` / `device` / `output_dir`):
-
-| Field | Type | Description |
-|---|---|---|
-| `libraries` | array | Per-library record (see below) |
-| `render_pipeline_states` | array | Per-RPS record (see below). Since R7.2 each entry includes RPS↔shader correlation when the bridge swizzle captured the descriptor. |
-| `compute_pipeline_states` | array | `{key, class, label?}` |
-| `functions` | array | `{key, class, name?, functionType, functionTypeStr}` |
-| `libraries_count` | int | Total libraries discovered |
-| `metallibs_exported` | int | How many `.metallib` files were written |
-| `bitcodes_exported` | int | How many `.air` files were written (some libs lack AIR) |
-| `render_pipeline_states_count`, `compute_pipeline_states_count`, `functions_count` | int | Totals matching their arrays |
-| `rps_correlated_count` | int | R7.2 — how many enumerated RPS got their descriptor matched via the swizzle. Healthy traces should have this equal to `render_pipeline_states_count`. |
-| `rps_captured_count` | int | R7.2 — how many `(descriptor, rps)` pairs the swizzle captured during replay. May be larger than `render_pipeline_states_count` when the trace creates RPS objects that don't end up keyed in the replay objectMap. **If this is `0` while `render_pipeline_states_count > 0`, the swizzle is broken** (e.g. macOS update changed the device class hierarchy). |
-
-Per-library record:
-
-```json
-{
-  "key": 248,
-  "class": "_MTLLibrary",
-  "function_count": 1,
-  "functions": ["fragment_skin_subsurface"],
-  "installName": "default.metallib",
-  "label": null,
-  "metallib_size": 4577,
-  "metallib_magic": "0x424C544D",
-  "metallib_file": "library_248.metallib",
-  "bitcode_size": 3920,
-  "bitcode_magic": "0x0B17C0DE",
-  "bitcode_file": "library_248.air"
-}
-```
-
-Per-render-pipeline-state record (R7.2 — extended with shader correlation when descriptor was captured):
-
-```json
-{
-  "key": 484,
-  "class": "AGXG16XFamilyRenderPipeline",
-  "label": "Papegame/SkinMakeupNew",
-
-  "vertex_function_key": 289,
-  "fragment_function_key": 357,
-  "vertex_library_key": 288,
-  "fragment_library_key": 356,
-  "vertex_function_name": "xlatMtlMain1",
-  "fragment_function_name": "xlatMtlMain",
-
-  "color_attachment_count": 2,
-  "color_attachments": [
-    {"index": 0, "format": "RGBA8Unorm", "pixelFormat": 70, "writeMask": "RGBA", "blendingEnabled": false},
-    {"index": 1, "format": "RGBA8Unorm", "pixelFormat": 70, "writeMask": "RGBA", "blendingEnabled": false}
-  ],
-  "depth_format": "Depth32Float_Stencil8",
-  "depth_format_value": 260,
-  "stencil_format": "Depth32Float_Stencil8",
-  "stencil_format_value": 260,
-  "raster_sample_count": 1
-}
-```
-
-The R7.2 fields are present **only** when the bridge's method swizzle on `MTLDevice newRenderPipelineStateWithDescriptor:*` captured this RPS at PSO-creation time. If a RPS is enumerable in the objectMap but absent from the swizzle table, only the basic three fields (`key`, `class`, `label`) appear.
-
-Library-key convention: `library_key = function_key - 1` (validated empirically across ~100 LYSK trace shaders; a fallback even-key downward scan is used if the convention happens to be broken in a specific trace).
-
-Magic-number sanity checks on exported library files:
-- metallib: `0x424C544D` (`"BLTM"` little-endian, "Metal Library Binary")
-- AIR bitcode: `0x0B17C0DE` (LLVM bitcode wrapper)
-
-Verify exported files with `file <path>`:
-```
-library_248.metallib: MetalLib executable, version 1.2.6
-library_248.air:      LLVM bitcode, wrapper
-```
-
-Library/function key relationship: libraries occupy even keys, the matching MTLFunction is at the next odd key (e.g. library 248 ↔ function 249). Pipeline states use a separate continuous key range that is typically larger than function keys; the bridge scans it with extra headroom (function-max + 250) to avoid silent truncation.
-
----
-
-## Subcommand: shader
-
-Hot-replaces a library in the in-memory ObjectMap with new bytecode or freshly compiled MSL source, then optionally re-runs the full replay to see the effect.
-
+**Typical usage** (fastest path from name to full context):
 ```bash
-# Replace from a metallib binary on disk
-gputrace_replay_bridge shader <trace> <lib_key> <metallib_path> [--verify]
-
-# Replace by compiling MSL source at runtime
-gputrace_replay_bridge shader <trace> <lib_key> --source <msl_path> [--verify]
+python3 "$WRAPPER" find-draws "$TRACE" \
+    --by-label "SkinMakeupNew" --show-first --with-ir --with-uniforms
 ```
 
-The replacement only persists for the lifetime of this single bridge invocation — the original `.gputrace` on disk is never modified. To make a permanent change you'd need to rebuild the trace upstream; this skill is for investigation, not patching.
-
-`--verify`: after `setLibrary:forKey:`, the bridge calls `rewind` then `playAll` again and reports whether the modified replay still succeeds.
-
-Output JSON:
-
-```json
-{
-  "command": "shader",
-  "trace_path": "...",
-  "library_key": 248,
-  "replacement_done": true,
-  "original": {
-    "exists": true,
-    "metallib_size": 4577,
-    "functions": ["fragment_skin_subsurface"]
-  },
-  "replacement": {
-    "metallib_size": 4577,
-    "metallib_path": "/tmp/.../library_248.metallib",
-    "functions": ["fragment_skin_subsurface"]
-  },
-  "verify": { "playAll_rc": 0, "success": true, "elapsed_ms": 7.2 }
-}
-```
-
-Notes:
-- The replacement library's function names should generally match the originals; if not, downstream `MTLFunction` lookups will fail at the next pipeline-state creation. Use `pipeline` first to confirm the original function name.
-- For an MSL-source replacement, the bridge calls `newLibraryWithSource:options:error:` with default `MTLCompileOptions` — match the original target if you need feature parity.
-
----
-
-## Subcommand: shader-of-rps
-
-Reverse-lookup the fragment or vertex shader of a render pipeline state. This is the **R7.4** "one command, one IR file" entry point — the user gives a `rps_key` (from `pipeline` output) and the bridge produces metallib, AIR, and (optionally) LLVM IR `.ll`.
-
-```bash
-gputrace_replay_bridge shader-of-rps <.gputrace> <rps_key> [--stage fragment|vertex] [--with-ir] [--output-dir DIR]
-```
-
-Internally this:
-1. Installs the same swizzle as `pipeline` so descriptors are captured during replay.
-2. Runs `playAll` once.
-3. Looks up the RPS by key in the objectMap, then finds its captured descriptor.
-4. Resolves the chosen stage's `MTLFunction` pointer to a function key via `objectMap.functionMap` reverse map.
-5. Computes `library_key = function_key - 1` (with even-key fallback scan).
-6. Dumps the library's `metallib` data via `libraryDataContents` (and `bitcodeData` AIR when available).
-7. Computes the PlayTools `cacheKey` on the metallib bytes (matches the algorithm used by the offline `extract_shader_raw.py` tool — see [investigation playbook §3.1](./investigation-playbook.md) for the full reference).
-8. With `--with-ir`: pipes the AIR through `llvm-dis` (auto-detected from Homebrew or `$PATH`) to produce a `.ll` file.
-
-Defaults:
-- `--stage fragment`
-- `--output-dir` = system temp directory (e.g. `/var/folders/.../T/`)
-
-Output JSON (success path, `bitcodeData` is present — legacy R7.4 path, `ir_source = "bitcodeData"`):
-
-```json
-{
-  "command": "shader-of-rps",
-  "trace_path": "...",
-  "rps_key": 484,
-  "stage": "fragment",
-  "output_dir": "/tmp/r74",
-  "rps_label": "Papegame/SkinMakeupNew",
-  "function_name": "xlatMtlMain",
-  "function_key": 357,
-  "library_key": 356,
-  "library_metallib_path": "/tmp/r74/library_356.metallib",
-  "library_metallib_size": 4593,
-  "library_air_path": "/tmp/r74/library_356.air",
-  "library_air_size": 3920,
-  "cache_key_metallib": "636181106F7E31A0_4593",
-  "ir_source": "bitcodeData",
-  "ir_ll_path": "/tmp/r74/library_356.ll",
-  "ir_ll_size": 3257,
-  "ir_dis_path": "/opt/homebrew/opt/llvm/bin/llvm-dis"
-}
-```
-
-Output JSON (R7.7 SDI fallback path — `bitcodeData` missing but PlayCover's `ShaderDebugInfo` cache has `module.bc`; this is the common case on PlayCover-launched apps, ~97% of LYSK libraries):
-
-```json
-{
-  "command": "shader-of-rps",
-  "rps_key": 472,
-  "rps_label": "Papegame/Cloth/ClothStandard",
-  "library_key": 374,
-  "library_metallib_path": "/tmp/out/library_374.metallib",
-  "library_metallib_size": 11041,
-  "cache_key_metallib": "5368B920C0D59DE1_11041",
-  "sdi_module_bc_path": "/tmp/out/library_374.module.bc",
-  "sdi_module_bc_size": 10800,
-  "sdi_bundle_id": "com.papegames.lysk",
-  "sdi_module_hash": "cb5a538c241f59268019ef2b35c834cf9edd3e87cc27ec9bc8ae389f951b85de",
-  "sdi_source_path": "/Users/.../ShaderDebugInfo/com.papegames.lysk/5368B920C0D59DE1_11041/modules/cb5a538c.../module.bc",
-  "ir_source": "sdi_module_bc",
-  "ir_ll_path": "/tmp/out/library_374.ll",
-  "ir_ll_size": 22019,
-  "ir_dis_path": "/opt/homebrew/opt/llvm/bin/llvm-dis"
-}
-```
-
-Failure modes (all emit valid JSON; exit code is 11 = `SUBCMD_FAIL`):
-
-| `error` | Meaning |
-|---|---|
-| `rps_not_found` | The given `rps_key` is not present in the trace's objectMap. Check `rps_captured_count` to see if the swizzle worked at all. |
-| `descriptor_not_captured` | The RPS exists in the objectMap but the swizzle didn't capture it at PSO creation time (this should not happen on a healthy run; if it does, the swizzle install path is broken). |
-| `stage_function_absent` | The descriptor has no function for the requested stage (e.g. `--stage fragment` on a depth-only / vertex-only RPS). |
-| `function_key_unresolved` | The captured function pointer isn't present in `objectMap.functionMap` — usually a sign the trace is in an inconsistent state. |
-| `library_key_unresolved` | `function_key=0` makes `library_key=-1`, an invalid case — should never happen for legitimate traces. |
-| `library_not_found` | Neither the `function_key - 1` convention nor the even-key downward scan found a `MTLLibrary` for this RPS. |
-
-`--with-ir` substitutes `ir_error` with one of:
-
-| `ir_error` | Meaning | `ir_hint` |
-|---|---|---|
-| `no_air_bitcode_and_no_sdi` | **R7.7**: neither `bitcodeData` nor PlayCover's `ShaderDebugInfo` cache had bitcode for this library. Run the app once through PlayCover to populate the SDI cache, then retry. | populated with run-the-app guidance |
-| `llvm_dis_not_found` | Bridge couldn't locate `llvm-dis` on Homebrew or PATH. | `install via 'brew install llvm' (Apple toolchain lacks llvm-dis)` |
-| `llvm_dis_failed` | `llvm-dis` ran but exited non-zero. `ir_dis_rc` and `ir_dis_stderr` are populated for debugging. | (none) |
-
-> **Deprecated**: the legacy `no_air_bitcode` (R7.4-only) is no longer produced by R7.7 — it's been replaced by the auto-fallback path described above. If you see `no_air_bitcode_and_no_sdi`, it means BOTH paths failed.
-
-The cacheKey can also be used to manually find the corresponding ShaderDebugInfo directory under `~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/<bundle>/<cache_key>/` — but R7.7's auto-fallback usually removes the need for manual lookups. See [investigation playbook §3](./investigation-playbook.md).
-
----
-
-## Subcommand: frame-list
-
-Replays the trace once with public-API method swizzling armed and emits the full `command_buffer → encoder → draw` timeline plus a flat `draw_to_rps_map[]`. This is the **R7.3** "frame inspector" entry point — the equivalent of expanding the encoder/draw tree in Xcode's Frame Debugger UI, but as a shell-pipe-able JSON document. **R7.6-A** extends this with per-draw vertex/fragment binding tables (resource-id-resolved buffers, textures, and samplers).
-
-```bash
-gputrace_replay_bridge frame-list <.gputrace> [--with-draws] [--no-draws] [--with-timing] [--with-bindings] [--no-bindings]
-```
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--with-draws` | on | Include per-encoder `draws[]` records and the top-level `draw_to_rps_map[]` view. The default; pass explicitly only for symmetry with `--no-draws`. |
-| `--no-draws` | off | Suppress per-draw records (encoder list only). Useful for very high-draw-count traces or when you only need the encoder timeline. |
-| `--with-timing` | off | Populate per-cb `gpu_start_ms` / `gpu_end_ms` / `gpu_duration_ms` from `MTLCommandBuffer.GPUStartTime/GPUEndTime`. Replay-internal CBs that never `commit` will surface `null` here. |
-| `--with-bindings` | on | **R7.6-A**: capture per-draw vertex/fragment binding snapshots (`bindings.{vertex,fragment}.{buffers,textures,samplers}[]`). The default; explicit for symmetry with `--no-bindings`. |
-| `--no-bindings` | off | **R7.6-A**: skip binding capture (output ~75% smaller; LYSK ~390KB → ~105KB). Useful for `shader-of-drawcall`-style chains that only need `draw_to_rps_map`. |
-
-Output JSON top-level fields:
-
-| Field | Type | Notes |
-|---|---|---|
-| `command` | string | Always `"frame-list"` |
-| `trace_path`, `device` | string | Echo + `MTLDevice.name` |
-| `replay_rc`, `success`, `elapsed_ms`, `total_call_count` | mixed | Same semantics as `replay` |
-| `with_draws`, `with_timing`, `with_bindings` | bool | Echoes the requested mode |
-| `command_buffer_count`, `encoder_count`, `draw_count` | int | Aggregate counts captured during this `playAll` |
-| `rps_correlated_count` | int | How many RPS keys were resolvable from the captured RPS pointer table — used to validate R7.2 swizzle health |
-| `command_buffers` | array | Tree, see below |
-| `draw_to_rps_map` | array | Present iff `--with-draws`; flat `(draw_index_global → rps_key)` records for direct chaining into `shader-of-rps` |
-
-`command_buffers[i]`:
-
-```json
-{
-  "index": 1,
-  "label": "Frame Render",
-  "encoder_count": 30,
-  "gpu_start_ms": 0.0,             // present iff --with-timing; may be 0/null
-  "gpu_end_ms": 0.32,
-  "gpu_duration_ms": 0.32,
-  "encoders": [ ... ]
-}
-```
-
-`encoders[j]` for `type == "render"`:
-
-```json
-{
-  "index": 2,
-  "type": "render",
-  "label": "Shadows.Draw",
-  "first_call_index": 125,
-  "last_call_index": 451,
-  "draw_count": 30,
-  "color_attachment_count": 0,
-  "color_attachments": [],
-  "depth_attachment": {"texture_id": 225, "pixelFormat": 252, "format": "Depth32Float"},
-  "stencil_attachment": null,
-  "draws": [
-    {
-      "draw_index_global": 0,
-      "draw_in_encoder": 0,
-      "call_index": 131,
-      "primitive_type": 3,
-      "primitive_type_name": "triangle",
-      "vertex_count": 0,
-      "instance_count": 1,
-      "indexed": true,
-      "index_count": 6726,
-      "rps_key": 472,
-      "rps_label": "Papegame/Cloth/ClothStandard",
-      "fragment_function_key": 375,
-      "bindings": {
-        "vertex": {
-          "buffers":  [{"index": 0, "resource_id": 2, "offset": 262144}, ...],
-          "textures": [{"index": 0, "resource_id": 91}],
-          "samplers": [{"index": 0, "sampler_ptr": "0x12a3e4500"}]
-        },
-        "fragment": {
-          "buffers":  [{"index": 0, "resource_id": 8, "offset": 0}, ...],
-          "textures": [{"index": 0, "resource_id": 186}, {"index": 3, "resource_id": 211}, ...],
-          "samplers": []
-        }
-      }
-    },
-    ...
-  ]
-}
-```
-
-The `bindings` field is **present iff `--with-bindings` is on AND the draw lives on a render encoder** (compute/blit encoders never emit per-draw records). Slot lists are sparse — only slots set to a non-nil resource appear. Inline bindings from `setVertexBytes:length:atIndex:` / `setFragmentBytes:length:atIndex:` use the `{"index": N, "inline_bytes_size": SIZE}` shape (no `resource_id` because inline data is not in `objectMap.resources`). Sampler entries surface a hex pointer string for diagnostic identity matching — sampler states are not in `objectMap.resources` so no `resource_id` is available.
-
-`encoders[j]` for `type == "compute"` adds `compute_dispatch_count` (current implementation records dispatches as future work; the encoder is still listed so downstream tools can branch on type without parsing the call index).
-
-`encoders[j]` for `type == "blit"` carries no attachments and no draws — the call window (`first/last_call_index`) is enough to identify the blit's place in the timeline.
-
-`draw_to_rps_map[k]`:
-
-```json
-{"draw_index_global": 0, "encoder_index": 2, "draw_in_encoder": 0, "call_index": 131, "rps_key": 472}
-```
-
-This array is the simplest entry point for the user-level question "which shader does draw N use?" — feed `rps_key` straight into `shader-of-rps`.
-
-### Implementation notes
-
-- Swizzles are installed on `MTLCommandQueue.commandBuffer*`, `MTLCommandBuffer.{render,compute,blit}CommandEncoder*`, and `MTLRenderCommandEncoder.{setRenderPipelineState:, drawPrimitives:*, drawIndexedPrimitives:*, endEncoding}`. The render-encoder swizzles are installed lazily on first encoder creation, since the concrete encoder class is not known up front.
-- **R7.6-A binding swizzles** are co-installed with the render-encoder swizzles: `setVertexBuffer:offset:atIndex:` / `setVertexBuffers:offsets:withRange:` / `setVertexBytes:length:atIndex:` / `setVertexTexture:atIndex:` / `setVertexTextures:withRange:` / `setVertexSamplerState:atIndex:` (six selectors) and the symmetric `setFragment*` family (six selectors). Thunks short-circuit when `g_frame_capture_bindings == 0`, so installing them adds zero overhead to non-`frame-list` paths.
-- Capture is gated to the actual `playAll` traversal — a process-global flag is opened immediately before `playAll` and closed after. Throwaway CBs/encoders the framework creates during `makeController` are filtered out.
-- `first_call_index` / `last_call_index` come from `*(uint32_t *)(controller + 0x5810)` (R7.1's controller offset), read synchronously inside each swizzle thunk.
-- The render encoder's `color_attachments[]` / `depth_attachment` / `stencil_attachment` are snapshotted at encoder begin from the `MTLRenderPassDescriptor`. Attachment `texture_id` references match the IDs surfaced by `replay --list-resources`.
-- `rps_key` for each draw is resolved by combining: (a) R7.3's `current_rps_ptr` tracked across `setRenderPipelineState:` and `drawXXX:` calls inside the encoder, with (b) a `(rps_ptr → rps_key)` map built post-replay by probing `objectMap.renderPipelineStateForKey:` over the same key range `pipeline` uses.
-- **R7.6-A `resource_id` resolution**: a single `(buffer/texture ptr → resource_key)` dict is built once post-`playAll` from `objectMap.resources` and used for every binding emit (avoids per-binding linear scan, ~60k lookups → ~60k O(1) probes on LYSK).
-
-### Health checks / invariants
-
-After `frame-list` completes, the following invariants hold on any healthy render-bearing run:
-
-- `sum(encoder.draw_count) == draw_count == len(draw_to_rps_map)`
-- For every entry in `draw_to_rps_map[]`, `rps_key` is non-null when the trace's draws all hit pipeline states captured by the R7.2 swizzle (LYSK trace baseline: 244/244 = 100%).
-- `rps_correlated_count` should equal the number of `render_pipeline_states` returned by `pipeline` — they share the same swizzle health gate.
-- **R7.6-A**: when `--with-bindings` is on, every render-encoder draw has a `bindings` object; vertex buffer slot 0 is bound on every draw (LYSK 244/244 invariant — vb0 = vertex stream is the universal Metal vertex shader entry contract).
-
-If any of these fails, the swizzle install path is broken (likely a macOS update changed the implementation class hierarchy); inspect stderr and re-run `setup.sh`.
-
-### Per-encoder GPU timing caveat
-
-`--with-timing` reads `MTLCommandBuffer.GPUStartTime` and `GPUEndTime`. Replay-internal command buffers may never `commit`, in which case both properties remain 0 and the JSON reports `gpu_duration_ms: null`. For accurate host-side per-segment timing, prefer `replay --playto N` bisection (see investigation playbook Pattern 4). This flag is provided primarily so callers can check whether the replay framework happens to surface valid timing for a given trace — when it does, it's "free".
-
----
-
-## Subcommand: shader-of-drawcall (wrapper-only)
-
-**R7.6-C/D** thin封装 — symmetric counterpart of `shader-of-rps`. Mental model: "I know the **draw index**, give me its shader IR (and bindings, and uniforms)." Equivalent to `frame-list <trace> | jq '.draw_to_rps_map[N].rps_key'` piped into `shader-of-rps`, but as a single command with proper structured-error handling for the compute-only / out-of-range edge cases.
-
-**R7.6-D upgrade**: with `--with-bindings` / `--with-uniforms`, the same one-shot invocation also returns the draw's per-stage binding snapshot **and** decodes every buffer slot's bytes through the captured `MTLRenderPipelineReflection`. This is the "draw → IR + bindings + uniforms" triple-bundle promised since R7.6-A, finally landed without bridge changes (pure wrapper glue reusing the already-shipped `frame-list`/`shader-of-rps`/`dump-uniforms` entries).
-
-Lives in the Python wrapper only — the bridge binary is **unchanged**. Run via:
-
-```bash
-python3 scripts/gputrace_replay_wrapper.py shader-of-drawcall <.gputrace> <draw_index> \
-    [--stage fragment|vertex] [--with-ir] [--with-bindings] [--with-uniforms] [--output-dir DIR]
-```
-
-Internally:
-
-1. Calls `frame-list` (with `--with-draws`, optional `--with-bindings`) to obtain `draw_to_rps_map[]` plus, when bindings are requested, every draw's full vertex/fragment binding snapshot. **One** `frame-list` call covers both — no double pass.
-2. Reads `draw_to_rps_map[draw_index]` for the `(rps_key, encoder_index, draw_in_encoder, call_index)` tuple; walks the `command_buffers` tree once more to recover `rps_label` and the requested draw's `bindings` dataclass.
-3. Calls `shader-of-rps <rps_key> --stage <stage> [--with-ir] [--output-dir DIR]` and embeds the full result.
-4. **R7.6-D** — When `--with-uniforms`, iterates `bindings.{stage}.buffers[]` and calls `bridge dump-uniforms <rps_key> <bind_slot> --buffer-key K --offset N --stage <stage>` for every slot. Per-slot soft errors (`reflection_not_captured`, `binding_not_a_buffer`, `offset_out_of_range`, …) land in that slot's `DumpUniformsResult.error` field and never abort the chain.
-
-| Flag | Default | Purpose |
-|---|---|---|
-| `--stage fragment\|vertex` | fragment | Which stage's shader/bindings/uniforms to look up. |
-| `--with-ir` | off | Run `llvm-dis` on the AIR/SDI bitcode and emit a `.ll` next to the metallib. |
-| `--with-bindings` | off | **R7.6-D**: attach this draw's full vertex+fragment binding snapshot (`bindings.{vertex,fragment}.{buffers,textures,samplers}[]`). Reuses the same `frame-list` call — zero extra subprocess cost. Implied by `--with-uniforms`. |
-| `--with-uniforms` | off | **R7.6-D**: for each buffer slot of `<stage>`, run `dump-uniforms` and decode the bytes via captured reflection; results land in `uniforms[]` keyed by `bind_slot`. Implies `--with-bindings`. |
-| `--output-dir` | tmp dir | Passed through to `shader-of-rps` and `dump-uniforms`. |
-
-Output JSON top-level fields:
-
-| Field | Type | Notes |
-|---|---|---|
-| `command` | string | Always `"shader-of-drawcall"` |
-| `trace_path`, `draw_index`, `stage`, `output_dir` | echo | Echo of inputs |
-| `encoder_index`, `draw_in_encoder`, `call_index`, `rps_key`, `rps_label` | mixed | Resolved from `frame-list` |
-| `shader_of_rps` | object | Full `shader-of-rps` JSON (metallib path/size, AIR path/size, cacheKey, IR `.ll` path/size, structured errors). May be `null` only if `error == "draw_has_no_rps_key"` (swizzle gap on this draw). |
-| `with_bindings` | bool | Whether bindings were requested / attached. |
-| `bindings` | object? | **R7.6-D**: present iff `with_bindings`. Same shape as a `frame-list` draw's `bindings` field (`{vertex,fragment}.{buffers,textures,samplers}[]`). |
-| `with_uniforms` | bool | Whether uniforms were requested / attached. |
-| `uniforms` | array? | **R7.6-D**: present iff `with_uniforms`. One entry per `bindings.<stage>.buffers[i]`, each is the same JSON shape as a standalone `dump-uniforms` call (incl. `layout`, `decoded`, `binding_name`, `error?`). Order matches `bindings.<stage>.buffers[]`. |
-| `uniforms_summary` | object? | **R7.6-D**: aggregate `{slot_count, slot_ok, slot_failed, errors[]}` to skim per-slot health. |
-| `error` | string? | Surfaces lookup failures uniformly: `"draw_has_no_rps_key"` (rare; swizzle health gap), or any `shader-of-rps` error string (`rps_not_found` / `descriptor_not_captured` / `stage_function_absent` / `no_air_bitcode_and_no_sdi` / `llvm_dis_not_found`) |
-| `hint` | string? | Human-readable hint paired with `error` |
-
-### Out-of-range / invalid-input handling
-
-| Input | Behavior |
-|---|---|
-| `draw_index >= draw_count` (incl. compute-only traces with `draw_count == 0`) | exit **12** + structured `{"error":"draw_index_out_of_range","draw_index":N,"draw_count":K,"hint":"..."}` (with a special hint when `draw_count == 0` explaining the trace is compute-only). Module API raises `DrawIndexOutOfRange`. |
-| `draw_index < 0` | Module API raises `ValueError` (CLI exit 2 via the wrapper's catch-all). |
-| `--stage geometry` (or any non-`fragment`/`vertex`) | Module API raises `ValueError`; CLI argparse rejects before the call. |
-| Soft failure on the `shader-of-rps` half (`rps_not_found` etc.) | The wrapper still prints the full payload (with `error` / `hint`) and exits **11**, mirroring `shader-of-rps` behavior. |
-| Per-slot `dump-uniforms` soft failure (`reflection_not_captured` / `binding_not_a_buffer` / `offset_out_of_range` …) | Surfaces only on that slot's `uniforms[i].error` — top-level exit stays 0. Use `uniforms_summary.slot_failed` to detect. |
-| Bridge subprocess error (exit 4–10) | Re-raised as `BridgeError`; CLI maps to that exit code. |
-
-### Equivalence guarantee
-
-For any `draw_index` where `frame-list`'s `draw_to_rps_map[draw_index].rps_key == K`, the produced `metallib`, `AIR`, and `cacheKey` are **byte-identical** to running `shader-of-rps <K>` directly. The disassembled `.ll` output differs only in the `; ModuleID = '...air'` header comment because `llvm-dis` writes the temporary input path; everything past that line is identical. (Verified via the LYSK regression baseline at `draw_index=103 → rps_key=444 → library_276`, `metallib`/`AIR`/`cacheKey` `cmp -s` clean; `.ll` diff limited to one comment line.)
-
-**R7.6-D**: per-slot `uniforms[i]` is byte-identical to a standalone `bridge dump-uniforms <rps_key> <bind_slot> --buffer-key K --offset N --stage <stage>` for the same draw — same `layout` (reflection tree), same `decoded` (cbuffer field tree), same `binding_name`. Verified by the T7s integration suite (LYSK draw 0 fragment slot 0 → `AsukaPerShader_PerCamera`, draw 10 vertex slot 0 → `AsukaPerShader_ShadowParams`).
-
-### Sample call (LYSK trace)
-
-```bash
-TRACE=/Users/<you>/Library/Containers/com.papegames.lysk/Data/Documents/Captures/capture_20260518_110050.gputrace
-WRAPPER=$SKILL_DIR/scripts/gputrace_replay_wrapper.py
-OUT=$(mktemp -d)
-
-# IR-only (R7.6-C original behavior — unchanged):
-python3 "$WRAPPER" shader-of-drawcall "$TRACE" 0 --with-ir --output-dir "$OUT" --pretty
-# → {"command":"shader-of-drawcall","draw_index":0,
-#    "encoder_index":2,"draw_in_encoder":0,"call_index":144,
-#    "rps_key":472,"rps_label":"Papegame/Cloth/ClothStandard",
-#    "shader_of_rps":{ ...metallib_path, cache_key_metallib, ir_ll_path... },
-#    "with_bindings":false, "with_uniforms":false}
-
-# R7.6-D — full draw context (one command, three deliverables):
-python3 "$WRAPPER" shader-of-drawcall "$TRACE" 0 \
-    --stage fragment --with-ir --with-uniforms --output-dir "$OUT" --pretty
-# → ... shader_of_rps with .ll path
-#    "with_bindings":true,
-#    "bindings":{"vertex":{...},"fragment":{"buffers":[{...},{...},...]}},
-#    "with_uniforms":true,
-#    "uniforms":[{"bind_slot":0,"binding_name":"AsukaPerShader_PerCamera",
-#                 "layout":{...},"decoded":{"_MainLightPosition":{...},...}}, ...],
-#    "uniforms_summary":{"slot_count":4,"slot_ok":4,"slot_failed":0,"errors":[]}
-
-python3 "$WRAPPER" shader-of-drawcall "$TRACE" 99999999 --pretty
-# → exit 12, {"error":"draw_index_out_of_range","draw_index":99999999,"draw_count":244,"hint":"..."}
-```
-
----
-
-## Subcommand: disasm
-
-**R7.7**: Direct `library_key` (default) or `rps_key` disassembly with the same SDI module.bc fallback used by `shader-of-rps`. The library-key path is the convenience entry point when you've already run `pipeline` and know which library you want — no need to detour through an RPS_key.
-
-```bash
-gputrace_replay_bridge disasm <.gputrace> <key> [--key-type rps|library] [--stage fragment|vertex] [--with-ir] [--output-dir DIR]
-```
-
-Defaults:
-- `--key-type library`
-- `--stage fragment` (only used when `--key-type=rps`)
-- `--output-dir` = system temp directory
-
-### Library-key path (default)
-
-```bash
-gputrace_replay_bridge disasm /path/foo.gputrace 374 --with-ir --output-dir /tmp/out
-```
-
-Internally:
-1. `replay_context_init` + `playAll` (so the objectMap is populated).
-2. `objectMap.libraryForKey:374` → `MTLLibrary`.
-3. Dump `libraryDataContents` → `library_374.metallib` and compute `cache_key_metallib`.
-4. Try `bitcodeData` first (R7.4 path). If non-empty: write `library_374.air` and treat that as the IR source.
-5. Otherwise (most LYSK libraries): scan `~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/<bundle>/<cache_key>/modules/<hash>/module.bc` and copy the first match into `library_374.module.bc`. The bridge iterates every `<bundle>` directory, so you don't have to specify which app the trace came from.
-6. With `--with-ir`: pipe whichever bitcode source we got through `llvm-dis` to produce `library_374.ll`.
-
-The output JSON includes `ir_source: "bitcodeData" | "sdi_module_bc"` so callers can tell which path was used. SDI fields (`sdi_module_bc_path`, `sdi_bundle_id`, `sdi_module_hash`, `sdi_source_path`) are populated only on the SDI fallback path.
-
-Output JSON (R7.7 SDI fallback path — same shape as `shader-of-rps` minus the RPS-specific fields):
-
-```json
-{
-  "command": "disasm",
-  "trace_path": "...",
-  "key_type": "library",
-  "library_key": 374,
-  "output_dir": "/tmp/out",
-  "library_metallib_path": "/tmp/out/library_374.metallib",
-  "library_metallib_size": 11041,
-  "cache_key_metallib": "5368B920C0D59DE1_11041",
-  "sdi_module_bc_path": "/tmp/out/library_374.module.bc",
-  "sdi_module_bc_size": 10800,
-  "sdi_bundle_id": "com.papegames.lysk",
-  "sdi_module_hash": "cb5a538c...",
-  "sdi_source_path": "/Users/.../ShaderDebugInfo/com.papegames.lysk/5368B920C0D59DE1_11041/modules/cb5a538c.../module.bc",
-  "ir_source": "sdi_module_bc",
-  "ir_ll_path": "/tmp/out/library_374.ll",
-  "ir_ll_size": 22019,
-  "ir_dis_path": "/opt/homebrew/opt/llvm/bin/llvm-dis"
-}
-```
-
-### RPS-key path (`--key-type rps`)
-
-`disasm <key> --key-type rps` is equivalent to `shader-of-rps <key>` — the bridge forwards internally. The output JSON's `command` field will be `"shader-of-rps"` (not `"disasm"`), reflecting the actual handler. Use this when you want a single CLI entry point with a uniform name across both keying conventions.
-
-### Failure modes
-
-Same `ir_error` taxonomy as `shader-of-rps` (`no_air_bitcode_and_no_sdi` / `llvm_dis_not_found` / `llvm_dis_failed`). Plus library-path-specific:
-
-| `error` | Meaning |
-|---|---|
-| `library_not_found` | `objectMap.libraryForKey:` returned nothing, or the returned object isn't an `MTLLibrary`. Pass a key from `pipeline`'s `libraries[].key` to be safe. |
-
-| `warning` | Meaning |
-|---|---|
-| `library_has_no_libraryDataContents` | The `MTLLibrary` exists but exposes no metallib bytes — extremely rare; cacheKey/IR will be unavailable. |
-
-### Hit-rate (LYSK main baseline, 96 libraries)
-
-| Path | Coverage |
-|---|---|
-| `bitcodeData` only (legacy R7.4) | 3 / 96 (3.1%) |
-| `bitcodeData` ∪ SDI module.bc (R7.7) | 96 / 96 (100%) |
-
-In other words: R7.7 is the difference between "1 in 30 calls produces IR" and "every call produces IR" on a typical PlayCover-launched app.
-
----
-
-## Subcommand: dump-uniforms
-
-R7.6-B. Decodes the bytes of a vertex/fragment buffer binding using the captured `MTLRenderPipelineReflection` (`MTLStructType` tree). Answers the "what cbuffer values did the shader actually see at this draw" question — typically the final-mile question for UV / matrix / light-param / material-param bugs.
-
-```bash
-gputrace_replay_bridge dump-uniforms <.gputrace> <rps_key> <bind_slot>
-                                     [--stage fragment|vertex]
-                                     [--buffer-key K] [--offset N]
-                                     [--with-hex] [--max-hex-bytes N]
-                                     [--output-dir DIR]
-```
-
-The bridge accepts a raw `rps_key`. To go from `draw_index` directly use the wrapper (auto-resolves `(rps_key, buffer_key, offset)` via `frame-list --with-bindings`):
-
-```bash
-python3 scripts/gputrace_replay_wrapper.py \
-    dump-uniforms <.gputrace> <draw_index> <bind_slot>
-                  [--target-kind draw|rps]
-                  [--stage fragment|vertex]
-                  [--buffer-key K] [--offset N]
-                  [--with-hex] [--max-hex-bytes N]
-                  [--output-dir DIR]
-```
-
-### Two-step pipeline
-
-```
-rps_key
-  ─> RPSCaptureEntry              (R7.2 swizzle: NewRenderPipelineStateWithDescriptor:options:reflection:error:)
-  ─> g_rps_reflections[entry]     (R7.6-B: reflection captured via the same swizzle)
-  ─> reflection.{vertex|fragment}Bindings[bind_slot]
-  ─> id<MTLBufferBinding>.bufferStructType   (MTLStructType*)
-  ─> recursive decode against bytes from objectMap.bufferForKey:(buffer_key)
-                                              starting at `offset`.
-```
-
-### Modes
-
-1. **Layout-only** (no `--buffer-key`): emits the `MTLStructType` reflection tree as `layout`. Useful as a "what does this shader expect at slot S?" query.
-2. **Layout + decoded bytes** (with `--buffer-key K --offset N`): also decodes the actual bytes — emits a `decoded` field with `{fieldName: {offset, data_type, value}}` per member. `value` is JSON-typed (numbers / arrays / nested objects).
-3. **Layout + hex dump** (`--with-hex`): adds a raw hex dump of the buffer bytes (clipped at `--max-hex-bytes`, default 256) — useful for cross-checking the decoded JSON.
-
-### JSON schema (top-level fields)
-
-```jsonc
-{
-  "command":           "dump-uniforms",
-  "trace_path":        "<input>",
-  "rps_key":           472,
-  "stage":             "fragment",
-  "bind_slot":         0,
-  "output_dir":        "/tmp/...",
-  "rps_label":         "Papegame/Cloth/ClothStandard",
-  "binding_name":      "AsukaPerShader_PerCamera",   // from MTLBinding.name
-  "buffer_data_size":  144,                          // bufferDataSize in bytes
-  "buffer_data_type":  "struct",                     // top-level dtype
-  "layout":            { /* MTLStructType tree, always present when reflection is captured */ },
-  "layout_source":     "metallib_reflection",       // or "none"
-  "buffer_key":        2,                            // only present when --buffer-key was supplied
-  "buffer_offset":     262208,
-  "buffer_length":     4194304,
-  "buffer_label":      "ScratchBuffer0_0",
-  "decoded":           { /* same shape as `layout`, but with decoded "value" fields */ },
-  "decoded_ok":        true,
-  "decoded_bytes":     144,
-  "hex":               "4260e53b9517...",            // only when --with-hex
-  "hex_bytes_emitted": 64,
-  "decode_status":     "layout_only",                // only in layout-only mode
-  "decode_skip_reason":"no_buffer_key_supplied"
-}
-```
-
-### Layout / decoded tree shape
-
-Each struct member becomes a key in the parent JSON object; the value is `{"offset": N, "data_type": "...", "value": <decoded>}`. For nested structs the `value` is itself a recursive object; for arrays the `value` is `{"length": L, "stride": S, "element_type": "...", "elements": [...]}` (truncated at 16 elements with `truncated:true` if longer). Matrices are emitted as 2D JSON arrays in row-major reading order; vectors as flat 1D arrays. Floats use `%.6g`; NaN/Infinity become string sentinels (`"NaN"` / `"Infinity"` / `"-Infinity"`) so the JSON stays parseable.
-
-### Failure modes (exit 11 with structured `error` field)
-
-| Error | Meaning |
-|-------|---------|
-| `rps_not_found` | `objectMap.renderPipelineStateForKey:` returned nil for the key |
-| `descriptor_not_captured` | RPS exists but the swizzle didn't capture its descriptor (rare; usually means the swizzle was installed too late) |
-| `reflection_not_captured` | RPS captured but reflection out-param was nil at creation time. Try `--with-hex --buffer-key K --offset N` to fall back to a hex dump |
-| `bind_slot_not_in_reflection` | The reflection has no binding at the requested `(stage, slot)` — check `pipeline` / `shader-of-rps` for what the shader actually expects |
-| `binding_not_a_buffer` | The slot is occupied by a texture/sampler/threadgroup binding, not a buffer |
-| `buffer_not_found` | `objectMap.bufferForKey:` returned nil for `--buffer-key` (invalid key or not in this trace) |
-| `buffer_contents_unavailable` | `[buffer contents]` returned NULL — buffer uses private/GPU-only storage |
-| `offset_out_of_range` | `--offset` exceeds `[buffer length]` |
-
-`draw_index_out_of_range` (exit 12) is wrapper-side only, raised when `target_kind=draw` and `draw_index >= draw_count` (mirrors `shader-of-drawcall` R7.6-C semantics).
-
-### Sample call (LYSK trace)
-
-```bash
-# Wrapper draw-mode: the most common path. Auto-resolves rps_key=472,
-# buffer_key=2, offset=262208 from frame-list bindings → bridge dumps the
-# AsukaPerShader_PerCamera cbuffer values for fragment slot 0 of draw 0.
-python3 scripts/gputrace_replay_wrapper.py \
-    dump-uniforms /Users/.../capture_20260518_110050.gputrace 0 0 --stage fragment
-
-# bridge-direct rps-mode: useful when you're iterating from `pipeline` output
-# and already know which RPS / buffer / offset you want.
-gputrace_replay_bridge dump-uniforms /Users/.../capture.gputrace 472 0 \
-    --stage vertex --buffer-key 2 --offset 262144
-
-# Layout-only ("what does slot 0 of fragment in this RPS expect?"):
-gputrace_replay_bridge dump-uniforms /Users/.../capture.gputrace 472 0 --stage fragment
-# → layout tree, no decoded field; decode_status=layout_only
-```
-
-### Implementation notes
-
-- The reflection capture lives entirely inside `rps_install_swizzles()` (R7.2 swizzle, extended in R7.6-B). The thunks now (a) always pass a non-NULL reflection out-pointer, and (b) when called via the no-options variant, issue a follow-up `newRenderPipelineStateWithDescriptor:options:reflection:error:` with `MTLPipelineOptionBindingInfo|BufferTypeInfo` to force reflection generation. The OS PSO cache typically makes this nearly free (same descriptor → cache hit).
-- Reflection objects live for the bridge process lifetime in a parallel `static id g_rps_reflections[]` array (file-scope `__strong` keeps them alive under ARC; `RPSCaptureEntry.reflection_index = -1` when capture failed).
-- `du_emit_struct` recurses up to depth 8 (`DU_MAX_DECODE_DEPTH`). Arrays decode at most 16 elements (`DU_MAX_ARRAY_ELEMS`) — surfaces `truncated:true,truncated_at:16` when clipped.
-- The half-precision decoder is local (`du_half_to_double`); float, int, uint, and bool families all share `du_emit_scalar_value`.
-
-### Known limits / future work
-
-- **Argument buffers (Tier-2 indirect resources)**: `bufferStructType` describes the argument buffer layout but inner resource handles need a second `MTLArgumentEncoder.argumentBuffer` lookup to resolve. Current dump shows the 64-bit handles; the deeper resolution is deferred.
-- **`setVertexBytes` inline buffers**: R7.6-A records inline `inline_bytes_size` but not the bytes themselves; R7.6-B can't decode inline-only bindings yet (would need an `--with-inline-bytes` capture flag during frame-list).
-- **No reflection PSOs**: rare on Apple Silicon, but if the device rejects `BindingInfo|BufferTypeInfo` options, the entry's `reflection_index = -1` and dump-uniforms returns `reflection_not_captured` with a hex-dump fallback path.
-- **Compute encoders**: R7.6-B is render-pipeline-state-only; compute pipeline reflection (`MTLComputePipelineReflection`) is not yet wired up. Tracked under R7.5-B.
-
----
-
-## Subcommand: config
-
-Runs a complete replay with one of three knobs flipped, isolating their individual effect. Each invocation creates a fresh replay context.
-
-```bash
-gputrace_replay_bridge config <path-to-.gputrace> [key=value ...]
-```
-
-| Key | Default | Effect when set to `1` |
-|---|---|---|
-| `disableOptimizeRestores` | `1` | Skip the call to `GTMTLReplayController_optimizeRestores`. Setting this to `0` enables restore optimization (typically 3–6× faster replays, useful for performance investigations). |
-| `forceLoadUnusedResources` | `1` | Call `populateUnusedResources` so resources used only briefly still appear in `resources`. Setting to `0` reduces memory and lets you see only "live" resources. |
-| `enableValidation` | `0` | Set the `g_runningValidationCI` global, enabling Metal's API validation layer for the replay. Setting to `1` will surface validation failures via stderr in the bridge process. |
-
-Output JSON:
-
-```json
-{
-  "command": "config",
-  "trace_path": "...",
-  "config": {
-    "disableOptimizeRestores": false,
-    "forceLoadUnusedResources": true,
-    "enableValidation": true
-  },
-  "playAll_rc": 0,
-  "success": true,
-  "elapsed_ms": 8.2,
-  "resource_count": 247
-}
-```
-
-Use `config` to A/B different replay environments quickly — e.g. compare `enableValidation=0` vs `=1` to surface previously-silent Metal misuse.
-
----
-
-## Subcommand: find-draws (wrapper-only, R7.6-E)
-
-Searches for draw calls matching a given RPS label, shader function name, or exact RPS key. Eliminates the "GUI shows shader name but CLI needs draw_index" entry impedance. **Bridge binary is never modified** — this is pure wrapper-level JSON post-processing of `frame-list` (and optionally `pipeline`) output.
-
-```bash
-python3 gputrace_replay_wrapper.py find-draws <path-to-.gputrace> \
-    [--by-label SUBSTR] [--by-shader-name SUBSTR] [--by-rps-key KEY] \
-    [--limit N] [--show-first] [--stage fragment|vertex] \
-    [--with-ir] [--with-uniforms] [--output-dir DIR]
-```
-
-| Flag | Description |
-|------|-------------|
-| `--by-label SUBSTR` | Case-insensitive substring match on `rps_label` |
-| `--by-shader-name SUBSTR` | Case-insensitive substring match on vertex/fragment function name (triggers `pipeline` call for rps→function_name mapping) |
-| `--by-rps-key KEY` | Exact RPS key match |
-| `--limit N` | Max hits returned (default: 50) |
-| `--show-first` | Automatically run `shader-of-drawcall` on the first hit |
-| `--stage` | Stage for `--show-first` linkage (default: fragment) |
-| `--with-ir` | Pass to `shader-of-drawcall` when `--show-first` |
-| `--with-uniforms` | Pass to `shader-of-drawcall` when `--show-first` |
-| `--output-dir` | Output dir for `--show-first` |
-
-At least one of `--by-label`, `--by-shader-name`, `--by-rps-key` must be specified. Multiple filters are AND-combined.
-
-Output JSON:
-
+**Output JSON**:
 ```json
 {
   "command": "find-draws",
-  "trace_path": "...",
-  "filter": {
-    "by_label": "SkinMakeupNew",
-    "by_shader_name": null,
-    "by_rps_key": null
-  },
+  "filter": {"by_label": "SkinMakeupNew", "by_shader_name": null, "by_rps_key": null},
   "hit_count": 14,
   "draw_count": 244,
-  "limit": 50,
-  "truncated": false,
   "hits": [
-    {
-      "draw_index": 4,
-      "encoder_index": 2,
-      "draw_in_encoder": 4,
-      "call_index": 178,
-      "rps_key": 476,
-      "rps_label": "Papegame/SkinMakeupNew",
-      "vertex_function_name": null,
-      "fragment_function_name": null
-    }
+    {"draw_index": 4, "encoder_index": 2, "draw_in_encoder": 4,
+     "call_index": 178, "rps_key": 476, "rps_label": "Papegame/SkinMakeupNew"}
   ],
-  "show_first": { ... }
+  "show_first": { /* full shader-of-drawcall result with IR + uniforms */ }
 }
 ```
 
-`vertex_function_name` / `fragment_function_name` are populated only when `--by-shader-name` is used (because the `pipeline` call is needed to resolve function names). When only `--by-label` or `--by-rps-key` is used, they are `null` to avoid the extra replay cost.
+**Notes**:
+- Multiple filters are AND-combined.
+- `vertex_function_name` / `fragment_function_name` populated only with `--by-shader-name` (avoids extra replay cost).
+- At least one of `--by-label`, `--by-shader-name`, `--by-rps-key` required.
 
-Python module API:
-
+**Python module**:
 ```python
-from gputrace_replay_wrapper import ReplayBridge, FindDrawsResult, FindDrawsHit
-bridge = ReplayBridge()
-result: FindDrawsResult = bridge.find_draws(
-    "/path/to/trace.gputrace",
-    by_label="SkinMakeupNew",
-    show_first=True,
-    show_first_with_ir=True,
-)
+result = bridge.find_draws(trace, by_label="SkinMakeupNew",
+                           show_first=True, show_first_with_ir=True)
 for hit in result.hits:
-    print(f"draw {hit.draw_index} → rps {hit.rps_key} ({hit.rps_label})")
-if result.show_first_result:
-    print(f"IR path: {result.show_first_result.shader.ir_ll_path}")
+    print(f"draw {hit.draw_index} → rps {hit.rps_key}")
 ```
 
 ---
 
-## Exit codes
+<a id="core-draw-info"></a>
+## 2. draw-info (wrapper-only, R8.1)
 
-Both the bridge and the wrapper use the same numeric scheme:
-
-| Code | Symbol | Meaning |
-|---|---|---|
-| 0 | OK | Success |
-| 1 | USAGE_ERROR | Wrong CLI usage / unknown subcommand |
-| 2 | BAD_INPUT | Invalid `.gputrace` path or missing/unreadable file |
-| 3 | NO_METAL_DEVICE | `MTLCreateSystemDefaultDevice()` returned nil |
-| 4 | DLOPEN_FAIL | Could not load `GPUToolsReplay.framework` |
-| 5 | SYMBOL_RESOLVE_FAIL | Required private symbol not found (likely macOS update) |
-| 6 | APR_FAIL | APR pool bootstrap failed |
-| 7 | DATASOURCE_FAIL | `makeDataSource` returned NULL or threw |
-| 8 | OBJECTMAP_FAIL | `GTMTLReplayObjectMap initWithDevice:` failed |
-| 9 | CONTROLLER_FAIL | `makeController` returned NULL |
-| 10 | REPLAY_FAIL | `playAll` / `playTo` returned non-zero |
-| 11 | SUBCMD_FAIL | Subcommand-specific failure (shader compile, `shader-of-rps` lookup error, etc.) |
-| 12 | PLAYTO_OOR | `--playto N` with N > `total_call_count` (graceful, structured error) |
-| 124 | (wrapper only) | Subprocess timeout |
-
-Codes 4–9 indicate the macOS or framework environment shifted under us — re-run `setup.sh` and consider checking for an OS update.
-
----
-
-## Python wrapper — CLI mode
-
-`scripts/gputrace_replay_wrapper.py` mirrors the bridge subcommand surface and adds pretty-printing.
+**Purpose**: Merged per-draw binding view with IR metadata automatically injected — eliminates the error-prone manual join between `frame-list` + `IR .ll` + `dump-uniforms`.
 
 ```bash
-python3 gputrace_replay_wrapper.py [global-opts] <command> [args]
+python3 "$WRAPPER" draw-info <trace> <draw_index> \
+    [--with-uniforms]    # decode all buffer slots through reflection
+    [--stage fragment|vertex]  # default: fragment
+    [--output-dir DIR]
+    [--pretty]
 ```
 
-Global options can appear before or after the subcommand thanks to the wrapper's parent-parser design:
+**What it does internally**:
+1. `frame-list --with-bindings` → target draw's bindings + rps_key
+2. `pipeline` → rps_key's vertex/fragment library_key
+3. `disasm --with-ir` (per library, cached) → `.ll` IR files
+4. `parse_air_metadata(.ll)` → per-slot `{arg_name, type_name, size}`
+5. `enrich_stage_bindings()` → inject metadata into JSON + compute `size_check`
 
-| Flag | Default | Meaning |
-|---|---|---|
-| `--bridge PATH` | auto | Override binary lookup (otherwise the wrapper searches: same dir → `PATH`) |
-| `--timeout N` | 300 | Subprocess timeout in seconds |
-| `--pretty` / `-p` | off | 2-space indented JSON output |
-
-Subcommands match the bridge 1-for-1:
-
-```bash
-python3 gputrace_replay_wrapper.py help --pretty
-python3 gputrace_replay_wrapper.py replay <trace> --list-resources --pretty
-python3 gputrace_replay_wrapper.py replay <trace> --playto 30
-python3 gputrace_replay_wrapper.py replay <trace> --export 17 /tmp/tex.bin
-python3 gputrace_replay_wrapper.py pipeline <trace> /tmp/out
-python3 gputrace_replay_wrapper.py shader <trace> 248 /tmp/out/library_248.metallib --verify
-python3 gputrace_replay_wrapper.py shader <trace> 248 --source /tmp/new.metal --verify
-python3 gputrace_replay_wrapper.py shader-of-rps <trace> 484 --with-ir --output-dir /tmp/out
-python3 gputrace_replay_wrapper.py frame-list <trace>
-python3 gputrace_replay_wrapper.py frame-list <trace> --no-draws
-python3 gputrace_replay_wrapper.py frame-list <trace> --no-bindings        # R7.6-A: skip per-draw bindings
-python3 gputrace_replay_wrapper.py frame-list <trace> --with-timing --pretty
-python3 gputrace_replay_wrapper.py shader-of-drawcall <trace> 0 --with-ir --output-dir /tmp/out
-python3 gputrace_replay_wrapper.py disasm <trace> 374 --with-ir --output-dir /tmp/out               # R7.7: direct library_key
-python3 gputrace_replay_wrapper.py disasm <trace> 484 --key-type rps --with-ir --output-dir /tmp/out  # R7.7: forwards to shader-of-rps
-python3 gputrace_replay_wrapper.py dump-uniforms <trace> 0 0 --stage fragment                       # R7.6-B: draw-mode (auto-resolve buffer)
-python3 gputrace_replay_wrapper.py dump-uniforms <trace> 472 0 --target-kind rps --stage fragment   # R7.6-B: rps-mode (layout only)
-python3 gputrace_replay_wrapper.py dump-uniforms <trace> 472 0 --target-kind rps --stage vertex \
-        --buffer-key 2 --offset 262144                                                              # R7.6-B: rps-mode + decoded
-python3 gputrace_replay_wrapper.py config <trace> disableOptimizeRestores=0 enableValidation=1
+**Output JSON** (key fields):
+```json
+{
+  "command": "draw-info",
+  "draw_index": 69,
+  "rps_key": 496, "rps_label": "Papegame/SkinMakeupNew",
+  "bindings": {
+    "fragment": {
+      "buffers": [
+        {"index": 0, "resource_id": 8, "offset": 0,
+         "arg_name": "AsukaPerShader_PerCamera", "ir_arg_size": 144,
+         "size_check": "ok", "buffer_label": "ConstantBuffer"},
+        {"index": 5, "resource_id": 2, "offset": 110912,
+         "arg_name": "UnityPerMaterial", "ir_arg_size": 336,
+         "size_check": "ok"}
+      ],
+      "textures": [
+        {"index": 0, "resource_id": 186, "arg_name": "_MainTex"},
+        {"index": 1, "resource_id": 145, "arg_name": "_LightIndexMap"}
+      ]
+    }
+  },
+  "uniforms": [ /* when --with-uniforms */ ],
+  "value_health_summary": {"nan_count": 1, "fields_with_nan": ["_FresnelColor"]}
+}
 ```
 
-On error, the wrapper prints a JSON diagnostic to stderr and uses an appropriate exit code.
+**size_check values**: `"ok"` (available ≥ ir_size ≤ 4×) | `"under"` (true OOB) | `"over"` (borrows large section) | `null` (insufficient info).
 
-For graceful structured failures (`shader-of-rps` rps_not_found / `replay --playto` out-of-range), the wrapper still prints the JSON payload to stdout and uses exit code 11/12 so callers see the diagnostic without needing to parse stderr.
+**Why prefer this over manual join**:
+- Automatically maps slot numbers to IR `arg_name` — no more slot mix-ups
+- `size_check` flags OOB before you waste time on wrong hypotheses
+- `value_health_summary` surfaces NaN/inf automatically
 
 ---
 
-## Python wrapper — module mode
+<a id="core-dump-uniforms"></a>
+## 3. dump-uniforms
 
-For programmatic use, `import` the wrapper. All return values are typed dataclasses so you get IDE completion and avoid stringly-typed JSON juggling.
+**Purpose**: Decode the actual bytes a shader saw at a specific buffer binding. Answers "what was `_MainLightPosition` at this draw?"
+
+### By name (R8.3, recommended):
+```bash
+python3 "$WRAPPER" dump-uniforms <trace> <draw_index> 0 \
+    --by-name <BINDING_NAME>    # e.g. "UnityPerMaterial"
+    [--field <FIELD_SUBSTR>]    # filter decoded fields, e.g. "_FresnelColor"
+    [--stage fragment|vertex]
+```
+
+### By slot (standard):
+```bash
+# Wrapper draw-mode (auto-resolves rps_key + buffer_key + offset):
+python3 "$WRAPPER" dump-uniforms <trace> <draw_index> <bind_slot> \
+    [--stage fragment|vertex]
+
+# Bridge direct rps-mode (when you know the exact parameters):
+"$BRIDGE" dump-uniforms <trace> <rps_key> <bind_slot> \
+    [--stage fragment|vertex] \
+    [--buffer-key K] [--offset N] \
+    [--with-hex] [--max-hex-bytes N]
+```
+
+### Modes:
+| Mode | Flags | Output |
+|------|-------|--------|
+| Layout-only | no `--buffer-key` (bridge-mode) | `layout` tree only — "what fields does the shader expect?" |
+| Layout + decoded | with `--buffer-key K --offset N` | `layout` + `decoded` with actual values |
+| Draw-mode (wrapper) | draw_index + slot | Auto-resolves everything, always decoded |
+| By-name | `--by-name <NAME>` | Resolves name→slot via IR, then decodes |
+
+### Output JSON:
+```json
+{
+  "command": "dump-uniforms",
+  "rps_key": 472, "stage": "fragment", "bind_slot": 0,
+  "rps_label": "Papegame/Cloth/ClothStandard",
+  "binding_name": "AsukaPerShader_PerCamera",
+  "buffer_data_size": 144,
+  "layout": {"_MainLightPosition": {"offset": 64, "data_type": "float4"}},
+  "decoded": {"_MainLightPosition": {"offset": 64, "data_type": "float4",
+              "value": [0.42, -0.85, 0.31, 0]}},
+  "decoded_ok": true,
+  "value_health_summary": {"nan_count": 0, "inf_count": 0, "denormal_count": 0}
+}
+```
+
+### Data type conventions:
+- Floats: `%.6g`; NaN → `"NaN"`, Infinity → `"Infinity"`
+- Vectors: flat 1D array `[x, y, z, w]`
+- Matrices: 2D array (row-major)
+- Arrays: `{"length": L, "stride": S, "elements": [...]}` (truncated at 16 with `truncated: true`)
+- Nested structs: recursive object
+
+### Failure modes (exit 11):
+| Error | Meaning |
+|-------|---------|
+| `rps_not_found` | Invalid rps_key |
+| `reflection_not_captured` | Reflection unavailable; try `--with-hex --buffer-key K --offset N` as fallback |
+| `bind_slot_not_in_reflection` | Shader has no binding at this (stage, slot) |
+| `buffer_not_found` | Invalid buffer_key |
+| `offset_out_of_range` | Offset exceeds buffer length |
+
+---
+
+# Supporting Commands
+
+---
+
+<a id="shader-of-drawcall"></a>
+## 4. shader-of-drawcall (wrapper-only)
+
+From draw index to shader IR + bindings + uniforms in one command.
+
+```bash
+python3 "$WRAPPER" shader-of-drawcall <trace> <draw_index> \
+    [--stage fragment|vertex] [--with-ir] [--with-bindings] [--with-uniforms] \
+    [--output-dir DIR]
+```
+
+- `--with-uniforms` implies `--with-bindings`.
+- Internally: `frame-list` → `shader-of-rps` → (optional) `dump-uniforms` per slot.
+- Out-of-range: exit 12 with `draw_index_out_of_range` (special hint for compute-only traces with `draw_count=0`).
+
+Output includes: `shader_of_rps` (metallib/AIR/cacheKey/IR), `bindings`, `uniforms[]`, `uniforms_summary`.
+
+---
+
+<a id="replay"></a>
+## 5. replay
+
+Headless replay with resource inventory and export.
+
+```bash
+"$BRIDGE" replay <trace> [--bounds] [--playto N] [--list-resources] [--export ID PATH]
+```
+
+| Flag | Purpose |
+|------|---------|
+| `--bounds` | Probe `total_call_count` only (cheap) |
+| `--playto N` | Replay up to call N (for bisecting). OOR → exit 12 |
+| `--list-resources` | Append texture/buffer inventory |
+| `--export ID PATH` | Dump one resource to disk (refuses depth/stencil) |
+
+Key output fields: `success`, `elapsed_ms`, `resource_count`, `total_call_count`, `last_call_index`.
+
+Resource entries include full Metal metadata: `storageMode`, `cpuCacheMode`, `hazardTrackingMode`, `usage[]`, `isDepthStencil`, `label`.
+
+---
+
+<a id="pipeline"></a>
+## 6. pipeline
+
+Enumerate all libraries, RPS, compute PSO, and functions. Exports `.metallib` + `.air` files.
+
+```bash
+"$BRIDGE" pipeline <trace> [output_dir]
+```
+
+Key output: `libraries[]`, `render_pipeline_states[]` (with R7.2 shader correlation: `vertex/fragment_function_key`, `vertex/fragment_library_key`, `color_attachments[]`, `depth_format`, `raster_sample_count`), `rps_correlated_count`.
+
+Health check: `rps_correlated_count` should equal `render_pipeline_states_count`.
+
+---
+
+<a id="frame-list"></a>
+## 7. frame-list
+
+Full frame timeline: command buffers → encoders → draws + draw→RPS map + per-draw bindings.
+
+```bash
+"$BRIDGE" frame-list <trace> [--no-draws] [--no-bindings] [--with-timing]
+```
+
+Default: `--with-draws --with-bindings`. Per-draw bindings add ~3× JSON size (LYSK: 390KB vs 105KB); use `--no-bindings` when only the RPS map is needed.
+
+Key output: `command_buffers[].encoders[].draws[]`, `draw_to_rps_map[]` (flat: draw_index → rps_key).
+
+Each draw has `bindings.{vertex,fragment}.{buffers,textures,samplers}[]` with `resource_id`, `offset`, or `inline_bytes_size`.
+
+---
+
+<a id="shader-of-rps"></a>
+## 8. shader-of-rps
+
+Reverse-lookup: RPS key → fragment/vertex shader metallib + AIR + IR.
+
+```bash
+"$BRIDGE" shader-of-rps <trace> <rps_key> [--stage fragment|vertex] [--with-ir] [--output-dir DIR]
+```
+
+R7.7: auto-fallback from `bitcodeData` to PlayCover `ShaderDebugInfo/module.bc` (LYSK 100% IR coverage). `ir_source` field reports which path was used.
+
+---
+
+<a id="disasm"></a>
+## 9. disasm
+
+Direct library_key → IR (skip the RPS detour). Same SDI fallback as `shader-of-rps`.
+
+```bash
+"$BRIDGE" disasm <trace> <key> [--key-type library|rps] [--with-ir] [--output-dir DIR]
+```
+
+`--key-type rps` forwards to `shader-of-rps` internally.
+
+---
+
+<a id="shader"></a>
+## 10. shader (hot-replace)
+
+Replace a library in-memory and optionally re-replay to verify.
+
+```bash
+"$BRIDGE" shader <trace> <lib_key> <metallib_path> [--verify]
+"$BRIDGE" shader <trace> <lib_key> --source <msl_path> [--verify]
+```
+
+Replacement is in-memory only — `.gputrace` on disk is never modified. Function names must match originals.
+
+---
+
+<a id="config"></a>
+## 11. config
+
+Toggle replay configuration knobs (A/B testing).
+
+```bash
+"$BRIDGE" config <trace> [disableOptimizeRestores=0|1] [forceLoadUnusedResources=0|1] [enableValidation=0|1]
+```
+
+Typical use: `disableOptimizeRestores=0` for 3–6× faster replays; `enableValidation=1` to surface Metal API misuse.
+
+---
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Wrong CLI usage |
+| 2 | Invalid input (bad trace path) |
+| 3–9 | Environment/framework failures (re-run `setup.sh`) |
+| 10 | Replay failed |
+| 11 | Subcommand-specific failure |
+| 12 | Out-of-range (playto / draw_index) |
+| 124 | Subprocess timeout (wrapper only) |
+
+---
+
+## Python Wrapper — CLI Mode
+
+```bash
+python3 gputrace_replay_wrapper.py [--bridge PATH] [--timeout N] [--pretty] <command> [args]
+```
+
+Subcommands: `help`, `replay`, `pipeline`, `shader`, `shader-of-rps`, `frame-list`, `shader-of-drawcall`, `disasm`, `dump-uniforms`, `draw-info`, `find-draws`, `config`.
+
+---
+
+## Python Wrapper — Module Mode
 
 ```python
-import sys
-sys.path.insert(0, "/path/to/skill/scripts")
-from gputrace_replay_wrapper import ReplayBridge, BridgeError
+import sys; sys.path.insert(0, "$SKILL_DIR/scripts")
+from gputrace_replay_wrapper import ReplayBridge, BridgeError, DrawIndexOutOfRange
 
-bridge = ReplayBridge()           # auto-locates binary in same dir / PATH
-# bridge = ReplayBridge("/explicit/path/gputrace_replay_bridge")
+bridge = ReplayBridge()  # auto-locates binary
 
-# replay
-r = bridge.replay("/path/to/foo.gputrace", list_resources=True)
-print(r.success, r.elapsed_ms, r.resource_count)
-for res in r.resources:
-    if res.type == "texture":
-        print(res.id, res.pixel_format_name, f"{res.width}x{res.height}")
-
-# pipeline + R7.2 RPS↔shader correlation
-p = bridge.pipeline("/path/to/foo.gputrace", "/tmp/out")
-print("RPS correlated:", p.rps_correlated_count, "/", p.rps_captured_count)
-for ps in p.render_pipeline_states:
-    if ps.fragment_function_key is not None:
-        print(ps.key, ps.label, "frag=", ps.fragment_function_key,
-              "lib=", ps.fragment_library_key, "depth=", ps.depth_format)
-
-# R7.4 — RPS reverse-lookup → IR in one call
-sor = bridge.shader_of_rps("/path/to/foo.gputrace", 484, with_ir=True, output_dir="/tmp/out")
-if sor.error:
-    print("lookup failed:", sor.error, sor.hint)
-else:
-    print(sor.function_name, "→", sor.library_metallib_path,
-          "cacheKey=", sor.cache_key_metallib)
-    if sor.ir_ll_path:
-        print("LLVM IR:", sor.ir_ll_path, sor.ir_ll_size, "bytes")
-
-# R7.3 — frame timeline + draw→RPS map
-fl = bridge.frame_list("/path/to/foo.gputrace")
-print("CBs:", fl.command_buffer_count, "encoders:", fl.encoder_count, "draws:", fl.draw_count)
-for cb in fl.command_buffers:
-    for enc in cb.encoders:
-        if enc.type == "render" and enc.draw_count:
-            first_draw = enc.draws[0]
-            print(f"enc#{enc.index} {enc.label or ''} -> first draw rps_key={first_draw.rps_key}")
-# Chain: pick the first draw's RPS, get its IR.
-first = fl.draw_to_rps_map[0]
-sor = bridge.shader_of_rps("/path/to/foo.gputrace", first.rps_key, with_ir=True, output_dir="/tmp/out")
-
-# R7.6-C — same chain in one call (mirror of shader_of_rps for the "I know draw N" entry point)
-from gputrace_replay_wrapper import DrawIndexOutOfRange
-try:
-    sod = bridge.shader_of_drawcall("/path/to/foo.gputrace", 0, with_ir=True, output_dir="/tmp/out")
-    print(f"draw 0 → enc#{sod.encoder_index} rps={sod.rps_key} ({sod.rps_label})")
-    if sod.shader and sod.shader.ir_ll_path:
-        # R7.7: ir_source distinguishes bitcodeData (legacy AIR) vs sdi_module_bc (PlayCover SDI fallback)
-        print(f"LLVM IR ({sod.shader.ir_source}):", sod.shader.ir_ll_path, sod.shader.ir_ll_size, "bytes")
-    elif sod.error:
-        print("lookup failed:", sod.error, sod.hint)
-except DrawIndexOutOfRange as e:
-    print(f"trace only has {e.draw_count} draws; idx {e.draw_index} is out of range")
-
-# R7.7 — direct library_key disassembly (skip the RPS detour)
-dis = bridge.disasm("/path/to/foo.gputrace", 374, with_ir=True, output_dir="/tmp/out")
-if dis.error:
-    print("disasm failed:", dis.error)
-else:
-    print(f"library 374 → {dis.library_metallib_path} (cacheKey={dis.cache_key_metallib})")
-    if dis.ir_ll_path:
-        print(f"  IR via {dis.ir_source}: {dis.ir_ll_path} ({dis.ir_ll_size} bytes)")
-        if dis.ir_source == "sdi_module_bc":
-            print(f"  source: {dis.sdi_source_path}")
-
-# shader hot-replace + verify
-target = p.libraries[0]
-s = bridge.shader("/path/to/foo.gputrace", target.key,
-                  "/tmp/out/" + target.metallib_file, verify=True)
-print("verify ok?", s.verify["success"], "elapsed", s.verify["elapsed_ms"])
-
-# config
-c = bridge.config("/path/to/foo.gputrace", enable_validation=True)
-print(c.success, c.elapsed_ms)
-
-# error handling
-try:
-    bridge.replay("/missing.gputrace")
-except FileNotFoundError as e:
-    print("user-side error:", e)
-except BridgeError as e:
-    print("bridge-side error:", e.exit_name, e.stderr)
+# Key methods (all return typed dataclasses):
+bridge.find_draws(trace, by_label="...", show_first=True, show_first_with_ir=True)
+bridge.draw_info(trace, draw_index, with_uniforms=True)
+bridge.dump_uniforms_by_name(trace, draw_index, name="UnityPerMaterial", field="_FresnelColor")
+bridge.shader_of_drawcall(trace, draw_index, with_ir=True, with_uniforms=True)
+bridge.replay(trace, list_resources=True)
+bridge.pipeline(trace, output_dir)
+bridge.frame_list(trace)
+bridge.shader_of_rps(trace, rps_key, with_ir=True)
+bridge.disasm(trace, library_key, with_ir=True)
+bridge.shader(trace, lib_key, metallib_path, verify=True)
+bridge.config(trace, enable_validation=True)
 ```
 
-Returned dataclasses (see `gputrace_replay_wrapper.py` for full field lists):
+Key dataclasses: `FindDrawsResult`, `DrawInfoResult`, `DumpUniformsResult`, `ShaderOfDrawcallResult`, `ReplayResult`, `PipelineResult`, `FrameListResult`, `ShaderOfRpsResult`, `ConfigResult`.
 
-| Class | Notable fields |
-|---|---|
-| `HelpResult` | `tool`, `version`, `commands`, `raw` |
-| `ReplayResult` | `success`, `elapsed_ms`, `resource_count`, `resources: list[Resource]`, `export_*` |
-| `Resource` | `id`, `type`, `width/height/depth/pixel_format_name/texture_type` (texture) or `length` (buffer), `label` |
-| `PipelineResult` | `libraries: list[Library]`, `render_pipeline_states`, `compute_pipeline_states`, `functions`, plus `*_count` totals; R7.2 adds `rps_correlated_count` / `rps_captured_count` |
-| `Library` | `key`, `functions`, `metallib_size/file`, `bitcode_size/file`, `install_name`, `label` |
-| `PipelineState` | `key`, `class_name`, `label`; R7.2 render-PSOs add `vertex_function_key` / `fragment_function_key` / `vertex_library_key` / `fragment_library_key` / `color_attachment_count` / `color_attachments: list[ColorAttachment]` / `depth_format` / `stencil_format` / `raster_sample_count` / `vertex_function_name` / `fragment_function_name` |
-| `ColorAttachment` | `index`, `format`, `pixel_format`, `write_mask`, `blending_enabled` |
-| `Function` | `key`, `name`, `function_type`, `function_type_str` |
-| `ShaderResult` | `replacement_done`, `original`, `replacement`, `verify` |
-| `ShaderOfRpsResult` (R7.4) | `rps_key`, `stage`, `function_key`, `function_name`, `library_key`, `library_metallib_path`, `library_air_path`, `cache_key_metallib`, `ir_ll_path`, `error?` (`rps_not_found` / `descriptor_not_captured` / `stage_function_absent` / ...) |
-| `FrameListResult` (R7.3) | `command_buffer_count`, `encoder_count`, `draw_count`, `rps_correlated_count`, `total_call_count`, `with_draws`, `with_timing`, `command_buffers: list[FrameCommandBuffer]`, `draw_to_rps_map: list[FrameDrawToRps]` |
-| `FrameCommandBuffer` | `index`, `label`, `encoder_count`, `gpu_start_ms?` / `gpu_end_ms?` / `gpu_duration_ms?`, `encoders: list[FrameEncoder]` |
-| `FrameEncoder` | `index`, `type` (`render`/`compute`/`blit`), `label`, `first_call_index`, `last_call_index`, `draw_count`, `color_attachments: list[FrameAttachment]`, `depth_attachment?`, `stencil_attachment?`, `compute_dispatch_count?`, `draws: list[FrameDraw]` |
-| `FrameDraw` | `draw_index_global`, `draw_in_encoder`, `call_index`, `primitive_type`, `primitive_type_name`, `vertex_count`, `instance_count`, `indexed`, `index_count?`, `rps_key?`, `rps_label?`, `fragment_function_key?` |
-| `FrameAttachment` | `texture_id`, `pixel_format`, `format`, `index?` |
-| `FrameDrawToRps` | `draw_index_global`, `encoder_index`, `draw_in_encoder`, `call_index`, `rps_key?` |
-| `ShaderOfDrawcallResult` (R7.6-C) | `draw_index`, `stage`, `output_dir`, `encoder_index?`, `draw_in_encoder?`, `call_index?`, `rps_key?`, `rps_label?`, `shader: ShaderOfRpsResult?`, `error?` (`draw_has_no_rps_key` / forwarded from `shader-of-rps`), `hint?` |
-| `DrawIndexOutOfRange(Exception)` (R7.6-C) | `draw_index`, `draw_count`, `trace_path` — raised by `shader_of_drawcall` when `draw_index >= draw_count` (incl. compute-only traces with `draw_count == 0`) |
-| `ConfigResult` | `config: dict[str,bool]`, `success`, `elapsed_ms`, `resource_count` |
-| `BridgeError(Exception)` | `exit_code`, `exit_name`, `stderr`, `command`, `args` |
-
-Every dataclass also keeps the original parsed JSON in `.raw` for fields the wrapper doesn't surface explicitly.
-
----
-
-## Pixel format helpers
-
-When exporting a texture you need to know the bytes-per-pixel to interpret the dump. The bridge already computes this internally, but if you're slicing the binary in Python the conventions are:
-
-| pixelFormat (numeric) | pixelFormatName | bytes/pixel |
-|---|---|---|
-| 1, 2, … | `R8Unorm`, `R8Snorm`, … | 1 |
-| 25, 26, 30, 31, 70, 80 | `RG8Unorm`, `R16Float`, `R16Unorm`, `BGRA8Unorm`, … | 2 / 4 |
-| 70, 71 | `BGRA8Unorm`, `BGRA8Unorm_sRGB` | 4 |
-| 110, 111 | `RGBA16Float` | 8 |
-| 125, 126 | `RGBA32Float` | 16 |
-
-Depth/stencil formats (`Depth32Float`, `Stencil8`, `Depth32Float_Stencil8`, etc.) cannot be exported with the texture dump path — `getBytes:` is unsupported for these on Apple Silicon. The bridge will return `export_error: "depth/stencil format cannot be exported via getBytes"`. To inspect depth, sample it inside a shader and write to a color target, then export that.
+All dataclasses keep `.raw` for the original parsed JSON.

@@ -1,256 +1,243 @@
 ---
 name: gpu-trace-analysis
-description: Investigates rendering bugs and performance issues in macOS Metal apps by replaying .gputrace captures headlessly via a bundled ObjC bridge. Use this skill whenever the user reports a rendering problem (black screen, missing geometry, wrong colors, broken material, flickering, shader issue, NaN output, validation error, GPU hang, performance regression) and provides or references a .gputrace file — even if they don't say "replay" explicitly. Also use it when the user wants to inspect Metal textures/buffers, dump shader binaries (metallib/AIR), hot-replace shaders to test fixes, enumerate pipeline states, or compare configurations on captured traces. Invoke this skill proactively whenever a .gputrace path appears in the conversation, or whenever the user mentions Xcode GPU capture, Metal frame debugger, AGX shaders, or asks to investigate "what the GPU did" in a captured frame.
+description: Investigates rendering bugs and performance issues in macOS Metal apps by replaying .gputrace captures headlessly via a bundled ObjC bridge. Use this skill whenever the user reports a rendering problem (black screen, missing geometry, wrong colors, broken material, flickering, shader issue, NaN output, validation error, GPU hang, performance regression) and provides or references a .gputrace file — even if they don't say "replay" explicitly. Also use it when the user wants to inspect Metal textures/buffers, dump shader binaries (metallib/AIR), hot-replace shaders to test fixes, enumerate pipeline states, or compare configurations on captured traces. Invoke this skill proactively whenever a .gputrace path appears in the conversation, or whenever the user mentions Xcode GPU capture, Metal frame debugger, AGX shaders, or asks to investigate "what the GPU did" in a captured frame. This skill should also trigger when the user asks about uniform/cbuffer values, pipeline state inspection, draw call analysis, render pass debugging, or wants to understand what a frame renders — even if they phrase it as "check the shader", "what's bound to this draw", "why is this material wrong", or "decode the constant buffer". If you see any path ending in .gputrace or any mention of Metal rendering investigation, load this skill immediately.
 ---
 
 # GPU Trace Analysis & Render-Bug Investigation
 
-This skill turns headless `.gputrace` replay into a programmable workflow for investigating Metal rendering issues on macOS. Everything you need is bundled in `scripts/` and `references/` — no external workspace dependencies.
+Headless `.gputrace` replay as a programmable workflow for Metal rendering issues on macOS.
 
-## What this skill gives you
-
-A self-contained CLI (`gputrace_replay_bridge`) plus a Python wrapper (`gputrace_replay_wrapper.py`) that together expose these capabilities matching what an engineer would otherwise do manually inside Xcode's GPU Frame Debugger:
-
-| Capability | Tool | What you can find out |
-|---|---|---|
-| Headless replay | `replay` | Whether the trace itself reproduces; per-call timing; resource snapshot |
-| Texture / buffer inspection | `replay --list-resources --export` | Are render targets blank? Is uniform data sane? Do values contain NaN? |
-| Pipeline / shader dump + RPS↔shader correlation | `pipeline` | Which library compiled which function; metallib + AIR for offline inspection; each RPS reports its vertex/fragment function keys, library keys, attachment formats, write masks, and raster sample count |
-| RPS → shader IR reverse-lookup | `shader-of-rps` | One command from a render-pipeline-state key to its fragment/vertex `MTLFunction`, the owning metallib, the PlayTools cacheKey, and (with `--with-ir`) the disassembled LLVM IR `.ll` file. When MTLLibrary lacks `bitcodeData`, transparently falls back to PlayCover ShaderDebugInfo `module.bc` — IR coverage ~100%. |
-| Frame timeline (encoder/draw) + draw→RPS map + bindings | `frame-list` | Command buffers, render/compute/blit encoders with attachment summaries, every draw with its bound RPS_key. Each draw also carries a full per-stage binding snapshot (`bindings.{vertex,fragment}.{buffers,textures,samplers}[]` with `resource_id` / `offset` / `inline_bytes_size`). |
-| **Find draws by name (recommended first entry point)** | `find-draws` (Python wrapper) | **When you know a shader name or RPS label from Xcode GUI (e.g. "SkinMakeupNew"), use `find-draws --by-label <name>` to get all matching draw indices. Add `--show-first --with-ir --with-uniforms` for a zero-step jump from GUI name to full triple-bundle (IR + bindings + uniforms). This is the bridge between "what user sees in Xcode" and "what CLI tools need".** |
-| draw_index → shader IR + bindings + uniforms (one-shot) | `shader-of-drawcall` (Python wrapper) | `--with-ir --with-uniforms` gives the full triple-bundle: shader IR + per-stage binding tables + every cbuffer slot decoded through reflection. One command returns the same draw-context an Xcode GUI selection gives you. |
-| library_key → IR (direct) | `disasm` | Skips the RPS detour and goes straight library_key → metallib → cacheKey → IR. |
-| Uniform / cbuffer content decode | `dump-uniforms` | Decodes bytes of a buffer binding using captured `MTLRenderPipelineReflection` — outputs field names, offsets, data types, and actual values. Answers "what cbuffer values did the shader actually see at this draw". |
-| Shader hot-replace | `shader --verify` | Bisect: replace a suspect shader with a corrected/instrumented one and re-replay |
-| Replay configuration | `config` | Toggle Metal validation, optimization, unused-resource loading to isolate causes |
-
-Why this matters: Metal frame debugger is GUI-only and one-trace-at-a-time. With this skill you can scriptably narrow down a bug across many shaders, many configurations, and many traces.
-
-## First step in every session: bring up the bridge
-
-Run the setup script once at the start. It is idempotent (cheap to re-run) and prints the absolute path of the verified, ad-hoc-signed binary.
+## Setup (run once per session)
 
 ```bash
 BRIDGE=$(bash "$SKILL_DIR/scripts/setup.sh")
+WRAPPER="$SKILL_DIR/scripts/gputrace_replay_wrapper.py"
 ```
 
-Where `$SKILL_DIR` is the directory containing this `SKILL.md`. If `setup.sh` exits non-zero, stop and report — the rest of the skill cannot work until the binary builds. The build needs only the system `clang` and the always-present `/System/Library/PrivateFrameworks/GPUToolsReplay.framework`; no Xcode CLI tools or developer certificates are required.
+If `setup.sh` exits non-zero, stop — the skill cannot work. Needs only system `clang` + `/System/Library/PrivateFrameworks/GPUToolsReplay.framework`.
 
-After setup, you can call the bridge directly:
+---
+
+## Decision Tree — "Which command do I run?"
+
+Start here. Match the user's situation and follow the arrow.
+
+```
+User gives you a rendering problem + .gputrace
+│
+├─ You KNOW the shader/material name (from Xcode GUI, user report, label)?
+│  │
+│  └─► find-draws --by-label "<name>" --show-first --with-ir --with-uniforms
+│       (One command → matching draws + IR + bindings + uniforms of first hit)
+│
+├─ You KNOW the draw index?
+│  │
+│  └─► shader-of-drawcall <draw_index> --with-ir --with-uniforms
+│       (Full triple-bundle: shader IR + binding tables + decoded cbuffer fields)
+│
+├─ You KNOW a cbuffer field name (e.g. "_MainLightPosition")?
+│  │
+│  └─► dump-uniforms <draw_index> 0 --by-name <FIELD_NAME>
+│       (Directly query a named uniform's value without knowing the slot number)
+│
+├─ You DON'T KNOW what to look at yet?
+│  │
+│  ├─ "Output is black / blank" → Pattern 1 below
+│  ├─ "Colors wrong / material broken" → Pattern 2 below
+│  ├─ "Crash / validation error" → Pattern 3 below
+│  ├─ "NaN / weird values in uniforms" → Pattern 4 below
+│  ├─ "Missing texture / wrong texture bound" → Pattern 5 below
+│  └─ "Unknown trace, explore it" → Full Exploration Sequence below
+│
+└─ You need MERGED per-draw context (IR + metadata + size-check)?
+   │
+   └─► draw-info <draw_index> --with-uniforms
+        (Auto-joins IR arg_name + binding + size_check into one view)
+```
+
+**80%+ of investigations use only these 3 commands:**
+
+| # | Command | When to use |
+|---|---------|-------------|
+| 1 | `find-draws --by-label <name> --show-first --with-ir --with-uniforms` | You have a name from Xcode GUI or user report |
+| 2 | `draw-info <draw_index> --with-uniforms` | You need the merged binding view with IR metadata + size checks |
+| 3 | `dump-uniforms <draw_index> <slot> --by-name <NAME>` | You need a specific uniform value by name |
+
+---
+
+## 5 Bug Pattern Quick-Reference
+
+### Pattern 1: Black Screen / Blank Output
+
+**Symptoms**: render target is all zeros, nothing visible.
 
 ```bash
-"$BRIDGE" help
-"$BRIDGE" replay /path/to/foo.gputrace --list-resources
+# Step 1: confirm trace replays cleanly
+"$BRIDGE" replay "$TRACE"
+# Check: success=true
+
+# Step 2: inventory render targets, find the final color buffer
+"$BRIDGE" replay "$TRACE" --list-resources | python3 -c "
+import json,sys
+for r in json.load(sys.stdin).get('resources',[]):
+  if r['type']=='texture' and 'renderTarget' in r.get('usage',[]):
+    print(f\"  id={r['id']} {r.get('pixelFormatName','')} {r.get('width','')}x{r.get('height','')} label={r.get('label','')}\")
+"
+
+# Step 3: export + check for all-zeros
+"$BRIDGE" replay "$TRACE" --export <ID> /tmp/color.bin
+python3 -c "data=open('/tmp/color.bin','rb').read(); nz=sum(1 for b in data if b); print(f'non-zero: {nz}/{len(data)} ({100*nz/len(data):.1f}%)')"
+
+# Step 4: if all-zero, bisect with --playto to find when it goes wrong
+"$BRIDGE" replay "$TRACE" --bounds  # get total_call_count
+"$BRIDGE" replay "$TRACE" --playto <MID> --export <ID> /tmp/color_mid.bin
 ```
 
-…or use the higher-level Python wrapper for structured results:
+**判断标准**: non-zero% = 0 → draw never wrote; non-zero but wrong colors → Pattern 2.
+
+### Pattern 2: Wrong Colors / Material Bug
+
+**Symptoms**: specific material/effect renders incorrectly.
 
 ```bash
-python3 "$SKILL_DIR/scripts/gputrace_replay_wrapper.py" replay /path/to/foo.gputrace --list-resources --pretty
+# ONE COMMAND — from shader name to full context:
+python3 "$WRAPPER" find-draws "$TRACE" --by-label "<MaterialName>" \
+    --show-first --with-ir --with-uniforms --output-dir /tmp/out
 ```
 
-The Python wrapper is also importable as a module — see `references/cli-reference.md` for the full surface.
+**判断标准**:
+- Check `uniforms_summary.slot_failed` — any slots failing to decode?
+- Check `value_health_summary` — any NaN/inf in uniform values?
+- Open `ir_ll_path` — does the shader math match expectations?
+- Compare `bindings.fragment.textures[]` resource_ids against expected assets.
 
-## Investigation workflow
+If uniforms and textures look correct, the bug is in shader logic → Pattern 5 (hot-replace).
 
-When the user gives you a rendering problem and a `.gputrace`, follow this loop. Don't skip steps just because something looks obvious; the value of the skill is in the systematic narrowing.
+### Pattern 3: Crash / Validation Error / GPU Hang
 
-### 1. Establish a baseline
-
-Always start by confirming the trace itself replays cleanly. This rules out a corrupt trace and gives you a timing baseline.
+**Symptoms**: replay fails, Metal validation fires, or GPU hangs.
 
 ```bash
-"$BRIDGE" replay <trace>
+# Run with validation enabled — watch stderr for Metal validation messages
+"$BRIDGE" config "$TRACE" enableValidation=1 2>/tmp/validation.log
+cat /tmp/validation.log
+
+# If validation is silent but replay fails, bisect the crash point:
+"$BRIDGE" replay "$TRACE" --bounds  # get max N
+"$BRIDGE" replay "$TRACE" --playto <N/2>  # binary search for first-failing call
 ```
 
-Look at `replay_rc`, `success`, `elapsed_ms`, `resource_count`. If `success=false`, the trace is broken at the OS layer — escalate, don't keep digging.
+**判断标准**: validation messages name the offending call. Cross-reference with `pipeline` output.
 
-### 2. Frame the question
+### Pattern 4: NaN / Bad Uniform Values
 
-Re-read the user's report and decide which capability is most likely to surface evidence first. Some heuristics:
-
-- "Output is black / missing / corrupted" → start with `replay --list-resources` to inventory render targets, then `--export` the suspect texture and inspect it (size, format, raw bytes).
-- "Specific material / effect looks wrong" → **use `find-draws --by-label <shader_name> --show-first --with-ir --with-uniforms`** to jump from the shader/material name to full draw context (IR + bindings + uniforms). This is the fastest path when you know the shader name from Xcode GUI.
-- "I know a shader name but not its draw index" → `find-draws --by-label <name>` or `find-draws --by-shader-name <fn>` to get matching draw indices, then `shader-of-drawcall` on any of them.
-- "It crashes / has validation errors" → run `config enableValidation=1` and compare to default.
-- "It's slow / regressed" → compare `config disableOptimizeRestores=0` vs `=1` (typically 3–6× delta). Use `replay --playto N` to bisect which call range dominates.
-- "I want to test a fix to shader X" → use `shader <key> <new.metallib> --verify` (see Shader Replacement section in `references/investigation-playbook.md`).
-
-If you can't decide in 30 seconds, default to: `find-draws --by-label <keyword>` if you have a name; `replay --list-resources` → `pipeline` if you don't.
-
-### 3. Drill down with the right subcommand
-
-Pick the matching subcommand and run it. Keep outputs organized:
+**Symptoms**: shader output has artifacts caused by bad input data.
 
 ```bash
-WORKDIR=$(mktemp -d -t gputrace-XXXXXX)   # one workdir per investigation
-"$BRIDGE" pipeline <trace> "$WORKDIR/pipelines"
-"$BRIDGE" replay <trace> --export 17 "$WORKDIR/tex_17.bin"
+# Full draw context with automatic NaN/inf detection:
+python3 "$WRAPPER" shader-of-drawcall "$TRACE" <draw_index> \
+    --with-ir --with-uniforms --output-dir /tmp/out
+
+# Check the output:
+# - uniforms[].value_health_summary.nan_count > 0 → found NaN
+# - uniforms[].value_health_summary.fields_with_nan → which fields
+
+# Or query a specific field by name:
+python3 "$WRAPPER" dump-uniforms "$TRACE" <draw_index> 0 \
+    --by-name "_FresnelColor"
 ```
 
-Read `references/cli-reference.md` for the precise flag syntax and JSON schema of every subcommand. Read `references/investigation-playbook.md` for worked examples of common bug shapes (black screen, wrong color, NaN, slow frame, etc.).
+**判断标准**: `value_health_summary` reports NaN/inf → bug is upstream (CPU-side data).
 
-### 4. Iterate — don't guess
+### Pattern 5: Missing / Wrong Texture Bound
 
-Each subcommand emits structured JSON. Parse it (Python wrapper does this for you with dataclasses) and let the data drive the next step. If a hypothesis doesn't pan out, drop it and revisit step 2 — don't pile shader replacements onto a wrong assumption.
-
-### 5. Report findings
-
-When you've reached a conclusion (or a dead end), summarize:
-
-- What was observed (concrete JSON fields, file sizes, magic numbers, timings).
-- Which subcommand outputs back the conclusion.
-- The minimal repro command(s) so the user can re-run.
-- If a fix was tested via `shader --verify`, report verify_rc and the elapsed delta.
-
-## Exploring an unknown trace's pipeline
-
-Sometimes the user hands over a `.gputrace` and asks "what does this frame even do?" rather than reporting a specific bug. Use this workflow when there is no concrete bug yet — the goal is to map the trace's render passes to their shader code.
-
-### Recommended minimal call sequence
-
-**Quick path (when you already know a shader/material name):**
+**Symptoms**: texture appears blank, uses wrong asset, or is entirely missing.
 
 ```bash
-# Zero-step jump from GUI name to full draw context:
-python3 "$SKILL_DIR/scripts/gputrace_replay_wrapper.py" \
-    find-draws <trace> --by-label "SkinMakeupNew" --show-first --with-ir --with-uniforms
+# Get the draw's full binding table:
+python3 "$WRAPPER" draw-info "$TRACE" <draw_index> --with-uniforms --output-dir /tmp/out
+
+# In output, check bindings.fragment.textures[]:
+# - Each entry has {index, resource_id, arg_name (from IR), size_check}
+# - arg_name tells you what the shader expects at that slot
+# - resource_id links to replay --list-resources
+
+# Export the suspect texture:
+"$BRIDGE" replay "$TRACE" --export <resource_id> /tmp/suspect_tex.bin
+
+# Check dimensions/format match IR expectations:
+"$BRIDGE" replay "$TRACE" --list-resources | python3 -c "
+import json,sys
+for r in json.load(sys.stdin).get('resources',[]):
+  if r['id']==<resource_id>: print(json.dumps(r,indent=2))
+"
 ```
 
-This gives you the matching draw indices, plus automatically runs `shader-of-drawcall` on the first hit with IR + bindings + uniforms. Skip the full sequence below if this answers your question.
+**判断标准**: resource_id mismatch, or exported texture is blank/wrong dimensions.
 
-**Full sequence (unknown trace, no specific target):**
+---
 
-1. **Bounds first** — `replay --bounds` for the maximum legal `--playto N`. Cheap (one playAll). Always do this before any `--playto`-based bisecting so the bridge can fail gracefully on out-of-range targets (exit 12 = `EXIT_PLAYTO_OOR`).
-2. **Pipeline overview** — `pipeline <trace> <output_dir>`. Produces every render pipeline's vertex/fragment function/library key plus attachment summary. Read `rps_correlated_count` vs `render_pipeline_states_count`: they should match.
-3. **Frame timeline** — `frame-list <trace>`. Lists every `command_buffer.encoders[]` (render / compute / blit) with the encoder's `[first_call_index, last_call_index]` window, plus per-encoder `draws[]` and a flat `draw_to_rps_map[]`. Use this to answer "which RPS does draw N use?" without writing a swizzle probe yourself.
-4. **Pick a RPS to investigate** — e.g. by `label`, by attachment count (depth-only Z-prepasses are typically `color_attachment_count: 0`), or directly from `draw_to_rps_map[k].rps_key`. Or use `find-draws --by-label <name>` to filter by shader name.
-5. **One-shot shader reverse lookup** — `shader-of-rps <trace> <rps_key> --with-ir --output-dir <dir>`. Or use `shader-of-drawcall <draw_index> --with-ir --with-uniforms` for the full triple-bundle.
+## Full Exploration Sequence (unknown trace, no target)
 
-### Worked example (LYSK trace)
+When the user asks "what does this frame do?" with no specific bug:
 
 ```bash
-BRIDGE=$(bash "$SKILL_DIR/scripts/setup.sh")
+# 1. Bounds probe (cheap)
+"$BRIDGE" replay "$TRACE" --bounds
 
-# Step 1 — bounds
-"$BRIDGE" replay /tmp/foo.gputrace --bounds | jq .total_call_count
-# → e.g. 3425
+# 2. Pipeline overview (RPS↔shader correlation)
+"$BRIDGE" pipeline "$TRACE" /tmp/pipelines > /tmp/pipeline.json
 
-# Step 2 — pipeline + R7.2 correlation
-"$BRIDGE" pipeline /tmp/foo.gputrace /tmp/foo-pipeline > /tmp/foo-pipeline.json
-jq '.render_pipeline_states[] | select(.label | contains("SkinMakeupNew"))' /tmp/foo-pipeline.json
-# → multiple RPS share label "Papegame/SkinMakeupNew" but distinguishable by:
-#     color_attachment_count, fragment_library_key, depth_format
-#   (RPS 476 = Z-prepass: 0 colors, fragment_library_key=252)
-#   (RPS 484 = main pass: 2 colors RGBA8Unorm, fragment_library_key=356)
+# 3. Frame timeline (encoder/draw tree + draw→RPS map + bindings)
+"$BRIDGE" frame-list "$TRACE" > /tmp/frame.json
 
-# Step 3 — frame timeline + draw→RPS map (R7.3) + per-draw bindings (R7.6-A)
-"$BRIDGE" frame-list /tmp/foo.gputrace > /tmp/foo-frame.json
-jq '{cb: .command_buffer_count, enc: .encoder_count, draws: .draw_count, with_bindings: .with_bindings}' /tmp/foo-frame.json
-# → e.g. {cb:4, enc:62, draws:244, with_bindings:true}
-# Pick the first draw's RPS:
-jq '.draw_to_rps_map[0]' /tmp/foo-frame.json
-# → {"draw_index_global":0,"encoder_index":2,"draw_in_encoder":0,"call_index":131,"rps_key":472}
+# 4. Pick a target:
+#    - By label: find-draws --by-label <name>
+#    - By attachment count: jq from pipeline.json
+#    - By encoder position: jq from frame.json
 
-# R7.6-A: each draw also carries a full per-stage binding snapshot. Use this
-# to answer "what was bound when this draw executed" without writing a probe.
-jq '.command_buffers[].encoders[].draws[0] | select(.bindings) | .bindings | {v_bufs: (.vertex.buffers|length), v_tex: (.vertex.textures|length), f_bufs: (.fragment.buffers|length), f_tex: (.fragment.textures|length)}' /tmp/foo-frame.json | head -5
-# → e.g. {"v_bufs":10,"v_tex":1,"f_bufs":4,"f_tex":16}  (typical PBR draw)
-#
-# Pull buffer 0 / fragment texture 0 of draw 0 — links straight back to
-# replay --list-resources / replay --export <id>:
-jq '.draw_to_rps_map[0].draw_index_global as $i | .command_buffers[].encoders[].draws[] | select(.draw_index_global==$i) | {v_buf0: .bindings.vertex.buffers[0], f_tex0: .bindings.fragment.textures[0]}' /tmp/foo-frame.json
-# → {"v_buf0":{"index":0,"resource_id":2,"offset":262144},"f_tex0":{"index":0,"resource_id":186}}
-# Now you can `replay --export 186 /tmp/draw0_ftex0.bin` to inspect the actual texture.
-#
-# If output volume is a concern (LYSK: ~390KB with bindings vs ~105KB without),
-# add `--no-bindings` to skip the per-draw binding snapshot.
-
-# Step 4 — pick RPS 484 (main pass), get IR
-"$BRIDGE" shader-of-rps /tmp/foo.gputrace 484 --with-ir --output-dir /tmp/foo-shaders
-# Output JSON includes ir_ll_path; open it in any editor.
-
-# Or: directly chain frame-list → shader-of-rps (the R7 final-mile).
-RPS=$(jq -r '.draw_to_rps_map[0].rps_key' /tmp/foo-frame.json)
-"$BRIDGE" shader-of-rps /tmp/foo.gputrace "$RPS" --with-ir --output-dir /tmp/foo-shaders
-
-# Or: one-shot via the R7.6-C/D thin wrapper — same byte-level metallib/AIR output,
-# but no manual jq plumbing. Best entry point when you know "I want draw N's shader".
-# As of R7.7, this also produces .ll IR via SDI module.bc fallback when the
-# library has no bitcodeData (LYSK: 3% AIR + 97% SDI = ~100% IR coverage).
-python3 "$SKILL_DIR/scripts/gputrace_replay_wrapper.py" \
-    shader-of-drawcall /tmp/foo.gputrace 0 --with-ir --output-dir /tmp/foo-shaders
-
-# Or: directly disassemble a library_key (skip the RPS detour) — also tries
-# bitcodeData first then PlayCover SDI module.bc fallback.
-"$BRIDGE" disasm /tmp/foo.gputrace 374 --with-ir --output-dir /tmp/foo-shaders
-
-# R7.6-B: see the actual cbuffer values the shader saw at draw N.
-# Wrapper draw-mode auto-resolves (rps_key, buffer_key, offset) from R7.6-A's
-# binding table — no manual plumbing.
-python3 "$SKILL_DIR/scripts/gputrace_replay_wrapper.py" \
-    dump-uniforms /tmp/foo.gputrace 0 0 --stage fragment
-# → JSON with "binding_name":"AsukaPerShader_PerCamera",
-#            "layout":{"_MainLightPosition":{...}, "_ProjectionMatrix":{...}, ...},
-#            "decoded":{"_MainLightPosition":{"value":[0.42,-0.85,0.31,0]}, ...}
-
-# R7.6-D: full draw context — IR + bindings + uniforms — in ONE command.
-# This is the wrapper-layer collapse of (frame-list --with-bindings) +
-# (shader-of-rps --with-ir) + (dump-uniforms-per-slot) into a single call.
-# Use this when you'd otherwise be hand-stitching 3 commands per investigated draw.
-python3 "$SKILL_DIR/scripts/gputrace_replay_wrapper.py" \
-    shader-of-drawcall /tmp/foo.gputrace 0 \
-    --stage fragment --with-ir --with-uniforms --output-dir /tmp/foo-shaders
-# → {"shader_of_rps":{...ir_ll_path...},
-#    "bindings":{"vertex":{"buffers":[...]}, "fragment":{"buffers":[...],"textures":[...]}},
-#    "uniforms":[{"bind_slot":0,"binding_name":"AsukaPerShader_PerCamera",
-#                 "layout":{...},"decoded":{"_MainLightPosition":{...},...}}, ...],
-#    "uniforms_summary":{"slot_count":4,"slot_ok":4,"slot_failed":0,"errors":[]}}
+# 5. Drill into the target:
+python3 "$WRAPPER" shader-of-drawcall "$TRACE" <draw_index> \
+    --with-ir --with-uniforms --output-dir /tmp/shaders
 ```
 
-If `--with-ir` returns `ir_error: "no_air_bitcode_and_no_sdi"` (R7.7), neither the in-trace `bitcodeData` nor PlayCover's `ShaderDebugInfo` cache could provide LLVM bitcode — usually because the SDI cache was never populated. Run the app once through PlayCover to populate it, or use the metallib directly. The legacy `no_air_bitcode` error is gone in R7.7 (replaced by the auto-fallback path).
+---
 
-The exported `cache_key_metallib` follows PlayCover's convention; the skill's IR-emission path will scan `~/Library/Containers/io.playcover.PlayCover/ShaderDebugInfo/<bundle>/<cache_key>/modules/<hash>/module.bc` automatically. See `references/investigation-playbook.md` §3 for the cacheKey algorithm and full SDI cross-reference path.
+## Operational Guardrails
 
-### Known blind spots (still on the R7 backlog)
+- **Read-only by default.** No mutation of `.gputrace` on disk.
+- **macOS only, Apple Silicon GPU verified.** Intel GPUs may have different class names.
+- **GPU counters / profiler / shader debugger out of scope** — require private entitlements + SIP off.
+- Parallel replays are safe (separate processes) but heavy batches can slow the system.
 
-These are limitations of the current skill — agents should not waste cycles trying to work around them with grep / zlib / unsorted-capture parsing.
+---
 
-- **Depth/stencil texture export** — `replay --export` refuses depth/stencil; sample inside a shader and write to a color target as a workaround. R7.5 (planned).
-- **Per-encoder GPU timing** — `frame-list --with-timing` reads `MTLCommandBuffer.GPUStartTime/GPUEndTime`, but on traces whose internal CBs never `commit` these properties remain 0 / null. The flag is provided for forward compatibility; for accurate host-side per-segment timing use `replay --playto N` bisection (see playbook Pattern 4).
-- **Compute encoder dispatch counts** — R7.3 lists `type=compute` encoders in the timeline, but `compute_dispatch_count` remains 0; `setComputePipelineState:` / `dispatchThreadgroups:*` swizzles are not yet installed (R7.5 子项 B planned).
-- **Indirect draws / mesh shaders** — `drawPrimitives:indirectBuffer:*` / `drawMeshThreadgroups:*` are not in the R7.3 swizzle set (LYSK doesn't use them; add when needed).
-
-If a user asks for any of the above, explain the gap and offer the closest available substitute (typically: `pipeline` to find the suspect library, then `shader-of-rps --with-ir` for IR; or `replay --playto` for bisection).
-
-## Operational guardrails
-
-- **Read-only by default.** All subcommands operate on a copy of the trace's data inside the replay process — they do not mutate the `.gputrace` bundle on disk. The only thing that gets written outside the trace is files you explicitly request via `--export` / `pipeline <output_dir>` / shader replacement (which only affects the in-memory ObjectMap of that one replay).
-- **Don't fight Xcode.** If the user is currently debugging the same trace inside Xcode, your headless replay still works (separate process), but heavy parallel replays can slow the system. Mention this if you kick off a long batch.
-- **macOS only, Apple Silicon GPU verified.** The bridge uses M-series-specific pipeline classes (`AGXG16XFamily*`). It will run on Intel GPUs but pipeline-state class names will differ — note that in your report instead of asserting it's broken.
-- **GPU counters / profiler / shader debugger are out of scope.** They require Apple-private entitlements and SIP off. Don't attempt them; if the user asks for raw HW counters, explain the boundary and offer host-timing via `--playto` per-segment as a substitute.
-
-## Verifying the skill itself
-
-If you suspect the bundled binary is misbehaving (compilation env changed, macOS update, etc.), run the bundled integration tests:
-
-```bash
-bash "$SKILL_DIR/scripts/test_bridge.sh"
-# or with a real trace for end-to-end coverage:
-GPUTRACE_PATH=/path/to/sample.gputrace bash "$SKILL_DIR/scripts/test_bridge.sh"
-```
-
-29 + 38 R7-specific assertions cover argument parsing, exit codes, JSON shape, codesign validity, R7.1 bounds checking + texture/buffer metadata, R7.2 RPS↔shader correlation, R7.3 frame-list timeline + draw_to_rps_map invariants + frame-list→shader-of-rps end-to-end chain, R7.4 `shader-of-rps` reverse lookup, R7.6-C `shader-of-drawcall` wrapper byte-level equivalence + OOR + module-API contract, **R7.7 `disasm` + SDI module.bc fallback (verifies `ir_source=sdi_module_bc`, deprecated `no_air_bitcode` is gone, lib & rps key-type both produce IR)**, **R7.6-A frame-list per-draw bindings (verifies `bindings.{vertex,fragment}.{buffers,textures,samplers}` schema, vb0 invariant on every render draw, `--no-bindings` size-shrink + suppression, plus chain-compatibility with `shader-of-rps`)**, R7.6-B `dump-uniforms` reflection decode (layout-only / decoded / bind_slot OOR / draw-mode auto-resolve), and **R7.6-D `shader-of-drawcall --with-bindings` / `--with-uniforms` triple-bundle (default-off compat, --with-uniforms implies --with-bindings, per-slot uniforms byte-identical to direct `dump-uniforms`, both stages, module-API contract)** — **148 total assertions** on a render-bearing trace.
-
-For multi-sample regression (so the suite doesn't only validate against one trace shape), point `GPUTRACE_PATH` at a compute-only trace too — `shader-of-drawcall`'s OOR + `frame-list`'s `draw_count=0` paths and `disasm` SDI graceful "no_air_bitcode_and_no_sdi" branch all exercise that branch. Pre-existing R7.3 assertions that assume render draws will fail on compute-only traces, which is expected.
-
-## Reference files
-
-Read these on demand — don't load them eagerly.
+## Reference Files (read on demand)
 
 | File | Read when |
 |---|---|
-| `references/cli-reference.md` | You need exact flags / JSON schema / Python API for any subcommand |
-| `references/investigation-playbook.md` | You're stuck choosing a subcommand, or want a worked example for the bug shape in front of you |
-| `references/architecture.md` | You hit unexpected behavior and need to reason about how the bridge works internally (Controller path, ObjectMap, BL offsets) |
+| `references/cli-reference.md` | You need exact flags, JSON schemas, Python module API, or edge-case behavior for any subcommand |
+| `references/investigation-playbook.md` | You want full worked examples beyond the quick patterns above (frame overview, trace comparison, shader hot-replace) |
+| `references/architecture.md` | You hit unexpected behavior and need to understand bridge internals (Controller path, ObjectMap, swizzle mechanics) |
+
+---
+
+## Verifying the Skill
+
+```bash
+bash "$SKILL_DIR/scripts/test_bridge.sh"
+# With a live trace for full coverage:
+GPUTRACE_PATH=/path/to/sample.gputrace bash "$SKILL_DIR/scripts/test_bridge.sh"
+# → 148 assertions on render-bearing traces
+```
+
+---
+
+## Known Blind Spots
+
+- **Depth/stencil export**: `--export` refuses depth/stencil textures. Workaround: sample inside a shader → write to color target → export that.
+- **Compute encoder dispatches**: listed in timeline but dispatch_count stays 0.
+- **Indirect draws / mesh shaders**: not in swizzle set.
+- **Inline buffer bytes**: `frame-list` records `inline_bytes_size` but not the raw bytes.
+
+If the user asks for any of these, explain the gap and offer the closest substitute.

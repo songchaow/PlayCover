@@ -14,7 +14,7 @@
 
 ```
                                      ┌──────────────────────────────────┐
-                                     │  ⓪ 上游 SSS pass 结果            │
+                                     │  A 上游 SSS pass 结果             │
    _SSSSkinTexture (rid 232) ──────► │  半分辨率皮肤 lighting 已含主灯  │
    E10→E11→E12 的产物                │  ½×½ → 上采样到全分辨率           │
                                      └──────┬───────────────────────────┘
@@ -23,33 +23,46 @@
                                      [漫反射主体（最大贡献）]
                                             ▲
                                             │ + charShadow ·
-   ① _CharMainLightColor (cb4) ──── ┐       │   ┌───────────────────┐
-                              │ × NdotL│      │   │ ⑤ 主灯 GGX 镜面    │
-                              │       │      │   │ + sparkle·CharMain│
-   _MainLightPosition (cb1)   ┘ × DVF  └─────┤   └───────────────────┘
+   B _CharMainLightColor (cb4) ──── ┐       │   ┌────────────────────────┐
+                              │ × NdotL      │   │ 主灯 GGX 镜面          │
+                              │              │   │ + sparkle·CharMainLight│
+   _MainLightPosition (cb1)   ┘ × DVF  ─────┤   └────────────────────────┘
                                             │       (charShadow=lerp(1,
                                             │        screenShadow.r,
                                             │        _CharShadowIntensity))
                                             │
                                             │ + screenShadow.a ·
-   ② _CharLightColor (cb4) ──────┐          │   ┌───────────────────┐
-   _CharLightPosition (cb4) ─────┘ DVF      │   │ ⑥ Char Light 镜面 │
-                                            │   └───────────────────┘
+   C _CharLightColor (cb4) ──────┐          │   ┌────────────────────────┐
+   _CharLightPosition (cb4) ─────┘ DVF      │   │ Char Light 镜面        │
+                                            │   └────────────────────────┘
                                             │
-                                            │ + (≈0) ·
-   ③ unity_SpecCube0 (rid 142, 1×1 黑)──┐    │   ┌───────────────────┐
-   _SHMaps[7] (cb6, Pape SH 是 0)? ─────┘ × F0 │   │ ⑦ envSpec ≈ 0     │
-                                            │   └───────────────────┘
+   D _ScreenShadowTexture (rid 236) ─────── │ ← 4 通道分别控制 B/C/E 的阴影
                                             │
                                             │ + Σ ·
-   ④ _AdditionalLight* (cb0, 30 槽 / ─────┐  │   ┌───────────────────┐
-       本帧 2 盏活跃) ───────────────────┘  └─►│ ⑧ 附加光镜面（最多 4 盏）│
-   _LightIndexMap (rid 145) → 4 byte 索引     │   └───────────────────┘
+   E _AdditionalLight* (cb0, 30 槽 / ─────┐ │   ┌────────────────────────┐
+       本帧 2 盏活跃) ───────────────────┘ └─►  │ 附加光镜面（最多 4 盏） │
+   _LightIndexMap (rid 145) → 4 byte 索引     │   └────────────────────────┘
+                                            │
+                                            │ + (≈0) ·
+   F unity_SpecCube0 (rid 142, 1×1 黑)──┐    │   ┌────────────────────────┐
+   _SHMaps[7] (cb6, Pape SH) ──────────┘ × F0   │ envSpec ≈ 0            │
+                                            │   └────────────────────────┘
                                             ▼
                                        finalColor (RGBA16F → 224)
 ```
 
-每个数字（①–⑧）对应下文一个小节。**记忆要点**：
+图中 A–F 标号与下文小节的对应关系：
+
+| 图标号 | 含义 | 对应正文 |
+|---|---|---|
+| **A** | 漫反射主体（上游 SSS pass 产物） | §2 |
+| **B** | 主灯方向 + 颜色 → 主灯镜面 + sparkle | §3 |
+| **C** | Char Light → 角色补光镜面 | §4 |
+| **D** | 屏幕空间阴影（控制 B/C/E 的衰减） | §5 |
+| **E** | 附加光（LightIndexMap cluster 路径） | §6 |
+| **F** | 间接光照 = Pape SH + cubemap → envSpec | §7 |
+
+**记忆要点**：
 
 1. **皮肤最主要的受光是 SSS pass 的输出，不是 RPS 496 自己算的**。RPS 496 自己算的只是镜面 + 附加光 + IBL。
 2. **URP 标准的 `_MainLightColor` 在这帧是 0**（不被 RPS 496 fragment 读取）；**所有"主灯亮度"都来自 cb4 的 `_CharMainLightColor = (2.51, 2.26, 2.43)`**。
@@ -58,7 +71,7 @@
 
 ---
 
-## 2. 漫反射主体 = `tintedAlbedo · _SSSSkinTexture` ⓪
+## 2. 漫反射主体 = `tintedAlbedo · _SSSSkinTexture`（A）
 
 shader 第 956 行：
 
@@ -106,7 +119,7 @@ sampled @ screenUV → ≈ (主灯 NdotL · _CharMainLightColor · shadow)  ✱ 
 
 ---
 
-## 3. 主灯方向 + 颜色解构 ①
+## 3. 主灯方向 + 颜色解构（B）
 
 ### 实测数据矛盾点：URP `_MainLightColor` 是 0
 
@@ -158,7 +171,7 @@ half3 sparkleColor_main = sparkleMask_main * activeSparkleColor;
 
 ---
 
-## 4. Char Light（角色专属补光）镜面 ②
+## 4. Char Light（角色专属补光）镜面（C）
 
 | 字段 | cb4 `Character_Param` | 实测 |
 |---|---|---|
@@ -187,7 +200,7 @@ half3 charSpecular = (charNdotL > 0)
 
 ---
 
-## 5. 主灯阴影 vs Char Light 阴影 ⑤⑥（合成顺序的关键）
+## 5. 主灯阴影 vs Char Light 阴影（D）— 合成顺序的关键
 
 **两个阴影项不同**，shader 第 956–959 行：
 
@@ -218,7 +231,7 @@ half3 finalColor = charSpecular * screenShadow.a + sssBlock;
 
 ---
 
-## 6. 附加光（LightIndexMap 路径）④
+## 6. 附加光（LightIndexMap 路径）（E）
 
 整段在 shader 第 805–897 行。**LYSK 用的是自定义 cluster lighting**，与 URP 标准 `GetAdditionalLight()` API **不同**。
 
@@ -309,7 +322,7 @@ Light 0（暖白 spot，距离 2.96m，spotFalloff 还要乘锥形衰减、且 S
 
 ---
 
-## 7. 间接光照 = Pape SH（不是 cubemap）③
+## 7. 间接光照 = Pape SH（不是 cubemap）（F）
 
 ### 7.1 SH 漫反射
 
@@ -404,38 +417,38 @@ half3 envSpecular = decodedCube * shIrradiance * F0 * _CharShIntensity;
 
 ```
 finalColor =
-    // ① 漫反射主体（包含主灯漫反射 + SH 漫反射，已在 SSS pass 中预积分）
+    // A 漫反射主体（包含主灯漫反射 + SH 漫反射，已在 SSS pass 中预积分）
     tintedAlbedo · _SSSSkinTexture                                                 [≈ 主要贡献]
 
-    // ⑤ 主灯镜面 + sparkle，受主灯阴影衰减
+    // B 主灯镜面 + sparkle，受主灯阴影衰减
   + lerp(1, screenShadow.r, _CharShadowIntensity) · (
         sparkleColor_main · _CharMainLightColor                                    [闪片]
       + NdotL_main · _CharMainLightColor · GGX_D · GGX_V · Fresnel                 [主灯镜面]
     )
 
-    // ⑥ Char Light 镜面，受独立的 .a 通道阴影衰减
+    // C Char Light 镜面，受独立的 .a 通道阴影衰减
   + screenShadow.a · (
         charNdotL · _CharLightColor · GGX_D · GGX_V · Fresnel                      [角色补光镜面]
     )
 
-    // ⑦ 环境镜面（cubemap×SH×F0×CharShIntensity，本帧 ≈ 0）
+    // F 环境镜面（cubemap×SH×F0×CharShIntensity，本帧 ≈ 0）
   + decodedCube · shIrradiance · F0 · _CharShIntensity                              [≈ 0，cube 全黑]
 
-    // ④ 附加光镜面（最多 4 盏，本帧实际 2 盏，每盏简化 BRDF）
+    // E 附加光镜面（最多 4 盏，本帧实际 2 盏，每盏简化 BRDF）
   + Σ_{i=0..3, idx≠255} addShadow_i · lightColor_i · NdotL_i · lightAtten_i
                        · (D · roughnessScale) · F0
 ```
 
-每一项的**典型量级**（基于本帧实测，假设视线正面看角色脸颊；具体 cb5 实测值见 §0）：
+每一项的**典型量级**（基于本帧实测，假设视线正面看角色脸颊；具体 cb5 实测值见 §2）：
 
 | 项 | 量级 | 占最终颜色比 |
 |---|---|---|
-| ① 漫反射主体 `tintedAlbedo · sssSkin` | (0.6, 0.5, 0.45) | **~80%**（主导） |
-| ⑤ 主灯镜面（仅鼻尖/眉骨） | (0.05, 0.045, 0.05) | **~7%**（局部） |
-| ⑤ 主灯 sparkle（仅唇/眼） | (0, 0, 0) | **0%**（**本帧 cb5 中 `_EyeSparkleColor / _LipSparkleColor / _EyeSparkleParams / _LipSparkleParams` 全部为 0，sparkle 输出为 0**） |
-| ⑥ Char Light 镜面 | (0.03, 0.025, 0.027) | **~5%**（高光环绕） |
-| ⑦ envSpec | ≈ 0 | **0%** |
-| ④ 附加光（合计 2 盏） | ~(0.04, 0.04, 0.06) | **~3–6%**（局部，鼻尖/唇高光区可见冷蓝点缀） |
+| A 漫反射主体 `tintedAlbedo · sssSkin` | (0.6, 0.5, 0.45) | **~80%**（主导） |
+| B 主灯镜面（仅鼻尖/眉骨） | (0.05, 0.045, 0.05) | **~7%**（局部） |
+| B 主灯 sparkle（仅唇/眼） | (0, 0, 0) | **0%**（**本帧 cb5 中 `_EyeSparkleColor / _LipSparkleColor / _EyeSparkleParams / _LipSparkleParams` 全部为 0，sparkle 输出为 0**） |
+| C Char Light 镜面 | (0.03, 0.025, 0.027) | **~5%**（高光环绕） |
+| F envSpec | ≈ 0 | **0%** |
+| E 附加光（合计 2 盏） | ~(0.04, 0.04, 0.06) | **~3–6%**（局部，鼻尖/唇高光区可见冷蓝点缀） |
 
 → **「化妆+底色 SSS 漫反射」承担 ~80% 视觉贡献**，剩余 ~20% 由 3 个镜面源（主灯、Char Light、附加光）瓜分。`_NonMetalSpecular = 0.983` 让 F0 维持在 ~0.08 的"偏强镜面"档位，附加光在鼻尖/唇高光区是**可见的局部冷色调点缀**而不是噪点级贡献。
 

@@ -7,6 +7,10 @@
 
 Uniform buffer 数据见 [`../08-rps496-binding-truth.md`](../08-rps496-binding-truth.md)。
 
+**Vertex Shader 分析与 Unity 导入指南见 [`VERTEX_SHADER_ANALYSIS.md`](VERTEX_SHADER_ANALYSIS.md)**。
+
+**验证用 OBJ 文件**: `PL_Head_decoded.obj`（已解码 position + octahedral normals + UV0）。
+
 ---
 
 ## 1. Index Buffer

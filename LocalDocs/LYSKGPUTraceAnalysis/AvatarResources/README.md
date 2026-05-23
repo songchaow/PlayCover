@@ -41,8 +41,8 @@ Draw 69 使用 7 个 vertex attribute stream（Metal vertex buffer slot 3..9）�
 ### 关键数据特征
 
 - **5,077 顶点** = 40,616 B ÷ 8 B/vtx = index max + 1
-- **Slot 3 (rid 100)** 和 **Slot 9 (rid 134)**：40B 交错流。前 16B (float4) 为 position（xyz 为局部坐标，w 为 blend weight ∈ [-1,1]）。Bytes 16-35 为 skinning 附加数据。Bytes 36-39 恒 = -1.0（tangent sign）。Rid 134 是前一帧 skinned position（diff < 0.00026）。
-- **Slot 4/5 (rid 83/84)**：float32×2 ∈ [0,1]，Metal 以 Float2 格式交给 shader，自动 pad 为 half3(x,y,0) / half4(x,y,0,1)。经 WTO/OTW 矩阵变换后产生 3D 世界法线/切线。
+- **Slot 3 (rid 100)** 和 **Slot 9 (rid 134)**：40B 交错流。前 16B (float4) 为 position（xyz 为局部坐标，w 为 blend weight ∈ [-1,1]）。Bytes 16-35 为 skinning 附加数据。Bytes 36-39 恒 = -1.0（tangent sign）。Rid 134 是前一帧 skinned position（max diff = 0.000131）。
+- **Slot 4/5 (rid 83/84)**：float32×2 ∈ [0,1]，Metal 以 Float2 格式交给 shader，自动 pad 为 half3(x,y,0) / half4(x,y,0,1)。经 WTO/OTW^T 矩阵（纯旋转时两者等价）变换后产生 3D 世界法线/切线。
 - **Slot 8 (rid 87)**：16B stride，大部分值为 0，shader 仅读前 8B。
 
 ### Metal Vertex Format 与 Shader 类型的关系

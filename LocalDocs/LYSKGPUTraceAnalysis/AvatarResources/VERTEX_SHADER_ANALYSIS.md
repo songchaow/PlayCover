@@ -5,7 +5,7 @@
 > **Vertex Shader**：`library_408` / `function_key=409` / `xlatMtlMain`
 > **IR 来源**：`LocalDocs/OfflineSourceRecovery/gputracebinaryreplacement/SkinMakeupNew_vertex.ll`
 >
-> **关键结论**：Normal/Tangent buffer 存储 **float32×2 ∈ [0,1]**，Metal vertex format 为 `Float2`，GPU 自动 pad 到 `half3(x,y,0)` / `half4(x,y,0,1)`。Vertex shader 依赖 `ObjectToWorld`/`WorldToObject` 的非平凡旋转将 2D 输入投射为 3D 法线/切线。对于 Unity 导入，**不需要 octahedral/hemisphere decode**——直接用 `RecalculateNormals()` + `RecalculateTangents()` 重建标准 TBN。
+> **关键结论**：Normal/Tangent buffer 存储 **float32×2 ∈ [0,1]**，Metal vertex format 为 `Float2`，GPU 自动 pad 到 `half3(x,y,0)` / `half4(x,y,0,1)`。Vertex shader 用 `WorldToObject` / `ObjectToWorld^T` 的非平凡旋转将 2D 输入投射为 3D 法线/切线。对于 Unity 导入，**不需要 octahedral/hemisphere decode**——直接用 `RecalculateNormals()` + `RecalculateTangents()` 重建标准 TBN。
 
 ---
 
@@ -31,11 +31,18 @@ ObjectToWorld 3×3 (from trace cbuffer):
   Row 2: ( -0.798,  0.000,  0.603 )   ← OS Z → World XZ
   Row 3: ( -0.003,  0.950, -0.005, 1) ← Translation
 
+WorldToObject 3×3:
+  Row 0: (  0.000,  0.603, -0.798 )
+  Row 1: ( -1.000,  0.000,  0.000 )
+  Row 2: (  0.000,  0.798,  0.603 )
+  Row 3: (  0.950,  0.006,  0.000, 1)
+
 Determinant = 1.0 (pure rotation, no scale)
 unity_WorldTransformParams.w = 1.0
+OTW^T ≡ WTO (orthogonal matrix property)
 ```
 
-OS Y 轴映射到 world XZ 平面（角色朝向），OS X 轴映射到 world -Y（向下）。法线/切线变换依赖此矩阵。
+OS Y 轴映射到 world XZ 平面（角色朝向），OS X 轴映射到 world -Y（向下）。由于矩阵为纯旋转，`OTW^T = WTO`，因此 normal 变换（`WTO * n`）和 tangent 变换（`OTW^T * t`）使用的是同一矩阵。
 
 ---
 
@@ -72,7 +79,7 @@ OS Y 轴映射到 world XZ 平面（角色朝向），OS X 轴映射到 world -Y
 | 36 | 4 B | Tangent sign，恒 = **-1.0** | ❌ |
 
 - `xyz`: Object-space 坐标，X∈[-0.72, -0.49], Y∈[-0.06, 0.11], Z∈[-0.08, 0.08]
-- `w`: 连续 blend weight ∈ [-1, 1]，约 4700 个 unique 值，本 shader 不读取
+- `w`: 连续 blend weight ∈ [-1, 1]，约 4713 个 unique 值，本 shader 不读取
 
 **Unity**：只取前 12 字节 (float3)。
 
@@ -91,12 +98,10 @@ OS Y 轴映射到 world XZ 平面（角色朝向），OS X 轴映射到 world -Y
 **工作原理**：
 
 ```
-worldNormal = normalize( normalOS(x,y,0) × WorldToObject_3x3 )
+worldNormal = normalize( WTO_3x3 × normalOS(x,y,0) )
 ```
 
 WTO 含非平凡旋转，2D 输入经矩阵投射后产生有效的 3D 世界法线。这是 **bandwidth 优化**：8B（2×float32）替代 12B（3×float32），靠刚性变换矩阵隐式补全第三维。
-
-**N·T 退化现象**：变换后 worldN 与 worldT 几乎平行（均值夹角 ~7.4°，dot = 0.992），bitangent 长度仅 ~6.6%。这是 2D 编码 + z=0 + 相似矩阵变换的数学必然结果。Fragment shader 中法线贴图的 bitangent 方向效果被弱化但非零，游戏实际渲染正常。
 
 **Unity**：**不直接使用**。应 `mesh.RecalculateNormals()` 重建。
 
@@ -165,13 +170,42 @@ mesh.uv3 = uv3;
 
 ### 3.8 Slot 9: TEXCOORD3 (rid 134) — 前一帧位置
 
-与 slot 3 结构相同（40B 交错流），position diff < 0.00026。用于 motion vector / temporal AA。
+与 slot 3 结构相同（40B 交错流），position max diff = 0.000131。用于 motion vector / temporal AA。
 
 **Unity**：静态还原时忽略。
 
 ---
 
-## 4. Vertex Shader 输出映射
+## 4. N·T 退化分析
+
+由于 OTW^T ≡ WTO（正交矩阵性质），normal 和 tangent 经过**同一矩阵**变换：
+
+```
+worldNormal  = normalize(WTO × normalOS(x,y,0))
+worldTangent = normalize(OTW^T × tangentOS(x,y,0)) = normalize(WTO × tangentOS(x,y,0))
+```
+
+正交变换保角，因此 world-space N·T 夹角 = object-space 2D 向量 (nx,ny) 与 (tx,ty) 的夹角。
+
+**实测统计**：
+
+| 指标 | 值 |
+|------|-----|
+| N·T 平均夹角 | 3.9° |
+| N·T 最小夹角 | 0.0° |
+| N·T 最大夹角 | 39.6° |
+| N·T 平均 dot | 0.992 |
+| Bitangent 平均长度 | 0.067 |
+| Bitangent < 0.1 的顶点比例 | 84.1% |
+| Bitangent < 0.3 的顶点比例 | 96.8% |
+
+这意味着法线贴图的 bitangent 方向效果被严重弱化（84% 顶点几乎无 bitangent 贡献）。这是 2D 编码 + z=0 + 相同矩阵变换的数学必然结果。游戏实际渲染正常，原因是法线贴图的主要效果来自 tangent 和 normal 方向的扰动，bitangent 方向的细节损失可接受。
+
+**结论**：导出的 normal/tangent 不适合直接用于任何引擎导入。
+
+---
+
+## 5. Vertex Shader 输出映射
 
 | Output | IR Type | Varying | 含义 |
 |--------|---------|---------|------|
@@ -182,11 +216,11 @@ mesh.uv3 = uv3;
 | [4] | half4 | TEXCOORD3 | (worldNormal.xyz, viewDir.x) |
 | [5] | half4 | TEXCOORD4 | (worldTangent.xyz, viewDir.y) |
 | [6] | half4 | TEXCOORD5 | (bitangent.xyz, viewDir.z) |
-| [7] | float4 | TEXCOORD6 | NDC position (screen UV) |
+| [7] | float4 | TEXCOORD6 | Clip position（同 SV_POSITION，用于 screen UV） |
 
 ---
 
-## 5. Unity 导入完整工作流
+## 6. Unity 导入完整工作流
 
 ```csharp
 Mesh mesh = new Mesh();
@@ -210,7 +244,7 @@ mesh.RecalculateTangents();
 mesh.RecalculateBounds();
 ```
 
-**不直接使用 normal/tangent buffer 的原因**：导出的 slot 4/5 是 pre-skinned 的 2D 编码值（float2 ∈ [0,1]），与本帧 ObjectToWorld 矩阵耦合。GPU 自动 pad 为 half3/half4，shader 用 WTO/OTW 矩阵投射后 normalize。变换后 N·T 夹角仅 ~7.4°，TBN 退化。这是 runtime skinning 中间产物，不适合静态 mesh 导入。
+**不直接使用 normal/tangent buffer 的原因**：导出的 slot 4/5 是 pre-skinned 的 2D 编码值（float2 ∈ [0,1]），与本帧 ObjectToWorld 矩阵耦合。GPU 自动 pad 为 half3/half4，shader 用 WTO/OTW^T 矩阵投射后 normalize。由于 OTW^T ≡ WTO（纯旋转矩阵），N 和 T 经同一矩阵变换，导致 world-space 夹角 = 2D 向量夹角（平均仅 3.9°），TBN 严重退化。这是 runtime skinning bandwidth 优化的中间产物，不适合静态 mesh 导入。
 
 ### 辅助函数
 
@@ -267,7 +301,7 @@ static int[] ReadUInt16(string path, int count) {
 
 ---
 
-## 6. 贴图资源状态
+## 7. 贴图资源状态
 
 | 贴图 | 格式 | Unity 可用 | 备注 |
 |------|------|------------|------|
@@ -282,7 +316,7 @@ static int[] ReadUInt16(string path, int count) {
 
 ---
 
-## 7. 数据完整性
+## 8. 数据完整性
 
 | 资源 | 大小 | 格式 | Unity 导入 |
 |------|------|------|------------|

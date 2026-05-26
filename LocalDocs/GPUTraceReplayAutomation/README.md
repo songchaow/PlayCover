@@ -99,10 +99,24 @@ GPUTRACE_PATH="$HOME/Desktop/reference_test_inject.gputrace" \
 2. 输出结果"看起来正确但实际有问题"时没有自动检测（如导出的纹理全零但 agent 继续分析）
 3. 多个命令组合时的中间状态丢失（如 draw-info 依赖 pipeline 缓存，但缓存被误清）
 
+**方向判断**（2026-05-26）：对比 BACKLOG 中的功能扩展（depth/stencil、dump-diff），R12 更直接服务于"易用"目标。理由：
+- 功能扩展解决的是"能不能做 X"，但用户当前场景 80%+ 已覆盖
+- 错误恢复解决的是"已有功能用不好"，这是 agent 独立完成完整调查流程的核心阻力
+- R12.1 是纯文档改动（0 代码成本），R12.2 是轻量 wrapper 改动，投入产出比远高于 R7.5/R8.4
+
 **R12 子项定义**：
-- **R12.1**：SKILL.md 新增 "Troubleshooting & Recovery" 章节 — 覆盖 setup 失败、replay 失败、export 失败、命令超时等 6+ 种常见失败模式，每种给出诊断命令和恢复路径
-- **R12.2**：wrapper 增加 `--diagnose` 模式 — 对 trace 做快速健康检查（replay 可达性 + 资源计数 + bridge 版本一致性），输出结构化 `trace_health` JSON
-- **R12.3**：SKILL.md 的 Pattern 章节末尾增加 "Common Pitfalls" 子段 — 每个 pattern 附 2~3 个 agent 常犯错误和正确做法
+- **R12.1**：SKILL.md 新增 "Troubleshooting & Recovery" 章节
+  - 覆盖 6 种失败模式：setup/编译失败、trace 路径不存在或损坏、replay 崩溃/超时、export 返回全零、命令 exit code 非零、Python wrapper ImportError
+  - 每种给出：症状识别 → 诊断命令 → 修复步骤 → 若无法修复则报告模板
+- **R12.2**：wrapper 增加 `diagnose` 子命令
+  - 输入：trace 路径
+  - 检查项：bridge 二进制存在且可执行 → replay 基本可达（`--bounds`） → 资源计数 → bridge 版本 hash 一致性
+  - 输出：结构化 `trace_health` JSON（`{"bridge_ok": true, "replay_ok": true, "resource_count": 247, ...}`）
+  - 建议在 SKILL.md Setup 步骤后自动执行一次 diagnose
+- **R12.3**：每个 Pattern 末尾增加 "⚠️ Common Mistakes" 子段
+  - Pattern 1：agent 不检查 export_verification 就直接分析全零数据
+  - Pattern 2：agent 混淆 slot index 和 IR location_index（应用 draw-info 而非手动对照）
+  - Pattern 5：agent 用 getBytes 而非 --export 导出压缩纹理
 
 剩余 BACKLOG/WISHLIST：
 - **[BACKLOG][P2] R7.5**：depth/stencil export + compute dispatch 计数

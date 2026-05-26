@@ -1826,6 +1826,124 @@ class ReplayBridge:
     # Validation Helpers
     # ------------------------------------------------------------------
 
+    def diagnose(
+        self,
+        trace_path: str | Path,
+        *,
+        timeout: float = 60.0,
+    ) -> dict[str, Any]:
+        """
+        R12.2: 综合自诊断。检查 bridge 环境 + trace 可达性 + 基本 replay 能力。
+
+        检查项：
+        1. bridge 二进制存在且可执行
+        2. bridge 'help' 能正常返回（签名 + framework 加载正常）
+        3. trace 路径存在且为 .gputrace bundle
+        4. replay --bounds 可达（最低成本 replay 验证）
+        5. resource 计数
+        6. bridge 二进制 hash（用于版本一致性校验）
+
+        Args:
+            trace_path: .gputrace bundle 路径
+            timeout: 超时秒数
+
+        Returns:
+            结构化健康检查 JSON dict:
+            {
+                "bridge_ok": bool,
+                "bridge_path": str,
+                "bridge_version_hash": str,     # sha256 前 16 位
+                "bridge_help_ok": bool,
+                "trace_path": str,
+                "trace_exists": bool,
+                "trace_is_bundle": bool,
+                "replay_ok": bool,
+                "replay_elapsed_ms": float,
+                "resource_count": int,
+                "total_call_count": int,
+                "errors": [str],                # 非空表示有问题
+            }
+        """
+        import hashlib
+
+        errors: list[str] = []
+        result: dict[str, Any] = {
+            "bridge_ok": False,
+            "bridge_path": str(self._binary),
+            "bridge_version_hash": "",
+            "bridge_help_ok": False,
+            "trace_path": str(trace_path),
+            "trace_exists": False,
+            "trace_is_bundle": False,
+            "replay_ok": False,
+            "replay_elapsed_ms": 0.0,
+            "resource_count": 0,
+            "total_call_count": 0,
+            "errors": errors,
+        }
+
+        # 1. Bridge binary check
+        if not self._binary.exists():
+            errors.append(f"bridge binary not found: {self._binary}")
+            return result
+        if not os.access(self._binary, os.X_OK):
+            errors.append(f"bridge binary not executable: {self._binary}")
+            return result
+
+        # Bridge version hash (sha256 of binary, first 16 hex chars)
+        try:
+            bridge_bytes = self._binary.read_bytes()
+            h = hashlib.sha256(bridge_bytes).hexdigest()[:16]
+            result["bridge_version_hash"] = h
+        except OSError as e:
+            errors.append(f"cannot read bridge binary for hashing: {e}")
+
+        result["bridge_ok"] = True
+
+        # 2. Bridge help smoke test
+        try:
+            help_result = self.help()
+            result["bridge_help_ok"] = bool(help_result.tool)
+        except Exception as e:
+            errors.append(f"bridge help failed: {e}")
+            return result
+
+        # 3. Trace path validation
+        p = Path(trace_path)
+        if not p.exists():
+            errors.append(f"trace path not found: {p}")
+            return result
+        result["trace_exists"] = True
+
+        if not p.is_dir():
+            errors.append(f"trace path is not a directory bundle: {p}")
+            return result
+        if p.suffix != ".gputrace":
+            errors.append(f"trace path does not end with .gputrace: {p}")
+            return result
+        result["trace_is_bundle"] = True
+
+        # 4. Replay --bounds (cheapest replay check)
+        try:
+            replay_result = self.replay(p, timeout=timeout)
+            result["replay_ok"] = replay_result.success
+            result["replay_elapsed_ms"] = replay_result.elapsed_ms
+            result["resource_count"] = replay_result.resource_count
+            # total_call_count comes from raw
+            result["total_call_count"] = replay_result.raw.get("total_call_count", 0)
+            if not replay_result.success:
+                errors.append(
+                    f"replay failed: replay_rc={replay_result.replay_rc}"
+                )
+        except BridgeError as e:
+            errors.append(f"replay crashed: {e.exit_name} (exit {e.exit_code})")
+        except TimeoutError:
+            errors.append(f"replay timed out after {timeout}s")
+        except Exception as e:
+            errors.append(f"replay unexpected error: {e}")
+
+        return result
+
     @staticmethod
     def _validate_trace(trace_path: str | Path) -> Path:
         """验证 .gputrace 路径存在且为目录"""
@@ -1975,6 +2093,11 @@ def _cli_main():
     p_config = subparsers.add_parser("config", parents=[parent], help="Configuration control")
     p_config.add_argument("trace", help="Path to .gputrace bundle")
     p_config.add_argument("options", nargs="*", help="key=value pairs")
+
+    # diagnose (R12.2)
+    p_diag = subparsers.add_parser("diagnose", parents=[parent],
+                                    help="Run self-diagnosis on bridge + trace health (R12.2)")
+    p_diag.add_argument("trace", help="Path to .gputrace bundle")
 
     args = parser.parse_args()
 
@@ -2186,6 +2309,12 @@ def _cli_main():
                     kwargs["enable_validation"] = v == "1"
             result = bridge.config(args.trace, timeout=args.timeout, **kwargs)
             print(json.dumps(result.raw, indent=indent))
+
+        elif args.command == "diagnose":
+            diag_result = bridge.diagnose(args.trace, timeout=args.timeout)
+            print(json.dumps(diag_result, indent=indent))
+            if diag_result.get("errors"):
+                sys.exit(1)
 
     except BridgeError as e:
         print(json.dumps({

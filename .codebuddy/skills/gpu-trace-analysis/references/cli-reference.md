@@ -18,11 +18,12 @@ Complete surface for the bundled tools. **Start with the 3 Core Commands** — t
 9. [disasm](#disasm)
 10. [shader (hot-replace)](#shader)
 11. [config](#config)
+12. [diagnose (wrapper-only)](#diagnose)
 
 ### Reference
-12. [Exit codes](#exit-codes)
-13. [Python wrapper — CLI mode](#python-wrapper--cli-mode)
-14. [Python wrapper — module mode](#python-wrapper--module-mode)
+13. [Exit codes](#exit-codes)
+14. [Python wrapper — CLI mode](#python-wrapper--cli-mode)
+15. [Python wrapper — module mode](#python-wrapper--module-mode)
 
 ---
 
@@ -349,6 +350,40 @@ Typical use: `disableOptimizeRestores=0` for 3–6× faster replays; `enableVali
 
 ---
 
+<a id="diagnose"></a>
+## 12. diagnose (wrapper-only, R12.2)
+
+**Purpose**: One-command health check for bridge + trace. Run after Setup to confirm everything is operational, or when something goes wrong to identify the failure point.
+
+```bash
+python3 "$WRAPPER" diagnose <trace>
+```
+
+**Output JSON**:
+
+```json
+{
+  "bridge_ok": true,
+  "bridge_path": "/path/to/gputrace_replay_bridge",
+  "bridge_version_hash": "a1b2c3d4e5f6g7h8",
+  "bridge_help_ok": true,
+  "trace_path": "/path/to/capture.gputrace",
+  "trace_exists": true,
+  "trace_is_bundle": true,
+  "replay_ok": true,
+  "replay_elapsed_ms": 8234.5,
+  "resource_count": 247,
+  "total_call_count": 3425,
+  "errors": []
+}
+```
+
+**Exit code**: 0 if all checks pass, 1 if any check fails (errors[] non-empty).
+
+**Check sequence**: bridge binary exists → bridge `help` works → trace path valid → replay succeeds → resource count.
+
+---
+
 ## Exit Codes
 
 | Code | Meaning |
@@ -370,7 +405,7 @@ Typical use: `disableOptimizeRestores=0` for 3–6× faster replays; `enableVali
 python3 gputrace_replay_wrapper.py [--bridge PATH] [--timeout N] [--pretty] <command> [args]
 ```
 
-Subcommands: `help`, `replay`, `pipeline`, `shader`, `shader-of-rps`, `frame-list`, `shader-of-drawcall`, `disasm`, `dump-uniforms`, `draw-info`, `find-draws`, `config`.
+Subcommands: `help`, `replay`, `pipeline`, `shader`, `shader-of-rps`, `frame-list`, `shader-of-drawcall`, `disasm`, `dump-uniforms`, `draw-info`, `find-draws`, `config`, `diagnose`.
 
 ---
 
@@ -394,6 +429,7 @@ bridge.shader_of_rps(trace, rps_key, with_ir=True)
 bridge.disasm(trace, library_key, with_ir=True)
 bridge.shader(trace, lib_key, metallib_path, verify=True)
 bridge.config(trace, enable_validation=True)
+bridge.diagnose(trace)  # returns dict with bridge_ok, replay_ok, errors[]
 ```
 
 Key dataclasses: `FindDrawsResult`, `DrawInfoResult`, `DumpUniformsResult`, `ShaderOfDrawcallResult`, `ReplayResult`, `PipelineResult`, `FrameListResult`, `ShaderOfRpsResult`, `ConfigResult`.

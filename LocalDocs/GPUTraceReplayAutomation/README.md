@@ -33,7 +33,7 @@
 | Shader 反编译（IR 产出） | `disasm` 子命令 + SDI fallback | ✅ R7.7 |
 | GPU Counters / Profiler | 需 Apple 私有 entitlement + SIP 关闭 | ⛔ 跳过 |
 
-**完成度**：R0~R11 核心功能全部完成（bridge 9 子命令 + wrapper 12 子命令 / 集成测试 LYSK 主基线 **148/148**）。R11 新增：导出自动验证 + .meta.json sidecar + 压缩格式标记。
+**完成度**：R0~R12 核心功能全部完成（bridge 9 子命令 + wrapper 13 子命令（含 diagnose） / 集成测试 LYSK 主基线 **148/148**）。R12 新增：Troubleshooting & Recovery 章节 + diagnose 自诊断子命令 + Pattern Common Mistakes。
 
 最终交付物：
 1. **统一 ObjC bridge CLI**（`.codebuddy/skills/gpu-trace-analysis/scripts/gputrace_replay_bridge.m`）— 9 子命令，Makefile 构建，支持压缩纹理解压导出
@@ -92,31 +92,14 @@ GPUTRACE_PATH="$HOME/Desktop/reference_test_inject.gputrace" \
 
 ### 下一步（当前最高优先级）
 
-**[P0] R12：错误恢复与 agent 自诊断能力**
+**[P2] BACKLOG: R7.5 / R8 Sprint β / R8 Sprint γ**
 
-**动机**：R0~R11 在功能上已齐备（148/148 测试），但 skill 的"易用、好用"瓶颈已从"能不能做"转移到"做错了怎么办"。agent 实际使用 skill 时最大的阻力不再是缺少命令，而是：
-1. 命令执行失败后不知道该怎么恢复（setup 编译失败、trace 路径错、replay 超时…）
-2. 输出结果"看起来正确但实际有问题"时没有自动检测（如导出的纹理全零但 agent 继续分析）
-3. 多个命令组合时的中间状态丢失（如 draw-info 依赖 pipeline 缓存，但缓存被误清）
+R12 已完成。当前无 P0/P1 任务。剩余均为 P2 BACKLOG：
+- R7.5：depth/stencil export + compute dispatch 计数
+- R8 Sprint β：`dump-diff` 双 dump 自动比对 + `metadata.skill_version`
+- R8 Sprint γ：`resource-trace <rid>` 资源 provenance
 
-**方向判断**（2026-05-26）：对比 BACKLOG 中的功能扩展（depth/stencil、dump-diff），R12 更直接服务于"易用"目标。理由：
-- 功能扩展解决的是"能不能做 X"，但用户当前场景 80%+ 已覆盖
-- 错误恢复解决的是"已有功能用不好"，这是 agent 独立完成完整调查流程的核心阻力
-- R12.1 是纯文档改动（0 代码成本），R12.2 是轻量 wrapper 改动，投入产出比远高于 R7.5/R8.4
-
-**R12 子项定义**：
-- **R12.1**：SKILL.md 新增 "Troubleshooting & Recovery" 章节
-  - 覆盖 6 种失败模式：setup/编译失败、trace 路径不存在或损坏、replay 崩溃/超时、export 返回全零、命令 exit code 非零、Python wrapper ImportError
-  - 每种给出：症状识别 → 诊断命令 → 修复步骤 → 若无法修复则报告模板
-- **R12.2**：wrapper 增加 `diagnose` 子命令
-  - 输入：trace 路径
-  - 检查项：bridge 二进制存在且可执行 → replay 基本可达（`--bounds`） → 资源计数 → bridge 版本 hash 一致性
-  - 输出：结构化 `trace_health` JSON（`{"bridge_ok": true, "replay_ok": true, "resource_count": 247, ...}`）
-  - 建议在 SKILL.md Setup 步骤后自动执行一次 diagnose
-- **R12.3**：每个 Pattern 末尾增加 "⚠️ Common Mistakes" 子段
-  - Pattern 1：agent 不检查 export_verification 就直接分析全零数据
-  - Pattern 2：agent 混淆 slot index 和 IR location_index（应用 draw-info 而非手动对照）
-  - Pattern 5：agent 用 getBytes 而非 --export 导出压缩纹理
+等待用户确认下一个优先级。
 
 剩余 BACKLOG/WISHLIST：
 - **[BACKLOG][P2] R7.5**：depth/stencil export + compute dispatch 计数
@@ -149,7 +132,7 @@ GPUTRACE_PATH="$HOME/Desktop/reference_test_inject.gputrace" \
 - **[DONE] R9**：Skill 引导层优化（决策树重构 + 5 bug pattern 模板 + cli-reference 层级化）— 纯文档改动
 - **[DONE] R10**：ASTC 压缩纹理导出修复 — bridge 新增 render pass 解压路径，13 张纹理全部正确导出
 - **[DONE] R11**：Skill 防呆与鲁棒性加固（R11.1 导出自动验证 + R11.2 `.meta.json` sidecar + R11.3 压缩格式标记 + R11.4 SKILL.md 更新）。详见 `subdocs/20260522-R8-skill-usability-backlog.md` §6
-- **[TODO][P0] R12**：错误恢复与 agent 自诊断能力（R12.1 Troubleshooting 章节 + R12.2 `--diagnose` + R12.3 Pattern Pitfalls）
+- **[DONE] R12**：错误恢复与 agent 自诊断能力（R12.1 Troubleshooting 章节 + R12.2 `diagnose` + R12.3 Pattern Pitfalls）。详见 `executions/20260526-R12-error-recovery-and-self-diagnosis.md`
 - **[BACKLOG][P2] R7.5**：depth/stencil export + compute dispatch 计数
 - **[BACKLOG][P2] R8 Sprint β**：`dump-diff` 双 dump 自动比对 + `metadata.skill_version`
 - **[BACKLOG][P2] R8 Sprint γ**：`resource-trace <rid>` 资源 provenance

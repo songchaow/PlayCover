@@ -16,6 +16,14 @@ WRAPPER="$SKILL_DIR/scripts/gputrace_replay_wrapper.py"
 
 If `setup.sh` exits non-zero, stop — the skill cannot work. Needs only system `clang` + `/System/Library/PrivateFrameworks/GPUToolsReplay.framework`.
 
+After setup, run a quick health check to confirm the bridge + trace are operational:
+
+```bash
+python3 "$WRAPPER" diagnose "$TRACE"
+# → {"bridge_ok": true, "replay_ok": true, "resource_count": N, ...}
+# If errors[] is non-empty, consult "Troubleshooting & Recovery" below.
+```
+
 ---
 
 ## Decision Tree — "Which command do I run?"
@@ -95,6 +103,11 @@ python3 -c "data=open('/tmp/color.bin','rb').read(); nz=sum(1 for b in data if b
 
 **判断标准**: non-zero% = 0 → draw never wrote; non-zero but wrong colors → Pattern 2.
 
+> ⚠️ **Common Mistakes — Pattern 1**
+> - **Not checking `export_verification` before analyzing**: The export may succeed (exit 0) but produce all-zero bytes (memoryless texture, empty render target). Always inspect `export_verification.all_zero` and `non_zero_pct` before drawing conclusions from the data.
+> - **Exporting the wrong resource**: `--list-resources` may return hundreds of textures. Filter by resolution + pixel format + usage flags to find the actual final color buffer. Exporting a depth or stencil attachment by mistake will look "blank" (all near-zero values).
+> - **Forgetting `--playto` for bisection**: If the final output is blank, don't just re-export the same resource — bisect with `--playto` to find *when* it went wrong.
+
 ### Pattern 2: Wrong Colors / Material Bug
 
 **Symptoms**: specific material/effect renders incorrectly.
@@ -112,6 +125,11 @@ python3 "$WRAPPER" find-draws "$TRACE" --by-label "<MaterialName>" \
 - Compare `bindings.fragment.textures[]` resource_ids against expected assets.
 
 If uniforms and textures look correct, the bug is in shader logic → Pattern 5 (hot-replace).
+
+> ⚠️ **Common Mistakes — Pattern 2**
+> - **Confusing slot index with IR location_index**: The `bind_slot` for `dump-uniforms` is the `MTLBinding.index` (from reflection), NOT the array position in `bindings.fragment.buffers[]`. Use `draw-info` which auto-joins these for you.
+> - **Ignoring `value_health_summary`**: If `nan_count > 0` or `inf_count > 0`, the problem is upstream data, not shader logic. Report it as a CPU-side bug rather than investigating the shader IR.
+> - **Skipping `uniforms_summary.slot_failed`**: Some slots may fail to decode (reflection not captured, inline bytes). Always check `slot_failed > 0` before concluding "uniforms look fine".
 
 ### Pattern 3: Crash / Validation Error / GPU Hang
 
@@ -179,6 +197,11 @@ for r in json.load(sys.stdin).get('resources',[]):
 
 **判断标准**: resource_id mismatch, or exported texture is blank/wrong dimensions. If `export_verification.all_zero` is true, the texture was never written to (or is memoryless).
 
+> ⚠️ **Common Mistakes — Pattern 5**
+> - **Using `getBytes` directly on compressed textures**: Metal `getBytes` on ASTC/BC/ETC textures returns raw compressed blocks, NOT RGBA pixels. Always use `--export` which auto-decompresses. If you bypass the bridge and call `getBytes` yourself, the "texture data" will be garbage.
+> - **Ignoring `.meta.json` sidecar**: After `--export`, always read the `.meta.json` file for `width`, `height`, `bytes_per_pixel`, `bytes_per_row`, `channel_order`. Do NOT guess dimensions from file size alone — padding and alignment can differ.
+> - **Forgetting to check `compressed` flag**: Before exporting, use `--list-resources` and check `"compressed": true`. This changes the interpretation of file size and the expected output format (decompressed RGBA vs raw blocks).
+
 ---
 
 ## Full Exploration Sequence (unknown trace, no target)
@@ -234,6 +257,143 @@ bash "$SKILL_DIR/scripts/test_bridge.sh"
 GPUTRACE_PATH=/path/to/sample.gputrace bash "$SKILL_DIR/scripts/test_bridge.sh"
 # → 148 assertions on render-bearing traces
 ```
+
+---
+
+## Troubleshooting & Recovery
+
+When something goes wrong, use this section to diagnose and fix it. The `diagnose` subcommand (below) automates most checks.
+
+### Quick health check (run after Setup)
+
+```bash
+python3 "$WRAPPER" diagnose "$TRACE"
+# → {"bridge_ok": true, "replay_ok": true, "resource_count": 247, "bridge_version_hash": "..."}
+```
+
+If `diagnose` passes, the skill is operational. If any field is false, follow the relevant failure mode below.
+
+### Failure Mode 1: Setup / Compilation Fails
+
+**Symptoms**: `setup.sh` exits non-zero; `make` prints clang errors; bridge binary missing.
+
+**Diagnose**:
+```bash
+# Check clang is available
+which clang && clang --version
+
+# Check GPUToolsReplay framework exists
+ls /System/Library/PrivateFrameworks/GPUToolsReplay.framework/GPUToolsReplay
+```
+
+**Fix**:
+- If clang missing → install Xcode Command Line Tools: `xcode-select --install`
+- If GPUToolsReplay.framework missing → requires macOS with Xcode installed (not just CLT)
+- If specific compile error → check that `gputrace_replay_bridge.m` is not corrupted; re-run `make clean && make`
+
+**If unfixable**: Report: "Bridge compilation failed. clang={version}, macOS={version}, framework_exists={yes/no}. Error: {first 5 lines of stderr}."
+
+### Failure Mode 2: Trace Path Not Found or Corrupted
+
+**Symptoms**: `FileNotFoundError` or `ValueError("Path does not end with .gputrace")`.
+
+**Diagnose**:
+```bash
+ls -la "$TRACE"
+file "$TRACE"  # should say "directory"
+ls "$TRACE/"   # should contain Metadata.plist, capture*.gputrace-internal, etc.
+```
+
+**Fix**:
+- Verify the path is correct and accessible (no broken symlinks)
+- `.gputrace` must be a directory bundle, not a zip/file
+- If the user provided a partial path, try `find / -name "*.gputrace" -type d 2>/dev/null | head -5`
+
+**If unfixable**: Report: "Trace path '{path}' is not a valid .gputrace bundle. Contents: {ls output}."
+
+### Failure Mode 3: Replay Crashes or Times Out
+
+**Symptoms**: bridge exits with code 10 (REPLAY_FAIL) or `TimeoutError` after 300s.
+
+**Diagnose**:
+```bash
+# Try bounds-only (cheapest replay operation)
+"$BRIDGE" replay "$TRACE" --bounds
+
+# If bounds-only also fails, the trace itself may be corrupt
+# Check system log for GPU fault
+log show --predicate 'subsystem == "com.apple.gpu"' --last 30s
+```
+
+**Fix**:
+- If `--bounds` works but full replay fails → try `--playto 1` (just first call). Some traces need `forceLoadUnusedResources=1`.
+- If Metal device error → ensure no other GPU-heavy process is running; try after system restart.
+- Timeout → increase `--timeout` value; LYSK trace takes ~8s on M1, but damaged traces can hang indefinitely.
+
+**If unfixable**: Report: "Replay crashed (exit {code}) or timed out. bounds_ok={yes/no}, system={chip}, macOS={version}. Stderr: {first 5 lines}."
+
+### Failure Mode 4: Export Returns All-Zero Data
+
+**Symptoms**: `export_verification.all_zero == true`, or exported file is all 0x00 bytes.
+
+**Diagnose**:
+```bash
+# Confirm the resource exists and has expected dimensions
+python3 "$WRAPPER" replay "$TRACE" --list-resources | python3 -c "
+import json,sys
+for r in json.load(sys.stdin).get('resources',[]):
+  if r['id'] == <RESOURCE_ID>:
+    print(json.dumps(r, indent=2))
+"
+```
+
+**Fix**:
+- Resource may be memoryless (no backing store) → cannot export, this is expected
+- Resource may require `--playto N` (only written at a specific call index)
+- For compressed textures: the bridge auto-decompresses, but if `was_decompressed: false` in `.meta.json`, something went wrong → try re-export
+
+**If unfixable**: Report: "Export of resource {id} ({format}, {width}x{height}) produced all zeros. Resource type={type}, label={label}. Possible memoryless."
+
+### Failure Mode 5: Non-Zero Exit Code from Bridge
+
+**Symptoms**: `BridgeError(exit_code=N)` in wrapper; raw bridge stderr output.
+
+**Diagnose**: Check the exit code mapping:
+| Code | Name | Meaning |
+|------|------|---------|
+| 1 | USAGE_ERROR | Wrong arguments passed |
+| 2 | BAD_INPUT | Invalid trace path / file |
+| 3 | NO_METAL_DEVICE | No GPU available |
+| 4 | DLOPEN_FAIL | GPUToolsReplay.framework not loadable |
+| 5 | SYMBOL_RESOLVE_FAIL | Framework API changed |
+| 6 | APR_FAIL | Archive/trace open failed |
+| 7 | DATASOURCE_FAIL | DataSource creation failed |
+| 8 | OBJECTMAP_FAIL | ObjectMap creation failed |
+| 9 | CONTROLLER_FAIL | Controller creation failed |
+| 10 | REPLAY_FAIL | playAll/playTo failed |
+| 11 | SUBCMD_FAIL | Subcommand-level soft error (JSON still emitted) |
+| 12 | PLAYTO_OOR | Call index out of range |
+
+**Fix**:
+- Codes 1-2: fix your arguments
+- Codes 3-5: environment issue (no GPU, missing framework)
+- Codes 6-9: trace may be corrupt or incompatible with current macOS
+- Codes 11-12: structured errors with JSON payload — inspect the `error` and `hint` fields
+
+### Failure Mode 6: Python Wrapper ImportError
+
+**Symptoms**: `ImportError` or `ModuleNotFoundError` when importing `gputrace_replay_wrapper`.
+
+**Diagnose**:
+```bash
+python3 --version  # must be 3.9+
+python3 -c "from pathlib import Path; from dataclasses import dataclass; print('OK')"
+```
+
+**Fix**:
+- Wrapper requires Python 3.9+ (uses `list[str]` type hints)
+- No external dependencies needed — only stdlib
+- If importing as module, ensure `sys.path` includes the scripts directory
 
 ---
 

@@ -2,12 +2,12 @@
 
 **来源**：2026-05-21 别的 agent 在使用 `gpu-trace-analysis` skill 调查 LYSK trace（247 资源 / 50 RPS / 96 lib）时反馈的能力缺口；以及"draw call 反查 shader IR"的 7 段链路验证。
 **结论**：当前 bridge/skill 在"渲染 bug 调查"任务上称职；R7 的目标是把"未知 trace 整体管线分析"与"draw call → shader 反查"两类任务也补齐。
-**进度与剩余项**：R7 主线 11 个子项全部完成（R7.1~R7.7 + R7.6-A~E）。集成测试基线：LYSK 主基线 **148/148**，compute-only `reference_test_inject` 79/93（14 个 R7.3 已知盲点不变，由 R7.5-B 顺手处理）。剩余 R7.5（depth/stencil + dispatch）为独立横向硬能力，排在 R8 Sprint α 之后。任务状态以主 dashboard `README.md` 为准，本文档只承载实现细节、设计决策、回归基线。
+
+> 任务状态（进度 / 卡点 / 下一步 / TODO）以主 dashboard `README.md` 为准；本文档只承载实现细节、设计决策、回归基线。
+
 **主回归基线 trace**：
 - LYSK：`/Users/songdogwang/Library/Containers/com.papegames.lysk/Data/Documents/Captures/capture_20260518_110050.gputrace`（4 cb / 62 enc / 244 draws / 65 RPS / 96 lib / 3425 calls）— 端到端 IR 链主基线
 - compute-only：`~/Desktop/reference_test_inject.gputrace`（2 cb / 2 compute enc / 0 draws / 0 RPS / 3 compute PSO / 27 calls）— OOR / `draw_count=0` / `rps_not_found` 多样本回归
-
-> 本文档是 R7 的总入口。R6.3（CI/样本库自动化流水线）已确认不做，R7 是 R6 之后唯一的主线。
 
 ---
 
@@ -108,9 +108,9 @@ cacheKey 直接对应 `~/Library/Containers/io.playcover.PlayCover/ShaderDebugIn
 
 ## 5. R7 改进矩阵（按依赖排序）
 
-R7 拆成 11 个独立 chunk（R7.1~R7.7 + R7.6-A~E），**全部完成**。剩余 **R7.5（depth/stencil + dispatch，独立横向硬能力，1–1.5 天）** 排在 R8 Sprint α 之后。R8 实现细节详见 `20260522-R8-skill-usability-backlog.md`，本文档不再展开。
+R7 拆成 11 个独立 chunk（R7.1~R7.7 + R7.6-A~E），全部完成。R8 实现细节详见 `20260522-R8-skill-usability-backlog.md`。
 
-**优先级演进**（所有子项已完成，仅记录决策原则）：原排期 R7.5 → R7.6-A → R7.6-B；实际按"先解锁已交付能力的可达性，再加横向新能力"原则多次调序：R7.7 → R7.6-A → R7.6-B → R7.6-D → R7.6-E，每次 R7.5 让位都因为"对真实工作流提升 > 横向硬能力 + 工时更小"。2026-05-22 RPS 496 / draw 69 复盘后，R8 Sprint α（merged binding view + health check）插队到 R7.5 之前——~80% agent 错误根源是"多数据源手工 join"，结构性消除 > 横向硬能力。R7.5 排在 R8 Sprint α 之后。
+**设计决策原则**（仅记录决策逻辑）：按"先解锁已交付能力的可达性，再加横向新能力"原则排序各子项。实际执行顺序：R7.7 → R7.6-A → R7.6-B → R7.6-D → R7.6-E，每次都因为"对真实工作流提升 > 横向硬能力 + 工时更小"。
 
 ### R7.1：bridge 越界保护 + 资源元数据补齐 — ✅ 已完成
 
@@ -234,9 +234,9 @@ R7 拆成 11 个独立 chunk（R7.1~R7.7 + R7.6-A~E），**全部完成**。剩�
 
 ---
 
-### R7.5：depth/stencil export + compute dispatch 计数补齐 — **P2 BACKLOG（仅在有明确 depth/stencil 调试需求时启动）**
+### R7.5：depth/stencil export + compute dispatch 计数补齐
 
-> **优先级演进**：多次让位 — 先 R7.7 → R7.6-A → R7.6-B → R7.6-D → R7.6-E → R8 Sprint α → **R9 skill 引导层优化**。每次都因为"对最终目标（skill 易用好用）提升更大 + 工时更小"。R7.5 是独立横向硬能力，对 skill 整体易用性无贡献，降为 P2。子项 A ≈ 1 天 + 子项 B ≈ 0.5 天。
+> 独立横向硬能力。子项 A ≈ 1 天 + 子项 B ≈ 0.5 天。
 
 **子项 A — depth/stencil blit export**
 - 当前 `replay --export <id> <path>` 直接拒绝 depth/stencil 纹理

@@ -4,8 +4,6 @@
 
 **定位**：R7 主线（draw → IR + bindings + uniforms 三件套）已闭环，R8 不再补新数据来源，而是把已有数据源**自动 join 后再交给 agent**，结构性降低错误率。R8.1 + R8.2 + R8.3 共享一份 `RPS → library → AIR metadata` cache，建议合并成一个 sprint。
 
-**优先级与排期**：以主 dashboard `README.md` 的"下一步"与"任务 TODO" 段为准，本文档只承载实现细节与设计决策。
-
 > 任务状态（进度 / 卡点 / 下一步 / TODO）以主 dashboard `README.md` 为准；本文档只承载实现细节与设计决策。
 
 ---
@@ -134,3 +132,15 @@ python3 gputrace_replay_wrapper.py dump-uniforms <trace> 69 0 --by-name UnityPer
 两者不重叠。R8 只新增字段、不修改既有字段，数据结构严格向后兼容。
 
 **根本洞察**：agent 在多数据源间手工 join 的错误率随数据源数量平方上升。skill 自己 join 好再交给 agent 看一份事实表，错误率大幅下降。
+
+---
+
+## 6. R10 暴露的新问题类别（2026-05-26）
+
+R10（ASTC 压缩纹理导出修复）暴露了一个**不同于 §1 的全新错误模式**：导出数据本身就是错的（Metal 返回压缩块而非像素），但 agent 没有任何结构化手段发现这一点——只能靠人工 hex dump 验证。
+
+这属于 "**数据质量盲区**" —— 与 §1 的 "join 错误"（数据正确但拼接出错）是不同的问题域：
+- §1：数据源各自正确，agent 手工拼接出错 → 已被 R8.1~R8.3 结构性消除
+- R10：数据源本身就返回了错误/非预期的格式，skill 没有检测机制 → 需 R11 防呆加固
+
+详见主文档 `README.md` 的 R11 章节。

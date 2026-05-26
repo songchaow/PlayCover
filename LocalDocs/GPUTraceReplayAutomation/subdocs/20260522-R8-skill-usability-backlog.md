@@ -135,12 +135,21 @@ python3 gputrace_replay_wrapper.py dump-uniforms <trace> 69 0 --by-name UnityPer
 
 ---
 
-## 6. R10 暴露的新问题类别（2026-05-26）
+## 6. R10/R11：数据质量盲区与防呆加固（2026-05-26）
 
-R10（ASTC 压缩纹理导出修复）暴露了一个**不同于 §1 的全新错误模式**：导出数据本身就是错的（Metal 返回压缩块而非像素），但 agent 没有任何结构化手段发现这一点——只能靠人工 hex dump 验证。
+R10（ASTC 压缩纹理导出修复）暴露了**不同于 §1 的全新错误模式**：导出数据本身就是错的（Metal 返回压缩块而非像素），但 agent 没有结构化手段发现。
 
-这属于 "**数据质量盲区**" —— 与 §1 的 "join 错误"（数据正确但拼接出错）是不同的问题域：
-- §1：数据源各自正确，agent 手工拼接出错 → 已被 R8.1~R8.3 结构性消除
-- R10：数据源本身就返回了错误/非预期的格式，skill 没有检测机制 → 需 R11 防呆加固
+问题域分类：
+- §1：数据源正确但 agent 拼接出错 → 已被 R8.1~R8.3 结构性消除
+- R10/R11：数据源返回非预期格式 → R11 防呆加固
 
-详见主文档 `README.md` 的 R11 章节。
+### 6.1 R11 实现（2026-05-26 完成）
+
+| 子项 | 实现 | 改动文件 |
+|------|------|---------|
+| **R11.1** 导出自动验证 | 采样前 64KB 检测全零/大小一致性/非零占比，输出 `export_verification` JSON | bridge.m |
+| **R11.2** `.meta.json` sidecar | 自动写 width/height/bytes_per_pixel/pixel_format/was_decompressed/channel_order | bridge.m |
+| **R11.3** 压缩格式标记 | `--list-resources` 输出 `compressed: true` + `block_size`；新增 `compressed_block_size()` + 增强 `pixel_format_name()` | bridge.m + wrapper.py |
+| **R11.4** SKILL.md 更新 | Known Blind Spots + Pattern 5 + description 扩展 | SKILL.md + cli-reference.md |
+
+验证：LYSK 57 个压缩纹理正确标记；导出 ASTC_6x6_LDR → RGBA8Unorm 正确解压；148/148 集成测试通过。

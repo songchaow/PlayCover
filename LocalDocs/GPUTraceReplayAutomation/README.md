@@ -92,7 +92,17 @@ GPUTRACE_PATH="$HOME/Desktop/reference_test_inject.gputrace" \
 
 ### 下一步（当前最高优先级）
 
-**无 P0 任务。** R0~R11 全部完成。剩余任务为 P2/P3 BACKLOG。
+**[P0] R12：错误恢复与 agent 自诊断能力**
+
+**动机**：R0~R11 在功能上已齐备（148/148 测试），但 skill 的"易用、好用"瓶颈已从"能不能做"转移到"做错了怎么办"。agent 实际使用 skill 时最大的阻力不再是缺少命令，而是：
+1. 命令执行失败后不知道该怎么恢复（setup 编译失败、trace 路径错、replay 超时…）
+2. 输出结果"看起来正确但实际有问题"时没有自动检测（如导出的纹理全零但 agent 继续分析）
+3. 多个命令组合时的中间状态丢失（如 draw-info 依赖 pipeline 缓存，但缓存被误清）
+
+**R12 子项定义**：
+- **R12.1**：SKILL.md 新增 "Troubleshooting & Recovery" 章节 — 覆盖 setup 失败、replay 失败、export 失败、命令超时等 6+ 种常见失败模式，每种给出诊断命令和恢复路径
+- **R12.2**：wrapper 增加 `--diagnose` 模式 — 对 trace 做快速健康检查（replay 可达性 + 资源计数 + bridge 版本一致性），输出结构化 `trace_health` JSON
+- **R12.3**：SKILL.md 的 Pattern 章节末尾增加 "Common Pitfalls" 子段 — 每个 pattern 附 2~3 个 agent 常犯错误和正确做法
 
 剩余 BACKLOG/WISHLIST：
 - **[BACKLOG][P2] R7.5**：depth/stencil export + compute dispatch 计数
@@ -124,11 +134,8 @@ GPUTRACE_PATH="$HOME/Desktop/reference_test_inject.gputrace" \
 - **[DONE] R8 Sprint α**：agent 多数据源 join 错误结构性消除（R8.1 draw-info + R8.2 health + R8.3 by-name）。详见 `subdocs/20260522-R8-skill-usability-backlog.md`
 - **[DONE] R9**：Skill 引导层优化（决策树重构 + 5 bug pattern 模板 + cli-reference 层级化）— 纯文档改动
 - **[DONE] R10**：ASTC 压缩纹理导出修复 — bridge 新增 render pass 解压路径，13 张纹理全部正确导出
-- **[DONE] R11**：Skill 防呆与鲁棒性加固
-  - **[DONE] R11.1**：`--export` 导出后自动验证（全零/压缩块模式/尺寸一致性检测）— `export_verification` JSON 对象
-  - **[DONE] R11.2**：`--export` 输出 `.meta.json`（pixelFormat/size/是否解压/原始格式）— 自动写 sidecar 文件
-  - **[DONE] R11.3**：`--list-resources` 对压缩格式标记 `compressed: true` + `block_size` + 正确格式名
-  - **[DONE] R11.4**：SKILL.md 补充压缩纹理导出注意事项 + Pattern 5 更新
+- **[DONE] R11**：Skill 防呆与鲁棒性加固（R11.1 导出自动验证 + R11.2 `.meta.json` sidecar + R11.3 压缩格式标记 + R11.4 SKILL.md 更新）。详见 `subdocs/20260522-R8-skill-usability-backlog.md` §6
+- **[TODO][P0] R12**：错误恢复与 agent 自诊断能力（R12.1 Troubleshooting 章节 + R12.2 `--diagnose` + R12.3 Pattern Pitfalls）
 - **[BACKLOG][P2] R7.5**：depth/stencil export + compute dispatch 计数
 - **[BACKLOG][P2] R8 Sprint β**：`dump-diff` 双 dump 自动比对 + `metadata.skill_version`
 - **[BACKLOG][P2] R8 Sprint γ**：`resource-trace <rid>` 资源 provenance

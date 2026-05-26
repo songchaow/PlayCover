@@ -120,14 +120,43 @@ uv2_raw = np.fromfile("vertex/texcoord2_rid87.bin", dtype=np.uint8).reshape(5077
 uv2 = np.frombuffer(uv2_raw[:, :8].tobytes(), dtype=np.float32).reshape(-1, 2)
 ```
 
-### Textures (RGBA8)
+### Textures (所有格式)
+
+所有贴图 `.bin` 文件由 gputrace replay bridge 导出，**均为 mip 0 的原始像素数据**（4 bytes/pixel），无论原始 GPU 格式如何：
+
+- **RGBA8Unorm / RGBA8Unorm_sRGB / ASTC 格式**：bridge 在导出时已将 ASTC 压缩数据解压为 RGBA8（4 bytes/pixel）。文件大小 = width × height × 4。
+- **RG11B10Float**：导出为 packed 32-bit 格式（11+11+10 unsigned float），同样 4 bytes/pixel。
+
+Metal pixelFormat 对照：
+| pixelFormat | 名称 | Block Size | 说明 |
+|---|---|---|---|
+| 70 | RGBA8Unorm | - | 线性颜色空间 |
+| 71 | RGBA8Unorm_sRGB | - | sRGB 颜色空间（存储值已是 sRGB 编码） |
+| 92 | RG11B10Float | - | HDR packed 格式，需特殊解码 |
+| 186 | ASTC_4x4_sRGB | 4×4 | bridge 已解压为 RGBA8 |
+| 204 | ASTC_8x8_sRGB | 8×8 | bridge 已解压为 RGBA8 |
+
 ```python
-# MainTexRT: 512×512 RGBA8
-tex = np.fromfile("textures/MainTexRT_rid222.bin", dtype=np.uint8).reshape(512, 512, 4)
+from PIL import Image
+import numpy as np
+
+# 所有 RGBA8 / ASTC 贴图统一读取方式：
+width, height = 512, 512  # 根据贴图分辨率调整
+data = open("textures/MainTexRT_rid222.bin", "rb").read()
+pixels = np.frombuffer(data, dtype=np.uint8).reshape(height, width, 4)
+img = Image.fromarray(pixels, mode='RGBA')
+img.save("output.png")
+
+# RG11B10Float 需要特殊解码（见 decode_textures.py 中的 decode_rg11b10_float 函数）
 ```
 
-### Textures (ASTC)
-ASTC 贴图（pixelFormat 186/204）存储 GPU 压缩数据，导出的 `.bin` 包含所有 mip level 拼接（mip 0 起始）。解压需 ASTC 解码器（如 `astcenc`）。
+**注意事项**：
+- sRGB 格式贴图（pixelFormat 71/186/204）的 RGBA 数据已在 sRGB 空间中，直接保存为 PNG 即可正确显示。
+- 法线贴图（rid194, RGBA8Unorm）的 RGBA 四通道均有有意义数据（RG=法线XY，BA=额外数据如妆容法线或掩码）。
+- MainTexRT（rid222）的 alpha 通道不是标准透明度，RGB 全区域都有有效颜色数据。
+- 化妆贴图（眉毛/眼影/眼线/腮红/唇部/眼睑）大部分区域透明，仅化妆区域有颜色和 alpha 数据。
+
+**已解码 PNG 文件**位于 `textures_decoded/` 目录下，可用 `decode_textures.py` 重新生成。
 
 ---
 

@@ -443,6 +443,31 @@ static BOOL is_compressed_format(MTLPixelFormat fmt) {
     return NO;
 }
 
+// R11.3: Return the block size string for a compressed format (e.g. "4x4", "8x8")
+static const char* compressed_block_size(MTLPixelFormat fmt) {
+    // ASTC block sizes vary by format enum offset
+    // ASTC sRGB: 186=4x4, 187=5x4, 188=5x5, 189=6x5, 190=6x6,
+    //            191=8x5, 192=8x6, 193=8x8, 194=10x5, 195=10x6,
+    //            196=10x8, 197=10x10, 198=12x10, 199=12x12
+    // Same offsets for LDR (base 204) and HDR (base 222)
+    static const char* astc_blocks[] = {
+        "4x4", "5x4", "5x5", "6x5", "6x6",
+        "8x5", "8x6", "8x8", "10x5", "10x6",
+        "10x8", "10x10", "12x10", "12x12"
+    };
+    if (fmt >= 186 && fmt <= 199) return astc_blocks[fmt - 186];
+    if (fmt >= 204 && fmt <= 217) return astc_blocks[fmt - 204];
+    if (fmt >= 222 && fmt <= 235) return astc_blocks[fmt - 222];
+    // PVRTC: 160-163 = 2bpp variants (8x4 blocks), 164-167 = 4bpp (4x4 blocks)
+    if (fmt >= 160 && fmt <= 163) return "8x4";
+    if (fmt >= 164 && fmt <= 167) return "4x4";
+    // ETC2/EAC: all 4x4
+    if (fmt >= 170 && fmt <= 183) return "4x4";
+    // BC1-BC7: all 4x4
+    if (fmt >= 130 && fmt <= 159) return "4x4";
+    return "unknown";
+}
+
 // For compressed formats, determine the sRGB-equivalent uncompressed format
 static MTLPixelFormat uncompressed_equivalent(MTLPixelFormat fmt) {
     // ASTC sRGB variants: 186-200
@@ -506,8 +531,34 @@ static const char* pixel_format_name(MTLPixelFormat fmt) {
         case MTLPixelFormatRGB9E5Float: return "RGB9E5Float";
         case MTLPixelFormatDepth32Float: return "Depth32Float";
         case MTLPixelFormatDepth32Float_Stencil8: return "Depth32Float_Stencil8";
-        default: return "Other";
+        default: break;
     }
+    // Compressed format names (by range)
+    if (is_compressed_format(fmt)) {
+        const char *block = compressed_block_size(fmt);
+        // ASTC sRGB: 186-199
+        if (fmt >= 186 && fmt <= 199) {
+            static char buf[64]; snprintf(buf, sizeof(buf), "ASTC_%s_sRGB", block); return buf;
+        }
+        // ASTC LDR: 204-217
+        if (fmt >= 204 && fmt <= 217) {
+            static char buf[64]; snprintf(buf, sizeof(buf), "ASTC_%s_LDR", block); return buf;
+        }
+        // ASTC HDR: 222-235
+        if (fmt >= 222 && fmt <= 235) {
+            static char buf[64]; snprintf(buf, sizeof(buf), "ASTC_%s_HDR", block); return buf;
+        }
+        // BC
+        if (fmt >= 130 && fmt <= 159) {
+            int bc_num = (int)(fmt - 130) / 4 + 1;  // approximate
+            static char buf[32]; snprintf(buf, sizeof(buf), "BC%d", bc_num); return buf;
+        }
+        // ETC2/EAC
+        if (fmt >= 170 && fmt <= 183) { return "ETC2"; }
+        // PVRTC
+        if (fmt >= 160 && fmt <= 167) { return "PVRTC"; }
+    }
+    return "Other";
 }
 
 static const char* texture_type_name(MTLTextureType t) {
@@ -1987,6 +2038,13 @@ static int cmd_replay(int argc, const char *argv[]) {
                 BOOL memoryless = (tex.storageMode == MTLStorageModeMemoryless);
                 printf(",\"memoryless\":%s", memoryless ? "true" : "false");
                 printf(",\"isDepthStencil\":%s", is_depth_stencil_format(tex.pixelFormat) ? "true" : "false");
+                // R11.3: compressed texture marker
+                BOOL isCompressed = is_compressed_format(tex.pixelFormat);
+                printf(",\"compressed\":%s", isCompressed ? "true" : "false");
+                if (isCompressed) {
+                    printf(",\"block_size\":");
+                    json_print_string(compressed_block_size(tex.pixelFormat));
+                }
                 if (tex.label) { printf(",\"label\":"); json_print_string([tex.label UTF8String]); }
             } else if ([value conformsToProtocol:@protocol(MTLBuffer)]) {
                 id<MTLBuffer> buf = (id<MTLBuffer>)value;
@@ -2190,6 +2248,103 @@ static int cmd_replay(int argc, const char *argv[]) {
             JSON_KV_UINT("export_id", (uint64_t)opts.export_id);
             JSON_KV_STR("export_path", opts.export_path);
             JSON_KV_UINT("export_bytes", export_bytes);
+
+            // --- R11.1: Auto-verification of exported data ---
+            // Re-read the file and check for integrity issues
+            FILE *vf = fopen(opts.export_path, "rb");
+            if (vf) {
+                fseek(vf, 0, SEEK_END);
+                long file_size = ftell(vf);
+                fseek(vf, 0, SEEK_SET);
+
+                BOOL all_zero = YES;
+                NSUInteger non_zero_count = 0;
+                NSUInteger sample_size = (file_size > 65536) ? 65536 : (NSUInteger)file_size;
+                uint8_t *sample_buf = (uint8_t *)malloc(sample_size);
+                if (sample_buf) {
+                    fread(sample_buf, 1, sample_size, vf);
+                    for (NSUInteger i = 0; i < sample_size; i++) {
+                        if (sample_buf[i] != 0) {
+                            non_zero_count++;
+                            all_zero = NO;
+                        }
+                    }
+                    free(sample_buf);
+                }
+                fclose(vf);
+
+                // Emit verification results
+                JSON_SEP();
+                printf("\"export_verification\":{");
+                printf("\"file_size\":%ld", file_size);
+                printf(",\"expected_bytes\":%llu", (unsigned long long)export_bytes);
+                printf(",\"size_match\":%s", ((NSUInteger)file_size == export_bytes) ? "true" : "false");
+                printf(",\"all_zero\":%s", all_zero ? "true" : "false");
+                printf(",\"sample_non_zero_bytes\":%llu", (unsigned long long)non_zero_count);
+                printf(",\"sample_size\":%llu", (unsigned long long)sample_size);
+                double non_zero_pct = (sample_size > 0) ? (100.0 * non_zero_count / sample_size) : 0.0;
+                printf(",\"non_zero_pct\":%.2f", non_zero_pct);
+                // Warnings
+                printf(",\"warnings\":[");
+                BOOL first_warn = YES;
+                if (all_zero) {
+                    printf("\"exported data is ALL ZEROS — likely decompression failure or empty texture\"");
+                    first_warn = NO;
+                }
+                if ((NSUInteger)file_size != export_bytes) {
+                    if (!first_warn) printf(",");
+                    printf("\"file size mismatch: written %llu but file is %ld bytes\"",
+                           (unsigned long long)export_bytes, file_size);
+                    first_warn = NO;
+                }
+                if (!all_zero && non_zero_pct < 1.0 && sample_size >= 1024) {
+                    if (!first_warn) printf(",");
+                    printf("\"less than 1%% non-zero bytes — possible decompression issue\"");
+                    first_warn = NO;
+                }
+                printf("]}");
+            }
+
+            // --- R11.2: Write .meta.json alongside export ---
+            char meta_path[4096];
+            snprintf(meta_path, sizeof(meta_path), "%s.meta.json", opts.export_path);
+            FILE *mf = fopen(meta_path, "w");
+            if (mf) {
+                fprintf(mf, "{\n");
+                fprintf(mf, "  \"export_id\": %llu,\n", (unsigned long long)opts.export_id);
+                fprintf(mf, "  \"export_bytes\": %llu,\n", (unsigned long long)export_bytes);
+
+                if ([exportObj conformsToProtocol:@protocol(MTLTexture)]) {
+                    id<MTLTexture> tex = (id<MTLTexture>)exportObj;
+                    BOOL wasCompressed = is_compressed_format(tex.pixelFormat);
+                    MTLPixelFormat outputFmt = wasCompressed ? uncompressed_equivalent(tex.pixelFormat) : tex.pixelFormat;
+                    NSUInteger outputBpp = wasCompressed ?
+                        ((outputFmt == MTLPixelFormatRGBA16Float) ? 8 : 4) :
+                        bytes_per_pixel_for_format(tex.pixelFormat);
+
+                    fprintf(mf, "  \"resource_type\": \"texture\",\n");
+                    fprintf(mf, "  \"width\": %lu,\n", (unsigned long)tex.width);
+                    fprintf(mf, "  \"height\": %lu,\n", (unsigned long)tex.height);
+                    fprintf(mf, "  \"original_pixel_format\": %lu,\n", (unsigned long)tex.pixelFormat);
+                    fprintf(mf, "  \"original_pixel_format_name\": \"%s\",\n", pixel_format_name(tex.pixelFormat));
+                    fprintf(mf, "  \"output_pixel_format\": %lu,\n", (unsigned long)outputFmt);
+                    fprintf(mf, "  \"output_pixel_format_name\": \"%s\",\n", pixel_format_name(outputFmt));
+                    fprintf(mf, "  \"bytes_per_pixel\": %lu,\n", (unsigned long)outputBpp);
+                    fprintf(mf, "  \"bytes_per_row\": %lu,\n", (unsigned long)(tex.width * outputBpp));
+                    fprintf(mf, "  \"was_decompressed\": %s,\n", wasCompressed ? "true" : "false");
+                    if (wasCompressed) {
+                        fprintf(mf, "  \"original_block_size\": \"%s\",\n", compressed_block_size(tex.pixelFormat));
+                    }
+                    fprintf(mf, "  \"channel_order\": \"RGBA\"\n");
+                } else {
+                    id<MTLBuffer> buf = (id<MTLBuffer>)exportObj;
+                    fprintf(mf, "  \"resource_type\": \"buffer\",\n");
+                    fprintf(mf, "  \"length\": %lu\n", (unsigned long)buf.length);
+                }
+                fprintf(mf, "}\n");
+                fclose(mf);
+                JSON_KV_STR("export_meta_path", meta_path);
+            }
         }
     }
 

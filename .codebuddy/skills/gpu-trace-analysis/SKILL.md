@@ -1,6 +1,6 @@
 ---
 name: gpu-trace-analysis
-description: Investigates rendering bugs and performance issues in macOS Metal apps by replaying .gputrace captures headlessly via a bundled ObjC bridge. Use this skill whenever the user reports a rendering problem (black screen, missing geometry, wrong colors, broken material, flickering, shader issue, NaN output, validation error, GPU hang, performance regression) and provides or references a .gputrace file — even if they don't say "replay" explicitly. Also use it when the user wants to inspect Metal textures/buffers, dump shader binaries (metallib/AIR), hot-replace shaders to test fixes, enumerate pipeline states, or compare configurations on captured traces. Invoke this skill proactively whenever a .gputrace path appears in the conversation, or whenever the user mentions Xcode GPU capture, Metal frame debugger, AGX shaders, or asks to investigate "what the GPU did" in a captured frame. This skill should also trigger when the user asks about uniform/cbuffer values, pipeline state inspection, draw call analysis, render pass debugging, or wants to understand what a frame renders — even if they phrase it as "check the shader", "what's bound to this draw", "why is this material wrong", or "decode the constant buffer". If you see any path ending in .gputrace or any mention of Metal rendering investigation, load this skill immediately.
+description: Investigates rendering bugs and performance issues in macOS Metal apps by replaying .gputrace captures headlessly via a bundled ObjC bridge. Use this skill whenever the user reports a rendering problem (black screen, missing geometry, wrong colors, broken material, flickering, shader issue, NaN output, validation error, GPU hang, performance regression) and provides or references a .gputrace file — even if they don't say "replay" explicitly. Also use it when the user wants to inspect Metal textures/buffers, dump shader binaries (metallib/AIR), hot-replace shaders to test fixes, enumerate pipeline states, or compare configurations on captured traces. Invoke this skill proactively whenever a .gputrace path appears in the conversation, or whenever the user mentions Xcode GPU capture, Metal frame debugger, AGX shaders, or asks to investigate "what the GPU did" in a captured frame. This skill should also trigger when the user asks about uniform/cbuffer values, pipeline state inspection, draw call analysis, render pass debugging, or wants to understand what a frame renders — even if they phrase it as "check the shader", "what's bound to this draw", "why is this material wrong", or "decode the constant buffer". If you see any path ending in .gputrace or any mention of Metal rendering investigation, load this skill immediately. Additionally trigger for: exporting textures from GPU traces (including ASTC/BC/ETC compressed textures with automatic decompression), verifying exported pixel data integrity, reading .meta.json sidecar files from previous exports, or any question about Metal pixel formats, texture compression, or GPU resource inspection.
 ---
 
 # GPU Trace Analysis & Render-Bug Investigation
@@ -162,18 +162,22 @@ python3 "$WRAPPER" draw-info "$TRACE" <draw_index> --with-uniforms --output-dir 
 # - arg_name tells you what the shader expects at that slot
 # - resource_id links to replay --list-resources
 
-# Export the suspect texture:
+# Export the suspect texture (auto-decompresses ASTC/BC/ETC):
 "$BRIDGE" replay "$TRACE" --export <resource_id> /tmp/suspect_tex.bin
+# → Check export_verification.all_zero and .warnings[] in output
+# → Read /tmp/suspect_tex.bin.meta.json for width/height/format/bytes_per_row
 
-# Check dimensions/format match IR expectations:
+# Check dimensions/format/compressed status:
 "$BRIDGE" replay "$TRACE" --list-resources | python3 -c "
 import json,sys
 for r in json.load(sys.stdin).get('resources',[]):
-  if r['id']==<resource_id>: print(json.dumps(r,indent=2))
+  if r['id']==<resource_id>:
+    print(json.dumps(r,indent=2))
+    if r.get('compressed'): print('⚠️  COMPRESSED texture — export auto-decompresses')
 "
 ```
 
-**判断标准**: resource_id mismatch, or exported texture is blank/wrong dimensions.
+**判断标准**: resource_id mismatch, or exported texture is blank/wrong dimensions. If `export_verification.all_zero` is true, the texture was never written to (or is memoryless).
 
 ---
 
@@ -239,5 +243,18 @@ GPUTRACE_PATH=/path/to/sample.gputrace bash "$SKILL_DIR/scripts/test_bridge.sh"
 - **Compute encoder dispatches**: listed in timeline but dispatch_count stays 0.
 - **Indirect draws / mesh shaders**: not in swizzle set.
 - **Inline buffer bytes**: `frame-list` records `inline_bytes_size` but not the raw bytes.
+
+### Compressed Texture Export (R10/R11)
+
+The bridge automatically detects ASTC/BC/ETC textures and decompresses them via a GPU render pass before export. Key points for the agent:
+
+1. **Detection**: Use `--list-resources` — compressed textures now have `"compressed": true` and `"block_size": "4x4"` (R11.3). Always check this before export.
+2. **Auto-decompression**: `--export` handles decompression transparently. Output is always raw RGBA pixels (RGBA8 for sRGB/LDR, RGBA16Float for HDR).
+3. **Verification** (R11.1): Export output now includes `export_verification` with:
+   - `all_zero`: if true → decompression failed silently; the texture was likely memoryless or empty
+   - `non_zero_pct`: < 1% is suspicious
+   - `warnings[]`: structured alerts for common failure modes
+4. **Meta file** (R11.2): A `.meta.json` is auto-written alongside the export containing `width`, `height`, `bytes_per_pixel`, `bytes_per_row`, `original_pixel_format_name`, `output_pixel_format_name`, `was_decompressed`, `channel_order`. Feed this to any decode/visualization script instead of guessing format info.
+5. **Common pitfall**: Metal `getBytes` on compressed textures returns raw compressed blocks, NOT pixels. The bridge handles this, but if you ever bypass the bridge and call `getBytes` directly, you'll get garbage. Always use `--export`.
 
 If the user asks for any of these, explain the gap and offer the closest substitute.

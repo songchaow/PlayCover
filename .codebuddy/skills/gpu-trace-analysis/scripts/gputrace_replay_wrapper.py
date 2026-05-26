@@ -90,6 +90,9 @@ class Resource:
     pixel_format_name: Optional[str] = None
     texture_type: Optional[str] = None
     mipmap_level_count: Optional[int] = None
+    # R11.3: compressed texture fields
+    compressed: Optional[bool] = None
+    block_size: Optional[str] = None
     # Buffer fields
     length: Optional[int] = None
     # Common
@@ -112,6 +115,10 @@ class ReplayResult:
     export_path: Optional[str] = None
     export_bytes: Optional[int] = None
     export_error: Optional[str] = None
+    # R11.1: export verification
+    export_verification: Optional[dict[str, Any]] = None
+    # R11.2: meta file path
+    export_meta_path: Optional[str] = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -724,6 +731,8 @@ class ReplayBridge:
                 pixel_format_name=r.get("pixelFormatName"),
                 texture_type=r.get("textureType"),
                 mipmap_level_count=r.get("mipmapLevelCount"),
+                compressed=r.get("compressed"),
+                block_size=r.get("block_size"),
                 length=r.get("length"),
                 label=r.get("label"),
                 class_name=r.get("class"),
@@ -742,6 +751,8 @@ class ReplayBridge:
             export_path=data.get("export_path"),
             export_bytes=data.get("export_bytes"),
             export_error=data.get("export_error"),
+            export_verification=data.get("export_verification"),
+            export_meta_path=data.get("export_meta_path"),
             raw=data,
         )
 

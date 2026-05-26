@@ -33,7 +33,7 @@
 | Shader 反编译（IR 产出） | `disasm` 子命令 + SDI fallback | ✅ R7.7 |
 | GPU Counters / Profiler | 需 Apple 私有 entitlement + SIP 关闭 | ⛔ 跳过 |
 
-**完成度**：R0~R10 核心功能全部完成（bridge 9 子命令 + wrapper 12 子命令 / 集成测试 LYSK 主基线 **148/148**）。
+**完成度**：R0~R11 核心功能全部完成（bridge 9 子命令 + wrapper 12 子命令 / 集成测试 LYSK 主基线 **148/148**）。R11 新增：导出自动验证 + .meta.json sidecar + 压缩格式标记。
 
 最终交付物：
 1. **统一 ObjC bridge CLI**（`.codebuddy/skills/gpu-trace-analysis/scripts/gputrace_replay_bridge.m`）— 9 子命令，Makefile 构建，支持压缩纹理解压导出
@@ -92,14 +92,7 @@ GPUTRACE_PATH="$HOME/Desktop/reference_test_inject.gputrace" \
 
 ### 下一步（当前最高优先级）
 
-**[P0] R11：Skill 防呆与鲁棒性加固**
-
-R10（ASTC 修复，2026-05-26）暴露了 skill 在"非常规纹理格式"场景下的脆弱性。当前 skill 的核心功能已齐备，但在边缘场景和 agent 使用体验上仍存在防呆缺陷。R11 聚焦于：
-
-1. **R11.1 `--export` 导出后自动验证**（P0）：导出纹理后自动检测数据完整性（全零检测 / 压缩块模式检测 / 尺寸一致性）。当前 agent 发现导出有误全靠人肉看 hex dump，应结构化自动告警。
-2. **R11.2 `--export` 输出元信息**（P0）：导出时同时写一个 `.meta.json`（含 pixelFormat、width/height、bytesPerRow、是否经过解压、原始格式）。当前 decode 脚本依赖外部手动提供格式信息，容易出错。
-3. **R11.3 `--list-resources` 输出增强**（P1）：对压缩格式纹理标记 `compressed: true` + `block_size`，让 agent 在选择导出策略前就知道需要特殊处理。
-4. **R11.4 SKILL.md 补充压缩纹理导出注意事项**（P1）：在 Known Blind Spots 或 Pattern 5 中补充 ASTC/BC/ETC 导出路径的说明。
+**无 P0 任务。** R0~R11 全部完成。剩余任务为 P2/P3 BACKLOG。
 
 剩余 BACKLOG/WISHLIST：
 - **[BACKLOG][P2] R7.5**：depth/stencil export + compute dispatch 计数
@@ -131,11 +124,11 @@ R10（ASTC 修复，2026-05-26）暴露了 skill 在"非常规纹理格式"场�
 - **[DONE] R8 Sprint α**：agent 多数据源 join 错误结构性消除（R8.1 draw-info + R8.2 health + R8.3 by-name）。详见 `subdocs/20260522-R8-skill-usability-backlog.md`
 - **[DONE] R9**：Skill 引导层优化（决策树重构 + 5 bug pattern 模板 + cli-reference 层级化）— 纯文档改动
 - **[DONE] R10**：ASTC 压缩纹理导出修复 — bridge 新增 render pass 解压路径，13 张纹理全部正确导出
-- **[IN-PROGRESS][P0] R11**：Skill 防呆与鲁棒性加固
-  - **[TODO] R11.1**：`--export` 导出后自动验证（全零/压缩块模式/尺寸一致性检测）
-  - **[TODO] R11.2**：`--export` 输出 `.meta.json`（pixelFormat/size/是否解压/原始格式）
-  - **[TODO] R11.3**：`--list-resources` 对压缩格式标记 `compressed: true` + `block_size`
-  - **[TODO] R11.4**：SKILL.md 补充压缩纹理导出注意事项
+- **[DONE] R11**：Skill 防呆与鲁棒性加固
+  - **[DONE] R11.1**：`--export` 导出后自动验证（全零/压缩块模式/尺寸一致性检测）— `export_verification` JSON 对象
+  - **[DONE] R11.2**：`--export` 输出 `.meta.json`（pixelFormat/size/是否解压/原始格式）— 自动写 sidecar 文件
+  - **[DONE] R11.3**：`--list-resources` 对压缩格式标记 `compressed: true` + `block_size` + 正确格式名
+  - **[DONE] R11.4**：SKILL.md 补充压缩纹理导出注意事项 + Pattern 5 更新
 - **[BACKLOG][P2] R7.5**：depth/stencil export + compute dispatch 计数
 - **[BACKLOG][P2] R8 Sprint β**：`dump-diff` 双 dump 自动比对 + `metadata.skill_version`
 - **[BACKLOG][P2] R8 Sprint γ**：`resource-trace <rid>` 资源 provenance

@@ -247,11 +247,20 @@ Headless replay with resource inventory and export.
 | `--bounds` | Probe `total_call_count` only (cheap) |
 | `--playto N` | Replay up to call N (for bisecting). OOR → exit 12 |
 | `--list-resources` | Append texture/buffer inventory |
-| `--export ID PATH` | Dump one resource to disk (refuses depth/stencil) |
+| `--export ID PATH` | Dump one resource to disk (refuses depth/stencil). Auto-decompresses ASTC/BC/ETC via render pass. |
 
 Key output fields: `success`, `elapsed_ms`, `resource_count`, `total_call_count`, `last_call_index`.
 
-Resource entries include full Metal metadata: `storageMode`, `cpuCacheMode`, `hazardTrackingMode`, `usage[]`, `isDepthStencil`, `label`.
+Resource entries include full Metal metadata: `storageMode`, `cpuCacheMode`, `hazardTrackingMode`, `usage[]`, `isDepthStencil`, `compressed`, `block_size`, `label`.
+
+**R11 export output fields** (when `--export` succeeds):
+- `export_id`, `export_path`, `export_bytes` — basic export info
+- `export_verification` — auto-integrity check:
+  - `all_zero` (bool): true means export is all zeros (decompression failure / empty texture)
+  - `non_zero_pct` (float): percentage of non-zero bytes in sampled region
+  - `size_match` (bool): file size == expected bytes
+  - `warnings[]` (string array): structured alerts for common issues
+- `export_meta_path` — path to the `.meta.json` sidecar file containing format metadata (width, height, bytes_per_pixel, bytes_per_row, original/output pixel format, was_decompressed, channel_order)
 
 ---
 

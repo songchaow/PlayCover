@@ -427,6 +427,34 @@ static int cmd_help(int argc, const char *argv[]) {
 #pragma mark - Pixel Format Helpers
 // ============================================================
 
+static BOOL is_compressed_format(MTLPixelFormat fmt) {
+    // ASTC sRGB: 186-200 (4x4 through 12x12)
+    // ASTC LDR:  204-218
+    // ASTC HDR:  222-236
+    if (fmt >= 186 && fmt <= 200) return YES;  // ASTC sRGB
+    if (fmt >= 204 && fmt <= 218) return YES;  // ASTC LDR
+    if (fmt >= 222 && fmt <= 236) return YES;  // ASTC HDR
+    // PVRTC (deprecated): 160-167
+    if (fmt >= 160 && fmt <= 167) return YES;
+    // ETC2/EAC: 170-183
+    if (fmt >= 170 && fmt <= 183) return YES;
+    // BC1-BC7: 130-159
+    if (fmt >= 130 && fmt <= 159) return YES;
+    return NO;
+}
+
+// For compressed formats, determine the sRGB-equivalent uncompressed format
+static MTLPixelFormat uncompressed_equivalent(MTLPixelFormat fmt) {
+    // ASTC sRGB variants: 186-200
+    if (fmt >= 186 && fmt <= 200) return MTLPixelFormatRGBA8Unorm_sRGB;
+    // ASTC LDR (linear): 204-218
+    if (fmt >= 204 && fmt <= 218) return MTLPixelFormatRGBA8Unorm;
+    // ASTC HDR: 222-236 → use RGBA16Float for HDR data
+    if (fmt >= 222 && fmt <= 236) return MTLPixelFormatRGBA16Float;
+    // Everything else → RGBA8Unorm
+    return MTLPixelFormatRGBA8Unorm;
+}
+
 static NSUInteger bytes_per_pixel_for_format(MTLPixelFormat fmt) {
     switch (fmt) {
         case MTLPixelFormatR8Unorm: case MTLPixelFormatR8Snorm:
@@ -1997,6 +2025,119 @@ static int cmd_replay(int argc, const char *argv[]) {
                 JSON_KV_STR("export_error", "depth/stencil format cannot be exported via getBytes");
             } else if (tex.textureType != MTLTextureType2D) {
                 JSON_KV_STR("export_error", "only 2D textures supported for export");
+            } else if (is_compressed_format(tex.pixelFormat)) {
+                // --- Compressed texture (ASTC/BC/ETC): render-pass decompress to RGBA8 then export ---
+                // Metal blit copy does NOT decompress; we must sample the texture via a shader.
+                MTLPixelFormat dstFmt = uncompressed_equivalent(tex.pixelFormat);
+                NSUInteger bpp = (dstFmt == MTLPixelFormatRGBA16Float) ? 8 : 4;
+
+                // Create render target texture
+                MTLTextureDescriptor *rtDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:dstFmt
+                                                                                                width:tex.width
+                                                                                               height:tex.height
+                                                                                            mipmapped:NO];
+                rtDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+                rtDesc.storageMode = MTLStorageModeShared;
+                id<MTLTexture> dstTex = [g_ctx.device newTextureWithDescriptor:rtDesc];
+                if (!dstTex) {
+                    JSON_KV_STR("export_error", "failed to create decompression destination texture");
+                } else {
+                    @try {
+                        // Compile a simple fullscreen-triangle shader that samples the source texture
+                        NSString *shaderSrc = @""
+                            "#include <metal_stdlib>\n"
+                            "using namespace metal;\n"
+                            "struct VertexOut { float4 pos [[position]]; float2 uv; };\n"
+                            "vertex VertexOut decompress_vs(uint vid [[vertex_id]]) {\n"
+                            "    VertexOut out;\n"
+                            "    // Fullscreen triangle: 3 vertices cover [-1,1] clip space\n"
+                            "    float2 positions[3] = {float2(-1,-1), float2(3,-1), float2(-1,3)};\n"
+                            "    float2 uvs[3] = {float2(0,1), float2(2,1), float2(0,-1)};\n"
+                            "    out.pos = float4(positions[vid], 0, 1);\n"
+                            "    out.uv = uvs[vid];\n"
+                            "    return out;\n"
+                            "}\n"
+                            "fragment float4 decompress_fs(VertexOut in [[stage_in]],\n"
+                            "                             texture2d<float> srcTex [[texture(0)]]) {\n"
+                            "    constexpr sampler s(filter::nearest);\n"
+                            "    return srcTex.sample(s, in.uv);\n"
+                            "}\n";
+
+                        NSError *compileErr = nil;
+                        id<MTLLibrary> lib = [g_ctx.device newLibraryWithSource:shaderSrc options:nil error:&compileErr];
+                        if (!lib) {
+                            char err_buf[512];
+                            snprintf(err_buf, sizeof(err_buf), "shader compile failed: %s",
+                                     [[compileErr localizedDescription] UTF8String]);
+                            JSON_KV_STR("export_error", err_buf);
+                        } else {
+                            id<MTLFunction> vsFn = [lib newFunctionWithName:@"decompress_vs"];
+                            id<MTLFunction> fsFn = [lib newFunctionWithName:@"decompress_fs"];
+
+                            MTLRenderPipelineDescriptor *pipeDesc = [[MTLRenderPipelineDescriptor alloc] init];
+                            pipeDesc.vertexFunction = vsFn;
+                            pipeDesc.fragmentFunction = fsFn;
+                            pipeDesc.colorAttachments[0].pixelFormat = dstFmt;
+
+                            NSError *pipeErr = nil;
+                            id<MTLRenderPipelineState> pso = [g_ctx.device newRenderPipelineStateWithDescriptor:pipeDesc error:&pipeErr];
+                            if (!pso) {
+                                char err_buf[512];
+                                snprintf(err_buf, sizeof(err_buf), "pipeline create failed: %s",
+                                         [[pipeErr localizedDescription] UTF8String]);
+                                JSON_KV_STR("export_error", err_buf);
+                            } else {
+                                id<MTLCommandQueue> queue = [g_ctx.device newCommandQueue];
+                                id<MTLCommandBuffer> cmdBuf = [queue commandBuffer];
+
+                                MTLRenderPassDescriptor *rpDesc = [MTLRenderPassDescriptor renderPassDescriptor];
+                                rpDesc.colorAttachments[0].texture = dstTex;
+                                rpDesc.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+                                rpDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+                                id<MTLRenderCommandEncoder> enc = [cmdBuf renderCommandEncoderWithDescriptor:rpDesc];
+                                [enc setRenderPipelineState:pso];
+                                [enc setFragmentTexture:tex atIndex:0];
+                                [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+                                [enc endEncoding];
+
+                                [cmdBuf commit];
+                                [cmdBuf waitUntilCompleted];
+
+                                if (cmdBuf.status == MTLCommandBufferStatusCompleted) {
+                                    NSUInteger bpr = tex.width * bpp;
+                                    NSUInteger totalBytes = bpr * tex.height;
+                                    void *pixelData = malloc(totalBytes);
+                                    if (pixelData) {
+                                        [dstTex getBytes:pixelData
+                                            bytesPerRow:bpr
+                                             fromRegion:MTLRegionMake2D(0, 0, tex.width, tex.height)
+                                            mipmapLevel:0];
+                                        FILE *f = fopen(opts.export_path, "wb");
+                                        if (f) {
+                                            fwrite(pixelData, 1, totalBytes, f);
+                                            fclose(f);
+                                            exported = YES;
+                                            export_bytes = totalBytes;
+                                        } else {
+                                            JSON_KV_STR("export_error", "cannot open output file");
+                                        }
+                                        free(pixelData);
+                                    }
+                                } else {
+                                    char err_buf[256];
+                                    snprintf(err_buf, sizeof(err_buf), "render decompress failed: cmdBuf status=%lu",
+                                             (unsigned long)cmdBuf.status);
+                                    JSON_KV_STR("export_error", err_buf);
+                                }
+                            }
+                        }
+                    } @catch (NSException *ex) {
+                        char err_buf[256];
+                        snprintf(err_buf, sizeof(err_buf), "render decompress exception: %s", [[ex reason] UTF8String]);
+                        JSON_KV_STR("export_error", err_buf);
+                    }
+                }
             } else {
                 NSUInteger bpp = bytes_per_pixel_for_format(tex.pixelFormat);
                 NSUInteger bpr = tex.width * bpp;

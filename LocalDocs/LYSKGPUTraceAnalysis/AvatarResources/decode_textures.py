@@ -130,20 +130,28 @@ def tonemap_hdr(r, g, b):
     return r_out, g_out, b_out
 
 
-def decode_rgba8(data, width, height, is_srgb=False):
+def decode_rgba8(data, width, height, is_srgb=False, is_bgra=True):
     """
-    Decode raw RGBA8 data to PIL Image.
+    Decode raw RGBA8/BGRA8 data to PIL Image.
     
     The bridge exports textures with standard row order (top-to-bottom).
+    For textures read via getBytes (non-compressed), Metal returns BGRA byte order.
+    For textures decompressed via render pass (ASTC/compressed), the output is already RGBA.
+    If is_bgra=True (default for non-compressed), swap B and R channels.
     If is_srgb=True, the data is already in sRGB space (GPU stores sRGB-encoded values).
     """
     expected_size = width * height * 4
     if len(data) != expected_size:
-        raise ValueError(f"Data size {len(data)} != expected {expected_size} for {width}x{height} RGBA8")
+        raise ValueError(f"Data size {len(data)} != expected {expected_size} for {width}x{height}")
     
-    pixels = np.frombuffer(data, dtype=np.uint8).reshape(height, width, 4)
+    pixels = np.frombuffer(data, dtype=np.uint8).reshape(height, width, 4).copy()
     
-    # Create RGBA image directly
+    if is_bgra:
+        # Bridge exports in BGRA byte order (Metal native format for getBytes)
+        # Swap B and R channels: BGRA -> RGBA
+        pixels[:, :, 0], pixels[:, :, 2] = pixels[:, :, 2].copy(), pixels[:, :, 0].copy()
+    
+    # Create RGBA image
     img = Image.fromarray(pixels, mode='RGBA')
     return img
 
@@ -262,9 +270,12 @@ def main():
             if pf == 92:  # RG11B10Float
                 img = decode_rg11b10_texture(data, width, height)
             else:
-                # All others are RGBA8 (bridge decompresses ASTC on export)
+                # All others are RGBA8 (bridge decompresses ASTC on export via render pass)
                 is_srgb = pf in (71, 186, 204)  # sRGB variants
-                img = decode_rgba8(data, width, height, is_srgb=is_srgb)
+                # ASTC textures are decompressed via render pass -> output is RGBA order
+                # Non-compressed textures use getBytes -> output is BGRA order (Metal native)
+                is_compressed = pf in (186, 204)  # ASTC formats
+                img = decode_rgba8(data, width, height, is_srgb=is_srgb, is_bgra=not is_compressed)
             
             # Validate
             issues = validate_image(img, filename)

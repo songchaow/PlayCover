@@ -60,7 +60,7 @@ I. Tonemap / FSR / UI / Present         (E28–E30)
 | **局部光阴影 atlas** | E3，10 draws | `226 LocalShadowmapAtlas 1024×1024 D32F` | **E9**（spot shadow → 写入 236.G） |
 | **半分辨率 ScreenSpaceShadowMap** | E5（粗 1/4）+ E9（精 1/2） | `230 R8` / `236 RGBA8` | E10（半分辨率 lighting）、E13（全分辨率 compose） |
 
-E2 用 30 draws / E3 用 10 draws 对**同一组 9 个角色 RPS（472–480）×3 cascade slice / ×1 atlas slice** 渲染（draw 列表表现为 `RPS 472–480` 重复 3 次写到 atlas 三段 viewport）。
+E2 用 30 draws / E3 用 10 draws 对**同一组 9 个角色 RPS（472–480）** 渲染（EyeSpec 479 出现两次 = 每段 10 draws × 3 cascade slice / ×1 atlas slice）。
 
 ### 3.3 E4 是 Velocity + Normal Pre-pass，不是 deferred GBuffer（**详见 `06-gbuffer-truth.md`**）
 
@@ -72,7 +72,7 @@ E4 的 MRT 是 `RGBA8Unorm × 2 + D32S8`：
 
 **LYSK 的实际 lighting 架构是 Forward + Visibility-Style Velocity Buffer**：lighting **不**通过解码 GBuffer 完成，而是在 **E10**（half-res，仅皮肤+牙齿）和 **E13**（full-res，全部材质）**重新光栅化几何**，并直接采样原始材质纹理（`PL_Head_MU_N`、`PL_Head_R`、`PL_Makeup_*` 等）+ cluster lighting buffer 来计算光照。
 
-→ 这是非常激进的「**Velocity Pre-pass + 全场景两次 Forward 重光栅化（half-res + full-res）**」方案，区别于经典 deferred 的「GBuffer 写一次 + lighting 解码一次」。代价是几何被画 6 次（3 cascade shadow + 1 local shadow + 1 velocity-prepass + 1 half-res lighting + 1 full-res compose），收益是：
+→ 这是非常激进的「**Velocity Pre-pass + 全场景两次 Forward 重光栅化（half-res + full-res）**」方案，区别于经典 deferred 的「GBuffer 写一次 + lighting 解码一次」。代价是几何被画 7 次（3 cascade shadow + 1 local shadow + 1 velocity-prepass + 1 half-res lighting + 1 full-res compose），收益是：
 - 不需要厚 GBuffer，省带宽（只有 RGBA8×2 = 8 字节/像素）；
 - Lighting 直接在 forward 域算，可以无损 SSS / 复杂材质参数（不被 GBuffer 通道数限制）；
 - TAA 拥有专门的 motion vector buffer，独立于 lighting 决策。

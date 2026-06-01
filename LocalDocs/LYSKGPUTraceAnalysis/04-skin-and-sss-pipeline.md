@@ -91,10 +91,10 @@ LYSK 把同一种「皮肤+底妆」材质按渲染阶段拆成了 5 个 RPS。�
 
 ## 4. SkinMakeupNew 的 ic（index count）追踪
 
-同一组皮肤几何在帧中以**完全相同的 ic=27894**出现 5 次（E2 ×3 cascade + E3 ×1 local + E4 + E10 + E13），证明：
+同一组皮肤几何在帧中以**完全相同的 ic=27894**出现 7 次（E2 ×3 cascade + E3 ×1 local + E4 + E10 + E13），证明：
 
-- 每帧角色皮肤被画 **6 次几何**（3 cascade + 1 local + 1 GBuffer + 1 half-res lighting + 1 full-res compose）。
-  → cascade 那 3 次共享 RPS 476 即 fragment 253，可能是同一 viewport 渲染 3 cascade 段也可能是 3 个独立 draw（draw 列表显示是 3 段独立 draw，每段 RPS 476 + 27894 ic）。
+- 每帧角色皮肤被画 **7 次几何**（3 cascade + 1 local + 1 velocity-prepass + 1 half-res lighting + 1 full-res compose）。
+  → cascade 那 3 次共享 RPS 476 即 fragment 253，是 3 个独立 draw（draw 列表显示是 3 段独立 draw，每段 RPS 476 + 27894 ic）。
 - **几何根本没有 culling 上的差异**（ic 完全相等）— 也就是说没有针对 cascade 的 frustum 裁剪粒度。
 - 半分辨率分支（RPS 491，E10）也对**全部 27894 三角形**算 lighting；这是 LYSK 选择「半分辨率覆盖率优先」而非「半分辨率只画 SSS-mask 区域」的工程决定。
 
@@ -114,7 +114,7 @@ jq '.command_buffers[1].encoders[].draws[]? | select(.index_count==27894) | {idx
 | 14 | E2 | 476 | SkinMakeupNew (cascade 1) |
 | 24 | E2 | 476 | SkinMakeupNew (cascade 2) |
 | 34 | E3 | 476 | SkinMakeupNew (local) |
-| 44 | E4 | 484 | SkinMakeupNew (GBuffer) |
+| 44 | E4 | 484 | SkinMakeupNew (velocity-prepass) |
 | 47 (实际 idx 不同) | E10 | 491 | SkinMakeupNew (half-res) |
 | 69 | E13 | 496 | SkinMakeupNew (full-res) |
 

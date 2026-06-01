@@ -362,7 +362,7 @@ draw RPS=471 EffectDissolve              // 溶解特效
 
 > **CB1 写 239、读 247；CB3 写 247、读 239**。这两张图就是双历史 ping-pong 的 buffer。
 
-### E19 — Bloom Threshold + 1/8 Down
+### E19 — Bloom Threshold + Down (1167×1671 → 223×320)
 
 | Calls | 1337–1354 | Draws | 1 | RT | `244 RGBA16F 223×320` | RPS | 458 (`Papegame/Bloom`) |
 

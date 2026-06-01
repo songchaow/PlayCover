@@ -151,8 +151,15 @@ def decode_rgba8(data, width, height, is_srgb=False, is_bgra=True):
         # Swap B and R channels: BGRA -> RGBA
         pixels[:, :, 0], pixels[:, :, 2] = pixels[:, :, 2].copy(), pixels[:, :, 0].copy()
     
-    # Create RGBA image
-    img = Image.fromarray(pixels, mode='RGBA')
+    # Check if alpha channel is meaningful (has significant variation)
+    alpha = pixels[:, :, 3]
+    alpha_mean = alpha.mean()
+    # If alpha is nearly all-zero or all-opaque, output as RGB only
+    # (render targets often store non-transparency data in alpha)
+    if alpha_mean < 32 or alpha_mean > 250:
+        img = Image.fromarray(pixels[:, :, :3], mode='RGB')
+    else:
+        img = Image.fromarray(pixels, mode='RGBA')
     return img
 
 
@@ -272,10 +279,12 @@ def main():
             else:
                 # All others are RGBA8 (bridge decompresses ASTC on export via render pass)
                 is_srgb = pf in (71, 186, 204)  # sRGB variants
-                # ASTC textures are decompressed via render pass -> output is RGBA order
-                # Non-compressed textures use getBytes -> output is BGRA order (Metal native)
-                is_compressed = pf in (186, 204)  # ASTC formats
-                img = decode_rgba8(data, width, height, is_srgb=is_srgb, is_bgra=not is_compressed)
+                # Metal getBytes byte order is determined by pixelFormat name:
+                #   - RGBA8Unorm (70), RGBA8Unorm_sRGB (71) -> RGBA order, no swap needed
+                #   - BGRA8Unorm (80), BGRA8Unorm_sRGB (81) -> BGRA order, need B<->R swap
+                #   - ASTC (render pass decompressed) -> output is RGBA order, no swap needed
+                is_bgra = pf in (80, 81)  # Only BGRA8 formats need swap
+                img = decode_rgba8(data, width, height, is_srgb=is_srgb, is_bgra=is_bgra)
             
             # Validate
             issues = validate_image(img, filename)

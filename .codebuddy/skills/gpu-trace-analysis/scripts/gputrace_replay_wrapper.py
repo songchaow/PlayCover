@@ -1823,6 +1823,313 @@ class ReplayBridge:
         return result
 
     # ------------------------------------------------------------------
+    # R13: High-level convenience methods (find-draws, draw-info, dump-uniforms --by-name)
+    # ------------------------------------------------------------------
+
+    def find_draws(
+        self,
+        trace_path: str | Path,
+        *,
+        by_label: Optional[str] = None,
+        by_shader_name: Optional[str] = None,
+        show_first: bool = False,
+        with_ir: bool = False,
+        with_uniforms: bool = False,
+        stage: str = "fragment",
+        output_dir: Optional[str | Path] = None,
+        timeout: float = 300.0,
+    ) -> dict[str, Any]:
+        """
+        R13: 按 label / shader 名子串搜索全部 draw，可选展开首个命中的三件套。
+
+        Args:
+            trace_path: .gputrace bundle 路径
+            by_label: RPS label 子串匹配（大小写不敏感）
+            by_shader_name: 同 by_label（别名，两者取 OR）
+            show_first: True 时对第一个命中调 shader-of-drawcall --with-uniforms
+            with_ir: show_first 时是否附带 IR
+            with_uniforms: show_first 时是否附带 uniforms
+            stage: 'fragment' (默认) 或 'vertex'
+            output_dir: shader 输出目录
+            timeout: 超时
+
+        Returns:
+            dict: {matches: [...], match_count, first_draw_detail (optional)}
+        """
+        trace_path = self._validate_trace(trace_path)
+        fl = self.frame_list(
+            trace_path,
+            with_draws=True,
+            with_bindings=True,
+            with_timing=False,
+            timeout=timeout,
+        )
+
+        pattern = (by_label or by_shader_name or "").lower()
+        matches: list[dict[str, Any]] = []
+        for cb in fl.command_buffers:
+            for enc in cb.encoders:
+                for d in enc.draws:
+                    label = (d.rps_label or "").lower()
+                    if pattern and pattern not in label:
+                        continue
+                    matches.append({
+                        "draw_index_global": d.draw_index_global,
+                        "encoder_index": enc.index,
+                        "draw_in_encoder": d.draw_in_encoder,
+                        "call_index": d.call_index,
+                        "rps_key": d.rps_key,
+                        "rps_label": d.rps_label,
+                    })
+
+        result: dict[str, Any] = {
+            "command": "find-draws",
+            "pattern": by_label or by_shader_name or "",
+            "match_count": len(matches),
+            "matches": matches,
+        }
+
+        if show_first and matches:
+            first = matches[0]
+            draw_idx = first["draw_index_global"]
+            detail = self.shader_of_drawcall(
+                trace_path,
+                draw_idx,
+                stage=stage,
+                with_ir=with_ir,
+                with_bindings=True,
+                with_uniforms=with_uniforms,
+                output_dir=output_dir,
+                timeout=timeout,
+            )
+            # Serialize detail to JSON-able dict
+            detail_payload = self._shader_of_drawcall_to_payload(detail)
+            result["first_draw_detail"] = detail_payload
+
+        return result
+
+    def draw_info(
+        self,
+        trace_path: str | Path,
+        draw_index: int,
+        *,
+        with_uniforms: bool = True,
+        stage: str = "fragment",
+        output_dir: Optional[str | Path] = None,
+        timeout: float = 300.0,
+    ) -> dict[str, Any]:
+        """
+        R13: 合并视图 — shader-of-drawcall 含 IR + bindings + uniforms + size_check。
+        与 shader-of-drawcall --with-uniforms 等价但自动注入 IR arg_name 元数据到 binding 表。
+
+        Returns:
+            dict: 完整 merged payload（与 shader-of-drawcall 输出同形，额外在
+                  bindings.{stage}.buffers[].arg_name 注入 IR 信息）
+        """
+        detail = self.shader_of_drawcall(
+            trace_path,
+            draw_index,
+            stage=stage,
+            with_ir=True,
+            with_bindings=True,
+            with_uniforms=with_uniforms,
+            output_dir=output_dir,
+            timeout=timeout,
+        )
+        payload = self._shader_of_drawcall_to_payload(detail)
+        # R8.1 风格 size_check 注入：对 uniforms 每个 slot，如果 buffer_length < buffer_data_size，标记
+        if detail.uniforms:
+            for u in detail.uniforms:
+                if u.buffer_length is not None and u.buffer_data_size is not None:
+                    if u.buffer_length < u.buffer_data_size:
+                        # 注入到 raw 中
+                        for u_raw in payload.get("uniforms", []):
+                            if u_raw.get("bind_slot") == u.bind_slot:
+                                u_raw["size_check"] = {
+                                    "ok": False,
+                                    "buffer_length": u.buffer_length,
+                                    "expected_size": u.buffer_data_size,
+                                    "deficit": u.buffer_data_size - u.buffer_length,
+                                }
+        # value_health_summary at top level
+        if detail.uniforms:
+            nan_total = 0
+            inf_total = 0
+            denormal_total = 0
+            for u in detail.uniforms:
+                if u.raw:
+                    vhs = u.raw.get("value_health_summary", {})
+                    nan_total += vhs.get("nan_count", 0)
+                    inf_total += vhs.get("inf_count", 0)
+                    denormal_total += vhs.get("denormal_count", 0)
+            payload["value_health_summary"] = {
+                "nan_count": nan_total,
+                "inf_count": inf_total,
+                "denormal_count": denormal_total,
+            }
+        return payload
+
+    def dump_uniforms_by_name(
+        self,
+        trace_path: str | Path,
+        draw_index: int,
+        *,
+        name: str,
+        field_filter: Optional[str] = None,
+        stage: str = "fragment",
+        output_dir: Optional[str | Path] = None,
+        timeout: float = 300.0,
+    ) -> dict[str, Any]:
+        """
+        R13 / R8.3: 按 binding 名或字段名搜索 uniform 值。
+
+        逻辑：对指定 draw 的所有 buffer slot 遍历，找到 binding_name 匹配 name，
+        或 decoded 字典中包含 name 子串的字段。返回命中的 slot + 字段值。
+
+        如果 field_filter 不为空，会进一步过滤 decoded 字段只保留匹配的。
+
+        Args:
+            trace_path: .gputrace 路径
+            draw_index: draw index
+            name: binding name 或 field 名子串（大小写不敏感）
+            field_filter: 可选的字段子串过滤
+            stage: fragment/vertex
+            output_dir: 临时输出目录
+            timeout: 超时
+
+        Returns:
+            dict: {command, draw_index, matches: [{bind_slot, binding_name, field, value, ...}]}
+        """
+        trace_path = self._validate_trace(trace_path)
+        # 获取该 draw 所有 uniforms
+        detail = self.shader_of_drawcall(
+            trace_path,
+            draw_index,
+            stage=stage,
+            with_ir=False,
+            with_bindings=True,
+            with_uniforms=True,
+            output_dir=output_dir,
+            timeout=timeout,
+        )
+
+        name_lower = name.lower()
+        field_lower = (field_filter or "").lower()
+        found: list[dict[str, Any]] = []
+
+        if detail.uniforms:
+            for u in detail.uniforms:
+                if u.error:
+                    continue
+                binding_name_match = (u.binding_name or "").lower()
+                # Check if name matches the binding name
+                if name_lower in binding_name_match:
+                    # Return all decoded fields (or filtered)
+                    decoded = u.decoded
+                    if decoded and isinstance(decoded, dict):
+                        filtered = {}
+                        for k, v in decoded.items():
+                            if not field_lower or field_lower in k.lower():
+                                filtered[k] = v
+                        if filtered:
+                            found.append({
+                                "bind_slot": u.bind_slot,
+                                "binding_name": u.binding_name,
+                                "rps_label": u.rps_label or detail.rps_label,
+                                "fields": filtered,
+                            })
+                    continue
+                # Check if name matches any field name in decoded
+                decoded = u.decoded
+                if decoded and isinstance(decoded, dict):
+                    matched_fields = {}
+                    for k, v in decoded.items():
+                        if name_lower in k.lower():
+                            if not field_lower or field_lower in k.lower():
+                                matched_fields[k] = v
+                    if matched_fields:
+                        found.append({
+                            "bind_slot": u.bind_slot,
+                            "binding_name": u.binding_name,
+                            "rps_label": u.rps_label or detail.rps_label,
+                            "fields": matched_fields,
+                        })
+
+        return {
+            "command": "dump-uniforms --by-name",
+            "trace_path": str(trace_path),
+            "draw_index": draw_index,
+            "stage": stage,
+            "search_name": name,
+            "field_filter": field_filter,
+            "match_count": len(found),
+            "matches": found,
+        }
+
+    def _shader_of_drawcall_to_payload(self, result: ShaderOfDrawcallResult) -> dict[str, Any]:
+        """序列化 ShaderOfDrawcallResult 为 JSON-dict（复用 CLI 输出逻辑）。"""
+        payload: dict[str, Any] = {
+            "command": "shader-of-drawcall",
+            "trace_path": result.trace_path,
+            "draw_index": result.draw_index,
+            "stage": result.stage,
+            "output_dir": result.output_dir,
+            "encoder_index": result.encoder_index,
+            "draw_in_encoder": result.draw_in_encoder,
+            "call_index": result.call_index,
+            "rps_key": result.rps_key,
+            "rps_label": result.rps_label,
+            "shader_of_rps": result.shader.raw if result.shader else None,
+        }
+        if result.bindings is not None:
+            payload["with_bindings"] = True
+
+            def _bg(sb: FrameStageBindings) -> dict[str, Any]:
+                return {
+                    "buffers": [
+                        {k: v for k, v in {
+                            "index": b.index,
+                            "resource_id": b.resource_id,
+                            "offset": b.offset,
+                            "inline_bytes_size": b.inline_bytes_size,
+                        }.items() if v is not None}
+                        for b in sb.buffers
+                    ],
+                    "textures": [
+                        {"index": t.index, "resource_id": t.resource_id}
+                        for t in sb.textures
+                    ],
+                    "samplers": [
+                        {"index": s.index, "sampler_ptr": s.sampler_ptr}
+                        for s in sb.samplers
+                    ],
+                }
+            payload["bindings"] = {
+                "vertex": _bg(result.bindings.vertex),
+                "fragment": _bg(result.bindings.fragment),
+            }
+        else:
+            payload["with_bindings"] = False
+        if result.uniforms is not None:
+            payload["with_uniforms"] = True
+            payload["uniforms"] = [u.raw for u in result.uniforms]
+            payload["uniforms_summary"] = {
+                "slot_count": len(result.uniforms),
+                "slot_ok": sum(1 for u in result.uniforms if u.error is None),
+                "slot_failed": sum(1 for u in result.uniforms if u.error is not None),
+                "errors": [
+                    {"bind_slot": u.bind_slot, "error": u.error}
+                    for u in result.uniforms if u.error is not None
+                ],
+            }
+        else:
+            payload["with_uniforms"] = False
+        if result.error:
+            payload["error"] = result.error
+            payload["hint"] = result.hint
+        return payload
+
+    # ------------------------------------------------------------------
     # Validation Helpers
     # ------------------------------------------------------------------
 
@@ -2071,8 +2378,8 @@ def _cli_main():
     p_du.add_argument("trace", help="Path to .gputrace bundle")
     p_du.add_argument("target", type=int,
                       help="draw_index (default --target-kind draw) or rps_key (--target-kind rps)")
-    p_du.add_argument("bind_slot", type=int,
-                      help="MTLBinding.index of the buffer binding to decode")
+    p_du.add_argument("bind_slot", type=int, nargs="?", default=None,
+                      help="MTLBinding.index of the buffer binding to decode (optional when --by-name is used)")
     p_du.add_argument("--target-kind", choices=["draw", "rps"], default="draw",
                       help="Interpret <target> as draw_index (default) or rps_key")
     p_du.add_argument("--stage", choices=["fragment", "vertex"], default="fragment",
@@ -2087,6 +2394,48 @@ def _cli_main():
     p_du.add_argument("--max-hex-bytes", type=int, default=256,
                       help="Truncate hex dump at this many bytes (default: 256)")
     p_du.add_argument("--output-dir", default=None,
+                      help="Output directory (default: system tmp)")
+    p_du.add_argument("--by-name", default=None,
+                      help="R13: Search by binding/field name substring (ignores bind_slot, scans all slots)")
+    p_du.add_argument("--field", default=None,
+                      help="R13: Further filter decoded fields by substring (used with --by-name)")
+
+    # find-draws (R13)
+    p_fd = subparsers.add_parser(
+        "find-draws", parents=[parent],
+        help="Search draws by RPS label / shader name substring (R13)",
+    )
+    p_fd.add_argument("trace", help="Path to .gputrace bundle")
+    p_fd.add_argument("--by-label", default=None,
+                      help="RPS label substring to match (case-insensitive)")
+    p_fd.add_argument("--by-shader-name", default=None,
+                      help="Alias for --by-label (either works)")
+    p_fd.add_argument("--show-first", action="store_true",
+                      help="Expand the first matching draw with full shader + bindings context")
+    p_fd.add_argument("--with-ir", action="store_true",
+                      help="Include LLVM IR for --show-first result")
+    p_fd.add_argument("--with-uniforms", action="store_true",
+                      help="Include decoded uniforms for --show-first result")
+    p_fd.add_argument("--stage", choices=["fragment", "vertex"], default="fragment",
+                      help="Pipeline stage (default: fragment)")
+    p_fd.add_argument("--output-dir", default=None,
+                      help="Output directory for --show-first shader files")
+
+    # draw-info (R13)
+    p_di = subparsers.add_parser(
+        "draw-info", parents=[parent],
+        help="Merged per-draw binding view with IR metadata + uniforms + size_check (R13)",
+    )
+    p_di.add_argument("trace", help="Path to .gputrace bundle")
+    p_di.add_argument("draw_index", type=int,
+                      help="Global draw index")
+    p_di.add_argument("--with-uniforms", action="store_true", default=True,
+                      help="Decode all buffer slots (default: True)")
+    p_di.add_argument("--no-uniforms", action="store_true",
+                      help="Suppress uniform decoding")
+    p_di.add_argument("--stage", choices=["fragment", "vertex"], default="fragment",
+                      help="Pipeline stage (default: fragment)")
+    p_di.add_argument("--output-dir", default=None,
                       help="Output directory (default: system tmp)")
 
     # config
@@ -2270,28 +2619,80 @@ def _cli_main():
                 sys.exit(11)
 
         elif args.command == "dump-uniforms":
-            du_result = bridge.dump_uniforms(
+            by_name = getattr(args, "by_name", None)
+            field_filter = getattr(args, "field", None)
+            if by_name:
+                # R13: --by-name mode — scans all slots, finds matching field/binding
+                result_dict = bridge.dump_uniforms_by_name(
+                    args.trace,
+                    args.target,
+                    name=by_name,
+                    field_filter=field_filter,
+                    stage=args.stage,
+                    output_dir=args.output_dir,
+                    timeout=args.timeout,
+                )
+                print(json.dumps(result_dict, indent=indent))
+                if result_dict["match_count"] == 0:
+                    sys.exit(11)
+            else:
+                # Standard mode — requires bind_slot
+                if args.bind_slot is None:
+                    print(json.dumps({
+                        "error": "bind_slot_required",
+                        "hint": "bind_slot is required unless --by-name is used",
+                    }, indent=indent), file=sys.stderr)
+                    sys.exit(1)
+                du_result = bridge.dump_uniforms(
+                    args.trace,
+                    args.target,
+                    args.bind_slot,
+                    target_kind=args.target_kind,
+                    stage=args.stage,
+                    buffer_key=args.buffer_key,
+                    offset=args.offset,
+                    with_hex=args.with_hex,
+                    max_hex_bytes=args.max_hex_bytes,
+                    output_dir=args.output_dir,
+                    timeout=args.timeout,
+                )
+                # 把 wrapper 自身合成的 frame-list 上下文也带进 raw
+                payload = dict(du_result.raw)
+                if du_result.draw_index is not None:
+                    payload.setdefault("draw_index", du_result.draw_index)
+                    payload.setdefault("encoder_index", du_result.encoder_index)
+                    payload.setdefault("draw_in_encoder", du_result.draw_in_encoder)
+                    payload.setdefault("call_index", du_result.call_index)
+                print(json.dumps(payload, indent=indent))
+                if du_result.error:
+                    sys.exit(11)
+
+        elif args.command == "find-draws":
+            result_dict = bridge.find_draws(
                 args.trace,
-                args.target,
-                args.bind_slot,
-                target_kind=args.target_kind,
+                by_label=args.by_label,
+                by_shader_name=args.by_shader_name,
+                show_first=args.show_first,
+                with_ir=args.with_ir,
+                with_uniforms=args.with_uniforms,
                 stage=args.stage,
-                buffer_key=args.buffer_key,
-                offset=args.offset,
-                with_hex=args.with_hex,
-                max_hex_bytes=args.max_hex_bytes,
                 output_dir=args.output_dir,
                 timeout=args.timeout,
             )
-            # 把 wrapper 自身合成的 frame-list 上下文也带进 raw（如 draw_index/encoder_index）
-            payload = dict(du_result.raw)
-            if du_result.draw_index is not None:
-                payload.setdefault("draw_index", du_result.draw_index)
-                payload.setdefault("encoder_index", du_result.encoder_index)
-                payload.setdefault("draw_in_encoder", du_result.draw_in_encoder)
-                payload.setdefault("call_index", du_result.call_index)
-            print(json.dumps(payload, indent=indent))
-            if du_result.error:
+            print(json.dumps(result_dict, indent=indent))
+
+        elif args.command == "draw-info":
+            with_uniforms = not args.no_uniforms
+            result_dict = bridge.draw_info(
+                args.trace,
+                args.draw_index,
+                with_uniforms=with_uniforms,
+                stage=args.stage,
+                output_dir=args.output_dir,
+                timeout=args.timeout,
+            )
+            print(json.dumps(result_dict, indent=indent))
+            if result_dict.get("error"):
                 sys.exit(11)
 
         elif args.command == "config":

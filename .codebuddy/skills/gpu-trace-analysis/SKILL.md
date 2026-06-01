@@ -45,8 +45,8 @@ User gives you a rendering problem + .gputrace
 │
 ├─ You KNOW a cbuffer field name (e.g. "_MainLightPosition")?
 │  │
-│  └─► dump-uniforms <draw_index> 0 --by-name <FIELD_NAME>
-│       (Directly query a named uniform's value without knowing the slot number)
+│  └─► dump-uniforms <draw_index> --by-name <FIELD_NAME>
+│       (Directly query a named uniform's value — auto-scans all slots, no slot number needed)
 │
 ├─ You DON'T KNOW what to look at yet?
 │  │
@@ -69,7 +69,7 @@ User gives you a rendering problem + .gputrace
 |---|---------|-------------|
 | 1 | `find-draws --by-label <name> --show-first --with-ir --with-uniforms` | You have a name from Xcode GUI or user report |
 | 2 | `draw-info <draw_index> --with-uniforms` | You need the merged binding view with IR metadata + size checks |
-| 3 | `dump-uniforms <draw_index> <slot> --by-name <NAME>` | You need a specific uniform value by name |
+| 3 | `dump-uniforms <draw_index> --by-name <NAME>` | You need a specific uniform value by name (auto-scans all slots) |
 
 ---
 

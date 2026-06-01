@@ -41,13 +41,11 @@ These 3 commands cover the vast majority of rendering investigations. Master the
 ```bash
 python3 "$WRAPPER" find-draws <trace> \
     --by-label <SUBSTR>          # case-insensitive substring on rps_label
-    [--by-shader-name <SUBSTR>]  # match on vertex/fragment function name
-    [--by-rps-key <KEY>]         # exact RPS key
+    [--by-shader-name <SUBSTR>]  # alias for --by-label
     [--show-first]               # auto-run shader-of-drawcall on first hit
     [--with-ir]                  # include LLVM IR (with --show-first)
     [--with-uniforms]            # include decoded cbuffer (with --show-first)
     [--stage fragment|vertex]    # default: fragment
-    [--limit N]                  # max hits (default: 50)
     [--output-dir DIR]
 ```
 
@@ -61,43 +59,39 @@ python3 "$WRAPPER" find-draws "$TRACE" \
 ```json
 {
   "command": "find-draws",
-  "filter": {"by_label": "SkinMakeupNew", "by_shader_name": null, "by_rps_key": null},
-  "hit_count": 14,
-  "draw_count": 244,
-  "hits": [
-    {"draw_index": 4, "encoder_index": 2, "draw_in_encoder": 4,
+  "pattern": "SkinMakeupNew",
+  "match_count": 14,
+  "matches": [
+    {"draw_index_global": 4, "encoder_index": 2, "draw_in_encoder": 4,
      "call_index": 178, "rps_key": 476, "rps_label": "Papegame/SkinMakeupNew"}
   ],
-  "show_first": { /* full shader-of-drawcall result with IR + uniforms */ }
+  "first_draw_detail": { /* full shader-of-drawcall result with IR + uniforms (when --show-first) */ }
 }
 ```
 
 **Notes**:
-- Multiple filters are AND-combined.
-- `vertex_function_name` / `fragment_function_name` populated only with `--by-shader-name` (avoids extra replay cost).
-- At least one of `--by-label`, `--by-shader-name`, `--by-rps-key` required.
+- At least one of `--by-label` or `--by-shader-name` required.
+- Match is case-insensitive substring on `rps_label`.
 
 **Python module**:
 ```python
 result = bridge.find_draws(trace, by_label="SkinMakeupNew",
-                           show_first=True, show_first_with_ir=True)
-for hit in result.hits:
-    print(f"draw {hit.draw_index} → rps {hit.rps_key}")
+                           show_first=True, with_ir=True, with_uniforms=True)
 ```
 
 ---
 
 <a id="core-draw-info"></a>
-## 2. draw-info (wrapper-only, R8.1)
+## 2. draw-info (wrapper-only, R8.1/R13)
 
-**Purpose**: Merged per-draw binding view with IR metadata automatically injected — eliminates the error-prone manual join between `frame-list` + `IR .ll` + `dump-uniforms`.
+**Purpose**: Merged per-draw binding view with IR + uniforms + value_health_summary + size_check. One command gives you everything about a draw.
 
 ```bash
 python3 "$WRAPPER" draw-info <trace> <draw_index> \
-    [--with-uniforms]    # decode all buffer slots through reflection
+    [--with-uniforms]    # decode all buffer slots (default: True)
+    [--no-uniforms]      # suppress uniform decoding
     [--stage fragment|vertex]  # default: fragment
     [--output-dir DIR]
-    [--pretty]
 ```
 
 **What it does internally**:
@@ -148,13 +142,15 @@ python3 "$WRAPPER" draw-info <trace> <draw_index> \
 
 **Purpose**: Decode the actual bytes a shader saw at a specific buffer binding. Answers "what was `_MainLightPosition` at this draw?"
 
-### By name (R8.3, recommended):
+### By name (R13, recommended for single-field queries):
 ```bash
-python3 "$WRAPPER" dump-uniforms <trace> <draw_index> 0 \
-    --by-name <BINDING_NAME>    # e.g. "UnityPerMaterial"
-    [--field <FIELD_SUBSTR>]    # filter decoded fields, e.g. "_FresnelColor"
+python3 "$WRAPPER" dump-uniforms <trace> <draw_index> \
+    --by-name <NAME_SUBSTR>     # binding name OR field name substring (case-insensitive)
+    [--field <FIELD_SUBSTR>]    # further filter decoded fields
     [--stage fragment|vertex]
 ```
+
+**Key point**: `--by-name` auto-scans ALL buffer slots — no need to know the slot number. It matches against both binding names (e.g. "Character_Param") and individual field names (e.g. "_CharShadowIntensity").
 
 ### By slot (standard):
 ```bash
@@ -175,7 +171,7 @@ python3 "$WRAPPER" dump-uniforms <trace> <draw_index> <bind_slot> \
 | Layout-only | no `--buffer-key` (bridge-mode) | `layout` tree only — "what fields does the shader expect?" |
 | Layout + decoded | with `--buffer-key K --offset N` | `layout` + `decoded` with actual values |
 | Draw-mode (wrapper) | draw_index + slot | Auto-resolves everything, always decoded |
-| By-name | `--by-name <NAME>` | Resolves name→slot via IR, then decodes |
+| By-name | `--by-name <NAME>` | Scans all slots, resolves name→matching fields automatically |
 
 ### Output JSON:
 ```json
@@ -417,11 +413,12 @@ from gputrace_replay_wrapper import ReplayBridge, BridgeError, DrawIndexOutOfRan
 
 bridge = ReplayBridge()  # auto-locates binary
 
-# Key methods (all return typed dataclasses):
-bridge.find_draws(trace, by_label="...", show_first=True, show_first_with_ir=True)
+# Key methods (all return typed dataclasses or dicts):
+bridge.find_draws(trace, by_label="...", show_first=True, with_ir=True, with_uniforms=True)
 bridge.draw_info(trace, draw_index, with_uniforms=True)
-bridge.dump_uniforms_by_name(trace, draw_index, name="UnityPerMaterial", field="_FresnelColor")
+bridge.dump_uniforms_by_name(trace, draw_index, name="_CharShadowIntensity", field_filter=None)
 bridge.shader_of_drawcall(trace, draw_index, with_ir=True, with_uniforms=True)
+bridge.dump_uniforms(trace, draw_index, bind_slot, target_kind="draw")
 bridge.replay(trace, list_resources=True)
 bridge.pipeline(trace, output_dir)
 bridge.frame_list(trace)

@@ -33,11 +33,11 @@
 | Shader 反编译（IR 产出） | `disasm` 子命令 + SDI fallback | ✅ R7.7 |
 | GPU Counters / Profiler | 需 Apple 私有 entitlement + SIP 关闭 | ⛔ 跳过 |
 
-**完成度**：R0~R12 核心功能全部完成（bridge 9 子命令 + wrapper 13 子命令（含 diagnose） / 集成测试 LYSK 主基线 **148/148**）。R12 新增：Troubleshooting & Recovery 章节 + diagnose 自诊断子命令 + Pattern Common Mistakes。
+**完成度**：R0~R13 核心功能全部完成（bridge 9 子命令 + wrapper 13 子命令（含 find-draws / draw-info / diagnose） / 集成测试 LYSK 主基线 **148/148**）。R13 新增：find-draws + draw-info + dump-uniforms --by-name CLI 入口，实现"一条命令从名称到值"的便捷查询。
 
 最终交付物：
 1. **统一 ObjC bridge CLI**（`.codebuddy/skills/gpu-trace-analysis/scripts/gputrace_replay_bridge.m`）— 9 子命令，Makefile 构建，支持压缩纹理解压导出
-2. **Python CLI wrapper**（`.codebuddy/skills/gpu-trace-analysis/scripts/gputrace_replay_wrapper.py`）— CLI + 模块双接口，12 子命令，dataclass 返回值
+2. **Python CLI wrapper**（`.codebuddy/skills/gpu-trace-analysis/scripts/gputrace_replay_wrapper.py`）— CLI + 模块双接口，13 子命令（含 find-draws / draw-info），dataclass 返回值
 3. **端到端验证链路** — LYSK 全覆盖（65 RPS / 244 draw / 96 IR / cbuffer 字节级一致）
 4. **GPU Trace 分析 skill**（`.codebuddy/skills/gpu-trace-analysis/`）— 自包含，含 SKILL.md + scripts/ + references/
 
@@ -133,6 +133,7 @@ R12 已完成。当前无 P0/P1 任务。剩余均为 P2 BACKLOG：
 - **[DONE] R10**：ASTC 压缩纹理导出修复 — bridge 新增 render pass 解压路径，13 张纹理全部正确导出
 - **[DONE] R11**：Skill 防呆与鲁棒性加固（R11.1 导出自动验证 + R11.2 `.meta.json` sidecar + R11.3 压缩格式标记 + R11.4 SKILL.md 更新）。详见 `subdocs/20260522-R8-skill-usability-backlog.md` §6
 - **[DONE] R12**：错误恢复与 agent 自诊断能力（R12.1 Troubleshooting 章节 + R12.2 `diagnose` + R12.3 Pattern Pitfalls）。详见 `executions/20260526-R12-error-recovery-and-self-diagnosis.md`
+- **[DONE] R13**：便捷查询命令实现（find-draws + draw-info + dump-uniforms --by-name CLI 入口）。详见 `executions/20260602-R13-convenience-commands.md`
 - **[BACKLOG][P2] R7.5**：depth/stencil export + compute dispatch 计数
 - **[BACKLOG][P2] R8 Sprint β**：`dump-diff` 双 dump 自动比对 + `metadata.skill_version`
 - **[BACKLOG][P2] R8 Sprint γ**：`resource-trace <rid>` 资源 provenance

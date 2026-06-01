@@ -46,7 +46,7 @@ I. Tonemap / FSR / UI / Present         (E28–E30)
 - `233 R32F` — DepthResolve 标量深度
 - `234 R8` — SSAO + SSS-mask 复用通道
 - `235 R8` — SSAOBlur
-- `236 RGBA8` — 半分辨率 ScreenSpaceShadowMap composite
+- `236 RGBA8` — 半分辨率 ScreenSpaceShadow + SSAO composite（R=方向光阴影², G=spot 阴影, B=1, A=SSAO）
 - `237 RG11B10F` — SSS 水平模糊中间结果
 - `238 RGBA16F` — DOF 半分辨率
 
@@ -56,8 +56,8 @@ I. Tonemap / FSR / UI / Present         (E28–E30)
 
 | 级别 | 在哪生成 | RT | 谁消费 |
 |---|---|---|---|
-| **主光定向阴影 atlas (3 cascade)** | E2，30 draws | `225 DirectionalShadowDepth 3072×1024 D32F` | E10（半分辨率 lighting）、E13（全分辨率 compose）、E9（屏幕空间阴影合成） |
-| **局部光阴影 atlas** | E3，10 draws | `226 LocalShadowmapAtlas 1024×1024 D32F` | E10、E13 |
+| **主光定向阴影 atlas (3 cascade)** | E2，30 draws | `225 DirectionalShadowDepth 3072×1024 D32F` | **E5**（quarter-res penumbra mask）、**E9**（full PCF → 写入 236.R） |
+| **局部光阴影 atlas** | E3，10 draws | `226 LocalShadowmapAtlas 1024×1024 D32F` | **E9**（spot shadow → 写入 236.G） |
 | **半分辨率 ScreenSpaceShadowMap** | E5（粗 1/4）+ E9（精 1/2） | `230 R8` / `236 RGBA8` | E10（半分辨率 lighting）、E13（全分辨率 compose） |
 
 E2 用 30 draws / E3 用 10 draws 对**同一组 9 个角色 RPS（472–480）×3 cascade slice / ×1 atlas slice** 渲染（draw 列表表现为 `RPS 472–480` 重复 3 次写到 atlas 三段 viewport）。
@@ -84,12 +84,12 @@ LYSK 的核心角色材质（皮肤、眼球、牙齿、头发、布料）每种
 | 阶段 | 输出格式 | RPS 范围 | 数量 |
 |---|---|---|---|
 | Z-Prepass / Shadow Caster（color#=0, D32F） | depth-only | 472–480 | 9 |
-| GBuffer 主写入（RGBA8×2 + D32S8） | MRT | 481–489 | 9 |
+| Velocity + Normal Pre-pass（RGBA8×2 + D32S8） | MRT | 481–489 | 9 |
 | **Half-res lighting branch**（RG11B10F + R8 + D32S8） | half-res | 490–492 | 3（仅皮肤/牙齿） |
 | Full-res HDR Compose（RGBA16F + D32S8） | full-res | 493–500 | 8 |
 | Eyes/Hair/Transparent 收尾（RGBA16F + D32S8） | full-res | 501–504 | 4 |
 
-→ 一个「皮肤 SkinMakeupNew」会出现 **5 次**：`476 (Z-prepass) → 484 (GBuffer) → 491 (Half-res lighting) → 496 (Full-res compose) → ?`，详见 `04-skin-and-sss-pipeline.md`。
+→ 一个「皮肤 SkinMakeupNew」会出现 **5 次**：`476 (Z-prepass) → 484 (Velocity+Normal) → 491 (Half-res lighting) → 496 (Full-res compose) → ?`，详见 `04-skin-and-sss-pipeline.md`。
 
 ### 3.5 时域抗锯齿（TAA）+ FSR 1.0 上采样的组合
 

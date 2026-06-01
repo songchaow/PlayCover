@@ -12,7 +12,7 @@ LYSK 把同一种「皮肤+底妆」材质按渲染阶段拆成了 5 个 RPS。�
 | **476** | Papegame/SkinMakeupNew | **251/253** | E2（cascade shadow ×3）+ E3（local shadow atlas） | depth=`225` / `226` D32F | **Z-Prepass / Shadow Caster** — 仅写 depth、做 alpha-test mask |
 | **484** | Papegame/SkinMakeupNew | **289/357** | E4（velocity+normal pre-pass） | color={`228`, `229`} RGBA8 + d/s=`227` D32S8 | **Velocity + Normal pre-pass**（**不是 GBuffer**） — 写 motion vector 到 228、octa-normal+角色 mask 到 229、深度模板到 227。**不写材质属性、不被 lighting pass 读取**（详见 `06-gbuffer-truth.md`）|
 | **491** | Papegame/SkinMakeupNew | **389/391** | E10（half-res lighting） | color={`232` RG11B10F, `234` R8} + d/s=`231` D32S8 | **半分辨率皮肤光照** — 输出皮肤 lighting 到 232（喂给 SSS）+ 写 SSS-mask 到 234 |
-| **496** | Papegame/SkinMakeupNew | **409/411** | E13（full-res HDR compose） | color=`224` RGBA16F + d/s=`227` D32S8 | **全分辨率合成** — 采样 232（已 SSS 滤波）+ GBuffer + 阴影 → HDR 颜色 |
+| **496** | Papegame/SkinMakeupNew | **409/411** | E13（full-res HDR compose） | color=`224` RGBA16F + d/s=`227` D32S8 | **全分辨率合成** — 采样 232（已 SSS 滤波）+ 236（屏幕阴影/SSAO）+ 材质纹理 + cluster lighting → HDR 颜色 |
 | ⚠ — | — | — | — | — | **第 5 个变体（refraction/transparent 阶段）在本 trace 中没出现**（皮肤本身不需要 refraction，眼睛/头发才有 — 见 RPS 502/503/504） |
 
 > 与 `extract_shader_raw.py` 抓出来的文件名对应：
@@ -39,25 +39,25 @@ LYSK 把同一种「皮肤+底妆」材质按渲染阶段拆成了 5 个 RPS。�
                                  │
                                  ▼
        ┌──────────────────────────────────────────────────┐
-       │ E4  GBuffer (RPS 484, vf=289/357)                │
-       │   写 228 baseColor / 229 normal / 227 D+S        │
+       │ E4  Velocity + Normal Pre-pass (RPS 484)          │
+       │   写 228 motionVec / 229 octa-normal+mask / 227 D+S│
        └──────────────┬───────────────────────────────────┘
                       │
                       ▼
        ┌──────────────────────────────────────────────────┐
-       │ E5–E9  Half-res prep                             │
-       │   230 (Coarse SSSM)                              │
-       │   233/231 (Half-res depth)                       │
-       │   235→234 (SSAO + Blur)                          │
-       │   236 (SSSM compose)                             │
+       │ E5–E9  Screen-space shadow & AO prep              │
+       │   230 (Penumbra mask, quarter-res)                │
+       │   233/231 (Half-res depth)                        │
+       │   235→234 (SSAO raw → SSAO blurred)               │
+       │   236 (ScreenShadow: R=dir², G=spot, B=1, A=SSAO)│
        └──────────────┬───────────────────────────────────┘
                       │
                       ▼
        ┌──────────────────────────────────────────────────┐
        │ E10  Half-res Lighting (RPS 491, vf=389/391)     │
-       │   读 228/229 GBuffer + 234 SSAO + 236 Shadow     │
-       │      + 225 cascade shadow + lighting buffer      │
-       │      + cluster lights (E1 compute output)        │
+       │   重新光栅化几何 + 采样原始材质纹理               │
+       │      + 236 (ScreenShadow) + cluster lights       │
+       │      + cbuffer (lighting 参数)                    │
        │   写 232 (RG11B10F, 皮肤光照)                     │
        │   写 234 (R8, SSS-mask 通道)                      │
        └──────────────┬───────────────────────────────────┘
@@ -81,9 +81,10 @@ LYSK 把同一种「皮肤+底妆」材质按渲染阶段拆成了 5 个 RPS。�
        │ E13  Full-res Compose (RPS 496, vf=409/411)      │
        │   draw69 ic=27894（与 E2/E4/E10 同一份索引！）    │
        │   读 232 (SSS lighting) — 上采样到 1167×1671      │
-       │   读 228/229 (GBuffer) — 重新解 normal/baseColor  │
-       │   读 225 (cascade shadow) + 226 (local shadow)   │
-       │   读 234 (SSAO + SSS-mask)                        │
+       │   读 236 (ScreenShadow: .r=方向光阴影, .g=spot    │
+       │        阴影, .a=SSAO)                             │
+       │   读 145 (LightIndexMap, cluster lighting)        │
+       │   读原始材质纹理 (PL_Head_* / PL_Makeup_* 等)     │
        │   写 224 (HDR 场景颜色)                            │
        └──────────────────────────────────────────────────┘
 ```
@@ -121,7 +122,7 @@ jq '.command_buffers[1].encoders[].draws[]? | select(.index_count==27894) | {idx
 
 如果要排查皮肤渲染问题，按从根因到表现的顺序定位：
 
-1. **形态错** → 看 RPS **484**（GBuffer），导出 228/229 检查 normal/baseColor 是否正常。
+1. **形态错** → 看 RPS **484**（Velocity+Normal Pre-pass），导出 228/229 检查 motion vector / octa-normal+mask 是否正常。
    ```bash
    "$BRIDGE" replay "$TRACE" --export 228 /tmp/gbuf0.bin
    "$BRIDGE" replay "$TRACE" --export 229 /tmp/gbuf1.bin
@@ -131,7 +132,7 @@ jq '.command_buffers[1].encoders[].draws[]? | select(.index_count==27894) | {idx
    "$BRIDGE" shader-of-drawcall "$TRACE" <draw_index_of_491> --with-ir --with-uniforms
    ```
 3. **皮肤过红/过白/过糊** → 看 RPS **464/465**（SSS blur），尤其 sigma / kernel 偏移 cbuffer。
-4. **最终颜色错** → 看 RPS **496**（full-res compose），它读 232+GBuffer 的混合系数最容易出问题。
+4. **最终颜色错** → 看 RPS **496**（full-res compose），它读 232 (SSS lighting) + 236 (ScreenShadow/SSAO) + 材质纹理的混合最容易出问题。
 
 每一项都可以通过 `shader-of-drawcall --with-bindings --with-uniforms` 一行命令拿到完整 binding 表 + cbuffer 字段。
 

@@ -50,7 +50,7 @@ SkinSSS ic=1698 → SkinMakeupNew ic=27894 → ClothStandard ic=51699 →
 ClothStandard ic=10047 → EyeSpec ic=2280 → EyeSpec ic=2280 → HairScreenDoor ic=50835
 ```
 
-**产物**：`225` — 被 E9（屏幕空间阴影合成）、E10（半分辨率 lighting）、E13（全分辨率 HDR compose）三处采样。
+**产物**：`225` — 被 E5（quarter-res penumbra mask）、E9（full PCF 写入 236.R）采样。E10/E13 通过 236 间接获取方向光阴影信息。
 
 ---
 
@@ -66,7 +66,7 @@ ClothStandard ic=10047 → EyeSpec ic=2280 → EyeSpec ic=2280 → HairScreenDoo
 
 **用途**：局部光（spot / point）阴影 atlas — 同 9 个 RPS（多一个 EyeSpec 重复）渲染一次。
 
-**产物**：`226` — 被 E10 / E13 中的 `SpotShadow` 等 fragment shader 采样。
+**产物**：`226` — 被 E9 中的 `SpotShadow` (RPS 450) 采样，写入 236.G。E10/E13 通过 236 间接获取局部光阴影信息。
 
 ---
 
@@ -163,7 +163,7 @@ draw51 RPS=440 Unlit/TAA/TemporalAA          ic=null    // 收尾全屏 quad
 | RT | color=`235 R8 583×835` |
 | RPS | 447 (`Unlit/SSAO`) |
 
-**用途**：屏幕空间环境光遮蔽，输入 233（半分辨率深度）+ GBuffer 法线。
+**用途**：屏幕空间环境光遮蔽，输入 233（半分辨率深度）。法线可能从 depth 重建或从 229 采样（06 §8.5 扫描未能确认 229 在本帧被显式 sample）。
 
 **产物**：`235` — 喂给 E8 模糊。
 
@@ -195,7 +195,7 @@ draw51 RPS=440 Unlit/TAA/TemporalAA          ic=null    // 收尾全屏 quad
 | RT | color=`236 RGBA8 583×835` + d/s=`231` |
 | RPS | 449 (`Hidden/Papegame/ScreenSpaceShadowMap`), 450 (`Unlit/Papegame/SpotShadow`), 463 (`ScreenSpaceShadowMap`) |
 
-**用途**：把粗阴影（230）、Cascade（225）、Spot（226）合并到一张半分辨率 RGBA8 mask（236）。
+**用途**：把 Cascade 方向光阴影（225 → PCF² → 236.R）、Spot 阴影（226 → Poisson disk → 236.G）、SSAO（234 → 236.A）合成到一张半分辨率 RGBA8 mask（236）。粗阴影 230 在 draw 56 (fallback) 中使用但被 draw 57 完全覆写。
 
 **产物**：`236` — E10 / E13 lighting compose 时采样。
 
@@ -258,7 +258,7 @@ draw51 RPS=440 Unlit/TAA/TemporalAA          ic=null    // 收尾全屏 quad
 
 **用途**：垂直方向 SSS，写回 232。**结束后 232 = 已 SSS 滤波的半分辨率皮肤 lighting**。
 
-**产物**：`232` — E13 全分辨率 compose 阶段被 `SkinMakeupNew (496)` / `SkinSSS (497)` 采样（`tex2D upsample + GBuffer normal/baseColor 重组`）。
+**产物**：`232` — E13 全分辨率 compose 阶段被 `SkinMakeupNew (496)` / `SkinSSS (497)` 采样（上采样到全分辨率，作为漫反射主体乘以 `tintedAlbedo`）。
 
 ---
 
@@ -274,7 +274,9 @@ draw51 RPS=440 Unlit/TAA/TemporalAA          ic=null    // 收尾全屏 quad
 | RT | color=`224 CameraColor 1167×1671 RGBA16F` + d/s=`227` |
 | RPS | 451, 452, 453, 454, 455, 469, 470, 493, 494, 495, 496, 497, 498, 499, 500 |
 
-**用途**：这是这一帧的「主合成」pass。输入是 E10/E12 产的半分辨率 lighting (232) + GBuffer (228/229) + 阴影 (236 + 225 + 226) + AO (234)，输出全分辨率 HDR 场景颜色 224。期间还混入大气、特效粒子、顶点位移特效。
+**用途**：这是这一帧的「主合成」pass。输入是 E10/E12 产的半分辨率 lighting (232) + 屏幕空间阴影 (236) + 材质原始纹理 + cluster lights (145) + 各 cbuffer，输出全分辨率 HDR 场景颜色 224。期间还混入大气、特效粒子、顶点位移特效。
+
+> **注意**：RPS 496 (SkinMakeupNew) 的 fragment texture binding 中**没有** 228/229/225/226 — 皮肤材质通过 236 (ScreenShadow) 间接获取阴影信息，通过重新光栅化几何 + 采样原始 PL_* 贴图获取材质数据（详见 `08-rps496-binding-truth.md`）。其他 RPS（Cloth/Eye/Teeth）的 binding 情况参见各自分析。
 
 **draw 列表（按时序，按用途分组）**：
 
@@ -443,7 +445,7 @@ draw121 RPS=466 Hidden/EffectCombine2     ic=600     // 全屏特效叠加（最
 
 | 阶段 | encoder | draws | 产物 | 主要消费方 |
 |---|---|---|---|---|
-| A. Pre-frame & Shadow | E1–E3 | 0+30+10 | lighting buf, 225, 226 | E10, E13, E17 |
+| A. Pre-frame & Shadow | E1–E3 | 0+30+10 | lighting buf (145), 225, 226 | 145→E10/E13/E17；225→E5/E9；226→E9 |
 | B. Velocity+Normal Pre-pass | E4 | 12 | 228 (velocity), 229 (octa-normal+mask), 227 (D+S) | E18 (228), E6/E9/E10/E13/E17 (227)；229 本帧无消费 |
 | C. Half-res SS Effects | E5–E10 | 1+1+1+1+3+3 = 10 | 230, 231, 233, 234, 235, 236, 232 | E11, E13 |
 | D. SSS | E11–E12 | 2 | 232 (滤波后) | E13 (RPS 496/497) |

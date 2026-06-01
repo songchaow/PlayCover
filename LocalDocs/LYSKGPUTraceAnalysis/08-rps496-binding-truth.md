@@ -331,7 +331,7 @@ RPS 496 的 color attachment 配置（来自 `pipeline` 子命令的 `render_pip
 | Slot | RT id | label | 大小 | 格式 |
 |---|---|---|---|---|
 | 0 | 224 | (HDR scene buffer) | 1167×1671 | RGBA16F |
-| (depth) | 226 | scene depth | 1167×1671 | D32S8 |
+| (depth) | 227 | `TempBuffer 119` (主深度+模板) | 1167×1671 | D32S8 |
 
 RPS 496 fragment 的输出 IR 签名 = `<{ <4 x half>, half }>` —— 一个 half4 颜色 + 一个 half（depth/control flag），写入 color slot 0。
 

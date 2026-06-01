@@ -198,10 +198,12 @@ POSITION0 / NORMAL0 / TANGENT0 / TEXCOORD0..3
 
 | 消费方 | 需要 228 motion vector | 需要 229 screen-normal | 说明 |
 |---|---|---|---|
-| **E18 TAA (RPS 441)** | ✓✓✓ | — | TAA reprojection 的核心输入 |
-| **E7 SSAO (RPS 447)** | — | ✓ | 屏幕空间法线（octa 解码） |
+| **E18 TAA (RPS 441)** | ✓✓✓（实测确认） | — | TAA reprojection 的核心输入 |
+| **E7 SSAO (RPS 447)** | — | ？（推测，未实测确认） | SSAO 通常需要法线，但 §8.5 扫描 IR 未发现显式 sample 229 — 可能从 depth 重建法线 |
 | **E14 DOF DownSample (RPS 456)** | 可能 | — | 可能用于 motion blur 协调 |
 | **E16 DOF Gather (RPS 457)** | 可能 | — | 同上 |
+
+> ⚠ 以上表格中带"？"/"可能"的条目是根据常规引擎架构推测；§8.5 的实测扫描（逐个 RPS 查 IR `air.texture`）表明 **229 在本帧中无任何 fragment shader 显式 sample**，所以 SSAO 的法线可能来自 depth buffer 重建而非 229。
 
 需要进一步验证哪些 RPS 真正绑定了 228/229 — 一行命令：
 

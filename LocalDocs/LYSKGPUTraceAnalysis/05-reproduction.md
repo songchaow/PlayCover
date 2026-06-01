@@ -104,9 +104,9 @@ python3 "$WRAPPER" shader-of-drawcall "$TRACE" 69 \
 # 把 swapchain 147（CB1 输出）dump 出来
 "$BRIDGE" replay "$TRACE" --export 147 /tmp/swapchain_147.bin
 
-# GBuffer
-"$BRIDGE" replay "$TRACE" --export 228 /tmp/gbuf0.bin
-"$BRIDGE" replay "$TRACE" --export 229 /tmp/gbuf1.bin
+# Velocity + Normal Pre-pass (非传统 GBuffer)
+"$BRIDGE" replay "$TRACE" --export 228 /tmp/velocity_228.bin
+"$BRIDGE" replay "$TRACE" --export 229 /tmp/normal_mask_229.bin
 
 # 半分辨率 SSS 链路三张关键图
 "$BRIDGE" replay "$TRACE" --export 232 /tmp/skin_lighting_after_sss.bin

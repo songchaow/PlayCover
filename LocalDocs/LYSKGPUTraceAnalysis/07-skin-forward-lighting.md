@@ -36,7 +36,7 @@
    _CharLightPosition (cb4) ─────┘ DVF      │   │ Char Light 镜面        │
                                             │   └────────────────────────┘
                                             │
-   D _ScreenShadowTexture (rid 236) ─────── │ ← 4 通道分别控制 B/C/E 的阴影
+   D _ScreenShadowTexture (rid 236) ─────── │ ← .r=主灯阴影, .g=spot 阴影, .a=SSAO
                                             │
                                             │ + Σ ·
    E _AdditionalLight* (cb0, 30 槽 / ─────┐ │   ┌────────────────────────┐
@@ -58,7 +58,7 @@
 | **A** | 漫反射主体（上游 SSS pass 产物） | §2 |
 | **B** | 主灯方向 + 颜色 → 主灯镜面 + sparkle | §3 |
 | **C** | Char Light → 角色补光镜面 | §4 |
-| **D** | 屏幕空间阴影（控制 B/C/E 的衰减） | §5 |
+| **D** | 屏幕空间阴影/SSAO（.r 控制 B，.a(SSAO) 衰减 C，.g 衰减 E） | §5 |
 | **E** | 附加光（LightIndexMap cluster 路径） | §6 |
 | **F** | 间接光照 = Pape SH + cubemap → envSpec | §7 |
 
@@ -200,32 +200,32 @@ half3 charSpecular = (charNdotL > 0)
 
 ---
 
-## 5. 主灯阴影 vs Char Light 阴影（D）— 合成顺序的关键
+## 5. 主灯阴影 vs SSAO 衰减（D）— 合成顺序的关键
 
-**两个阴影项不同**，shader 第 956–959 行：
+**两种衰减来源不同**，shader 第 956–959 行：
 
 ```hlsl
-//  ↓ 用 screenShadow.r 控制主灯/sparkle 项
+//  ↓ 用 screenShadow.r（主灯方向光 PCF² 阴影）控制主灯/sparkle 项
 half charShadow = lerp(1.0h, screenShadow.r, _CharShadowIntensity);
 half3 charShadowBlock = charShadow * sparkleAndSpec;        // sparkleAndSpec = sparkle·CharMainLight + mainSpec
 half3 sssBlock = tintedAlbedo * sssSkin.rgb + charShadowBlock;
 
-//  ↓ 用 screenShadow.a 控制 Char Light 项（不同通道！）
+//  ↓ 用 screenShadow.a（SSAO 环境遮蔽）衰减 Char Light 镜面
 half3 finalColor = charSpecular * screenShadow.a + sssBlock;
 ```
 
 ### `_ScreenShadowTexture` (rid 236) 通道解读
 
-`_ScreenShadowTexture` = **E9 写出的 RGBA8 半分辨率屏幕空间阴影合成图**。它的四个通道在这套 shader 中各司其职：
+`_ScreenShadowTexture` = **E9 写出的 RGBA8 半分辨率屏幕空间阴影/AO 合成图**。它的四个通道在这套 shader 中各司其职：
 
-| 通道 | 在 RPS 496 中的用途 |
-|---|---|
-| `.r` | 主灯阴影（和 `_CharShadowIntensity = 1.0` 相乘后给 sparkle/mainSpec） |
-| `.g` | 附加光阴影 — 通过 `_AdditionalLightShadowWeight[idx]` dot 取 |
-| `.b` | （shader 中未直接读，可能是预留 Spot Shadow 通道）|
-| `.a` | Char Light 阴影（直接乘 charSpecular，不经 lerp） |
+| 通道 | 数据来源 | 在 RPS 496 中的用途 |
+|---|---|---|
+| `.r` | 主灯方向光 5×5 PCF² (RPS 463) | 主灯阴影（和 `_CharShadowIntensity = 1.0` 相乘后给 sparkle/mainSpec） |
+| `.g` | Spot Light 0 Poisson disk 阴影 (RPS 450) | 附加光阴影 — 通过 `_AdditionalLightShadowWeight[idx]` dot 取（Light 0 的 sw=(0,1,0,0) 正好取此通道） |
+| `.b` | 恒 1.0（空闲通道，当前无灯使用） | 可被 `_AdditionalLightShadowWeight` dot 取，但本帧无灯引用此通道 |
+| `.a` | **SSAO**（E8 `Unlit/SSAOBlur` 输出 rid 234 → 合成进此通道） | 直接乘 charSpecular，衰减角色补光镜面（`charSpecular * screenShadow.a`） |
 
-> 引擎还原时务必：(a) 复刻 E9 ScreenSpaceShadowMap pass 的输出格式；(b) 注意四个通道分别承载不同灯的阴影数据。最常见的错误是把 `.r` 当所有灯的阴影 → 角色补光会和主灯一起一暗一亮、看起来像"穿模"。
+> 引擎还原时务必：(a) 复刻 E9 ScreenSpaceShadowMap pass 的输出格式（R=方向光阴影², G=spot 阴影, B=1, A=SSAO）；(b) 注意四个通道各自承载不同数据。最常见的错误是把 `.a` 当成某种"Char Light 专属阴影"——实际上它是环境遮蔽，用于衰减角色补光镜面高光。
 
 `_CharShadowIntensity = 1.0` 实测值 ⇒ `charShadow = lerp(1, screenShadow.r, 1) = screenShadow.r` 直接采用。
 
@@ -296,7 +296,7 @@ half addShadow = 1.0h - _CharShadowIntensity * shadowRaw;
 addLightContribution += addSpecular * addShadow;
 ```
 
-- Light 0 ShadowWeight = `(0, 1, 0, 0)` → `shadowRaw = (1-screenShadow).g · 1`，**与主灯阴影 g 通道等权叠加**（不是加重，也不是替代主灯 .r 通道阴影）。
+- Light 0 ShadowWeight = `(0, 1, 0, 0)` → `shadowRaw = (1-screenShadow).g · 1`，即取 G 通道的 **spot shadow**（正好对应 Light 0 自身的聚光灯阴影，由 RPS 450 写入）来衰减该灯贡献。
 - Light 1 ShadowWeight = `(0, 0, 0, 0)` → `shadowRaw = 0` → `addShadow = 1 - _CharShadowIntensity · 0 = 1`，**该灯完全不受屏幕阴影衰减**。这是引擎为冷蓝 point light 单独保留的"不打阴影补光"配置。
 
 ### 6.7 附加光对最终颜色的贡献量级估算
@@ -426,7 +426,7 @@ finalColor =
       + NdotL_main · _CharMainLightColor · GGX_D · GGX_V · Fresnel                 [主灯镜面]
     )
 
-    // C Char Light 镜面，受独立的 .a 通道阴影衰减
+    // C Char Light 镜面，受 SSAO (.a 通道) 衰减
   + screenShadow.a · (
         charNdotL · _CharLightColor · GGX_D · GGX_V · Fresnel                      [角色补光镜面]
     )
@@ -463,7 +463,7 @@ finalColor =
 | **`_SSSSkinTexture`**（实质 = 主灯漫反射 + SH 漫反射 + SSS profile） | ★★★★★ | ✅ | rid 232（E12 输出，需先跑 E10/E11/E12） | 不可，省了画面就糊 |
 | **`_CharMainLightColor`** | ★★★★ | ✅ | cb4 idx 2 = `(2.51, 2.26, 2.43, 3.14)` | 不可，主灯镜面/sparkle 都用 |
 | **`_MainLightPosition`** | ★★★★ | ✅ | cb1 idx 1 = `(0.292, 0.274, 0.916, 0)` 已是单位向量 | 不可，主灯方向 |
-| **`_ScreenShadowTexture` 4 通道** | ★★★ | ✅ | rid 236（E9 输出）| 不可，阴影感缺失 |
+| **`_ScreenShadowTexture` R/G/A 通道** | ★★★ | ✅ | rid 236（E9 输出，R=方向光阴影², G=spot 阴影, A=SSAO）| 不可，阴影/AO 感缺失 |
 | **`_CharShadowIntensity`** | ★★★ | ✅ | cb4 = 1.0 | 设 0 ⇒ 阴影全失 |
 | **Pape SH 7 个 half4** | ★★ | ✅ | cb6 `_SHMaps[0..6]` | 影响 envSpec（但 envSpec ≈ 0），实际可全填 0 |
 | **`_CharLightPosition`/`Color`** | ★★ | ✅ | cb4 idx 0 / 3 | 不可，丢掉补光高光 |
@@ -494,7 +494,7 @@ finalColor =
 - **06**：解释 RPS 484（E4）是 velocity-prepass，**不是** GBuffer，**不被 RPS 496 读取**。
 - **07**（本文）：解释 RPS 496 真正的输入数据从哪里来 — 完全不依赖 228/229，而是从：
   - 上游 SSS pass 输出（rid 232 `_SSSSkinTexture`）
-  - 屏幕空间阴影（rid 236 `_ScreenShadowTexture`，4 通道分别承载主灯/附加光/Char Light 阴影）
+  - 屏幕空间阴影/AO（rid 236 `_ScreenShadowTexture`，R=主灯方向光阴影², G=spot 阴影, B=1, A=SSAO）
   - 7 个 cbuffer 的字段（其中 cb4 / cb6 是 LYSK 自定义的）
   - cube placeholder（rid 142 全黑）
   - cluster lighting index（rid 145 = 128×128 RGBA8Unorm renderTarget，正常工作）

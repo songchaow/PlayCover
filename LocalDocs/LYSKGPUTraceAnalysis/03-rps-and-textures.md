@@ -147,7 +147,7 @@
 | 233 | 583×835 | R32Float | `TempBuffer 125` | DepthResolve 标量深度 |
 | 234 | 583×835 | R8Unorm | `TempBuffer 126` | SSAO + SSS-mask 复用 |
 | 235 | 583×835 | R8Unorm | `TempBuffer 127` | SSAO 中间 |
-| 236 | 583×835 | RGBA8Unorm | `TempBuffer 128` | 半分辨率 ScreenSpaceShadow composite（E9） |
+| 236 | 583×835 | RGBA8Unorm | `TempBuffer 128` | 半分辨率 ScreenShadow+SSAO composite（E9，R=dir shadow², G=spot, B=1, A=SSAO） |
 | 237 | 583×835 | RG11B10Float | `TempBuffer 129` | SSS H-blur 中间（E11） |
 | 238 | 583×835 | RGBA16Float | `TempBuffer 130` | DOF down（E14） |
 | **239** | 1167×1671 | RGBA16Float | `CameraColor2_0` | **TAA history A**（CB1 写、CB3 读） |
@@ -164,8 +164,8 @@
 
 | 纹理 | 写入它的 encoder | 读取它的 encoder（推断） |
 |---|---|---|
-| 225 | E2（30 draws） | E9, E10, E13 |
-| 226 | E3（10 draws） | E10, E13 |
+| 225 | E2（30 draws） | **E5** (penumbra mask), **E9** (full PCF → 236.R) |
+| 226 | E3（10 draws） | **E9** (spot shadow → 236.G) |
 | 227 | E4 | E6, E9, E10, E13, E17 |
 | 228 (velocity) | E4 | **E18 (TAA `_VelocityTexture`)**（其它 RPS 仅 binding 占位、IR 不 sample） |
 | 229 (octa-normal+mask) | E4 | 本帧无 fragment 显式 sample（dead store / 引擎全局 binding 占位 — 详见 `06-gbuffer-truth.md §8.5`）|

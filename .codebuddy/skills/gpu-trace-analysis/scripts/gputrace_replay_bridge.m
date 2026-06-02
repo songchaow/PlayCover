@@ -675,6 +675,8 @@ static void print_texture_usage_array(MTLTextureUsage usage) {
 #define RPS_FN_NAME_LEN   128
 #define RPS_FMT_NAME_LEN  48
 #define RPS_MAX_COLOR_ATT 8
+#define RPS_MAX_VTX_ATTR  31
+#define RPS_MAX_VTX_LAYOUT 31
 
 typedef struct {
     int      index;
@@ -683,6 +685,20 @@ typedef struct {
     char     write_mask[8]; // "RGBA" / subset
     BOOL     blending_enabled;
 } RPSColorAttachmentInfo;
+
+typedef struct {
+    int        location;     // attribute index (vertex shader location)
+    NSUInteger format;       // MTLVertexFormat enum
+    NSUInteger offset;       // byte offset within the buffer
+    NSUInteger buffer_index; // which vertex buffer slot this reads from
+} RPSVertexAttributeInfo;
+
+typedef struct {
+    int        index;        // buffer layout index
+    NSUInteger stride;
+    NSUInteger step_function; // MTLVertexStepFunction
+    NSUInteger step_rate;
+} RPSVertexLayoutInfo;
 
 typedef struct {
     void *rps_ptr;
@@ -702,6 +718,11 @@ typedef struct {
     // because C structs under ARC can't directly hold strong id refs).
     // -1 means reflection capture failed for this RPS.
     int   reflection_index;
+    // R12: Vertex descriptor — attribute→buffer mapping
+    int   vtx_attr_count;
+    RPSVertexAttributeInfo vtx_attrs[RPS_MAX_VTX_ATTR];
+    int   vtx_layout_count;
+    RPSVertexLayoutInfo    vtx_layouts[RPS_MAX_VTX_LAYOUT];
 } RPSCaptureEntry;
 
 static RPSCaptureEntry g_rps_captured[MAX_CAPTURED_RPS];
@@ -807,6 +828,64 @@ static void rps_capture_descriptor(id rps, id desc) {
         @try { rsc = [[desc valueForKey:@"sampleCount"] unsignedLongValue]; } @catch (NSException *ex) {}
     }
     e->raster_sample_count = rsc;
+
+    // R12: Vertex descriptor — attribute[i].format/offset/bufferIndex and
+    // layouts[i].stride/stepFunction/stepRate. This is the AUTHORITATIVE
+    // mapping from vertex shader input locations to vertex buffer slots.
+    e->vtx_attr_count = 0;
+    e->vtx_layout_count = 0;
+    id vtxDesc = nil;
+    @try { vtxDesc = [desc valueForKey:@"vertexDescriptor"]; } @catch (NSException *ex) {}
+    if (vtxDesc) {
+        // attributes: MTLVertexAttributeDescriptorArray
+        id attrsArr = nil;
+        @try { attrsArr = [vtxDesc valueForKey:@"attributes"]; } @catch (NSException *ex) {}
+        if (attrsArr) {
+            SEL objAtIdx = @selector(objectAtIndexedSubscript:);
+            for (int i = 0; i < RPS_MAX_VTX_ATTR; i++) {
+                id attr = nil;
+                @try {
+                    attr = ((id (*)(id, SEL, NSUInteger))objc_msgSend)(attrsArr, objAtIdx, (NSUInteger)i);
+                } @catch (NSException *ex) {}
+                if (!attr) continue;
+                NSUInteger fmt = 0;
+                @try { fmt = [[attr valueForKey:@"format"] unsignedLongValue]; } @catch (NSException *ex) {}
+                if (fmt == 0) continue; // MTLVertexFormatInvalid — unused slot
+                RPSVertexAttributeInfo *a = &e->vtx_attrs[e->vtx_attr_count];
+                a->location = i;
+                a->format = fmt;
+                a->buffer_index = 0;
+                a->offset = 0;
+                @try { a->offset = [[attr valueForKey:@"offset"] unsignedLongValue]; } @catch (NSException *ex) {}
+                @try { a->buffer_index = [[attr valueForKey:@"bufferIndex"] unsignedLongValue]; } @catch (NSException *ex) {}
+                e->vtx_attr_count++;
+            }
+        }
+        // layouts: MTLVertexBufferLayoutDescriptorArray
+        id layoutsArr = nil;
+        @try { layoutsArr = [vtxDesc valueForKey:@"layouts"]; } @catch (NSException *ex) {}
+        if (layoutsArr) {
+            SEL objAtIdx = @selector(objectAtIndexedSubscript:);
+            for (int i = 0; i < RPS_MAX_VTX_LAYOUT; i++) {
+                id layout = nil;
+                @try {
+                    layout = ((id (*)(id, SEL, NSUInteger))objc_msgSend)(layoutsArr, objAtIdx, (NSUInteger)i);
+                } @catch (NSException *ex) {}
+                if (!layout) continue;
+                NSUInteger stride = 0;
+                @try { stride = [[layout valueForKey:@"stride"] unsignedLongValue]; } @catch (NSException *ex) {}
+                if (stride == 0) continue; // unused layout slot
+                RPSVertexLayoutInfo *l = &e->vtx_layouts[e->vtx_layout_count];
+                l->index = i;
+                l->stride = stride;
+                l->step_function = 0;
+                l->step_rate = 1;
+                @try { l->step_function = [[layout valueForKey:@"stepFunction"] unsignedLongValue]; } @catch (NSException *ex) {}
+                @try { l->step_rate = [[layout valueForKey:@"stepRate"] unsignedLongValue]; } @catch (NSException *ex) {}
+                e->vtx_layout_count++;
+            }
+        }
+    }
 }
 
 // R7.6-B: helper used by both swizzle thunks. Tries to obtain a strong
@@ -2604,6 +2683,32 @@ static int cmd_pipeline(int argc, const char *argv[]) {
             json_print_string(e->stencil_format);
             printf(",\"stencil_format_value\":%lu", (unsigned long)e->stencil_format_value);
             printf(",\"raster_sample_count\":%lu", (unsigned long)e->raster_sample_count);
+
+            // R12: vertex_descriptor — the authoritative attribute→buffer mapping
+            if (e->vtx_attr_count > 0 || e->vtx_layout_count > 0) {
+                printf(",\"vertex_descriptor\":{");
+                printf("\"attributes\":[");
+                for (int ai = 0; ai < e->vtx_attr_count; ai++) {
+                    if (ai > 0) printf(",");
+                    RPSVertexAttributeInfo *a = &e->vtx_attrs[ai];
+                    printf("{\"location\":%d,\"format\":%lu,\"offset\":%lu,\"buffer_index\":%lu}",
+                           a->location,
+                           (unsigned long)a->format,
+                           (unsigned long)a->offset,
+                           (unsigned long)a->buffer_index);
+                }
+                printf("],\"layouts\":[");
+                for (int li = 0; li < e->vtx_layout_count; li++) {
+                    if (li > 0) printf(",");
+                    RPSVertexLayoutInfo *l = &e->vtx_layouts[li];
+                    printf("{\"index\":%d,\"stride\":%lu,\"step_function\":%lu,\"step_rate\":%lu}",
+                           l->index,
+                           (unsigned long)l->stride,
+                           (unsigned long)l->step_function,
+                           (unsigned long)l->step_rate);
+                }
+                printf("]}");
+            }
         }
 
         printf("}");

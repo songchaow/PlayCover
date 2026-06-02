@@ -134,7 +134,11 @@ def decode_rgba8(data, width, height, is_srgb=False, is_bgra=True):
     """
     Decode raw RGBA8/BGRA8 data to PIL Image.
     
-    The bridge exports textures with standard row order (top-to-bottom).
+    Metal textures are stored in bottom-to-top row order in GPU memory.
+    The bridge exports raw bytes in this native GPU order, so we need to
+    flip vertically (Y-axis) to get the correct top-to-bottom orientation
+    that image files (PNG) and human viewers expect.
+    
     For textures read via getBytes (non-compressed), Metal returns BGRA byte order.
     For textures decompressed via render pass (ASTC/compressed), the output is already RGBA.
     If is_bgra=True (default for non-compressed), swap B and R channels.
@@ -145,6 +149,10 @@ def decode_rgba8(data, width, height, is_srgb=False, is_bgra=True):
         raise ValueError(f"Data size {len(data)} != expected {expected_size} for {width}x{height}")
     
     pixels = np.frombuffer(data, dtype=np.uint8).reshape(height, width, 4).copy()
+    
+    # Flip vertically: Metal stores textures bottom-to-top, but PNG/image
+    # viewers expect top-to-bottom row order.
+    pixels = pixels[::-1, :, :]
     
     if is_bgra:
         # Bridge exports in BGRA byte order (Metal native format for getBytes)
@@ -163,12 +171,19 @@ def decode_rgba8(data, width, height, is_srgb=False, is_bgra=True):
 def decode_rg11b10_texture(data, width, height):
     """
     Decode RG11B10Float texture to a tonemapped RGB PNG.
+    
+    Like RGBA8 textures, the raw data is in Metal's native bottom-to-top
+    row order, so we flip vertically after decoding.
     """
     expected_size = width * height * 4
     if len(data) != expected_size:
         raise ValueError(f"Data size {len(data)} != expected {expected_size} for {width}x{height} RG11B10Float")
     
     packed = np.frombuffer(data, dtype=np.uint32).reshape(height, width)
+    
+    # Flip vertically: Metal stores textures bottom-to-top
+    packed = packed[::-1, :]
+    
     r, g, b = decode_rg11b10_float(packed.flatten())
     
     # Reshape to image dimensions

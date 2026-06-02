@@ -43,6 +43,11 @@ User gives you a rendering problem + .gputrace
 │  └─► shader-of-drawcall <draw_index> --with-ir --with-uniforms
 │       (Full triple-bundle: shader IR + binding tables + decoded cbuffer fields)
 │
+├─ You need to inspect VERTEX DATA (positions, UVs, normals)?
+│  │
+│  └─► vertex-info <draw_index>
+│       (Lists all vertex channels with format + resource_id + stride; export with --export-channel TEXCOORD0)
+│
 ├─ You KNOW a cbuffer field name (e.g. "_MainLightPosition")?
 │  │
 │  └─► dump-uniforms <draw_index> --by-name <FIELD_NAME>
@@ -63,13 +68,14 @@ User gives you a rendering problem + .gputrace
         (Auto-joins IR arg_name + binding + size_check into one view)
 ```
 
-**80%+ of investigations use only these 3 commands:**
+**80%+ of investigations use only these 4 commands:**
 
 | # | Command | When to use |
 |---|---------|-------------|
 | 1 | `find-draws --by-label <name> --show-first --with-ir --with-uniforms` | You have a name from Xcode GUI or user report |
 | 2 | `draw-info <draw_index> --with-uniforms` | You need the merged binding view with IR metadata + size checks |
 | 3 | `dump-uniforms <draw_index> --by-name <NAME>` | You need a specific uniform value by name (auto-scans all slots) |
+| 4 | `vertex-info <draw_index> [--export-channel CHANNEL]` | You need vertex data channels (POSITION/NORMAL/TEXCOORD0...) or export raw buffer |
 
 ---
 

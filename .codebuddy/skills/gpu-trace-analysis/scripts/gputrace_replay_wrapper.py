@@ -52,6 +52,101 @@ EXIT_CODE_MAP = {
 
 
 # ---------------------------------------------------------------------------
+# MTLVertexFormat Lookup Table
+# ---------------------------------------------------------------------------
+# Maps MTLVertexFormat enum → (name, bytes_per_vertex, component_count)
+
+VERTEX_FORMAT_TABLE: dict[int, tuple[str, int, int]] = {
+    # Invalid
+    0:  ("Invalid", 0, 0),
+    # UChar
+    1:  ("UChar2", 2, 2),
+    2:  ("UChar3", 3, 3),
+    3:  ("UChar4", 4, 4),
+    # Char
+    4:  ("Char2", 2, 2),
+    5:  ("Char3", 3, 3),
+    6:  ("Char4", 4, 4),
+    # UChar Normalized
+    7:  ("UChar2Normalized", 2, 2),
+    8:  ("UChar3Normalized", 3, 3),
+    9:  ("UChar4Normalized", 4, 4),
+    # Char Normalized
+    10: ("Char2Normalized", 2, 2),
+    11: ("Char3Normalized", 3, 3),
+    12: ("Char4Normalized", 4, 4),
+    # UShort
+    13: ("UShort2", 4, 2),
+    14: ("UShort3", 6, 3),
+    15: ("UShort4", 8, 4),
+    # Short
+    16: ("Short2", 4, 2),
+    17: ("Short3", 6, 3),
+    18: ("Short4", 8, 4),
+    # UShort Normalized
+    19: ("UShort2Normalized", 4, 2),
+    20: ("UShort3Normalized", 6, 3),
+    21: ("UShort4Normalized", 8, 4),
+    # Short Normalized
+    22: ("Short2Normalized", 4, 2),
+    23: ("Short3Normalized", 6, 3),
+    24: ("Short4Normalized", 8, 4),
+    # Half
+    25: ("Half2", 4, 2),
+    26: ("Half3", 6, 3),
+    27: ("Half4", 8, 4),
+    # Float
+    28: ("Float", 4, 1),
+    29: ("Float2", 8, 2),
+    30: ("Float3", 12, 3),
+    31: ("Float4", 16, 4),
+    # Int
+    32: ("Int", 4, 1),
+    33: ("Int2", 8, 2),
+    34: ("Int3", 12, 3),
+    35: ("Int4", 16, 4),
+    # UInt
+    36: ("UInt", 4, 1),
+    37: ("UInt2", 8, 2),
+    38: ("UInt3", 12, 3),
+    39: ("UInt4", 16, 4),
+    # 1010102
+    40: ("Int1010102Normalized", 4, 4),
+    41: ("UInt1010102Normalized", 4, 4),
+    # Special
+    48: ("UChar4Normalized_BGRA", 4, 4),
+    # UChar
+    45: ("UChar", 1, 1),
+    46: ("Char", 1, 1),
+    47: ("UCharNormalized", 1, 1),
+    49: ("CharNormalized", 1, 1),
+    50: ("UShort", 2, 1),
+    51: ("Short", 2, 1),
+    52: ("UShortNormalized", 2, 1),
+    53: ("ShortNormalized", 2, 1),
+    54: ("Half", 2, 1),
+}
+
+
+def vertex_format_name(fmt: int) -> str:
+    """Return human-readable name for a MTLVertexFormat enum value."""
+    entry = VERTEX_FORMAT_TABLE.get(fmt)
+    return entry[0] if entry else f"Unknown({fmt})"
+
+
+def vertex_format_bytes(fmt: int) -> int:
+    """Return byte size of a single vertex for this MTLVertexFormat."""
+    entry = VERTEX_FORMAT_TABLE.get(fmt)
+    return entry[1] if entry else 0
+
+
+def vertex_format_components(fmt: int) -> int:
+    """Return component count for a MTLVertexFormat."""
+    entry = VERTEX_FORMAT_TABLE.get(fmt)
+    return entry[2] if entry else 0
+
+
+# ---------------------------------------------------------------------------
 # Result Dataclasses
 # ---------------------------------------------------------------------------
 
@@ -2066,6 +2161,336 @@ class ReplayBridge:
             "matches": found,
         }
 
+    # ------------------------------------------------------------------
+    # R14: vertex-info — one-command vertex channel query + export
+    # ------------------------------------------------------------------
+
+    # Standard vertex attribute semantic names by location index.
+    # These are common conventions (Unity/UE/custom engines); the actual
+    # meaning depends on the app, but location order is usually:
+    # 0=POSITION, 1=NORMAL, 2=TANGENT, 3+=TEXCOORD0..N, etc.
+    # We provide a fallback; the user can always interpret location index.
+    _DEFAULT_SEMANTIC_NAMES = {
+        0: "POSITION",
+        1: "NORMAL",
+        2: "TANGENT",
+        3: "TEXCOORD0",
+        4: "TEXCOORD1",
+        5: "TEXCOORD2",
+        6: "TEXCOORD3",
+        7: "TEXCOORD4",
+        8: "TEXCOORD5",
+        9: "TEXCOORD6",
+        10: "TEXCOORD7",
+        11: "COLOR0",
+        12: "COLOR1",
+        13: "BLENDWEIGHT",
+        14: "BLENDINDICES",
+    }
+
+    def vertex_info(
+        self,
+        trace_path: str | Path,
+        draw_index: int,
+        *,
+        export_channel: Optional[str] = None,
+        output_dir: Optional[str | Path] = None,
+        timeout: float = 300.0,
+    ) -> dict[str, Any]:
+        """
+        R14: 一条命令查询指定 draw call 的所有顶点数据通道。
+
+        对指定 draw_index：
+        1. 通过 frame-list 获取该 draw 的 rps_key + vertex stage binding（哪些 buffer 被绑定）
+        2. 通过 pipeline 获取该 RPS 的 vertex_descriptor（attribute→buffer_index + offset + format）
+        3. 合并产出一张 "通道表"：semantic_name, format, resource_id, buffer_index, offset, stride
+
+        如果指定了 export_channel（如 "POSITION" / "TEXCOORD0" / "location:3"），
+        则自动导出对应 buffer 的原始字节到文件。
+
+        Args:
+            trace_path: .gputrace bundle 路径
+            draw_index: draw_index_global
+            export_channel: 可选，要导出的通道名（语义名或 "location:N"）
+            output_dir: 导出目录（默认 /tmp）
+            timeout: 超时
+
+        Returns:
+            dict: {
+                command, draw_index, rps_key, rps_label, vertex_count,
+                channels: [{semantic, location, format, format_name, bytes_per_vertex,
+                            buffer_index, offset, stride, resource_id}],
+                export: {channel, path, bytes, ...} (if export_channel specified),
+                hints: [str]  -- 使用提示
+            }
+        """
+        import tempfile
+
+        trace_path = self._validate_trace(trace_path)
+        if output_dir is None:
+            output_dir = tempfile.mkdtemp(prefix="vertex_info_")
+        else:
+            output_dir = str(output_dir)
+            os.makedirs(output_dir, exist_ok=True)
+
+        # Step 1: frame-list to get draw's rps_key + vertex bindings
+        fl = self.frame_list(
+            trace_path,
+            with_draws=True,
+            with_bindings=True,
+            with_timing=False,
+            timeout=timeout,
+        )
+
+        # Find the target draw
+        target_draw: Optional[FrameDraw] = None
+        for cb in fl.command_buffers:
+            for enc in cb.encoders:
+                for d in enc.draws:
+                    if d.draw_index_global == draw_index:
+                        target_draw = d
+                        break
+                if target_draw:
+                    break
+            if target_draw:
+                break
+
+        if target_draw is None:
+            return {
+                "command": "vertex-info",
+                "error": "draw_index_not_found",
+                "draw_index": draw_index,
+                "draw_count": fl.draw_count,
+                "hint": f"Valid draw_index range: [0, {fl.draw_count - 1}]",
+            }
+
+        rps_key = target_draw.rps_key
+        rps_label = target_draw.rps_label
+        vertex_count = target_draw.vertex_count
+
+        # Build vertex buffer binding map: buffer_slot_index → resource_id
+        vtx_binding_map: dict[int, dict[str, Any]] = {}
+        if target_draw.bindings and target_draw.bindings.vertex:
+            for buf in target_draw.bindings.vertex.buffers:
+                vtx_binding_map[buf.index] = {
+                    "resource_id": buf.resource_id,
+                    "offset": buf.offset or 0,
+                }
+
+        # Step 2: pipeline to get vertex_descriptor for this RPS
+        pipeline_result = self.pipeline(trace_path, timeout=timeout)
+
+        # Find the RPS entry
+        vtx_descriptor = None
+        for rps in pipeline_result.raw.get("render_pipeline_states", []):
+            if rps.get("key") == rps_key:
+                vtx_descriptor = rps.get("vertex_descriptor")
+                break
+
+        if vtx_descriptor is None:
+            return {
+                "command": "vertex-info",
+                "draw_index": draw_index,
+                "rps_key": rps_key,
+                "rps_label": rps_label,
+                "error": "vertex_descriptor_not_found",
+                "hint": (
+                    "This RPS's vertex descriptor was not captured. "
+                    "Possible cause: the PSO was created before bridge swizzle was installed."
+                ),
+            }
+
+        # Build layout map: buffer_index → stride
+        layout_map: dict[int, int] = {}
+        for layout in vtx_descriptor.get("layouts", []):
+            layout_map[layout["index"]] = layout["stride"]
+
+        # Build channel list from attributes
+        channels: list[dict[str, Any]] = []
+        for attr in vtx_descriptor.get("attributes", []):
+            location = attr["location"]
+            fmt = attr["format"]
+            offset_in_buf = attr["offset"]
+            buffer_index = attr["buffer_index"]
+
+            semantic = self._DEFAULT_SEMANTIC_NAMES.get(location, f"ATTR{location}")
+            stride = layout_map.get(buffer_index, 0)
+
+            # Resolve resource_id from binding map
+            binding_info = vtx_binding_map.get(buffer_index, {})
+            resource_id = binding_info.get("resource_id")
+            buffer_base_offset = binding_info.get("offset", 0)
+
+            channels.append({
+                "semantic": semantic,
+                "location": location,
+                "format": fmt,
+                "format_name": vertex_format_name(fmt),
+                "bytes_per_vertex": vertex_format_bytes(fmt),
+                "components": vertex_format_components(fmt),
+                "buffer_index": buffer_index,
+                "offset_in_buffer": offset_in_buf,
+                "stride": stride,
+                "resource_id": resource_id,
+                "buffer_base_offset": buffer_base_offset,
+            })
+
+        # Sort by location for readability
+        channels.sort(key=lambda c: c["location"])
+
+        # Build result
+        result: dict[str, Any] = {
+            "command": "vertex-info",
+            "trace_path": str(trace_path),
+            "draw_index": draw_index,
+            "rps_key": rps_key,
+            "rps_label": rps_label,
+            "vertex_count": vertex_count,
+            "instance_count": target_draw.instance_count,
+            "indexed": target_draw.indexed,
+            "index_count": target_draw.index_count,
+            "channel_count": len(channels),
+            "channels": channels,
+        }
+
+        # Generate export hints
+        hints: list[str] = []
+        for ch in channels:
+            rid = ch["resource_id"]
+            sem = ch["semantic"]
+            if rid is not None:
+                hints.append(
+                    f"Export {sem}: vertex-info {draw_index} --export-channel {sem}"
+                )
+        if hints:
+            result["hints"] = hints
+            result["export_usage"] = (
+                "To export a channel's raw buffer data:\n"
+                "  python3 $WRAPPER vertex-info $TRACE <draw_index> "
+                "--export-channel <SEMANTIC>\n"
+                "  e.g.: --export-channel POSITION / --export-channel TEXCOORD0"
+            )
+
+        # Step 3: export channel if requested
+        if export_channel:
+            export_result = self._export_vertex_channel(
+                trace_path, draw_index, channels, export_channel,
+                vertex_count, target_draw.indexed, target_draw.index_count,
+                output_dir, timeout,
+            )
+            result["export"] = export_result
+
+        return result
+
+    def _export_vertex_channel(
+        self,
+        trace_path: Path,
+        draw_index: int,
+        channels: list[dict[str, Any]],
+        channel_name: str,
+        vertex_count: int,
+        indexed: bool,
+        index_count: Optional[int],
+        output_dir: str,
+        timeout: float,
+    ) -> dict[str, Any]:
+        """Export a specific vertex channel's buffer data."""
+        # Resolve channel: match by semantic name or "location:N"
+        target_channel = None
+        name_lower = channel_name.lower()
+
+        if name_lower.startswith("location:"):
+            try:
+                loc = int(name_lower.split(":")[1])
+                for ch in channels:
+                    if ch["location"] == loc:
+                        target_channel = ch
+                        break
+            except (ValueError, IndexError):
+                pass
+        else:
+            for ch in channels:
+                if ch["semantic"].lower() == name_lower:
+                    target_channel = ch
+                    break
+
+        if target_channel is None:
+            available = [ch["semantic"] for ch in channels]
+            return {
+                "error": "channel_not_found",
+                "requested": channel_name,
+                "available_channels": available,
+                "hint": f"Available channels: {', '.join(available)}",
+            }
+
+        resource_id = target_channel["resource_id"]
+        if resource_id is None:
+            return {
+                "error": "no_resource_bound",
+                "channel": channel_name,
+                "buffer_index": target_channel["buffer_index"],
+                "hint": "No buffer resource was bound to this vertex buffer slot during the draw.",
+            }
+
+        # Export the buffer using replay --export
+        semantic = target_channel["semantic"]
+        export_filename = f"draw{draw_index}_{semantic}_rid{resource_id}.bin"
+        export_path = os.path.join(output_dir, export_filename)
+
+        replay_result = self.replay(
+            trace_path,
+            export_id=resource_id,
+            export_path=export_path,
+            timeout=timeout,
+        )
+
+        if replay_result.export_error:
+            return {
+                "error": "export_failed",
+                "channel": semantic,
+                "resource_id": resource_id,
+                "detail": replay_result.export_error,
+            }
+
+        # Compute channel data slice info
+        stride = target_channel["stride"]
+        offset_in_buf = target_channel["offset_in_buffer"]
+        fmt_bytes = target_channel["bytes_per_vertex"]
+        effective_vertex_count = index_count if indexed else vertex_count
+
+        return {
+            "channel": semantic,
+            "location": target_channel["location"],
+            "format": target_channel["format_name"],
+            "components": target_channel["components"],
+            "resource_id": resource_id,
+            "buffer_index": target_channel["buffer_index"],
+            "exported_path": export_path,
+            "exported_bytes": replay_result.export_bytes,
+            "stride": stride,
+            "offset_in_buffer": offset_in_buf,
+            "bytes_per_vertex": fmt_bytes,
+            "vertex_count": effective_vertex_count,
+            "interpretation": (
+                f"Buffer contains interleaved data with stride={stride}. "
+                f"Channel '{semantic}' starts at byte offset {offset_in_buf} in each vertex, "
+                f"and is {fmt_bytes} bytes ({target_channel['format_name']}). "
+                f"To read vertex N: seek to byte (N * {stride} + {offset_in_buf}), read {fmt_bytes} bytes."
+            ),
+            "python_read_snippet": (
+                f"import struct, numpy as np\n"
+                f"data = open('{export_path}', 'rb').read()\n"
+                f"# Read all {effective_vertex_count} vertices of {semantic}:\n"
+                f"vertices = []\n"
+                f"for i in range({effective_vertex_count}):\n"
+                f"    off = i * {stride} + {offset_in_buf}\n"
+                f"    vertices.append(struct.unpack_from('<{'f' * target_channel['components']}', data, off))\n"
+                f"# Or with numpy:\n"
+                f"arr = np.frombuffer(data, dtype=np.float32).reshape(-1, {stride // 4})\n"
+                f"channel = arr[:, {offset_in_buf // 4}:{offset_in_buf // 4 + target_channel['components']}]"
+            ),
+        }
+
     def _shader_of_drawcall_to_payload(self, result: ShaderOfDrawcallResult) -> dict[str, Any]:
         """序列化 ShaderOfDrawcallResult 为 JSON-dict（复用 CLI 输出逻辑）。"""
         payload: dict[str, Any] = {
@@ -2438,6 +2863,20 @@ def _cli_main():
     p_di.add_argument("--output-dir", default=None,
                       help="Output directory (default: system tmp)")
 
+    # vertex-info (R14)
+    p_vi = subparsers.add_parser(
+        "vertex-info", parents=[parent],
+        help="Query vertex channels (attributes) of a draw call, with optional per-channel export (R14)",
+    )
+    p_vi.add_argument("trace", help="Path to .gputrace bundle")
+    p_vi.add_argument("draw_index", type=int,
+                      help="Global draw index (from frame-list / find-draws)")
+    p_vi.add_argument("--export-channel", default=None,
+                      help="Export a specific channel's raw buffer data. "
+                           "Accepts semantic name (POSITION, TEXCOORD0, ...) or 'location:N'")
+    p_vi.add_argument("--output-dir", default=None,
+                      help="Output directory for exported buffers (default: /tmp)")
+
     # config
     p_config = subparsers.add_parser("config", parents=[parent], help="Configuration control")
     p_config.add_argument("trace", help="Path to .gputrace bundle")
@@ -2688,6 +3127,18 @@ def _cli_main():
                 args.draw_index,
                 with_uniforms=with_uniforms,
                 stage=args.stage,
+                output_dir=args.output_dir,
+                timeout=args.timeout,
+            )
+            print(json.dumps(result_dict, indent=indent))
+            if result_dict.get("error"):
+                sys.exit(11)
+
+        elif args.command == "vertex-info":
+            result_dict = bridge.vertex_info(
+                args.trace,
+                args.draw_index,
+                export_channel=args.export_channel,
                 output_dir=args.output_dir,
                 timeout=args.timeout,
             )

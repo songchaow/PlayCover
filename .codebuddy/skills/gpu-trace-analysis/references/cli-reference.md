@@ -1,6 +1,6 @@
 # CLI & API Reference
 
-Complete surface for the bundled tools. **Start with the 3 Core Commands** — they cover 80%+ of investigations. Expand the remaining sections only when needed.
+Complete surface for the bundled tools. **Start with the 4 Core Commands** — they cover 80%+ of investigations. Expand the remaining sections only when needed.
 
 ## Table of Contents
 
@@ -8,22 +8,23 @@ Complete surface for the bundled tools. **Start with the 3 Core Commands** — t
 1. [find-draws (wrapper-only)](#core-find-draws)
 2. [draw-info (wrapper-only)](#core-draw-info)
 3. [dump-uniforms](#core-dump-uniforms)
+4. [vertex-info (wrapper-only)](#core-vertex-info)
 
 ### Supporting Commands (concise reference)
-4. [shader-of-drawcall (wrapper-only)](#shader-of-drawcall)
-5. [replay](#replay)
-6. [pipeline](#pipeline)
-7. [frame-list](#frame-list)
-8. [shader-of-rps](#shader-of-rps)
-9. [disasm](#disasm)
-10. [shader (hot-replace)](#shader)
-11. [config](#config)
-12. [diagnose (wrapper-only)](#diagnose)
+5. [shader-of-drawcall (wrapper-only)](#shader-of-drawcall)
+6. [replay](#replay)
+7. [pipeline](#pipeline)
+8. [frame-list](#frame-list)
+9. [shader-of-rps](#shader-of-rps)
+10. [disasm](#disasm)
+11. [shader (hot-replace)](#shader)
+12. [config](#config)
+13. [diagnose (wrapper-only)](#diagnose)
 
 ### Reference
-13. [Exit codes](#exit-codes)
-14. [Python wrapper — CLI mode](#python-wrapper--cli-mode)
-15. [Python wrapper — module mode](#python-wrapper--module-mode)
+14. [Exit codes](#exit-codes)
+15. [Python wrapper — CLI mode](#python-wrapper--cli-mode)
+16. [Python wrapper — module mode](#python-wrapper--module-mode)
 
 ---
 
@@ -207,12 +208,117 @@ python3 "$WRAPPER" dump-uniforms <trace> <draw_index> <bind_slot> \
 
 ---
 
+<a id="core-vertex-info"></a>
+## 4. vertex-info (wrapper-only, R14)
+
+**Purpose**: One command to query all vertex data channels of a draw call (POSITION, NORMAL, TEXCOORD0...) and optionally export a specific channel's raw buffer data. Eliminates the multi-step process of cross-referencing vertex_descriptor from `pipeline`, bindings from `frame-list`, and export from `replay`.
+
+```bash
+python3 "$WRAPPER" vertex-info <trace> <draw_index> \
+    [--export-channel <SEMANTIC|location:N>] \
+    [--output-dir DIR]
+```
+
+**Typical usage** (query all channels):
+```bash
+python3 "$WRAPPER" vertex-info "$TRACE" 69 --pretty
+```
+
+**Export a specific channel**:
+```bash
+python3 "$WRAPPER" vertex-info "$TRACE" 69 --export-channel TEXCOORD0 --output-dir /tmp/vtx
+# → exports raw buffer bytes + provides python snippet to read them
+```
+
+**Output JSON (query mode)**:
+```json
+{
+  "command": "vertex-info",
+  "draw_index": 69,
+  "rps_key": 496,
+  "rps_label": "Papegame/SkinMakeupNew",
+  "vertex_count": 0,
+  "indexed": true,
+  "index_count": 27894,
+  "channel_count": 7,
+  "channels": [
+    {
+      "semantic": "POSITION",
+      "location": 0,
+      "format": 30,
+      "format_name": "Float3",
+      "bytes_per_vertex": 12,
+      "components": 3,
+      "buffer_index": 3,
+      "offset_in_buffer": 0,
+      "stride": 40,
+      "resource_id": 100
+    },
+    {
+      "semantic": "TEXCOORD0",
+      "location": 3,
+      "format": 29,
+      "format_name": "Float2",
+      "bytes_per_vertex": 8,
+      "components": 2,
+      "buffer_index": 4,
+      "offset_in_buffer": 0,
+      "stride": 8,
+      "resource_id": 83
+    }
+  ],
+  "hints": [
+    "Export POSITION: vertex-info 69 --export-channel POSITION",
+    "Export TEXCOORD0: vertex-info 69 --export-channel TEXCOORD0"
+  ]
+}
+```
+
+**Output JSON (export mode)** — adds `export` field:
+```json
+{
+  "export": {
+    "channel": "TEXCOORD0",
+    "format": "Float2",
+    "components": 2,
+    "resource_id": 83,
+    "exported_path": "/tmp/vtx/draw69_TEXCOORD0_rid83.bin",
+    "exported_bytes": 40616,
+    "stride": 8,
+    "offset_in_buffer": 0,
+    "bytes_per_vertex": 8,
+    "vertex_count": 27894,
+    "interpretation": "Buffer contains interleaved data with stride=8...",
+    "python_read_snippet": "import struct, numpy as np\n..."
+  }
+}
+```
+
+**Key features**:
+- Automatically resolves attribute→buffer_slot→resource_id mapping (via vertex_descriptor + frame-list bindings)
+- Provides human-readable semantic names (POSITION, NORMAL, TANGENT, TEXCOORD0-7, COLOR0-1)
+- Supports `location:N` syntax for non-standard attribute locations
+- Export includes ready-to-use Python snippet for reading the binary data
+- Error messages list all available channels if the requested one doesn't exist
+
+**Python module**:
+```python
+result = bridge.vertex_info(trace, draw_index=69)
+# result["channels"] → list of channel descriptors
+
+result = bridge.vertex_info(trace, draw_index=69, export_channel="TEXCOORD0",
+                            output_dir="/tmp/vtx")
+# result["export"]["exported_path"] → path to exported .bin file
+```
+
+---
+
 # Supporting Commands
 
 ---
 
 <a id="shader-of-drawcall"></a>
-## 4. shader-of-drawcall (wrapper-only)
+## 5. shader-of-drawcall (wrapper-only)
 
 From draw index to shader IR + bindings + uniforms in one command.
 
@@ -231,7 +337,7 @@ Output includes: `shader_of_rps` (metallib/AIR/cacheKey/IR), `bindings`, `unifor
 ---
 
 <a id="replay"></a>
-## 5. replay
+## 6. replay
 
 Headless replay with resource inventory and export.
 
@@ -262,7 +368,7 @@ Resource entries include full Metal metadata: `storageMode`, `cpuCacheMode`, `ha
 ---
 
 <a id="pipeline"></a>
-## 6. pipeline
+## 7. pipeline
 
 Enumerate all libraries, RPS, compute PSO, and functions. Exports `.metallib` + `.air` files.
 
@@ -277,7 +383,7 @@ Health check: `rps_correlated_count` should equal `render_pipeline_states_count`
 ---
 
 <a id="frame-list"></a>
-## 7. frame-list
+## 8. frame-list
 
 Full frame timeline: command buffers → encoders → draws + draw→RPS map + per-draw bindings.
 
@@ -294,7 +400,7 @@ Each draw has `bindings.{vertex,fragment}.{buffers,textures,samplers}[]` with `r
 ---
 
 <a id="shader-of-rps"></a>
-## 8. shader-of-rps
+## 9. shader-of-rps
 
 Reverse-lookup: RPS key → fragment/vertex shader metallib + AIR + IR.
 
@@ -307,7 +413,7 @@ R7.7: auto-fallback from `bitcodeData` to PlayCover `ShaderDebugInfo/module.bc` 
 ---
 
 <a id="disasm"></a>
-## 9. disasm
+## 10. disasm
 
 Direct library_key → IR (skip the RPS detour). Same SDI fallback as `shader-of-rps`.
 
@@ -320,7 +426,7 @@ Direct library_key → IR (skip the RPS detour). Same SDI fallback as `shader-of
 ---
 
 <a id="shader"></a>
-## 10. shader (hot-replace)
+## 11. shader (hot-replace)
 
 Replace a library in-memory and optionally re-replay to verify.
 
@@ -334,7 +440,7 @@ Replacement is in-memory only — `.gputrace` on disk is never modified. Functio
 ---
 
 <a id="config"></a>
-## 11. config
+## 12. config
 
 Toggle replay configuration knobs (A/B testing).
 
@@ -347,7 +453,7 @@ Typical use: `disableOptimizeRestores=0` for 3–6× faster replays; `enableVali
 ---
 
 <a id="diagnose"></a>
-## 12. diagnose (wrapper-only, R12.2)
+## 13. diagnose (wrapper-only, R12.2)
 
 **Purpose**: One-command health check for bridge + trace. Run after Setup to confirm everything is operational, or when something goes wrong to identify the failure point.
 

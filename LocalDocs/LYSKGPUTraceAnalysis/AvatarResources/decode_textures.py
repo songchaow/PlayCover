@@ -151,15 +151,12 @@ def decode_rgba8(data, width, height, is_srgb=False, is_bgra=True):
         # Swap B and R channels: BGRA -> RGBA
         pixels[:, :, 0], pixels[:, :, 2] = pixels[:, :, 2].copy(), pixels[:, :, 0].copy()
     
-    # Check if alpha channel is meaningful (has significant variation)
-    alpha = pixels[:, :, 3]
-    alpha_mean = alpha.mean()
-    # If alpha is nearly all-zero or all-opaque, output as RGB only
-    # (render targets often store non-transparency data in alpha)
-    if alpha_mean < 32 or alpha_mean > 250:
-        img = Image.fromarray(pixels[:, :, :3], mode='RGB')
-    else:
-        img = Image.fromarray(pixels, mode='RGBA')
+    # Always preserve all 4 channels (RGBA) — the tool cannot know the
+    # semantic meaning of each channel.  Alpha may be a sparse mask (e.g.
+    # lip makeup covering < 5% of the UV area), a blend weight, or any
+    # other data that downstream consumers (Unity/Unreal/custom shaders)
+    # rely on.  Stripping alpha based on heuristics causes silent data loss.
+    img = Image.fromarray(pixels, mode='RGBA')
     return img
 
 
